@@ -78,6 +78,9 @@ tests.
 - Added app-facing `AppTestServer` assertions for server rows, missing rows,
   commit counts, and captured auth headers so downstream tests can avoid
   reaching into fixture internals.
+- Added `AppTestHttpServer::wait_for_requests` plus captured HTTP request count
+  and header assertions so app-shell tests can wait on and inspect production
+  transport requests consistently.
 - Added a scoped stateful server smoke proving bootstrap rows, later commits,
   and deletes are all filtered by the generated app schema scopes.
 - Added stateful encrypted-field sync coverage proving server-side stored rows

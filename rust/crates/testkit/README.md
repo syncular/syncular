@@ -37,7 +37,7 @@ Initial scope:
 - CRDT field helpers for applying text updates and asserting materialized
   Rust/native field values.
 - Assertions for outbox, conflicts, stateful app server rows/commits/auth,
-  blob queue, and blob cache state.
+  captured HTTP request headers, blob queue, and blob cache state.
 
 ## App Usage
 
@@ -170,6 +170,12 @@ fn syncs_against_stateful_http_server() {
 
     fixture.client.sync_http().unwrap();
     assert_table_has_row(&mut fixture.client, "notes", "id", "note-1");
+    let requests = server.wait_for_requests(1, std::time::Duration::from_secs(1));
+    syncular_testkit::assert_http_request_header(
+        &requests[0],
+        "x-syncular-schema-version",
+        &app_schema.current_schema_version().to_string(),
+    );
 }
 ```
 

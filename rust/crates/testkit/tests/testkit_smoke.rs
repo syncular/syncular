@@ -19,11 +19,12 @@ use syncular_testkit::{
     apply_native_todo_task_upsert, assert_app_server_auth_header, assert_app_server_commit_count,
     assert_app_server_has_row, assert_app_server_missing_row, assert_app_server_row_count,
     assert_blob_upload_queue, assert_conflict_count, assert_crdt_field_materializes,
-    assert_crdt_field_text_nonblank, assert_native_crdt_field_materializes,
-    assert_native_error_kind, assert_native_rows_changed, assert_native_table_row_count,
-    assert_no_conflicts, assert_outbox_empty, assert_outbox_statuses, assert_table_has_row,
-    assert_table_row_count, default_combined_response, encoded_blob_hash, open_app_client,
-    open_app_client_in_memory, open_app_client_with_server, open_app_client_with_transport,
+    assert_crdt_field_text_nonblank, assert_http_request_count, assert_http_request_header,
+    assert_native_crdt_field_materializes, assert_native_error_kind, assert_native_rows_changed,
+    assert_native_table_row_count, assert_no_conflicts, assert_outbox_empty,
+    assert_outbox_statuses, assert_table_has_row, assert_table_row_count,
+    default_combined_response, encoded_blob_hash, open_app_client, open_app_client_in_memory,
+    open_app_client_with_server, open_app_client_with_transport,
     open_native_client_with_schema_json_options, open_native_client_with_schema_options,
     open_todo_client, open_todo_client_with_transport, push_conflict_response,
     snapshot_combined_response, sync_conformance_str, sync_conformance_value, todo_app_schema_json,
@@ -417,7 +418,8 @@ fn app_test_http_server_records_http_and_realtime_auth_headers() {
     let mut socket = transport.connect_realtime().expect("realtime connect");
     socket.close();
 
-    let requests = server.requests();
+    let requests = server.wait_for_requests(2, Duration::from_secs(1));
+    assert_http_request_count(&requests, 2);
     let http_request = requests
         .iter()
         .find(|request| request.method == "POST")
@@ -427,23 +429,19 @@ fn app_test_http_server_records_http_and_realtime_auth_headers() {
         .find(|request| request.method == "GET")
         .expect("captured websocket request");
     let schema_version = schema_version.to_string();
-    assert_eq!(
-        http_request.header("authorization"),
-        Some("Bearer stateful-auth")
+    assert_http_request_header(http_request, "authorization", "Bearer stateful-auth");
+    assert_http_request_header(http_request, "x-syncular-tenant", "tenant-1");
+    assert_http_request_header(
+        http_request,
+        "x-syncular-schema-version",
+        schema_version.as_str(),
     );
-    assert_eq!(http_request.header("x-syncular-tenant"), Some("tenant-1"));
-    assert_eq!(
-        http_request.header("x-syncular-schema-version"),
-        Some(schema_version.as_str())
-    );
-    assert_eq!(
-        ws_request.header("authorization"),
-        Some("Bearer stateful-auth")
-    );
-    assert_eq!(ws_request.header("x-syncular-tenant"), Some("tenant-1"));
-    assert_eq!(
-        ws_request.header("x-syncular-schema-version"),
-        Some(schema_version.as_str())
+    assert_http_request_header(ws_request, "authorization", "Bearer stateful-auth");
+    assert_http_request_header(ws_request, "x-syncular-tenant", "tenant-1");
+    assert_http_request_header(
+        ws_request,
+        "x-syncular-schema-version",
+        schema_version.as_str(),
     );
     assert!(ws_request
         .path
