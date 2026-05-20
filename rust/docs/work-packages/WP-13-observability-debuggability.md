@@ -1,6 +1,6 @@
 # WP-13 Observability And Debuggability
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -173,7 +173,23 @@ snapshot first:
 
 ## Next Action
 
-Before making this `Now`, decide whether WP-13 should follow WP-05 adaptive
-bootstrap or run in parallel with it. The strongest first product surface is
-the client debug bundle plus correlated server request events; the console
-"why missing?" view can follow once the diagnostic envelope is stable.
+Continue first-slice correlation work:
+
+1. Thread generated `syncAttemptId` through browser `syncPull`, `syncPush`,
+   `syncOnce`, realtime pull-required recovery, and server request events.
+2. Add tests that prove a successful pull and a realtime pull-required recovery
+   can be correlated across client diagnostics and server request records.
+3. Add native/runtime diagnostic snapshot parity after the browser shape has
+   settled.
+
+## Progress
+
+- Added TypeScript diagnostic envelope fields for `syncAttemptId`, `traceId`,
+  `spanId`, `clientId`, `subscriptionId`, `table`, `rowId`, and `cursor`.
+- Added `diagnosticSnapshot()` to the browser client contract.
+- Added redacted subscription snapshots that expose scope/param keys and value
+  counts but not raw scope values.
+- Added ring-buffered recent diagnostics and recent sync timings to the worker
+  client and direct Rust browser client.
+- Added worker-client snapshot coverage for diagnostics, bootstrap cursor
+  state, transport stats, outbox stats, conflict stats, and redaction.

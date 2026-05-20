@@ -322,6 +322,18 @@ function fakeClient(): SyncularV2Client {
         realtime: 'disconnected',
       };
     },
+    async diagnosticSnapshot() {
+      const runtime = await this.runtimeInfo();
+      const connection = this.connectionState();
+      return {
+        generatedAt: Date.now(),
+        runtime,
+        connection,
+        subscriptions: [],
+        recentDiagnostics: [],
+        recentSyncTimings: [],
+      };
+    },
     addDiagnosticListener() {
       return () => undefined;
     },

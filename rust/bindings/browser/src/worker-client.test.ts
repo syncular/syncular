@@ -446,6 +446,150 @@ describe('Syncular v2 worker client', () => {
     });
   });
 
+  it('returns a redacted diagnostic snapshot for support tools', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+
+    const setSubscriptions = client.setSubscriptions([
+      {
+        id: 'tasks-primary',
+        table: 'tasks',
+        scopes: {
+          user_id: 'secret-user-id',
+          organization_id: ['secret-org-a', 'secret-org-b'],
+        },
+        params: { limit: 50 },
+        bootstrapPhase: 1,
+      },
+    ]);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await setSubscriptions;
+
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'diagnostic',
+      event: {
+        at: 123,
+        level: 'info',
+        source: 'sync',
+        code: 'sync.pull.applied',
+        message: 'Pull applied',
+        syncAttemptId: 'sync-attempt-1',
+        subscriptionId: 'tasks-primary',
+        table: 'tasks',
+        cursor: 42,
+      },
+    });
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'bootstrapChanged',
+      bootstrap: {
+        ...zeroBootstrapStatus(),
+        channelPhase: 'live',
+        complete: true,
+        expectedSubscriptionIds: ['tasks-primary'],
+        readySubscriptionIds: ['tasks-primary'],
+        subscriptions: [
+          {
+            id: 'tasks-primary',
+            table: 'tasks',
+            expected: true,
+            ready: true,
+            status: 'ok',
+            phase: 'live',
+            progressPercent: 100,
+            cursor: 42,
+            bootstrapPhase: 1,
+            bootstrapState: {
+              asOfCommitSeq: 7,
+              tables: ['tasks'],
+              tableIndex: 0,
+              rowCursor: null,
+            },
+          },
+        ],
+      },
+    });
+
+    const snapshot = client.diagnosticSnapshot();
+    await waitForMessages(worker, 3);
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        packageName: SYNCULAR_V2_PACKAGE_NAME,
+        packageVersion: SYNCULAR_V2_PACKAGE_VERSION,
+        workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        wasmGlueUrl: 'http://localhost/wasm/syncular_v2.js',
+        wasmUrl: 'http://localhost/wasm/syncular_v2_bg.wasm',
+      },
+    });
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: zeroTransportStats(),
+    });
+    await waitForMessages(worker, 4);
+    worker.respond({
+      id: worker.messages[3]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { rows: [{ status: 'pending', count: 2 }] },
+    });
+    await waitForMessages(worker, 5);
+    worker.respond({
+      id: worker.messages[4]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { rows: [{ unresolved: 1, resolved: 2, total: 3 }] },
+    });
+
+    await expect(snapshot).resolves.toMatchObject({
+      connection: {
+        realtime: 'disconnected',
+        lastDiagnostic: {
+          code: 'sync.pull.applied',
+          syncAttemptId: 'sync-attempt-1',
+        },
+      },
+      subscriptions: [
+        {
+          id: 'tasks-primary',
+          table: 'tasks',
+          scopeKeys: ['organization_id', 'user_id'],
+          scopeValueCount: 3,
+          paramsKeys: ['limit'],
+          paramsValueCount: 1,
+          ready: true,
+          phase: 'live',
+          cursor: 42,
+        },
+      ],
+      recentDiagnostics: [
+        {
+          code: 'sync.pull.applied',
+          syncAttemptId: 'sync-attempt-1',
+          subscriptionId: 'tasks-primary',
+          table: 'tasks',
+          cursor: 42,
+        },
+      ],
+      outboxStats: { pending: 2, total: 2 },
+      conflictStats: { unresolved: 1, resolved: 2, total: 3 },
+    });
+    expect(JSON.stringify(await snapshot)).not.toContain('secret-user-id');
+  });
+
   it('falls back to IndexedDB when default OPFS open fails', async () => {
     const worker = new FakeWorker();
     const promise = createSyncularV2WorkerClient({
@@ -1382,5 +1526,35 @@ function zeroBootstrapStatus(): SyncularV2BootstrapStatus {
     pendingSubscriptionIds: [],
     subscriptions: [],
     phases: [],
+  };
+}
+
+function zeroTransportStats() {
+  return {
+    requestCount: 0,
+    requestBytes: 0,
+    responseBytes: 0,
+    snapshotChunkCount: 0,
+    snapshotChunkJsonCount: 0,
+    snapshotChunkBinaryCount: 0,
+    snapshotChunkRowCount: 0,
+    snapshotChunkFetchMs: 0,
+    snapshotChunkDecompressMs: 0,
+    snapshotChunkHashMs: 0,
+    snapshotChunkDecodeMs: 0,
+    snapshotArtifactCount: 0,
+    snapshotArtifactBytes: 0,
+    snapshotArtifactFetchMs: 0,
+    snapshotArtifactDecompressMs: 0,
+    snapshotArtifactHashMs: 0,
+    syncPackDecodeMs: 0,
+    serverBootstrapSnapshotQueryMs: 0,
+    serverBootstrapRowFrameEncodeMs: 0,
+    serverBootstrapSnapshotBinaryEncodeMs: 0,
+    serverBootstrapChunkCacheLookupMs: 0,
+    serverBootstrapArtifactCacheLookupMs: 0,
+    serverBootstrapChunkGzipMs: 0,
+    serverBootstrapChunkHashMs: 0,
+    serverBootstrapChunkPersistMs: 0,
   };
 }

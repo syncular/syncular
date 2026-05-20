@@ -3,6 +3,11 @@ import {
   resolveSyncularV2ClientConfig,
   SYNCULAR_V2_DEFAULT_STORAGE,
 } from './client-config';
+import {
+  appendSyncularV2DiagnosticEvent,
+  appendSyncularV2SyncTimings,
+  summarizeSyncularV2DiagnosticSubscriptions,
+} from './diagnostics';
 import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   CreateSyncularV2DatabaseOptions,
@@ -15,6 +20,7 @@ import type {
   SyncularV2BlobCacheStats,
   SyncularV2BlobStoreOptions,
   SyncularV2BlobUploadQueueStats,
+  SyncularV2BootstrapStatus,
   SyncularV2Client,
   SyncularV2ClientConfig,
   SyncularV2ClientEventMap,
@@ -35,6 +41,7 @@ import type {
   SyncularV2CrdtUpdateLogEntry,
   SyncularV2DiagnosticEvent,
   SyncularV2DiagnosticSink,
+  SyncularV2DiagnosticSnapshot,
   SyncularV2EncryptedCrdtConfig,
   SyncularV2EncryptionHelperMethod,
   SyncularV2FieldEncryptionConfig,
@@ -54,6 +61,7 @@ import type {
   SyncularV2StorageFallbackInfo,
   SyncularV2SubscriptionSpec,
   SyncularV2SyncResult,
+  SyncularV2SyncTimings,
   SyncularV2TransportStats,
 } from './types';
 import { selectSyncularV2RuntimeArtifact } from './wasm-runtime';
@@ -181,6 +189,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   #storageFallback: SyncularV2StorageFallbackInfo | undefined;
   #lastDiagnostic: SyncularV2DiagnosticEvent | undefined;
   #lastError: { message: string; code?: string } | undefined;
+  #subscriptions: SyncularV2SubscriptionSpec[] = [];
+  #lastBootstrap: SyncularV2BootstrapStatus | undefined;
+  #recentDiagnostics: SyncularV2DiagnosticEvent[] = [];
+  #recentSyncTimings: SyncularV2SyncTimings[] = [];
   #rowsChangedDebounceMs: number | false;
   #rowsChangedDebounceTimer: ReturnType<typeof setTimeout> | undefined;
   #pendingRowsChanged:
@@ -275,6 +287,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     });
     this.#config = config;
     this.#realtimeOptions = undefined;
+    this.#subscriptions = [];
+    this.#lastBootstrap = undefined;
     await this.#refreshAuthHeaders();
   }
 
@@ -345,9 +359,11 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   async setSubscriptions(
     subscriptions: readonly SyncularV2SubscriptionSpec[]
   ): Promise<void> {
+    this.#subscriptions = [...subscriptions];
+    this.#lastBootstrap = undefined;
     await this.#request({
       type: 'setSubscriptions',
-      subscriptions: [...subscriptions],
+      subscriptions: this.#subscriptions,
     });
   }
 
@@ -655,6 +671,36 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         : {}),
       ...(this.#lastDiagnostic ? { lastDiagnostic: this.#lastDiagnostic } : {}),
       ...(this.#lastError ? { lastError: this.#lastError } : {}),
+    };
+  }
+
+  async diagnosticSnapshot(): Promise<SyncularV2DiagnosticSnapshot> {
+    const [runtime, transportStats] = await Promise.all([
+      this.runtimeInfo(),
+      this.transportStats().catch(() => undefined),
+    ]);
+    const outboxStats =
+      this.#lastOutboxStats ??
+      (await this.#readOutboxStats().catch(() => undefined));
+    if (outboxStats) this.#lastOutboxStats = outboxStats;
+    const conflictStats =
+      this.#lastConflictStats ??
+      (await this.#readConflictStats().catch(() => undefined));
+    if (conflictStats) this.#lastConflictStats = conflictStats;
+    return {
+      generatedAt: Date.now(),
+      runtime,
+      connection: this.connectionState(),
+      subscriptions: summarizeSyncularV2DiagnosticSubscriptions(
+        this.#subscriptions,
+        this.#lastBootstrap
+      ),
+      recentDiagnostics: [...this.#recentDiagnostics],
+      recentSyncTimings: [...this.#recentSyncTimings],
+      ...(this.#lastBootstrap ? { bootstrap: this.#lastBootstrap } : {}),
+      ...(transportStats ? { transportStats } : {}),
+      ...(outboxStats ? { outboxStats } : {}),
+      ...(conflictStats ? { conflictStats } : {}),
     };
   }
 
@@ -1049,6 +1095,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       return;
     }
     if (event.type === 'bootstrapChanged') {
+      this.#lastBootstrap = event.bootstrap;
       this.#emitClientEvent('bootstrapChanged', event.bootstrap);
       return;
     }
@@ -1152,6 +1199,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   #emitBootstrapChanged(result: SyncularV2SyncResult): void {
+    this.#lastBootstrap = result.bootstrap;
+    appendSyncularV2SyncTimings(this.#recentSyncTimings, result.timings);
     this.#emitClientEvent('bootstrapChanged', result.bootstrap);
   }
 
@@ -1372,9 +1421,18 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       source: event.source,
       code: event.code,
       message: event.message,
+      ...(event.syncAttemptId ? { syncAttemptId: event.syncAttemptId } : {}),
+      ...(event.traceId ? { traceId: event.traceId } : {}),
+      ...(event.spanId ? { spanId: event.spanId } : {}),
+      ...(event.clientId ? { clientId: event.clientId } : {}),
+      ...(event.subscriptionId ? { subscriptionId: event.subscriptionId } : {}),
+      ...(event.table ? { table: event.table } : {}),
+      ...(event.rowId ? { rowId: event.rowId } : {}),
+      ...(event.cursor !== undefined ? { cursor: event.cursor } : {}),
       ...(event.details ? { details: event.details } : {}),
     };
     this.#lastDiagnostic = diagnostic;
+    appendSyncularV2DiagnosticEvent(this.#recentDiagnostics, diagnostic);
     if (this.#diagnosticListeners.size === 0) return;
     for (const listener of this.#diagnosticListeners) {
       try {

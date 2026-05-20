@@ -1,5 +1,10 @@
 import type { BlobRef, SyncOperation } from '@syncular/core';
 import { resolveSyncularV2ClientConfig } from './client-config';
+import {
+  appendSyncularV2DiagnosticEvent,
+  appendSyncularV2SyncTimings,
+  summarizeSyncularV2DiagnosticSubscriptions,
+} from './diagnostics';
 import { createSyncularV2RuntimeInfo } from './runtime-contract';
 import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
@@ -18,6 +23,7 @@ import type {
   SyncularV2ChangedRow,
   SyncularV2ClientConfig,
   SyncularV2ConflictSummary,
+  SyncularV2ConnectionState,
   SyncularV2CrdtDocumentSnapshot,
   SyncularV2CrdtFieldCompactionReceipt,
   SyncularV2CrdtFieldCompactionRequest,
@@ -28,6 +34,9 @@ import type {
   SyncularV2CrdtFieldWriteReceipt,
   SyncularV2CrdtFieldYjsUpdateRequest,
   SyncularV2CrdtUpdateLogEntry,
+  SyncularV2DiagnosticEvent,
+  SyncularV2DiagnosticSink,
+  SyncularV2DiagnosticSnapshot,
   SyncularV2EncryptedCrdtConfig,
   SyncularV2EncryptionHelperMethod,
   SyncularV2FieldEncryptionConfig,
@@ -44,6 +53,7 @@ import type {
   SyncularV2StorageCompactionReport,
   SyncularV2SubscriptionSpec,
   SyncularV2SyncResult,
+  SyncularV2SyncTimings,
   SyncularV2TransportStats,
 } from './types';
 import {
@@ -208,11 +218,15 @@ function loadSyncularV2WasmGlueFromUrl(
 
 export class SyncularV2RustClient {
   #rowsChangedListeners = new Set<SyncularV2RowsChangedSink>();
+  #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
+  #recentDiagnostics: SyncularV2DiagnosticEvent[] = [];
+  #recentSyncTimings: SyncularV2SyncTimings[] = [];
   #subscriptions: SyncularV2SubscriptionSpec[] = [];
   #bootstrapById = new Map<
     string,
     SyncularV2BootstrapSubscriptionStatusEntry
   >();
+  #closed = false;
 
   constructor(
     private readonly raw: RawSyncularV2RustClient,
@@ -224,6 +238,14 @@ export class SyncularV2RustClient {
     this.#subscriptions = [...subscriptions];
     this.#bootstrapById.clear();
     this.raw.setSubscriptionsJson(JSON.stringify(subscriptions));
+    this.#emitDiagnostic({
+      at: Date.now(),
+      level: 'info',
+      source: 'client',
+      code: 'client.subscriptions.updated',
+      message: 'Syncular v2 subscriptions updated',
+      details: { subscriptionCount: subscriptions.length },
+    });
   }
 
   async forceSubscriptionsBootstrap(
@@ -302,6 +324,7 @@ export class SyncularV2RustClient {
     const result = this.#decorateSyncResult(
       parseSyncResult(await this.raw.syncPullJson())
     );
+    this.#captureSyncTimings(result);
     this.#emitRowsChanged('remotePull', result);
     return result;
   }
@@ -312,6 +335,7 @@ export class SyncularV2RustClient {
     const result = this.#decorateSyncResult(
       parseSyncResult(await this.raw.applyRealtimeSyncPackBytes(bytes))
     );
+    this.#captureSyncTimings(result);
     this.#emitRowsChanged('remotePull', result);
     return result;
   }
@@ -321,6 +345,7 @@ export class SyncularV2RustClient {
       const result = this.#decorateSyncResult(
         parseSyncResult(await this.raw.syncPushJson())
       );
+      this.#captureSyncTimings(result);
       this.#emitRowsChanged('localWrite', result);
       return result;
     } catch (error) {
@@ -334,6 +359,7 @@ export class SyncularV2RustClient {
       const result = this.#decorateSyncResult(
         parseSyncResult(await this.raw.syncOnceJson())
       );
+      this.#captureSyncTimings(result);
       this.#emitRowsChanged('remotePull', result);
       return result;
     } catch (error) {
@@ -574,6 +600,45 @@ export class SyncularV2RustClient {
     return this.runtime;
   }
 
+  connectionState(): SyncularV2ConnectionState {
+    const lastDiagnostic =
+      this.#recentDiagnostics[this.#recentDiagnostics.length - 1];
+    return {
+      closed: this.#closed,
+      pendingRequests: 0,
+      realtime: 'disconnected',
+      ...(lastDiagnostic ? { lastDiagnostic } : {}),
+    };
+  }
+
+  async diagnosticSnapshot(): Promise<SyncularV2DiagnosticSnapshot> {
+    const bootstrap = buildBootstrapStatus(
+      this.#subscriptions,
+      this.#bootstrapById,
+      this.pullOptions
+    );
+    return {
+      generatedAt: Date.now(),
+      runtime: this.runtime,
+      connection: this.connectionState(),
+      subscriptions: summarizeSyncularV2DiagnosticSubscriptions(
+        this.#subscriptions,
+        bootstrap
+      ),
+      recentDiagnostics: [...this.#recentDiagnostics],
+      recentSyncTimings: [...this.#recentSyncTimings],
+      bootstrap,
+      transportStats: this.transportStats(),
+    };
+  }
+
+  addDiagnosticListener(listener: SyncularV2DiagnosticSink): () => void {
+    this.#diagnosticListeners.add(listener);
+    return () => {
+      this.#diagnosticListeners.delete(listener);
+    };
+  }
+
   #decorateSyncResult(result: SyncularV2SyncResult): SyncularV2SyncResult {
     for (const subscription of result.subscriptions) {
       this.#bootstrapById.set(subscription.id, {
@@ -622,6 +687,22 @@ export class SyncularV2RustClient {
     }
   }
 
+  #captureSyncTimings(result: SyncularV2SyncResult): void {
+    appendSyncularV2SyncTimings(this.#recentSyncTimings, result.timings);
+  }
+
+  #emitDiagnostic(event: SyncularV2DiagnosticEvent): void {
+    appendSyncularV2DiagnosticEvent(this.#recentDiagnostics, event);
+    if (this.#diagnosticListeners.size === 0) return;
+    for (const listener of this.#diagnosticListeners) {
+      try {
+        listener(event);
+      } catch {
+        // Diagnostics must never break client control flow.
+      }
+    }
+  }
+
   #drainAndEmitRowsChanged(): void {
     let events: SyncularV2RowsChangedEvent[];
     try {
@@ -645,6 +726,7 @@ export class SyncularV2RustClient {
   }
 
   close(): void {
+    this.#closed = true;
     this.raw.close();
   }
 }
