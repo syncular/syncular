@@ -741,6 +741,11 @@ Generated derived-schema contract follow-up:
 - `syncular.schema.json` now includes a flattened `localDerivedSchema` section
   for non-TS adapters that need the same local index/read-model install phases
   without reconstructing them from table and read-model metadata.
+- Browser E2E scoreboard now reports `rust_schema_install_ms` and
+  `rust_cached_schema_install_ms`, keeping sync bootstrap timing separate from
+  generated schema installation. The 100k release artifact gate stayed in band:
+  `rust_bootstrap_ms=149.75`, `rust_schema_install_ms=5.42`, and
+  `rust_cached_schema_install_ms=2.55`.
 
 ## Next Action
 
@@ -759,6 +764,10 @@ Continue artifact resource-state work, but keep it benchmark-gated.
   consume `localDerivedSchema` and compare install strategies: generated full
   schema before bootstrap versus bulk load followed by explicit
   index/read-model setup and rebuild.
+- Keep schema-install timing visible in local browser runs when comparing
+  against external app-style benchmarks, because external reports derived
+  schema as part of app bootstrap while local sync bootstrap intentionally does
+  not.
 - The next useful artifact-memory step is still a larger bootstrap state design
   if the generated derived-schema work leaves memory as the bottleneck:
   release/detach artifact databases before full commit without copying rows

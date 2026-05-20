@@ -33,6 +33,7 @@ import {
   createSyncularRustOwnedSqlite,
   createSyncularV2Dialect,
   type SyncularRustOwnedSqlite,
+  withSyncularV2SchemaWrites,
 } from '../../../../rust/bindings/browser/src/index';
 import {
   createSyncularAppDatabase,
@@ -1183,6 +1184,7 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       getHeaders: () => ({ 'x-actor-id': actorId }),
       diagnostics: (event) => rustDiagnosticEvents.push(event),
       subscriptions: false,
+      schemaInstallMode: 'none',
       config: {
         baseUrl: `${options.serverUrl.replace(/\/$/, '')}/sync`,
         actorId,
@@ -1194,6 +1196,12 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         pull: rustPullOptions,
       },
     });
+    const rustSchemaInstallStartedAt = performance.now();
+    await withSyncularV2SchemaWrites(rustDatabase, ensureSyncularAppSchema);
+    pushMetric(
+      'rust_schema_install_ms',
+      performance.now() - rustSchemaInstallStartedAt
+    );
     await rustDatabase.client.setSubscriptions([taskSubscription({ actorId })]);
     const rustDiagnostics =
       rustDatabase.client as unknown as RustE2eDiagnostics;
@@ -1312,6 +1320,7 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         }),
       getHeaders: () => ({ 'x-actor-id': actorId }),
       subscriptions: false,
+      schemaInstallMode: 'none',
       config: {
         baseUrl: `${options.serverUrl.replace(/\/$/, '')}/sync`,
         actorId,
@@ -1323,6 +1332,15 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         pull: rustPullOptions,
       },
     });
+    const cachedRustSchemaInstallStartedAt = performance.now();
+    await withSyncularV2SchemaWrites(
+      cachedRustDatabase,
+      ensureSyncularAppSchema
+    );
+    pushMetric(
+      'rust_cached_schema_install_ms',
+      performance.now() - cachedRustSchemaInstallStartedAt
+    );
     await cachedRustDatabase.client.setSubscriptions([
       taskSubscription({ actorId }),
     ]);
