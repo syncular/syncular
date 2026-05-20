@@ -738,6 +738,9 @@ Generated derived-schema contract follow-up:
   The default generated installer stayed in band on the 100k release artifact
   gate (`147.84ms -> 146.94ms`). A generated `liveSetup` mode was rejected
   because 500k bootstrap regressed versus the default installer.
+- `syncular.schema.json` now includes a flattened `localDerivedSchema` section
+  for non-TS adapters that need the same local index/read-model install phases
+  without reconstructing them from table and read-model metadata.
 
 ## Next Action
 
@@ -753,9 +756,9 @@ Continue artifact resource-state work, but keep it benchmark-gated.
   or failed to improve external peak memory enough to justify their complexity.
 - Do not keep spending time on artifact memory micro-probes unless they change
   the bootstrap state model. The next useful app-style benchmark slice should
-  consume the generated derived-schema phase contract and compare install
-  strategies: generated full schema before bootstrap versus bulk load followed
-  by explicit index/read-model setup and rebuild.
+  consume `localDerivedSchema` and compare install strategies: generated full
+  schema before bootstrap versus bulk load followed by explicit
+  index/read-model setup and rebuild.
 - The next useful artifact-memory step is still a larger bootstrap state design
   if the generated derived-schema work leaves memory as the bottleneck:
   release/detach artifact databases before full commit without copying rows

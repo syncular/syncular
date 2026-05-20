@@ -182,6 +182,8 @@ read-only review:
     directly instead of reconstructing local schema SQL. A generated
     `liveSetup` install mode and matching benchmark switch were rejected after
     the 500k gate regressed versus the default installer.
+    `syncular.schema.json` now also exposes a flattened `localDerivedSchema`
+    contract for non-TS adapters.
     Browser scoreboard now measures raw aggregate and read-model aggregate lanes:
     at 100k rows, Rust read-model aggregate p50 is `0.05ms` vs TS `0.53ms`
     while raw aggregate remains visible (`23.00ms` Rust vs `161.09ms` TS). This

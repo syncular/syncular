@@ -75,6 +75,10 @@ Retained first slice:
 - `syncular.schema.json` now carries each local read model's generated
   `setupSql` and `rebuildSql`, making the SQLite read-model contract available
   to non-TS host tooling without duplicating SQL generation.
+- `syncular.schema.json` now also carries `localDerivedSchema`, a flattened
+  contract for local index metadata plus read-model setup/rebuild SQL. Host
+  adapters can consume this directly instead of inferring install phases from
+  scattered table and read-model fields.
 - The external `offline-sync-bench` Rust adapter was verified locally against a
   generated Syncular schema contract instead of hand-written read-model SQL.
 - No hidden runtime cache, default index, or compatibility branch was added.
@@ -212,5 +216,5 @@ passes.
 Initial `countBy` read models and generated derived-schema phase helpers are
 accepted. Future read-model work should be a new scoped WP for additional
 read-model kinds or for changing bootstrap/install strategy. External app-style
-adapters should consume the generated index/read-model contract rather than
-carrying local SQL fixtures.
+adapters should consume `localDerivedSchema` or the generated TypeScript
+helpers rather than carrying local SQL fixtures.

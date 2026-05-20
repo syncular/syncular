@@ -570,6 +570,8 @@ struct SchemaJsonDocument {
     tables: Vec<SchemaJsonTable>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     local_read_models: Vec<SchemaJsonLocalReadModel>,
+    #[serde(default)]
+    local_derived_schema: SchemaJsonLocalDerivedSchema,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -603,6 +605,22 @@ struct SchemaJsonTable {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct SchemaJsonIndex {
+    name: String,
+    sql: String,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaJsonLocalDerivedSchema {
+    indexes: Vec<SchemaJsonLocalDerivedIndex>,
+    read_model_setup_sql: Vec<String>,
+    read_model_rebuild_sql: Vec<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaJsonLocalDerivedIndex {
+    table: String,
     name: String,
     sql: String,
 }
@@ -831,6 +849,29 @@ fn generate_schema_json(
             })
         })
         .collect::<Result<Vec<_>>>()?;
+    let local_derived_schema = SchemaJsonLocalDerivedSchema {
+        indexes: schema_tables
+            .iter()
+            .flat_map(|table| {
+                table
+                    .indexes
+                    .iter()
+                    .map(|index| SchemaJsonLocalDerivedIndex {
+                        table: table.name.clone(),
+                        name: index.name.clone(),
+                        sql: index.sql.clone(),
+                    })
+            })
+            .collect(),
+        read_model_setup_sql: local_read_models
+            .iter()
+            .flat_map(|model| model.setup_sql.iter().cloned())
+            .collect(),
+        read_model_rebuild_sql: local_read_models
+            .iter()
+            .flat_map(|model| model.rebuild_sql.iter().cloned())
+            .collect(),
+    };
 
     let document = SchemaJsonDocument {
         schema_ref: "https://syncular.dev/schemas/syncular.schema.v1.json".to_string(),
@@ -839,6 +880,7 @@ fn generate_schema_json(
         migrations: migration_specs(migrations_dir)?,
         tables: schema_tables,
         local_read_models,
+        local_derived_schema,
     };
 
     Ok(format!("{}\n", serde_json::to_string_pretty(&document)?))
@@ -9342,6 +9384,19 @@ mod tests {
         );
         assert_eq!(
             json["localReadModels"][0]["rebuildSql"][1],
+            "INSERT INTO \"syncular_task_counts_by_deleted\" (\"deleted\", \"task_count\")\nSELECT \"deleted\", count(*)\nFROM \"tasks\"\nGROUP BY \"deleted\""
+        );
+        assert_eq!(json["localDerivedSchema"]["indexes"][0]["table"], "tasks");
+        assert_eq!(
+            json["localDerivedSchema"]["indexes"][0]["sql"],
+            "CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks (project_id, id)"
+        );
+        assert_eq!(
+            json["localDerivedSchema"]["readModelSetupSql"][0],
+            "CREATE TABLE IF NOT EXISTS \"syncular_task_counts_by_deleted\" (\n  \"deleted\" INTEGER NOT NULL,\n  \"task_count\" INTEGER NOT NULL DEFAULT 0,\n  PRIMARY KEY (\"deleted\")\n)"
+        );
+        assert_eq!(
+            json["localDerivedSchema"]["readModelRebuildSql"][1],
             "INSERT INTO \"syncular_task_counts_by_deleted\" (\"deleted\", \"task_count\")\nSELECT \"deleted\", count(*)\nFROM \"tasks\"\nGROUP BY \"deleted\""
         );
 

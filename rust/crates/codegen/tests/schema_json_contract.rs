@@ -97,6 +97,26 @@ fn assert_schema_contract(path: &Path) {
             "localReadModel.rebuildSql"
         );
     }
+
+    let local_derived = json["localDerivedSchema"]
+        .as_object()
+        .expect("localDerivedSchema object");
+    let local_indexes = local_derived["indexes"]
+        .as_array()
+        .expect("localDerivedSchema.indexes array");
+    for index in local_indexes {
+        assert_non_empty_string(&index["table"], "localDerivedSchema.indexes.table");
+        assert_non_empty_string(&index["name"], "localDerivedSchema.indexes.name");
+        assert_non_empty_string(&index["sql"], "localDerivedSchema.indexes.sql");
+    }
+    assert!(
+        local_derived["readModelSetupSql"].as_array().is_some(),
+        "localDerivedSchema.readModelSetupSql"
+    );
+    assert!(
+        local_derived["readModelRebuildSql"].as_array().is_some(),
+        "localDerivedSchema.readModelRebuildSql"
+    );
 }
 
 fn assert_non_empty_string(value: &Value, label: &str) {
