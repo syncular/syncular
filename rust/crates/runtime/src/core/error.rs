@@ -209,6 +209,14 @@ fn known_error_classification(code: &str) -> Option<SyncularErrorClassification>
         "sync.invalid_request" => ("invalid-request", false, "fixRequest"),
         "sync.invalid_client_id" => ("invalid-request", false, "resetClientId"),
         "sync.invalid_subscription" => ("invalid-request", false, "fixRequest"),
+        "sync.empty_commit" => ("invalid-request", false, "fixRequest"),
+        "sync.unknown_table" => ("schema-mismatch", false, "regenerateClient"),
+        "sync.unsupported_operation" => ("invalid-request", false, "fixRequest"),
+        "sync.row_missing" => ("not-found", false, "forceResync"),
+        "sync.version_conflict" => ("conflict", false, "resolveConflict"),
+        "sync.constraint_violation" => ("invalid-request", false, "fixRequest"),
+        "sync.missing_scopes" => ("internal", false, "inspectServer"),
+        "sync.idempotency_cache_miss" => ("internal", true, "retryLater"),
         "sync.too_many_operations" => ("invalid-request", false, "splitBatch"),
         "sync.not_found" => ("not-found", false, "forceResync"),
         "sync.rate_limited" => ("rate-limited", true, "retryLater"),
@@ -222,13 +230,24 @@ fn known_error_classification(code: &str) -> Option<SyncularErrorClassification>
         "runtime.codegen_mismatch" => ("schema-mismatch", false, "regenerateClient"),
         "runtime.internal" => ("internal", false, "inspectServer"),
         "storage.failed" => ("storage", false, "inspectStorage"),
+        "worker.closed" => ("invalid-request", false, "fixRequest"),
+        "worker.not_open" => ("invalid-request", false, "fixRequest"),
+        "worker.protocol_mismatch" => ("schema-mismatch", false, "regenerateClient"),
+        "worker.request_timeout" => ("rate-limited", true, "retryLater"),
+        "worker.failed" => ("internal", false, "recreateClient"),
+        "worker.message_unreadable" => ("internal", false, "recreateClient"),
         "console.auth_required" => ("auth-required", true, "refreshAuth"),
         "console.forbidden_origin" => ("forbidden", false, "checkPermissions"),
         "console.invalid_request" => ("invalid-request", false, "fixRequest"),
+        "console.schema_unavailable" => ("server", true, "retryLater"),
         "console.not_found" => ("not-found", false, "inspectServer"),
         "console.downstream_unavailable" => ("server", true, "retryLater"),
         "console.downstream_invalid_response" => ("server", false, "inspectServer"),
+        "proxy.auth_required" => ("auth-required", true, "refreshAuth"),
+        "proxy.forbidden_origin" => ("forbidden", false, "checkPermissions"),
+        "proxy.connection_limit" => ("rate-limited", true, "retryLater"),
         "blob.invalid_request" => ("blob", false, "fixRequest"),
+        "blob.storage_not_configured" => ("blob", false, "inspectServer"),
         "blob.too_large" => ("blob", false, "fixRequest"),
         "blob.not_found" => ("blob", false, "fixRequest"),
         "blob.forbidden" => ("forbidden", false, "checkPermissions"),
@@ -415,6 +434,26 @@ mod tests {
                 recommended_action: "checkPermissions".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn classification_knows_shared_taxonomy_codes_without_envelope_metadata() {
+        let conflict = SyncularError::message(
+            ErrorKind::Transport,
+            r#"sync failed with HTTP 409: {"error":"sync.version_conflict","code":"sync.version_conflict","message":"Version conflict"}"#,
+        );
+        let worker = SyncularError::message(
+            ErrorKind::Transport,
+            r#"worker failed: {"error":"worker.failed","code":"worker.failed","message":"Worker failed"}"#,
+        );
+
+        assert_eq!(conflict.classification().category, "conflict");
+        assert_eq!(
+            conflict.classification().recommended_action,
+            "resolveConflict"
+        );
+        assert_eq!(worker.classification().category, "internal");
+        assert_eq!(worker.classification().recommended_action, "recreateClient");
     }
 
     #[test]

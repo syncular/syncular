@@ -14,7 +14,10 @@ import type {
   SyncularV2WorkerEvent,
   SyncularV2WorkerRealtimeOptions,
 } from './worker-protocol';
-import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
+import {
+  createSyncularV2WorkerErrorPayload,
+  SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+} from './worker-protocol';
 
 export interface SyncularV2WorkerRealtimeClient {
   syncPull(
@@ -103,10 +106,10 @@ export class SyncularV2WorkerRealtimeController {
 
   start(options: SyncularV2WorkerRealtimeOptions): void {
     if (!this.controllerOptions.getConfig()) {
-      throw {
-        code: 'not_open',
-        message: 'Syncular v2 worker client is not open',
-      };
+      throw createSyncularV2WorkerErrorPayload(
+        'worker.not_open',
+        'Syncular v2 worker client is not open'
+      );
     }
     this.stop();
     this.#options = options;

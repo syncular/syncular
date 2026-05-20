@@ -28,7 +28,10 @@ import type {
   SyncularV2WorkerRequest,
   SyncularV2WorkerRuntimeArtifact,
 } from './worker-protocol';
-import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
+import {
+  createSyncularV2WorkerErrorPayload,
+  SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+} from './worker-protocol';
 import { SyncularV2WorkerRealtimeController } from './worker-realtime';
 
 let client: SyncularV2RustClient | undefined;
@@ -59,11 +62,11 @@ async function handleRequest(request: SyncularV2WorkerRequest): Promise<void> {
       id: request.id,
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
       ok: false,
-      error: {
-        code: 'protocol_mismatch',
-        message: `Unsupported Syncular v2 worker protocol ${request.protocolVersion}`,
-        details: { supported: SYNCULAR_V2_WORKER_PROTOCOL_VERSION },
-      },
+      error: createSyncularV2WorkerErrorPayload(
+        'worker.protocol_mismatch',
+        `Unsupported Syncular v2 worker protocol ${request.protocolVersion}`,
+        { details: { supported: SYNCULAR_V2_WORKER_PROTOCOL_VERSION } }
+      ),
     });
     return;
   }
@@ -325,10 +328,10 @@ function loadWorkerWasmGlue(wasmGlueUrl: string): Promise<SyncularV2WasmGlue> {
 
 function requireClient(): SyncularV2RustClient {
   if (!client) {
-    throw {
-      code: 'not_open',
-      message: 'Syncular v2 worker client is not open',
-    } satisfies SyncularV2WorkerErrorPayload;
+    throw createSyncularV2WorkerErrorPayload(
+      'worker.not_open',
+      'Syncular v2 worker client is not open'
+    );
   }
   return client;
 }
@@ -612,16 +615,19 @@ function encodeWorkerError(error: unknown): SyncularV2WorkerErrorPayload {
       error.message,
       details
     );
+    if (!classification) {
+      return createSyncularV2WorkerErrorPayload('worker.failed', error.message, {
+        name: error.name,
+        stack: error.stack,
+        details,
+      });
+    }
     return {
-      code: classification?.code ?? 'worker_error',
+      code: classification.code,
       message: error.message,
-      ...(classification?.category
-        ? { category: classification.category }
-        : {}),
-      ...(classification ? { retryable: classification.retryable } : {}),
-      ...(classification?.recommendedAction
-        ? { recommendedAction: classification.recommendedAction }
-        : {}),
+      category: classification.category,
+      retryable: classification.retryable,
+      recommendedAction: classification.recommendedAction,
       name: error.name,
       stack: error.stack,
       details,
@@ -629,14 +635,15 @@ function encodeWorkerError(error: unknown): SyncularV2WorkerErrorPayload {
   }
   const message = String(error);
   const classification = classifySyncularV2Error(error, message);
+  if (!classification) {
+    return createSyncularV2WorkerErrorPayload('worker.failed', message);
+  }
   return {
-    code: classification?.code ?? 'worker_error',
+    code: classification.code,
     message,
-    ...(classification?.category ? { category: classification.category } : {}),
-    ...(classification ? { retryable: classification.retryable } : {}),
-    ...(classification?.recommendedAction
-      ? { recommendedAction: classification.recommendedAction }
-      : {}),
+    category: classification.category,
+    retryable: classification.retryable,
+    recommendedAction: classification.recommendedAction,
   };
 }
 

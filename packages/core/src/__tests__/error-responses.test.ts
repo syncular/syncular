@@ -41,14 +41,19 @@ describe('Syncular error responses', () => {
       retryable: true,
       recommendedAction: 'retryLater',
     });
-    expect(createSyncularErrorResponse('storage.failed')).toMatchObject({
-      category: 'storage',
-      retryable: false,
-      recommendedAction: 'inspectStorage',
-    });
-    expect(createSyncularErrorResponse('runtime.internal')).toMatchObject({
-      category: 'internal',
-      retryable: false,
+  expect(createSyncularErrorResponse('storage.failed')).toMatchObject({
+    category: 'storage',
+    retryable: false,
+    recommendedAction: 'inspectStorage',
+  });
+  expect(createSyncularErrorResponse('worker.failed')).toMatchObject({
+    category: 'internal',
+    retryable: false,
+    recommendedAction: 'recreateClient',
+  });
+  expect(createSyncularErrorResponse('runtime.internal')).toMatchObject({
+    category: 'internal',
+    retryable: false,
       recommendedAction: 'inspectServer',
     });
   });

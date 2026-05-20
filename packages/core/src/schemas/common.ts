@@ -36,6 +36,7 @@ export const SyncularErrorRecommendedActionSchema = z.enum([
   'inspectStorage',
   'inspectServer',
   'resolveConflict',
+  'recreateClient',
 ]);
 
 export const ErrorResponseSchema = z.object({

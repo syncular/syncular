@@ -10,7 +10,6 @@ import type {
 import {
   createSyncularV2WorkerClient,
   SyncularV2WorkerClient,
-  SyncularV2WorkerError,
 } from './worker-client';
 import {
   SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
@@ -254,9 +253,11 @@ describe('Syncular v2 worker client', () => {
       diagnostics: (event) => diagnostics.push(event),
     });
 
-    await expect(client.executeSql('select 1')).rejects.toBeInstanceOf(
-      SyncularV2WorkerError
-    );
+    await expect(client.executeSql('select 1')).rejects.toMatchObject({
+      code: 'worker.request_timeout',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
     expect(worker.messages.map((message) => message.type)).toEqual([
       'executeSql',
       'cancel',
@@ -439,14 +440,14 @@ describe('Syncular v2 worker client', () => {
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
       ok: false,
       error: {
-        code: 'worker_error',
+        code: 'worker.failed',
         message: 'broken',
       },
     });
     await expect(failed).rejects.toThrow('broken');
     expect(client.connectionState()).toMatchObject({
       lastError: {
-        code: 'worker_error',
+        code: 'worker.failed',
         message: 'broken',
       },
     });
@@ -618,7 +619,7 @@ describe('Syncular v2 worker client', () => {
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
       ok: false,
       error: {
-        code: 'worker_error',
+        code: 'worker.failed',
         message: 'Storage: install opfs-sahpool vfs: sync access handle failed',
       },
     });
@@ -890,7 +891,7 @@ describe('Syncular v2 worker client', () => {
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
       ok: false,
       error: {
-        code: 'worker_error',
+        code: 'worker.failed',
         message: 'Transport: browser fetch failed with HTTP 401: expired',
         details: { status: 401 },
       },
@@ -1459,7 +1460,7 @@ describe('Syncular v2 worker client', () => {
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
       ok: false,
       error: {
-        code: 'worker_error',
+        code: 'worker.failed',
         message: 'Transport: browser fetch failed with HTTP 403: expired',
         details: { status: 403 },
       },
