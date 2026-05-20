@@ -1167,59 +1167,80 @@ object SyncularAppOperations {
 
 }
 
-fun SyncularNativeJsonClient.applyNewComment(input: NewComment, baseVersion: Long? = 0, localRowJson: String? = null): String =
-    apply(SyncularAppOperations.newComment(input, baseVersion), localRowJson)
+class SyncularAppMutations internal constructor(
+    private val client: SyncularNativeJsonClient,
+    private val queued: Boolean = false,
+) {
+    val comments: CommentMutations get() = CommentMutations(client, queued)
+    val projects: ProjectMutations get() = ProjectMutations(client, queued)
+    val tasks: TaskMutations get() = TaskMutations(client, queued)
+}
 
-fun SyncularNativeJsonClient.applyCommentPatch(rowId: String, patch: CommentPatch, baseVersion: Long? = null, localRowJson: String? = null): String =
-    apply(SyncularAppOperations.patchComment(rowId, patch, baseVersion), localRowJson)
+val SyncularNativeJsonClient.mutations: SyncularAppMutations
+    get() = SyncularAppMutations(this)
 
-fun SyncularNativeJsonClient.applyCommentDelete(rowId: String, baseVersion: Long? = null): String =
-    apply(SyncularAppOperations.deleteComment(rowId, baseVersion))
+val SyncularNativeJsonClient.queuedMutations: SyncularAppMutations
+    get() = SyncularAppMutations(this, queued = true)
 
-fun SyncularNativeJsonClient.enqueueNewComment(input: NewComment, baseVersion: Long? = 0, localRowJson: String? = null): String =
-    enqueue(SyncularAppOperations.newComment(input, baseVersion), localRowJson)
+class CommentMutations internal constructor(
+    private val client: SyncularNativeJsonClient,
+    private val queued: Boolean,
+) {
+    fun insert(input: NewComment, baseVersion: Long? = 0, localRowJson: String? = null): String {
+        val operation = SyncularAppOperations.newComment(input, baseVersion)
+        return if (queued) client.enqueue(operation, localRowJson) else client.apply(operation, localRowJson)
+    }
 
-fun SyncularNativeJsonClient.enqueueCommentPatch(rowId: String, patch: CommentPatch, baseVersion: Long? = null, localRowJson: String? = null): String =
-    enqueue(SyncularAppOperations.patchComment(rowId, patch, baseVersion), localRowJson)
+    fun update(rowId: String, patch: CommentPatch, baseVersion: Long? = null, localRowJson: String? = null): String {
+        val operation = SyncularAppOperations.patchComment(rowId, patch, baseVersion)
+        return if (queued) client.enqueue(operation, localRowJson) else client.apply(operation, localRowJson)
+    }
 
-fun SyncularNativeJsonClient.enqueueCommentDelete(rowId: String, baseVersion: Long? = null): String =
-    enqueue(SyncularAppOperations.deleteComment(rowId, baseVersion))
+    fun delete(rowId: String, baseVersion: Long? = null): String {
+        val operation = SyncularAppOperations.deleteComment(rowId, baseVersion)
+        return if (queued) client.enqueue(operation) else client.apply(operation)
+    }
+}
 
-fun SyncularNativeJsonClient.applyNewProject(input: NewProject, baseVersion: Long? = 0, localRowJson: String? = null): String =
-    apply(SyncularAppOperations.newProject(input, baseVersion), localRowJson)
+class ProjectMutations internal constructor(
+    private val client: SyncularNativeJsonClient,
+    private val queued: Boolean,
+) {
+    fun insert(input: NewProject, baseVersion: Long? = 0, localRowJson: String? = null): String {
+        val operation = SyncularAppOperations.newProject(input, baseVersion)
+        return if (queued) client.enqueue(operation, localRowJson) else client.apply(operation, localRowJson)
+    }
 
-fun SyncularNativeJsonClient.applyProjectPatch(rowId: String, patch: ProjectPatch, baseVersion: Long? = null, localRowJson: String? = null): String =
-    apply(SyncularAppOperations.patchProject(rowId, patch, baseVersion), localRowJson)
+    fun update(rowId: String, patch: ProjectPatch, baseVersion: Long? = null, localRowJson: String? = null): String {
+        val operation = SyncularAppOperations.patchProject(rowId, patch, baseVersion)
+        return if (queued) client.enqueue(operation, localRowJson) else client.apply(operation, localRowJson)
+    }
 
-fun SyncularNativeJsonClient.applyProjectDelete(rowId: String, baseVersion: Long? = null): String =
-    apply(SyncularAppOperations.deleteProject(rowId, baseVersion))
+    fun delete(rowId: String, baseVersion: Long? = null): String {
+        val operation = SyncularAppOperations.deleteProject(rowId, baseVersion)
+        return if (queued) client.enqueue(operation) else client.apply(operation)
+    }
+}
 
-fun SyncularNativeJsonClient.enqueueNewProject(input: NewProject, baseVersion: Long? = 0, localRowJson: String? = null): String =
-    enqueue(SyncularAppOperations.newProject(input, baseVersion), localRowJson)
+class TaskMutations internal constructor(
+    private val client: SyncularNativeJsonClient,
+    private val queued: Boolean,
+) {
+    fun insert(input: NewTask, baseVersion: Long? = 0, localRowJson: String? = null): String {
+        val operation = SyncularAppOperations.newTask(input, baseVersion)
+        return if (queued) client.enqueue(operation, localRowJson) else client.apply(operation, localRowJson)
+    }
 
-fun SyncularNativeJsonClient.enqueueProjectPatch(rowId: String, patch: ProjectPatch, baseVersion: Long? = null, localRowJson: String? = null): String =
-    enqueue(SyncularAppOperations.patchProject(rowId, patch, baseVersion), localRowJson)
+    fun update(rowId: String, patch: TaskPatch, baseVersion: Long? = null, localRowJson: String? = null): String {
+        val operation = SyncularAppOperations.patchTask(rowId, patch, baseVersion)
+        return if (queued) client.enqueue(operation, localRowJson) else client.apply(operation, localRowJson)
+    }
 
-fun SyncularNativeJsonClient.enqueueProjectDelete(rowId: String, baseVersion: Long? = null): String =
-    enqueue(SyncularAppOperations.deleteProject(rowId, baseVersion))
-
-fun SyncularNativeJsonClient.applyNewTask(input: NewTask, baseVersion: Long? = 0, localRowJson: String? = null): String =
-    apply(SyncularAppOperations.newTask(input, baseVersion), localRowJson)
-
-fun SyncularNativeJsonClient.applyTaskPatch(rowId: String, patch: TaskPatch, baseVersion: Long? = null, localRowJson: String? = null): String =
-    apply(SyncularAppOperations.patchTask(rowId, patch, baseVersion), localRowJson)
-
-fun SyncularNativeJsonClient.applyTaskDelete(rowId: String, baseVersion: Long? = null): String =
-    apply(SyncularAppOperations.deleteTask(rowId, baseVersion))
-
-fun SyncularNativeJsonClient.enqueueNewTask(input: NewTask, baseVersion: Long? = 0, localRowJson: String? = null): String =
-    enqueue(SyncularAppOperations.newTask(input, baseVersion), localRowJson)
-
-fun SyncularNativeJsonClient.enqueueTaskPatch(rowId: String, patch: TaskPatch, baseVersion: Long? = null, localRowJson: String? = null): String =
-    enqueue(SyncularAppOperations.patchTask(rowId, patch, baseVersion), localRowJson)
-
-fun SyncularNativeJsonClient.enqueueTaskDelete(rowId: String, baseVersion: Long? = null): String =
-    enqueue(SyncularAppOperations.deleteTask(rowId, baseVersion))
+    fun delete(rowId: String, baseVersion: Long? = null): String {
+        val operation = SyncularAppOperations.deleteTask(rowId, baseVersion)
+        return if (queued) client.enqueue(operation) else client.apply(operation)
+    }
+}
 
 fun SyncularNativeJsonClient.openTaskTitleCrdtField(rowId: String): SyncularCrdtFieldDescriptor =
     openCrdtField(SyncularCrdtFieldRequest(table = "tasks", rowId = rowId, field = "title"))

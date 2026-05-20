@@ -151,7 +151,7 @@ let tasks = try TaskQuery
     .orderBy(TaskQuery.serverVersion.desc())
     .fetch(on: client)
 
-let commandId = try client.enqueueNewTask(NewTask(
+let commandId = try client.queuedMutations.tasks.insert(NewTask(
     id: "task-ios",
     title: "Ship iOS client",
     completed: 0,
@@ -190,7 +190,7 @@ val tasks = TaskQuery
     .orderBy(TaskQuery.serverVersion.desc())
     .fetch(client)
 
-val commandId = client.enqueueNewTask(
+val commandId = client.queuedMutations.tasks.insert(
     NewTask(
         id = "task-android",
         title = "Ship Android client",

@@ -94,7 +94,7 @@ private enum LifecycleAppSmoke {
         let blobRef = try blobRef(fromPayload: blobPayload)
 
         let rowId = "task-swift-lifecycle"
-        let mutationCommandId = try native.enqueueNewTask(NewTask(
+        let mutationCommandId = try native.queuedMutations.tasks.insert(NewTask(
             id: rowId,
             title: "",
             completed: 0,

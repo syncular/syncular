@@ -1,7 +1,7 @@
 import Foundation
 
 private final class MockNativeClient: SyncularNativeJsonClient {
-    private(set) var mutations: [String] = []
+    private(set) var capturedMutations: [String] = []
     private(set) var crdtFieldRequests: [String] = []
     private(set) var crdtTextRequests: [String] = []
     private(set) var queuedCrdtTextRequests: [String] = []
@@ -18,12 +18,12 @@ private final class MockNativeClient: SyncularNativeJsonClient {
     }
 
     func applyMutationJson(mutationJson: String, localRowJson: String?) throws -> String {
-        mutations.append(mutationJson)
+        capturedMutations.append(mutationJson)
         return "commit-swift"
     }
 
     func enqueueMutationJson(mutationJson: String, localRowJson: String?) throws -> String {
-        mutations.append(mutationJson)
+        capturedMutations.append(mutationJson)
         return "command-swift"
     }
 
@@ -308,7 +308,7 @@ private enum GeneratedClientSmoke {
         expect(projectChangedRows(in: rowDeltaEvent).first?.isDelete == true, "Swift changed-row helper should expose project deletes")
         expect(commentChangedRows(in: rowDeltaEvent).isEmpty, "Swift changed-row helper should ignore unrelated tables")
 
-        let commitId = try client.applyNewTask(NewTask(
+        let commitId = try client.mutations.tasks.insert(NewTask(
             id: jsonString(taskInput, "id"),
             title: jsonString(taskInput, "title"),
             completed: jsonInt(taskInput, "completed"),
@@ -316,15 +316,15 @@ private enum GeneratedClientSmoke {
             projectId: jsonString(taskInput, "project_id")
         ))
         expect(commitId == "commit-swift", "Swift mutation helper should return commit id")
-        expect(client.mutations.count == 1, "Swift mutation helper should call applyMutationJson once")
-        try expectJsonEqual(try parseJson(client.mutations[0]), jsonValue(taskFixture, "newOperation"), "Swift mutation should match shared new task operation")
+        expect(client.capturedMutations.count == 1, "Swift mutation helper should call applyMutationJson once")
+        try expectJsonEqual(try parseJson(client.capturedMutations[0]), jsonValue(taskFixture, "newOperation"), "Swift mutation should match shared new task operation")
 
-        _ = try client.applyTaskPatch(rowId: jsonString(taskInput, "id"), patch: TaskPatch(completed: 0), baseVersion: 11)
-        try expectJsonEqual(try parseJson(client.mutations[1]), jsonValue(taskFixture, "patchOperation"), "Swift patch should match shared task patch operation")
-        _ = try client.applyTaskDelete(rowId: jsonString(taskInput, "id"), baseVersion: 12)
-        try expectJsonEqual(try parseJson(client.mutations[2]), jsonValue(taskFixture, "deleteOperation"), "Swift delete should match shared task delete operation")
+        _ = try client.mutations.tasks.update(rowId: jsonString(taskInput, "id"), patch: TaskPatch(completed: 0), baseVersion: 11)
+        try expectJsonEqual(try parseJson(client.capturedMutations[1]), jsonValue(taskFixture, "patchOperation"), "Swift patch should match shared task patch operation")
+        _ = try client.mutations.tasks.delete(rowId: jsonString(taskInput, "id"), baseVersion: 12)
+        try expectJsonEqual(try parseJson(client.capturedMutations[2]), jsonValue(taskFixture, "deleteOperation"), "Swift delete should match shared task delete operation")
 
-        let enqueueCommandId = try client.enqueueNewTask(NewTask(
+        let enqueueCommandId = try client.queuedMutations.tasks.insert(NewTask(
             id: jsonString(taskInput, "id"),
             title: jsonString(taskInput, "title"),
             completed: jsonInt(taskInput, "completed"),
@@ -332,7 +332,7 @@ private enum GeneratedClientSmoke {
             projectId: jsonString(taskInput, "project_id")
         ))
         expect(enqueueCommandId == "command-swift", "Swift enqueue mutation helper should return command id")
-        try expectJsonEqual(try parseJson(client.mutations[3]), jsonValue(taskFixture, "newOperation"), "Swift enqueue mutation should match shared new task operation")
+        try expectJsonEqual(try parseJson(client.capturedMutations[3]), jsonValue(taskFixture, "newOperation"), "Swift enqueue mutation should match shared new task operation")
 
         let blobOperation = try encodedJsonObject(SyncularAppOperations.newTask(NewTask(
             id: jsonString(blobTask, "id"),

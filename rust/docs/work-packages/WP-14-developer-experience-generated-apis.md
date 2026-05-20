@@ -68,9 +68,7 @@ the correct sync path easy and make incorrect paths hard to reach.
 
 Continue tightening generated app surfaces:
 
-1. Review native generated mutation naming for cross-platform consistency
-   without adding table-specific read/ORM helpers.
-2. Add generated-client examples for conflict resolution and blob flows to the
+1. Add generated-client examples for conflict resolution and blob flows to the
    concise API reference if app integration feedback shows the long integration
    guide is not discoverable enough.
 
@@ -102,6 +100,11 @@ Continue tightening generated app surfaces:
   guide for generated Rust, Browser TypeScript, Swift, and Kotlin clients. It
   documents typed query-builder reads, outbox-safe mutations, CRDT helper
   writes, diagnostics, live queries, and row-delta routing in one place.
+- Swift and Kotlin generated native row mutations now use table namespaces:
+  `client.mutations.tasks.insert/update/delete` for synchronous host calls and
+  `client.queuedMutations.tasks.insert/update/delete` for worker-queued UI
+  writes. The old direct row helpers are removed from generated output; CRDT
+  field helpers remain field-specific.
 
 ## Latest Evidence
 

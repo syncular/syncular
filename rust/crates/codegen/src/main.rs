@@ -1851,30 +1851,6 @@ fn lower_camel_case(name: &str) -> String {
     out
 }
 
-fn apply_new_function_name(table_name: &str) -> String {
-    format!("applyNew{}", singular_pascal_case(table_name))
-}
-
-fn apply_patch_function_name(table_name: &str) -> String {
-    format!("apply{}Patch", singular_pascal_case(table_name))
-}
-
-fn apply_delete_function_name(table_name: &str) -> String {
-    format!("apply{}Delete", singular_pascal_case(table_name))
-}
-
-fn enqueue_new_function_name(table_name: &str) -> String {
-    format!("enqueueNew{}", singular_pascal_case(table_name))
-}
-
-fn enqueue_patch_function_name(table_name: &str) -> String {
-    format!("enqueue{}Patch", singular_pascal_case(table_name))
-}
-
-fn enqueue_delete_function_name(table_name: &str) -> String {
-    format!("enqueue{}Delete", singular_pascal_case(table_name))
-}
-
 fn double_quoted_string(value: &str) -> String {
     format!(
         "\"{}\"",
@@ -7355,58 +7331,76 @@ fn generate_swift_module(
     }
     out.push_str("}\n");
 
-    out.push_str("\npublic extension SyncularNativeJsonClient {\n");
+    out.push_str("\npublic struct SyncularAppMutations {\n");
+    out.push_str("    private let client: SyncularNativeJsonClient\n");
+    out.push_str("    private let queued: Bool\n\n");
+    out.push_str(
+        "    init(client: SyncularNativeJsonClient, queued: Bool = false) {\n        self.client = client\n        self.queued = queued\n    }\n\n",
+    );
+    for table in &user_tables {
+        let type_name = singular_pascal_case(&table.name);
+        out.push_str(&format!(
+            "    public var {}: {type_name}Mutations {{ {type_name}Mutations(client: client, queued: queued) }}\n",
+            lower_camel_case(&table.name)
+        ));
+    }
+    out.push_str("}\n\n");
+    out.push_str("public extension SyncularNativeJsonClient {\n");
+    out.push_str(
+        "    var mutations: SyncularAppMutations { SyncularAppMutations(client: self) }\n",
+    );
+    out.push_str("    var queuedMutations: SyncularAppMutations { SyncularAppMutations(client: self, queued: true) }\n");
+    out.push_str("}\n\n");
+    for table in &user_tables {
+        let type_name = singular_pascal_case(&table.name);
+        out.push_str(&format!("public struct {type_name}Mutations {{\n"));
+        out.push_str("    private let client: SyncularNativeJsonClient\n");
+        out.push_str("    private let queued: Bool\n\n");
+        out.push_str(
+            "    init(client: SyncularNativeJsonClient, queued: Bool) {\n        self.client = client\n        self.queued = queued\n    }\n\n",
+        );
+        out.push_str(&format!(
+            "    public func insert(_ input: New{type_name}, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {{\n"
+        ));
+        out.push_str(&format!(
+            "        let operation = SyncularAppOperations.new{type_name}(input, baseVersion: baseVersion)\n"
+        ));
+        out.push_str("        if queued {\n");
+        out.push_str(
+            "            return try client.enqueue(operation, localRowJson: localRowJson)\n",
+        );
+        out.push_str("        }\n");
+        out.push_str("        return try client.apply(operation, localRowJson: localRowJson)\n");
+        out.push_str("    }\n\n");
+        out.push_str(&format!(
+            "    public func update(rowId: String, patch: {type_name}Patch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {{\n"
+        ));
+        out.push_str(&format!(
+            "        let operation = SyncularAppOperations.patch{type_name}(rowId: rowId, patch: patch, baseVersion: baseVersion)\n"
+        ));
+        out.push_str("        if queued {\n");
+        out.push_str(
+            "            return try client.enqueue(operation, localRowJson: localRowJson)\n",
+        );
+        out.push_str("        }\n");
+        out.push_str("        return try client.apply(operation, localRowJson: localRowJson)\n");
+        out.push_str("    }\n\n");
+        out.push_str(&format!(
+            "    public func delete(rowId: String, baseVersion: Int64? = nil) throws -> String {{\n"
+        ));
+        out.push_str(&format!(
+            "        let operation = SyncularAppOperations.delete{type_name}(rowId: rowId, baseVersion: baseVersion)\n"
+        ));
+        out.push_str("        if queued {\n");
+        out.push_str("            return try client.enqueue(operation)\n");
+        out.push_str("        }\n");
+        out.push_str("        return try client.apply(operation)\n");
+        out.push_str("    }\n\n");
+        out.push_str("}\n\n");
+    }
+    out.push_str("public extension SyncularNativeJsonClient {\n");
     for table in &user_tables {
         let table_config = config.table(&table.name);
-        let type_name = singular_pascal_case(&table.name);
-        let apply_new_fn = apply_new_function_name(&table.name);
-        let apply_patch_fn = apply_patch_function_name(&table.name);
-        let apply_delete_fn = apply_delete_function_name(&table.name);
-        let enqueue_new_fn = enqueue_new_function_name(&table.name);
-        let enqueue_patch_fn = enqueue_patch_function_name(&table.name);
-        let enqueue_delete_fn = enqueue_delete_function_name(&table.name);
-        out.push_str(&format!(
-            "    func {apply_new_fn}(_ input: New{type_name}, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {{\n"
-        ));
-        out.push_str(&format!(
-            "        try apply(SyncularAppOperations.new{type_name}(input, baseVersion: baseVersion), localRowJson: localRowJson)\n"
-        ));
-        out.push_str("    }\n\n");
-        out.push_str(&format!(
-            "    func {apply_patch_fn}(rowId: String, patch: {type_name}Patch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {{\n"
-        ));
-        out.push_str(&format!(
-            "        try apply(SyncularAppOperations.patch{type_name}(rowId: rowId, patch: patch, baseVersion: baseVersion), localRowJson: localRowJson)\n"
-        ));
-        out.push_str("    }\n\n");
-        out.push_str(&format!(
-            "    func {apply_delete_fn}(rowId: String, baseVersion: Int64? = nil) throws -> String {{\n"
-        ));
-        out.push_str(&format!(
-            "        try apply(SyncularAppOperations.delete{type_name}(rowId: rowId, baseVersion: baseVersion))\n"
-        ));
-        out.push_str("    }\n\n");
-        out.push_str(&format!(
-            "    func {enqueue_new_fn}(_ input: New{type_name}, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {{\n"
-        ));
-        out.push_str(&format!(
-            "        try enqueue(SyncularAppOperations.new{type_name}(input, baseVersion: baseVersion), localRowJson: localRowJson)\n"
-        ));
-        out.push_str("    }\n\n");
-        out.push_str(&format!(
-            "    func {enqueue_patch_fn}(rowId: String, patch: {type_name}Patch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {{\n"
-        ));
-        out.push_str(&format!(
-            "        try enqueue(SyncularAppOperations.patch{type_name}(rowId: rowId, patch: patch, baseVersion: baseVersion), localRowJson: localRowJson)\n"
-        ));
-        out.push_str("    }\n\n");
-        out.push_str(&format!(
-            "    func {enqueue_delete_fn}(rowId: String, baseVersion: Int64? = nil) throws -> String {{\n"
-        ));
-        out.push_str(&format!(
-            "        try enqueue(SyncularAppOperations.delete{type_name}(rowId: rowId, baseVersion: baseVersion))\n"
-        ));
-        out.push_str("    }\n\n");
         for field in &table_config.crdt_yjs_fields {
             if field.kind != "text" {
                 continue;
@@ -8829,51 +8823,58 @@ fn generate_kotlin_module(
         }
     }
     out.push_str("}\n\n");
+    out.push_str("class SyncularAppMutations internal constructor(\n");
+    out.push_str("    private val client: SyncularNativeJsonClient,\n");
+    out.push_str("    private val queued: Boolean = false,\n");
+    out.push_str(") {\n");
+    for table in &user_tables {
+        let type_name = singular_pascal_case(&table.name);
+        out.push_str(&format!(
+            "    val {}: {type_name}Mutations get() = {type_name}Mutations(client, queued)\n",
+            lower_camel_case(&table.name)
+        ));
+    }
+    out.push_str("}\n\n");
+    out.push_str("val SyncularNativeJsonClient.mutations: SyncularAppMutations\n");
+    out.push_str("    get() = SyncularAppMutations(this)\n\n");
+    out.push_str("val SyncularNativeJsonClient.queuedMutations: SyncularAppMutations\n");
+    out.push_str("    get() = SyncularAppMutations(this, queued = true)\n\n");
+    for table in &user_tables {
+        let type_name = singular_pascal_case(&table.name);
+        out.push_str(&format!(
+            "class {type_name}Mutations internal constructor(\n"
+        ));
+        out.push_str("    private val client: SyncularNativeJsonClient,\n");
+        out.push_str("    private val queued: Boolean,\n");
+        out.push_str(") {\n");
+        out.push_str(&format!(
+            "    fun insert(input: New{type_name}, baseVersion: Long? = 0, localRowJson: String? = null): String {{\n"
+        ));
+        out.push_str(&format!(
+            "        val operation = SyncularAppOperations.new{type_name}(input, baseVersion)\n"
+        ));
+        out.push_str("        return if (queued) client.enqueue(operation, localRowJson) else client.apply(operation, localRowJson)\n");
+        out.push_str("    }\n\n");
+        out.push_str(&format!(
+            "    fun update(rowId: String, patch: {type_name}Patch, baseVersion: Long? = null, localRowJson: String? = null): String {{\n"
+        ));
+        out.push_str(&format!(
+            "        val operation = SyncularAppOperations.patch{type_name}(rowId, patch, baseVersion)\n"
+        ));
+        out.push_str("        return if (queued) client.enqueue(operation, localRowJson) else client.apply(operation, localRowJson)\n");
+        out.push_str("    }\n\n");
+        out.push_str("    fun delete(rowId: String, baseVersion: Long? = null): String {\n");
+        out.push_str(&format!(
+            "        val operation = SyncularAppOperations.delete{type_name}(rowId, baseVersion)\n"
+        ));
+        out.push_str(
+            "        return if (queued) client.enqueue(operation) else client.apply(operation)\n",
+        );
+        out.push_str("    }\n");
+        out.push_str("}\n\n");
+    }
     for table in &user_tables {
         let table_config = config.table(&table.name);
-        let type_name = singular_pascal_case(&table.name);
-        let apply_new_fn = apply_new_function_name(&table.name);
-        let apply_patch_fn = apply_patch_function_name(&table.name);
-        let apply_delete_fn = apply_delete_function_name(&table.name);
-        let enqueue_new_fn = enqueue_new_function_name(&table.name);
-        let enqueue_patch_fn = enqueue_patch_function_name(&table.name);
-        let enqueue_delete_fn = enqueue_delete_function_name(&table.name);
-        out.push_str(&format!(
-            "fun SyncularNativeJsonClient.{apply_new_fn}(input: New{type_name}, baseVersion: Long? = 0, localRowJson: String? = null): String =\n"
-        ));
-        out.push_str(&format!(
-            "    apply(SyncularAppOperations.new{type_name}(input, baseVersion), localRowJson)\n\n"
-        ));
-        out.push_str(&format!(
-            "fun SyncularNativeJsonClient.{apply_patch_fn}(rowId: String, patch: {type_name}Patch, baseVersion: Long? = null, localRowJson: String? = null): String =\n"
-        ));
-        out.push_str(&format!(
-            "    apply(SyncularAppOperations.patch{type_name}(rowId, patch, baseVersion), localRowJson)\n\n"
-        ));
-        out.push_str(&format!(
-            "fun SyncularNativeJsonClient.{apply_delete_fn}(rowId: String, baseVersion: Long? = null): String =\n"
-        ));
-        out.push_str(&format!(
-            "    apply(SyncularAppOperations.delete{type_name}(rowId, baseVersion))\n\n"
-        ));
-        out.push_str(&format!(
-            "fun SyncularNativeJsonClient.{enqueue_new_fn}(input: New{type_name}, baseVersion: Long? = 0, localRowJson: String? = null): String =\n"
-        ));
-        out.push_str(&format!(
-            "    enqueue(SyncularAppOperations.new{type_name}(input, baseVersion), localRowJson)\n\n"
-        ));
-        out.push_str(&format!(
-            "fun SyncularNativeJsonClient.{enqueue_patch_fn}(rowId: String, patch: {type_name}Patch, baseVersion: Long? = null, localRowJson: String? = null): String =\n"
-        ));
-        out.push_str(&format!(
-            "    enqueue(SyncularAppOperations.patch{type_name}(rowId, patch, baseVersion), localRowJson)\n\n"
-        ));
-        out.push_str(&format!(
-            "fun SyncularNativeJsonClient.{enqueue_delete_fn}(rowId: String, baseVersion: Long? = null): String =\n"
-        ));
-        out.push_str(&format!(
-            "    enqueue(SyncularAppOperations.delete{type_name}(rowId, baseVersion))\n\n"
-        ));
         for field in &table_config.crdt_yjs_fields {
             if field.kind != "text" {
                 continue;
@@ -10651,6 +10652,11 @@ mod tests {
         assert!(swift.contains("public func refreshIfChanged(event: SyncularNativeEvent"));
         assert!(swift.contains("func apply(_ operation: SyncularGeneratedOperation"));
         assert!(swift.contains("public enum SyncularAppOperations"));
+        assert!(swift.contains("public struct SyncularAppMutations"));
+        assert!(swift.contains("var mutations: SyncularAppMutations"));
+        assert!(swift.contains("var queuedMutations: SyncularAppMutations"));
+        assert!(swift.contains("public var tasks: TaskMutations"));
+        assert!(swift.contains("public struct TaskMutations"));
         assert!(swift.contains("public enum TaskQuery"));
         assert!(swift.contains("public static let table = SyncularQueryTable<TaskRow>"));
         assert!(swift.contains("public static let projectId = SyncularQueryColumn<String>"));
@@ -10659,12 +10665,15 @@ mod tests {
         assert!(swift.contains("public static func newTask(_ input: NewTask"));
         assert!(!swift.contains("func listTasks()"));
         assert!(!swift.contains("func listTableJson"));
-        assert!(swift.contains("func applyNewTask(_ input: NewTask"));
-        assert!(swift.contains("func enqueueNewTask(_ input: NewTask"));
-        assert!(swift.contains("func enqueueTaskPatch(rowId: String"));
-        assert!(swift.contains("func enqueueTaskDelete(rowId: String"));
-        assert!(swift.contains("func applyTaskPatch(rowId: String"));
-        assert!(swift.contains("func applyTaskDelete(rowId: String"));
+        assert!(swift.contains("public func insert(_ input: NewTask"));
+        assert!(swift.contains("public func update(rowId: String, patch: TaskPatch"));
+        assert!(swift.contains("public func delete(rowId: String"));
+        assert!(!swift.contains("func applyNewTask(_ input: NewTask"));
+        assert!(!swift.contains("func enqueueNewTask(_ input: NewTask"));
+        assert!(!swift.contains("func enqueueTaskPatch(rowId: String"));
+        assert!(!swift.contains("func enqueueTaskDelete(rowId: String"));
+        assert!(!swift.contains("func applyTaskPatch(rowId: String"));
+        assert!(!swift.contains("func applyTaskDelete(rowId: String"));
         assert!(swift.contains("payload[\"completed\"] = .int(input.completed ?? 0)"));
         assert!(swift.contains("payload[\"image\"] = value.syncularPayloadValue"));
         assert!(swift.contains("public let image: SyncularBlobRef?"));
@@ -10744,6 +10753,11 @@ mod tests {
         assert!(kotlin
             .contains("fun SyncularNativeJsonClient.apply(operation: SyncularGeneratedOperation"));
         assert!(kotlin.contains("object SyncularAppOperations"));
+        assert!(kotlin.contains("class SyncularAppMutations"));
+        assert!(kotlin.contains("val SyncularNativeJsonClient.mutations"));
+        assert!(kotlin.contains("val SyncularNativeJsonClient.queuedMutations"));
+        assert!(kotlin.contains("val tasks: TaskMutations"));
+        assert!(kotlin.contains("class TaskMutations"));
         assert!(kotlin.contains("object TaskQuery"));
         assert!(kotlin.contains("val table = SyncularQueryTable(name = \"tasks\""));
         assert!(kotlin.contains("val projectId = SyncularQueryColumn<String>"));
@@ -10753,12 +10767,15 @@ mod tests {
         assert!(kotlin.contains("import kotlinx.serialization.json.Json"));
         assert!(!kotlin.contains("fun SyncularNativeJsonClient.listTasks()"));
         assert!(!kotlin.contains("fun listTableJson"));
-        assert!(kotlin.contains("fun SyncularNativeJsonClient.applyNewTask(input: NewTask"));
-        assert!(kotlin.contains("fun SyncularNativeJsonClient.enqueueNewTask(input: NewTask"));
-        assert!(kotlin.contains("fun SyncularNativeJsonClient.enqueueTaskPatch(rowId: String"));
-        assert!(kotlin.contains("fun SyncularNativeJsonClient.enqueueTaskDelete(rowId: String"));
-        assert!(kotlin.contains("fun SyncularNativeJsonClient.applyTaskPatch(rowId: String"));
-        assert!(kotlin.contains("fun SyncularNativeJsonClient.applyTaskDelete(rowId: String"));
+        assert!(kotlin.contains("fun insert(input: NewTask"));
+        assert!(kotlin.contains("fun update(rowId: String, patch: TaskPatch"));
+        assert!(kotlin.contains("fun delete(rowId: String"));
+        assert!(!kotlin.contains("fun SyncularNativeJsonClient.applyNewTask(input: NewTask"));
+        assert!(!kotlin.contains("fun SyncularNativeJsonClient.enqueueNewTask(input: NewTask"));
+        assert!(!kotlin.contains("fun SyncularNativeJsonClient.enqueueTaskPatch(rowId: String"));
+        assert!(!kotlin.contains("fun SyncularNativeJsonClient.enqueueTaskDelete(rowId: String"));
+        assert!(!kotlin.contains("fun SyncularNativeJsonClient.applyTaskPatch(rowId: String"));
+        assert!(!kotlin.contains("fun SyncularNativeJsonClient.applyTaskDelete(rowId: String"));
         assert!(kotlin.contains("private fun syncularDecodeTaskRows(json: String): List<TaskRow>"));
         assert!(kotlin.contains("image = row.syncularOptionalBlobRef(\"image\")"));
         assert!(kotlin.contains("private fun syncularGeneratedQueryRows(json: String)"));

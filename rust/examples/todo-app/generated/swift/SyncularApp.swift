@@ -1594,79 +1594,131 @@ public enum SyncularAppOperations {
 
 }
 
+public struct SyncularAppMutations {
+    private let client: SyncularNativeJsonClient
+    private let queued: Bool
+
+    init(client: SyncularNativeJsonClient, queued: Bool = false) {
+        self.client = client
+        self.queued = queued
+    }
+
+    public var comments: CommentMutations { CommentMutations(client: client, queued: queued) }
+    public var projects: ProjectMutations { ProjectMutations(client: client, queued: queued) }
+    public var tasks: TaskMutations { TaskMutations(client: client, queued: queued) }
+}
+
 public extension SyncularNativeJsonClient {
-    func applyNewComment(_ input: NewComment, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
-        try apply(SyncularAppOperations.newComment(input, baseVersion: baseVersion), localRowJson: localRowJson)
+    var mutations: SyncularAppMutations { SyncularAppMutations(client: self) }
+    var queuedMutations: SyncularAppMutations { SyncularAppMutations(client: self, queued: true) }
+}
+
+public struct CommentMutations {
+    private let client: SyncularNativeJsonClient
+    private let queued: Bool
+
+    init(client: SyncularNativeJsonClient, queued: Bool) {
+        self.client = client
+        self.queued = queued
     }
 
-    func applyCommentPatch(rowId: String, patch: CommentPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
-        try apply(SyncularAppOperations.patchComment(rowId: rowId, patch: patch, baseVersion: baseVersion), localRowJson: localRowJson)
+    public func insert(_ input: NewComment, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
+        let operation = SyncularAppOperations.newComment(input, baseVersion: baseVersion)
+        if queued {
+            return try client.enqueue(operation, localRowJson: localRowJson)
+        }
+        return try client.apply(operation, localRowJson: localRowJson)
     }
 
-    func applyCommentDelete(rowId: String, baseVersion: Int64? = nil) throws -> String {
-        try apply(SyncularAppOperations.deleteComment(rowId: rowId, baseVersion: baseVersion))
+    public func update(rowId: String, patch: CommentPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
+        let operation = SyncularAppOperations.patchComment(rowId: rowId, patch: patch, baseVersion: baseVersion)
+        if queued {
+            return try client.enqueue(operation, localRowJson: localRowJson)
+        }
+        return try client.apply(operation, localRowJson: localRowJson)
     }
 
-    func enqueueNewComment(_ input: NewComment, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
-        try enqueue(SyncularAppOperations.newComment(input, baseVersion: baseVersion), localRowJson: localRowJson)
+    public func delete(rowId: String, baseVersion: Int64? = nil) throws -> String {
+        let operation = SyncularAppOperations.deleteComment(rowId: rowId, baseVersion: baseVersion)
+        if queued {
+            return try client.enqueue(operation)
+        }
+        return try client.apply(operation)
     }
 
-    func enqueueCommentPatch(rowId: String, patch: CommentPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
-        try enqueue(SyncularAppOperations.patchComment(rowId: rowId, patch: patch, baseVersion: baseVersion), localRowJson: localRowJson)
+}
+
+public struct ProjectMutations {
+    private let client: SyncularNativeJsonClient
+    private let queued: Bool
+
+    init(client: SyncularNativeJsonClient, queued: Bool) {
+        self.client = client
+        self.queued = queued
     }
 
-    func enqueueCommentDelete(rowId: String, baseVersion: Int64? = nil) throws -> String {
-        try enqueue(SyncularAppOperations.deleteComment(rowId: rowId, baseVersion: baseVersion))
+    public func insert(_ input: NewProject, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
+        let operation = SyncularAppOperations.newProject(input, baseVersion: baseVersion)
+        if queued {
+            return try client.enqueue(operation, localRowJson: localRowJson)
+        }
+        return try client.apply(operation, localRowJson: localRowJson)
     }
 
-    func applyNewProject(_ input: NewProject, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
-        try apply(SyncularAppOperations.newProject(input, baseVersion: baseVersion), localRowJson: localRowJson)
+    public func update(rowId: String, patch: ProjectPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
+        let operation = SyncularAppOperations.patchProject(rowId: rowId, patch: patch, baseVersion: baseVersion)
+        if queued {
+            return try client.enqueue(operation, localRowJson: localRowJson)
+        }
+        return try client.apply(operation, localRowJson: localRowJson)
     }
 
-    func applyProjectPatch(rowId: String, patch: ProjectPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
-        try apply(SyncularAppOperations.patchProject(rowId: rowId, patch: patch, baseVersion: baseVersion), localRowJson: localRowJson)
+    public func delete(rowId: String, baseVersion: Int64? = nil) throws -> String {
+        let operation = SyncularAppOperations.deleteProject(rowId: rowId, baseVersion: baseVersion)
+        if queued {
+            return try client.enqueue(operation)
+        }
+        return try client.apply(operation)
     }
 
-    func applyProjectDelete(rowId: String, baseVersion: Int64? = nil) throws -> String {
-        try apply(SyncularAppOperations.deleteProject(rowId: rowId, baseVersion: baseVersion))
+}
+
+public struct TaskMutations {
+    private let client: SyncularNativeJsonClient
+    private let queued: Bool
+
+    init(client: SyncularNativeJsonClient, queued: Bool) {
+        self.client = client
+        self.queued = queued
     }
 
-    func enqueueNewProject(_ input: NewProject, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
-        try enqueue(SyncularAppOperations.newProject(input, baseVersion: baseVersion), localRowJson: localRowJson)
+    public func insert(_ input: NewTask, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
+        let operation = SyncularAppOperations.newTask(input, baseVersion: baseVersion)
+        if queued {
+            return try client.enqueue(operation, localRowJson: localRowJson)
+        }
+        return try client.apply(operation, localRowJson: localRowJson)
     }
 
-    func enqueueProjectPatch(rowId: String, patch: ProjectPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
-        try enqueue(SyncularAppOperations.patchProject(rowId: rowId, patch: patch, baseVersion: baseVersion), localRowJson: localRowJson)
+    public func update(rowId: String, patch: TaskPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
+        let operation = SyncularAppOperations.patchTask(rowId: rowId, patch: patch, baseVersion: baseVersion)
+        if queued {
+            return try client.enqueue(operation, localRowJson: localRowJson)
+        }
+        return try client.apply(operation, localRowJson: localRowJson)
     }
 
-    func enqueueProjectDelete(rowId: String, baseVersion: Int64? = nil) throws -> String {
-        try enqueue(SyncularAppOperations.deleteProject(rowId: rowId, baseVersion: baseVersion))
+    public func delete(rowId: String, baseVersion: Int64? = nil) throws -> String {
+        let operation = SyncularAppOperations.deleteTask(rowId: rowId, baseVersion: baseVersion)
+        if queued {
+            return try client.enqueue(operation)
+        }
+        return try client.apply(operation)
     }
 
-    func applyNewTask(_ input: NewTask, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
-        try apply(SyncularAppOperations.newTask(input, baseVersion: baseVersion), localRowJson: localRowJson)
-    }
+}
 
-    func applyTaskPatch(rowId: String, patch: TaskPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
-        try apply(SyncularAppOperations.patchTask(rowId: rowId, patch: patch, baseVersion: baseVersion), localRowJson: localRowJson)
-    }
-
-    func applyTaskDelete(rowId: String, baseVersion: Int64? = nil) throws -> String {
-        try apply(SyncularAppOperations.deleteTask(rowId: rowId, baseVersion: baseVersion))
-    }
-
-    func enqueueNewTask(_ input: NewTask, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
-        try enqueue(SyncularAppOperations.newTask(input, baseVersion: baseVersion), localRowJson: localRowJson)
-    }
-
-    func enqueueTaskPatch(rowId: String, patch: TaskPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
-        try enqueue(SyncularAppOperations.patchTask(rowId: rowId, patch: patch, baseVersion: baseVersion), localRowJson: localRowJson)
-    }
-
-    func enqueueTaskDelete(rowId: String, baseVersion: Int64? = nil) throws -> String {
-        try enqueue(SyncularAppOperations.deleteTask(rowId: rowId, baseVersion: baseVersion))
-    }
-
+public extension SyncularNativeJsonClient {
     func openTaskTitleCrdtField(rowId: String) throws -> SyncularCrdtFieldDescriptor {
         let request = SyncularCrdtFieldRequest(table: "tasks", rowId: rowId, field: "title")
         return try openCrdtField(request)

@@ -237,7 +237,7 @@ private func createServerConflict(
     conflictInfo: ServerConflict,
     label: String
 ) throws -> NativeConflictSummary {
-    let writeCommandId = try client.enqueueTaskPatch(
+    let writeCommandId = try client.queuedMutations.tasks.update(
         rowId: conflictInfo.rowId,
         patch: TaskPatch(
             title: conflictInfo.localTitle,
@@ -518,7 +518,7 @@ private enum ServerSyncSmoke {
         )
 
         let pushedTaskId = "native-swift-pushed-task"
-        let writeCommandId = try client.enqueueNewTask(NewTask(
+        let writeCommandId = try client.queuedMutations.tasks.insert(NewTask(
             id: pushedTaskId,
             title: "Swift pushed task",
             completed: 0,
@@ -530,7 +530,7 @@ private enum ServerSyncSmoke {
         _ = try waitForEvent(from: client, kind: "SyncCompleted", commandId: pushSyncCommandId)
 
         let websocketTaskId = "native-swift-websocket-task"
-        let websocketWriteCommandId = try client.enqueueNewTask(NewTask(
+        let websocketWriteCommandId = try client.queuedMutations.tasks.insert(NewTask(
             id: websocketTaskId,
             title: "Swift websocket task",
             completed: 0,
@@ -603,7 +603,7 @@ private enum ServerSyncSmoke {
         expect(uploadResult.failed == 0, "Swift blob upload queue should not fail")
         let blobRef = try blobRef(from: blobJson)
         let blobTaskId = "native-swift-blob-task"
-        let blobWriteCommandId = try client.enqueueNewTask(NewTask(
+        let blobWriteCommandId = try client.queuedMutations.tasks.insert(NewTask(
             id: blobTaskId,
             title: "Swift blob task",
             completed: 0,
@@ -621,7 +621,7 @@ private enum ServerSyncSmoke {
             message: "Swift server sync client should accept field encryption config"
         )
         let encryptedTaskId = info.e2ee.swiftTask.id
-        let encryptedWriteCommandId = try client.enqueueNewTask(NewTask(
+        let encryptedWriteCommandId = try client.queuedMutations.tasks.insert(NewTask(
             id: encryptedTaskId,
             title: info.e2ee.swiftTask.title,
             completed: 0,

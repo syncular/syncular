@@ -118,7 +118,7 @@ fun main(args: Array<String>) {
         expect(initialRows.isEmpty(), "Kotlin host live query should start empty")
         expect(raw.observedQueriesJson().contains("kotlin-bolt-live"), "Kotlin host should register observed query")
 
-        val commitId = client.applyNewTask(
+        val commitId = client.mutations.tasks.insert(
             NewTask(
                 id = "task-kotlin-bolt",
                 title = "",

@@ -1100,9 +1100,10 @@ Progress:
   generated-client smokes, not only string-checked. The smoke locks the
   cross-platform contract that unknown columns are retained in the raw event
   metadata but do not appear as known typed field changes.
-- Generated Swift/Kotlin clients now include typed enqueue helpers for table
-  mutations (`enqueueNewTask`, `enqueueTaskPatch`, `enqueueTaskDelete`) on top
-  of the schema-agnostic low-level `enqueueMutationJson`.
+- Generated Swift/Kotlin clients now include table-namespaced mutation helpers
+  (`client.mutations.tasks.insert/update/delete` and
+  `client.queuedMutations.tasks.insert/update/delete`) on top of the
+  schema-agnostic low-level `applyMutationJson` and `enqueueMutationJson`.
 - Added local Swift and Kotlin lifecycle shell smokes. They open a real
   BoltFFI-backed native client, keep the worker hot, register a live query,
   enqueue blob file storage, enqueue a typed generated mutation containing a

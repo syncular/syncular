@@ -154,8 +154,18 @@ fn generated_targets_share_the_same_app_schema_contract() {
         );
         assert_contains(
             &generated.swift,
-            &format!("func applyNew{type_name}"),
-            "swift mutation helper",
+            &format!("public struct {type_name}Mutations"),
+            "swift mutation namespace",
+        );
+        assert_contains(
+            &generated.swift,
+            &format!("public var {table_name}: {type_name}Mutations"),
+            "swift table mutation namespace",
+        );
+        assert_contains(
+            &generated.swift,
+            &format!("public func insert(_ input: New{type_name}"),
+            "swift insert helper",
         );
         assert_contains(
             &generated.swift,
@@ -206,8 +216,18 @@ fn generated_targets_share_the_same_app_schema_contract() {
             );
             assert_contains(
                 kotlin,
-                &format!("fun SyncularNativeJsonClient.applyNew{type_name}"),
-                "kotlin mutation helper",
+                &format!("class {type_name}Mutations"),
+                "kotlin mutation namespace",
+            );
+            assert_contains(
+                kotlin,
+                &format!("val {table_name}: {type_name}Mutations"),
+                "kotlin table mutation namespace",
+            );
+            assert_contains(
+                kotlin,
+                &format!("fun insert(input: New{type_name}"),
+                "kotlin insert helper",
             );
             assert_contains(
                 kotlin,
