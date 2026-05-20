@@ -659,7 +659,50 @@ function sqliteTypeFamily(type: string | null | undefined): string {
   return 'text';
 }
 
-export type SyncularAppDatabase = SyncularRustSqliteDatabase<SyncularAppDb>;
+export interface SyncularGeneratedMutationOptions {
+  baseVersion?: number | null;
+}
+
+export interface SyncularGeneratedMutationReceipt {
+  commitId: string;
+  clientCommitId: string;
+}
+
+export type SyncularGeneratedInsertReceipt = SyncularGeneratedMutationReceipt & { id: string };
+export type SyncularGeneratedInsertManyReceipt = SyncularGeneratedMutationReceipt & { ids: string[] };
+
+export interface SyncularGeneratedTableMutations<NewRow, Patch> {
+  insert(input: NewRow): Promise<SyncularGeneratedInsertReceipt>;
+  insertMany(rows: readonly NewRow[]): Promise<SyncularGeneratedInsertManyReceipt>;
+  update(rowId: string, patch: Patch, options?: SyncularGeneratedMutationOptions): Promise<SyncularGeneratedMutationReceipt>;
+  delete(rowId: string, options?: SyncularGeneratedMutationOptions): Promise<SyncularGeneratedMutationReceipt>;
+  upsert(rowId: string, patch: Patch, options?: SyncularGeneratedMutationOptions): Promise<SyncularGeneratedMutationReceipt>;
+}
+
+export interface SyncularGeneratedTableMutationsTx<NewRow, Patch> {
+  insert(input: NewRow): Promise<string>;
+  insertMany(rows: readonly NewRow[]): Promise<string[]>;
+  update(rowId: string, patch: Patch, options?: SyncularGeneratedMutationOptions): Promise<void>;
+  delete(rowId: string, options?: SyncularGeneratedMutationOptions): Promise<void>;
+  upsert(rowId: string, patch: Patch, options?: SyncularGeneratedMutationOptions): Promise<void>;
+}
+
+export interface SyncularAppMutationsTx {
+  comments: SyncularGeneratedTableMutationsTx<NewComment, CommentPatch>;
+  projects: SyncularGeneratedTableMutationsTx<NewProject, ProjectPatch>;
+  tasks: SyncularGeneratedTableMutationsTx<NewTask, TaskPatch>;
+}
+
+export interface SyncularAppMutations {
+  $commit<R>(fn: (tx: SyncularAppMutationsTx) => Promise<R> | R): Promise<{ result: R; commit: SyncularGeneratedMutationReceipt }>;
+  comments: SyncularGeneratedTableMutations<NewComment, CommentPatch>;
+  projects: SyncularGeneratedTableMutations<NewProject, ProjectPatch>;
+  tasks: SyncularGeneratedTableMutations<NewTask, TaskPatch>;
+}
+
+export type SyncularAppDatabase = Omit<SyncularRustSqliteDatabase<SyncularAppDb>, 'mutations'> & {
+  mutations: SyncularAppMutations;
+};
 export type SyncularAppSubscriptionsOption =
   | false
   | readonly SyncularSubscriptionSpec[]
@@ -741,7 +784,7 @@ export async function createSyncularAppDatabase(
       throw new Error(`Unknown Syncular schemaInstallMode: ${schemaInstallMode}`);
     }
     await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));
-    return database;
+    return database as unknown as SyncularAppDatabase;
   } catch (err) {
     await database.close();
     throw err;

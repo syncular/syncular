@@ -5453,7 +5453,55 @@ fn generate_typescript_module(
     out.push_str("  if (upper.includes('BLOB')) return 'blob';\n");
     out.push_str("  return 'text';\n");
     out.push_str("}\n\n");
-    out.push_str("export type SyncularAppDatabase = SyncularRustSqliteDatabase<SyncularAppDb>;\n");
+    out.push_str("export interface SyncularGeneratedMutationOptions {\n");
+    out.push_str("  baseVersion?: number | null;\n");
+    out.push_str("}\n\n");
+    out.push_str("export interface SyncularGeneratedMutationReceipt {\n");
+    out.push_str("  commitId: string;\n");
+    out.push_str("  clientCommitId: string;\n");
+    out.push_str("}\n\n");
+    out.push_str("export type SyncularGeneratedInsertReceipt = SyncularGeneratedMutationReceipt & { id: string };\n");
+    out.push_str("export type SyncularGeneratedInsertManyReceipt = SyncularGeneratedMutationReceipt & { ids: string[] };\n\n");
+    out.push_str("export interface SyncularGeneratedTableMutations<NewRow, Patch> {\n");
+    out.push_str("  insert(input: NewRow): Promise<SyncularGeneratedInsertReceipt>;\n");
+    out.push_str(
+        "  insertMany(rows: readonly NewRow[]): Promise<SyncularGeneratedInsertManyReceipt>;\n",
+    );
+    out.push_str("  update(rowId: string, patch: Patch, options?: SyncularGeneratedMutationOptions): Promise<SyncularGeneratedMutationReceipt>;\n");
+    out.push_str("  delete(rowId: string, options?: SyncularGeneratedMutationOptions): Promise<SyncularGeneratedMutationReceipt>;\n");
+    out.push_str("  upsert(rowId: string, patch: Patch, options?: SyncularGeneratedMutationOptions): Promise<SyncularGeneratedMutationReceipt>;\n");
+    out.push_str("}\n\n");
+    out.push_str("export interface SyncularGeneratedTableMutationsTx<NewRow, Patch> {\n");
+    out.push_str("  insert(input: NewRow): Promise<string>;\n");
+    out.push_str("  insertMany(rows: readonly NewRow[]): Promise<string[]>;\n");
+    out.push_str("  update(rowId: string, patch: Patch, options?: SyncularGeneratedMutationOptions): Promise<void>;\n");
+    out.push_str(
+        "  delete(rowId: string, options?: SyncularGeneratedMutationOptions): Promise<void>;\n",
+    );
+    out.push_str("  upsert(rowId: string, patch: Patch, options?: SyncularGeneratedMutationOptions): Promise<void>;\n");
+    out.push_str("}\n\n");
+    out.push_str("export interface SyncularAppMutationsTx {\n");
+    for table in &user_tables {
+        let type_name = singular_pascal_case(&table.name);
+        out.push_str(&format!(
+            "  {}: SyncularGeneratedTableMutationsTx<New{type_name}, {type_name}Patch>;\n",
+            ts_property_name(&table.name)
+        ));
+    }
+    out.push_str("}\n\n");
+    out.push_str("export interface SyncularAppMutations {\n");
+    out.push_str("  $commit<R>(fn: (tx: SyncularAppMutationsTx) => Promise<R> | R): Promise<{ result: R; commit: SyncularGeneratedMutationReceipt }>;\n");
+    for table in &user_tables {
+        let type_name = singular_pascal_case(&table.name);
+        out.push_str(&format!(
+            "  {}: SyncularGeneratedTableMutations<New{type_name}, {type_name}Patch>;\n",
+            ts_property_name(&table.name)
+        ));
+    }
+    out.push_str("}\n\n");
+    out.push_str("export type SyncularAppDatabase = Omit<SyncularRustSqliteDatabase<SyncularAppDb>, 'mutations'> & {\n");
+    out.push_str("  mutations: SyncularAppMutations;\n");
+    out.push_str("};\n");
     out.push_str("export type SyncularAppSubscriptionsOption =\n");
     out.push_str("  | false\n");
     out.push_str("  | readonly SyncularSubscriptionSpec[]\n");
@@ -5543,7 +5591,7 @@ fn generate_typescript_module(
     out.push_str(
         "    await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));\n",
     );
-    out.push_str("    return database;\n");
+    out.push_str("    return database as unknown as SyncularAppDatabase;\n");
     out.push_str("  } catch (err) {\n");
     out.push_str("    await database.close();\n");
     out.push_str("    throw err;\n");
@@ -9972,8 +10020,10 @@ mod tests {
             "import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';"
         ));
         assert!(output.contains("export interface SyncularAppDb"));
+        assert!(output.contains("export interface SyncularAppMutations {"));
+        assert!(output.contains("tasks: SyncularGeneratedTableMutations<NewTask, TaskPatch>;"));
         assert!(output.contains(
-            "export type SyncularAppDatabase = SyncularRustSqliteDatabase<SyncularAppDb>;"
+            "export type SyncularAppDatabase = Omit<SyncularRustSqliteDatabase<SyncularAppDb>, 'mutations'> &"
         ));
         assert!(output.contains("export async function createSyncularAppDatabase("));
         assert!(output.contains(

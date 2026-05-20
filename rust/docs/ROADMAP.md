@@ -184,6 +184,12 @@ read-only review:
     fetch, hash, decompress, and apply timings; the 100k guard stayed in band
     at `136.33ms`, and the external 500k guard stayed healthy at `1002.06ms`
     with `snapshotChunkCount=0`.
+- `[~]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
+  - First retained TypeScript generated-client slice narrows
+    `database.mutations` to generated inputs and patches. App code can now call
+    `database.mutations.tasks.insert(NewTask)` without supplying server-owned
+    columns such as `server_version`, while runtime execution still goes
+    through the existing Rust-first mutation/outbox path.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin
@@ -285,6 +291,9 @@ read-only review:
 
 ## Next
 
+- Continue WP-14 generated-client ergonomics by aligning native generated
+  mutation surfaces and adding generated diagnostic helpers that consume WP-13
+  snapshots/events without raw JSON parsing.
 - Continue the larger bootstrap/performance architecture in
   [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md):
   artifact apply is now fast enough that the remaining useful work is a larger
@@ -357,8 +366,8 @@ read-only review:
     Local and external artifact guards stayed in band; keep measuring package
     size and performance for every browser/WASM-facing change.
 - `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
-- `[ ]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
-- `[ ]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
+- `[~]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
+- `[~]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
 - `[ ]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
