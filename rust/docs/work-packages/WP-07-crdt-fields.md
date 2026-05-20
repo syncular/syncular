@@ -101,6 +101,9 @@ Latest accepted slice:
   sync-route response, verifies a second Rust WASM client sends a state-vector
   hint after snapshotting the CRDT field, and confirms the server returns an
   incremental `__yjs` diff row without the full state column.
+- Native Diesel coverage applies the same incremental diff-envelope shape,
+  verifies ordinary row fields in the payload are preserved, and confirms the
+  native pull request includes the CRDT state-vector hint.
 
 Gate evidence:
 
@@ -108,6 +111,7 @@ Gate evidence:
 - `bun test packages/server/src/pull-plugins.test.ts`
 - `bun test --cwd rust/bindings/browser src/__tests__/sync-hono.wasm.test.ts -t "applies a generated app server-merge CRDT field through the Rust WASM worker"`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field diesel_client_applies_server_merge_crdt_diff_pull_with_row_fields`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features crdt-yjs diff_envelope_remote_rows_preserve_non_crdt_payload_fields`
 - `bun run tsgo`
 - `bunx biome check packages/server/src/plugins/types.ts packages/server/src/pull.ts packages/server/src/subscriptions/resolve.ts packages/server/src/pull-plugins.test.ts packages/server-hono/src/routes.ts plugins/yjs/server/src/index.ts plugins/yjs/server/src/index.test.ts`
@@ -145,6 +149,5 @@ Known local environment note:
 
 ## Next Action
 
-Add native Diesel/Hono-style coverage for server-side CRDT state-vector diff
-pulls, then decide whether snapshot/rebootstrap can use a separate safe CRDT
-delta side channel without weakening bootstrap reset semantics.
+Decide whether snapshot/rebootstrap can use a separate safe CRDT delta side
+channel without weakening bootstrap reset semantics.

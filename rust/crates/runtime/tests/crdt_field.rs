@@ -13,6 +13,7 @@ use syncular_runtime::crdt_field::{
 };
 use syncular_runtime::crdt_yjs::{
     build_yjs_text_update, transform_local_row_for_metadata, BuildYjsTextUpdateArgs,
+    YJS_PAYLOAD_KEY,
 };
 use syncular_runtime::diesel_sqlite::DieselSqliteStore;
 use syncular_runtime::encrypted_crdt::{
@@ -29,6 +30,7 @@ use syncular_runtime::protocol::{
 use syncular_runtime::transport::{RealtimeEvent, RealtimeTransport, SyncTransport};
 use syncular_testkit::{
     unique_temp_db_path, AppTestServer, AppTestServerDeliveryMode, AppTestServerOptions,
+    TestTransport,
 };
 
 #[test]
@@ -217,6 +219,143 @@ fn server_merge_crdt_field_sends_scoped_state_vector_pull_hints() -> Result<()> 
     assert_eq!(hint.field, "title");
     assert_eq!(hint.state_column, "title_yjs_state");
     assert_eq!(hint.sync_mode, "server-merge");
+    assert_eq!(hint.state_vector_base64, snapshot.state_vector_base64);
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn diesel_client_applies_server_merge_crdt_diff_pull_with_row_fields() -> Result<()> {
+    let path = temp_db_path("syncular-crdt-diff-pull");
+    let task_id = "crdt-diff-pull-task";
+    let base = build_yjs_text_update(BuildYjsTextUpdateArgs {
+        previous_state_base64: None,
+        next_text: "Native diff v1".to_string(),
+        container_key: Some("title".to_string()),
+        update_id: Some("native-diff-base".to_string()),
+    })?;
+    let next = build_yjs_text_update(BuildYjsTextUpdateArgs {
+        previous_state_base64: Some(base.next_state_base64.clone()),
+        next_text: "Native diff v2".to_string(),
+        container_key: Some("title".to_string()),
+        update_id: Some("native-diff-next".to_string()),
+    })?;
+
+    let transport = TestTransport::new();
+    let handle = transport.handle();
+    transport.push_http_response(CombinedResponse {
+        ok: true,
+        required_schema_version: None,
+        latest_schema_version: None,
+        push: None,
+        pull: Some(PullResponse {
+            ok: true,
+            subscriptions: vec![SubscriptionResponse {
+                id: "sub-tasks".to_string(),
+                status: "active".to_string(),
+                scopes: scopes(),
+                bootstrap: true,
+                bootstrap_state: None,
+                next_cursor: 1,
+                integrity: None,
+                commits: Vec::new(),
+                snapshots: Some(vec![SyncSnapshot {
+                    table: "tasks".to_string(),
+                    rows: vec![json!({
+                        "id": task_id,
+                        "title": "Native diff v1",
+                        "completed": 0,
+                        "user_id": "user-rust",
+                        "project_id": "p0",
+                        "server_version": 1,
+                        "image": null,
+                        "title_yjs_state": base.next_state_base64,
+                    })],
+                    chunks: None,
+                    artifacts: None,
+                    manifest: None,
+                    is_first_page: true,
+                    is_last_page: true,
+                    bootstrap_state_after: None,
+                }]),
+            }],
+        }),
+    });
+    transport.push_http_response(CombinedResponse {
+        ok: true,
+        required_schema_version: None,
+        latest_schema_version: None,
+        push: None,
+        pull: Some(PullResponse {
+            ok: true,
+            subscriptions: vec![SubscriptionResponse {
+                id: "sub-tasks".to_string(),
+                status: "active".to_string(),
+                scopes: scopes(),
+                bootstrap: false,
+                bootstrap_state: None,
+                next_cursor: 2,
+                integrity: None,
+                commits: vec![SyncCommit {
+                    commit_seq: 2,
+                    created_at: "2026-01-01T00:00:02Z".to_string(),
+                    actor_id: "server".to_string(),
+                    changes: vec![SyncChange {
+                        table: "tasks".to_string(),
+                        row_id: task_id.to_string(),
+                        op: "upsert".to_string(),
+                        row_json: Some(json!({
+                            "completed": 1,
+                            YJS_PAYLOAD_KEY: {
+                                "title": next.update
+                            }
+                        })),
+                        row_version: Some(2),
+                        scopes: scopes(),
+                    }],
+                }],
+                snapshots: None,
+            }],
+        }),
+    });
+
+    let app_schema = demo_todo_app_schema();
+    let store = DieselSqliteStore::open_with_schema(&path, app_schema)?;
+    let mut client = SyncularClient::with_app_schema_parts(
+        test_config_with_client(&path, "crdt-diff-pull-client"),
+        store,
+        transport,
+        app_schema,
+    );
+
+    client.sync_http()?;
+    let field = client.open_crdt_field(CrdtFieldId::new("tasks", task_id, "title"))?;
+    let snapshot = client.crdt_document_snapshot(&field)?;
+    assert_eq!(
+        client.materialize_crdt_field(&field)?.value,
+        Value::String("Native diff v1".to_string())
+    );
+
+    client.sync_http()?;
+
+    let rows: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
+    assert_eq!(rows[0]["title"], "Native diff v2");
+    assert_eq!(rows[0]["completed"], 1);
+    assert_eq!(rows[0]["server_version"], 2);
+    assert!(rows[0]["title_yjs_state"].as_str().is_some());
+
+    let requests = handle.requests();
+    let hint = requests
+        .iter()
+        .filter_map(|request| request.pull.as_ref())
+        .flat_map(|pull| pull.subscriptions.iter())
+        .flat_map(|subscription| subscription.crdt_state_vectors.iter())
+        .find(|hint| hint.row_id == task_id)
+        .expect("second native pull should carry CRDT state-vector hint");
+    assert_eq!(hint.row_id, task_id);
+    assert_eq!(hint.field, "title");
+    assert_eq!(hint.state_column, "title_yjs_state");
     assert_eq!(hint.state_vector_base64, snapshot.state_vector_base64);
 
     let _ = std::fs::remove_file(path);
