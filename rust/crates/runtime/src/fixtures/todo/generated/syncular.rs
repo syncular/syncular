@@ -519,6 +519,37 @@ pub fn default_subscriptions(config: &SyncularClientConfig) -> Vec<SubscriptionS
     ]
 }
 
+pub fn default_subscriptions_with_bootstrap_phases(
+    config: &SyncularClientConfig,
+    bootstrap_phases: &[(&str, i64)],
+) -> Vec<SubscriptionSpec> {
+    let mut subscriptions = default_subscriptions(config);
+    apply_bootstrap_phases(&mut subscriptions, bootstrap_phases);
+    subscriptions
+}
+
+pub fn apply_bootstrap_phases(
+    subscriptions: &mut [SubscriptionSpec],
+    bootstrap_phases: &[(&str, i64)],
+) {
+    for subscription in subscriptions {
+        if let Some((_, phase)) = bootstrap_phases
+            .iter()
+            .find(|(key, _)| *key == subscription.id || *key == subscription.table)
+        {
+            subscription.bootstrap_phase = *phase;
+        }
+    }
+}
+
+pub fn with_bootstrap_phase(
+    mut subscription: SubscriptionSpec,
+    bootstrap_phase: i64,
+) -> SubscriptionSpec {
+    subscription.bootstrap_phase = bootstrap_phase;
+    subscription
+}
+
 pub fn comments_subscription(user_id: &str, project_id: Option<&str>) -> SubscriptionSpec {
     let mut scopes = Map::new();
     scopes.insert("user_id".to_string(), json!(user_id));

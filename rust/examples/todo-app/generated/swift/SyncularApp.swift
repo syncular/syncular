@@ -176,10 +176,17 @@ public struct SyncularSubscriptionArgs: Equatable {
     public let actorId: String
     public let projectId: String?
 
-    public init(actorId: String, projectId: String? = nil) {
+    public let bootstrapPhases: [String: Int64]
+
+    public init(actorId: String, projectId: String? = nil, bootstrapPhases: [String: Int64] = [:]) {
         self.actorId = actorId
         self.projectId = projectId
+        self.bootstrapPhases = bootstrapPhases
     }
+}
+
+private func syncularBootstrapPhase(args: SyncularSubscriptionArgs, table: String, subscriptionId: String) -> Int64 {
+    args.bootstrapPhases[subscriptionId] ?? args.bootstrapPhases[table] ?? 0
 }
 
 public struct SyncularSubscriptionSpec: Codable, Equatable {
@@ -210,8 +217,8 @@ public func syncularSubscriptionsJson(_ subscriptions: [SyncularSubscriptionSpec
     return String(data: try encoder.encode(subscriptions), encoding: .utf8)!
 }
 
-public func syncularDefaultSubscriptionsJson(actorId: String, projectId: String? = nil) throws -> String {
-    try syncularSubscriptionsJson(syncularDefaultSubscriptions(args: SyncularSubscriptionArgs(actorId: actorId, projectId: projectId)))
+public func syncularDefaultSubscriptionsJson(actorId: String, projectId: String? = nil, bootstrapPhases: [String: Int64] = [:]) throws -> String {
+    try syncularSubscriptionsJson(syncularDefaultSubscriptions(args: SyncularSubscriptionArgs(actorId: actorId, projectId: projectId, bootstrapPhases: bootstrapPhases)))
 }
 
 public func syncularDefaultSubscriptions(args: SyncularSubscriptionArgs) -> [SyncularSubscriptionSpec] {
@@ -226,20 +233,20 @@ public func commentSubscription(args: SyncularSubscriptionArgs) -> SyncularSubsc
     var scopes: [String: SyncularJsonValue] = [:]
     scopes["user_id"] = .string(args.actorId)
     if let projectId = args.projectId { scopes["project_id"] = .string(projectId) }
-    return SyncularSubscriptionSpec(id: "sub-comments", table: "comments", scopes: scopes, params: [:])
+    return SyncularSubscriptionSpec(id: "sub-comments", table: "comments", scopes: scopes, params: [:], bootstrapPhase: syncularBootstrapPhase(args: args, table: "comments", subscriptionId: "sub-comments"))
 }
 
 public func projectSubscription(args: SyncularSubscriptionArgs) -> SyncularSubscriptionSpec {
     var scopes: [String: SyncularJsonValue] = [:]
     scopes["user_id"] = .string(args.actorId)
-    return SyncularSubscriptionSpec(id: "sub-projects", table: "projects", scopes: scopes, params: [:])
+    return SyncularSubscriptionSpec(id: "sub-projects", table: "projects", scopes: scopes, params: [:], bootstrapPhase: syncularBootstrapPhase(args: args, table: "projects", subscriptionId: "sub-projects"))
 }
 
 public func taskSubscription(args: SyncularSubscriptionArgs) -> SyncularSubscriptionSpec {
     var scopes: [String: SyncularJsonValue] = [:]
     scopes["user_id"] = .string(args.actorId)
     if let projectId = args.projectId { scopes["project_id"] = .string(projectId) }
-    return SyncularSubscriptionSpec(id: "sub-tasks", table: "tasks", scopes: scopes, params: [:])
+    return SyncularSubscriptionSpec(id: "sub-tasks", table: "tasks", scopes: scopes, params: [:], bootstrapPhase: syncularBootstrapPhase(args: args, table: "tasks", subscriptionId: "sub-tasks"))
 }
 
 public struct SyncularReadonlyQuery: Codable, Equatable {
