@@ -955,6 +955,19 @@ Rejected artifact cap-1 probe:
 - Cap `2` remains the accepted state shape until a different bootstrap state
   design proves lower memory without request/heap regression.
 
+Rejected browser deferred-apply-transaction probe:
+
+- Tried changing browser Rust-owned SQLite apply batches from `BEGIN IMMEDIATE`
+  to deferred `BEGIN`, while leaving non-apply write transactions immediate.
+  The goal was to avoid grabbing a write lock while post-checkpoint artifact
+  bytes are fetched.
+- Rejected and reverted. Same-session local 100k release artifact gate was flat
+  on wall time (`136.18ms -> 135.81ms`) but worsened JS heap delta
+  (`2.19MB -> 7.62MB`) with no snapshot chunks in either run.
+- Do not retry isolated transaction-mode probes. Revisit only as part of a
+  larger lazy-write-transaction state model with explicit UI read/write
+  contention coverage and no memory regression.
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.
@@ -969,8 +982,9 @@ Continue artifact resource-state work, but keep it benchmark-gated.
   temp-table staging probes were all rejected. Separate-SQLite row streaming and
   segmented artifact apply were also rejected. Raising browser artifact pull
   cap `2 -> 3` was rejected for the same reason: modest wall-time improvement
-  with higher peak memory. These either regressed wall time or failed to improve
-  external peak memory enough to justify their complexity.
+  with higher peak memory. Deferred apply transactions were also rejected after
+  flat wall time and worse JS heap delta. These either regressed wall time or
+  failed to improve external peak memory enough to justify their complexity.
 - Do not keep spending time on artifact memory micro-probes unless they change
   the bootstrap state model. The generated `localDerivedSchema` path is proven,
   and the before-bootstrap install strategy is rejected; keep bulk load followed

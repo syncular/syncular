@@ -190,7 +190,10 @@ read-only review:
     `snapshotChunkCount=0`, while peak memory moved slightly worse
     (`668.20MB -> 671.13MB`). Artifact checkpoint count/time are now explicit
     browser sync/scoreboard metrics, and the local 100k guard reports one
-    checkpoint with neutral wall time.
+    checkpoint with neutral wall time. A deferred apply-transaction probe was
+    rejected because same-session local 100k artifact wall time stayed flat
+    (`136.18ms -> 135.81ms`) while JS heap delta worsened
+    (`2.19MB -> 7.62MB`).
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   - First retained TypeScript generated-client slice narrows
     `database.mutations` to generated inputs and patches. App code can now call

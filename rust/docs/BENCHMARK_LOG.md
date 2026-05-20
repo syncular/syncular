@@ -18,6 +18,63 @@ Decision:
 Notes:
 ```
 
+## 2026-05-21 - Rejected Browser Deferred Apply Transactions
+
+Commit: rejected probe, code reverted
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change tried:
+
+- Changed browser Rust-owned SQLite apply batches from `BEGIN IMMEDIATE` to
+  deferred `BEGIN` while leaving non-apply write transactions immediate.
+- Goal was to avoid grabbing a write lock while post-checkpoint artifact bytes
+  are fetched. This was a state-model/resource probe, not a query-cache change.
+
+Same-session local 100k release artifact gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/wp12-deferred-apply-baseline-100k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/wp12-deferred-apply-after-100k.json
+```
+
+| Metric | Immediate apply tx baseline | Deferred apply tx probe |
+| --- | ---: | ---: |
+| Rust bootstrap | `136.18ms` | `135.81ms` |
+| Rust pull apply | `128ms` | `127ms` |
+| Rust artifact apply | `113ms` | `113ms` |
+| Rust artifact fetch | `5ms` | `4ms` |
+| Rust artifact bytes | `872,794` | `872,794` |
+| Snapshot chunks | `0` | `0` |
+| JS heap delta | `2.19MB` | `7.62MB` |
+| Served Rust WASM bytes | `2,220,519` | `2,220,567` |
+
+Correctness probe:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --test protocol_contract http_sync_rejects_snapshot_artifacts_before_mutating_store \
+  --features native,crdt-yjs,demo-todo-native-fixture
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+```
+
+Decision:
+
+- Rejected and reverted. Wall time was effectively flat, while JS heap delta
+  regressed sharply in the same-session gate. The resource-locking idea may be
+  worth revisiting only as part of a broader lazy-write-transaction state model
+  with explicit tests for UI read/write contention and no heap regression.
+
 ## 2026-05-20 - Retained Browser Sync Attempt Trace Plumbing
 
 Commit: retained slice
