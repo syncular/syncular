@@ -178,9 +178,7 @@ snapshot first:
 
 Continue first-slice correlation work:
 
-1. Add native sync timing buckets to the diagnostic snapshot if apps need the
-   same timing breakdown currently exposed by the browser worker snapshot.
-2. Add console/API affordances that query client/server diagnostics by
+1. Add console/API affordances that query client/server diagnostics by
    `syncAttemptId` once the console investigation views move forward.
 
 ## Progress
@@ -225,3 +223,7 @@ Continue first-slice correlation work:
 - Added browser/Hono integration coverage proving a normal sync pull and a
   realtime pull-required HTTP recovery can be correlated from client
   diagnostics to persisted server `sync_request_events` by trace id.
+- Added native `recentSyncTimings` diagnostic snapshot entries derived from
+  worker sync outcome events. Native timing entries expose event sequence,
+  kind, command id, total duration, success, retry scheduling, outbox count, and
+  conflict count without inventing unavailable browser-only sub-buckets.
