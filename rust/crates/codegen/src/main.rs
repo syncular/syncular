@@ -5103,6 +5103,20 @@ fn generate_typescript_module(
     out.push_str("  await ensureSyncularAppBaseSchema(db);\n");
     out.push_str("  await ensureSyncularAppDerivedSchema(db);\n");
     out.push_str("}\n\n");
+    out.push_str(
+        "export async function ensureSyncularAppLiveSchema(db: Kysely<any>): Promise<void> {\n",
+    );
+    out.push_str("  const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppSchemaMetadata(db);\n");
+    out.push_str("  await ensureSyncularAppBaseSchema(db);\n");
+    out.push_str("  await ensureSyncularAppIndexes(db);\n");
+    out.push_str("  await ensureSyncularAppReadModelSetup(db);\n");
+    out.push_str(
+        "  if (syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion) {\n",
+    );
+    out.push_str("    await assertSyncularAppTablesEmptyForLiveSchema(db);\n");
+    out.push_str("  }\n");
+    out.push_str("  await recordSyncularAppSchemaVersion(db);\n");
+    out.push_str("}\n\n");
     out.push_str("interface SyncularGeneratedColumnInfo {\n");
     out.push_str("  name: string;\n");
     out.push_str("  type: string;\n");
@@ -5142,6 +5156,18 @@ fn generate_typescript_module(
         out.push_str("  return rows.rows.length > 0;\n");
         out.push_str("}\n\n");
     }
+    out.push_str("async function assertSyncularAppTablesEmptyForLiveSchema(db: Kysely<any>): Promise<void> {\n");
+    out.push_str("  for (const table of syncularGeneratedAppTables) {\n");
+    out.push_str("    const rows = await sql<{ found: number }>`\n");
+    out.push_str("      select 1 as found\n");
+    out.push_str("      from ${sql.table(String(table))}\n");
+    out.push_str("      limit 1\n");
+    out.push_str("    `.execute(db);\n");
+    out.push_str("    if (rows.rows.length > 0) {\n");
+    out.push_str("      throw new Error(`Syncular live schema install cannot skip read-model rebuild because ${String(table)} already contains rows`);\n");
+    out.push_str("    }\n");
+    out.push_str("  }\n");
+    out.push_str("}\n\n");
     out.push_str("async function validateSyncularAppSchema(db: Kysely<any>): Promise<void> {\n");
     for table in &user_tables {
         out.push_str(&format!(
@@ -5200,10 +5226,13 @@ fn generate_typescript_module(
     out.push_str(
         "  | ((args: SyncularSubscriptionArgs) => readonly SyncularSubscriptionSpec[]);\n\n",
     );
+    out.push_str(
+        "export type SyncularAppSchemaInstallMode = 'full' | 'base' | 'liveSetup' | 'none';\n\n",
+    );
     out.push_str("export interface CreateSyncularAppDatabaseOptions extends CreateSyncularRustSqliteDatabaseOptions {\n");
     out.push_str("  subscriptions?: SyncularAppSubscriptionsOption;\n");
     out.push_str("  bootstrapPhases?: Record<string, number>;\n");
-    out.push_str("  schemaInstallMode?: 'full' | 'base' | 'none';\n");
+    out.push_str("  schemaInstallMode?: SyncularAppSchemaInstallMode;\n");
     out.push_str("}\n\n");
     out.push_str("export async function assertSyncularAppRuntime(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {\n");
     out.push_str("  assertSyncularAppRuntimeInfo(await database.client.runtimeInfo());\n");
@@ -5274,6 +5303,10 @@ fn generate_typescript_module(
     out.push_str("    } else if (schemaInstallMode === 'base') {\n");
     out.push_str(
         "      await withSyncularV2SchemaWrites(database, ensureSyncularAppBaseSchema);\n",
+    );
+    out.push_str("    } else if (schemaInstallMode === 'liveSetup') {\n");
+    out.push_str(
+        "      await withSyncularV2SchemaWrites(database, ensureSyncularAppLiveSchema);\n",
     );
     out.push_str("    } else if (schemaInstallMode !== 'none') {\n");
     out.push_str(
@@ -9578,7 +9611,10 @@ mod tests {
         assert!(
             output.contains("await withSyncularV2SchemaWrites(database, ensureSyncularAppSchema);")
         );
-        assert!(output.contains("schemaInstallMode?: 'full' | 'base' | 'none';"));
+        assert!(output.contains(
+            "export type SyncularAppSchemaInstallMode = 'full' | 'base' | 'liveSetup' | 'none';"
+        ));
+        assert!(output.contains("schemaInstallMode?: SyncularAppSchemaInstallMode;"));
         assert!(output.contains(
             "export async function finalizeSyncularAppDatabaseSchema(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {"
         ));
@@ -9588,6 +9624,12 @@ mod tests {
         assert!(output.contains("const schemaInstallMode = options.schemaInstallMode ?? 'full';"));
         assert!(output
             .contains("await withSyncularV2SchemaWrites(database, ensureSyncularAppBaseSchema);"));
+        assert!(output
+            .contains("await withSyncularV2SchemaWrites(database, ensureSyncularAppLiveSchema);"));
+        assert!(output.contains(
+            "export async function ensureSyncularAppLiveSchema(db: Kysely<any>): Promise<void> {"
+        ));
+        assert!(output.contains("async function assertSyncularAppTablesEmptyForLiveSchema"));
         assert!(output.contains("await database.client.setSubscriptions("));
         assert!(output.contains(
             "await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));"
