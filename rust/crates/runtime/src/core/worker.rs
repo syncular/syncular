@@ -3,8 +3,8 @@ use crate::client::BootstrapStatus;
 #[cfg(feature = "native")]
 use crate::client::CrdtFieldCompactionReceipt;
 use crate::client::{
-    sync_changed_row_for_local_operation, SubscriptionSpec, SyncChangedRow, SyncReport,
-    SyncularClient,
+    sync_changed_crdt_field_from_metadata, sync_changed_row_for_local_operation, SubscriptionSpec,
+    SyncChangedRow, SyncReport, SyncularClient,
 };
 #[cfg(feature = "native")]
 use crate::crdt_field::{CrdtField, CrdtFieldId, CrdtFieldSyncMode};
@@ -454,6 +454,16 @@ pub trait SyncWorkerClientExt {
         Ok(None)
     }
 
+    fn worker_crdt_field_changed_row(
+        &mut self,
+        _table: &str,
+        _row_id: &str,
+        _field: &str,
+        _client_commit_id: &str,
+    ) -> Result<Option<SyncChangedRow>> {
+        Ok(None)
+    }
+
     fn worker_query_json(&mut self, _request_json: &str) -> Result<String> {
         Err(SyncularError::config(
             "worker-owned snapshot refresh is not available for this client",
@@ -655,6 +665,20 @@ where
     ) -> Result<Option<Value>> {
         let field = self.open_crdt_field(CrdtFieldId::new(table, row_id, field))?;
         Ok(crdt_field_event_payload_for_worker(self, &field))
+    }
+
+    fn worker_crdt_field_changed_row(
+        &mut self,
+        table: &str,
+        row_id: &str,
+        field: &str,
+        client_commit_id: &str,
+    ) -> Result<Option<SyncChangedRow>> {
+        let field = self.open_crdt_field(CrdtFieldId::new(table, row_id, field))?;
+        Ok(Some(crdt_field_changed_row_for_worker(
+            &field,
+            client_commit_id,
+        )))
     }
 
     fn worker_query_json(&mut self, request_json: &str) -> Result<String> {
@@ -3031,22 +3055,36 @@ where
                     .worker_crdt_field_event_payload_json(&key.table, &key.row_id, &key.field)
                     .ok()
                     .flatten();
-                for command_id in batch.command_ids {
-                    let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
-                        command_id: command_id.clone(),
-                        client_commit_id: client_commit_id.clone(),
-                        changed_tables: vec![key.table.clone()],
-                        changed_rows: vec![SyncChangedRow {
+                let changed_rows = client
+                    .worker_crdt_field_changed_row(
+                        &key.table,
+                        &key.row_id,
+                        &key.field,
+                        &client_commit_id,
+                    )
+                    .ok()
+                    .flatten()
+                    .map(|row| vec![row])
+                    .unwrap_or_else(|| {
+                        vec![SyncChangedRow {
                             table: key.table.clone(),
                             row_id: Some(key.row_id.clone()),
                             operation: "update".to_string(),
                             changed_fields: vec![key.field.clone()],
                             crdt_fields: vec![key.field.clone()],
+                            crdt_field_changes: Vec::new(),
                             commit_id: Some(client_commit_id.clone()),
                             commit_seq: None,
                             subscription_id: None,
                             server_version: None,
-                        }],
+                        }]
+                    });
+                for command_id in batch.command_ids {
+                    let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
+                        command_id: command_id.clone(),
+                        client_commit_id: client_commit_id.clone(),
+                        changed_tables: vec![key.table.clone()],
+                        changed_rows: changed_rows.clone(),
                         duration_ms: duration_ms(started),
                     });
                     let _ = event_tx.publish_event(SyncWorkerEvent::CrdtFieldChanged {
@@ -3300,12 +3338,19 @@ fn crdt_field_compaction_tables_for_worker(field: &CrdtField) -> Vec<String> {
 
 #[cfg(feature = "native")]
 fn crdt_field_changed_row_for_worker(field: &CrdtField, client_commit_id: &str) -> SyncChangedRow {
+    let crdt_field_changes = vec![sync_changed_crdt_field_from_metadata(
+        field.field_metadata(),
+    )];
     SyncChangedRow {
         table: field.table().to_string(),
         row_id: Some(field.row_id().to_string()),
         operation: "update".to_string(),
         changed_fields: vec![field.field().to_string(), field.state_column().to_string()],
-        crdt_fields: vec![field.state_column().to_string()],
+        crdt_fields: crdt_field_changes
+            .iter()
+            .map(|field| field.state_column.clone())
+            .collect(),
+        crdt_field_changes,
         commit_id: Some(client_commit_id.to_string()),
         commit_seq: None,
         subscription_id: None,
@@ -3318,12 +3363,19 @@ fn crdt_field_compacted_row_for_worker(
     field: &CrdtField,
     client_commit_id: &str,
 ) -> SyncChangedRow {
+    let crdt_field_changes = vec![sync_changed_crdt_field_from_metadata(
+        field.field_metadata(),
+    )];
     SyncChangedRow {
         table: field.table().to_string(),
         row_id: Some(field.row_id().to_string()),
         operation: "compact".to_string(),
         changed_fields: vec![field.state_column().to_string()],
-        crdt_fields: vec![field.state_column().to_string()],
+        crdt_fields: crdt_field_changes
+            .iter()
+            .map(|field| field.state_column.clone())
+            .collect(),
+        crdt_field_changes,
         commit_id: Some(client_commit_id.to_string()),
         commit_seq: None,
         subscription_id: None,

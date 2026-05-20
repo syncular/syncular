@@ -190,6 +190,12 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     expect(row.changedFields).toContain('title');
     expect(row.changedFields).toContain('user_id');
     expect(row.crdtFields).toContain('title_yjs_state');
+    expect(row.crdtFieldChanges?.[0]).toMatchObject({
+      field: 'title',
+      stateColumn: 'title_yjs_state',
+      kind: 'text',
+      syncMode: 'server-merge',
+    });
     expect(typeof row.commitId).toBe('string');
   });
 

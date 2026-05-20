@@ -6,7 +6,10 @@ use crate::binary_snapshot::{
     BinarySnapshotCell, BinarySnapshotPayload, BinarySnapshotRowCursor,
     BorrowedBinarySnapshotRawCellVisitor, DecodedBinarySnapshotRows, SnapshotChunkRows,
 };
-use crate::client::{sync_changed_row_for_local_operation, SubscriptionSpec, SyncChangedRow};
+use crate::client::{
+    sync_changed_crdt_field_from_metadata, sync_changed_row_for_local_operation, SubscriptionSpec,
+    SyncChangedRow,
+};
 use crate::compaction::{
     required_compaction_cutoff, tombstone_delete_statements, tombstone_table_names,
     StorageCompactionOptions, StorageCompactionReport,
@@ -6047,12 +6050,19 @@ fn crdt_field_compacted_changed_row(
     field: &CrdtField,
     client_commit_id: Option<String>,
 ) -> SyncChangedRow {
+    let crdt_field_changes = vec![sync_changed_crdt_field_from_metadata(
+        field.field_metadata(),
+    )];
     SyncChangedRow {
         table: field.table().to_string(),
         row_id: Some(field.row_id().to_string()),
         operation: "compact".to_string(),
         changed_fields: vec![field.state_column().to_string()],
-        crdt_fields: vec![field.state_column().to_string()],
+        crdt_fields: crdt_field_changes
+            .iter()
+            .map(|field| field.state_column.clone())
+            .collect(),
+        crdt_field_changes,
         commit_id: client_commit_id,
         commit_seq: None,
         subscription_id: None,

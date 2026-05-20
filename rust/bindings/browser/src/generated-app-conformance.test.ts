@@ -111,6 +111,24 @@ describe('generated app conformance', () => {
           operation: 'update',
           changedFields: ['title', 'title_yjs_state', 'unknown_column'],
           crdtFields: ['title_yjs_state'],
+          crdtFieldChanges: [
+            {
+              field: 'title',
+              stateColumn: 'title_yjs_state',
+              containerKey: 'title',
+              rowIdField: 'id',
+              kind: 'text',
+              syncMode: 'server-merge',
+            },
+            {
+              field: 'unknown_column',
+              stateColumn: 'unknown_yjs_state',
+              containerKey: 'unknown',
+              rowIdField: 'id',
+              kind: 'text',
+              syncMode: 'server-merge',
+            },
+          ],
           commitId: 'commit-delta',
         },
       ],
@@ -124,6 +142,12 @@ describe('generated app conformance', () => {
     expect(task?.changed.completed).toBe(false);
     expect(task?.crdt.title_yjs_state).toBe(true);
     expect(task?.changedFields).toEqual(['title', 'title_yjs_state']);
+    expect(task?.crdtFieldChanges).toEqual([
+      expect.objectContaining({
+        field: 'title',
+        stateColumn: 'title_yjs_state',
+      }),
+    ]);
     expect(syncularChangedRows.tasks(event)[0]?.raw.commitId).toBe('commit-delta');
     expect(syncularAppChangedRows(event)).toHaveLength(1);
   });

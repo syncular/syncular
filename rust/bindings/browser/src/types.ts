@@ -441,10 +441,20 @@ export interface SyncularV2ChangedRow {
   operation: 'insert' | 'update' | 'delete' | 'compact' | string;
   changedFields: string[];
   crdtFields: string[];
+  crdtFieldChanges?: SyncularV2ChangedCrdtField[];
   commitId?: string | null;
   commitSeq?: number | null;
   subscriptionId?: string | null;
   serverVersion?: number | null;
+}
+
+export interface SyncularV2ChangedCrdtField {
+  field: string;
+  stateColumn: string;
+  containerKey: string;
+  rowIdField: string;
+  kind: string;
+  syncMode: string;
 }
 
 export interface SyncularV2RowsChangedEvent {

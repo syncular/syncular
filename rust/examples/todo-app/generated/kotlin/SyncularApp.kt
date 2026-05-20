@@ -202,12 +202,22 @@ data class SyncularLiveQueryRegistration(
     fun toJsonString(): String = syncularJsonValue(toJsonValue())
 }
 
+data class SyncularChangedCrdtField(
+    val field: String,
+    val stateColumn: String,
+    val containerKey: String,
+    val rowIdField: String,
+    val kind: String,
+    val syncMode: String,
+)
+
 data class SyncularChangedRow(
     val table: String,
     val rowId: String? = null,
     val operation: String,
     val changedFields: List<String> = emptyList(),
     val crdtFields: List<String> = emptyList(),
+    val crdtFieldChanges: List<SyncularChangedCrdtField> = emptyList(),
     val commitId: String? = null,
     val commitSeq: Long? = null,
     val subscriptionId: String? = null,
@@ -399,12 +409,22 @@ data class SyncularCrdtFieldCompactionReceipt(
     val encryptedStreamAfter: SyncularEncryptedCrdtStreamStats?,
 )
 
+fun syncularDecodeChangedCrdtField(field: JsonObject): SyncularChangedCrdtField = SyncularChangedCrdtField(
+    field = field["field"]?.jsonPrimitive?.content ?: "",
+    stateColumn = field["stateColumn"]?.jsonPrimitive?.content ?: "",
+    containerKey = field["containerKey"]?.jsonPrimitive?.content ?: "",
+    rowIdField = field["rowIdField"]?.jsonPrimitive?.content ?: "",
+    kind = field["kind"]?.jsonPrimitive?.content ?: "",
+    syncMode = field["syncMode"]?.jsonPrimitive?.content ?: "",
+)
+
 fun syncularDecodeChangedRow(row: JsonObject): SyncularChangedRow = SyncularChangedRow(
     table = row["table"]?.jsonPrimitive?.content ?: "",
     rowId = row["rowId"]?.jsonPrimitive?.content,
     operation = row["operation"]?.jsonPrimitive?.content ?: "",
     changedFields = row["changedFields"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
     crdtFields = row["crdtFields"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
+    crdtFieldChanges = row["crdtFieldChanges"]?.jsonArray?.map { syncularDecodeChangedCrdtField(it.jsonObject) } ?: emptyList(),
     commitId = row["commitId"]?.jsonPrimitive?.content,
     commitSeq = row["commitSeq"]?.jsonPrimitive?.longOrNull,
     subscriptionId = row["subscriptionId"]?.jsonPrimitive?.content,

@@ -7,7 +7,7 @@ use std::time::{Duration, Instant};
 use diesel::prelude::*;
 use diesel::sql_query;
 use serde_json::{json, Value};
-use syncular_runtime::client::{BootstrapStatus, SyncChangedRow, SyncReport};
+use syncular_runtime::client::{BootstrapStatus, SyncChangedCrdtField, SyncChangedRow, SyncReport};
 use syncular_runtime::crdt_yjs::{build_yjs_text_update, BuildYjsTextUpdateArgs};
 use syncular_runtime::error::{ErrorKind, Result};
 use syncular_runtime::fixtures::todo::app_schema as demo_todo_app_schema;
@@ -466,6 +466,14 @@ fn native_worker_event_converter_preserves_rows_queries_and_sequence() -> Result
         operation: "update".to_string(),
         changed_fields: vec!["title".to_string(), "title_yjs_state".to_string()],
         crdt_fields: vec!["title_yjs_state".to_string()],
+        crdt_field_changes: vec![SyncChangedCrdtField {
+            field: "title".to_string(),
+            state_column: "title_yjs_state".to_string(),
+            container_key: "title".to_string(),
+            row_id_field: "id".to_string(),
+            kind: "text".to_string(),
+            sync_mode: "server-merge".to_string(),
+        }],
         commit_id: Some("server-commit".to_string()),
         commit_seq: Some(42),
         subscription_id: Some("sub-tasks".to_string()),
@@ -492,7 +500,7 @@ fn native_worker_event_converter_preserves_rows_queries_and_sequence() -> Result
             label: None,
         }],
     );
-    assert_eq!(events.len(), 3);
+    assert_eq!(events.len(), 4);
     assert_eq!(events[0].event_seq, 1);
     assert_eq!(events[0].kind, NativeEventKind::SyncCompleted);
     assert_eq!(events[0].changed_rows, vec![changed_row.clone()]);
@@ -513,13 +521,64 @@ fn native_worker_event_converter_preserves_rows_queries_and_sequence() -> Result
     assert_eq!(events[2].event_seq, 3);
     assert_eq!(events[2].kind, NativeEventKind::QueriesChanged);
     assert_eq!(events[2].queries, vec!["task-list".to_string()]);
-    assert_eq!(events[2].changed_rows, vec![changed_row]);
+    assert_eq!(events[2].changed_rows, vec![changed_row.clone()]);
+    assert_eq!(events[3].event_seq, 4);
+    assert_eq!(events[3].kind, NativeEventKind::CrdtFieldChanged);
+    assert_eq!(
+        events[3]
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("source")),
+        Some(&json!("remotePull"))
+    );
+    assert_eq!(
+        events[3]
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("table")),
+        Some(&json!("tasks"))
+    );
+    assert_eq!(
+        events[3]
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("rowId")),
+        Some(&json!("converter-task"))
+    );
+    assert_eq!(
+        events[3]
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("field")),
+        Some(&json!("title"))
+    );
+    assert_eq!(
+        events[3]
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("stateColumn")),
+        Some(&json!("title_yjs_state"))
+    );
+    assert_eq!(
+        events[3]
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("commitSeq")),
+        Some(&json!(42))
+    );
+    assert_eq!(
+        events[3]
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("subscriptionId")),
+        Some(&json!("sub-tasks"))
+    );
 
     let converter = NativeWorkerEventConverter::new();
     let first = converter.convert(worker_event.clone());
     let second = converter.convert(worker_event.clone());
     assert_eq!(first[0].event_seq, 1);
-    assert_eq!(second[0].event_seq, 3);
+    assert_eq!(second[0].event_seq, 4);
 
     let json_events = native_event_json_from_worker_event(worker_event)?;
     let first_json: Value = serde_json::from_str(&json_events[0])?;
@@ -1038,6 +1097,7 @@ fn native_facade_coalesces_enqueued_yjs_updates_on_worker() -> Result<()> {
     let mut first_commit_id = None;
     let mut second_commit_id = None;
     let mut saw_rows_changed = false;
+    let mut yjs_changed_row = None;
     for _ in 0..6 {
         let event = client
             .next_event_timeout(Duration::from_secs(2))
@@ -1055,15 +1115,28 @@ fn native_facade_coalesces_enqueued_yjs_updates_on_worker() -> Result<()> {
             }
             NativeEventKind::RowsChanged if event.tables == vec!["tasks".to_string()] => {
                 saw_rows_changed = true;
+                yjs_changed_row = event.changed_rows.first().cloned();
             }
             _ => {}
         }
-        if first_commit_id.is_some() && second_commit_id.is_some() && saw_rows_changed {
+        if first_commit_id.is_some() && second_commit_id.is_some() && yjs_changed_row.is_some() {
             break;
         }
     }
     assert_eq!(first_commit_id, second_commit_id);
     assert!(saw_rows_changed);
+    let yjs_changed_row = yjs_changed_row.expect("queued Yjs changed row");
+    assert_eq!(
+        yjs_changed_row.crdt_fields,
+        vec!["title_yjs_state".to_string()]
+    );
+    assert_eq!(
+        yjs_changed_row
+            .crdt_field_changes
+            .first()
+            .map(|field| field.field.as_str()),
+        Some("title")
+    );
 
     let tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
     assert_eq!(tasks_json.as_array().map(Vec::len), Some(1));

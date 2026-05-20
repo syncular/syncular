@@ -1,8 +1,8 @@
 use crate::app_schema::{app_schema_from_json, default_app_schema, AppSchema, AppTableMetadata};
 use crate::client::{
-    sync_changed_row_for_local_operation, BootstrapStatus, CrdtFieldCompactionReceipt,
-    CrdtFieldMaterialization, CrdtFieldWriteReceipt, SubscriptionSpec, SyncChangedRow, SyncReport,
-    SyncularClient, SyncularClientConfig,
+    sync_changed_crdt_field_from_metadata, sync_changed_row_for_local_operation, BootstrapStatus,
+    CrdtFieldCompactionReceipt, CrdtFieldMaterialization, CrdtFieldWriteReceipt, SubscriptionSpec,
+    SyncChangedRow, SyncReport, SyncularClient, SyncularClientConfig,
 };
 use crate::crdt_field::{CrdtField, CrdtFieldId, CrdtFieldSyncMode};
 use crate::crdt_yjs::YjsUpdateEnvelope;
@@ -1784,7 +1784,7 @@ impl NativeEventHub {
                 let mut events = vec![sync_completed_event(
                     report.clone(),
                     bootstrap,
-                    command_id,
+                    command_id.clone(),
                     outbox_count,
                     conflict_count,
                     duration_ms,
@@ -1804,6 +1804,12 @@ impl NativeEventHub {
                             Some("remotePull"),
                         ));
                     }
+                    events.extend(crdt_field_changed_events_from_changed_rows(
+                        &report.changed_rows,
+                        "remotePull",
+                        command_id,
+                        Some(duration_ms),
+                    ));
                 }
                 if report.conflicts_changed {
                     events.push(conflicts_changed_event());
@@ -2108,12 +2114,16 @@ fn crdt_field_compaction_tables(field: &CrdtField) -> Vec<&'static str> {
 }
 
 fn crdt_field_changed_row(field: &CrdtField, client_commit_id: Option<String>) -> SyncChangedRow {
+    let crdt_field_changes = vec![sync_changed_crdt_field_from_metadata(
+        field.field_metadata(),
+    )];
     SyncChangedRow {
         table: field.table().to_string(),
         row_id: Some(field.row_id().to_string()),
         operation: "update".to_string(),
         changed_fields: vec![field.field().to_string(), field.state_column().to_string()],
         crdt_fields: vec![field.state_column().to_string()],
+        crdt_field_changes,
         commit_id: client_commit_id,
         commit_seq: None,
         subscription_id: None,
@@ -2122,12 +2132,16 @@ fn crdt_field_changed_row(field: &CrdtField, client_commit_id: Option<String>) -
 }
 
 fn crdt_field_compacted_row(field: &CrdtField, client_commit_id: Option<String>) -> SyncChangedRow {
+    let crdt_field_changes = vec![sync_changed_crdt_field_from_metadata(
+        field.field_metadata(),
+    )];
     SyncChangedRow {
         table: field.table().to_string(),
         row_id: Some(field.row_id().to_string()),
         operation: "compact".to_string(),
         changed_fields: vec![field.state_column().to_string()],
         crdt_fields: vec![field.state_column().to_string()],
+        crdt_field_changes,
         commit_id: client_commit_id,
         commit_seq: None,
         subscription_id: None,
@@ -2346,6 +2360,50 @@ fn crdt_field_payload(parts: CrdtFieldEventParts) -> Value {
         }
     }
     payload
+}
+
+fn crdt_field_changed_events_from_changed_rows(
+    changed_rows: &[SyncChangedRow],
+    source: &str,
+    command_id: Option<String>,
+    duration_ms: Option<u64>,
+) -> Vec<NativeEvent> {
+    let mut events = Vec::new();
+    for row in changed_rows {
+        let Some(row_id) = row.row_id.as_ref() else {
+            continue;
+        };
+        for field in &row.crdt_field_changes {
+            events.push(crdt_field_changed_event_from_parts(
+                CrdtFieldEventParts {
+                    table: row.table.clone(),
+                    row_id: row_id.clone(),
+                    field: field.field.clone(),
+                    changed_tables: vec![row.table.clone()],
+                    client_commit_id: None,
+                    checkpoint_created: None,
+                    extra_payload_json: Some(json!({
+                        "source": source,
+                        "operation": row.operation,
+                        "stateColumn": field.state_column,
+                        "containerKey": field.container_key,
+                        "rowIdField": field.row_id_field,
+                        "kind": field.kind,
+                        "syncMode": field.sync_mode,
+                        "commitId": row.commit_id,
+                        "commitSeq": row.commit_seq,
+                        "subscriptionId": row.subscription_id,
+                        "serverVersion": row.server_version,
+                        "changedFields": row.changed_fields,
+                        "crdtFields": row.crdt_fields,
+                    })),
+                },
+                command_id.clone(),
+                duration_ms,
+            ));
+        }
+    }
+    events
 }
 
 fn rows_changed_event_with_details<'a>(
