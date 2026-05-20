@@ -5506,6 +5506,9 @@ fn generate_typescript_module(
     out.push_str("  if (schemaState.currentSchemaVersion !== syncularGeneratedSchemaVersion) {\n");
     out.push_str("    throw new Error(`Syncular Rust app schema version mismatch: ${schemaState.currentSchemaVersion}, expected ${syncularGeneratedSchemaVersion}`);\n");
     out.push_str("  }\n");
+    out.push_str("  if (schemaState.schemaVersion !== null && schemaState.schemaVersion !== syncularGeneratedSchemaVersion) {\n");
+    out.push_str("    throw new Error(`Syncular Rust local app schema version mismatch: local ${schemaState.schemaVersion}, generated ${syncularGeneratedSchemaVersion}`);\n");
+    out.push_str("  }\n");
     out.push_str("}\n\n");
     out.push_str("export function assertSyncularAppRuntimeInfo(runtimeInfo: SyncularV2RuntimeInfo): void {\n");
     out.push_str("  if (runtimeInfo.packageName !== SYNCULAR_V2_PACKAGE_NAME) {\n");
@@ -10114,6 +10117,9 @@ mod tests {
         assert!(
             output.contains("schemaState.currentSchemaVersion !== syncularGeneratedSchemaVersion")
         );
+        assert!(output.contains(
+            "schemaState.schemaVersion !== null && schemaState.schemaVersion !== syncularGeneratedSchemaVersion"
+        ));
         assert!(output.contains("export const syncularGeneratedRequiredRuntimeFeatures = ["));
         assert!(output.contains("  'web-owned-sqlite-core',"));
         assert!(output.contains("  'blobs',"));

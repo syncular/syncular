@@ -47,6 +47,26 @@ describe('generated Syncular v2 runtime assertions', () => {
     ).rejects.toThrow('Syncular Rust app schema version mismatch');
   });
 
+  it('rejects mismatched persisted local app schema versions', async () => {
+    await expect(
+      assertSyncularAppRuntime({
+        client: {
+          async runtimeInfo() {
+            return runtimeInfo();
+          },
+          async generatedSchemaState() {
+            return {
+              schemaId: 'syncular-app',
+              schemaVersion: syncularGeneratedSchemaVersion - 1,
+              currentSchemaVersion: syncularGeneratedSchemaVersion,
+              updatedAt: Date.now(),
+            };
+          },
+        },
+      } as any)
+    ).rejects.toThrow('Syncular Rust local app schema version mismatch');
+  });
+
   it('rejects a runtime without rust-owned SQLite support', () => {
     expect(() =>
       assertSyncularAppRuntimeInfo(
