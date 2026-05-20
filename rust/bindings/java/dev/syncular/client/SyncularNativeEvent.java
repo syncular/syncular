@@ -10,6 +10,7 @@ public final class SyncularNativeEvent {
     public final String rawJson;
     public final long eventSeq;
     public final String kind;
+    public final ErrorInfo error;
     public final String commandId;
     public final String clientCommitId;
     public final Long durationMs;
@@ -23,6 +24,7 @@ public final class SyncularNativeEvent {
         String rawJson,
         long eventSeq,
         String kind,
+        ErrorInfo error,
         String commandId,
         String clientCommitId,
         Long durationMs,
@@ -35,6 +37,7 @@ public final class SyncularNativeEvent {
         this.rawJson = rawJson;
         this.eventSeq = eventSeq;
         this.kind = kind;
+        this.error = error;
         this.commandId = commandId;
         this.clientCommitId = clientCommitId;
         this.durationMs = durationMs;
@@ -55,6 +58,7 @@ public final class SyncularNativeEvent {
             json,
             longValue(event.get("event_seq"), 0L),
             stringValue(event.get("kind")),
+            errorInfo(event.get("error")),
             stringValue(event.get("command_id")),
             stringValue(event.get("client_commit_id")),
             nullableLong(event.get("duration_ms")),
@@ -76,6 +80,10 @@ public final class SyncularNativeEvent {
             }
         }
         return out;
+    }
+
+    private static ErrorInfo errorInfo(Object value) {
+        return value instanceof Map ? ErrorInfo.fromMap((Map<?, ?>) value) : null;
     }
 
     private static List<ChangedCrdtField> changedCrdtFields(Object value) {
@@ -116,6 +124,51 @@ public final class SyncularNativeEvent {
 
     private static Boolean nullableBoolean(Object value) {
         return value instanceof Boolean ? (Boolean) value : null;
+    }
+
+    private static boolean booleanValue(Object value, boolean fallback) {
+        Boolean parsed = nullableBoolean(value);
+        return parsed == null ? fallback : parsed.booleanValue();
+    }
+
+    public static final class ErrorInfo {
+        public final String kind;
+        public final String code;
+        public final String category;
+        public final boolean retryable;
+        public final String recommendedAction;
+        public final String message;
+        public final String debug;
+
+        private ErrorInfo(
+            String kind,
+            String code,
+            String category,
+            boolean retryable,
+            String recommendedAction,
+            String message,
+            String debug
+        ) {
+            this.kind = kind;
+            this.code = code;
+            this.category = category;
+            this.retryable = retryable;
+            this.recommendedAction = recommendedAction;
+            this.message = message;
+            this.debug = debug;
+        }
+
+        private static ErrorInfo fromMap(Map<?, ?> error) {
+            return new ErrorInfo(
+                stringValue(error.get("kind")),
+                stringValue(error.get("code")),
+                stringValue(error.get("category")),
+                booleanValue(error.get("retryable"), false),
+                stringValue(error.get("recommendedAction")),
+                stringValue(error.get("message")),
+                stringValue(error.get("debug"))
+            );
+        }
     }
 
     public static final class ChangedRow {

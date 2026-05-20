@@ -240,7 +240,10 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(swift.contains("public struct SyncularChangedRow"));
     assert!(swift.contains("public struct TaskChangedRow"));
     assert!(swift.contains("public struct TaskChangedFields"));
+    assert!(swift.contains("public struct SyncularNativeErrorInfo"));
     assert!(swift.contains("public struct SyncularNativeEvent"));
+    assert!(swift.contains("public let error: SyncularNativeErrorInfo?"));
+    assert!(swift.contains("public let recommendedAction: String"));
     assert!(swift.contains("public let changedRows: [SyncularChangedRow]"));
     assert!(swift.contains("public let droppedCount: UInt64?"));
     assert!(swift.contains("public let resyncRequired: Bool"));
@@ -266,7 +269,7 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(!swift.contains("triggerSync"));
     assert!(swift.contains("public enum TaskQuery"));
     assert!(swift.contains("public static func select() -> SyncularSelectQuery<TaskRow>"));
-    assert!(swift.contains("func applyNewTask(_ input: NewTask"));
+    assert!(!swift.contains("func applyNewTask(_ input: NewTask"));
     assert!(kotlin.contains("interface SyncularNativeJsonClient"));
     assert!(kotlin.contains("data class SyncularReadonlyQuery"));
     assert!(kotlin.contains("class SyncularQueryColumn"));
@@ -275,7 +278,10 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(kotlin.contains("data class SyncularChangedRow"));
     assert!(kotlin.contains("data class TaskChangedRow"));
     assert!(kotlin.contains("data class TaskChangedFields"));
+    assert!(kotlin.contains("data class SyncularNativeErrorInfo"));
     assert!(kotlin.contains("data class SyncularNativeEvent"));
+    assert!(kotlin.contains("val error: SyncularNativeErrorInfo? = null"));
+    assert!(kotlin.contains("val recommendedAction: String"));
     assert!(kotlin.contains("val changedRows: List<SyncularChangedRow> = emptyList()"));
     assert!(kotlin.contains("val droppedCount: Long? = null"));
     assert!(kotlin.contains("val resyncRequired: Boolean = false"));
@@ -301,7 +307,7 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(!kotlin.contains("triggerSync"));
     assert!(kotlin.contains("object TaskQuery"));
     assert!(kotlin.contains("fun select(): SyncularSelectQuery<TaskRow>"));
-    assert!(kotlin.contains("fun SyncularNativeJsonClient.applyNewTask(input: NewTask"));
+    assert!(!kotlin.contains("fun SyncularNativeJsonClient.applyNewTask(input: NewTask"));
     assert!(android_kotlin.contains("package dev.syncular.client.generated"));
     assert!(android_kotlin.contains("fun applyMutationJson(mutationJson: String"));
     assert!(android_kotlin.contains("applyMutationJson(operation.toJsonString(), localRowJson)"));
@@ -310,7 +316,9 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(android_kotlin.contains("data class SyncularChangedRow"));
     assert!(android_kotlin.contains("data class TaskChangedRow"));
     assert!(android_kotlin.contains("data class TaskChangedFields"));
+    assert!(android_kotlin.contains("data class SyncularNativeErrorInfo"));
     assert!(android_kotlin.contains("data class SyncularNativeEvent"));
+    assert!(android_kotlin.contains("val error: SyncularNativeErrorInfo? = null"));
     assert!(android_kotlin.contains("val changedRows: List<SyncularChangedRow> = emptyList()"));
     assert!(android_kotlin.contains("class SyncularNativeLiveQuery<Row>"));
     assert!(android_kotlin.contains("fun registerQueryJson(queryJson: String): String"));

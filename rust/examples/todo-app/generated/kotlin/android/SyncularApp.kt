@@ -270,9 +270,20 @@ data class SyncularBootstrapStatus(
     val phases: List<SyncularBootstrapPhaseStatus> = emptyList(),
 )
 
+data class SyncularNativeErrorInfo(
+    val kind: String,
+    val code: String,
+    val category: String,
+    val retryable: Boolean,
+    val recommendedAction: String,
+    val message: String,
+    val debug: String? = null,
+)
+
 data class SyncularNativeEvent(
     val eventSeq: Long = 0,
     val kind: String,
+    val error: SyncularNativeErrorInfo? = null,
     val tables: List<String> = emptyList(),
     val queries: List<String> = emptyList(),
     val changedRows: List<SyncularChangedRow> = emptyList(),
@@ -497,11 +508,26 @@ private fun syncularDecodeBootstrapStatus(value: JsonElement?): SyncularBootstra
     )
 }
 
+private fun syncularDecodeNativeErrorInfo(value: JsonElement?): SyncularNativeErrorInfo? {
+    if (value == null || value is JsonNull) return null
+    val error = value.jsonObject
+    return SyncularNativeErrorInfo(
+        kind = error["kind"]?.jsonPrimitive?.content ?: "",
+        code = error["code"]?.jsonPrimitive?.content ?: "",
+        category = error["category"]?.jsonPrimitive?.content ?: "",
+        retryable = error["retryable"]?.jsonPrimitive?.booleanOrNull ?: false,
+        recommendedAction = error["recommendedAction"]?.jsonPrimitive?.content ?: "",
+        message = error["message"]?.jsonPrimitive?.content ?: "",
+        debug = syncularOptionalString(error["debug"]),
+    )
+}
+
 fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {
     val event = Json.parseToJsonElement(eventJson).jsonObject
     return SyncularNativeEvent(
         eventSeq = event["event_seq"]?.jsonPrimitive?.longOrNull ?: 0L,
         kind = event["kind"]?.jsonPrimitive?.content ?: "",
+        error = syncularDecodeNativeErrorInfo(event["error"]),
         tables = event["tables"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
         queries = event["queries"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),
         changedRows = event["changedRows"]?.jsonArray?.map { syncularDecodeChangedRow(it.jsonObject) } ?: emptyList(),

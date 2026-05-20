@@ -212,6 +212,17 @@ fun main(args: Array<String>) {
     expect(rows[0].image?.size == blobImage.longValue("size"), "Kotlin fetch should decode blob ref size")
     expect(rows[0].image?.mimeType == blobImage.str("mimeType"), "Kotlin fetch should decode blob ref MIME type")
 
+    val errorEvent = syncularDecodeNativeEvent(
+        """{"kind":"SyncFailed","error":{"kind":"Transport","code":"sync.forbidden","category":"forbidden","retryable":false,"recommendedAction":"checkPermissions","message":"Forbidden","debug":"Transport: Forbidden"}}"""
+    )
+    expect(errorEvent.error?.code == "sync.forbidden", "Kotlin native event should decode error code")
+    expect(errorEvent.error?.category == "forbidden", "Kotlin native event should decode error category")
+    expect(errorEvent.error?.retryable == false, "Kotlin native event should decode retryable")
+    expect(
+        errorEvent.error?.recommendedAction == "checkPermissions",
+        "Kotlin native event should decode recommended action",
+    )
+
     val rowDeltaEvent = SyncularNativeEvent(
         kind = "RowsChanged",
         changedRows = listOf(

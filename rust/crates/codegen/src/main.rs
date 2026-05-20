@@ -6414,9 +6414,19 @@ fn generate_swift_module(
     out.push_str("    public let subscriptions: [SyncularBootstrapSubscriptionStatus]\n");
     out.push_str("    public let phases: [SyncularBootstrapPhaseStatus]\n");
     out.push_str("}\n\n");
+    out.push_str("public struct SyncularNativeErrorInfo: Decodable, Equatable {\n");
+    out.push_str("    public let kind: String\n");
+    out.push_str("    public let code: String\n");
+    out.push_str("    public let category: String\n");
+    out.push_str("    public let retryable: Bool\n");
+    out.push_str("    public let recommendedAction: String\n");
+    out.push_str("    public let message: String\n");
+    out.push_str("    public let debug: String?\n");
+    out.push_str("}\n\n");
     out.push_str("public struct SyncularNativeEvent: Decodable, Equatable {\n");
     out.push_str("    public let eventSeq: UInt64\n");
     out.push_str("    public let kind: String\n");
+    out.push_str("    public let error: SyncularNativeErrorInfo?\n");
     out.push_str("    public let tables: [String]\n");
     out.push_str("    public let queries: [String]\n");
     out.push_str("    public let changedRows: [SyncularChangedRow]\n");
@@ -6427,10 +6437,11 @@ fn generate_swift_module(
     out.push_str("    public let bootstrap: SyncularBootstrapStatus?\n");
     out.push_str("    public let resyncRequired: Bool\n\n");
     out.push_str(
-        "    public init(eventSeq: UInt64 = 0, kind: String, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, bootstrap: SyncularBootstrapStatus? = nil, resyncRequired: Bool = false) {\n",
+        "    public init(eventSeq: UInt64 = 0, kind: String, error: SyncularNativeErrorInfo? = nil, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, bootstrap: SyncularBootstrapStatus? = nil, resyncRequired: Bool = false) {\n",
     );
     out.push_str("        self.eventSeq = eventSeq\n");
     out.push_str("        self.kind = kind\n");
+    out.push_str("        self.error = error\n");
     out.push_str("        self.tables = tables\n");
     out.push_str("        self.queries = queries\n");
     out.push_str("        self.changedRows = changedRows\n");
@@ -6444,6 +6455,7 @@ fn generate_swift_module(
     out.push_str("    private enum CodingKeys: String, CodingKey {\n");
     out.push_str("        case eventSeq = \"event_seq\"\n");
     out.push_str("        case kind\n");
+    out.push_str("        case error\n");
     out.push_str("        case tables\n");
     out.push_str("        case queries\n");
     out.push_str("        case changedRows\n");
@@ -6460,6 +6472,9 @@ fn generate_swift_module(
         "        eventSeq = try container.decodeIfPresent(UInt64.self, forKey: .eventSeq) ?? 0\n",
     );
     out.push_str("        kind = try container.decode(String.self, forKey: .kind)\n");
+    out.push_str(
+        "        error = try container.decodeIfPresent(SyncularNativeErrorInfo.self, forKey: .error)\n",
+    );
     out.push_str(
         "        tables = try container.decodeIfPresent([String].self, forKey: .tables) ?? []\n",
     );
@@ -8054,9 +8069,19 @@ fn generate_kotlin_module(
     );
     out.push_str("    val phases: List<SyncularBootstrapPhaseStatus> = emptyList(),\n");
     out.push_str(")\n\n");
+    out.push_str("data class SyncularNativeErrorInfo(\n");
+    out.push_str("    val kind: String,\n");
+    out.push_str("    val code: String,\n");
+    out.push_str("    val category: String,\n");
+    out.push_str("    val retryable: Boolean,\n");
+    out.push_str("    val recommendedAction: String,\n");
+    out.push_str("    val message: String,\n");
+    out.push_str("    val debug: String? = null,\n");
+    out.push_str(")\n\n");
     out.push_str("data class SyncularNativeEvent(\n");
     out.push_str("    val eventSeq: Long = 0,\n");
     out.push_str("    val kind: String,\n");
+    out.push_str("    val error: SyncularNativeErrorInfo? = null,\n");
     out.push_str("    val tables: List<String> = emptyList(),\n");
     out.push_str("    val queries: List<String> = emptyList(),\n");
     out.push_str("    val changedRows: List<SyncularChangedRow> = emptyList(),\n");
@@ -8314,11 +8339,27 @@ fn generate_kotlin_module(
     out.push_str("        phases = status[\"phases\"]?.jsonArray?.map { syncularDecodeBootstrapPhaseStatus(it) } ?: emptyList(),\n");
     out.push_str("    )\n");
     out.push_str("}\n\n");
+    out.push_str("private fun syncularDecodeNativeErrorInfo(value: JsonElement?): SyncularNativeErrorInfo? {\n");
+    out.push_str("    if (value == null || value is JsonNull) return null\n");
+    out.push_str("    val error = value.jsonObject\n");
+    out.push_str("    return SyncularNativeErrorInfo(\n");
+    out.push_str("        kind = error[\"kind\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("        code = error[\"code\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("        category = error[\"category\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str(
+        "        retryable = error[\"retryable\"]?.jsonPrimitive?.booleanOrNull ?: false,\n",
+    );
+    out.push_str("        recommendedAction = error[\"recommendedAction\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("        message = error[\"message\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("        debug = syncularOptionalString(error[\"debug\"]),\n");
+    out.push_str("    )\n");
+    out.push_str("}\n\n");
     out.push_str("fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {\n");
     out.push_str("    val event = Json.parseToJsonElement(eventJson).jsonObject\n");
     out.push_str("    return SyncularNativeEvent(\n");
     out.push_str("        eventSeq = event[\"event_seq\"]?.jsonPrimitive?.longOrNull ?: 0L,\n");
     out.push_str("        kind = event[\"kind\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("        error = syncularDecodeNativeErrorInfo(event[\"error\"]),\n");
     out.push_str("        tables = event[\"tables\"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),\n");
     out.push_str("        queries = event[\"queries\"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),\n");
     out.push_str("        changedRows = event[\"changedRows\"]?.jsonArray?.map { syncularDecodeChangedRow(it.jsonObject) } ?: emptyList(),\n");
@@ -10617,7 +10658,10 @@ mod tests {
         assert!(swift.contains("public struct SyncularLiveQueryRegistration"));
         assert!(swift.contains("public struct SyncularChangedRow"));
         assert!(swift.contains("public struct SyncularBootstrapStatus"));
+        assert!(swift.contains("public struct SyncularNativeErrorInfo"));
         assert!(swift.contains("public struct SyncularNativeEvent"));
+        assert!(swift.contains("public let error: SyncularNativeErrorInfo?"));
+        assert!(swift.contains("public let recommendedAction: String"));
         assert!(swift.contains("public let changedRows: [SyncularChangedRow]"));
         assert!(swift.contains("public let commandId: String?"));
         assert!(swift.contains("public let droppedCount: UInt64?"));
@@ -10719,7 +10763,10 @@ mod tests {
         assert!(kotlin.contains("data class SyncularLiveQueryRegistration"));
         assert!(kotlin.contains("data class SyncularChangedRow"));
         assert!(kotlin.contains("data class SyncularBootstrapStatus"));
+        assert!(kotlin.contains("data class SyncularNativeErrorInfo"));
         assert!(kotlin.contains("data class SyncularNativeEvent"));
+        assert!(kotlin.contains("val error: SyncularNativeErrorInfo? = null"));
+        assert!(kotlin.contains("val recommendedAction: String"));
         assert!(kotlin.contains("val changedRows: List<SyncularChangedRow> = emptyList()"));
         assert!(kotlin.contains("val commandId: String? = null"));
         assert!(kotlin.contains("val droppedCount: Long? = null"));
