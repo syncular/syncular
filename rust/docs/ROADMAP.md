@@ -278,8 +278,10 @@ read-only review:
     the server stores ciphertext while a second client pulls decrypted
     plaintext. Stateful blob coverage now exercises queued upload, queue drain,
     local cache clear, remote download, and recache through real client APIs.
-    The Rust perf binary now uses the same fixture instead of maintaining its
-    own private server copy.
+    The Rust conformance fixture loader now lives in `syncular-testkit`, and
+    runtime protocol tests consume it instead of a private copy. The Rust perf
+    binary now uses the same fixture instead of maintaining its own private
+    server copy.
 - `[ ]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
 - `[ ]` [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
 - `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)

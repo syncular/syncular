@@ -7,6 +7,7 @@
 pub mod app;
 pub mod app_server;
 pub mod assertions;
+pub mod conformance;
 pub mod crdt;
 pub mod deterministic;
 pub mod http;
@@ -19,6 +20,7 @@ pub mod transport;
 pub use app::*;
 pub use app_server::*;
 pub use assertions::*;
+pub use conformance::*;
 pub use crdt::*;
 pub use deterministic::*;
 pub use http::*;

@@ -43,8 +43,9 @@ use syncular_testkit::{
     pull_not_ok_response, push_conflict_response, push_not_ok_response,
     revoked_subscription_response, schema_latest_response, schema_required_response,
     snapshot_chunks_combined_response, snapshot_combined_response, snapshot_page_combined_response,
-    todo_snapshot_response, todo_task_row, unique_temp_db_path, FaultOperation, FaultPhase,
-    FaultStep, FaultTransport, TestTransport,
+    sync_conformance_i64, sync_conformance_str, sync_conformance_value, todo_snapshot_response,
+    todo_task_row, unique_temp_db_path, FaultOperation, FaultPhase, FaultStep, FaultTransport,
+    TestTransport,
 };
 
 #[test]
@@ -2793,37 +2794,6 @@ fn test_config(path: &str, client_id: &str) -> SyncularClientConfig {
         actor_id: sync_conformance_str(&["actors", "rust", "actorId"]),
         project_id: Some(sync_conformance_str(&["actors", "rust", "projectId"])),
     }
-}
-
-fn sync_conformance() -> Value {
-    serde_json::from_str(include_str!(
-        "../../../examples/todo-app/conformance/sync-scenarios.json"
-    ))
-    .expect("sync conformance JSON")
-}
-
-fn sync_conformance_str(path: &[&str]) -> String {
-    sync_conformance_value(path)
-        .as_str()
-        .unwrap_or_else(|| panic!("sync conformance path {path:?} must be a string"))
-        .to_string()
-}
-
-fn sync_conformance_i64(path: &[&str]) -> i64 {
-    sync_conformance_value(path)
-        .as_i64()
-        .unwrap_or_else(|| panic!("sync conformance path {path:?} must be an integer"))
-}
-
-fn sync_conformance_value(path: &[&str]) -> Value {
-    let mut value = sync_conformance();
-    for segment in path {
-        value = value
-            .get(segment)
-            .unwrap_or_else(|| panic!("missing sync conformance path {path:?}"))
-            .clone();
-    }
-    value
 }
 
 fn temp_db_path(prefix: &str) -> String {

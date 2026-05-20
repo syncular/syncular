@@ -25,6 +25,9 @@ Initial scope:
 - `FaultTransport` for scripted transport failures and latency.
 - Protocol builders for snapshot pages/chunks, pull commits, conflict,
   revoked, schema-required/latest, and not-ok server responses.
+- Shared conformance fixture helpers for
+  `examples/todo-app/conformance/sync-scenarios.json`, so Rust runtime, SDK,
+  and app tests read the same scenario values.
 - `AppFixture` helpers that accept a generated `AppSchema` from consuming apps,
   including file-backed temp DBs and Rust-only in-memory DBs.
 - `TodoFixture` helpers backed by the generated todo schema and Diesel SQLite.
