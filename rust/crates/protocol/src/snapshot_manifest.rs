@@ -18,6 +18,28 @@ pub fn validate_pull_snapshot_manifests(response: &PullResponse) -> Result<()> {
 
 fn validate_snapshot_manifest(subscription_id: &str, snapshot: &SyncSnapshot) -> Result<()> {
     let chunks = snapshot.chunks.as_deref().unwrap_or(&[]);
+    let artifacts = snapshot.artifacts.as_deref().unwrap_or(&[]);
+    if !artifacts.is_empty() {
+        if !snapshot.rows.is_empty() {
+            return Err(ProtocolError::message(format!(
+                "subscription {subscription_id} snapshot {} has artifacts mixed with inline rows",
+                snapshot.table
+            )));
+        }
+        if !chunks.is_empty() {
+            return Err(ProtocolError::message(format!(
+                "subscription {subscription_id} snapshot {} has artifacts mixed with chunk refs",
+                snapshot.table
+            )));
+        }
+        if snapshot.manifest.is_some() {
+            return Err(ProtocolError::message(format!(
+                "subscription {subscription_id} snapshot {} has artifacts mixed with chunk manifest",
+                snapshot.table
+            )));
+        }
+        return Ok(());
+    }
     if chunks.is_empty() {
         if snapshot.manifest.is_some() {
             return Err(ProtocolError::message(format!(
@@ -190,9 +212,11 @@ fn append_manifest_bool_field(parts: &mut Vec<String>, name: &str, value: bool) 
 mod tests {
     use super::*;
     use crate::{
-        PullResponse, ScopeValues, SnapshotChunkRef, SnapshotManifestChunkRef,
-        SubscriptionResponse, SyncSnapshot,
+        PullResponse, ScopeValues, ScopedSnapshotArtifactManifest, ScopedSnapshotArtifactRef,
+        SnapshotChunkRef, SnapshotManifestChunkRef, SubscriptionResponse, SyncSnapshot,
+        SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1, SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
     };
+    use serde_json::Value;
 
     #[test]
     fn validates_chunked_snapshot_manifest() {
@@ -248,5 +272,86 @@ mod tests {
         };
 
         validate_pull_snapshot_manifests(&pull).expect("valid manifest");
+    }
+
+    #[test]
+    fn rejects_artifact_snapshots_mixed_with_rows_or_chunks() {
+        let artifact = ScopedSnapshotArtifactRef {
+            id: "artifact-1".to_string(),
+            byte_length: 128,
+            sha256: "b".repeat(64),
+            manifest_digest: "d".repeat(64),
+            artifact_kind: SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string(),
+            compression: SNAPSHOT_ARTIFACT_COMPRESSION_NONE.to_string(),
+            row_count: 1,
+            next_row_cursor: None,
+            is_first_page: true,
+            is_last_page: true,
+            manifest: ScopedSnapshotArtifactManifest {
+                version: 1,
+                artifact_kind: SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string(),
+                digest: "d".repeat(64),
+                partition_id: "partition-1".to_string(),
+                subscription_id: "sub-tasks".to_string(),
+                table: "tasks".to_string(),
+                schema_version: "7".to_string(),
+                as_of_commit_seq: 42,
+                scope_digest: "a".repeat(64),
+                row_cursor: None,
+                row_limit: 50_000,
+                row_count: 1,
+                next_row_cursor: None,
+                is_first_page: true,
+                is_last_page: true,
+                compression: SNAPSHOT_ARTIFACT_COMPRESSION_NONE.to_string(),
+                byte_length: 128,
+                sha256: "b".repeat(64),
+                feature_set: vec!["blobs".to_string()],
+            },
+        };
+        let snapshot = |rows: Vec<Value>, chunks: Option<Vec<SnapshotChunkRef>>| SyncSnapshot {
+            table: "tasks".to_string(),
+            rows,
+            chunks,
+            artifacts: Some(vec![artifact.clone()]),
+            manifest: None,
+            is_first_page: true,
+            is_last_page: true,
+            bootstrap_state_after: None,
+        };
+        let pull = |snapshot: SyncSnapshot| PullResponse {
+            ok: true,
+            subscriptions: vec![SubscriptionResponse {
+                id: "sub-tasks".to_string(),
+                status: "active".to_string(),
+                scopes: ScopeValues::new(),
+                bootstrap: true,
+                bootstrap_state: None,
+                next_cursor: 42,
+                integrity: None,
+                commits: Vec::new(),
+                snapshots: Some(vec![snapshot]),
+            }],
+        };
+
+        let rows_error = validate_pull_snapshot_manifests(&pull(snapshot(
+            vec![serde_json::json!({ "id": "task-1" })],
+            None,
+        )))
+        .expect_err("mixed rows should fail");
+        assert!(rows_error.to_string().contains("inline rows"));
+
+        let chunks_error = validate_pull_snapshot_manifests(&pull(snapshot(
+            Vec::new(),
+            Some(vec![SnapshotChunkRef {
+                id: "chunk-1".to_string(),
+                byte_length: 128,
+                sha256: "c".repeat(64),
+                encoding: "binary-table-v1".to_string(),
+                compression: "gzip".to_string(),
+            }]),
+        )))
+        .expect_err("mixed chunks should fail");
+        assert!(chunks_error.to_string().contains("chunk refs"));
     }
 }

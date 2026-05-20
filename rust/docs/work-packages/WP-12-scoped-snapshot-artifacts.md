@@ -789,6 +789,23 @@ Retained generated schema timing follow-up:
   (`1110.12ms -> 1055.27ms`) and needs generated index-column metadata plus
   external proof before it is worth retaining.
 
+Retained artifact protocol hardening follow-up:
+
+- Snapshot pages that carry scoped SQLite artifact refs are now exclusive:
+  they cannot also carry inline rows, snapshot chunks, or chunk manifests.
+- TypeScript protocol validation rejects mixed artifact/row/chunk shapes at
+  the `SyncSnapshotSchema` boundary.
+- Rust protocol validation rejects the same mixed shape through
+  `validate_pull_snapshot_manifests(...)` before runtime apply/fetch paths can
+  clear or mutate local rows.
+- Correctness gates passed:
+  `bun test packages/core/src/__tests__/snapshot-chunks.test.ts`,
+  `bun test packages/core/src/__tests__/sync-packs.test.ts packages/core/src/__tests__/protocol-fixtures.test.ts`,
+  `bun run --cwd packages/core tsgo`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract http_sync_diesel_applies_snapshot_artifact_rows --features native,crdt-yjs,demo-todo-native-fixture`, and
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract http_sync_rejects_snapshot_artifacts_before_mutating_store --features native,crdt-yjs,demo-todo-native-fixture`.
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.

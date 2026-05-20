@@ -332,16 +332,41 @@ export type SyncSnapshotArtifactRef = z.infer<
   typeof SyncSnapshotArtifactRefSchema
 >;
 
-export const SyncSnapshotSchema = z.object({
-  table: z.string(),
-  rows: z.array(z.unknown()),
-  chunks: z.array(SyncSnapshotChunkRefSchema).optional(),
-  manifest: SyncSnapshotManifestSchema.optional(),
-  artifacts: z.array(SyncSnapshotArtifactRefSchema).optional(),
-  isFirstPage: z.boolean(),
-  isLastPage: z.boolean(),
-  bootstrapStateAfter: SyncBootstrapStateSchema.nullable().optional(),
-});
+export const SyncSnapshotSchema = z
+  .object({
+    table: z.string(),
+    rows: z.array(z.unknown()),
+    chunks: z.array(SyncSnapshotChunkRefSchema).optional(),
+    manifest: SyncSnapshotManifestSchema.optional(),
+    artifacts: z.array(SyncSnapshotArtifactRefSchema).optional(),
+    isFirstPage: z.boolean(),
+    isLastPage: z.boolean(),
+    bootstrapStateAfter: SyncBootstrapStateSchema.nullable().optional(),
+  })
+  .superRefine((snapshot, ctx) => {
+    if (!snapshot.artifacts || snapshot.artifacts.length === 0) return;
+    if (snapshot.rows.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['rows'],
+        message: 'Snapshot artifacts cannot be mixed with inline rows',
+      });
+    }
+    if (snapshot.chunks && snapshot.chunks.length > 0) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['chunks'],
+        message: 'Snapshot artifacts cannot be mixed with chunk refs',
+      });
+    }
+    if (snapshot.manifest) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['manifest'],
+        message: 'Snapshot artifacts cannot be mixed with chunk manifests',
+      });
+    }
+  });
 
 export type SyncSnapshot = z.infer<typeof SyncSnapshotSchema>;
 
