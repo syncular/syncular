@@ -845,6 +845,18 @@ Retained local-index normalization follow-up:
 - Browser 100k release artifact guard stayed in band:
   bootstrap `144.00ms -> 143.14ms`, schema install `5.34ms -> 5.20ms`.
 
+Rejected artifact page-cap follow-up:
+
+- Raising browser direct artifact pulls from cap `2` to cap `3` lets the
+  external 20k-page harness use 60k artifact bundles and reduces external sync
+  calls from `13` to `9`.
+- It was still rejected: external 500k bootstrap improved only
+  `1142.29ms -> 1095.22ms` while peak memory regressed
+  `667.59MB -> 675.95MB`; local browser 500k heap delta regressed from the
+  accepted `2.60MB` cap-2 context to `11.89MB`.
+- Keep the cap at `2` unless a later bootstrap state design can release
+  artifact DBs earlier without copying rows or increasing peak memory.
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.
@@ -855,8 +867,10 @@ Continue artifact resource-state work, but keep it benchmark-gated.
   artifact precompute row limit `40000`.
 - The nullable-column, attached-PRAGMA, larger-bundle, SQLite-owned-buffer, and
   temp-table staging probes were all rejected. Separate-SQLite row streaming and
-  segmented artifact apply were also rejected. These either regressed wall time
-  or failed to improve external peak memory enough to justify their complexity.
+  segmented artifact apply were also rejected. Raising browser artifact pull
+  cap `2 -> 3` was rejected for the same reason: modest wall-time improvement
+  with higher peak memory. These either regressed wall time or failed to improve
+  external peak memory enough to justify their complexity.
 - Do not keep spending time on artifact memory micro-probes unless they change
   the bootstrap state model. The generated `localDerivedSchema` path is proven,
   and the before-bootstrap install strategy is rejected; keep bulk load followed

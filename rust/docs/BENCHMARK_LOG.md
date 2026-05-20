@@ -141,6 +141,79 @@ Decision:
 - The sync/apply timings moved slightly upward in the external run, but total
   bootstrap and memory improved enough to keep the slice.
 
+## 2026-05-20 - Rejected Artifact Page Cap 3
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Probe:
+
+- Changed browser direct SQLite artifact pulls from a hard cap of `2`
+  snapshot pages per pull to `3`.
+- This lets the external 20k-row-page harness use the server's natural 60k
+  binary bundle shape, but keeps more attached artifact databases alive inside
+  each browser apply transaction.
+
+Commands:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=25 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-artifact-pagecap3-100k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-artifact-pagecap3-500k.json
+```
+
+External app-style probe used `SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000`
+to match the cap-3 artifact lookup key:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+| Metric | Cap 2 accepted | Cap 3 probe |
+| --- | ---: | ---: |
+| Local browser 500k bootstrap | `595.93ms` | `579.38ms` |
+| Local browser 500k JS heap delta | `2.60MB` | `11.89MB` |
+| External 500k bootstrap | `1142.29ms` | `1095.22ms` |
+| External 500k sync calls | `13` | `9` |
+| External 500k local apply | `222ms` | `209ms` |
+| External 500k response bytes | `3,537,756` | `3,528,852` |
+| External 500k peak memory | `667.59MB` | `675.95MB` |
+
+Decision:
+
+- Rejected. The wall-time improvement is modest, but both the local browser
+  heap delta and external peak memory regress. WP-12 requires scoped artifact
+  work to improve large bootstrap without increasing peak memory, so the cap
+  remains `2`.
+
 ## 2026-05-20 - Retained Generated Schema Phase Timings
 
 Commit: retained slice
