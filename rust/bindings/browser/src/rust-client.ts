@@ -8,6 +8,10 @@ import {
   syncularV2DiagnosticAttemptFields,
   syncularV2SyncAttemptHeaders,
 } from './diagnostics';
+import {
+  SyncularV2ClientError,
+  toSyncularV2ClientError,
+} from './errors';
 import { createSyncularV2RuntimeInfo } from './runtime-contract';
 import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
@@ -753,19 +757,36 @@ export class SyncularV2RustClient {
       });
       return result;
     } catch (error) {
+      const classifiedError = toSyncularV2ClientError(error);
+      const classified =
+        classifiedError instanceof SyncularV2ClientError
+          ? classifiedError
+          : null;
       this.#emitDiagnostic({
         at: Date.now(),
         level: 'warn',
         source: 'sync',
-        code: `sync.${requestType}.failed`,
+        code: classified?.code ?? `sync.${requestType}.failed`,
         message: `Syncular v2 ${requestType} failed`,
         ...syncularV2DiagnosticAttemptFields(syncAttempt),
         details: {
           durationMs: Date.now() - startedAt,
-          error: error instanceof Error ? error.message : String(error),
+          error:
+            classifiedError instanceof Error
+              ? classifiedError.message
+              : String(classifiedError),
+          ...(classified
+            ? {
+                errorCode: classified.code,
+                category: classified.category,
+                retryable: classified.retryable,
+                recommendedAction: classified.recommendedAction,
+                ...(classified.details ?? {}),
+              }
+            : {}),
         },
       });
-      throw error;
+      throw classifiedError;
     } finally {
       this.raw.setAuthHeadersJson(JSON.stringify(this.#authHeaders));
     }

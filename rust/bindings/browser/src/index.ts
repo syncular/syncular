@@ -1,6 +1,7 @@
 export * from './client-config';
 export * from './client';
 export * from './database';
+export * from './errors';
 export * from './mutations';
 export * from './runtime-contract';
 export * from './rust-client';
