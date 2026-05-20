@@ -146,6 +146,11 @@ pub enum NativeEventKind {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeErrorInfo {
     pub kind: ErrorKind,
+    pub code: String,
+    pub category: String,
+    pub retryable: bool,
+    #[serde(rename = "recommendedAction")]
+    pub recommended_action: String,
     pub message: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub debug: Option<String>,
@@ -2210,8 +2215,13 @@ impl NativeObservedQueryRegistration {
 
 impl NativeErrorInfo {
     pub fn from_error(error: &SyncularError) -> Self {
+        let classification = error.classification();
         Self {
             kind: error.kind(),
+            code: classification.code,
+            category: classification.category,
+            retryable: classification.retryable,
+            recommended_action: classification.recommended_action,
             message: error.message_text(),
             debug: Some(error.debug_text()),
         }
@@ -2945,6 +2955,13 @@ fn sync_failed_event(
         Some(auth) => {
             let operation = auth.operation.clone();
             let status = auth.status;
+            let mut details = vec![
+                ("operation", json!(operation)),
+                ("status", json!(status)),
+                ("retryScheduled", json!(retry_scheduled)),
+                ("durationMs", json!(duration_ms)),
+            ];
+            push_native_error_details(&mut details, error);
             let mut event = native_event(
                 NativeEventKind::AuthExpired,
                 Vec::new(),
@@ -2953,12 +2970,7 @@ fn sync_failed_event(
                     "auth",
                     "auth.expired",
                     "Native Syncular auth expired",
-                    [
-                        ("operation", json!(operation)),
-                        ("status", json!(status)),
-                        ("retryScheduled", json!(retry_scheduled)),
-                        ("durationMs", json!(duration_ms)),
-                    ],
+                    details,
                 )),
             );
             event.error = Some(NativeErrorInfo::from_error(error));
@@ -2970,6 +2982,12 @@ fn sync_failed_event(
         }
         None => {
             let resync_required = error.requires_full_snapshot_resync();
+            let mut details = vec![
+                ("retryScheduled", json!(retry_scheduled)),
+                ("durationMs", json!(duration_ms)),
+                ("resyncRequired", json!(resync_required)),
+            ];
+            push_native_error_details(&mut details, error);
             let mut event = native_event(
                 NativeEventKind::SyncFailed,
                 Vec::new(),
@@ -2986,12 +3004,7 @@ fn sync_failed_event(
                     } else {
                         "Native Syncular sync failed"
                     },
-                    [
-                        ("errorKind", json!(format!("{:?}", error.kind()))),
-                        ("retryScheduled", json!(retry_scheduled)),
-                        ("durationMs", json!(duration_ms)),
-                        ("resyncRequired", json!(resync_required)),
-                    ],
+                    details,
                 )),
             );
             event.error = Some(NativeErrorInfo::from_error(error));
@@ -3048,6 +3061,11 @@ fn local_write_failed_event(
     payload_json: Option<Value>,
     duration_ms: u64,
 ) -> NativeEvent {
+    let mut details = vec![
+        ("commandId", json!(command_id.clone())),
+        ("durationMs", json!(duration_ms)),
+    ];
+    push_native_error_details(&mut details, error);
     let mut event = native_event(
         NativeEventKind::LocalWriteFailed,
         Vec::new(),
@@ -3056,11 +3074,7 @@ fn local_write_failed_event(
             "storage",
             "storage.local_write_failed",
             "Native Syncular local write failed",
-            [
-                ("commandId", json!(command_id.clone())),
-                ("errorKind", json!(format!("{:?}", error.kind()))),
-                ("durationMs", json!(duration_ms)),
-            ],
+            details,
         )),
     );
     event.error = Some(NativeErrorInfo::from_error(error));
@@ -3101,6 +3115,11 @@ fn conflict_resolution_failed_event(
     command_id: String,
     duration_ms: u64,
 ) -> NativeEvent {
+    let mut details = vec![
+        ("commandId", json!(command_id.clone())),
+        ("durationMs", json!(duration_ms)),
+    ];
+    push_native_error_details(&mut details, error);
     let mut event = native_event(
         NativeEventKind::ConflictResolutionFailed,
         Vec::new(),
@@ -3109,11 +3128,7 @@ fn conflict_resolution_failed_event(
             "sync",
             "sync.conflict_resolution_failed",
             "Native Syncular conflict resolution failed",
-            [
-                ("commandId", json!(command_id.clone())),
-                ("errorKind", json!(format!("{:?}", error.kind()))),
-                ("durationMs", json!(duration_ms)),
-            ],
+            details,
         )),
     );
     event.error = Some(NativeErrorInfo::from_error(error));
@@ -3176,6 +3191,12 @@ fn worker_command_failed_event(
     operation: &str,
     duration_ms: u64,
 ) -> NativeEvent {
+    let mut details = vec![
+        ("commandId", json!(command_id.clone())),
+        ("operation", json!(operation)),
+        ("durationMs", json!(duration_ms)),
+    ];
+    push_native_error_details(&mut details, error);
     let mut event = native_event(
         NativeEventKind::WorkerCommandFailed,
         Vec::new(),
@@ -3184,12 +3205,7 @@ fn worker_command_failed_event(
             "worker",
             "worker.command_failed",
             "Native Syncular worker command failed",
-            [
-                ("commandId", json!(command_id.clone())),
-                ("operation", json!(operation)),
-                ("errorKind", json!(format!("{:?}", error.kind()))),
-                ("durationMs", json!(duration_ms)),
-            ],
+            details,
         )),
     );
     event.error = Some(NativeErrorInfo::from_error(error));
@@ -3245,23 +3261,31 @@ fn native_diagnostic<'a>(
     }
 }
 
+fn push_native_error_details(details: &mut Vec<(&'static str, Value)>, error: &SyncularError) {
+    let classification = error.classification();
+    details.push(("errorKind", json!(format!("{:?}", error.kind()))));
+    details.push(("errorCode", json!(classification.code)));
+    details.push(("errorCategory", json!(classification.category)));
+    details.push(("retryable", json!(classification.retryable)));
+    details.push((
+        "recommendedAction",
+        json!(classification.recommended_action),
+    ));
+}
+
 fn native_auth_info_from_error(error: &SyncularError) -> Option<NativeAuthInfo> {
     if error.kind() != ErrorKind::Transport {
         return None;
     }
 
     let message = error.message_text();
-    let status = if message.contains("HTTP 401") {
-        401
-    } else if message.contains("HTTP 403") {
-        403
-    } else {
+    let classification = error.classification();
+    if classification.code != "sync.auth_required" {
         return None;
-    };
-
+    }
     Some(NativeAuthInfo {
         operation: auth_operation_from_message(&message).to_string(),
-        status,
+        status: 401,
     })
 }
 
@@ -3319,4 +3343,74 @@ fn unique_event_tables<'a>(tables: impl IntoIterator<Item = &'a str>) -> Vec<Str
         }
     }
     unique
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn first_native_event_json(event: SyncWorkerEvent) -> Value {
+        let json_events = native_event_json_from_worker_event(event).unwrap();
+        serde_json::from_str(&json_events[0]).unwrap()
+    }
+
+    #[test]
+    fn native_sync_failed_exposes_server_error_classification() {
+        let value = first_native_event_json(SyncWorkerEvent::SyncFailed {
+            command_id: Some("cmd-1".to_string()),
+            error: SyncularError::message(
+                ErrorKind::Transport,
+                r#"sync failed with HTTP 403: {"error":"sync.forbidden","code":"sync.forbidden","category":"forbidden","retryable":false,"recommendedAction":"checkPermissions","message":"Forbidden"}"#,
+            ),
+            retry_scheduled: false,
+            duration_ms: 12,
+        });
+
+        assert_eq!(value["kind"], "SyncFailed");
+        assert_eq!(value["error"]["code"], "sync.forbidden");
+        assert_eq!(value["error"]["category"], "forbidden");
+        assert_eq!(value["error"]["retryable"], false);
+        assert_eq!(value["error"]["recommendedAction"], "checkPermissions");
+        assert_eq!(
+            value["diagnostic"]["details"]["errorCode"],
+            "sync.forbidden"
+        );
+        assert_eq!(
+            value["diagnostic"]["details"]["recommendedAction"],
+            "checkPermissions"
+        );
+    }
+
+    #[test]
+    fn native_sync_failed_maps_auth_required_to_auth_expired_event() {
+        let value = first_native_event_json(SyncWorkerEvent::SyncFailed {
+            command_id: Some("cmd-2".to_string()),
+            error: SyncularError::message(ErrorKind::Transport, "sync failed with HTTP 401"),
+            retry_scheduled: true,
+            duration_ms: 34,
+        });
+
+        assert_eq!(value["kind"], "AuthExpired");
+        assert_eq!(value["auth"]["status"], 401);
+        assert_eq!(value["error"]["code"], "sync.auth_required");
+        assert_eq!(value["error"]["category"], "auth-required");
+        assert_eq!(value["error"]["retryable"], true);
+        assert_eq!(value["error"]["recommendedAction"], "refreshAuth");
+    }
+
+    #[test]
+    fn native_local_write_failed_exposes_storage_classification() {
+        let value = first_native_event_json(SyncWorkerEvent::LocalWriteFailed {
+            command_id: "cmd-3".to_string(),
+            error: SyncularError::message(ErrorKind::Storage, "database is locked"),
+            payload_json: None,
+            duration_ms: 56,
+        });
+
+        assert_eq!(value["kind"], "LocalWriteFailed");
+        assert_eq!(value["error"]["code"], "storage.failed");
+        assert_eq!(value["error"]["category"], "storage");
+        assert_eq!(value["error"]["recommendedAction"], "inspectStorage");
+        assert_eq!(value["diagnostic"]["details"]["errorCategory"], "storage");
+    }
 }

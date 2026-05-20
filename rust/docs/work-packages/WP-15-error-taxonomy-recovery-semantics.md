@@ -63,9 +63,9 @@ error taxonomy so app code and console investigation do not parse message text.
 
 ## Next Action
 
-Continue expanding the same stable error envelope into native facade/BoltFFI
-errors, generated typed errors, console route errors, and remaining runtime
-storage/blob queue failures.
+Expose the native runtime `error` object through generated Swift/Kotlin/Java
+event wrappers so host apps do not need to parse raw event JSON for
+classification metadata.
 
 ## Progress
 
@@ -95,6 +95,16 @@ storage/blob queue failures.
   in Rust transport failures, so server-side `sync.forbidden`,
   `sync.rate_limited`, blob errors, and future codes do not depend on parsing
   message text.
+- Rust runtime errors now have a shared classifier that maps server envelopes,
+  bare HTTP 401/403 failures, schema mismatch, integrity rejection, generic
+  transport failures, local storage failures, config failures, and internal
+  runtime failures into stable `code`, `category`, `retryable`, and
+  `recommendedAction` fields.
+- Native `NativeErrorInfo` and error diagnostics now expose the same stable
+  classification fields. HTTP 403 is now `sync.forbidden`; only
+  `sync.auth_required` / HTTP 401 becomes an `AuthExpired` event.
+- The shared TS public taxonomy now includes runtime transport/storage/internal
+  classifications so browser and native can use the same public code space.
 
 ## Latest Evidence
 
@@ -107,3 +117,12 @@ storage/blob queue failures.
 - `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "revoked sessions|server-required schema|corrupted snapshot chunk"`
 - `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "structured worker errors|revoked sessions|server-required schema|corrupted snapshot chunk"`
 - `bun test rust/bindings/browser/src/errors.test.ts rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "browser errors|structured worker errors|revoked sessions|server-required schema|corrupted snapshot chunk"`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime error::tests --lib`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime native_sync_failed --lib --features native,crdt-yjs`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime native_local_write_failed --lib --features native,crdt-yjs`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+- `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
+- `bun run --cwd packages/core tsgo`
+- `bun run --cwd packages/server-hono tsgo`
+- `bun run --cwd rust/bindings/browser tsgo`
+- `bun test packages/core/src/__tests__/error-responses.test.ts`

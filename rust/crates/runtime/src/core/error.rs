@@ -6,6 +6,15 @@ pub type Result<T> = std::result::Result<T, SyncularError>;
 
 pub const FULL_SNAPSHOT_RESYNC_REQUIRED: &str = "full snapshot resync required";
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncularErrorClassification {
+    pub code: String,
+    pub category: String,
+    pub retryable: bool,
+    pub recommended_action: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ErrorKind {
     Busy,
@@ -84,12 +93,222 @@ impl SyncularError {
         self.message_text().contains(FULL_SNAPSHOT_RESYNC_REQUIRED)
     }
 
+    pub fn classification(&self) -> SyncularErrorClassification {
+        let message = self.message_text();
+        if let Some(classification) = classification_from_server_error(&message) {
+            return classification;
+        }
+
+        if http_status_from_message(&message) == Some(401) {
+            return syncular_error_classification(
+                "sync.auth_required",
+                "auth-required",
+                true,
+                "refreshAuth",
+            );
+        }
+
+        if http_status_from_message(&message) == Some(403) {
+            return syncular_error_classification(
+                "sync.forbidden",
+                "forbidden",
+                false,
+                "checkPermissions",
+            );
+        }
+
+        let haystack = format!("{message}\n{}", self.debug_text());
+        if self.kind == ErrorKind::Schema || haystack_contains_schema_mismatch(&haystack) {
+            return syncular_error_classification(
+                "sync.schema_mismatch",
+                "schema-mismatch",
+                false,
+                "regenerateClient",
+            );
+        }
+
+        if self.kind == ErrorKind::Protocol
+            && (haystack_contains_integrity_rejection(&haystack)
+                || self.requires_full_snapshot_resync())
+        {
+            return syncular_error_classification(
+                "sync.integrity_rejected",
+                "integrity-rejected",
+                false,
+                "forceResync",
+            );
+        }
+
+        match self.kind {
+            ErrorKind::Busy => {
+                syncular_error_classification("runtime.busy", "rate-limited", true, "retryLater")
+            }
+            ErrorKind::Config => syncular_error_classification(
+                "runtime.config_invalid",
+                "invalid-request",
+                false,
+                "fixRequest",
+            ),
+            ErrorKind::Storage => {
+                syncular_error_classification("storage.failed", "storage", false, "inspectStorage")
+            }
+            ErrorKind::Transport => syncular_error_classification(
+                "sync.transport_failed",
+                "transport",
+                true,
+                "retryLater",
+            ),
+            ErrorKind::Protocol => syncular_error_classification(
+                "sync.invalid_request",
+                "invalid-request",
+                false,
+                "fixRequest",
+            ),
+            ErrorKind::Schema => unreachable!("schema errors are classified above"),
+            ErrorKind::Codegen => syncular_error_classification(
+                "runtime.codegen_mismatch",
+                "schema-mismatch",
+                false,
+                "regenerateClient",
+            ),
+            ErrorKind::Internal => syncular_error_classification(
+                "runtime.internal",
+                "internal",
+                false,
+                "inspectServer",
+            ),
+        }
+    }
+
     pub fn context(self, context: impl fmt::Display) -> Self {
         Self {
             kind: self.kind,
             source: self.source.context(context.to_string()),
         }
     }
+}
+
+fn syncular_error_classification(
+    code: &str,
+    category: &str,
+    retryable: bool,
+    recommended_action: &str,
+) -> SyncularErrorClassification {
+    SyncularErrorClassification {
+        code: code.to_string(),
+        category: category.to_string(),
+        retryable,
+        recommended_action: recommended_action.to_string(),
+    }
+}
+
+fn known_error_classification(code: &str) -> Option<SyncularErrorClassification> {
+    let (category, retryable, recommended_action) = match code {
+        "sync.auth_required" => ("auth-required", true, "refreshAuth"),
+        "sync.forbidden" => ("forbidden", false, "checkPermissions"),
+        "sync.invalid_request" => ("invalid-request", false, "fixRequest"),
+        "sync.invalid_client_id" => ("invalid-request", false, "resetClientId"),
+        "sync.invalid_subscription" => ("invalid-request", false, "fixRequest"),
+        "sync.too_many_operations" => ("invalid-request", false, "splitBatch"),
+        "sync.not_found" => ("not-found", false, "forceResync"),
+        "sync.rate_limited" => ("rate-limited", true, "retryLater"),
+        "sync.schema_mismatch" => ("schema-mismatch", false, "regenerateClient"),
+        "sync.integrity_rejected" => ("integrity-rejected", false, "forceResync"),
+        "sync.websocket_not_configured" => ("server", false, "inspectServer"),
+        "sync.websocket_connection_limit" => ("rate-limited", true, "retryLater"),
+        "sync.transport_failed" => ("transport", true, "retryLater"),
+        "runtime.busy" => ("rate-limited", true, "retryLater"),
+        "runtime.config_invalid" => ("invalid-request", false, "fixRequest"),
+        "runtime.codegen_mismatch" => ("schema-mismatch", false, "regenerateClient"),
+        "runtime.internal" => ("internal", false, "inspectServer"),
+        "storage.failed" => ("storage", false, "inspectStorage"),
+        "blob.invalid_request" => ("blob", false, "fixRequest"),
+        "blob.too_large" => ("blob", false, "fixRequest"),
+        "blob.not_found" => ("blob", false, "fixRequest"),
+        "blob.forbidden" => ("forbidden", false, "checkPermissions"),
+        "blob.invalid_token" => ("auth-required", true, "refreshAuth"),
+        "blob.upload_failed" => ("blob", true, "retryLater"),
+        "blob.hash_mismatch" => ("integrity-rejected", false, "fixRequest"),
+        "blob.size_mismatch" => ("blob", false, "fixRequest"),
+        _ => return None,
+    };
+
+    Some(syncular_error_classification(
+        code,
+        category,
+        retryable,
+        recommended_action,
+    ))
+}
+
+fn classification_from_server_error(message: &str) -> Option<SyncularErrorClassification> {
+    let parsed = parse_json_object_suffix(message)?;
+    let code = parsed
+        .get("code")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| parsed.get("error").and_then(serde_json::Value::as_str))?;
+
+    let base = known_error_classification(code)
+        .unwrap_or_else(|| syncular_error_classification(code, "server", false, "inspectServer"));
+    Some(SyncularErrorClassification {
+        code: code.to_string(),
+        category: parsed
+            .get("category")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&base.category)
+            .to_string(),
+        retryable: parsed
+            .get("retryable")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(base.retryable),
+        recommended_action: parsed
+            .get("recommendedAction")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or(&base.recommended_action)
+            .to_string(),
+    })
+}
+
+fn parse_json_object_suffix(message: &str) -> Option<serde_json::Map<String, serde_json::Value>> {
+    let start = message.find('{')?;
+    let tail = &message[start..];
+    let parsed = match serde_json::from_str::<serde_json::Value>(tail) {
+        Ok(value) => value,
+        Err(_) => {
+            let end = tail.rfind('}')?;
+            serde_json::from_str::<serde_json::Value>(&tail[..=end]).ok()?
+        }
+    };
+    match parsed {
+        serde_json::Value::Object(object) => Some(object),
+        _ => None,
+    }
+}
+
+fn http_status_from_message(message: &str) -> Option<u16> {
+    let index = message.find("HTTP ")?;
+    let status = message.get(index + 5..index + 8)?;
+    status.parse::<u16>().ok()
+}
+
+fn haystack_contains_schema_mismatch(haystack: &str) -> bool {
+    haystack.to_ascii_lowercase().contains("schema version")
+}
+
+fn haystack_contains_integrity_rejection(haystack: &str) -> bool {
+    let haystack = haystack.to_ascii_lowercase();
+    [
+        "hash mismatch",
+        "sha256 mismatch",
+        "byte length mismatch",
+        "manifest ",
+        "integrity",
+        "chain root",
+        "commit root",
+        "verified root",
+    ]
+    .iter()
+    .any(|needle| haystack.contains(needle))
 }
 
 impl fmt::Display for SyncularError {
@@ -167,5 +386,73 @@ impl From<syncular_protocol::ProtocolError> for SyncularError {
 impl From<std::io::Error> for SyncularError {
     fn from(source: std::io::Error) -> Self {
         Self::new(ErrorKind::Internal, source)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn classification_prefers_server_error_envelope() {
+        let error = SyncularError::message(
+            ErrorKind::Transport,
+            r#"sync failed with HTTP 403: {"error":"sync.forbidden","code":"sync.forbidden","category":"forbidden","retryable":false,"recommendedAction":"checkPermissions","message":"Forbidden"}"#,
+        );
+
+        assert_eq!(
+            error.classification(),
+            SyncularErrorClassification {
+                code: "sync.forbidden".to_string(),
+                category: "forbidden".to_string(),
+                retryable: false,
+                recommended_action: "checkPermissions".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn classification_maps_http_auth_statuses_without_server_envelope() {
+        let auth = SyncularError::message(ErrorKind::Transport, "sync failed with HTTP 401");
+        let forbidden = SyncularError::message(ErrorKind::Transport, "sync failed with HTTP 403");
+
+        assert_eq!(auth.classification().code, "sync.auth_required");
+        assert_eq!(auth.classification().recommended_action, "refreshAuth");
+        assert_eq!(forbidden.classification().code, "sync.forbidden");
+        assert_eq!(
+            forbidden.classification().recommended_action,
+            "checkPermissions"
+        );
+    }
+
+    #[test]
+    fn classification_maps_schema_and_integrity_errors() {
+        let schema = SyncularError::schema("server schema version 12 is not compatible");
+        let integrity = SyncularError::protocol_message(
+            "snapshot chunk sha256 mismatch; full snapshot resync required",
+        );
+
+        assert_eq!(schema.classification().code, "sync.schema_mismatch");
+        assert_eq!(
+            schema.classification().recommended_action,
+            "regenerateClient"
+        );
+        assert_eq!(integrity.classification().code, "sync.integrity_rejected");
+        assert_eq!(integrity.classification().recommended_action, "forceResync");
+    }
+
+    #[test]
+    fn classification_maps_runtime_storage_failures() {
+        let error = SyncularError::message(ErrorKind::Storage, "database is locked");
+
+        assert_eq!(
+            error.classification(),
+            SyncularErrorClassification {
+                code: "storage.failed".to_string(),
+                category: "storage".to_string(),
+                retryable: false,
+                recommended_action: "inspectStorage".to_string(),
+            }
+        );
     }
 }

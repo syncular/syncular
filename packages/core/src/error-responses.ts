@@ -77,6 +77,42 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     recommendedAction: 'retryLater',
     message: 'The realtime websocket connection limit was reached.',
   },
+  'sync.transport_failed': {
+    category: 'transport',
+    retryable: true,
+    recommendedAction: 'retryLater',
+    message: 'The sync transport failed.',
+  },
+  'runtime.busy': {
+    category: 'rate-limited',
+    retryable: true,
+    recommendedAction: 'retryLater',
+    message: 'The Syncular runtime is busy.',
+  },
+  'runtime.config_invalid': {
+    category: 'invalid-request',
+    retryable: false,
+    recommendedAction: 'fixRequest',
+    message: 'The Syncular runtime configuration is invalid.',
+  },
+  'runtime.codegen_mismatch': {
+    category: 'schema-mismatch',
+    retryable: false,
+    recommendedAction: 'regenerateClient',
+    message: 'The generated client code is not compatible with the runtime.',
+  },
+  'runtime.internal': {
+    category: 'internal',
+    retryable: false,
+    recommendedAction: 'inspectServer',
+    message: 'The Syncular runtime failed internally.',
+  },
+  'storage.failed': {
+    category: 'storage',
+    retryable: false,
+    recommendedAction: 'inspectStorage',
+    message: 'The local Syncular storage operation failed.',
+  },
   'blob.invalid_request': {
     category: 'blob',
     retryable: false,

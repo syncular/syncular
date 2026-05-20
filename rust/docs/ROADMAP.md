@@ -393,7 +393,12 @@ read-only review:
     direct Rust client sync path through `SyncularV2ClientError`. Core now owns
     the public error response taxonomy, and Hono sync/blob/rate-limit/auth
     routes emit stable JSON error envelopes that the browser classifier can
-    consume from Rust transport failures.
+    consume from Rust transport failures. The native runtime now uses a shared
+    Rust classifier for server envelopes, auth/forbidden transport failures,
+    schema mismatches, integrity rejection, storage failures, and runtime
+    failures; native error JSON and diagnostics carry the same
+    `code/category/retryable/recommendedAction` shape. HTTP 403 is treated as
+    `sync.forbidden`, not auth expiry.
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)

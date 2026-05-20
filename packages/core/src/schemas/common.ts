@@ -16,8 +16,11 @@ export const SyncularErrorCategorySchema = z.enum([
   'schema-mismatch',
   'integrity-rejected',
   'rate-limited',
+  'transport',
+  'storage',
   'blob',
   'server',
+  'internal',
 ]);
 
 export const SyncularErrorRecommendedActionSchema = z.enum([
@@ -29,6 +32,7 @@ export const SyncularErrorRecommendedActionSchema = z.enum([
   'retryLater',
   'forceResync',
   'regenerateClient',
+  'inspectStorage',
   'inspectServer',
 ]);
 
