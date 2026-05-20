@@ -1010,6 +1010,81 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     ]);
   });
 
+  it('resumes after a committed SQLite snapshot artifact page when a later artifact fetch fails', async () => {
+    let artifactDownloads = 0;
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+      precomputedTaskSnapshotArtifact: {
+        actorId: ACTOR_A,
+        artifactId: 'browser-sqlite-artifact-partial-progress',
+        rowLimit: 1,
+      },
+      seedTasks: [
+        {
+          id: 'artifact-partial-progress-1',
+          title: 'Artifact Partial Progress 1',
+          actorId: ACTOR_A,
+        },
+        {
+          id: 'artifact-partial-progress-2',
+          title: 'Artifact Partial Progress 2',
+          actorId: ACTOR_A,
+        },
+      ],
+      edgeGate: (request) => {
+        const url = new URL(request.url);
+        if (url.pathname.includes('/snapshot-artifacts/')) {
+          artifactDownloads += 1;
+          if (artifactDownloads === 2) {
+            return new Response('artifact failure', { status: 500 });
+          }
+        }
+        return null;
+      },
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'sqlite-artifact-partial-progress-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+      pull: {
+        includeSnapshotRows: false,
+        collectChangedRows: false,
+        limitSnapshotRows: 1,
+        maxSnapshotPages: 2,
+      },
+    });
+    await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+
+    await expect(client.syncPull()).rejects.toThrow(/snapshot artifact/i);
+    await expect(client.listTable('tasks')).resolves.toEqual([
+      expect.objectContaining({
+        id: 'artifact-partial-progress-1',
+        title: 'Artifact Partial Progress 1',
+      }),
+    ]);
+
+    await expect(client.syncPull()).resolves.toMatchObject({
+      bootstrap: {
+        complete: true,
+        pendingSubscriptionIds: [],
+      },
+      subscriptions: [
+        {
+          id: syncConformance.subscription.id,
+          ready: true,
+          snapshotRows: [],
+        },
+      ],
+    });
+    await expect(client.listTable('tasks')).resolves.toEqual([
+      expect.objectContaining({ id: 'artifact-partial-progress-1' }),
+      expect.objectContaining({ id: 'artifact-partial-progress-2' }),
+    ]);
+    expect(artifactDownloads).toBe(3);
+  });
+
   it('clears direct SQLite artifact rows when a subscription is revoked', async () => {
     const scenario = syncConformance.revokedSubscription;
     let artifactDownloads = 0;
