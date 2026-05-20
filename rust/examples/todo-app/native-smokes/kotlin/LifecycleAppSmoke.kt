@@ -148,7 +148,7 @@ fun main(args: Array<String>) {
         )
 
         val rowId = "task-kotlin-lifecycle"
-        val mutationCommandId = client.enqueueNewTask(
+        val mutationCommandId = client.queuedMutations.tasks.insert(
             NewTask(
                 id = rowId,
                 title = "",

@@ -71,7 +71,7 @@ private enum GeneratedBoltHostSmoke {
         expect(initialRows.isEmpty, "Swift host live query should start empty")
         expect(try client.observedQueriesJson().contains("swift-bolt-live"), "Swift host should register observed query")
 
-        let commitId = try client.applyNewTask(NewTask(
+        let commitId = try client.mutations.tasks.insert(NewTask(
             id: "task-swift-bolt",
             title: "",
             completed: 1,

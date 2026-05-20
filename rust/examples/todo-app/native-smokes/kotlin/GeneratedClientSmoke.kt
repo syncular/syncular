@@ -7,7 +7,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 
 private class MockNativeClient(private val imageJson: String? = null) : SyncularNativeJsonClient {
-    val mutations = mutableListOf<String>()
+    val capturedMutations = mutableListOf<String>()
     val crdtFieldRequests = mutableListOf<String>()
     val crdtTextRequests = mutableListOf<String>()
     val queuedCrdtTextRequests = mutableListOf<String>()
@@ -19,12 +19,12 @@ private class MockNativeClient(private val imageJson: String? = null) : Syncular
     val unregisteredIds = mutableListOf<String>()
 
     override fun applyMutationJson(mutationJson: String, localRowJson: String?): String {
-        mutations += mutationJson
+        capturedMutations += mutationJson
         return "commit-kotlin"
     }
 
     override fun enqueueMutationJson(mutationJson: String, localRowJson: String?): String {
-        mutations += mutationJson
+        capturedMutations += mutationJson
         return "command-kotlin"
     }
 
@@ -249,7 +249,7 @@ fun main(args: Array<String>) {
     expect(projectChangedRows(rowDeltaEvent).firstOrNull()?.isDelete == true, "Kotlin changed-row helper should expose project deletes")
     expect(commentChangedRows(rowDeltaEvent).isEmpty(), "Kotlin changed-row helper should ignore unrelated tables")
 
-    val commitId = client.applyNewTask(
+    val commitId = client.mutations.tasks.insert(
         NewTask(
             id = taskInput.str("id"),
             title = taskInput.str("title"),
@@ -259,15 +259,15 @@ fun main(args: Array<String>) {
         ),
     )
     expect(commitId == "commit-kotlin", "Kotlin mutation helper should return commit id")
-    expect(client.mutations.size == 1, "Kotlin mutation helper should call applyMutationJson once")
-    expect(parseJson(client.mutations[0]) == taskFixture["newOperation"], "Kotlin mutation should match shared new task operation")
+    expect(client.capturedMutations.size == 1, "Kotlin mutation helper should call applyMutationJson once")
+    expect(parseJson(client.capturedMutations[0]) == taskFixture["newOperation"], "Kotlin mutation should match shared new task operation")
 
-    client.applyTaskPatch(rowId = taskInput.str("id"), patch = TaskPatch(completed = 0), baseVersion = 11)
-    expect(parseJson(client.mutations[1]) == taskFixture["patchOperation"], "Kotlin patch should match shared task patch operation")
-    client.applyTaskDelete(rowId = taskInput.str("id"), baseVersion = 12)
-    expect(parseJson(client.mutations[2]) == taskFixture["deleteOperation"], "Kotlin delete should match shared task delete operation")
+    client.mutations.tasks.update(rowId = taskInput.str("id"), patch = TaskPatch(completed = 0), baseVersion = 11)
+    expect(parseJson(client.capturedMutations[1]) == taskFixture["patchOperation"], "Kotlin patch should match shared task patch operation")
+    client.mutations.tasks.delete(rowId = taskInput.str("id"), baseVersion = 12)
+    expect(parseJson(client.capturedMutations[2]) == taskFixture["deleteOperation"], "Kotlin delete should match shared task delete operation")
 
-    val enqueueCommandId = client.enqueueNewTask(
+    val enqueueCommandId = client.queuedMutations.tasks.insert(
         NewTask(
             id = taskInput.str("id"),
             title = taskInput.str("title"),
@@ -277,7 +277,7 @@ fun main(args: Array<String>) {
         ),
     )
     expect(enqueueCommandId == "command-kotlin", "Kotlin enqueue mutation helper should return command id")
-    expect(parseJson(client.mutations[3]) == taskFixture["newOperation"], "Kotlin enqueue mutation should match shared new task operation")
+    expect(parseJson(client.capturedMutations[3]) == taskFixture["newOperation"], "Kotlin enqueue mutation should match shared new task operation")
 
     val blobOperation = parseJson(
         SyncularAppOperations.newTask(

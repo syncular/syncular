@@ -8,8 +8,8 @@ import dev.syncular.client.generated.SyncularBlobRef
 import dev.syncular.client.generated.SyncularNativeEvent
 import dev.syncular.client.generated.SyncularNativeJsonClient
 import dev.syncular.client.generated.TaskQuery
-import dev.syncular.client.generated.enqueueNewTask
 import dev.syncular.client.generated.enqueueTaskTitleText
+import dev.syncular.client.generated.queuedMutations
 import dev.syncular.client.generated.syncularDecodeNativeEvent
 import dev.syncular.client.generated.syncularNativeGeneratedAppSchemaJson
 import java.io.File
@@ -160,7 +160,7 @@ object SyncularAndroidLifecycleScenario {
             )
 
             val rowId = "task-android-lifecycle"
-            val mutationCommandId = client.enqueueNewTask(
+            val mutationCommandId = client.queuedMutations.tasks.insert(
                 NewTask(
                     id = rowId,
                     title = "",
