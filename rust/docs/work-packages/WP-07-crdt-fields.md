@@ -129,6 +129,11 @@ Latest accepted slice:
   CRDT diff fails without local state, `force_subscriptions_bootstrap` resets
   subscription state, and the next pull requests cursor `-1` and recovers from a
   full snapshot row.
+- Browser/Hono worker coverage mirrors the same recovery path: clearing the
+  local app row's materialized Yjs state while preserving CRDT state-vector hints
+  produces a `sync.resync_required` diagnostic, then
+  `forceSubscriptionsBootstrap()` resets the subscription and the next worker
+  sync restores the row from snapshot.
 
 Gate evidence:
 
@@ -174,5 +179,6 @@ Known local environment note:
 
 ## Next Action
 
-Mirror the `resyncRequired` -> force-bootstrap -> successful snapshot recovery
-flow in the browser Hono/worker test harness.
+Review whether encrypted-update-log CRDT recovery should expose a similarly
+explicit resync diagnostic for missing checkpoint/update bases, or whether its
+append-only system table path already has enough recovery coverage.

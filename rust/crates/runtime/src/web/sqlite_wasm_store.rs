@@ -860,6 +860,17 @@ impl SyncularRustOwnedSqliteClient {
         Ok(())
     }
 
+    #[wasm_bindgen(js_name = forceSubscriptionsBootstrapJson)]
+    pub async fn force_subscriptions_bootstrap_json(
+        &mut self,
+        subscription_ids_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        self.inner
+            .force_subscriptions_bootstrap_json(subscription_ids_json)
+            .await
+            .map_err(error_to_js)
+    }
+
     #[wasm_bindgen(js_name = setAuthHeadersJson)]
     pub fn set_auth_headers_json(
         &mut self,
