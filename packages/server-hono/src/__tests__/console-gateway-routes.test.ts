@@ -878,8 +878,10 @@ describe('createConsoleGatewayRoutes', () => {
     expect(noMatchResponse.status).toBe(400);
     const noMatchBody = (await noMatchResponse.json()) as {
       error: string;
+      details: { consoleError: string };
     };
-    expect(noMatchBody.error).toBe('NO_INSTANCES_SELECTED');
+    expect(noMatchBody.error).toBe('console.invalid_request');
+    expect(noMatchBody.details.consoleError).toBe('NO_INSTANCES_SELECTED');
   });
 
   it('merges stats and reports partial failures', async () => {
@@ -1034,10 +1036,12 @@ describe('createConsoleGatewayRoutes', () => {
     expect(response.status).toBe(502);
     const body = (await response.json()) as {
       error: string;
-      failedInstances: Array<{ instanceId: string; reason: string }>;
+      details: {
+        failedInstances: Array<{ instanceId: string; reason: string }>;
+      };
     };
-    expect(body.error).toBe('DOWNSTREAM_UNAVAILABLE');
-    expect(body.failedInstances).toEqual([
+    expect(body.error).toBe('console.downstream_unavailable');
+    expect(body.details.failedInstances).toEqual([
       { instanceId: 'alpha', reason: 'HTTP 503', status: 503 },
       { instanceId: 'beta', reason: 'HTTP 503', status: 503 },
     ]);
@@ -1247,8 +1251,10 @@ describe('createConsoleGatewayRoutes', () => {
     const pruneBody = (await pruneWithoutInstance.json()) as {
       error: string;
       message: string;
+      details: { consoleError: string };
     };
-    expect(pruneBody.error).toBe('INSTANCE_REQUIRED');
+    expect(pruneBody.error).toBe('console.invalid_request');
+    expect(pruneBody.details.consoleError).toBe('INSTANCE_REQUIRED');
 
     const handlersWithoutInstance = await app.request(
       'http://localhost/console/handlers',
@@ -1259,8 +1265,10 @@ describe('createConsoleGatewayRoutes', () => {
     expect(handlersWithoutInstance.status).toBe(400);
     const handlersBody = (await handlersWithoutInstance.json()) as {
       error: string;
+      details: { consoleError: string };
     };
-    expect(handlersBody.error).toBe('INSTANCE_REQUIRED');
+    expect(handlersBody.error).toBe('console.invalid_request');
+    expect(handlersBody.details.consoleError).toBe('INSTANCE_REQUIRED');
   });
 
   it('proxies single-instance mutation and config endpoints', async () => {

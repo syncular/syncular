@@ -113,6 +113,42 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     recommendedAction: 'inspectStorage',
     message: 'The local Syncular storage operation failed.',
   },
+  'console.auth_required': {
+    category: 'auth-required',
+    retryable: true,
+    recommendedAction: 'refreshAuth',
+    message: 'Console authentication is required.',
+  },
+  'console.forbidden_origin': {
+    category: 'forbidden',
+    retryable: false,
+    recommendedAction: 'checkPermissions',
+    message: 'The console websocket origin is not allowed.',
+  },
+  'console.invalid_request': {
+    category: 'invalid-request',
+    retryable: false,
+    recommendedAction: 'fixRequest',
+    message: 'The console request is invalid.',
+  },
+  'console.not_found': {
+    category: 'not-found',
+    retryable: false,
+    recommendedAction: 'inspectServer',
+    message: 'The requested console resource was not found.',
+  },
+  'console.downstream_unavailable': {
+    category: 'server',
+    retryable: true,
+    recommendedAction: 'retryLater',
+    message: 'A console downstream instance is unavailable.',
+  },
+  'console.downstream_invalid_response': {
+    category: 'server',
+    retryable: false,
+    recommendedAction: 'inspectServer',
+    message: 'A console downstream instance returned an invalid response.',
+  },
   'blob.invalid_request': {
     category: 'blob',
     retryable: false,

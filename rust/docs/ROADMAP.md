@@ -400,7 +400,9 @@ read-only review:
     `code/category/retryable/recommendedAction` shape. HTTP 403 is treated as
     `sync.forbidden`, not auth expiry. Generated Swift/Kotlin native app
     clients and the Java event parser now expose the native error object as a
-    typed `event.error` shape.
+    typed `event.error` shape. Console gateway routes now return stable
+    `console.*` envelopes for auth, forbidden origin, invalid selection,
+    not-found, downstream unavailable, and invalid downstream response cases.
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)

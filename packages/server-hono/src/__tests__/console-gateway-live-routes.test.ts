@@ -315,8 +315,12 @@ describe('createConsoleGatewayRoutes live fan-in', () => {
     });
 
     expect(response.status).toBe(403);
-    expect(await response.json()).toEqual({
-      error: 'FORBIDDEN_ORIGIN',
+    expect(await response.json()).toMatchObject({
+      error: 'console.forbidden_origin',
+      code: 'console.forbidden_origin',
+      category: 'forbidden',
+      retryable: false,
+      recommendedAction: 'checkPermissions',
     });
   });
 

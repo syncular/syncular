@@ -15,7 +15,11 @@
  * - DELETE /clients/:id   - Evict client
  */
 
-import { logSyncEvent, sha256Hex } from '@syncular/core';
+import {
+  createSyncularErrorResponse,
+  logSyncEvent,
+  sha256Hex,
+} from '@syncular/core';
 import type { SqlFamily, SyncCoreDb, SyncServerAuth } from '@syncular/server';
 import {
   coerceNumber,
@@ -2714,7 +2718,10 @@ export function createConsoleRoutes<
 
     routes.get('/events/live', async (c, next) => {
       if (!isWebSocketOriginAllowed(c, options.websocket?.allowedOrigins)) {
-        return c.json({ error: 'FORBIDDEN_ORIGIN' }, 403);
+        return c.json(
+          createSyncularErrorResponse('console.forbidden_origin'),
+          403
+        );
       }
       return liveEventsWebSocketRoute(c, next);
     });
