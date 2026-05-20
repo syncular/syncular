@@ -1,6 +1,6 @@
 # WP-14 Developer Experience And Generated APIs
 
-Status: `[~]` in progress
+Status: `[x]` accepted
 
 ## Goal
 
@@ -66,11 +66,9 @@ the correct sync path easy and make incorrect paths hard to reach.
 
 ## Next Action
 
-Continue tightening generated app surfaces:
-
-1. Add generated-client examples for conflict resolution and blob flows to the
-   concise API reference if app integration feedback shows the long integration
-   guide is not discoverable enough.
+WP-14 is accepted for the current generated-client foundation. Reopen this work
+package only when real app integration feedback exposes concrete naming,
+discoverability, conflict, blob, or subscription ergonomics gaps.
 
 ## Progress
 

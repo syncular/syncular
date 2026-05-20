@@ -184,7 +184,7 @@ read-only review:
     fetch, hash, decompress, and apply timings; the 100k guard stayed in band
     at `136.33ms`, and the external 500k guard stayed healthy at `1002.06ms`
     with `snapshotChunkCount=0`.
-- `[~]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
+- `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   - First retained TypeScript generated-client slice narrows
     `database.mutations` to generated inputs and patches. App code can now call
     `database.mutations.tasks.insert(NewTask)` without supplying server-owned
@@ -375,7 +375,7 @@ read-only review:
     size and performance for every browser/WASM-facing change.
 - `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
 - `[~]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
-- `[~]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
+- `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
 - `[ ]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
