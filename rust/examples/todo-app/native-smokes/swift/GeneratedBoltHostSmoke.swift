@@ -17,11 +17,13 @@ private func removeSqliteFiles(_ path: String) {
 
 private func readEvents(from client: SyncularBoltClient, count: Int) throws -> [SyncularNativeEvent] {
     var events: [SyncularNativeEvent] = []
-    for _ in 0..<count {
-        if let eventJson = try client.nextEventJson() {
+    let deadline = Date().addingTimeInterval(5.0)
+    while events.count < count && Date() < deadline {
+        if let eventJson = try client.nextEventJsonTimeout(timeoutMs: 50) {
             events.append(try syncularDecodeNativeEvent(eventJson))
         }
     }
+    expect(events.count == count, "Swift host expected \(count) native events, got \(events.count)")
     return events
 }
 

@@ -1757,6 +1757,59 @@ fn canonical_commit_integrity_is_recomputed_and_verified_root_is_persisted() -> 
 }
 
 #[test]
+fn canonical_commit_integrity_verifies_wire_payload_before_decrypting_pull() -> Result<()> {
+    let scenario = sync_conformance_value(&["e2ee"]);
+    let path = temp_db_path("syncular-protocol-encrypted-integrity");
+    let row_id = "encrypted-integrity-task";
+    let title = scenario["task"]["title"].as_str().expect("e2ee title");
+    let server_version = 77;
+    let change = SyncChange {
+        table: "tasks".to_string(),
+        row_id: row_id.to_string(),
+        op: "upsert".to_string(),
+        row_json: Some(encrypted_task_row_for(row_id, title, server_version)),
+        row_version: Some(server_version),
+        scopes: scopes(),
+    };
+    let (commit, integrity) = verified_wire_commit(server_version, change)?;
+    let expected_root = integrity.commit_chain_root.clone();
+    let transport = TestTransport::new();
+    let mut response =
+        commits_combined_response("sub-tasks", scopes(), server_version, vec![commit]);
+    response.pull.as_mut().expect("pull").subscriptions[0].integrity = Some(integrity);
+    transport.push_http_response(response);
+    let store = RusqliteStore::open(&path)?;
+    let mut client = demo_client(
+        test_config(
+            &path,
+            scenario["pullClientId"]
+                .as_str()
+                .expect("e2ee pull client id"),
+        ),
+        store,
+        transport,
+    );
+    client.set_field_encryption(Some(test_field_encryption()?));
+
+    client.sync_http()?;
+    let tasks = client.list_tasks()?;
+    assert_eq!(tasks.len(), 1);
+    assert_eq!(tasks[0].id, row_id);
+    assert_eq!(tasks[0].title, title);
+    assert_eq!(tasks[0].server_version, server_version);
+    drop(client);
+
+    let mut store = RusqliteStore::open(&path)?;
+    let root = store
+        .transaction(|tx| tx.verified_root("default", "sub-tasks"))?
+        .expect("persisted encrypted verified root");
+    assert_eq!(root.root, expected_root);
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn canonical_commit_integrity_rejects_tampered_commit_before_apply() -> Result<()> {
     let path = temp_db_path("syncular-protocol-tampered-commit-integrity");
     let change = SyncChange {

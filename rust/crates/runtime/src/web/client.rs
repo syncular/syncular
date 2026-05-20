@@ -15,7 +15,7 @@ use crate::protocol::{
     validate_sqlite_snapshot_artifact_for_apply, verify_subscription_commit_integrity,
     BootstrapState, CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
     PushCommitRequest, ScopeValues, SnapshotArtifactsRequest, SubscriptionRequest, SyncChange,
-    SyncCommit, SyncOperation, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+    SyncCommit, SyncOperation, VerifiedCommitRoot, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
     SNAPSHOT_CHUNK_COMPRESSION_GZIP, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
     SYNC_PACK_ENCODING_BINARY_V1,
 };
@@ -30,6 +30,7 @@ use crate::web_store::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSyncularClientConfig {
@@ -291,9 +292,6 @@ where
             result.timings.pull_request_ms = pull_request_ms;
             return Ok(result);
         };
-        let transform_started_at = timing_now_ms();
-        let pull = self.transform_pull_response(pull)?;
-        let pull_transform_ms = elapsed_ms_since(transform_started_at);
         if !pull.ok {
             return Err(SyncularError::protocol_message(
                 "browser pull response was not ok",
@@ -301,9 +299,17 @@ where
         }
 
         let mut result = WebSyncResult::default();
+        let integrity_verify_started_at = timing_now_ms();
+        let verified_roots = self.verify_pull_response_integrity(&pull).await?;
+        result.timings.integrity_verify_ms += elapsed_ms_since(integrity_verify_started_at);
+        let transform_started_at = timing_now_ms();
+        let pull = self.transform_pull_response(pull)?;
+        let pull_transform_ms = elapsed_ms_since(transform_started_at);
         self.store.begin_apply_batch().await?;
         let apply_started_at = timing_now_ms();
-        let apply_result = self.apply_pull_response(pull, &mut result).await;
+        let apply_result = self
+            .apply_pull_response(pull, &mut result, verified_roots)
+            .await;
         result.timings.pull_apply_ms = elapsed_ms_since(apply_started_at);
         add_store_apply_timings(&mut result.timings, self.store.drain_apply_timings());
         match apply_result {
@@ -330,9 +336,8 @@ where
         &mut self,
         pull: PullResponse,
         result: &mut WebSyncResult,
+        mut verified_roots: HashMap<String, Option<VerifiedCommitRoot>>,
     ) -> Result<()> {
-        validate_pull_commit_integrity_metadata(&pull)?;
-        validate_pull_snapshot_manifests(&pull)?;
         let app_schema = self.store.app_schema();
         let include_snapshot_rows = self.config.pull.include_snapshot_rows;
         let collect_changed_rows = self.config.pull.collect_changed_rows;
@@ -343,18 +348,7 @@ where
             let scopes_changed = previous_state
                 .as_ref()
                 .is_some_and(|state| state.scopes != sub.scopes);
-            let stored_root = if scopes_changed {
-                self.store.delete_verified_root(&sub.id).await?;
-                None
-            } else {
-                self.store.verified_root(&sub.id).await?
-            };
-            let verified_root = verify_subscription_commit_integrity(
-                &sub.id,
-                stored_root.as_ref().map(|root| root.root.as_str()),
-                sub.integrity.as_ref(),
-                &sub.commits,
-            )?;
+            let verified_root = verified_roots.remove(&sub.id).flatten();
             let table = self
                 .subscriptions
                 .iter()
@@ -667,6 +661,7 @@ where
                             .await?;
                         result.timings.scope_clear_ms += elapsed_ms_since(scope_clear_started_at);
                         add_changed_table(&mut result.changed_tables, &previous_state.table);
+                        self.store.delete_verified_root(&sub.id).await?;
                     }
                 }
                 self.store
@@ -722,6 +717,39 @@ where
         Ok(())
     }
 
+    async fn verify_pull_response_integrity(
+        &mut self,
+        pull: &PullResponse,
+    ) -> Result<HashMap<String, Option<VerifiedCommitRoot>>> {
+        validate_pull_commit_integrity_metadata(pull)?;
+        validate_pull_snapshot_manifests(pull)?;
+        let mut verified_roots = HashMap::new();
+        for sub in &pull.subscriptions {
+            if sub.status == "revoked" {
+                verified_roots.insert(sub.id.clone(), None);
+                continue;
+            }
+
+            let previous_state = self.store.subscription_state(&sub.id).await?;
+            let scopes_changed = previous_state
+                .as_ref()
+                .is_some_and(|state| state.scopes != sub.scopes);
+            let stored_root = if scopes_changed {
+                None
+            } else {
+                self.store.verified_root(&sub.id).await?
+            };
+            let verified_root = verify_subscription_commit_integrity(
+                &sub.id,
+                stored_root.as_ref().map(|root| root.root.as_str()),
+                sub.integrity.as_ref(),
+                &sub.commits,
+            )?;
+            verified_roots.insert(sub.id.clone(), verified_root);
+        }
+        Ok(verified_roots)
+    }
+
     pub async fn sync_pull_json(&mut self) -> Result<String> {
         Ok(serde_json::to_string(&self.sync_pull().await?)?)
     }
@@ -766,9 +794,11 @@ where
             return Ok(result);
         };
         let mut result = WebSyncResult::default();
+        let integrity_verify_started_at = timing_now_ms();
+        let mut verified_roots = self.verify_pull_response_integrity(&pull).await?;
+        result.timings.integrity_verify_ms += elapsed_ms_since(integrity_verify_started_at);
         let transform_started_at = timing_now_ms();
         let pull = self.transform_pull_response(pull)?;
-        validate_pull_commit_integrity_metadata(&pull)?;
         result.timings.pull_transform_ms = elapsed_ms_since(transform_started_at);
         if !pull
             .subscriptions
@@ -784,7 +814,8 @@ where
         let apply_started_at = timing_now_ms();
         let apply_result = async {
             for subscription in pull.subscriptions {
-                self.apply_realtime_subscription_response(&mut result, subscription)
+                let verified_root = verified_roots.remove(&subscription.id).flatten();
+                self.apply_realtime_subscription_response(&mut result, subscription, verified_root)
                     .await?;
             }
             Ok(())
@@ -813,6 +844,7 @@ where
         &mut self,
         result: &mut WebSyncResult,
         subscription: crate::protocol::SubscriptionResponse,
+        verified_root: Option<VerifiedCommitRoot>,
     ) -> Result<()> {
         if subscription.status != "active" {
             return Err(SyncularError::protocol_message(
@@ -846,17 +878,7 @@ where
             )));
         }
 
-        let stored_root = self.store.verified_root(&subscription.id).await?;
         result.timings.subscription_state_ms += elapsed_ms_since(subscription_state_started_at);
-
-        let integrity_verify_started_at = timing_now_ms();
-        let verified_root = verify_subscription_commit_integrity(
-            &subscription.id,
-            stored_root.as_ref().map(|root| root.root.as_str()),
-            subscription.integrity.as_ref(),
-            &subscription.commits,
-        )?;
-        result.timings.integrity_verify_ms += elapsed_ms_since(integrity_verify_started_at);
 
         result.subscriptions.push(WebSubscriptionResult {
             id: subscription.id.clone(),

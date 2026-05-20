@@ -319,6 +319,12 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readOptional { reader in reader.readString() } } else { throw FfiError(message: reader.readString()) } }() }
     }
 
+    public func nextEventJsonTimeout(timeoutMs: UInt64) throws -> String? {
+        let buf = boltffi_syncular_bolt_client_next_event_json_timeout(handle, timeoutMs)
+        defer { boltffi_free_buf(buf) }
+        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readOptional { reader in reader.readString() } } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
     public func closeEventStream() throws -> Bool {
         let buf = boltffi_syncular_bolt_client_close_event_stream(handle)
         defer { boltffi_free_buf(buf) }

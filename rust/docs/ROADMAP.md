@@ -267,10 +267,10 @@ read-only review:
     receipt exposes counters and state-vector metadata without embedding the
     full state blob, and encrypted update-log fields include before/after
     stream checkpoint stats. Runtime CRDT tests and browser Hono WASM CRDT
-    coverage pass. The full native smoke currently hangs in the Swift
-    server-sync executable after generated Swift/Kotlin, BoltFFI host,
-    lifecycle, and JVM packaging smokes pass; isolate that before treating the
-    native lane as fully green.
+    coverage pass. Native event streams now have bounded timeout reads through
+    BoltFFI/generated Swift/Kotlin/Java, and the full native smoke lane passes.
+    Encrypted pull integrity is verified on the wire payload before decrypting
+    fields, then the verified root is persisted during decrypted local apply.
 - `[~]` [`WP-08 Testkit And Conformance`](work-packages/WP-08-testkit-conformance.md)
   - Rust testkit now exposes `AppTestHttpServer`, a disposable HTTP/WebSocket
     wrapper around the stateful `AppTestServer`. Smoke coverage proves HTTP

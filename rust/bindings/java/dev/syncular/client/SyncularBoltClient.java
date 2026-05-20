@@ -301,6 +301,16 @@ public final class SyncularBoltClient implements AutoCloseable {
         return reader.readI8() == 0 ? java.util.Optional.empty() : java.util.Optional.ofNullable(reader.readString());
     }
 
+    public java.util.Optional<String> nextEventJsonTimeout(long timeoutMs) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_next_event_json_timeout(handle, timeoutMs);
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readI8() == 0 ? java.util.Optional.empty() : java.util.Optional.ofNullable(reader.readString());
+    }
+
     public boolean closeEventStream() {
         byte[] _buf = Native.boltffi_syncular_bolt_client_close_event_stream(handle);
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");

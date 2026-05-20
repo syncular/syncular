@@ -941,6 +941,15 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
 
     @Throws(FfiException::class)
+    fun nextEventJsonTimeout(timeoutMs: ULong): String? {
+        val buf = Native.boltffi_syncular_bolt_client_next_event_json_timeout(handle, timeoutMs.toLong())
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readOptional { reader.readString() } }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
     fun closeEventStream(): Boolean {
         val buf = Native.boltffi_syncular_bolt_client_close_event_stream(handle)
             ?: throw FfiException(-1, "Null buffer returned")
@@ -1604,6 +1613,7 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_presence_json(handle: Long, scope_key: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_start_event_stream(handle: Long, capacity: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_next_event_json(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_next_event_json_timeout(handle: Long, timeout_ms: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_close_event_stream(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_apply_mutation_json(handle: Long, mutation_json: ByteArray, local_row_json: ByteBuffer): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_mutation_json(handle: Long, mutation_json: ByteArray, local_row_json: ByteBuffer): ByteArray?

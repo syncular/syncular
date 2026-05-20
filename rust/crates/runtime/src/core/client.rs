@@ -51,7 +51,7 @@ use serde_json::json;
 use serde_json::{Map, Value};
 #[cfg(feature = "native")]
 use std::collections::BTreeMap;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 #[cfg(feature = "native")]
 use std::fs;
@@ -2271,9 +2271,10 @@ where
                 return Err(SyncularError::protocol_message("pull response was not ok"));
             }
 
+            let verified_roots = self.verify_pull_response_integrity(&response)?;
             let transformed_response = self.transform_pull_response(response)?;
             let needs_more = pull_response_needs_another_round(&transformed_response, 50);
-            report.merge(self.apply_pull_response(transformed_response)?);
+            report.merge(self.apply_pull_response(transformed_response, verified_roots)?);
 
             if !needs_more {
                 return Ok(report);
@@ -2300,9 +2301,51 @@ where
         Ok(report)
     }
 
-    fn apply_pull_response(&mut self, response: PullResponse) -> Result<SyncReport> {
-        validate_pull_commit_integrity_metadata(&response)?;
-        validate_pull_snapshot_manifests(&response)?;
+    fn verify_pull_response_integrity(
+        &mut self,
+        response: &PullResponse,
+    ) -> Result<HashMap<String, Option<VerifiedCommitRoot>>> {
+        validate_pull_commit_integrity_metadata(response)?;
+        validate_pull_snapshot_manifests(response)?;
+        self.store.transaction(|tx| {
+            let mut verified_roots = HashMap::new();
+            for sub in &response.subscriptions {
+                if sub.status == "revoked" {
+                    verified_roots.insert(sub.id.clone(), None);
+                    continue;
+                }
+
+                let previous_state = tx.subscription_state(DEFAULT_STATE_ID, &sub.id)?;
+                let stored_root = if previous_state
+                    .as_ref()
+                    .map(|prev| {
+                        let previous_scopes: ScopeValues = serde_json::from_str(&prev.scopes_json)?;
+                        Ok::<bool, SyncularError>(previous_scopes != sub.scopes)
+                    })
+                    .transpose()?
+                    .unwrap_or(false)
+                {
+                    None
+                } else {
+                    tx.verified_root(DEFAULT_STATE_ID, &sub.id)?
+                };
+                let verified_root = verify_subscription_commit_integrity(
+                    &sub.id,
+                    stored_root.as_ref().map(|root| root.root.as_str()),
+                    sub.integrity.as_ref(),
+                    &sub.commits,
+                )?;
+                verified_roots.insert(sub.id.clone(), verified_root);
+            }
+            Ok(verified_roots)
+        })
+    }
+
+    fn apply_pull_response(
+        &mut self,
+        response: PullResponse,
+        mut verified_roots: HashMap<String, Option<VerifiedCommitRoot>>,
+    ) -> Result<SyncReport> {
         let mut report = SyncReport::default();
         for sub in response.subscriptions {
             if sub.status == "revoked" {
@@ -2397,13 +2440,7 @@ where
                     }
                 }
 
-                let stored_root = tx.verified_root(DEFAULT_STATE_ID, &sub.id)?;
-                let verified_root = verify_subscription_commit_integrity(
-                    &sub.id,
-                    stored_root.as_ref().map(|root| root.root.as_str()),
-                    sub.integrity.as_ref(),
-                    &sub.commits,
-                )?;
+                let verified_root = verified_roots.remove(&sub.id).flatten();
 
                 let mut snapshot_cleared_tables = HashSet::new();
                 if let Some(prev) = previous_state.as_ref() {

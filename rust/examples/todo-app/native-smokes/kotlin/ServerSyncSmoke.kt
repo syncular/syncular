@@ -206,14 +206,16 @@ private fun waitForEventJson(
     timeoutMs: Long = 5_000,
 ): Pair<SyncularNativeEvent, String> {
     val deadline = System.currentTimeMillis() + timeoutMs
+    val seen = mutableListOf<String>()
     while (System.currentTimeMillis() < deadline) {
-        val eventJson = client.nextEventJson() ?: continue
+        val eventJson = client.nextEventJsonTimeout(50uL) ?: continue
         val event = syncularDecodeNativeEvent(eventJson)
+        seen += "${event.kind}:${event.commandId ?: "-"}:$eventJson"
         if (event.kind == kind && (commandId == null || event.commandId == commandId)) {
             return event to eventJson
         }
     }
-    error("Timed out waiting for $kind")
+    error("Timed out waiting for $kind command ${commandId ?: "-"}; seen ${seen.joinToString()}")
 }
 
 private fun createServerConflict(

@@ -61,10 +61,12 @@ private fun removeSqliteFiles(path: String) {
 
 private fun readEvents(client: SyncularBoltClient, count: Int): List<SyncularNativeEvent> {
     val events = mutableListOf<SyncularNativeEvent>()
-    while (events.size < count) {
-        val eventJson = client.nextEventJson() ?: break
+    val deadline = System.currentTimeMillis() + 5_000
+    while (events.size < count && System.currentTimeMillis() < deadline) {
+        val eventJson = client.nextEventJsonTimeout(50uL) ?: continue
         events += syncularDecodeNativeEvent(eventJson)
     }
+    expect(events.size == count, "Kotlin host expected $count native events, got ${events.size}")
     return events
 }
 
