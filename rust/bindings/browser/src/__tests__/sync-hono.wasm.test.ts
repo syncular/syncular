@@ -112,10 +112,12 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     });
     harnesses.push(sync);
 
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
     const client = await sync.openWorkerClient({
       clientId: scenario.clientId,
       actorId: ACTOR_A,
       getHeaders: () => ({ authorization: TOKEN_A }),
+      diagnostics: (event) => diagnostics.push(event),
     });
     await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
     await client.syncOnce();
@@ -134,6 +136,15 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       status: scenario.expectedStatus,
       scopes: scenario.expectedScopes,
     });
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'sync.scope_revoked',
+        details: expect.objectContaining({
+          revokedSubscriptionIds: [syncConformance.subscription.id],
+          revokedSubscriptionCount: 1,
+        }),
+      })
+    );
     await expect(client.listTable('tasks')).resolves.toEqual([]);
   });
 

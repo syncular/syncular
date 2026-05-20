@@ -153,6 +153,12 @@ or record a deliberate exception in the compatibility register.
   of requiring Hono routes to compare message strings. Completion failures map
   through `blob.invalid_request`, `blob.not_found`, `blob.forbidden`, or
   `blob.size_mismatch`; the route preserves `blob.forbidden` as a 403.
+- Scope revocation and offline transport failures now have first-class
+  taxonomy entries: `sync.scope_revoked` uses the `scope-revoked` category and
+  `sync.offline` uses the `offline` category. Rust and browser classifiers
+  recognize offline transport failures, and browser worker/direct sync paths
+  emit a `sync.scope_revoked` diagnostic with revoked subscription ids when a
+  pull clears a revoked subscription.
 
 ## Latest Evidence
 
@@ -206,6 +212,16 @@ or record a deliberate exception in the compatibility register.
 - `bun run --cwd packages/server tsgo`
 - `bun run --cwd packages/server-hono tsgo`
 - `bun test packages/server-hono/src/__tests__/blob-routes.test.ts`
+- `bun run --cwd packages/core fixtures:protocol`
+- `bun run --cwd packages/core tsgo`
+- `bun run --cwd rust/bindings/browser tsgo`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime error::tests --lib`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
+- `bun test packages/core/src/__tests__/error-responses.test.ts rust/bindings/browser/src/errors.test.ts`
+- `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "clears scoped local rows"`
+- `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "revoked sessions|server-required schema|corrupted snapshot chunk"`
+- `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
+- `git diff --check`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen native_modules_support_runtime_contract_and_operation_builders`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime generated_app_bindings_target_boltffi_layout --test native_binding_scaffold`

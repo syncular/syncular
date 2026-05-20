@@ -132,6 +132,15 @@ export function classifySyncularV2Error(
       : syncularDebugFromError(error);
   const haystack = `${message}\n${debug ?? ''}`;
 
+  if (/\boffline\b|network is unreachable/i.test(haystack)) {
+    return {
+      code: 'sync.offline',
+      category: 'offline',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    };
+  }
+
   if (syncularKind === 'Schema' || /\bschema version\b/i.test(haystack)) {
     return {
       code: 'sync.schema_mismatch',

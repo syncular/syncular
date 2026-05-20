@@ -113,6 +113,18 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     recommendedAction: 'forceResync',
     message: 'Sync data failed integrity verification.',
   },
+  'sync.scope_revoked': {
+    category: 'scope-revoked',
+    retryable: false,
+    recommendedAction: 'checkPermissions',
+    message: 'A synced subscription scope was revoked.',
+  },
+  'sync.offline': {
+    category: 'offline',
+    retryable: true,
+    recommendedAction: 'retryLater',
+    message: 'The client is offline.',
+  },
   'sync.websocket_not_configured': {
     category: 'server',
     retryable: false,

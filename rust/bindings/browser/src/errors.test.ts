@@ -57,4 +57,18 @@ describe('Syncular v2 browser errors', () => {
       },
     });
   });
+
+  it('classifies offline transport failures', () => {
+    const error = toSyncularV2ClientError(
+      new Error('browser fetch failed: offline')
+    );
+
+    expect(error).toBeInstanceOf(SyncularV2ClientError);
+    expect(error).toMatchObject({
+      code: 'sync.offline',
+      category: 'offline',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
+  });
 });

@@ -127,6 +127,10 @@ impl SyncularError {
             );
         }
 
+        if self.kind == ErrorKind::Transport && haystack_contains_offline(&haystack) {
+            return syncular_error_classification("sync.offline", "offline", true, "retryLater");
+        }
+
         if self.kind == ErrorKind::Protocol
             && (haystack_contains_integrity_rejection(&haystack)
                 || self.requires_full_snapshot_resync())
@@ -222,6 +226,8 @@ fn known_error_classification(code: &str) -> Option<SyncularErrorClassification>
         "sync.rate_limited" => ("rate-limited", true, "retryLater"),
         "sync.schema_mismatch" => ("schema-mismatch", false, "regenerateClient"),
         "sync.integrity_rejected" => ("integrity-rejected", false, "forceResync"),
+        "sync.scope_revoked" => ("scope-revoked", false, "checkPermissions"),
+        "sync.offline" => ("offline", true, "retryLater"),
         "sync.websocket_not_configured" => ("server", false, "inspectServer"),
         "sync.websocket_connection_limit" => ("rate-limited", true, "retryLater"),
         "sync.transport_failed" => ("transport", true, "retryLater"),
@@ -318,6 +324,11 @@ fn http_status_from_message(message: &str) -> Option<u16> {
 
 fn haystack_contains_schema_mismatch(haystack: &str) -> bool {
     haystack.to_ascii_lowercase().contains("schema version")
+}
+
+fn haystack_contains_offline(haystack: &str) -> bool {
+    let haystack = haystack.to_ascii_lowercase();
+    haystack.contains("offline") || haystack.contains("network is unreachable")
 }
 
 fn haystack_contains_integrity_rejection(haystack: &str) -> bool {
@@ -497,6 +508,21 @@ mod tests {
                 category: "storage".to_string(),
                 retryable: false,
                 recommended_action: "inspectStorage".to_string(),
+            }
+        );
+    }
+
+    #[test]
+    fn classification_maps_offline_transport_failures() {
+        let error = SyncularError::message(ErrorKind::Transport, "browser fetch failed: offline");
+
+        assert_eq!(
+            error.classification(),
+            SyncularErrorClassification {
+                code: "sync.offline".to_string(),
+                category: "offline".to_string(),
+                retryable: true,
+                recommended_action: "retryLater".to_string(),
             }
         );
     }
