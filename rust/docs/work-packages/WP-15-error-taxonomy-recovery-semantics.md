@@ -145,6 +145,10 @@ or record a deliberate exception in the compatibility register.
   core taxonomy owns those definitions, worker payload creation fills
   category/retry/recovery metadata, and the Rust runtime classifier recognizes
   the expanded shared code set when it sees server-style envelopes.
+- The shared TS error taxonomy now has a generated
+  `error-taxonomy-v1.json` fixture consumed by Rust runtime tests. Core tests
+  fail if the checked-in fixture drifts from `SYNCULAR_ERROR_DEFINITIONS`, and
+  Rust tests fail if its classifier stops matching any shared code.
 
 ## Latest Evidence
 
@@ -189,6 +193,11 @@ or record a deliberate exception in the compatibility register.
 - `bun run --cwd packages/server-hono tsgo`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
+- `bun run --cwd packages/core fixtures:protocol`
+- `bun run --cwd packages/core tsgo`
+- `bun test packages/core/src/__tests__/error-responses.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
+- `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen native_modules_support_runtime_contract_and_operation_builders`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime generated_app_bindings_target_boltffi_layout --test native_binding_scaffold`

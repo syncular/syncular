@@ -421,7 +421,10 @@ read-only review:
     shared conformance fixtures instead of legacy uppercase strings. Browser
     worker public errors now use `worker.*` taxonomy codes with structured
     category/retry/recovery metadata instead of underscore/local codes, and the
-    Rust runtime classifier recognizes the expanded shared taxonomy.
+    Rust runtime classifier recognizes the expanded shared taxonomy. Core now
+    generates a checked-in error taxonomy fixture, with TS and Rust tests
+    guarding against drift between `SYNCULAR_ERROR_DEFINITIONS` and the Rust
+    classifier.
 - `[ ]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
 - `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)

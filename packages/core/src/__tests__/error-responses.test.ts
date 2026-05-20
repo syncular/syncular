@@ -1,5 +1,9 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'bun:test';
-import { createSyncularErrorResponse } from '../error-responses';
+import {
+  createSyncularErrorResponse,
+  SYNCULAR_ERROR_DEFINITIONS,
+} from '../error-responses';
 import { ErrorResponseSchema } from '../schemas/common';
 
 describe('Syncular error responses', () => {
@@ -41,19 +45,19 @@ describe('Syncular error responses', () => {
       retryable: true,
       recommendedAction: 'retryLater',
     });
-  expect(createSyncularErrorResponse('storage.failed')).toMatchObject({
-    category: 'storage',
-    retryable: false,
-    recommendedAction: 'inspectStorage',
-  });
-  expect(createSyncularErrorResponse('worker.failed')).toMatchObject({
-    category: 'internal',
-    retryable: false,
-    recommendedAction: 'recreateClient',
-  });
-  expect(createSyncularErrorResponse('runtime.internal')).toMatchObject({
-    category: 'internal',
-    retryable: false,
+    expect(createSyncularErrorResponse('storage.failed')).toMatchObject({
+      category: 'storage',
+      retryable: false,
+      recommendedAction: 'inspectStorage',
+    });
+    expect(createSyncularErrorResponse('worker.failed')).toMatchObject({
+      category: 'internal',
+      retryable: false,
+      recommendedAction: 'recreateClient',
+    });
+    expect(createSyncularErrorResponse('runtime.internal')).toMatchObject({
+      category: 'internal',
+      retryable: false,
       recommendedAction: 'inspectServer',
     });
   });
@@ -122,6 +126,23 @@ describe('Syncular error responses', () => {
       category: 'blob',
       retryable: false,
       recommendedAction: 'inspectServer',
+    });
+  });
+
+  it('keeps the Rust taxonomy fixture in sync with core definitions', () => {
+    const fixture = JSON.parse(
+      readFileSync(
+        new URL(
+          '../../../../rust/crates/runtime/tests/fixtures/error-taxonomy-v1.json',
+          import.meta.url
+        ),
+        'utf8'
+      )
+    );
+
+    expect(fixture).toEqual({
+      version: 1,
+      definitions: SYNCULAR_ERROR_DEFINITIONS,
     });
   });
 });

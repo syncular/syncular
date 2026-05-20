@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
+import { SYNCULAR_ERROR_DEFINITIONS } from '../src/error-responses';
 import {
   decodeBinarySnapshotTable,
   decodeSnapshotRows,
@@ -28,10 +29,18 @@ writeFixture(
   await binarySyncPackFixture()
 );
 writeFixture('binary-snapshot-table-v1-tasks.json', binarySnapshotFixture());
+writeFixture('error-taxonomy-v1.json', errorTaxonomyFixture());
 writeFixture('json-row-frame-v1-tasks.json', jsonRowFrameFixture());
 
 function writeFixture(name: string, value: unknown): void {
   writeFileSync(new URL(name, fixturesDir), `${JSON.stringify(value, null, 2)}\n`);
+}
+
+function errorTaxonomyFixture() {
+  return {
+    version: 1,
+    definitions: SYNCULAR_ERROR_DEFINITIONS,
+  };
 }
 
 function readU16Le(bytes: Uint8Array, offset: number): number {
