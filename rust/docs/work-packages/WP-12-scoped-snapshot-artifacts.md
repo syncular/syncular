@@ -860,6 +860,17 @@ Rejected artifact page-cap follow-up:
 - Keep the cap at `2` unless a later bootstrap state design can release
   artifact DBs earlier without copying rows or increasing peak memory.
 
+Retained artifact recovery coverage follow-up:
+
+- Browser/Hono WASM coverage now proves a transient HTTP 500 while downloading
+  a scoped SQLite snapshot artifact leaves local rows untouched and recovers on
+  the next pull.
+- The browser byte transport now reports byte-fetch failures with the concrete
+  resource label (`snapshot artifact`, `snapshot chunk`, or `blob download`)
+  instead of reusing the snapshot chunk label for every byte request.
+- Correctness gate passed:
+  `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"`.
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.

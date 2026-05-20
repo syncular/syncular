@@ -222,9 +222,14 @@ impl AsyncSyncTransport for WebSyncTransport {
             )];
             headers.extend(effective_auth_headers(&self.auth_headers));
             let fetch_started_at = timing_now_ms();
-            let compressed =
-                fetch_bytes_metered(&url, &headers, self.abort_signal.as_ref(), &self.stats)
-                    .await?;
+            let compressed = fetch_bytes_metered(
+                "snapshot chunk",
+                &url,
+                &headers,
+                self.abort_signal.as_ref(),
+                &self.stats,
+            )
+            .await?;
             record_snapshot_chunk_fetch(&self.stats, elapsed_ms_since(fetch_started_at));
             decode_snapshot_rows(chunk, &compressed, &self.stats).await
         })
@@ -246,9 +251,14 @@ impl AsyncSyncTransport for WebSyncTransport {
                 serde_json::to_string(scopes)?,
             )];
             headers.extend(effective_auth_headers(&self.auth_headers));
-            let bytes =
-                fetch_bytes_metered(&url, &headers, self.abort_signal.as_ref(), &self.stats)
-                    .await?;
+            let bytes = fetch_bytes_metered(
+                "snapshot artifact",
+                &url,
+                &headers,
+                self.abort_signal.as_ref(),
+                &self.stats,
+            )
+            .await?;
             decode_snapshot_artifact_bytes(artifact, &bytes).await
         })
     }
@@ -305,7 +315,13 @@ impl AsyncBlobTransport for WebSyncTransport {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + 'a>> {
         Box::pin(async move {
             let download = self.get_blob_download_url(&blob.hash).await?;
-            fetch_bytes(&download.url, &[], self.abort_signal.as_ref()).await
+            fetch_bytes(
+                "blob download",
+                &download.url,
+                &[],
+                self.abort_signal.as_ref(),
+            )
+            .await
         })
     }
 }
@@ -411,6 +427,7 @@ async fn fetch_json(
 }
 
 async fn fetch_bytes(
+    label: &str,
     url: &str,
     headers: &[(String, String)],
     abort_signal: Option<&JsValue>,
@@ -421,7 +438,7 @@ async fn fetch_bytes(
         let body = response_text(&response).await.unwrap_or_default();
         return Err(SyncularError::message(
             ErrorKind::Transport,
-            format!("browser snapshot chunk fetch failed with HTTP {status}: {body}"),
+            format!("browser {label} fetch failed with HTTP {status}: {body}"),
         ));
     }
     let buffer = response
@@ -484,13 +501,14 @@ async fn fetch_sync_response_metered(
 }
 
 async fn fetch_bytes_metered(
+    label: &str,
     url: &str,
     headers: &[(String, String)],
     abort_signal: Option<&JsValue>,
     stats: &Rc<RefCell<WebTransportStats>>,
 ) -> Result<Vec<u8>> {
     record_request(stats, 0);
-    let bytes = fetch_bytes(url, headers, abort_signal).await?;
+    let bytes = fetch_bytes(label, url, headers, abort_signal).await?;
     record_response(stats, bytes.len());
     Ok(bytes)
 }
