@@ -1188,6 +1188,7 @@ export async function buildPullRequest<DB extends SyncClientDb>(
       bootstrapState: parseBootstrapState(
         existingById.get(sub.id)?.bootstrap_state_json
       ),
+      crdtStateVectors: [],
     })),
   };
 
@@ -1256,6 +1257,7 @@ export function createFollowupPullState(
         ...sub,
         cursor: Math.max(-1, row?.cursor ?? -1),
         bootstrapState: parseBootstrapState(row?.bootstrap_state_json),
+        crdtStateVectors: [],
       };
     }),
   };

@@ -167,7 +167,13 @@ describe('createServerHandler', () => {
       clientId: 'c1',
       limitCommits: 10,
       subscriptions: [
-        { id: 's1', table: 'tasks', scopes: { user_id: 'u1' }, cursor: -1 },
+        {
+          id: 's1',
+          table: 'tasks',
+          scopes: { user_id: 'u1' },
+          cursor: -1,
+          crdtStateVectors: [],
+        },
       ],
     };
 
@@ -222,6 +228,7 @@ describe('createServerHandler', () => {
           table: 'catalog_items',
           scopes: { catalog_id: 'demo' },
           cursor: -1,
+          crdtStateVectors: [],
         },
       ],
     };
@@ -316,6 +323,7 @@ describe('createServerHandler', () => {
             table: 'task_codecs',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -424,6 +432,7 @@ describe('createServerHandler', () => {
               table: 'tasks',
               scopes: { team_id: 't1' },
               cursor: -1,
+              crdtStateVectors: [],
             },
           ],
         },
@@ -468,6 +477,7 @@ describe('createServerHandler', () => {
               table: 'tasks',
               scopes: { user_id: 'u1' },
               cursor: -1,
+              crdtStateVectors: [],
             },
           ],
         },
@@ -685,6 +695,7 @@ describe('createServerHandler', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: 1,
+            crdtStateVectors: [],
           },
         ],
       },

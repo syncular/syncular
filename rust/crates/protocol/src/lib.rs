@@ -93,6 +93,21 @@ pub struct BootstrapState {
     pub row_cursor: Option<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct CrdtStateVectorHint {
+    #[serde(rename = "rowId")]
+    pub row_id: String,
+    pub field: String,
+    #[serde(rename = "stateColumn")]
+    pub state_column: String,
+    #[serde(rename = "stateVectorBase64")]
+    pub state_vector_base64: String,
+    #[serde(rename = "syncMode")]
+    pub sync_mode: String,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SubscriptionRequest {
     pub id: String,
@@ -105,6 +120,8 @@ pub struct SubscriptionRequest {
     pub bootstrap_state: Option<BootstrapState>,
     #[serde(rename = "verifiedRoot", skip_serializing_if = "Option::is_none")]
     pub verified_root: Option<String>,
+    #[serde(rename = "crdtStateVectors")]
+    pub crdt_state_vectors: Vec<CrdtStateVectorHint>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

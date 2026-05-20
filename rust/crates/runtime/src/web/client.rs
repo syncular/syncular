@@ -32,6 +32,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 
+const CRDT_STATE_VECTOR_HINT_LIMIT: i64 = 256;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WebSyncularClientConfig {
     pub base_url: String,
@@ -1197,6 +1199,10 @@ where
                     .await?
                     .map(|root| root.root)
             };
+            let crdt_state_vectors = self
+                .store
+                .crdt_state_vector_hints(&spec.table, &spec.scopes, CRDT_STATE_VECTOR_HINT_LIMIT)
+                .await?;
             subscriptions.push(SubscriptionRequest {
                 id: spec.id.clone(),
                 table: spec.table.clone(),
@@ -1213,6 +1219,7 @@ where
                     state.and_then(|state| state.bootstrap_state)
                 },
                 verified_root,
+                crdt_state_vectors,
             });
         }
 

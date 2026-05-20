@@ -274,7 +274,9 @@ read-only review:
     Row-change metadata now includes structured `crdtFieldChanges`, native
     remote pulls emit generic `CrdtFieldChanged` events for CRDT-backed field
     changes, and browser/generated TypeScript/Swift/Kotlin/Java surfaces expose
-    the same metadata to app bridges.
+    the same metadata to app bridges. Native Diesel and browser owned-SQLite
+    pull builders now attach scope-filtered `crdtStateVectors` hints from
+    `sync_crdt_documents`; the next step is server-side use of those hints.
 - `[~]` [`WP-08 Testkit And Conformance`](work-packages/WP-08-testkit-conformance.md)
   - Rust testkit now exposes `AppTestHttpServer`, a disposable HTTP/WebSocket
     wrapper around the stateful `AppTestServer`. Smoke coverage proves HTTP

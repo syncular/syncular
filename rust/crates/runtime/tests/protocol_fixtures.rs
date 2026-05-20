@@ -51,6 +51,11 @@ fn decodes_json_combined_sync_fixture() {
     assert_eq!(pull.subscriptions[0].id, "sub-tasks");
     assert_eq!(pull.subscriptions[0].table, "tasks");
     assert_eq!(pull.subscriptions[0].cursor, 41);
+    assert_eq!(pull.subscriptions[0].crdt_state_vectors.len(), 1);
+    assert_eq!(
+        pull.subscriptions[0].crdt_state_vectors[0].state_column,
+        "title_yjs_state"
+    );
     assert_eq!(
         pull.subscriptions[0]
             .scopes

@@ -109,7 +109,7 @@ export type SyncBootstrapSubscriptionPhase =
   | 'pending';
 
 export interface SyncClientSubscription
-  extends Omit<SyncSubscriptionRequest, 'cursor'> {
+  extends Omit<SyncSubscriptionRequest, 'cursor' | 'crdtStateVectors'> {
   /**
    * Local-only bootstrap phase for staged startup.
    *

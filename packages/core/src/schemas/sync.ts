@@ -152,6 +152,19 @@ export type SyncBootstrapState = z.infer<typeof SyncBootstrapStateSchema>;
 // Pull Request/Response Schemas
 // ============================================================================
 
+export const SyncCrdtStateVectorHintSchema = z.object({
+  rowId: z.string().min(1),
+  field: z.string().min(1),
+  stateColumn: z.string().min(1),
+  stateVectorBase64: z.string().min(1),
+  syncMode: z.string().min(1),
+  updatedAt: z.number().int(),
+});
+
+export type SyncCrdtStateVectorHint = z.infer<
+  typeof SyncCrdtStateVectorHintSchema
+>;
+
 export const SyncSubscriptionRequestSchema = z.object({
   id: z.string().min(1),
   table: z.string().min(1),
@@ -160,6 +173,7 @@ export const SyncSubscriptionRequestSchema = z.object({
   cursor: z.number().int(),
   bootstrapState: SyncBootstrapStateSchema.nullable().optional(),
   verifiedRoot: z.string().optional(),
+  crdtStateVectors: z.array(SyncCrdtStateVectorHintSchema),
 });
 
 export type SyncSubscriptionRequest = z.infer<

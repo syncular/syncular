@@ -870,6 +870,7 @@ async function runScopedIncrementalPullCatchup(
             table: 'tasks',
             scopes: { user_id: 'scope-user-0' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },

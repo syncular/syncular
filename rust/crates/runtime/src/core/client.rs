@@ -66,6 +66,7 @@ use uuid::Uuid;
 
 const DEFAULT_STATE_ID: &str = "default";
 const MAX_PULL_ROUNDS: usize = 20;
+const CRDT_STATE_VECTOR_HINT_LIMIT: i64 = 256;
 
 static ACTIVE_SYNC_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -2110,6 +2111,11 @@ where
                     tx.verified_root(DEFAULT_STATE_ID, &spec.id)?
                         .map(|root| root.root)
                 };
+                let crdt_state_vectors = tx.crdt_state_vector_hints(
+                    &spec.table,
+                    &spec.scopes,
+                    CRDT_STATE_VECTOR_HINT_LIMIT,
+                )?;
                 subscriptions.push(SubscriptionRequest {
                     id: spec.id,
                     table: spec.table,
@@ -2129,6 +2135,7 @@ where
                             .transpose()?
                     },
                     verified_root,
+                    crdt_state_vectors,
                 });
             }
 

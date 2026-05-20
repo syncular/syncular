@@ -206,6 +206,7 @@ export function createRelayRoutes<DB extends RelayDatabase = RelayDatabase>(
         params: rawParams,
         cursor,
         bootstrapState,
+        crdtStateVectors: [],
       });
     }
 

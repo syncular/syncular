@@ -179,6 +179,14 @@ pub trait SyncStoreTx {
     fn delete_verified_root(&mut self, _state_id: &str, _subscription_id: &str) -> Result<()> {
         Ok(())
     }
+    fn crdt_state_vector_hints(
+        &mut self,
+        _table: &str,
+        _scopes: &ScopeValues,
+        _limit: i64,
+    ) -> Result<Vec<CrdtStateVectorHint>> {
+        Ok(Vec::new())
+    }
 
     fn clear_table_for_scopes(&mut self, table: &str, scopes: &ScopeValues) -> Result<()>;
     fn clear_table_for_scopes_preserving_local_crdt(
