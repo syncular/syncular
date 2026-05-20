@@ -273,7 +273,9 @@ read-only review:
     reusable HTTP fixture, including websocket push response and subscriber
     wakeup. Stateful HTTP/WebSocket request capture now lets app tests assert
     production auth and schema-version headers, and the fixture can now enforce
-    required authorization for HTTP sync and WebSocket connections. Stateful
+    required authorization for HTTP sync and WebSocket connections. App-facing
+    assertions now cover server rows, missing rows, commit counts, and captured
+    auth headers so app tests do not need to inspect fixture internals. Stateful
     scope coverage now proves bootstrap rows, later commits, and deletes are
     filtered through generated app schema scopes. Stateful encrypted-field coverage now proves
     the server stores ciphertext while a second client pulls decrypted

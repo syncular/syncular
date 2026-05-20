@@ -16,13 +16,14 @@ use syncular_runtime::transport::{
 };
 use syncular_testkit::{
     actor_project_scopes, apply_crdt_field_text, apply_native_crdt_field_text,
-    apply_native_todo_task_upsert, assert_blob_upload_queue, assert_conflict_count,
-    assert_crdt_field_materializes, assert_crdt_field_text_nonblank,
-    assert_native_crdt_field_materializes, assert_native_error_kind, assert_native_rows_changed,
-    assert_native_table_row_count, assert_no_conflicts, assert_outbox_empty,
-    assert_outbox_statuses, assert_table_has_row, assert_table_row_count,
-    default_combined_response, encoded_blob_hash, open_app_client, open_app_client_in_memory,
-    open_app_client_with_server, open_app_client_with_transport,
+    apply_native_todo_task_upsert, assert_app_server_auth_header, assert_app_server_commit_count,
+    assert_app_server_has_row, assert_app_server_missing_row, assert_app_server_row_count,
+    assert_blob_upload_queue, assert_conflict_count, assert_crdt_field_materializes,
+    assert_crdt_field_text_nonblank, assert_native_crdt_field_materializes,
+    assert_native_error_kind, assert_native_rows_changed, assert_native_table_row_count,
+    assert_no_conflicts, assert_outbox_empty, assert_outbox_statuses, assert_table_has_row,
+    assert_table_row_count, default_combined_response, encoded_blob_hash, open_app_client,
+    open_app_client_in_memory, open_app_client_with_server, open_app_client_with_transport,
     open_native_client_with_schema_json_options, open_native_client_with_schema_options,
     open_todo_client, open_todo_client_with_transport, push_conflict_response,
     snapshot_combined_response, sync_conformance_str, sync_conformance_value, todo_app_schema_json,
@@ -134,16 +135,9 @@ fn app_test_server_applies_pushes_and_later_pull_reads_state() {
         .expect("add task");
     let report = writer.client.sync_http().expect("writer sync");
     assert!(report.changed_tables.contains(&"tasks".to_string()));
-    assert_eq!(
-        server.row("tasks", "app-server-task").unwrap()["title"],
-        "Stateful server task"
-    );
-    assert_eq!(
-        server
-            .wait_for_commit_count(1, Duration::from_secs(1))
-            .len(),
-        1
-    );
+    let server_row = assert_app_server_has_row(&server, "tasks", "app-server-task");
+    assert_eq!(server_row["title"], "Stateful server task");
+    assert_app_server_commit_count(&server, 1, Duration::from_secs(1));
 
     let report = reader.client.sync_http().expect("reader sync");
     assert!(report.changed_tables.contains(&"tasks".to_string()));
@@ -219,6 +213,7 @@ fn app_test_server_filters_bootstrap_commits_and_deletes_by_scope() {
             }),
         )
         .expect("seed hidden row");
+    assert_app_server_row_count(&server, "tasks", 2);
     let mut reader = open_app_client_with_server(
         todo::app_schema(),
         server.clone(),
@@ -269,6 +264,7 @@ fn app_test_server_filters_bootstrap_commits_and_deletes_by_scope() {
     server
         .delete_row("tasks", "scope-p0-seed")
         .expect("delete visible row");
+    assert_app_server_missing_row(&server, "tasks", "scope-p0-seed");
     reader.client.sync_http().expect("pull scoped delete");
     let rows = assert_table_row_count(&mut reader.client, "tasks", 1);
     assert_eq!(rows[0]["id"], "scope-p0-commit");
@@ -327,13 +323,9 @@ fn app_test_http_server_serves_stateful_sync_and_realtime_wakeups() {
     let rows = assert_table_row_count(&mut reader.client, "tasks", 1);
     assert_eq!(rows[0]["id"], "app-server-http-task");
     assert_eq!(rows[0]["title"], "Stateful HTTP task");
-    assert_eq!(
-        server
-            .app_server()
-            .row("tasks", "app-server-http-task")
-            .unwrap()["title"],
-        "Stateful HTTP task"
-    );
+    let server_row =
+        assert_app_server_has_row(server.app_server(), "tasks", "app-server-http-task");
+    assert_eq!(server_row["title"], "Stateful HTTP task");
 }
 
 #[test]
@@ -383,13 +375,9 @@ fn app_test_http_server_accepts_production_realtime_pushes() {
 
     assert_eq!(response.status, "applied");
     assert_eq!(response.commit_seq, Some(1));
-    assert_eq!(
-        server
-            .app_server()
-            .row("tasks", "app-server-ws-push-task")
-            .expect("server row")["title"],
-        "WebSocket pushed task"
-    );
+    let server_row =
+        assert_app_server_has_row(server.app_server(), "tasks", "app-server-ws-push-task");
+    assert_eq!(server_row["title"], "WebSocket pushed task");
     assert_eq!(
         next_realtime_event(&mut reader_socket, Duration::from_secs(2)),
         Some("Sync".to_string())
@@ -522,11 +510,12 @@ fn app_test_http_server_enforces_configured_authorization() {
         .expect("authorized websocket");
     socket.close();
 
-    let captured_headers = server.app_server().auth_headers();
-    assert!(captured_headers.iter().any(|headers| {
-        headers.get("authorization") == Some(&required_authorization)
-            && headers.get("x-syncular-tenant").map(String::as_str) == Some("tenant-auth")
-    }));
+    assert_app_server_auth_header(
+        server.app_server(),
+        "authorization",
+        &required_authorization,
+    );
+    assert_app_server_auth_header(server.app_server(), "x-syncular-tenant", "tenant-auth");
 }
 
 #[test]
@@ -592,13 +581,9 @@ fn app_test_http_server_reports_stateful_version_conflicts() {
     let conflicts = assert_conflict_count(&mut fixture.client, 1);
     assert_eq!(conflicts[0].code.as_deref(), Some("VERSION_CONFLICT"));
     assert_eq!(conflicts[0].server_version, Some(2));
-    assert_eq!(
-        server
-            .app_server()
-            .row("tasks", "app-server-http-conflict")
-            .expect("server row")["title"],
-        "Server edit"
-    );
+    let server_row =
+        assert_app_server_has_row(server.app_server(), "tasks", "app-server-http-conflict");
+    assert_eq!(server_row["title"], "Server edit");
     let row = assert_table_has_row(
         &mut fixture.client,
         "tasks",
@@ -701,14 +686,12 @@ fn app_test_server_merges_concurrent_server_merge_crdt_updates() {
         "merged CRDT text should contain B: {text}"
     );
     assert!(
-        server.row("tasks", "app-server-crdt-task").unwrap()["title_yjs_state"]
+        assert_app_server_has_row(&server, "tasks", "app-server-crdt-task")["title_yjs_state"]
             .as_str()
             .is_some_and(|state| !state.is_empty())
     );
     assert_eq!(
-        server
-            .wait_for_commit_count(2, Duration::from_secs(1))
-            .len(),
+        assert_app_server_commit_count(&server, 2, Duration::from_secs(1)).len(),
         2
     );
 }
@@ -758,9 +741,8 @@ fn app_test_server_syncs_encrypted_fields_without_plaintext_storage() {
         .expect("local encrypted mutation");
     writer.client.sync_http().expect("writer push");
 
-    let encrypted_title = server
-        .row("tasks", "app-server-e2ee-task")
-        .expect("server encrypted row")["title"]
+    let encrypted_title = assert_app_server_has_row(&server, "tasks", "app-server-e2ee-task")
+        ["title"]
         .as_str()
         .expect("encrypted title")
         .to_string();

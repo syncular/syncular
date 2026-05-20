@@ -1,9 +1,11 @@
 use serde_json::Value;
+use std::time::Duration;
 use syncular_runtime::client::SyncularClient;
 use syncular_runtime::diesel_sqlite::DieselSqliteStore;
 use syncular_runtime::store::{ConflictSummary, OutboxSummary};
-use syncular_runtime::transport::SyncTransport;
+use syncular_runtime::transport::{SyncAuthHeaders, SyncTransport};
 
+use crate::app_server::{AppTestServer, AppTestServerCommit};
 use crate::transport::{BlobUploadRecord, TestTransportHandle};
 
 pub fn assert_outbox_empty<T>(
@@ -168,4 +170,58 @@ pub fn assert_blob_uploaded(handle: &TestTransportHandle, hash: &str) -> BlobUpl
         .into_iter()
         .find(|upload| upload.blob.hash == hash)
         .unwrap_or_else(|| panic!("expected uploaded blob {hash}"))
+}
+
+pub fn assert_app_server_row_count(
+    server: &AppTestServer,
+    table: &str,
+    expected: usize,
+) -> Vec<Value> {
+    let rows = server.rows(table);
+    assert_eq!(
+        rows.len(),
+        expected,
+        "unexpected AppTestServer row count for {table}: {rows:?}"
+    );
+    rows
+}
+
+pub fn assert_app_server_has_row(server: &AppTestServer, table: &str, row_id: &str) -> Value {
+    server
+        .row(table, row_id)
+        .unwrap_or_else(|| panic!("expected AppTestServer row {table}.{row_id}"))
+}
+
+pub fn assert_app_server_missing_row(server: &AppTestServer, table: &str, row_id: &str) {
+    assert!(
+        server.row(table, row_id).is_none(),
+        "expected missing AppTestServer row {table}.{row_id}"
+    );
+}
+
+pub fn assert_app_server_commit_count(
+    server: &AppTestServer,
+    expected: usize,
+    timeout: Duration,
+) -> Vec<AppTestServerCommit> {
+    let commits = server.wait_for_commit_count(expected, timeout);
+    assert_eq!(
+        commits.len(),
+        expected,
+        "unexpected AppTestServer commit count: {commits:?}"
+    );
+    commits
+}
+
+pub fn assert_app_server_auth_header(
+    server: &AppTestServer,
+    name: &str,
+    expected: &str,
+) -> SyncAuthHeaders {
+    let name = name.to_ascii_lowercase();
+    server
+        .auth_headers()
+        .into_iter()
+        .find(|headers| headers.get(&name).map(String::as_str) == Some(expected))
+        .unwrap_or_else(|| panic!("expected AppTestServer auth header {name}={expected}"))
 }

@@ -75,6 +75,9 @@ tests.
   failures against the reusable fixture instead of building private auth mocks.
 - Updated the public `syncular-testkit` README with required-auth usage, current
   conformance gate commands, and the correct native event subscription example.
+- Added app-facing `AppTestServer` assertions for server rows, missing rows,
+  commit counts, and captured auth headers so downstream tests can avoid
+  reaching into fixture internals.
 - Added a scoped stateful server smoke proving bootstrap rows, later commits,
   and deletes are all filtered by the generated app schema scopes.
 - Added stateful encrypted-field sync coverage proving server-side stored rows
