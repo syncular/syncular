@@ -490,6 +490,17 @@ export async function ensureSyncularAppSchema(db: Kysely<any>): Promise<void> {
   await ensureSyncularAppDerivedSchema(db);
 }
 
+export async function ensureSyncularAppLiveSchema(db: Kysely<any>): Promise<void> {
+  const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppSchemaMetadata(db);
+  await ensureSyncularAppBaseSchema(db);
+  await ensureSyncularAppIndexes(db);
+  await ensureSyncularAppReadModelSetup(db);
+  if (syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion) {
+    await assertSyncularAppTablesEmptyForLiveSchema(db);
+  }
+  await recordSyncularAppSchemaVersion(db);
+}
+
 interface SyncularGeneratedColumnInfo {
   name: string;
   type: string;
@@ -529,6 +540,19 @@ async function syncularGeneratedTableExists(db: Kysely<any>, table: string): Pro
     limit 1
   `.execute(db);
   return rows.rows.length > 0;
+}
+
+async function assertSyncularAppTablesEmptyForLiveSchema(db: Kysely<any>): Promise<void> {
+  for (const table of syncularGeneratedAppTables) {
+    const rows = await sql<{ found: number }>`
+      select 1 as found
+      from ${sql.table(String(table))}
+      limit 1
+    `.execute(db);
+    if (rows.rows.length > 0) {
+      throw new Error(`Syncular live schema install cannot skip read-model rebuild because ${String(table)} already contains rows`);
+    }
+  }
 }
 
 async function validateSyncularAppSchema(db: Kysely<any>): Promise<void> {
@@ -595,10 +619,12 @@ export type SyncularAppSubscriptionsOption =
   | readonly SyncularSubscriptionSpec[]
   | ((args: SyncularSubscriptionArgs) => readonly SyncularSubscriptionSpec[]);
 
+export type SyncularAppSchemaInstallMode = 'full' | 'base' | 'liveSetup' | 'none';
+
 export interface CreateSyncularAppDatabaseOptions extends CreateSyncularRustSqliteDatabaseOptions {
   subscriptions?: SyncularAppSubscriptionsOption;
   bootstrapPhases?: Record<string, number>;
-  schemaInstallMode?: 'full' | 'base' | 'none';
+  schemaInstallMode?: SyncularAppSchemaInstallMode;
 }
 
 export async function assertSyncularAppRuntime(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {
@@ -667,6 +693,8 @@ export async function createSyncularAppDatabase(
       await withSyncularV2SchemaWrites(database, ensureSyncularAppSchema);
     } else if (schemaInstallMode === 'base') {
       await withSyncularV2SchemaWrites(database, ensureSyncularAppBaseSchema);
+    } else if (schemaInstallMode === 'liveSetup') {
+      await withSyncularV2SchemaWrites(database, ensureSyncularAppLiveSchema);
     } else if (schemaInstallMode !== 'none') {
       throw new Error(`Unknown Syncular schemaInstallMode: ${schemaInstallMode}`);
     }

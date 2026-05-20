@@ -142,7 +142,8 @@ read-only review:
     Latest external evidence shows derived-schema setup is now a larger
     app-harness cost than artifact apply, so the next benchmark slice should
     use the generated derived-schema phase helpers from WP-06 to compare app
-    install strategies before more artifact-memory micro-probes.
+    install strategies, including the generated `liveSetup` path, before more
+    artifact-memory micro-probes.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin
@@ -179,7 +180,10 @@ read-only review:
     Generated TypeScript clients now also export local index metadata plus
     explicit derived-schema phase helpers for index setup, read-model setup, and
     read-model rebuild, so app adapters can consume the generated contract
-    directly instead of reconstructing local schema SQL.
+    directly instead of reconstructing local schema SQL. The generated
+    `liveSetup` install mode prepares those live-maintained local structures
+    without a read-model rebuild only when app tables are empty or already
+    marked current.
     Browser scoreboard now measures raw aggregate and read-model aggregate lanes:
     at 100k rows, Rust read-model aggregate p50 is `0.05ms` vs TS `0.53ms`
     while raw aggregate remains visible (`23.00ms` Rust vs `161.09ms` TS). This
