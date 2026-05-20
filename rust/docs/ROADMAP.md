@@ -272,9 +272,10 @@ read-only review:
     Production `RealtimeTransport::push_commit` is now covered against the same
     reusable HTTP fixture, including websocket push response and subscriber
     wakeup. Stateful HTTP/WebSocket request capture now lets app tests assert
-    production auth and schema-version headers. Stateful scope coverage now
-    proves bootstrap rows, later commits, and deletes are filtered through
-    generated app schema scopes. Stateful encrypted-field coverage now proves
+    production auth and schema-version headers, and the fixture can now enforce
+    required authorization for HTTP sync and WebSocket connections. Stateful
+    scope coverage now proves bootstrap rows, later commits, and deletes are
+    filtered through generated app schema scopes. Stateful encrypted-field coverage now proves
     the server stores ciphertext while a second client pulls decrypted
     plaintext. Stateful blob coverage now exercises queued upload, queue drain,
     local cache clear, remote download, and recache through real client APIs.

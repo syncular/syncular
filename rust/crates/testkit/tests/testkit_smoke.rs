@@ -27,8 +27,9 @@ use syncular_testkit::{
     open_todo_client, open_todo_client_with_transport, push_conflict_response,
     snapshot_combined_response, sync_conformance_str, sync_conformance_value, todo_app_schema_json,
     todo_snapshot_response, todo_task_row, AppFixtureOptions, AppTestHttpServer, AppTestServer,
-    FaultOperation, FaultPhase, FaultStep, FaultTransport, NativeFixtureOptions, TestBlobServer,
-    TestBlobServerOptions, TestSyncServer, TestTransport, TodoFixtureOptions,
+    AppTestServerOptions, FaultOperation, FaultPhase, FaultStep, FaultTransport,
+    NativeFixtureOptions, TestBlobServer, TestBlobServerOptions, TestSyncServer, TestTransport,
+    TodoFixtureOptions,
 };
 use tungstenite::{connect, stream::MaybeTlsStream, Message};
 
@@ -459,6 +460,73 @@ fn app_test_http_server_records_http_and_realtime_auth_headers() {
     assert!(ws_request
         .path
         .starts_with("/sync/realtime?clientId=app-server-auth-client"));
+}
+
+#[test]
+fn app_test_http_server_enforces_configured_authorization() {
+    let app_schema = todo::app_schema();
+    let schema_version = app_schema.current_schema_version();
+    let required_authorization = sync_conformance_str(&["workerAuth", "authorization"]);
+    let server = AppTestHttpServer::start_with_server(AppTestServer::with_options(
+        app_schema,
+        AppTestServerOptions::default().require_authorization(required_authorization.clone()),
+    ))
+    .expect("stateful auth HTTP server");
+    let request = || CombinedRequest {
+        client_id: "app-server-required-auth".to_string(),
+        sync_pack_encodings: Vec::new(),
+        push: None,
+        pull: None,
+    };
+
+    let unauthorized_transport = HttpSyncTransport::new(SyncTransportConfig::new(
+        server.url(),
+        "app-server-required-auth".to_string(),
+        "actor-auth".to_string(),
+    ))
+    .with_schema_version(schema_version);
+    let error = unauthorized_transport
+        .post_sync(&request())
+        .expect_err("missing authorization should be rejected");
+    assert_eq!(error.kind(), ErrorKind::Transport);
+    assert!(error.to_string().contains("HTTP 401"));
+
+    let unauthorized_realtime = HttpSyncTransport::new(SyncTransportConfig::new(
+        server.url(),
+        "app-server-required-auth-ws".to_string(),
+        "actor-auth".to_string(),
+    ))
+    .with_schema_version(schema_version);
+    let websocket_error = unauthorized_realtime
+        .connect_realtime()
+        .err()
+        .expect("missing websocket authorization should be rejected");
+    assert_eq!(websocket_error.kind(), ErrorKind::Transport);
+
+    let mut authorized_transport = HttpSyncTransport::new(SyncTransportConfig::new(
+        server.url(),
+        "app-server-required-auth-ok".to_string(),
+        "actor-auth".to_string(),
+    ))
+    .with_schema_version(schema_version);
+    let mut headers = SyncAuthHeaders::new();
+    headers.insert("authorization".to_string(), required_authorization.clone());
+    headers.insert("x-syncular-tenant".to_string(), "tenant-auth".to_string());
+    authorized_transport.set_auth_headers(headers);
+
+    authorized_transport
+        .post_sync(&request())
+        .expect("authorized HTTP sync");
+    let mut socket = authorized_transport
+        .connect_realtime()
+        .expect("authorized websocket");
+    socket.close();
+
+    let captured_headers = server.app_server().auth_headers();
+    assert!(captured_headers.iter().any(|headers| {
+        headers.get("authorization") == Some(&required_authorization)
+            && headers.get("x-syncular-tenant").map(String::as_str) == Some("tenant-auth")
+    }));
 }
 
 #[test]

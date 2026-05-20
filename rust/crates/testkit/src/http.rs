@@ -14,8 +14,8 @@ use syncular_runtime::protocol::{
     CombinedRequest, CombinedResponse, PushBatchRequest, PushCommitRequest, SyncOperation,
     SYNC_PACK_ENCODING_BINARY_V1,
 };
-use syncular_runtime::transport::SyncTransport;
-use tungstenite::Message;
+use syncular_runtime::transport::{SyncAuthHeaders, SyncTransport};
+use tungstenite::{http::StatusCode, Message};
 
 use crate::app_server::AppTestServer;
 
@@ -493,6 +493,15 @@ fn handle_app_test_http_connection(
         );
         return;
     }
+    let auth_headers = auth_headers_from_request(&request);
+    server.record_auth_headers(auth_headers.clone());
+    if !server.is_authorized_headers(&auth_headers) {
+        write_http_response(
+            &mut stream,
+            TestHttpResponse::status(401, "Unauthorized", "unauthorized"),
+        );
+        return;
+    }
 
     let response = (|| {
         let request = serde_json::from_str::<CombinedRequest>(&request.body)?;
@@ -554,6 +563,14 @@ fn handle_app_test_ws_connection(
             client_id = query_param(request.uri().query().unwrap_or_default(), "clientId")
                 .unwrap_or_else(|| "app-test-ws-client".to_string());
             record_app_test_http_request(state, websocket_request_record(request));
+            let auth_headers = auth_headers_from_ws_request(request);
+            server.record_auth_headers(auth_headers.clone());
+            if !server.is_authorized_headers(&auth_headers) {
+                return Err(tungstenite::handshake::server::Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .body(Some("unauthorized".to_string()))
+                    .expect("unauthorized websocket response"));
+            }
             Ok(response)
         },
     ) {
@@ -649,6 +666,35 @@ fn websocket_request_record(request: &tungstenite::handshake::server::Request) -
             })
             .collect(),
         body: String::new(),
+    }
+}
+
+fn auth_headers_from_request(request: &TestHttpRequest) -> SyncAuthHeaders {
+    request
+        .headers
+        .iter()
+        .filter_map(|(name, value)| auth_header_entry(name, value))
+        .collect()
+}
+
+fn auth_headers_from_ws_request(
+    request: &tungstenite::handshake::server::Request,
+) -> SyncAuthHeaders {
+    request
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| auth_header_entry(name.as_str(), value.to_str().ok()?))
+        .collect()
+}
+
+fn auth_header_entry(name: &str, value: &str) -> Option<(String, String)> {
+    let name = name.to_ascii_lowercase();
+    if name == "authorization"
+        || (name.starts_with("x-syncular-") && name != "x-syncular-schema-version")
+    {
+        Some((name, value.to_string()))
+    } else {
+        None
     }
 }
 

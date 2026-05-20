@@ -24,6 +24,7 @@ pub struct AppTestServerOptions {
     pub created_at_prefix: String,
     pub emit_realtime_sync: bool,
     pub delivery_mode: AppTestServerDeliveryMode,
+    pub required_authorization: Option<String>,
 }
 
 impl Default for AppTestServerOptions {
@@ -33,7 +34,15 @@ impl Default for AppTestServerOptions {
             created_at_prefix: "2026-01-01T00:00:00".to_string(),
             emit_realtime_sync: true,
             delivery_mode: AppTestServerDeliveryMode::Normal,
+            required_authorization: None,
         }
+    }
+}
+
+impl AppTestServerOptions {
+    pub fn require_authorization(mut self, authorization: impl Into<String>) -> Self {
+        self.required_authorization = Some(authorization.into());
+        self
     }
 }
 
@@ -215,6 +224,21 @@ impl AppTestServer {
             .clone()
     }
 
+    pub fn record_auth_headers(&self, headers: SyncAuthHeaders) {
+        self.state
+            .lock()
+            .expect("app test server state")
+            .auth_headers
+            .push(headers);
+    }
+
+    pub fn is_authorized_headers(&self, headers: &SyncAuthHeaders) -> bool {
+        match self.options.required_authorization.as_ref() {
+            Some(required) => headers.get("authorization") == Some(required),
+            None => true,
+        }
+    }
+
     pub fn closed_realtime_count(&self) -> usize {
         self.state
             .lock()
@@ -287,6 +311,9 @@ impl AppTestServer {
         request: &CombinedRequest,
     ) -> Result<CombinedResponse> {
         state.requests.push(request.clone());
+        if !self.is_authorized_locked(state) {
+            return Err(unauthorized_error());
+        }
         let push = request
             .push
             .as_ref()
@@ -599,15 +626,24 @@ impl AppTestServer {
     fn created_at(&self, commit_seq: i64) -> String {
         format!("{}.{commit_seq:03}Z", self.options.created_at_prefix)
     }
+
+    fn is_authorized_locked(&self, state: &AppTestServerState) -> bool {
+        match self.options.required_authorization.as_ref() {
+            Some(required) => {
+                state
+                    .auth_headers
+                    .last()
+                    .and_then(|headers| headers.get("authorization"))
+                    == Some(required)
+            }
+            None => true,
+        }
+    }
 }
 
 impl SyncAuthHeaderStore for AppTestServer {
     fn set_auth_headers(&mut self, headers: SyncAuthHeaders) {
-        self.state
-            .lock()
-            .expect("app test server state")
-            .auth_headers
-            .push(headers);
+        self.record_auth_headers(headers);
     }
 }
 
@@ -813,4 +849,11 @@ fn applied_result(index: usize, server_version: Option<i64>) -> OperationResult 
         server_version,
         server_row: None,
     }
+}
+
+fn unauthorized_error() -> SyncularError {
+    SyncularError::message(
+        ErrorKind::Transport,
+        "unauthorized: missing or invalid authorization header",
+    )
 }
