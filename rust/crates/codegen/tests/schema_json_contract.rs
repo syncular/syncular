@@ -108,6 +108,14 @@ fn assert_schema_contract(path: &Path) {
         assert_non_empty_string(&index["table"], "localDerivedSchema.indexes.table");
         assert_non_empty_string(&index["name"], "localDerivedSchema.indexes.name");
         assert_non_empty_string(&index["sql"], "localDerivedSchema.indexes.sql");
+        assert!(
+            index["unique"].as_bool().is_some(),
+            "localDerivedSchema.indexes.unique must be a boolean"
+        );
+        assert!(
+            index["partial"].as_bool().is_some(),
+            "localDerivedSchema.indexes.partial must be a boolean"
+        );
     }
     assert!(
         local_derived["readModelSetupSql"].as_array().is_some(),

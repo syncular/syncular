@@ -828,6 +828,9 @@ Retained local-index normalization follow-up:
   shorter index's leading column sequence.
 - Unique and partial indexes are preserved. This is an app-declared index
   normalization, not hidden caching or a runtime fallback.
+- The stable schema contract and generated TypeScript local-index metadata now
+  carry structured `unique` and `partial` booleans, so future generator/binding
+  work does not need to infer index semantics from SQL text.
 - The external benchmark app's shorter
   `(project_id, owner_id, completed)` index is covered by
   `(project_id, owner_id, completed, updated_at desc)` and is no longer created

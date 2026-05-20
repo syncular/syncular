@@ -424,12 +424,14 @@ fn sqlite_index_create_if_not_exists(sql: &str) -> String {
     trimmed.to_string()
 }
 
+#[cfg(test)]
 fn sqlite_index_sql_is_unique(sql: &str) -> bool {
     let upper = sql.trim().to_ascii_uppercase();
     upper.starts_with("CREATE UNIQUE INDEX ")
         || upper.starts_with("CREATE UNIQUE INDEX IF NOT EXISTS ")
 }
 
+#[cfg(test)]
 fn sqlite_index_sql_is_partial(sql: &str) -> bool {
     sql.to_ascii_uppercase().contains(" WHERE ")
 }
@@ -687,6 +689,8 @@ struct SchemaJsonTable {
 struct SchemaJsonIndex {
     name: String,
     sql: String,
+    unique: bool,
+    partial: bool,
     columns: Vec<SchemaJsonIndexColumn>,
 }
 
@@ -711,6 +715,8 @@ struct SchemaJsonLocalDerivedIndex {
     table: String,
     name: String,
     sql: String,
+    unique: bool,
+    partial: bool,
     columns: Vec<SchemaJsonIndexColumn>,
 }
 
@@ -870,6 +876,8 @@ fn generate_schema_json(
                 .map(|index| SchemaJsonIndex {
                     name: index.name.clone(),
                     sql: sqlite_index_create_if_not_exists(&index.sql),
+                    unique: index.unique,
+                    partial: index.partial,
                     columns: schema_json_index_columns(index),
                 })
                 .collect(),
@@ -949,6 +957,8 @@ fn generate_schema_json(
                         table: table.name.clone(),
                         name: index.name.clone(),
                         sql: index.sql.clone(),
+                        unique: index.unique,
+                        partial: index.partial,
                         columns: index.columns.clone(),
                     })
             })
@@ -1188,8 +1198,8 @@ fn schema_backed_codegen_inputs(
                             descending: column.descending,
                         })
                         .collect(),
-                    unique: sqlite_index_sql_is_unique(&index.sql),
-                    partial: sqlite_index_sql_is_partial(&index.sql),
+                    unique: index.unique,
+                    partial: index.partial,
                 })
                 .collect(),
         });
@@ -4981,6 +4991,8 @@ fn generate_typescript_module(
     out.push_str("  table: keyof SyncularAppDb;\n");
     out.push_str("  name: string;\n");
     out.push_str("  sql: string;\n");
+    out.push_str("  unique: boolean;\n");
+    out.push_str("  partial: boolean;\n");
     out.push_str("  columns: readonly { name: string | null; descending: boolean }[];\n");
     out.push_str("}\n\n");
     out.push_str(
@@ -4996,6 +5008,8 @@ fn generate_typescript_module(
                 &sqlite_index_create_if_not_exists(&index.sql),
             ));
             out.push_str("`,\n");
+            out.push_str(&format!("    unique: {},\n", index.unique));
+            out.push_str(&format!("    partial: {},\n", index.partial));
             out.push_str("    columns: [");
             for (column_index, column) in index.columns.iter().enumerate() {
                 if column_index > 0 {
@@ -9718,6 +9732,8 @@ mod tests {
         assert_eq!(table["scopes"][0]["name"], "project_id");
         assert_eq!(table["scopes"][0]["source"], "projectId");
         assert_eq!(table["indexes"][0]["name"], "idx_tasks_project_id");
+        assert_eq!(table["indexes"][0]["unique"], false);
+        assert_eq!(table["indexes"][0]["partial"], false);
         assert_eq!(table["indexes"][0]["columns"][0]["name"], "project_id");
         assert_eq!(table["indexes"][0]["columns"][0]["descending"], false);
         assert_eq!(table["indexes"][0]["columns"][1]["name"], "id");
@@ -9741,6 +9757,8 @@ mod tests {
             "INSERT INTO \"syncular_task_counts_by_deleted\" (\"deleted\", \"task_count\")\nSELECT \"deleted\", count(*)\nFROM \"tasks\"\nGROUP BY \"deleted\""
         );
         assert_eq!(json["localDerivedSchema"]["indexes"][0]["table"], "tasks");
+        assert_eq!(json["localDerivedSchema"]["indexes"][0]["unique"], false);
+        assert_eq!(json["localDerivedSchema"]["indexes"][0]["partial"], false);
         assert_eq!(
             json["localDerivedSchema"]["indexes"][0]["columns"][0]["name"],
             "project_id"
@@ -10224,6 +10242,8 @@ mod tests {
             "export const syncularGeneratedLocalIndexes: readonly SyncularGeneratedLocalIndex[] = ["
         ));
         assert!(output.contains("name: 'idx_tasks_user_project_id'"));
+        assert!(output.contains("unique: false"));
+        assert!(output.contains("partial: false"));
         assert!(output.contains(
             "CREATE INDEX IF NOT EXISTS idx_tasks_user_project_id ON tasks (user_id, project_id, id)"
         ));
