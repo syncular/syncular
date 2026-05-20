@@ -355,6 +355,47 @@ Decision:
   not show an overhead regression. The browser bundle size increase is small
   enough to keep because future artifact state work needs these counters.
 
+## 2026-05-20 - Rejected Artifact Page Cap 1
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Probe:
+
+- Changed browser direct SQLite artifact pulls from cap `2` snapshot pages per
+  pull to cap `1`.
+- The goal was to reduce attached artifact DB retention by forcing at most one
+  artifact page per apply transaction.
+
+Command:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-artifact-cap1-100k.json
+```
+
+| Metric | Cap 2 accepted | Cap 1 probe |
+| --- | ---: | ---: |
+| 100k Rust artifact bootstrap | `136.33ms` | `139.76ms` |
+| Rust pull rounds | `1` | `2` |
+| Rust request count | `3` | `4` |
+| Rust response bytes | `874,885` | `875,060` |
+| Rust artifact count | `2` | `2` |
+| Rust artifact apply | `111ms` | `112ms` |
+| Browser heap delta | `5.18MB` | `6.63MB` |
+
+Decision:
+
+- Rejected and reverted. Cap `1` increases request overhead and did not reduce
+  browser heap in the measured path, so cap `2` remains the accepted shape.
+
 ## 2026-05-20 - Rejected Artifact Page Cap 3
 
 Work package:

@@ -925,6 +925,16 @@ Retained browser artifact timing counters follow-up:
   response bytes `3,537,717 -> 3,537,647`, peak memory
   `662.03MB -> 668.20MB`, and `snapshotChunkCount=0`.
 
+Rejected artifact cap-1 probe:
+
+- Tried forcing browser direct SQLite artifact pulls to `maxSnapshotPages=1` so
+  a pull transaction would retain at most one attached artifact DB.
+- Rejected and reverted. Local 100k artifact bootstrap regressed
+  `136.33ms -> 139.76ms`, pull rounds increased `1 -> 2`, request count
+  increased `3 -> 4`, and browser heap delta worsened `5.18MB -> 6.63MB`.
+- Cap `2` remains the accepted state shape until a different bootstrap state
+  design proves lower memory without request/heap regression.
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.
