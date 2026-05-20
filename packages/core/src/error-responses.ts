@@ -149,6 +149,24 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     recommendedAction: 'inspectServer',
     message: 'A console downstream instance returned an invalid response.',
   },
+  'proxy.auth_required': {
+    category: 'auth-required',
+    retryable: true,
+    recommendedAction: 'refreshAuth',
+    message: 'Proxy authentication is required.',
+  },
+  'proxy.forbidden_origin': {
+    category: 'forbidden',
+    retryable: false,
+    recommendedAction: 'checkPermissions',
+    message: 'The proxy websocket origin is not allowed.',
+  },
+  'proxy.connection_limit': {
+    category: 'rate-limited',
+    retryable: true,
+    recommendedAction: 'retryLater',
+    message: 'The proxy websocket connection limit was reached.',
+  },
   'blob.invalid_request': {
     category: 'blob',
     retryable: false,
