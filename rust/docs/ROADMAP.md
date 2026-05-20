@@ -271,6 +271,10 @@ read-only review:
     BoltFFI/generated Swift/Kotlin/Java, and the full native smoke lane passes.
     Encrypted pull integrity is verified on the wire payload before decrypting
     fields, then the verified root is persisted during decrypted local apply.
+    Row-change metadata now includes structured `crdtFieldChanges`, native
+    remote pulls emit generic `CrdtFieldChanged` events for CRDT-backed field
+    changes, and browser/generated TypeScript/Swift/Kotlin/Java surfaces expose
+    the same metadata to app bridges.
 - `[~]` [`WP-08 Testkit And Conformance`](work-packages/WP-08-testkit-conformance.md)
   - Rust testkit now exposes `AppTestHttpServer`, a disposable HTTP/WebSocket
     wrapper around the stateful `AppTestServer`. Smoke coverage proves HTTP

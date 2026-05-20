@@ -189,6 +189,17 @@ pub struct SubscriptionSpec {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SyncChangedCrdtField {
+    pub field: String,
+    pub state_column: String,
+    pub container_key: String,
+    pub row_id_field: String,
+    pub kind: String,
+    pub sync_mode: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SyncChangedRow {
     pub table: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -198,6 +209,8 @@ pub struct SyncChangedRow {
     pub changed_fields: Vec<String>,
     #[serde(default)]
     pub crdt_fields: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub crdt_field_changes: Vec<SyncChangedCrdtField>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commit_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -357,11 +370,14 @@ pub fn sync_changed_row_for_local_operation(
     } else {
         operation.op.as_str()
     };
+    let crdt_field_changes = crdt_field_changes_for_fields(metadata, &changed_fields);
+    let crdt_fields = crdt_state_columns_for_changes(&crdt_field_changes);
     Some(SyncChangedRow {
         table: operation.table.clone(),
         row_id: Some(operation.row_id.clone()),
         operation: operation_kind.to_string(),
-        crdt_fields: crdt_state_columns_for_fields(metadata, &changed_fields),
+        crdt_fields,
+        crdt_field_changes,
         changed_fields,
         commit_id,
         commit_seq: None,
@@ -379,6 +395,8 @@ pub fn sync_changed_row_for_change(
 ) -> Option<SyncChangedRow> {
     let metadata = app_schema.table_metadata(&change.table)?;
     let changed_fields = changed_fields_from_remote_change(metadata, change, previous_row);
+    let crdt_field_changes = crdt_field_changes_for_fields(metadata, &changed_fields);
+    let crdt_fields = crdt_state_columns_for_changes(&crdt_field_changes);
     Some(SyncChangedRow {
         table: change.table.clone(),
         row_id: Some(change.row_id.clone()),
@@ -389,7 +407,8 @@ pub fn sync_changed_row_for_change(
         } else {
             "insert".to_string()
         },
-        crdt_fields: crdt_state_columns_for_fields(metadata, &changed_fields),
+        crdt_fields,
+        crdt_field_changes,
         changed_fields,
         commit_id: Some(commit_seq.to_string()),
         commit_seq: Some(commit_seq),
@@ -411,6 +430,8 @@ pub fn sync_changed_row_for_snapshot(
         .and_then(Value::as_str)
         .map(str::to_string);
     let changed_fields = changed_fields_from_row_diff(metadata, previous_row, Some(row));
+    let crdt_field_changes = crdt_field_changes_for_fields(metadata, &changed_fields);
+    let crdt_fields = crdt_state_columns_for_changes(&crdt_field_changes);
     Some(SyncChangedRow {
         table: table.to_string(),
         row_id,
@@ -419,7 +440,8 @@ pub fn sync_changed_row_for_snapshot(
         } else {
             "insert".to_string()
         },
-        crdt_fields: crdt_state_columns_for_fields(metadata, &changed_fields),
+        crdt_fields,
+        crdt_field_changes,
         changed_fields,
         commit_id: None,
         commit_seq: None,
@@ -536,7 +558,8 @@ fn sync_changed_rows_for_cleared_binary_snapshot_chunk_limited(
             Some(column.name.to_string())
         })
         .collect::<Vec<_>>();
-    let crdt_fields = crdt_state_columns_for_fields(metadata, &changed_fields);
+    let crdt_field_changes = crdt_field_changes_for_fields(metadata, &changed_fields);
+    let crdt_fields = crdt_state_columns_for_changes(&crdt_field_changes);
     Ok((
         rows.rows
             .iter()
@@ -548,6 +571,7 @@ fn sync_changed_rows_for_cleared_binary_snapshot_chunk_limited(
                     .and_then(binary_snapshot_cell_row_id),
                 operation: "insert".to_string(),
                 crdt_fields: crdt_fields.clone(),
+                crdt_field_changes: crdt_field_changes.clone(),
                 changed_fields: changed_fields.clone(),
                 commit_id: None,
                 commit_seq: None,
@@ -635,7 +659,8 @@ fn sync_changed_rows_for_cleared_binary_snapshot_payload_limited(
             Some(column.name.to_string())
         })
         .collect::<Vec<_>>();
-    let crdt_fields = crdt_state_columns_for_fields(metadata, &changed_fields);
+    let crdt_field_changes = crdt_field_changes_for_fields(metadata, &changed_fields);
+    let crdt_fields = crdt_state_columns_for_changes(&crdt_field_changes);
     let mut cursor = payload.row_cursor();
     let row_limit = payload.row_count().min(limit);
     let mut rows = Vec::with_capacity(row_limit);
@@ -659,6 +684,7 @@ fn sync_changed_rows_for_cleared_binary_snapshot_payload_limited(
             row_id,
             operation: "insert".to_string(),
             crdt_fields: crdt_fields.clone(),
+            crdt_field_changes: crdt_field_changes.clone(),
             changed_fields: changed_fields.clone(),
             commit_id: None,
             commit_seq: None,
@@ -926,10 +952,10 @@ fn changed_fields_from_yjs_envelope(metadata: &AppTableMetadata, payload: &Value
     fields
 }
 
-fn crdt_state_columns_for_fields(
+fn crdt_field_changes_for_fields(
     metadata: &AppTableMetadata,
     changed_fields: &[String],
-) -> Vec<String> {
+) -> Vec<SyncChangedCrdtField> {
     let changed = changed_fields
         .iter()
         .map(String::as_str)
@@ -939,11 +965,31 @@ fn crdt_state_columns_for_fields(
         .iter()
         .filter_map(|field| {
             if changed.contains(field.field) || changed.contains(field.state_column) {
-                Some(field.state_column.to_string())
+                Some(sync_changed_crdt_field_from_metadata(field))
             } else {
                 None
             }
         })
+        .collect()
+}
+
+pub fn sync_changed_crdt_field_from_metadata(
+    field: &crate::app_schema::CrdtYjsFieldMetadata,
+) -> SyncChangedCrdtField {
+    SyncChangedCrdtField {
+        field: field.field.to_string(),
+        state_column: field.state_column.to_string(),
+        container_key: field.container_key.to_string(),
+        row_id_field: field.row_id_field.to_string(),
+        kind: field.kind.to_string(),
+        sync_mode: field.sync_mode.to_string(),
+    }
+}
+
+fn crdt_state_columns_for_changes(changes: &[SyncChangedCrdtField]) -> Vec<String> {
+    changes
+        .iter()
+        .map(|field| field.state_column.clone())
         .collect()
 }
 

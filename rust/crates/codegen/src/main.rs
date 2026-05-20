@@ -4248,6 +4248,7 @@ fn push_typescript_changed_row_helpers(out: &mut String, user_tables: &[TableInf
     out.push_str("  operation: SyncularGeneratedChangedOperation;\n");
     out.push_str("  changedFields: Field[];\n");
     out.push_str("  crdtFields: Field[];\n");
+    out.push_str("  crdtFieldChanges: (SyncularV2ChangedCrdtField & { field: Field })[];\n");
     out.push_str("  changed: Record<Field, boolean>;\n");
     out.push_str("  crdt: Record<Field, boolean>;\n");
     out.push_str("  commitId: string | null;\n");
@@ -4280,6 +4281,7 @@ fn push_typescript_changed_row_helpers(out: &mut String, user_tables: &[TableInf
     out.push_str("      operation: row.operation,\n");
     out.push_str("      changedFields: row.changedFields.filter((field): field is Field => fieldSet.has(field)),\n");
     out.push_str("      crdtFields: row.crdtFields.filter((field): field is Field => fieldSet.has(field)),\n");
+    out.push_str("      crdtFieldChanges: (row.crdtFieldChanges ?? []).filter((field): field is SyncularV2ChangedCrdtField & { field: Field } => fieldSet.has(field.field)),\n");
     out.push_str("      changed: syncularColumnFlags(row.changedFields, fields),\n");
     out.push_str("      crdt: syncularColumnFlags(row.crdtFields, fields),\n");
     out.push_str("      commitId: row.commitId ?? null,\n");
@@ -4649,7 +4651,7 @@ fn generate_typescript_module(
         ts_string(runtime_import_path)
     ));
     out.push_str(&format!(
-        "import type {{ CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedRow, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
+        "import type {{ CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedCrdtField, SyncularV2ChangedRow, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
         ts_string(runtime_import_path)
     ));
     out.push_str("import { sql, type Kysely } from 'kysely';\n");
@@ -6054,28 +6056,63 @@ fn generate_swift_module(
     out.push_str("        return String(data: try encoder.encode(self), encoding: .utf8)!\n");
     out.push_str("    }\n");
     out.push_str("}\n\n");
+    out.push_str("public struct SyncularChangedCrdtField: Decodable, Equatable {\n");
+    out.push_str("    public let field: String\n");
+    out.push_str("    public let stateColumn: String\n");
+    out.push_str("    public let containerKey: String\n");
+    out.push_str("    public let rowIdField: String\n");
+    out.push_str("    public let kind: String\n");
+    out.push_str("    public let syncMode: String\n\n");
+    out.push_str("    public init(field: String, stateColumn: String, containerKey: String, rowIdField: String, kind: String, syncMode: String) {\n");
+    out.push_str("        self.field = field\n");
+    out.push_str("        self.stateColumn = stateColumn\n");
+    out.push_str("        self.containerKey = containerKey\n");
+    out.push_str("        self.rowIdField = rowIdField\n");
+    out.push_str("        self.kind = kind\n");
+    out.push_str("        self.syncMode = syncMode\n");
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
     out.push_str("public struct SyncularChangedRow: Decodable, Equatable {\n");
     out.push_str("    public let table: String\n");
     out.push_str("    public let rowId: String?\n");
     out.push_str("    public let operation: String\n");
     out.push_str("    public let changedFields: [String]\n");
     out.push_str("    public let crdtFields: [String]\n");
+    out.push_str("    public let crdtFieldChanges: [SyncularChangedCrdtField]\n");
     out.push_str("    public let commitId: String?\n");
     out.push_str("    public let commitSeq: Int64?\n");
     out.push_str("    public let subscriptionId: String?\n");
     out.push_str("    public let serverVersion: Int64?\n\n");
     out.push_str(
-        "    public init(table: String, rowId: String? = nil, operation: String, changedFields: [String] = [], crdtFields: [String] = [], commitId: String? = nil, commitSeq: Int64? = nil, subscriptionId: String? = nil, serverVersion: Int64? = nil) {\n",
+        "    public init(table: String, rowId: String? = nil, operation: String, changedFields: [String] = [], crdtFields: [String] = [], crdtFieldChanges: [SyncularChangedCrdtField] = [], commitId: String? = nil, commitSeq: Int64? = nil, subscriptionId: String? = nil, serverVersion: Int64? = nil) {\n",
     );
     out.push_str("        self.table = table\n");
     out.push_str("        self.rowId = rowId\n");
     out.push_str("        self.operation = operation\n");
     out.push_str("        self.changedFields = changedFields\n");
     out.push_str("        self.crdtFields = crdtFields\n");
+    out.push_str("        self.crdtFieldChanges = crdtFieldChanges\n");
     out.push_str("        self.commitId = commitId\n");
     out.push_str("        self.commitSeq = commitSeq\n");
     out.push_str("        self.subscriptionId = subscriptionId\n");
     out.push_str("        self.serverVersion = serverVersion\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public init(from decoder: Decoder) throws {\n");
+    out.push_str("        let container = try decoder.container(keyedBy: CodingKeys.self)\n");
+    out.push_str("        table = try container.decode(String.self, forKey: .table)\n");
+    out.push_str("        rowId = try container.decodeIfPresent(String.self, forKey: .rowId)\n");
+    out.push_str("        operation = try container.decode(String.self, forKey: .operation)\n");
+    out.push_str("        changedFields = try container.decodeIfPresent([String].self, forKey: .changedFields) ?? []\n");
+    out.push_str("        crdtFields = try container.decodeIfPresent([String].self, forKey: .crdtFields) ?? []\n");
+    out.push_str("        crdtFieldChanges = try container.decodeIfPresent([SyncularChangedCrdtField].self, forKey: .crdtFieldChanges) ?? []\n");
+    out.push_str(
+        "        commitId = try container.decodeIfPresent(String.self, forKey: .commitId)\n",
+    );
+    out.push_str(
+        "        commitSeq = try container.decodeIfPresent(Int64.self, forKey: .commitSeq)\n",
+    );
+    out.push_str("        subscriptionId = try container.decodeIfPresent(String.self, forKey: .subscriptionId)\n");
+    out.push_str("        serverVersion = try container.decodeIfPresent(Int64.self, forKey: .serverVersion)\n");
     out.push_str("    }\n\n");
     out.push_str("    private enum CodingKeys: String, CodingKey {\n");
     out.push_str("        case table\n");
@@ -6083,6 +6120,7 @@ fn generate_swift_module(
     out.push_str("        case operation\n");
     out.push_str("        case changedFields\n");
     out.push_str("        case crdtFields\n");
+    out.push_str("        case crdtFieldChanges\n");
     out.push_str("        case commitId\n");
     out.push_str("        case commitSeq\n");
     out.push_str("        case subscriptionId\n");
@@ -7682,12 +7720,21 @@ fn generate_kotlin_module(
     out.push_str("    )\n\n");
     out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
     out.push_str("}\n\n");
+    out.push_str("data class SyncularChangedCrdtField(\n");
+    out.push_str("    val field: String,\n");
+    out.push_str("    val stateColumn: String,\n");
+    out.push_str("    val containerKey: String,\n");
+    out.push_str("    val rowIdField: String,\n");
+    out.push_str("    val kind: String,\n");
+    out.push_str("    val syncMode: String,\n");
+    out.push_str(")\n\n");
     out.push_str("data class SyncularChangedRow(\n");
     out.push_str("    val table: String,\n");
     out.push_str("    val rowId: String? = null,\n");
     out.push_str("    val operation: String,\n");
     out.push_str("    val changedFields: List<String> = emptyList(),\n");
     out.push_str("    val crdtFields: List<String> = emptyList(),\n");
+    out.push_str("    val crdtFieldChanges: List<SyncularChangedCrdtField> = emptyList(),\n");
     out.push_str("    val commitId: String? = null,\n");
     out.push_str("    val commitSeq: Long? = null,\n");
     out.push_str("    val subscriptionId: String? = null,\n");
@@ -7895,6 +7942,14 @@ fn generate_kotlin_module(
         out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
         out.push_str("}\n\n");
     }
+    out.push_str("fun syncularDecodeChangedCrdtField(field: JsonObject): SyncularChangedCrdtField = SyncularChangedCrdtField(\n");
+    out.push_str("    field = field[\"field\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("    stateColumn = field[\"stateColumn\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("    containerKey = field[\"containerKey\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("    rowIdField = field[\"rowIdField\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("    kind = field[\"kind\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str("    syncMode = field[\"syncMode\"]?.jsonPrimitive?.content ?: \"\",\n");
+    out.push_str(")\n\n");
     out.push_str(
         "fun syncularDecodeChangedRow(row: JsonObject): SyncularChangedRow = SyncularChangedRow(\n",
     );
@@ -7903,6 +7958,7 @@ fn generate_kotlin_module(
     out.push_str("    operation = row[\"operation\"]?.jsonPrimitive?.content ?: \"\",\n");
     out.push_str("    changedFields = row[\"changedFields\"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),\n");
     out.push_str("    crdtFields = row[\"crdtFields\"]?.jsonArray?.map { it.jsonPrimitive.content } ?: emptyList(),\n");
+    out.push_str("    crdtFieldChanges = row[\"crdtFieldChanges\"]?.jsonArray?.map { syncularDecodeChangedCrdtField(it.jsonObject) } ?: emptyList(),\n");
     out.push_str("    commitId = row[\"commitId\"]?.jsonPrimitive?.content,\n");
     out.push_str("    commitSeq = row[\"commitSeq\"]?.jsonPrimitive?.longOrNull,\n");
     out.push_str("    subscriptionId = row[\"subscriptionId\"]?.jsonPrimitive?.content,\n");
@@ -9669,7 +9725,7 @@ mod tests {
             "import { SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularRustSqliteDatabase, withSyncularV2SchemaWrites } from '@app/sync-runtime';"
         ));
         assert!(output.contains(
-            "import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedRow, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
+            "import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedCrdtField, SyncularV2ChangedRow, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
         ));
         assert!(output.contains("import { sql, type Kysely } from 'kysely';"));
         assert!(output.contains(

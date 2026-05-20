@@ -2,7 +2,7 @@
 // Source: migrations/*.sql and syncular.codegen.json
 
 import { SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularRustSqliteDatabase, withSyncularV2SchemaWrites } from '../../../../bindings/browser/src';
-import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedRow, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '../../../../bindings/browser/src';
+import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedCrdtField, SyncularV2ChangedRow, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '../../../../bindings/browser/src';
 
 import { sql, type Kysely } from 'kysely';
 import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';
@@ -268,6 +268,7 @@ export interface SyncularGeneratedChangedRowBase<Table extends keyof SyncularApp
   operation: SyncularGeneratedChangedOperation;
   changedFields: Field[];
   crdtFields: Field[];
+  crdtFieldChanges: (SyncularV2ChangedCrdtField & { field: Field })[];
   changed: Record<Field, boolean>;
   crdt: Record<Field, boolean>;
   commitId: string | null;
@@ -303,6 +304,7 @@ function syncularTypedChangedRows<Table extends keyof SyncularAppDb, Field exten
       operation: row.operation,
       changedFields: row.changedFields.filter((field): field is Field => fieldSet.has(field)),
       crdtFields: row.crdtFields.filter((field): field is Field => fieldSet.has(field)),
+      crdtFieldChanges: (row.crdtFieldChanges ?? []).filter((field): field is SyncularV2ChangedCrdtField & { field: Field } => fieldSet.has(field.field)),
       changed: syncularColumnFlags(row.changedFields, fields),
       crdt: syncularColumnFlags(row.crdtFields, fields),
       commitId: row.commitId ?? null,

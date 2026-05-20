@@ -47,6 +47,20 @@ encrypted/convergence coverage.
 
 Latest accepted slice:
 
+- `changedRows` now include structured `crdtFieldChanges` metadata for
+  CRDT-backed app fields: logical field, state column, container key,
+  row-id field, kind, and sync mode.
+- Native remote pulls derive generic `CrdtFieldChanged` events from
+  CRDT-backed row changes. The event payload carries source, operation,
+  commit/subscription/server-version diagnostics, changed fields, and CRDT
+  state columns so UI bridges can refresh active documents without guessing
+  from table-level changes.
+- Worker-coalesced Yjs writes now resolve the same CRDT field metadata before
+  emitting local row-change events, so queued editor bursts report the state
+  column and logical CRDT field consistently.
+- Browser worker/runtime row-change events expose the same
+  `crdtFieldChanges` shape, and generated TypeScript/Swift/Kotlin clients plus
+  the Java native event parser surface it to app code.
 - `compact_crdt_field` now returns a structured diagnostic receipt with
   before/after compaction stats instead of only `checkpointCreated`.
 - Compaction stats intentionally omit the full CRDT state blob and include
@@ -68,11 +82,14 @@ Latest accepted slice:
 Gate evidence:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract canonical_commit_integrity_verifies_wire_payload_before_decrypting_pull`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_binding_scaffold`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --features native,boltffi-bindings`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `bun run --cwd rust/bindings/crdt-adapters test`
 - `bun run --cwd rust/bindings/browser tsgo`
+- `bun test --cwd rust/bindings/browser src/generated-app-conformance.test.ts`
 - `bun run --cwd rust/bindings/crdt-adapters tsgo`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-client --no-default-features --features native,crdt-yjs`
@@ -92,4 +109,5 @@ Known local environment note:
 
 ## Next Action
 
-Continue with state-vector pull hints or remote update observation diagnostics.
+Continue with state-vector pull hints and tighter CRDT observation coverage in
+the browser/native generated adapters.

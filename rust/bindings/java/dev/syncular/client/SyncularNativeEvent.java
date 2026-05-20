@@ -78,6 +78,18 @@ public final class SyncularNativeEvent {
         return out;
     }
 
+    private static List<ChangedCrdtField> changedCrdtFields(Object value) {
+        if (!(value instanceof List)) return Collections.emptyList();
+        List<?> fields = (List<?>) value;
+        List<ChangedCrdtField> out = new ArrayList<>(fields.size());
+        for (Object field : fields) {
+            if (field instanceof Map) {
+                out.add(ChangedCrdtField.fromMap((Map<?, ?>) field));
+            }
+        }
+        return out;
+    }
+
     private static List<String> stringList(Object value) {
         if (!(value instanceof List)) return Collections.emptyList();
         List<?> values = (List<?>) value;
@@ -112,6 +124,7 @@ public final class SyncularNativeEvent {
         public final String operation;
         public final List<String> changedFields;
         public final List<String> crdtFields;
+        public final List<ChangedCrdtField> crdtFieldChanges;
         public final String commitId;
         public final Long commitSeq;
         public final String subscriptionId;
@@ -123,6 +136,7 @@ public final class SyncularNativeEvent {
             String operation,
             List<String> changedFields,
             List<String> crdtFields,
+            List<ChangedCrdtField> crdtFieldChanges,
             String commitId,
             Long commitSeq,
             String subscriptionId,
@@ -133,6 +147,7 @@ public final class SyncularNativeEvent {
             this.operation = operation;
             this.changedFields = Collections.unmodifiableList(changedFields);
             this.crdtFields = Collections.unmodifiableList(crdtFields);
+            this.crdtFieldChanges = Collections.unmodifiableList(crdtFieldChanges);
             this.commitId = commitId;
             this.commitSeq = commitSeq;
             this.subscriptionId = subscriptionId;
@@ -146,10 +161,47 @@ public final class SyncularNativeEvent {
                 stringValue(row.get("operation")),
                 stringList(row.get("changedFields")),
                 stringList(row.get("crdtFields")),
+                changedCrdtFields(row.get("crdtFieldChanges")),
                 stringValue(row.get("commitId")),
                 nullableLong(row.get("commitSeq")),
                 stringValue(row.get("subscriptionId")),
                 nullableLong(row.get("serverVersion"))
+            );
+        }
+    }
+
+    public static final class ChangedCrdtField {
+        public final String field;
+        public final String stateColumn;
+        public final String containerKey;
+        public final String rowIdField;
+        public final String kind;
+        public final String syncMode;
+
+        private ChangedCrdtField(
+            String field,
+            String stateColumn,
+            String containerKey,
+            String rowIdField,
+            String kind,
+            String syncMode
+        ) {
+            this.field = field;
+            this.stateColumn = stateColumn;
+            this.containerKey = containerKey;
+            this.rowIdField = rowIdField;
+            this.kind = kind;
+            this.syncMode = syncMode;
+        }
+
+        private static ChangedCrdtField fromMap(Map<?, ?> field) {
+            return new ChangedCrdtField(
+                stringValue(field.get("field")),
+                stringValue(field.get("stateColumn")),
+                stringValue(field.get("containerKey")),
+                stringValue(field.get("rowIdField")),
+                stringValue(field.get("kind")),
+                stringValue(field.get("syncMode"))
             );
         }
     }

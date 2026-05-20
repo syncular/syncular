@@ -285,27 +285,61 @@ public struct SyncularLiveQueryRegistration: Codable, Equatable {
     }
 }
 
+public struct SyncularChangedCrdtField: Decodable, Equatable {
+    public let field: String
+    public let stateColumn: String
+    public let containerKey: String
+    public let rowIdField: String
+    public let kind: String
+    public let syncMode: String
+
+    public init(field: String, stateColumn: String, containerKey: String, rowIdField: String, kind: String, syncMode: String) {
+        self.field = field
+        self.stateColumn = stateColumn
+        self.containerKey = containerKey
+        self.rowIdField = rowIdField
+        self.kind = kind
+        self.syncMode = syncMode
+    }
+}
+
 public struct SyncularChangedRow: Decodable, Equatable {
     public let table: String
     public let rowId: String?
     public let operation: String
     public let changedFields: [String]
     public let crdtFields: [String]
+    public let crdtFieldChanges: [SyncularChangedCrdtField]
     public let commitId: String?
     public let commitSeq: Int64?
     public let subscriptionId: String?
     public let serverVersion: Int64?
 
-    public init(table: String, rowId: String? = nil, operation: String, changedFields: [String] = [], crdtFields: [String] = [], commitId: String? = nil, commitSeq: Int64? = nil, subscriptionId: String? = nil, serverVersion: Int64? = nil) {
+    public init(table: String, rowId: String? = nil, operation: String, changedFields: [String] = [], crdtFields: [String] = [], crdtFieldChanges: [SyncularChangedCrdtField] = [], commitId: String? = nil, commitSeq: Int64? = nil, subscriptionId: String? = nil, serverVersion: Int64? = nil) {
         self.table = table
         self.rowId = rowId
         self.operation = operation
         self.changedFields = changedFields
         self.crdtFields = crdtFields
+        self.crdtFieldChanges = crdtFieldChanges
         self.commitId = commitId
         self.commitSeq = commitSeq
         self.subscriptionId = subscriptionId
         self.serverVersion = serverVersion
+    }
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        table = try container.decode(String.self, forKey: .table)
+        rowId = try container.decodeIfPresent(String.self, forKey: .rowId)
+        operation = try container.decode(String.self, forKey: .operation)
+        changedFields = try container.decodeIfPresent([String].self, forKey: .changedFields) ?? []
+        crdtFields = try container.decodeIfPresent([String].self, forKey: .crdtFields) ?? []
+        crdtFieldChanges = try container.decodeIfPresent([SyncularChangedCrdtField].self, forKey: .crdtFieldChanges) ?? []
+        commitId = try container.decodeIfPresent(String.self, forKey: .commitId)
+        commitSeq = try container.decodeIfPresent(Int64.self, forKey: .commitSeq)
+        subscriptionId = try container.decodeIfPresent(String.self, forKey: .subscriptionId)
+        serverVersion = try container.decodeIfPresent(Int64.self, forKey: .serverVersion)
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -314,6 +348,7 @@ public struct SyncularChangedRow: Decodable, Equatable {
         case operation
         case changedFields
         case crdtFields
+        case crdtFieldChanges
         case commitId
         case commitSeq
         case subscriptionId
