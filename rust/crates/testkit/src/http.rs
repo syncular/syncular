@@ -105,6 +105,7 @@ pub struct AppTestHttpServer {
     addr: SocketAddr,
     app_server: AppTestServer,
     broadcaster: WsBroadcaster,
+    state: Arc<Mutex<TestHttpState>>,
     stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
@@ -363,10 +364,12 @@ impl AppTestHttpServer {
         listener.set_nonblocking(true)?;
         let addr = listener.local_addr()?;
         let broadcaster: WsBroadcaster = Arc::new(Mutex::new(Vec::new()));
+        let state = Arc::new(Mutex::new(TestHttpState::default()));
         let stop = Arc::new(AtomicBool::new(false));
         let thread_stop = stop.clone();
         let thread_server = app_server.clone();
         let thread_broadcaster = broadcaster.clone();
+        let thread_state = state.clone();
         let join = thread::spawn(move || {
             while !thread_stop.load(Ordering::Relaxed) {
                 match listener.accept() {
@@ -378,11 +381,13 @@ impl AppTestHttpServer {
                         let connection_server = thread_server.clone();
                         let connection_broadcaster = thread_broadcaster.clone();
                         let connection_stop = thread_stop.clone();
+                        let connection_state = thread_state.clone();
                         thread::spawn(move || {
                             handle_app_test_http_connection(
                                 stream,
                                 &connection_server,
                                 &connection_broadcaster,
+                                &connection_state,
                                 &connection_stop,
                             );
                         });
@@ -399,6 +404,7 @@ impl AppTestHttpServer {
             addr,
             app_server,
             broadcaster,
+            state,
             stop,
             join: Some(join),
         })
@@ -422,6 +428,14 @@ impl AppTestHttpServer {
 
     pub fn app_server(&self) -> &AppTestServer {
         &self.app_server
+    }
+
+    pub fn requests(&self) -> Vec<TestHttpRequest> {
+        self.state
+            .lock()
+            .expect("app test HTTP server state")
+            .requests
+            .clone()
     }
 
     pub fn push_realtime_sync(&self) {
@@ -459,10 +473,11 @@ fn handle_app_test_http_connection(
     mut stream: TcpStream,
     server: &AppTestServer,
     broadcaster: &WsBroadcaster,
+    state: &Arc<Mutex<TestHttpState>>,
     stop: &Arc<AtomicBool>,
 ) {
     if is_websocket_request(&stream) {
-        handle_app_test_ws_connection(stream, server, broadcaster, stop);
+        handle_app_test_ws_connection(stream, server, broadcaster, state, stop);
         return;
     }
 
@@ -470,6 +485,7 @@ fn handle_app_test_http_connection(
     if request.body.is_empty() && request.method.is_empty() {
         return;
     }
+    record_app_test_http_request(state, request.clone());
     if request.method != "POST" || request.path != "/sync" {
         write_http_response(
             &mut stream,
@@ -528,6 +544,7 @@ fn handle_app_test_ws_connection(
     stream: TcpStream,
     server: &AppTestServer,
     broadcaster: &WsBroadcaster,
+    state: &Arc<Mutex<TestHttpState>>,
     stop: &Arc<AtomicBool>,
 ) {
     let mut client_id = String::new();
@@ -536,6 +553,7 @@ fn handle_app_test_ws_connection(
         |request: &tungstenite::handshake::server::Request, response| {
             client_id = query_param(request.uri().query().unwrap_or_default(), "clientId")
                 .unwrap_or_else(|| "app-test-ws-client".to_string());
+            record_app_test_http_request(state, websocket_request_record(request));
             Ok(response)
         },
     ) {
@@ -602,6 +620,36 @@ fn handle_app_test_ws_connection(
     }
 
     let _ = socket.close(None);
+}
+
+fn record_app_test_http_request(state: &Arc<Mutex<TestHttpState>>, request: TestHttpRequest) {
+    state
+        .lock()
+        .expect("app test HTTP server state")
+        .requests
+        .push(request);
+}
+
+fn websocket_request_record(request: &tungstenite::handshake::server::Request) -> TestHttpRequest {
+    TestHttpRequest {
+        method: request.method().to_string(),
+        path: request
+            .uri()
+            .path_and_query()
+            .map(|path| path.as_str().to_string())
+            .unwrap_or_else(|| request.uri().path().to_string()),
+        headers: request
+            .headers()
+            .iter()
+            .filter_map(|(name, value)| {
+                Some((
+                    name.as_str().to_ascii_lowercase(),
+                    value.to_str().ok()?.to_string(),
+                ))
+            })
+            .collect(),
+        body: String::new(),
+    }
 }
 
 fn handle_ws_push_message(server: &AppTestServer, client_id: &str, message: &str) -> Result<Value> {
