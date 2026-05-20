@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import type { SyncOperation } from '@syncular/core';
 import { Kysely } from 'kysely';
 import { readFileSync } from 'node:fs';
-import { syncConformance as untypedSyncConformance } from '../../../examples/todo-app/conformance/sync-conformance';
+import { syncConformance } from '../../../examples/todo-app/conformance/sync-conformance';
 import {
   deleteTaskOperation,
   newTaskOperation,
@@ -39,18 +39,6 @@ const conformance = JSON.parse(
     typescriptKyselyQuery: {
       sql: string;
       params: unknown[];
-    };
-  };
-};
-
-const syncScenarios = untypedSyncConformance as {
-  e2ee: {
-    keyBase64: string;
-    envelopePrefix: string;
-    rule: {
-      scope: string;
-      table: string;
-      fields: string[];
     };
   };
 };
@@ -101,14 +89,14 @@ describe('generated app conformance', () => {
   it('keeps generated field-encryption config aligned with the shared sync scenarios', () => {
     expect(
       syncularGeneratedFieldEncryptionConfig({
-        keys: { default: syncScenarios.e2ee.keyBase64 },
-        envelopePrefix: syncScenarios.e2ee.envelopePrefix,
-        rules: [syncScenarios.e2ee.rule],
+        keys: { default: syncConformance.e2ee.keyBase64 },
+        envelopePrefix: syncConformance.e2ee.envelopePrefix,
+        rules: [syncConformance.e2ee.rule],
       })
     ).toEqual({
-      keys: { default: syncScenarios.e2ee.keyBase64 },
-      envelopePrefix: syncScenarios.e2ee.envelopePrefix,
-      rules: [syncScenarios.e2ee.rule],
+      keys: { default: syncConformance.e2ee.keyBase64 },
+      envelopePrefix: syncConformance.e2ee.envelopePrefix,
+      rules: [syncConformance.e2ee.rule],
     });
   });
 

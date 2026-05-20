@@ -90,6 +90,9 @@ tests.
   `sync-scenarios.json`, then pointed browser fixture tests and native Hono
   smoke server setup at it so native smokes no longer import browser test
   internals.
+- Moved the TypeScript `SyncScenarioFixture` contract onto the shared
+  conformance loader so browser tests and native Hono smokes use the same typed
+  JSON fixture without local `unknown`/`any` casts.
 - Updated browser generated-app conformance tests to use the shared TypeScript
   sync scenario loader for field-encryption scenarios.
 - Added `rust/scripts/run-conformance-gates.sh` with `--fast`,
@@ -108,10 +111,16 @@ tests.
   blob_transport` passed with `3` blob tests.
 - Gate: `bun -e "import('./rust/bindings/browser/src/__tests__/fixtures/sync-conformance.ts')..."`
   passed and proved the browser fixture resolves the shared TypeScript loader.
+- Gate: `bun -e "import('./rust/examples/todo-app/conformance/sync-conformance.ts')..."`
+  passed and proved the shared TypeScript conformance loader resolves directly.
+- Gate: `bun -e "import('./rust/examples/todo-app/native-smokes/hono-sync-server.ts')..."`
+  reached the expected missing-env error after resolving the typed shared
+  conformance import.
 - Gate: `bun test ./rust/bindings/browser/src/__tests__/fixtures/sync-conformance.ts`
   passed as a no-test import smoke.
 - Gate: `bun test ./rust/bindings/browser/src/generated-app-conformance.test.ts`
   passed with `5` browser generated-app conformance tests.
+- Gate: `bun --cwd rust/bindings/browser tsgo` passed.
 - Gate: `bun run rust:conformance:fast` passed, covering `syncular-testkit`,
   runtime protocol/blob/CRDT tests, Rust generated app tests, and browser
   generated-app conformance tests.

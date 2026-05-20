@@ -282,8 +282,9 @@ read-only review:
     The Rust conformance fixture loader now lives in `syncular-testkit`, and
     runtime protocol and blob transport tests consume it instead of private
     copies. The TypeScript conformance loader now lives next to the shared JSON
-    fixture, so browser generated-app tests and native Hono smoke setup no
-    longer couple through browser test internals. The Rust perf binary now uses
+    fixture with an exported `SyncScenarioFixture` contract, so browser
+    generated-app tests and native Hono smoke setup no longer couple through
+    browser test internals or local `unknown` casts. The Rust perf binary now uses
     the same fixture instead of maintaining its own private server copy.
     `bun run rust:conformance:fast` now runs the repeatable fast gate for the
     shared testkit/runtime/generated-app/browser contract subset, including
