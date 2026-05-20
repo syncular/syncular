@@ -187,6 +187,90 @@ fn app_test_server_realtime_wakeup_pulls_committed_rows() {
 }
 
 #[test]
+fn app_test_server_filters_bootstrap_commits_and_deletes_by_scope() {
+    let server = AppTestServer::new(todo::app_schema());
+    server
+        .seed_row(
+            "tasks",
+            json!({
+                "id": "scope-p0-seed",
+                "title": "Visible seed",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0",
+                "server_version": 1
+            }),
+        )
+        .expect("seed visible row");
+    server
+        .seed_row(
+            "tasks",
+            json!({
+                "id": "scope-p1-seed",
+                "title": "Hidden seed",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p1",
+                "server_version": 2
+            }),
+        )
+        .expect("seed hidden row");
+    let mut reader = open_app_client_with_server(
+        todo::app_schema(),
+        server.clone(),
+        app_server_options("app-server-scope-reader"),
+    )
+    .expect("reader fixture");
+
+    reader.client.sync_http().expect("bootstrap scoped rows");
+    let rows = assert_table_row_count(&mut reader.client, "tasks", 1);
+    assert_eq!(rows[0]["id"], "scope-p0-seed");
+
+    server
+        .commit_row(
+            "tasks",
+            json!({
+                "id": "scope-p1-commit",
+                "title": "Hidden commit",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p1"
+            }),
+        )
+        .expect("commit hidden row");
+    server
+        .commit_row(
+            "tasks",
+            json!({
+                "id": "scope-p0-commit",
+                "title": "Visible commit",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0"
+            }),
+        )
+        .expect("commit visible row");
+
+    reader.client.sync_http().expect("pull scoped commits");
+    let rows = assert_table_row_count(&mut reader.client, "tasks", 2);
+    let ids = rows
+        .iter()
+        .map(|row| row["id"].as_str().expect("row id"))
+        .collect::<Vec<_>>();
+    assert!(ids.contains(&"scope-p0-seed"));
+    assert!(ids.contains(&"scope-p0-commit"));
+    assert!(!ids.contains(&"scope-p1-seed"));
+    assert!(!ids.contains(&"scope-p1-commit"));
+
+    server
+        .delete_row("tasks", "scope-p0-seed")
+        .expect("delete visible row");
+    reader.client.sync_http().expect("pull scoped delete");
+    let rows = assert_table_row_count(&mut reader.client, "tasks", 1);
+    assert_eq!(rows[0]["id"], "scope-p0-commit");
+}
+
+#[test]
 fn app_test_http_server_serves_stateful_sync_and_realtime_wakeups() {
     let server = AppTestHttpServer::start(todo::app_schema()).expect("stateful HTTP server");
     let mut socket = connect(server.realtime_url("app-server-http-reader").as_str())
