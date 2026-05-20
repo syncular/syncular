@@ -16,7 +16,8 @@ Initial scope:
 - `AppTestServer` for stateful generated-schema app tests: it stores rows,
   applies pushed commits, returns later pull snapshots/commits, merges
   server-merge CRDT/Yjs payloads, filters self commits, can reverse/duplicate
-  delivery, and emits realtime sync wakeups.
+  delivery, preserves encrypted field payloads, and emits realtime sync
+  wakeups.
 - `AppTestHttpServer` for stateful HTTP/WebSocket app tests over the production
   native transport shape, including captured HTTP/WebSocket requests for auth
   and schema-version assertions.

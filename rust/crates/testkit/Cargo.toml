@@ -11,6 +11,7 @@ syncular-runtime = { path = "../runtime", default-features = false, features = [
     "native",
     "demo-todo-native-fixture",
     "crdt-yjs",
+    "e2ee",
 ] }
 tungstenite = { version = "0.26", default-features = false, features = [
     "handshake",
