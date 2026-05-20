@@ -1,12 +1,6 @@
 use anyhow::{bail, Result};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::json;
-use std::io::{BufRead, BufReader, Read, Write};
-use std::net::{SocketAddr, TcpListener, TcpStream};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex};
-use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 use syncular_client::client::{SyncularClient, SyncularClientConfig};
 use syncular_client::crdt_field::CrdtFieldId;
@@ -15,16 +9,13 @@ use syncular_client::fixtures::todo::app_schema as generated_app_schema;
 use syncular_client::fixtures::todo::generated::{
     NewTask, SyncularGeneratedMutationsExt, TaskPatch,
 };
-use syncular_client::protocol::{
-    CombinedRequest, PushBatchRequest, PushCommitRequest, SyncOperation,
-    SYNC_PACK_ENCODING_BINARY_V1,
-};
 use syncular_client::store::{SyncStateStore, SyncStore};
 use syncular_client::transport::{
     HttpSyncTransport, RealtimeEvent, RealtimeTransport, SyncTransport, SyncTransportConfig,
 };
-use syncular_testkit::{open_app_client_with_server_in_memory, AppFixtureOptions, AppTestServer};
-use tungstenite::Message;
+use syncular_testkit::{
+    open_app_client_with_server_in_memory, AppFixtureOptions, AppTestHttpServer, AppTestServer,
+};
 
 const ACTOR_ID: &str = "rust-perf-user";
 const PROJECT_ID: &str = "rust-perf-project";
@@ -120,19 +111,6 @@ struct StressChecks {
     writer_outbox_commits: usize,
     realtime_events: usize,
 }
-
-#[derive(Debug, Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct WsPushMessage {
-    #[serde(rename = "type")]
-    message_type: String,
-    request_id: String,
-    client_commit_id: String,
-    operations: Vec<SyncOperation>,
-    schema_version: i32,
-}
-
-type WsBroadcaster = Arc<Mutex<Vec<Sender<()>>>>;
 
 fn main() -> Result<()> {
     let options = parse_options()?;
@@ -824,7 +802,7 @@ fn benchmark_ws_client_to_client_catchup(options: Options) -> Result<NativePerfM
 fn benchmark_http_multi_client_stress(options: Options) -> Result<StressPerfReport> {
     let total_rows = options.stress_batches * options.stress_batch_size;
     let transport = options.stress_transport.label();
-    let server = StatefulHttpAppServer::start(generated_app_schema())?;
+    let server = AppTestHttpServer::start(generated_app_schema())?;
     let base_url = server.url();
 
     let mut writers = Vec::with_capacity(options.stress_writers);
@@ -937,7 +915,7 @@ fn benchmark_http_multi_client_stress(options: Options) -> Result<StressPerfRepo
 fn benchmark_long_lived_realtime_stress(options: Options) -> Result<StressPerfReport> {
     let total_rows = options.stress_batches * options.stress_batch_size;
     let transport = options.stress_transport.label();
-    let server = StatefulHttpAppServer::start(generated_app_schema())?;
+    let server = AppTestHttpServer::start(generated_app_schema())?;
     let base_url = server.url();
 
     let mut writers = Vec::with_capacity(options.stress_writers);
@@ -1111,11 +1089,11 @@ fn open_e2e_pair(
 fn open_http_pair(
     name: &str,
 ) -> Result<(
-    StatefulHttpAppServer,
+    AppTestHttpServer,
     SyncularClient<DieselSqliteStore, HttpSyncTransport>,
     SyncularClient<DieselSqliteStore, HttpSyncTransport>,
 )> {
-    let server = StatefulHttpAppServer::start(generated_app_schema())?;
+    let server = AppTestHttpServer::start(generated_app_schema())?;
     let writer = open_http_client(&format!("{name}-writer"), server.url())?;
     let reader = open_http_client(&format!("{name}-reader"), server.url())?;
     Ok((server, writer, reader))
@@ -1145,361 +1123,6 @@ fn e2e_options(client_id: &str) -> AppFixtureOptions {
         actor_id: ACTOR_ID.to_string(),
         project_id: Some(PROJECT_ID.to_string()),
     }
-}
-
-struct StatefulHttpAppServer {
-    addr: SocketAddr,
-    app_server: AppTestServer,
-    broadcaster: WsBroadcaster,
-    stop: Arc<AtomicBool>,
-    join: Option<JoinHandle<()>>,
-}
-
-impl StatefulHttpAppServer {
-    fn start(app_schema: syncular_client::app_schema::AppSchema) -> Result<Self> {
-        let listener = TcpListener::bind("127.0.0.1:0")?;
-        listener.set_nonblocking(true)?;
-        let addr = listener.local_addr()?;
-        let app_server = AppTestServer::new(app_schema);
-        let broadcaster: WsBroadcaster = Arc::new(Mutex::new(Vec::new()));
-        let stop = Arc::new(AtomicBool::new(false));
-        let thread_stop = stop.clone();
-        let thread_server = app_server.clone();
-        let thread_broadcaster = broadcaster.clone();
-        let join = thread::spawn(move || {
-            while !thread_stop.load(Ordering::Relaxed) {
-                match listener.accept() {
-                    Ok((stream, _)) => {
-                        if thread_stop.load(Ordering::Relaxed) {
-                            break;
-                        }
-                        let _ = stream.set_nonblocking(false);
-                        let connection_server = thread_server.clone();
-                        let connection_broadcaster = thread_broadcaster.clone();
-                        let connection_stop = thread_stop.clone();
-                        thread::spawn(move || {
-                            handle_stateful_http_connection(
-                                stream,
-                                &connection_server,
-                                &connection_broadcaster,
-                                &connection_stop,
-                            );
-                        });
-                    }
-                    Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
-                        thread::sleep(Duration::from_millis(2));
-                    }
-                    Err(_) => break,
-                }
-            }
-        });
-
-        Ok(Self {
-            addr,
-            app_server,
-            broadcaster,
-            stop,
-            join: Some(join),
-        })
-    }
-
-    fn url(&self) -> String {
-        format!("http://{}/sync", self.addr)
-    }
-
-    fn app_server(&self) -> &AppTestServer {
-        &self.app_server
-    }
-}
-
-impl Drop for StatefulHttpAppServer {
-    fn drop(&mut self) {
-        let _ = self.broadcaster.lock().map(|peers| peers.len());
-        self.stop.store(true, Ordering::Relaxed);
-        let _ = TcpStream::connect(self.addr);
-        if let Some(join) = self.join.take() {
-            let _ = join.join();
-        }
-    }
-}
-
-fn handle_stateful_http_connection(
-    mut stream: TcpStream,
-    server: &AppTestServer,
-    broadcaster: &WsBroadcaster,
-    stop: &Arc<AtomicBool>,
-) {
-    if is_websocket_request(&stream) {
-        handle_stateful_ws_connection(stream, server, broadcaster, stop);
-        return;
-    }
-
-    let Ok(request) = read_http_sync_request(&mut stream) else {
-        return;
-    };
-    if request.method != "POST" || request.path != "/sync" {
-        let _ = write_http_response(&mut stream, 404, "Not Found", "text/plain", "not found");
-        return;
-    }
-
-    let response = serde_json::from_str::<CombinedRequest>(&request.body)
-        .map_err(anyhow::Error::from)
-        .and_then(|request| server.post_sync(&request).map_err(anyhow::Error::from))
-        .and_then(|response| serde_json::to_string(&response).map_err(anyhow::Error::from));
-
-    match response {
-        Ok(body) => {
-            let _ = write_http_response(&mut stream, 200, "OK", "application/json", &body);
-            if request.body.contains("\"push\"") {
-                broadcast_realtime_sync(broadcaster);
-            }
-        }
-        Err(error) => {
-            let body = json!({ "error": error.to_string() }).to_string();
-            let _ = write_http_response(
-                &mut stream,
-                500,
-                "Internal Server Error",
-                "application/json",
-                &body,
-            );
-        }
-    }
-}
-
-fn is_websocket_request(stream: &TcpStream) -> bool {
-    let mut buffer = [0u8; 4];
-    match stream.peek(&mut buffer) {
-        Ok(read) => read >= 3 && buffer[..read].starts_with(b"GET"),
-        Err(_) => false,
-    }
-}
-
-fn handle_stateful_ws_connection(
-    stream: TcpStream,
-    server: &AppTestServer,
-    broadcaster: &WsBroadcaster,
-    stop: &Arc<AtomicBool>,
-) {
-    let mut client_id = String::new();
-    let mut socket = match tungstenite::accept_hdr(
-        stream,
-        |request: &tungstenite::handshake::server::Request, response| {
-            client_id = query_param(request.uri().query().unwrap_or_default(), "clientId")
-                .unwrap_or_else(|| ACTOR_ID.to_string());
-            Ok(response)
-        },
-    ) {
-        Ok(socket) => socket,
-        Err(_) => return,
-    };
-    set_ws_stream_read_timeout(&mut socket, Duration::from_millis(50));
-    let (tx, rx) = mpsc::channel::<()>();
-    broadcaster.lock().expect("ws broadcaster").push(tx);
-
-    while !stop.load(Ordering::Relaxed) {
-        while rx.try_recv().is_ok() {
-            if socket
-                .send(Message::Text(json!({ "event": "sync" }).to_string().into()))
-                .is_err()
-            {
-                let _ = socket.close(None);
-                return;
-            }
-        }
-        let message = match socket.read() {
-            Ok(Message::Text(text)) => text.to_string(),
-            Ok(Message::Ping(bytes)) => {
-                let _ = socket.send(Message::Pong(bytes));
-                continue;
-            }
-            Ok(Message::Close(_)) => break,
-            Ok(_) => continue,
-            Err(tungstenite::Error::Io(error))
-                if error.kind() == std::io::ErrorKind::WouldBlock
-                    || error.kind() == std::io::ErrorKind::TimedOut =>
-            {
-                continue;
-            }
-            Err(_) => break,
-        };
-
-        let response = serde_json::from_str::<WsPushMessage>(&message)
-            .map_err(anyhow::Error::from)
-            .and_then(|message| {
-                if message.message_type != "push" {
-                    bail!(
-                        "unsupported websocket message type: {}",
-                        message.message_type
-                    );
-                }
-                let request_id = message.request_id;
-                let request = CombinedRequest {
-                    client_id: client_id.clone(),
-                    sync_pack_encodings: vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()],
-                    push: Some(PushBatchRequest {
-                        commits: vec![PushCommitRequest {
-                            client_commit_id: message.client_commit_id,
-                            operations: message.operations,
-                            schema_version: message.schema_version,
-                        }],
-                    }),
-                    pull: None,
-                };
-                let combined = server.post_sync(&request)?;
-                let response = combined
-                    .push
-                    .and_then(|push| push.commits.into_iter().next())
-                    .ok_or_else(|| anyhow::anyhow!("missing websocket push response"))?;
-                Ok(json!({
-                    "event": "push-response",
-                    "data": {
-                        "requestId": request_id,
-                        "clientCommitId": response.client_commit_id,
-                        "status": response.status,
-                        "commitSeq": response.commit_seq,
-                        "results": response.results,
-                    }
-                }))
-            });
-
-        match response {
-            Ok(response) => {
-                if socket
-                    .send(Message::Text(response.to_string().into()))
-                    .is_err()
-                {
-                    break;
-                }
-                broadcast_realtime_sync(broadcaster);
-            }
-            Err(error) => {
-                let _ = socket.send(Message::Text(
-                    json!({
-                        "event": "error",
-                        "data": { "message": error.to_string() }
-                    })
-                    .to_string()
-                    .into(),
-                ));
-                break;
-            }
-        }
-    }
-
-    let _ = socket.close(None);
-}
-
-fn broadcast_realtime_sync(broadcaster: &WsBroadcaster) {
-    let mut peers = broadcaster.lock().expect("ws broadcaster");
-    peers.retain(|sender| sender.send(()).is_ok());
-}
-
-fn set_ws_stream_read_timeout(socket: &mut tungstenite::WebSocket<TcpStream>, timeout: Duration) {
-    let _ = socket.get_mut().set_read_timeout(Some(timeout));
-}
-
-fn query_param(query: &str, name: &str) -> Option<String> {
-    query.split('&').find_map(|pair| {
-        let (key, value) = pair.split_once('=')?;
-        if key == name {
-            Some(value.replace("%20", " "))
-        } else {
-            None
-        }
-    })
-}
-
-struct HttpSyncRequest {
-    method: String,
-    path: String,
-    body: String,
-}
-
-fn read_http_sync_request(stream: &mut TcpStream) -> std::io::Result<HttpSyncRequest> {
-    stream.set_read_timeout(Some(Duration::from_secs(5)))?;
-    let mut reader = BufReader::new(stream);
-    let mut request_line = String::new();
-    reader.read_line(&mut request_line)?;
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or_default().to_string();
-    let path = parts.next().unwrap_or_default().to_string();
-
-    let mut content_length = 0usize;
-    let mut chunked = false;
-    loop {
-        let mut line = String::new();
-        reader.read_line(&mut line)?;
-        if line == "\r\n" || line.is_empty() {
-            break;
-        }
-        let Some((name, value)) = line.split_once(':') else {
-            continue;
-        };
-        if name.eq_ignore_ascii_case("content-length") {
-            content_length = value.trim().parse::<usize>().unwrap_or(0);
-        }
-        if name.eq_ignore_ascii_case("transfer-encoding")
-            && value.to_ascii_lowercase().contains("chunked")
-        {
-            chunked = true;
-        }
-    }
-
-    let body = if chunked {
-        read_chunked_body(&mut reader)?
-    } else {
-        let mut body = vec![0u8; content_length];
-        reader.read_exact(&mut body)?;
-        body
-    };
-
-    let body = String::from_utf8_lossy(&body).to_string();
-    Ok(HttpSyncRequest { method, path, body })
-}
-
-fn read_chunked_body<R: BufRead>(reader: &mut R) -> std::io::Result<Vec<u8>> {
-    let mut body = Vec::new();
-    loop {
-        let mut size_line = String::new();
-        reader.read_line(&mut size_line)?;
-        let size_text = size_line
-            .trim()
-            .split_once(';')
-            .map(|(size, _)| size)
-            .unwrap_or_else(|| size_line.trim());
-        let size = usize::from_str_radix(size_text, 16).unwrap_or(0);
-        if size == 0 {
-            loop {
-                let mut trailer = String::new();
-                reader.read_line(&mut trailer)?;
-                if trailer == "\r\n" || trailer.is_empty() {
-                    return Ok(body);
-                }
-            }
-        }
-        let mut chunk = vec![0u8; size];
-        reader.read_exact(&mut chunk)?;
-        body.extend(chunk);
-        let mut crlf = [0u8; 2];
-        reader.read_exact(&mut crlf)?;
-    }
-}
-
-fn write_http_response(
-    stream: &mut TcpStream,
-    status: u16,
-    reason: &str,
-    content_type: &str,
-    body: &str,
-) -> std::io::Result<()> {
-    let response = format!(
-        "HTTP/1.1 {status} {reason}\r\ncontent-type: {content_type}\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
-        body.len()
-    );
-    stream.write_all(response.as_bytes())?;
-    stream.flush()?;
-    Ok(())
 }
 
 fn commit_server_tasks(

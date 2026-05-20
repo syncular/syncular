@@ -6,7 +6,7 @@ use serde_json::json;
 use syncular_runtime::error::ErrorKind;
 use syncular_runtime::fixtures::todo;
 use syncular_runtime::native::{NativeClientOptions, NativeEventKind};
-use syncular_runtime::transport::RealtimeEvent;
+use syncular_runtime::transport::{HttpSyncTransport, RealtimeEvent, SyncTransportConfig};
 use syncular_testkit::{
     actor_project_scopes, apply_crdt_field_text, apply_native_crdt_field_text,
     apply_native_todo_task_upsert, assert_blob_upload_queue, assert_crdt_field_materializes,
@@ -14,14 +14,15 @@ use syncular_testkit::{
     assert_native_error_kind, assert_native_rows_changed, assert_native_table_row_count,
     assert_no_conflicts, assert_outbox_empty, assert_outbox_statuses, assert_table_has_row,
     assert_table_row_count, default_combined_response, encoded_blob_hash, open_app_client,
-    open_app_client_in_memory, open_app_client_with_server,
+    open_app_client_in_memory, open_app_client_with_server, open_app_client_with_transport,
     open_native_client_with_schema_json_options, open_native_client_with_schema_options,
     open_todo_client, open_todo_client_with_transport, push_conflict_response,
     snapshot_combined_response, todo_app_schema_json, todo_snapshot_response, todo_task_row,
-    AppFixtureOptions, AppTestServer, FaultOperation, FaultPhase, FaultStep, FaultTransport,
-    NativeFixtureOptions, TestBlobServer, TestBlobServerOptions, TestSyncServer, TestTransport,
-    TodoFixtureOptions,
+    AppFixtureOptions, AppTestHttpServer, AppTestServer, FaultOperation, FaultPhase, FaultStep,
+    FaultTransport, NativeFixtureOptions, TestBlobServer, TestBlobServerOptions, TestSyncServer,
+    TestTransport, TodoFixtureOptions,
 };
+use tungstenite::{connect, stream::MaybeTlsStream, Message};
 
 #[test]
 fn todo_fixture_uses_real_sqlite_and_generated_mutations() {
@@ -178,6 +179,68 @@ fn app_test_server_realtime_wakeup_pulls_committed_rows() {
     assert_eq!(seen, vec!["Sync"]);
     let rows = assert_table_row_count(&mut reader.client, "tasks", 1);
     assert_eq!(rows[0]["id"], "app-server-rt-task");
+}
+
+#[test]
+fn app_test_http_server_serves_stateful_sync_and_realtime_wakeups() {
+    let server = AppTestHttpServer::start(todo::app_schema()).expect("stateful HTTP server");
+    let mut socket = connect(server.realtime_url("app-server-http-reader").as_str())
+        .expect("websocket")
+        .0;
+    if let MaybeTlsStream::Plain(stream) = socket.get_mut() {
+        stream
+            .set_read_timeout(Some(Duration::from_secs(2)))
+            .expect("set websocket timeout");
+    }
+
+    let mut writer_options = app_server_options("app-server-http-writer");
+    writer_options.base_url = server.url();
+    let writer_transport = HttpSyncTransport::new(SyncTransportConfig::new(
+        server.url(),
+        writer_options.client_id.clone(),
+        writer_options.actor_id.clone(),
+    ));
+    let mut writer =
+        open_app_client_with_transport(todo::app_schema(), writer_transport, writer_options)
+            .expect("writer fixture");
+
+    let mut reader_options = app_server_options("app-server-http-reader");
+    reader_options.base_url = server.url();
+    let reader_transport = HttpSyncTransport::new(SyncTransportConfig::new(
+        server.url(),
+        reader_options.client_id.clone(),
+        reader_options.actor_id.clone(),
+    ));
+    let mut reader =
+        open_app_client_with_transport(todo::app_schema(), reader_transport, reader_options)
+            .expect("reader fixture");
+
+    reader.client.sync_http().expect("establish cursor");
+    writer
+        .client
+        .add_task(
+            "Stateful HTTP task".to_string(),
+            Some("app-server-http-task".to_string()),
+        )
+        .expect("add task");
+    writer.client.sync_http().expect("writer HTTP sync");
+
+    let wakeup = socket.read().expect("realtime wakeup");
+    assert_eq!(
+        wakeup,
+        Message::Text(json!({ "event": "sync" }).to_string().into())
+    );
+    reader.client.sync_http().expect("reader HTTP sync");
+    let rows = assert_table_row_count(&mut reader.client, "tasks", 1);
+    assert_eq!(rows[0]["id"], "app-server-http-task");
+    assert_eq!(rows[0]["title"], "Stateful HTTP task");
+    assert_eq!(
+        server
+            .app_server()
+            .row("tasks", "app-server-http-task")
+            .unwrap()["title"],
+        "Stateful HTTP task"
+    );
 }
 
 #[test]

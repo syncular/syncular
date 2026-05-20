@@ -1,6 +1,6 @@
 # WP-08 Testkit And Conformance
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -42,11 +42,30 @@ behavior instead of mocking the client everywhere.
 ## Current Evidence
 
 The JS `@syncular/testkit` was both internal infrastructure and a public app
-testing story. The Rust testkit covers useful primitives, but app projects
-still need a stronger stateful app-server layer for multi-client convergence.
+testing story. The Rust testkit now has both an in-process `AppTestServer` and
+an `AppTestHttpServer` wrapper for production-shaped HTTP/WebSocket app tests.
+The stateful server accepts generated app schemas, stores rows, applies pushed
+commits, serves later pulls, emits realtime wakeups, and covers CRDT/Yjs merge
+behavior in smoke tests.
 
 ## Next Action
 
-Implement or extend one stateful app-server fixture that accepts arbitrary app
-schema rows, records commits, serves later pulls from state, and emits realtime
-wakeups.
+Move the next app conformance slice onto this fixture: shared scenarios for
+auth, conflicts, blobs, E2EE, and CRDT across Rust/native/browser bindings.
+Keep the stateful server generic; app-specific fixture rows should stay in app
+tests.
+
+## Progress
+
+- Added `AppTestHttpServer`, a disposable HTTP/WebSocket wrapper around
+  `AppTestServer`.
+- Added smoke coverage proving HTTP push writes server state, WebSocket clients
+  receive sync wakeups, and a second client pulls the committed row through the
+  production native HTTP transport shape.
+- Replaced the Rust perf binary's private stateful HTTP/WebSocket server copy
+  with the shared testkit fixture to keep performance and app tests aligned.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
+  passed with `22` smoke tests.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-client
+  --no-default-features --features cli --bin syncular-rust-perf --no-run`
+  passed.

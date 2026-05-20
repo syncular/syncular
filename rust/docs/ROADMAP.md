@@ -262,7 +262,13 @@ read-only review:
 - `[x]` [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
 - `[ ]` [`WP-07 CRDT Fields`](work-packages/WP-07-crdt-fields.md)
-- `[ ]` [`WP-08 Testkit And Conformance`](work-packages/WP-08-testkit-conformance.md)
+- `[~]` [`WP-08 Testkit And Conformance`](work-packages/WP-08-testkit-conformance.md)
+  - Rust testkit now exposes `AppTestHttpServer`, a disposable HTTP/WebSocket
+    wrapper around the stateful `AppTestServer`. Smoke coverage proves HTTP
+    pushes write server state, WebSocket listeners receive sync wakeups, and a
+    second client pulls the committed row through the production native HTTP
+    transport shape. The Rust perf binary now uses the same fixture instead of
+    maintaining its own private server copy.
 - `[ ]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
 - `[ ]` [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
 - `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
