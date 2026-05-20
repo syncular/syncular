@@ -70,6 +70,9 @@ tests.
 - Added stateful HTTP/WebSocket request capture so app tests can assert
   production auth and schema-version headers without replacing the real
   transport.
+- Added configurable required authorization to the stateful app test server so
+  app suites can exercise unauthorized HTTP sync and WebSocket connection
+  failures against the reusable fixture instead of building private auth mocks.
 - Added a scoped stateful server smoke proving bootstrap rows, later commits,
   and deletes are all filtered by the generated app schema scopes.
 - Added stateful encrypted-field sync coverage proving server-side stored rows
@@ -98,7 +101,7 @@ tests.
 - Replaced the Rust perf binary's private stateful HTTP/WebSocket server copy
   with the shared testkit fixture to keep performance and app tests aligned.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
-  passed with `28` smoke tests.
+  passed with `29` smoke tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   protocol_contract` passed with `40` protocol tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
