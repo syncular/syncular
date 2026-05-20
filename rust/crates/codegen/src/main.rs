@@ -5374,7 +5374,7 @@ fn generate_typescript_module(
     out.push_str("  if (version == null) return null;\n");
     out.push_str("  const localVersion = Number(version);\n");
     out.push_str("  if (localVersion !== syncularGeneratedSchemaVersion) {\n");
-    out.push_str("    throw new Error(`Syncular app schema version mismatch: local ${localVersion}, generated ${syncularGeneratedSchemaVersion}`);\n");
+    out.push_str("    throw new Error(`Syncular app schema version mismatch: local ${localVersion}, generated ${syncularGeneratedSchemaVersion}. Browser app schema migration replay is not available for this generated client; recreate the local database or provide an app migration path before opening Syncular.`);\n");
     out.push_str("  }\n");
     out.push_str("  return localVersion;\n");
     out.push_str("}\n\n");
@@ -10173,6 +10173,7 @@ mod tests {
         ));
         assert!(output.contains("export const syncularGeneratedSchemaVersion = 7 as const;"));
         assert!(output.contains("await ensureSyncularAppSchemaMetadata(db);"));
+        assert!(output.contains("Browser app schema migration replay is not available"));
         assert!(output.contains("async function validateSyncularAppSchema(db: Kysely<any>)"));
         assert!(output.contains("    .createTable('projects')"));
         assert!(output.contains("    .addColumn('owner_id', 'text', (col) => col.notNull())"));
