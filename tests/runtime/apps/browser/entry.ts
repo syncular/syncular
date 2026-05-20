@@ -38,6 +38,7 @@ import {
 import {
   createSyncularAppDatabase,
   ensureSyncularAppSchema,
+  ensureSyncularAppSchemaWithTimings,
   newCommentOperation,
   newProjectOperation,
   newTaskOperation,
@@ -1137,6 +1138,37 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       value: number,
       unit: E2eScoreboardMetric['unit'] = 'ms'
     ) => metrics.push({ name, value, unit });
+    const pushRustSchemaInstallMetrics = (
+      prefix: 'rust' | 'rust_cached',
+      timings: Awaited<ReturnType<typeof ensureSyncularAppSchemaWithTimings>>
+    ) => {
+      pushMetric(`${prefix}_schema_install_ms`, timings.totalMs);
+      pushMetric(`${prefix}_schema_base_ms`, timings.baseSchemaMs);
+      pushMetric(`${prefix}_schema_derived_ms`, timings.derivedSchemaMs);
+      pushMetric(`${prefix}_schema_metadata_ms`, timings.metadataMs);
+      pushMetric(`${prefix}_schema_indexes_ms`, timings.indexesMs);
+      pushMetric(
+        `${prefix}_schema_read_model_probe_ms`,
+        timings.readModelProbeMs
+      );
+      pushMetric(
+        `${prefix}_schema_read_model_setup_ms`,
+        timings.readModelSetupMs
+      );
+      pushMetric(
+        `${prefix}_schema_read_model_rebuild_ms`,
+        timings.readModelRebuildMs
+      );
+      pushMetric(
+        `${prefix}_schema_record_version_ms`,
+        timings.recordSchemaVersionMs
+      );
+      pushMetric(
+        `${prefix}_schema_rebuilt_read_models`,
+        timings.rebuiltReadModels.length,
+        'count'
+      );
+    };
     const rustPullOptions: SyncularV2PullOptions = {
       includeSnapshotRows: options.rustIncludeSnapshotRows ?? false,
       collectChangedRows: options.rustCollectChangedRows ?? false,
@@ -1196,12 +1228,11 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         pull: rustPullOptions,
       },
     });
-    const rustSchemaInstallStartedAt = performance.now();
-    await withSyncularV2SchemaWrites(rustDatabase, ensureSyncularAppSchema);
-    pushMetric(
-      'rust_schema_install_ms',
-      performance.now() - rustSchemaInstallStartedAt
+    const rustSchemaInstallTimings = await withSyncularV2SchemaWrites(
+      rustDatabase,
+      ensureSyncularAppSchemaWithTimings
     );
+    pushRustSchemaInstallMetrics('rust', rustSchemaInstallTimings);
     await rustDatabase.client.setSubscriptions([taskSubscription({ actorId })]);
     const rustDiagnostics =
       rustDatabase.client as unknown as RustE2eDiagnostics;
@@ -1332,15 +1363,11 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
         pull: rustPullOptions,
       },
     });
-    const cachedRustSchemaInstallStartedAt = performance.now();
-    await withSyncularV2SchemaWrites(
+    const cachedRustSchemaInstallTimings = await withSyncularV2SchemaWrites(
       cachedRustDatabase,
-      ensureSyncularAppSchema
+      ensureSyncularAppSchemaWithTimings
     );
-    pushMetric(
-      'rust_cached_schema_install_ms',
-      performance.now() - cachedRustSchemaInstallStartedAt
-    );
+    pushRustSchemaInstallMetrics('rust_cached', cachedRustSchemaInstallTimings);
     await cachedRustDatabase.client.setSubscriptions([
       taskSubscription({ actorId }),
     ]);

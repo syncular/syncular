@@ -18,6 +18,82 @@ Decision:
 Notes:
 ```
 
+## 2026-05-20 - Retained Generated Schema Phase Timings
+
+Commit: retained slice
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Generated TypeScript app clients now expose
+  `ensureSyncularAppSchemaWithTimings(...)` and
+  `ensureSyncularAppDerivedSchemaWithTimings(...)`.
+- Browser E2E records generated schema install phases instead of reporting only
+  one total `rust_schema_install_ms` value.
+
+Correctness gates:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd tests/runtime tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=25 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-schema-phase-timings-100k.json
+```
+
+Comparison:
+
+| Metric | Previous schema-install metric run | Current |
+| --- | ---: | ---: |
+| Rust 100k artifact bootstrap | `149.75ms` | `144.00ms` |
+| Rust schema install | `5.42ms` | `5.34ms` |
+| Rust cached schema install | `2.55ms` | `1.91ms` |
+| Rust read-model aggregate p50 | `0.04ms` | `0.05ms` |
+| Browser entry JS bytes | `1,274,435` | `1,278,907` |
+
+New phase metrics from the 100k gate:
+
+| Metric | Value |
+| --- | ---: |
+| `rust_schema_base_ms` | `1.64ms` |
+| `rust_schema_derived_ms` | `3.70ms` |
+| `rust_schema_indexes_ms` | `0.00ms` |
+| `rust_schema_read_model_setup_ms` | `1.14ms` |
+| `rust_schema_read_model_rebuild_ms` | `0.99ms` |
+| `rust_schema_record_version_ms` | `1.38ms` |
+
+Derived-schema probe:
+
+- A local `.context` probe against the external app schema showed the 500k
+  derived-schema cost is index dominated: indexes `1070.57ms`, read-model setup
+  `0.67ms`, read-model rebuild `38.88ms`.
+- Rebuilding read models before indexes was rejected by measurement:
+  derived total `1110.12ms -> 1377.38ms`.
+- Creating only the read-model dimension index before rebuild was roughly flat
+  in the probe (`1110.12ms -> 1055.27ms`) and is not retained as a framework
+  change yet because it needs generated index-column metadata and external
+  app-style proof.
+
+Decision:
+
+- Retained. The app-facing API remains the same, the benchmark stayed in band,
+  and future gates can identify index/read-model/schema-version costs directly.
+
 ## 2026-05-19 - Retained WP-12 Artifact Page Cap
 
 Commit: retained slice

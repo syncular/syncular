@@ -764,6 +764,31 @@ Retained derived-schema storage-shape follow-up:
   `976.02ms -> 930.41ms`, and local apply `207ms -> 202ms`, with
   `snapshotChunkCount=0`.
 
+Retained generated schema timing follow-up:
+
+- Generated TypeScript app clients now expose
+  `ensureSyncularAppSchemaWithTimings(...)` and
+  `ensureSyncularAppDerivedSchemaWithTimings(...)` beside the existing
+  installer. The default consumer API stays unchanged.
+- Browser E2E now reports schema phases:
+  `rust_schema_base_ms`, `rust_schema_derived_ms`,
+  `rust_schema_indexes_ms`, `rust_schema_read_model_probe_ms`,
+  `rust_schema_read_model_setup_ms`,
+  `rust_schema_read_model_rebuild_ms`, and
+  `rust_schema_record_version_ms`, plus cached equivalents.
+- 100k release artifact gate stayed in band:
+  previous schema-install run `rust_bootstrap_ms=149.75`,
+  `rust_schema_install_ms=5.42`, `rust_cached_schema_install_ms=2.55`;
+  current `rust_bootstrap_ms=144.00`, `rust_schema_install_ms=5.34`,
+  `rust_cached_schema_install_ms=1.91`.
+- A local `.context` probe against the external app schema showed the 500k
+  derived-schema cost is index dominated: indexes `1070.57ms`,
+  read-model setup `0.67ms`, and read-model rebuild `38.88ms`.
+  Rebuilding read models before indexes was rejected (`1110.12ms -> 1377.38ms`
+  derived total). A dimension-index-first order was roughly flat in the probe
+  (`1110.12ms -> 1055.27ms`) and needs generated index-column metadata plus
+  external proof before it is worth retaining.
+
 ## Next Action
 
 Continue artifact resource-state work, but keep it benchmark-gated.
@@ -787,6 +812,9 @@ Continue artifact resource-state work, but keep it benchmark-gated.
 - Derived-schema setup is now a first-class performance input for app-style
   bootstrap comparisons. Keep optimizing only generated, app-declared local
   indexes/read models; do not introduce hidden runtime caches.
+- The immediate derived-schema bottleneck is app-declared index creation, not
+  read-model rebuild. Avoid read-model rebuild order changes unless the external
+  app-style gate proves a clear win.
 - The next useful artifact-memory step is still a larger bootstrap state design
   if the generated derived-schema work leaves memory as the bottleneck:
   release/detach artifact databases before full commit without copying rows
