@@ -186,6 +186,10 @@ pub trait AsyncWebStore {
         Box::pin(async { Ok(()) })
     }
 
+    fn checkpoint_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn rollback_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async { Ok(()) })
     }

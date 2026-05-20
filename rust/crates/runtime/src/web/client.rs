@@ -453,6 +453,7 @@ where
                         .iter()
                         .map(SnapshotChunkRows::row_count)
                         .sum::<usize>();
+                    let mut checkpoint_after_snapshot = false;
                     if snapshot.is_first_page
                         || !snapshot.rows.is_empty()
                         || !artifact_refs.is_empty()
@@ -481,6 +482,7 @@ where
                         self.store.upsert_rows(&snapshot_table, inline_rows).await?;
                         result.timings.snapshot_row_apply_ms +=
                             elapsed_ms_since(row_apply_started_at);
+                        let mut applied_direct_artifact = false;
                         for artifact in artifact_refs {
                             let snapshot_fetch_started_at = timing_now_ms();
                             let bytes = self
@@ -498,6 +500,7 @@ where
                             self.store
                                 .apply_sqlite_snapshot_artifact_rows(&snapshot_table, bytes, mode)
                                 .await?;
+                            applied_direct_artifact = true;
                             let artifact_apply_ms = elapsed_ms_since(artifact_apply_started_at);
                             result.timings.snapshot_row_apply_ms += artifact_apply_ms;
                             result.timings.snapshot_artifact_apply_ms += artifact_apply_ms;
@@ -515,6 +518,9 @@ where
                             }
                             result.timings.snapshot_chunk_apply_ms +=
                                 elapsed_ms_since(chunk_apply_started_at);
+                        }
+                        if applied_direct_artifact && snapshot.bootstrap_state_after.is_some() {
+                            checkpoint_after_snapshot = true;
                         }
                     } else {
                         let mut rows_to_upsert = Vec::with_capacity(inline_rows.len());
@@ -647,6 +653,9 @@ where
                             .await?;
                         result.timings.subscription_state_ms +=
                             elapsed_ms_since(subscription_state_started_at);
+                    }
+                    if checkpoint_after_snapshot {
+                        self.store.checkpoint_apply_batch().await?;
                     }
                 }
             }

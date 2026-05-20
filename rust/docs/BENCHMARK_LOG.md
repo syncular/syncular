@@ -4721,3 +4721,100 @@ Decision:
   branch. Peak memory moved up by `7.94MB` in the external run, but remains
   below the recent `707.92MB` accepted scoped-artifact baseline while bootstrap
   and derived-schema time improve.
+
+## 2026-05-20 - WP-12 Checkpoint Direct Artifact Pages
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Browser direct SQLite artifact apply can now checkpoint an apply batch after a
+  verified artifact snapshot page that carries `bootstrapStateAfter`.
+- The checkpoint commits the applied page plus subscription bootstrap state,
+  detaches artifact databases, and starts the next write transaction. A later
+  artifact failure can resume from the committed page instead of restarting the
+  scoped bootstrap from page one.
+- This is a bootstrap state-model improvement, not a client apply micro-probe
+  and not a hidden cache.
+
+Local 100k release artifact gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/browser-e2e-100k-sqlite-artifacts-before-checkpoint.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/browser-e2e-100k-sqlite-artifacts-after-checkpoint.json
+```
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Rust bootstrap | `136.15ms` | `135.50ms` |
+| Rust pull apply | `125ms` | `124ms` |
+| Rust artifact apply | `110ms` | `110ms` |
+| Rust commit apply | `0ms` | `1ms` |
+| JS heap delta | `4.42MB` | `7.74MB` |
+| Snapshot chunks | `0` | `0` |
+
+External app-style scoped artifact benchmark:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T10-17-22-131Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous 40k artifact guard | Checkpointed artifact pages |
+| --- | ---: | ---: |
+| 500k bootstrap | `1002.06ms` | `995.58ms` |
+| 500k derived schema | n/a | `584.27ms` |
+| 500k sync total | n/a | `399ms` |
+| 500k pull apply | n/a | `302ms` |
+| 500k local apply | `198ms` | `203ms` |
+| 500k response bytes | `3,537,647` | `3,537,607` |
+| 500k peak memory | `668.20MB` | `671.13MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Correctness gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|committed SQLite snapshot artifact|artifact rows when a subscription is revoked"
+bun run --cwd rust/bindings/browser tsgo
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+```
+
+Decision:
+
+- Accepted as a correctness and state-model slice. The new test proves the
+  client commits a verified artifact page and resumes with one remaining
+  artifact download after a later artifact failure.
+- This is not a memory win. Local wall time stayed neutral, external 500k
+  bootstrap improved slightly, and peak memory moved up by `2.93MB` versus the
+  previous artifact guard. Do not use this as evidence for raising artifact page
+  caps without a separate memory benchmark win.

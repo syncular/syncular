@@ -925,6 +925,22 @@ Retained browser artifact timing counters follow-up:
   response bytes `3,537,717 -> 3,537,647`, peak memory
   `662.03MB -> 668.20MB`, and `snapshotChunkCount=0`.
 
+Retained checkpointed artifact page follow-up:
+
+- Browser direct SQLite artifact apply now checkpoints after a verified artifact
+  snapshot page that carries `bootstrapStateAfter`: commit the applied page and
+  subscription bootstrap state, detach artifact databases, and start the next
+  write transaction.
+- This makes scoped artifact bootstrap resumable inside a multi-page pull. A
+  new browser/Hono WASM test proves that when the second artifact download
+  fails, the first artifact page remains committed and the next pull downloads
+  only the remaining artifact instead of restarting from page one.
+- This is a state-model/correctness improvement, not a memory win. Local 100k
+  release artifact bootstrap stayed flat (`136.15ms -> 135.50ms`), external
+  app-style 500k bootstrap stayed healthy (`1002.06ms -> 995.58ms`), and
+  `snapshotChunkCount` stayed `0`; external peak memory moved slightly worse
+  (`668.20MB -> 671.13MB`).
+
 Rejected artifact cap-1 probe:
 
 - Tried forcing browser direct SQLite artifact pulls to `maxSnapshotPages=1` so
@@ -939,13 +955,12 @@ Rejected artifact cap-1 probe:
 
 Continue artifact resource-state work, but keep it benchmark-gated.
 
-- The accepted scoped artifact baseline is now external Rust 500k bootstrap
-  `1142.29ms`, derived schema `672.43ms`, local apply `222ms`, response bytes
-  `3537756`, peak memory `667.59MB`, and `snapshotChunkCount=0`, with external
-  artifact precompute row limit `40000`. Smaller artifact pages are now valid
-  only when the best-fit lookup keeps `snapshotChunkCount=0`; use this as a
-  robustness guard, not a reason to lower the accepted page size without a
-  benchmark win.
+- The accepted scoped artifact guard is now external Rust 500k bootstrap
+  `995.58ms`, local apply `203ms`, response bytes `3537607`, peak memory
+  `671.13MB`, and `snapshotChunkCount=0`, with external artifact precompute row
+  limit `40000`. Smaller artifact pages are now valid only when the best-fit
+  lookup keeps `snapshotChunkCount=0`; use this as a robustness guard, not a
+  reason to lower the accepted page size without a benchmark win.
 - The nullable-column, attached-PRAGMA, larger-bundle, SQLite-owned-buffer, and
   temp-table staging probes were all rejected. Separate-SQLite row streaming and
   segmented artifact apply were also rejected. Raising browser artifact pull

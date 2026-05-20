@@ -4174,6 +4174,14 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         })
     }
 
+    fn checkpoint_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            self.exec("COMMIT")?;
+            self.detach_snapshot_artifacts()?;
+            self.begin_write_transaction()
+        })
+    }
+
     fn rollback_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
             let rollback = self.exec("ROLLBACK");

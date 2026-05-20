@@ -183,7 +183,12 @@ read-only review:
     Browser artifact benchmark output now reports direct artifact count, bytes,
     fetch, hash, decompress, and apply timings; the 100k guard stayed in band
     at `136.33ms`, and the external 500k guard stayed healthy at `1002.06ms`
-    with `snapshotChunkCount=0`.
+    with `snapshotChunkCount=0`. Browser direct artifact pages now checkpoint
+    after verified pages with `bootstrapStateAfter`, so a later artifact failure
+    resumes from the committed page instead of restarting; the follow-up gate
+    stayed healthy at external 500k bootstrap `995.58ms` with
+    `snapshotChunkCount=0`, while peak memory moved slightly worse
+    (`668.20MB -> 671.13MB`).
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   - First retained TypeScript generated-client slice narrows
     `database.mutations` to generated inputs and patches. App code can now call
