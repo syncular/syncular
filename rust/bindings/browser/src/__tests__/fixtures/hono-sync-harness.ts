@@ -84,6 +84,7 @@ export interface HonoWorkerClientOptions {
   appSchema?: SyncularV2ClientConfig['appSchema'];
   pull?: SyncularV2PullOptions;
   diagnostics?: CreateSyncularV2DatabaseOptions['diagnostics'];
+  sync?: CreateSyncularV2DatabaseOptions['sync'];
   fileName?: string;
   requestTimeoutMs?: number;
 }
@@ -294,6 +295,7 @@ export async function createHonoSyncHarness(
         getHeaders: clientOptions.getHeaders,
         authLifecycle: clientOptions.authLifecycle,
         diagnostics: clientOptions.diagnostics,
+        sync: clientOptions.sync,
         config: {
           baseUrl,
           clientId: clientOptions.clientId,

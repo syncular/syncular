@@ -58,9 +58,9 @@ mechanics into app-state APIs that developers can render and test.
 
 ## Next Action
 
-Extend lifecycle coverage from browser worker state derivation into a
-production-shaped browser/Hono scenario covering offline mutation queueing,
-reconnect recovery, and final complete state.
+Add native/runtime parity for the same lifecycle contract so app-specific Rust
+wrappers can consume the canonical event stream without rebuilding state
+machines.
 
 ## Progress
 
@@ -72,6 +72,11 @@ reconnect recovery, and final complete state.
   pending-request context.
 - Worker client tests now prove lifecycle transitions for connecting,
   resync-required recovery, auth-required action, and final complete state.
+- Browser/Hono integration now proves a production-shaped flow: generated
+  mutations queue while the server is offline, the public lifecycle state shows
+  pending outbox and failed sync state, retry backoff is honored, reconnect
+  pushes the queued commit, and lifecycle reaches `complete` after the server
+  has the row.
 
 ## Latest Evidence
 
@@ -79,3 +84,5 @@ reconnect recovery, and final complete state.
 - `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/client.test.ts`
 - `bun run --cwd rust/bindings/browser tsgo`
 - `bun test rust/bindings/browser/src/public-api.test.ts rust/bindings/browser/src/react.test.ts`
+- `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts -t "lifecycle state"`
+- `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts`

@@ -16,6 +16,7 @@ import type {
   SyncularV2AppSchema,
   SyncularV2Client,
   SyncularV2DiagnosticEvent,
+  SyncularV2LifecycleState,
   SyncularV2LiveQueryEvent,
   SyncularV2RowsChangedEvent,
   SyncularV2UnsafeSqlClient,
@@ -176,6 +177,82 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     });
     expect(refreshCount).toBe(scenario.expectedRefreshCount);
     expect(sync.syncRouteAuthHeaders).toEqual(scenario.expectedAuthHeaders);
+  });
+
+  it('reports lifecycle state through offline queued mutation and reconnect recovery', async () => {
+    let offline = true;
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+      edgeGate: () =>
+        offline ? new Response('offline', { status: 503 }) : null,
+    });
+    harnesses.push(sync);
+
+    const database = await sync.openWorkerDatabase({
+      clientId: 'client-lifecycle-offline',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+      sync: { autoSyncAfterMutation: false },
+    });
+    const lifecycleEvents: SyncularV2LifecycleState[] = [];
+    database.client.addEventListener('lifecycleChanged', (event) => {
+      lifecycleEvents.push(event);
+    });
+    await database.client.setSubscriptions([
+      taskSubscription({ actorId: ACTOR_A }),
+    ]);
+
+    expect(database.client.lifecycleState()).toMatchObject({
+      phase: 'offline',
+      online: false,
+      requiresAction: false,
+    });
+
+    await database.mutations.tasks.insert({
+      id: 'task-lifecycle-offline',
+      title: 'Queued offline task',
+      completed: 0,
+      user_id: ACTOR_A,
+    });
+    const queued = await waitForLifecycle(lifecycleEvents, (event) =>
+      Boolean(event.outbox && event.outbox.pending >= 1)
+    );
+    expect(queued).toMatchObject({
+      outbox: { pending: 1 },
+    });
+
+    await expect(database.client.syncOnce()).rejects.toThrow(/offline|503/);
+    expect(database.client.lifecycleState()).toMatchObject({
+      phase: 'offline',
+      lastError: expect.objectContaining({ message: expect.any(String) }),
+    });
+
+    offline = false;
+    await waitForRetryBackoff();
+    await expect(database.client.syncOnce()).resolves.toMatchObject({
+      pushedCommits: 1,
+      bootstrap: { complete: true },
+    });
+    await waitForLifecycle(
+      lifecycleEvents,
+      (event) => event.phase === 'complete' && event.outbox?.pending === 0
+    );
+    expect(database.client.lifecycleState()).toMatchObject({
+      phase: 'complete',
+      outbox: { pending: 0, failed: 0 },
+      bootstrap: { complete: true },
+    });
+
+    const stored = await sync.db
+      .selectFrom('tasks')
+      .select(['id', 'title', 'user_id'])
+      .where('id', '=', 'task-lifecycle-offline')
+      .executeTakeFirst();
+    expect(stored).toEqual({
+      id: 'task-lifecycle-offline',
+      title: 'Queued offline task',
+      user_id: ACTOR_A,
+    });
   });
 
   it('correlates successful pull diagnostics with server request events', async () => {
@@ -2389,6 +2466,20 @@ async function waitForSyncRequestEventByTrace(
     await new Promise((resolve) => setTimeout(resolve, 25));
   }
   throw new Error(`Timed out waiting for sync_request_events trace ${traceId}`);
+}
+
+async function waitForLifecycle(
+  events: readonly SyncularV2LifecycleState[],
+  predicate: (event: SyncularV2LifecycleState) => boolean
+): Promise<SyncularV2LifecycleState> {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event && predicate(event)) return event;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('Timed out waiting for lifecycle event');
 }
 
 function waitForRetryBackoff(): Promise<void> {
