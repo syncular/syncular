@@ -157,7 +157,9 @@ read-only review:
     and cached schema install `1.91ms`. A local external-schema probe showed
     500k derived work is index dominated (`1070.57ms` indexes versus
     `38.88ms` read-model rebuild), so the next derived-schema experiments
-    should target app-declared index shape/order with external proof.
+    should target app-declared index shape/order with external proof. Snapshot
+    artifact pages are now protocol-exclusive: a page with artifact refs cannot
+    also carry inline rows, chunk refs, or chunk manifests.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin

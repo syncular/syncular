@@ -2,6 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import {
   SyncPullRequestSchema,
   SyncSnapshotChunkRefSchema,
+  SyncSnapshotSchema,
 } from '../schemas/sync';
 import {
   BinarySnapshotTableWriter,
@@ -12,6 +13,7 @@ import {
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
   SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+  SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
   scopedSnapshotArtifactDigestPayload,
@@ -69,6 +71,70 @@ describe('snapshot chunk protocol', () => {
 
     expect(parsed.encoding).toBe(SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1);
     expect(isSyncSnapshotChunkEncoding(parsed.encoding)).toBe(true);
+  });
+
+  it('rejects mixed artifact and row/chunk snapshot pages', async () => {
+    const manifest = await createScopedSnapshotArtifactManifest({
+      version: SYNC_SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
+      artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+      partitionId: 'partition-1',
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      schemaVersion: '7',
+      asOfCommitSeq: 42,
+      scopeDigest: 'a'.repeat(64),
+      rowCursor: null,
+      rowLimit: 50_000,
+      rowCount: 1,
+      nextRowCursor: null,
+      isFirstPage: true,
+      isLastPage: true,
+      compression: SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+      byteLength: 128,
+      sha256: 'b'.repeat(64),
+      featureSet: ['blobs'],
+    });
+    const artifact = {
+      id: 'artifact-1',
+      byteLength: manifest.byteLength,
+      sha256: manifest.sha256,
+      manifestDigest: manifest.digest,
+      artifactKind: manifest.artifactKind,
+      compression: manifest.compression,
+      rowCount: manifest.rowCount,
+      nextRowCursor: manifest.nextRowCursor,
+      isFirstPage: manifest.isFirstPage,
+      isLastPage: manifest.isLastPage,
+      manifest,
+    };
+    const baseSnapshot = {
+      table: 'tasks',
+      rows: [],
+      artifacts: [artifact],
+      isFirstPage: true,
+      isLastPage: true,
+    };
+
+    expect(() =>
+      SyncSnapshotSchema.parse({
+        ...baseSnapshot,
+        rows: [{ id: 'task-1' }],
+      })
+    ).toThrow(/inline rows/);
+    expect(() =>
+      SyncSnapshotSchema.parse({
+        ...baseSnapshot,
+        chunks: [
+          {
+            id: 'chunk-1',
+            byteLength: 128,
+            sha256: 'c'.repeat(64),
+            encoding: SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+            compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+          },
+        ],
+      })
+    ).toThrow(/chunk refs/);
   });
 
   it('supports generated table writers without generic row lookups', () => {
