@@ -3,6 +3,9 @@ use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
 use serde_json::json;
+use syncular_runtime::encryption::{
+    FieldEncryption, FieldEncryptionRule, StaticFieldEncryptionConfig,
+};
 use syncular_runtime::error::ErrorKind;
 use syncular_runtime::fixtures::todo;
 use syncular_runtime::native::{NativeClientOptions, NativeEventKind};
@@ -643,6 +646,65 @@ fn app_test_server_merges_concurrent_server_merge_crdt_updates() {
 }
 
 #[test]
+fn app_test_server_syncs_encrypted_fields_without_plaintext_storage() {
+    let app_schema = todo::app_schema();
+    let server = AppTestServer::new(app_schema);
+    let mut writer = open_app_client_with_server(
+        app_schema,
+        server.clone(),
+        app_server_options("app-server-e2ee-writer"),
+    )
+    .expect("writer fixture");
+    let mut reader = open_app_client_with_server(
+        app_schema,
+        server.clone(),
+        app_server_options("app-server-e2ee-reader"),
+    )
+    .expect("reader fixture");
+    writer
+        .client
+        .set_field_encryption(Some(stateful_test_field_encryption()));
+    reader
+        .client
+        .set_field_encryption(Some(stateful_test_field_encryption()));
+
+    writer
+        .client
+        .apply_mutation_json(
+            &json!({
+                "table": "tasks",
+                "row_id": "app-server-e2ee-task",
+                "op": "upsert",
+                "payload": {
+                    "id": "app-server-e2ee-task",
+                    "title": "Encrypted stateful title",
+                    "completed": 0,
+                    "user_id": "user-rust",
+                    "project_id": "p0"
+                },
+                "base_version": 0
+            })
+            .to_string(),
+            None,
+        )
+        .expect("local encrypted mutation");
+    writer.client.sync_http().expect("writer push");
+
+    let encrypted_title = server
+        .row("tasks", "app-server-e2ee-task")
+        .expect("server encrypted row")["title"]
+        .as_str()
+        .expect("encrypted title")
+        .to_string();
+    assert!(encrypted_title.starts_with("dgsync:e2ee:1:"));
+    assert_ne!(encrypted_title, "Encrypted stateful title");
+
+    reader.client.sync_http().expect("reader pull");
+    let row = assert_table_has_row(&mut reader.client, "tasks", "id", "app-server-e2ee-task");
+    assert_eq!(row["title"], "Encrypted stateful title");
+}
+
+#[test]
 fn native_fixture_opens_with_direct_schema_and_waits_for_events() {
     let mut fixture = open_native_client_with_schema_options(
         todo::app_schema(),
@@ -1055,6 +1117,28 @@ fn app_server_options(client_id: &str) -> AppFixtureOptions {
         client_id: client_id.to_string(),
         ..AppFixtureOptions::default()
     }
+}
+
+fn stateful_test_field_encryption() -> FieldEncryption {
+    let keys = [(
+        "default".to_string(),
+        "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc".to_string(),
+    )]
+    .into_iter()
+    .collect();
+    FieldEncryption::from_static_config(StaticFieldEncryptionConfig {
+        rules: vec![FieldEncryptionRule {
+            scope: "tasks".to_string(),
+            table: Some("tasks".to_string()),
+            fields: vec!["title".to_string()],
+            row_id_field: None,
+        }],
+        keys,
+        encryption_kid: None,
+        decryption_error_mode: None,
+        envelope_prefix: Some("dgsync:e2ee:1:".to_string()),
+    })
+    .expect("stateful test field encryption")
 }
 
 fn raw_http_request(

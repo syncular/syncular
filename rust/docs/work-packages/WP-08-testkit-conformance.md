@@ -70,13 +70,16 @@ tests.
   transport.
 - Added a scoped stateful server smoke proving bootstrap rows, later commits,
   and deletes are all filtered by the generated app schema scopes.
+- Added stateful encrypted-field sync coverage proving server-side stored rows
+  stay ciphertext while a second client pulls and decrypts plaintext through the
+  normal app sync path.
 - Added a stateful HTTP conflict smoke proving version conflicts are reported
   through the production native HTTP transport shape while the same sync can
   pull the server-winning row.
 - Replaced the Rust perf binary's private stateful HTTP/WebSocket server copy
   with the shared testkit fixture to keep performance and app tests aligned.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
-  passed with `26` smoke tests.
+  passed with `27` smoke tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-client
   --no-default-features --features cli --bin syncular-rust-perf --no-run`
   passed.

@@ -274,8 +274,10 @@ read-only review:
     wakeup. Stateful HTTP/WebSocket request capture now lets app tests assert
     production auth and schema-version headers. Stateful scope coverage now
     proves bootstrap rows, later commits, and deletes are filtered through
-    generated app schema scopes. The Rust perf binary now uses the same fixture
-    instead of maintaining its own private server copy.
+    generated app schema scopes. Stateful encrypted-field coverage now proves
+    the server stores ciphertext while a second client pulls decrypted
+    plaintext. The Rust perf binary now uses the same fixture instead of
+    maintaining its own private server copy.
 - `[ ]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
 - `[ ]` [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
 - `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
