@@ -106,6 +106,16 @@ public final class SyncularBoltClient implements AutoCloseable {
         return reader.readBool();
     }
 
+    public String forceSubscriptionsBootstrapJson(String subscriptionIdsJson) {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_force_subscriptions_bootstrap_json(handle, subscriptionIdsJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
+    }
+
     public boolean setFieldEncryptionJson(String configJson) {
         byte[] _buf = Native.boltffi_syncular_bolt_client_set_field_encryption_json(handle, configJson.getBytes(java.nio.charset.StandardCharsets.UTF_8));
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
@@ -753,6 +763,16 @@ public final class SyncularBoltClient implements AutoCloseable {
 
     public String observedQueriesJson() {
         byte[] _buf = Native.boltffi_syncular_bolt_client_observed_queries_json(handle);
+        if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
+        WireReader reader = new WireReader(_buf);
+        if (reader.readI8() != 0) {
+            throw new RuntimeException(reader.readString());
+        }
+        return reader.readString();
+    }
+
+    public String diagnosticSnapshotJson() {
+        byte[] _buf = Native.boltffi_syncular_bolt_client_diagnostic_snapshot_json(handle);
         if (_buf == null) throw new RuntimeException("FFI call returned null buffer");
         WireReader reader = new WireReader(_buf);
         if (reader.readI8() != 0) {

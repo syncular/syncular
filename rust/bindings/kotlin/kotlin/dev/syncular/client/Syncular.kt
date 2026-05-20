@@ -761,6 +761,15 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
 
     @Throws(FfiException::class)
+    fun forceSubscriptionsBootstrapJson(subscriptionIdsJson: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_force_subscriptions_bootstrap_json(handle, subscriptionIdsJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
     fun setFieldEncryptionJson(configJson: String): Boolean {
         val buf = Native.boltffi_syncular_bolt_client_set_field_encryption_json(handle, configJson.toByteArray(Charsets.UTF_8))
             ?: throw FfiException(-1, "Null buffer returned")
@@ -1391,6 +1400,15 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
 
     @Throws(FfiException::class)
+    fun diagnosticSnapshotJson(): String {
+        val buf = Native.boltffi_syncular_bolt_client_diagnostic_snapshot_json(handle)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
     fun outboxSummariesJson(): String {
         val buf = Native.boltffi_syncular_bolt_client_outbox_summaries_json(handle)
             ?: throw FfiException(-1, "Null buffer returned")
@@ -1594,6 +1612,7 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_runtime_manifest_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_set_auth_headers_json(handle: Long, headers_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_set_subscriptions_json(handle: Long, subscriptions_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_force_subscriptions_bootstrap_json(handle: Long, subscription_ids_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_set_field_encryption_json(handle: Long, config_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_set_encrypted_crdt_json(handle: Long, config_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_trigger_sync(handle: Long): ByteArray?
@@ -1655,6 +1674,7 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_register_query_json(handle: Long, query_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_unregister_query(handle: Long, id: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_observed_queries_json(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_diagnostic_snapshot_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_outbox_summaries_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_conflict_summaries_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_resolve_conflict(handle: Long, id: ByteArray, resolution: ByteArray): ByteArray?

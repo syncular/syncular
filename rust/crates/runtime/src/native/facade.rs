@@ -10,7 +10,7 @@ use crate::diesel_sqlite::DieselSqliteStore;
 use crate::encrypted_crdt::{EncryptedCrdt, CRDT_CHECKPOINTS_TABLE, CRDT_UPDATES_TABLE};
 use crate::encryption::{encryption_helpers_json, FieldEncryption};
 use crate::error::{ErrorKind, Result, SyncularError};
-use crate::protocol::BlobRef;
+use crate::protocol::{BlobRef, BootstrapState};
 use crate::runtime_schema::runtime_schema_version;
 use crate::sqlite_query::ReadonlySqlQueryExecutor;
 use crate::store::{now_ms, ConflictSummary, OutboxSummary};
@@ -22,7 +22,7 @@ use crate::worker::{
     PersistentRealtimeWorker, SyncWorker, SyncWorkerEvent, SyncWorkerEventSubscription,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
@@ -72,6 +72,8 @@ pub struct NativeSyncularClient {
     default_events: NativeEventSubscription,
     read_executor: Mutex<ReadonlySqlQueryExecutor>,
 }
+
+const NATIVE_RECENT_EVENT_LIMIT: usize = 100;
 
 pub struct NativeClientOpenTask {
     command_id: String,
@@ -205,6 +207,69 @@ pub struct NativeDiagnostic {
     pub details: BTreeMap<String, Value>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeDiagnosticSnapshot {
+    pub generated_at: i64,
+    pub runtime: NativeRuntimeManifest,
+    pub connection: NativeDiagnosticConnectionSnapshot,
+    pub subscriptions: Vec<NativeDiagnosticSubscriptionSnapshot>,
+    pub recent_events: Vec<NativeEvent>,
+    pub recent_diagnostics: Vec<NativeDiagnostic>,
+    pub bootstrap: BootstrapStatus,
+    pub outbox_stats: NativeOutboxStats,
+    pub conflict_stats: NativeConflictStats,
+    pub blob_upload_queue_stats: Value,
+    pub blob_cache_stats: Value,
+    pub observed_queries: Vec<NativeObservedQuery>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeDiagnosticConnectionSnapshot {
+    pub sync_worker_running: bool,
+    pub realtime_worker_running: bool,
+    pub auto_sync_local_writes: bool,
+    pub event_subscriber_count: usize,
+    pub observed_query_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeDiagnosticSubscriptionSnapshot {
+    pub id: String,
+    pub table: String,
+    pub scope_keys: Vec<String>,
+    pub scope_value_count: usize,
+    pub params_keys: Vec<String>,
+    pub params_value_count: usize,
+    pub status: Option<String>,
+    pub ready: bool,
+    pub phase: String,
+    pub progress_percent: i64,
+    pub cursor: Option<i64>,
+    pub bootstrap_phase: i64,
+    pub bootstrap_state: Option<BootstrapState>,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeOutboxStats {
+    pub pending: usize,
+    pub sending: usize,
+    pub failed: usize,
+    pub acked: usize,
+    pub total: usize,
+}
+
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeConflictStats {
+    pub unresolved: usize,
+    pub resolved: usize,
+    pub total: usize,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeAuthInfo {
     pub operation: String,
@@ -235,6 +300,7 @@ struct NativeEventHub {
     subscriber_seq: Arc<Mutex<u64>>,
     subscribers: Arc<Mutex<BTreeMap<u64, Arc<NativeEventQueue>>>>,
     query_observers: Arc<Mutex<BTreeMap<String, NativeObservedQuery>>>,
+    recent_events: Arc<Mutex<VecDeque<NativeEvent>>>,
 }
 
 pub struct NativeEventSubscription {
@@ -378,6 +444,7 @@ pub fn native_runtime_manifest() -> NativeRuntimeManifest {
             "blob-file-api",
             "background-worker-lifecycle",
             "structured-diagnostics",
+            "diagnostic-snapshot",
             "storage-compaction",
             "streaming-blob-file-api",
             "crdt-yjs",
@@ -1213,6 +1280,46 @@ impl NativeSyncularClient {
         Ok(serde_json::to_string(&self.observed_queries()?)?)
     }
 
+    pub fn diagnostic_snapshot(&mut self) -> Result<NativeDiagnosticSnapshot> {
+        let bootstrap = self.writer.bootstrap_status()?;
+        let outbox = self.writer.outbox_summaries()?;
+        let conflicts = self.writer.conflict_summaries()?;
+        let observed_queries = self.observed_queries()?;
+        let recent_events = self.events.recent_events();
+        let recent_diagnostics = recent_events
+            .iter()
+            .filter_map(|event| event.diagnostic.clone())
+            .collect();
+        let connection = NativeDiagnosticConnectionSnapshot {
+            sync_worker_running: self.sync_worker_running(),
+            realtime_worker_running: self.realtime_worker.is_some(),
+            auto_sync_local_writes: self.auto_sync_local_writes,
+            event_subscriber_count: self.events.subscriber_count(),
+            observed_query_count: observed_queries.len(),
+        };
+        Ok(NativeDiagnosticSnapshot {
+            generated_at: now_ms(),
+            runtime: native_runtime_manifest(),
+            connection,
+            subscriptions: native_diagnostic_subscription_snapshots(
+                self.writer.subscriptions(),
+                &bootstrap,
+            ),
+            recent_events,
+            recent_diagnostics,
+            bootstrap,
+            outbox_stats: native_outbox_stats(&outbox),
+            conflict_stats: native_conflict_stats(&conflicts),
+            blob_upload_queue_stats: serde_json::to_value(self.writer.blob_upload_queue_stats()?)?,
+            blob_cache_stats: serde_json::to_value(self.writer.blob_cache_stats()?)?,
+            observed_queries,
+        })
+    }
+
+    pub fn diagnostic_snapshot_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(&self.diagnostic_snapshot()?)?)
+    }
+
     pub fn outbox_summaries(&mut self) -> Result<Vec<OutboxSummary>> {
         self.writer.outbox_summaries()
     }
@@ -1701,6 +1808,7 @@ impl NativeEventHub {
 
     fn publish_event(&self, event: NativeEvent) {
         let event = self.stamp_event(event);
+        self.record_recent_event(event.clone());
         let Ok(mut subscribers) = self.subscribers.lock() else {
             return;
         };
@@ -1716,6 +1824,30 @@ impl NativeEventHub {
     fn publish_worker_event(&self, event: SyncWorkerEvent) {
         for event in self.events_from_worker_event(event) {
             self.publish_event(event);
+        }
+    }
+
+    fn recent_events(&self) -> Vec<NativeEvent> {
+        self.recent_events
+            .lock()
+            .map(|events| events.iter().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    fn subscriber_count(&self) -> usize {
+        self.subscribers
+            .lock()
+            .map(|subscribers| subscribers.len())
+            .unwrap_or_default()
+    }
+
+    fn record_recent_event(&self, event: NativeEvent) {
+        let Ok(mut events) = self.recent_events.lock() else {
+            return;
+        };
+        events.push_back(event);
+        while events.len() > NATIVE_RECENT_EVENT_LIMIT {
+            events.pop_front();
         }
     }
 
@@ -2089,6 +2221,86 @@ impl NativeClientConfig {
             None => Ok(default_app_schema()),
         }
     }
+}
+
+fn native_diagnostic_subscription_snapshots(
+    subscriptions: &[SubscriptionSpec],
+    bootstrap: &BootstrapStatus,
+) -> Vec<NativeDiagnosticSubscriptionSnapshot> {
+    subscriptions
+        .iter()
+        .map(|subscription| {
+            let status = bootstrap
+                .subscriptions
+                .iter()
+                .find(|status| status.id == subscription.id);
+            NativeDiagnosticSubscriptionSnapshot {
+                id: subscription.id.clone(),
+                table: subscription.table.clone(),
+                scope_keys: sorted_json_map_keys(&subscription.scopes),
+                scope_value_count: count_redacted_values(&subscription.scopes),
+                params_keys: sorted_json_map_keys(&subscription.params),
+                params_value_count: count_redacted_values(&subscription.params),
+                status: status.and_then(|status| status.status.clone()),
+                ready: status.is_some_and(|status| status.ready),
+                phase: status
+                    .map(|status| status.phase.clone())
+                    .unwrap_or_else(|| "pending".to_string()),
+                progress_percent: status.map_or(0, |status| status.progress_percent),
+                cursor: status.and_then(|status| status.cursor),
+                bootstrap_phase: subscription.bootstrap_phase,
+                bootstrap_state: status.and_then(|status| status.bootstrap_state.clone()),
+            }
+        })
+        .collect()
+}
+
+fn sorted_json_map_keys(map: &Map<String, Value>) -> Vec<String> {
+    let mut keys = map.keys().cloned().collect::<Vec<_>>();
+    keys.sort();
+    keys
+}
+
+fn count_redacted_values(map: &Map<String, Value>) -> usize {
+    map.values()
+        .map(|value| match value {
+            Value::Array(values) => values.len(),
+            Value::Null => 0,
+            _ => 1,
+        })
+        .sum()
+}
+
+fn native_outbox_stats(outbox: &[OutboxSummary]) -> NativeOutboxStats {
+    let mut stats = NativeOutboxStats {
+        total: outbox.len(),
+        ..NativeOutboxStats::default()
+    };
+    for item in outbox {
+        match item.status.as_str() {
+            "pending" => stats.pending += 1,
+            "sending" => stats.sending += 1,
+            "failed" => stats.failed += 1,
+            "acked" => stats.acked += 1,
+            _ => {}
+        }
+    }
+    stats
+}
+
+fn native_conflict_stats(conflicts: &[ConflictSummary]) -> NativeConflictStats {
+    let mut stats = NativeConflictStats {
+        total: conflicts.len(),
+        ..NativeConflictStats::default()
+    };
+    for conflict in conflicts {
+        if conflict.resolved_at.is_some() {
+            stats.resolved += 1;
+        } else {
+            stats.unresolved += 1;
+        }
+    }
+    stats
 }
 
 fn crdt_field_descriptor(field: &CrdtField) -> Value {

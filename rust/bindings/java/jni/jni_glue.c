@@ -6,7 +6,7 @@
 #include <string.h>
 #include <limits.h>
 #include <stdatomic.h>
-#include <syncular_runtime.h>
+#include <syncular-runtime.h>
 
 static inline bool boltffi_exception_pending(JNIEnv* env) {
     return (*env)->ExceptionCheck(env);
@@ -796,6 +796,39 @@ JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1
     _buf = boltffi_syncular_bolt_client_set_subscriptions_json((void*)handle, (const uint8_t*)_subscriptions_json_ptr, (uintptr_t)_subscriptions_json_len);
 boltffi_input_cleanup:
     if (_subscriptions_json_needs_release) (*env)->ReleaseByteArrayElements(env, subscriptions_json, (jbyte*)_subscriptions_json_ptr, JNI_ABORT);
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1force_1subscriptions_1bootstrap_1json(JNIEnv *env, jclass cls, jlong handle, jbyteArray subscription_ids_json) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+
+    jbyte _subscription_ids_json_stack[8];
+    uintptr_t _subscription_ids_json_len = (uintptr_t)(*env)->GetArrayLength(env, subscription_ids_json);
+    uint8_t* _subscription_ids_json_ptr = NULL;
+    bool _subscription_ids_json_needs_release = false;
+    if (_subscription_ids_json_len <= 8) {
+        (*env)->GetByteArrayRegion(env, subscription_ids_json, 0, (jsize)_subscription_ids_json_len, _subscription_ids_json_stack);
+        if (boltffi_exception_pending(env)) {
+            _subscription_ids_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _subscription_ids_json_ptr = (uint8_t*)_subscription_ids_json_stack;
+        }
+    } else {
+        _subscription_ids_json_ptr = (uint8_t*)(*env)->GetByteArrayElements(env, subscription_ids_json, NULL);
+        if (_subscription_ids_json_ptr == NULL) {
+            _subscription_ids_json_len = 0;
+            _boltffi_input_error = true;
+        } else {
+            _subscription_ids_json_needs_release = true;
+        }
+    }
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_force_subscriptions_bootstrap_json((void*)handle, (const uint8_t*)_subscription_ids_json_ptr, (uintptr_t)_subscription_ids_json_len);
+boltffi_input_cleanup:
+    if (_subscription_ids_json_needs_release) (*env)->ReleaseByteArrayElements(env, subscription_ids_json, (jbyte*)_subscription_ids_json_ptr, JNI_ABORT);
     if (_boltffi_input_error) return NULL;
     return boltffi_buf_to_jbytearray(env, _buf);
 }
@@ -2283,6 +2316,16 @@ JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1
     FfiBuf_u8 _buf = {0};
     if (_boltffi_input_error) goto boltffi_input_cleanup;
     _buf = boltffi_syncular_bolt_client_observed_queries_json((void*)handle);
+boltffi_input_cleanup:
+    if (_boltffi_input_error) return NULL;
+    return boltffi_buf_to_jbytearray(env, _buf);
+}
+JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1diagnostic_1snapshot_1json(JNIEnv *env, jclass cls, jlong handle) {
+    if (handle == 0) return NULL;
+    bool _boltffi_input_error = false;
+    FfiBuf_u8 _buf = {0};
+    if (_boltffi_input_error) goto boltffi_input_cleanup;
+    _buf = boltffi_syncular_bolt_client_diagnostic_snapshot_json((void*)handle);
 boltffi_input_cleanup:
     if (_boltffi_input_error) return NULL;
     return boltffi_buf_to_jbytearray(env, _buf);

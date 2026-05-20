@@ -933,6 +933,7 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_runtime_manifest_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_set_auth_headers_json(long handle, byte[] headersJson);
     static native byte[] boltffi_syncular_bolt_client_set_subscriptions_json(long handle, byte[] subscriptionsJson);
+    static native byte[] boltffi_syncular_bolt_client_force_subscriptions_bootstrap_json(long handle, byte[] subscriptionIdsJson);
     static native byte[] boltffi_syncular_bolt_client_set_field_encryption_json(long handle, byte[] configJson);
     static native byte[] boltffi_syncular_bolt_client_set_encrypted_crdt_json(long handle, byte[] configJson);
     static native byte[] boltffi_syncular_bolt_client_trigger_sync(long handle);
@@ -994,6 +995,7 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_register_query_json(long handle, byte[] queryJson);
     static native byte[] boltffi_syncular_bolt_client_unregister_query(long handle, byte[] id);
     static native byte[] boltffi_syncular_bolt_client_observed_queries_json(long handle);
+    static native byte[] boltffi_syncular_bolt_client_diagnostic_snapshot_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_outbox_summaries_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_conflict_summaries_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_resolve_conflict(long handle, byte[] id, byte[] resolution);
