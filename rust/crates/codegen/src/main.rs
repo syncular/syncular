@@ -10274,6 +10274,44 @@ mod tests {
     }
 
     #[test]
+    fn introspects_sqlite_index_columns() -> Result<()> {
+        let sqlite_path = temp_sqlite_path()?;
+        let _ = fs::remove_file(&sqlite_path);
+        let mut conn =
+            SqliteConnection::establish(sqlite_path.to_str().context("utf8 sqlite path")?)?;
+        sql_query(
+            "CREATE TABLE tasks (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )",
+        )
+        .execute(&mut conn)?;
+        sql_query("CREATE INDEX idx_tasks_user_updated ON tasks (user_id, updated_at DESC)")
+            .execute(&mut conn)?;
+
+        let tables = load_tables(&mut conn)?;
+        let tasks = tables
+            .iter()
+            .find(|table| table.name == "tasks")
+            .expect("tasks table");
+        let index = tasks
+            .indexes
+            .iter()
+            .find(|index| index.name == "idx_tasks_user_updated")
+            .expect("generated index");
+
+        assert_eq!(index.columns.len(), 2);
+        assert_eq!(index.columns[0].name.as_deref(), Some("user_id"));
+        assert!(!index.columns[0].descending);
+        assert_eq!(index.columns[1].name.as_deref(), Some("updated_at"));
+        assert!(index.columns[1].descending);
+
+        let _ = fs::remove_file(&sqlite_path);
+        Ok(())
+    }
+
+    #[test]
     fn native_modules_support_runtime_contract_and_operation_builders() -> Result<()> {
         let tables = vec![
             table(
