@@ -166,6 +166,15 @@ GROUP BY "user_id", "completed"`,
   },
 ] as const satisfies readonly SyncularGeneratedLocalReadModel[];
 
+export interface SyncularGeneratedLocalIndex {
+  table: keyof SyncularAppDb;
+  name: string;
+  sql: string;
+}
+
+export const syncularGeneratedLocalIndexes = [
+] as const satisfies readonly SyncularGeneratedLocalIndex[];
+
 export const syncularGeneratedAppSchema = {
   schemaVersion: syncularGeneratedSchemaVersion,
   tables: [
@@ -426,18 +435,46 @@ export async function ensureSyncularAppBaseSchema(db: Kysely<any>): Promise<void
 
 export async function ensureSyncularAppDerivedSchema(db: Kysely<any>): Promise<void> {
   const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppSchemaMetadata(db);
+  await ensureSyncularAppIndexes(db);
+  const syncularGeneratedReadModelWasInstalled = new Map<string, boolean>();
   for (const readModel of syncularGeneratedLocalReadModels) {
-    const readModelWasInstalled = await syncularGeneratedTableExists(db, readModel.outputTable);
-    for (const statement of readModel.setupSql) {
-      await sql.raw(statement).execute(db);
-    }
-    if (!readModelWasInstalled || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion) {
+    syncularGeneratedReadModelWasInstalled.set(readModel.name, await syncularGeneratedTableExists(db, readModel.outputTable));
+  }
+  await ensureSyncularAppReadModelSetup(db);
+  for (const readModel of syncularGeneratedLocalReadModels) {
+    if (!syncularGeneratedReadModelWasInstalled.get(readModel.name) || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion) {
       for (const statement of readModel.rebuildSql) {
         await sql.raw(statement).execute(db);
       }
     }
   }
 
+  await recordSyncularAppSchemaVersion(db);
+}
+
+export async function ensureSyncularAppIndexes(db: Kysely<any>): Promise<void> {
+  for (const index of syncularGeneratedLocalIndexes) {
+    await sql.raw(index.sql).execute(db);
+  }
+}
+
+export async function ensureSyncularAppReadModelSetup(db: Kysely<any>): Promise<void> {
+  for (const readModel of syncularGeneratedLocalReadModels) {
+    for (const statement of readModel.setupSql) {
+      await sql.raw(statement).execute(db);
+    }
+  }
+}
+
+export async function rebuildSyncularAppReadModels(db: Kysely<any>): Promise<void> {
+  for (const readModel of syncularGeneratedLocalReadModels) {
+    for (const statement of readModel.rebuildSql) {
+      await sql.raw(statement).execute(db);
+    }
+  }
+}
+
+async function recordSyncularAppSchemaVersion(db: Kysely<any>): Promise<void> {
   await validateSyncularAppSchema(db);
   await sql`
     insert into syncular_app_schema (schema_id, schema_version, updated_at)

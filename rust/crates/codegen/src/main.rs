@@ -4809,6 +4809,26 @@ fn generate_typescript_module(
         out.push_str("  },\n");
     }
     out.push_str("] as const satisfies readonly SyncularGeneratedLocalReadModel[];\n\n");
+    out.push_str("export interface SyncularGeneratedLocalIndex {\n");
+    out.push_str("  table: keyof SyncularAppDb;\n");
+    out.push_str("  name: string;\n");
+    out.push_str("  sql: string;\n");
+    out.push_str("}\n\n");
+    out.push_str("export const syncularGeneratedLocalIndexes = [\n");
+    for table in &user_tables {
+        for index in &table.indexes {
+            out.push_str("  {\n");
+            out.push_str(&format!("    table: {},\n", ts_string(&table.name)));
+            out.push_str(&format!("    name: {},\n", ts_string(&index.name)));
+            out.push_str("    sql: `");
+            out.push_str(&ts_template_literal_content(
+                &sqlite_index_create_if_not_exists(&index.sql),
+            ));
+            out.push_str("`,\n");
+            out.push_str("  },\n");
+        }
+    }
+    out.push_str("] as const satisfies readonly SyncularGeneratedLocalIndex[];\n\n");
     out.push_str("export const syncularGeneratedAppSchema = {\n");
     out.push_str("  schemaVersion: syncularGeneratedSchemaVersion,\n");
     out.push_str("  tables: [\n");
@@ -5017,35 +5037,55 @@ fn generate_typescript_module(
             "  const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppSchemaMetadata(db);\n",
         );
     }
-    for table in &user_tables {
-        for index in &table.indexes {
-            let sql = ts_template_literal_content(&sqlite_index_create_if_not_exists(&index.sql));
-            let index_name = index.name.replace('\n', " ").replace('\r', " ");
-            out.push_str(&format!("  // SQLite index: {index_name}\n"));
-            out.push_str("  await sql`\n");
-            for line in sql.lines() {
-                out.push_str("    ");
-                out.push_str(line);
-                out.push('\n');
-            }
-            out.push_str("  `.execute(db);\n\n");
-        }
-    }
+    out.push_str("  await ensureSyncularAppIndexes(db);\n");
     if !local_read_models.is_empty() {
+        out.push_str(
+            "  const syncularGeneratedReadModelWasInstalled = new Map<string, boolean>();\n",
+        );
         out.push_str("  for (const readModel of syncularGeneratedLocalReadModels) {\n");
         out.push_str(
-            "    const readModelWasInstalled = await syncularGeneratedTableExists(db, readModel.outputTable);\n",
+            "    syncularGeneratedReadModelWasInstalled.set(readModel.name, await syncularGeneratedTableExists(db, readModel.outputTable));\n",
         );
-        out.push_str("    for (const statement of readModel.setupSql) {\n");
-        out.push_str("      await sql.raw(statement).execute(db);\n");
-        out.push_str("    }\n");
-        out.push_str("    if (!readModelWasInstalled || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion) {\n");
+        out.push_str("  }\n");
+        out.push_str("  await ensureSyncularAppReadModelSetup(db);\n");
+        out.push_str("  for (const readModel of syncularGeneratedLocalReadModels) {\n");
+        out.push_str("    if (!syncularGeneratedReadModelWasInstalled.get(readModel.name) || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion) {\n");
         out.push_str("      for (const statement of readModel.rebuildSql) {\n");
         out.push_str("        await sql.raw(statement).execute(db);\n");
         out.push_str("      }\n");
         out.push_str("    }\n");
         out.push_str("  }\n\n");
     }
+    out.push_str("  await recordSyncularAppSchemaVersion(db);\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "export async function ensureSyncularAppIndexes(db: Kysely<any>): Promise<void> {\n",
+    );
+    out.push_str("  for (const index of syncularGeneratedLocalIndexes) {\n");
+    out.push_str("    await sql.raw(index.sql).execute(db);\n");
+    out.push_str("  }\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "export async function ensureSyncularAppReadModelSetup(db: Kysely<any>): Promise<void> {\n",
+    );
+    out.push_str("  for (const readModel of syncularGeneratedLocalReadModels) {\n");
+    out.push_str("    for (const statement of readModel.setupSql) {\n");
+    out.push_str("      await sql.raw(statement).execute(db);\n");
+    out.push_str("    }\n");
+    out.push_str("  }\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "export async function rebuildSyncularAppReadModels(db: Kysely<any>): Promise<void> {\n",
+    );
+    out.push_str("  for (const readModel of syncularGeneratedLocalReadModels) {\n");
+    out.push_str("    for (const statement of readModel.rebuildSql) {\n");
+    out.push_str("      await sql.raw(statement).execute(db);\n");
+    out.push_str("    }\n");
+    out.push_str("  }\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "async function recordSyncularAppSchemaVersion(db: Kysely<any>): Promise<void> {\n",
+    );
     out.push_str("  await validateSyncularAppSchema(db);\n");
     out.push_str("  await sql`\n");
     out.push_str("    insert into syncular_app_schema (schema_id, schema_version, updated_at)\n");
@@ -9751,10 +9791,12 @@ mod tests {
 
         let output = generate_typescript_module(&[tasks], &config, 3)?;
 
-        assert!(output.contains("// SQLite index: idx_tasks_user_project_id"));
+        assert!(output.contains("export const syncularGeneratedLocalIndexes = ["));
+        assert!(output.contains("name: 'idx_tasks_user_project_id'"));
         assert!(output.contains(
             "CREATE INDEX IF NOT EXISTS idx_tasks_user_project_id ON tasks (user_id, project_id, id)"
         ));
+        assert!(output.contains("await ensureSyncularAppIndexes(db);"));
         assert!(!output.contains("async function syncularGeneratedTableExists"));
         Ok(())
     }
@@ -9805,15 +9847,21 @@ mod tests {
         assert!(output.contains("rebuildSql: ["));
         assert!(output.contains("for (const readModel of syncularGeneratedLocalReadModels)"));
         assert!(output.contains("await sql.raw(statement).execute(db);"));
+        assert!(output.contains(
+            "export async function ensureSyncularAppReadModelSetup(db: Kysely<any>): Promise<void>"
+        ));
+        assert!(output.contains(
+            "export async function rebuildSyncularAppReadModels(db: Kysely<any>): Promise<void>"
+        ));
         assert!(output.contains("CREATE TABLE IF NOT EXISTS \"syncular_task_counts\""));
         assert!(output.contains(
             "CREATE TRIGGER IF NOT EXISTS \"syncular_rm_taskCountsByUserCompletion_insert\""
         ));
         assert!(output.contains(
-            "const readModelWasInstalled = await syncularGeneratedTableExists(db, readModel.outputTable)"
+            "syncularGeneratedReadModelWasInstalled.set(readModel.name, await syncularGeneratedTableExists(db, readModel.outputTable))"
         ));
         assert!(output.contains(
-            "if (!readModelWasInstalled || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion)"
+            "if (!syncularGeneratedReadModelWasInstalled.get(readModel.name) || syncularGeneratedPreviousSchemaVersion !== syncularGeneratedSchemaVersion)"
         ));
         assert!(output.contains("async function syncularGeneratedTableExists"));
         Ok(())
