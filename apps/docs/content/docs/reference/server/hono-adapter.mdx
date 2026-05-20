@@ -205,11 +205,11 @@ These endpoints are **relative to where you mount** `createSyncRoutes`. If you m
 
 | Error Code | HTTP Status | Description |
 |------------|-------------|-------------|
-| `UNAUTHENTICATED` | 401 | Authentication failed |
-| `FORBIDDEN` | 403 | Not authorized for resource |
-| `INVALID_REQUEST` | 400 | Malformed request |
-| `INVALID_SUBSCRIPTION` | 400 | Unknown table |
-| `TOO_MANY_OPERATIONS` | 400 | Exceeded max operations |
+| `sync.auth_required` | 401 | Authentication failed |
+| `sync.forbidden` | 403 | Not authorized for resource |
+| `sync.invalid_request` | 400 | Malformed request |
+| `sync.invalid_subscription` | 400 | Unknown table |
+| `sync.too_many_operations` | 400 | Exceeded max operations |
 | `WEBSOCKET_CONNECTION_LIMIT_TOTAL` | 429 | Too many WebSocket connections |
 | `WEBSOCKET_CONNECTION_LIMIT_CLIENT` | 429 | Too many connections for client |
 

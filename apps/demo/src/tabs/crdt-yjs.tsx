@@ -246,8 +246,8 @@ function EditorPanelContent({
     return conflicts.some(
       (conflict) =>
         conflict.resultStatus === 'error' &&
-        (conflict.code === 'ROW_MISSING' ||
-          conflict.message === 'ROW_NOT_FOUND_FOR_BASE_VERSION')
+        (conflict.code === 'sync.row_missing' ||
+          conflict.message === 'Row not found for base version')
     );
   }, [conflicts, status.error]);
 

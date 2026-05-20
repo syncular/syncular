@@ -132,7 +132,7 @@ describe('Syncular v2 worker client', () => {
           opIndex: 0,
           resultStatus: 'conflict',
           message: 'version conflict',
-          code: 'VERSION_CONFLICT',
+          code: 'sync.version_conflict',
           serverVersion: 9,
           resolvedAt: null,
           resolution: null,
@@ -140,7 +140,7 @@ describe('Syncular v2 worker client', () => {
       ],
     });
     await expect(summaries).resolves.toEqual([
-      expect.objectContaining({ id: 'conflict-1', code: 'VERSION_CONFLICT' }),
+      expect.objectContaining({ id: 'conflict-1', code: 'sync.version_conflict' }),
     ]);
 
     const retry = client.retryConflictKeepLocal('conflict-1');

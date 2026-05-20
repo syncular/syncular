@@ -255,7 +255,7 @@ fixture.transport.push_http_response_fn(|request| {
     Ok(push_conflict_response(
         request,
         "version conflict",
-        "VERSION_CONFLICT",
+        "sync.version_conflict",
         todo_task_row("note-1", "Server row", 9),
         9,
     ))

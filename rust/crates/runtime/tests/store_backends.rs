@@ -899,7 +899,7 @@ where
         Ok(push_conflict_response(
             request,
             "version conflict",
-            "VERSION_CONFLICT",
+            "sync.version_conflict",
             json!({
                 "id": "conflict-parity-task",
                 "title": "Server winner",

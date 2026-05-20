@@ -5,6 +5,7 @@ import type {
   ScopeValues,
   StoredScopes,
   SyncOperation,
+  SyncularErrorCode,
 } from '@syncular/core';
 import { BinarySnapshotTableWriter } from '@syncular/core';
 import { sql } from 'kysely';
@@ -240,15 +241,15 @@ function createEncryptedCrdtUpdateHandler<
       if (op.table !== SYNC_CRDT_UPDATES_TABLE) {
         return errorResult(
           opIndex,
-          `UNKNOWN_TABLE:${op.table}`,
-          'UNKNOWN_TABLE'
+          `Unknown table: ${op.table}`,
+          'sync.unknown_table'
         );
       }
       if (op.op !== 'upsert') {
         return errorResult(
           opIndex,
           'Encrypted CRDT updates are append-only',
-          'UNSUPPORTED_OPERATION'
+          'sync.unsupported_operation'
         );
       }
 
@@ -256,7 +257,9 @@ function createEncryptedCrdtUpdateHandler<
       const row = updateRowFromPayload(ctx, op, payload);
       if (options.authorizeUpdate) {
         const allowed = await options.authorizeUpdate({ ctx, row });
-        if (!allowed) return errorResult(opIndex, 'Forbidden', 'FORBIDDEN');
+        if (!allowed) {
+          return errorResult(opIndex, 'Forbidden', 'sync.forbidden');
+        }
       }
 
       const inserted = await insertSystemRow(
@@ -298,15 +301,15 @@ function createEncryptedCrdtCheckpointHandler<
       if (op.table !== SYNC_CRDT_CHECKPOINTS_TABLE) {
         return errorResult(
           opIndex,
-          `UNKNOWN_TABLE:${op.table}`,
-          'UNKNOWN_TABLE'
+          `Unknown table: ${op.table}`,
+          'sync.unknown_table'
         );
       }
       if (op.op !== 'upsert') {
         return errorResult(
           opIndex,
           'Encrypted CRDT checkpoints are append-only',
-          'UNSUPPORTED_OPERATION'
+          'sync.unsupported_operation'
         );
       }
 
@@ -314,7 +317,9 @@ function createEncryptedCrdtCheckpointHandler<
       const row = checkpointRowFromPayload(ctx, op, payload);
       if (options.authorizeCheckpoint) {
         const allowed = await options.authorizeCheckpoint({ ctx, row });
-        if (!allowed) return errorResult(opIndex, 'Forbidden', 'FORBIDDEN');
+        if (!allowed) {
+          return errorResult(opIndex, 'Forbidden', 'sync.forbidden');
+        }
       }
 
       const inserted = await insertSystemRow(
@@ -477,7 +482,7 @@ function appliedResult(
 function errorResult(
   opIndex: number,
   error: string,
-  code: string
+  code: SyncularErrorCode
 ): ApplyOperationResult {
   return {
     result: { opIndex, status: 'error', error, code, retriable: false },

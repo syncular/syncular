@@ -11,6 +11,7 @@ import { z } from 'zod';
 export const SyncularErrorCategorySchema = z.enum([
   'auth-required',
   'forbidden',
+  'conflict',
   'invalid-request',
   'not-found',
   'schema-mismatch',
@@ -34,6 +35,7 @@ export const SyncularErrorRecommendedActionSchema = z.enum([
   'regenerateClient',
   'inspectStorage',
   'inspectServer',
+  'resolveConflict',
 ]);
 
 export const ErrorResponseSchema = z.object({

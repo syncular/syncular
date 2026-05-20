@@ -577,7 +577,7 @@ fn app_test_http_server_reports_stateful_version_conflicts() {
     assert!(report.conflicts_changed);
 
     let conflicts = assert_conflict_count(&mut fixture.client, 1);
-    assert_eq!(conflicts[0].code.as_deref(), Some("VERSION_CONFLICT"));
+    assert_eq!(conflicts[0].code.as_deref(), Some("sync.version_conflict"));
     assert_eq!(conflicts[0].server_version, Some(2));
     let server_row =
         assert_app_server_has_row(server.app_server(), "tasks", "app-server-http-conflict");
@@ -999,7 +999,7 @@ fn protocol_builders_cover_conflict_flow() {
         Ok(push_conflict_response(
             request,
             "version conflict",
-            "VERSION_CONFLICT",
+            "sync.version_conflict",
             todo_task_row("conflict-builder-task", "Server conflict", 9),
             9,
         ))
@@ -1008,7 +1008,7 @@ fn protocol_builders_cover_conflict_flow() {
     fixture.client.sync_http().expect("sync conflict");
     assert_eq!(fixture.transport.handle().request_count(), 1);
     let conflicts = syncular_testkit::assert_conflict_count(&mut fixture.client, 1);
-    assert_eq!(conflicts[0].code.as_deref(), Some("VERSION_CONFLICT"));
+    assert_eq!(conflicts[0].code.as_deref(), Some("sync.version_conflict"));
     let row = assert_table_has_row(&mut fixture.client, "tasks", "id", "conflict-builder-task");
     assert_eq!(row["title"], "Local conflict");
 }

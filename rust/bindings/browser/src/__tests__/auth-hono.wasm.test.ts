@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
+import { createSyncularErrorResponse } from '@syncular/core';
 import { taskSubscription } from '../../../../examples/todo-app/generated/typescript/syncular.generated';
 import type { SyncularV2Client } from '../types';
 import {
@@ -87,7 +88,9 @@ describe('Syncular v2 worker auth against Hono sync routes', () => {
         ) {
           edgeRejectedAuthHeaders.push(authorization);
           return Response.json(
-            { error: 'FORBIDDEN', message: 'stale token rejected' },
+            createSyncularErrorResponse('sync.forbidden', {
+              message: 'stale token rejected',
+            }),
             { status: options.rejectStaleAtEdgeWith }
           );
         }

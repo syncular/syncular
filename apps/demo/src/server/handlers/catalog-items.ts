@@ -27,8 +27,8 @@ export const catalogItemsServerHandler = createServerHandler<
     result: {
       opIndex,
       status: 'error',
-      error: 'READ_ONLY',
-      code: 'READ_ONLY',
+      error: 'Read only',
+      code: 'sync.unsupported_operation',
       retriable: false,
     },
     emittedChanges: [],

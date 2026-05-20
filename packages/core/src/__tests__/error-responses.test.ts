@@ -53,6 +53,26 @@ describe('Syncular error responses', () => {
     });
   });
 
+  it('includes push operation result classifications', () => {
+    expect(createSyncularErrorResponse('sync.version_conflict')).toMatchObject({
+      category: 'conflict',
+      retryable: false,
+      recommendedAction: 'resolveConflict',
+    });
+    expect(createSyncularErrorResponse('sync.unknown_table')).toMatchObject({
+      category: 'schema-mismatch',
+      retryable: false,
+      recommendedAction: 'regenerateClient',
+    });
+    expect(
+      createSyncularErrorResponse('sync.idempotency_cache_miss')
+    ).toMatchObject({
+      category: 'internal',
+      retryable: true,
+      recommendedAction: 'retryLater',
+    });
+  });
+
   it('includes console gateway classifications', () => {
     expect(
       createSyncularErrorResponse('console.forbidden_origin')

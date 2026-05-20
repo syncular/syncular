@@ -155,7 +155,10 @@ fn decodes_typescript_encoded_binary_sync_pack_fixture() {
         conflict_commit.results[0].message.as_deref(),
         Some("server row changed")
     );
-    assert_eq!(conflict_commit.results[0].code.as_deref(), Some("CONFLICT"));
+    assert_eq!(
+        conflict_commit.results[0].code.as_deref(),
+        Some("sync.version_conflict")
+    );
     assert_eq!(conflict_commit.results[0].server_version, Some(7));
     assert_eq!(
         conflict_commit.results[0]
