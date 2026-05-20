@@ -6,6 +6,7 @@
 
 import type { SyncPullRequest, SyncPushRequest } from '@syncular/core';
 import {
+  createSyncularErrorResponse,
   createSyncTimer,
   isRecord,
   logSyncEvent,
@@ -71,6 +72,33 @@ function clampInt(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value));
 }
 
+function relayError(
+  c: Context,
+  status: 400 | 401,
+  code:
+    | 'sync.auth_required'
+    | 'sync.invalid_request'
+    | 'sync.too_many_operations',
+  message?: string,
+  details?: Record<string, unknown>
+): Response {
+  return c.json(
+    createSyncularErrorResponse(code, {
+      ...(message ? { message } : {}),
+      ...(details ? { details } : {}),
+    }),
+    status
+  );
+}
+
+function invalidRelayRequest(
+  c: Context,
+  message: string,
+  details?: Record<string, unknown>
+): Response {
+  return relayError(c, 400, 'sync.invalid_request', message, details);
+}
+
 /**
  * Create Hono routes for relay server-role endpoints.
  *
@@ -93,80 +121,50 @@ export function createRelayRoutes<DB extends RelayDatabase = RelayDatabase>(
   // POST /pull
   routes.post('/pull', async (c) => {
     const auth = await authenticate(c);
-    if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+    if (!auth) return relayError(c, 401, 'sync.auth_required');
 
     const rawBody: unknown = await c.req.json();
     const timer = createSyncTimer();
 
     if (!isRecord(rawBody)) {
-      return c.json(
-        { error: 'INVALID_REQUEST', message: 'Invalid JSON body' },
-        400
-      );
+      return invalidRelayRequest(c, 'Invalid JSON body');
     }
 
     if (!rawBody.clientId || typeof rawBody.clientId !== 'string') {
-      return c.json(
-        { error: 'INVALID_REQUEST', message: 'clientId is required' },
-        400
-      );
+      return invalidRelayRequest(c, 'clientId is required');
     }
 
     if (!Array.isArray(rawBody.subscriptions)) {
-      return c.json(
-        {
-          error: 'INVALID_REQUEST',
-          message: 'subscriptions array is required',
-        },
-        400
-      );
+      return invalidRelayRequest(c, 'subscriptions array is required');
     }
 
     if (rawBody.subscriptions.length > maxSubscriptionsPerPull) {
-      return c.json(
-        {
-          error: 'INVALID_REQUEST',
-          message: `Too many subscriptions (max ${maxSubscriptionsPerPull})`,
-        },
-        400
+      return invalidRelayRequest(
+        c,
+        `Too many subscriptions (max ${maxSubscriptionsPerPull})`
       );
     }
 
     const subscriptions: SyncPullRequest['subscriptions'] = [];
     for (const subValue of rawBody.subscriptions) {
       if (!isRecord(subValue)) {
-        return c.json(
-          { error: 'INVALID_REQUEST', message: 'Invalid subscription entry' },
-          400
-        );
+        return invalidRelayRequest(c, 'Invalid subscription entry');
       }
 
       const id = typeof subValue.id === 'string' ? subValue.id : null;
       const table = typeof subValue.table === 'string' ? subValue.table : null;
       if (!id || !table) {
-        return c.json(
-          {
-            error: 'INVALID_REQUEST',
-            message: 'Subscription id/table required',
-          },
-          400
-        );
+        return invalidRelayRequest(c, 'Subscription id/table required');
       }
 
       const scopesParsed = ScopeValuesSchema.safeParse(subValue.scopes);
       if (!scopesParsed.success) {
-        return c.json(
-          { error: 'INVALID_REQUEST', message: 'Invalid subscription scopes' },
-          400
-        );
+        return invalidRelayRequest(c, 'Invalid subscription scopes');
       }
 
       const rawParams = subValue.params;
       if (rawParams !== undefined && !isRecord(rawParams)) {
-        return c.json(
-          { error: 'INVALID_REQUEST', message: 'Invalid subscription params' },
-          400
-        );
+        return invalidRelayRequest(c, 'Invalid subscription params');
       }
 
       const cursor =
@@ -190,12 +188,9 @@ export function createRelayRoutes<DB extends RelayDatabase = RelayDatabase>(
         rawBootstrapState !== null &&
         bootstrapState === null
       ) {
-        return c.json(
-          {
-            error: 'INVALID_REQUEST',
-            message: 'Invalid subscription bootstrapState',
-          },
-          400
+        return invalidRelayRequest(
+          c,
+          'Invalid subscription bootstrapState'
         );
       }
 
@@ -245,10 +240,7 @@ export function createRelayRoutes<DB extends RelayDatabase = RelayDatabase>(
 
     const validatedRequest = SyncPullRequestSchema.safeParse(request);
     if (!validatedRequest.success) {
-      return c.json(
-        { error: 'INVALID_REQUEST', message: 'Invalid pull request' },
-        400
-      );
+      return invalidRelayRequest(c, 'Invalid pull request');
     }
 
     const pullResult = await relayPull({
@@ -286,26 +278,22 @@ export function createRelayRoutes<DB extends RelayDatabase = RelayDatabase>(
   // POST /push
   routes.post('/push', async (c) => {
     const auth = await authenticate(c);
-    if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+    if (!auth) return relayError(c, 401, 'sync.auth_required');
 
     const rawBody: unknown = await c.req.json();
     const parsed = SyncPushRequestSchema.safeParse(rawBody);
     if (!parsed.success) {
-      return c.json(
-        { error: 'INVALID_REQUEST', message: 'Invalid push request' },
-        400
-      );
+      return invalidRelayRequest(c, 'Invalid push request');
     }
 
     const body: SyncPushRequest = parsed.data;
 
     if (body.operations.length > maxOperationsPerPush) {
-      return c.json(
-        {
-          error: 'TOO_MANY_OPERATIONS',
-          message: `Maximum ${maxOperationsPerPush} operations per push`,
-        },
-        400
+      return relayError(
+        c,
+        400,
+        'sync.too_many_operations',
+        `Maximum ${maxOperationsPerPush} operations per push`
       );
     }
 

@@ -117,9 +117,14 @@ string-only errors.
   blob, and console validation failures return stable `sync.invalid_request`,
   `blob.invalid_request`, or `console.invalid_request` envelopes before route
   handlers run.
+- Relay server-role `/pull` and `/push` routes now return stable sync error
+  envelopes for unauthenticated requests, malformed requests, and push
+  operation-limit rejection instead of uppercase string-only errors.
 
 ## Latest Evidence
 
+- `bun run --cwd packages/relay tsgo`
+- `bun test packages/relay/src/__tests__/relay.test.ts`
 - `bun run --cwd packages/core tsgo`
 - `bun run --cwd packages/server-hono tsgo`
 - `bun run --cwd rust/bindings/browser tsgo`
