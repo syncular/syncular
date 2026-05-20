@@ -9,12 +9,13 @@ use syncular_runtime::native::{NativeClientOptions, NativeEventKind};
 use syncular_runtime::transport::{HttpSyncTransport, RealtimeEvent, SyncTransportConfig};
 use syncular_testkit::{
     actor_project_scopes, apply_crdt_field_text, apply_native_crdt_field_text,
-    apply_native_todo_task_upsert, assert_blob_upload_queue, assert_crdt_field_materializes,
-    assert_crdt_field_text_nonblank, assert_native_crdt_field_materializes,
-    assert_native_error_kind, assert_native_rows_changed, assert_native_table_row_count,
-    assert_no_conflicts, assert_outbox_empty, assert_outbox_statuses, assert_table_has_row,
-    assert_table_row_count, default_combined_response, encoded_blob_hash, open_app_client,
-    open_app_client_in_memory, open_app_client_with_server, open_app_client_with_transport,
+    apply_native_todo_task_upsert, assert_blob_upload_queue, assert_conflict_count,
+    assert_crdt_field_materializes, assert_crdt_field_text_nonblank,
+    assert_native_crdt_field_materializes, assert_native_error_kind, assert_native_rows_changed,
+    assert_native_table_row_count, assert_no_conflicts, assert_outbox_empty,
+    assert_outbox_statuses, assert_table_has_row, assert_table_row_count,
+    default_combined_response, encoded_blob_hash, open_app_client, open_app_client_in_memory,
+    open_app_client_with_server, open_app_client_with_transport,
     open_native_client_with_schema_json_options, open_native_client_with_schema_options,
     open_todo_client, open_todo_client_with_transport, push_conflict_response,
     snapshot_combined_response, todo_app_schema_json, todo_snapshot_response, todo_task_row,
@@ -241,6 +242,85 @@ fn app_test_http_server_serves_stateful_sync_and_realtime_wakeups() {
             .unwrap()["title"],
         "Stateful HTTP task"
     );
+}
+
+#[test]
+fn app_test_http_server_reports_stateful_version_conflicts() {
+    let server = AppTestHttpServer::start(todo::app_schema()).expect("stateful HTTP server");
+    server
+        .app_server()
+        .seed_row(
+            "tasks",
+            json!({
+                "id": "app-server-http-conflict",
+                "title": "Base task",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0",
+                "server_version": 1
+            }),
+        )
+        .expect("seed row");
+
+    let mut options = app_server_options("app-server-http-conflict");
+    options.base_url = server.url();
+    let transport = HttpSyncTransport::new(SyncTransportConfig::new(
+        server.url(),
+        options.client_id.clone(),
+        options.actor_id.clone(),
+    ));
+    let mut fixture = open_app_client_with_transport(todo::app_schema(), transport, options)
+        .expect("client fixture");
+
+    fixture.client.sync_http().expect("bootstrap");
+    server
+        .app_server()
+        .commit_row(
+            "tasks",
+            json!({
+                "id": "app-server-http-conflict",
+                "title": "Server edit",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0"
+            }),
+        )
+        .expect("server edit");
+
+    fixture
+        .client
+        .apply_mutation_json(
+            &json!({
+                "table": "tasks",
+                "row_id": "app-server-http-conflict",
+                "op": "upsert",
+                "payload": { "title": "Local edit" },
+                "base_version": 1
+            })
+            .to_string(),
+            None,
+        )
+        .expect("local edit");
+    let report = fixture.client.sync_http().expect("conflict sync");
+    assert!(report.conflicts_changed);
+
+    let conflicts = assert_conflict_count(&mut fixture.client, 1);
+    assert_eq!(conflicts[0].code.as_deref(), Some("VERSION_CONFLICT"));
+    assert_eq!(conflicts[0].server_version, Some(2));
+    assert_eq!(
+        server
+            .app_server()
+            .row("tasks", "app-server-http-conflict")
+            .expect("server row")["title"],
+        "Server edit"
+    );
+    let row = assert_table_has_row(
+        &mut fixture.client,
+        "tasks",
+        "id",
+        "app-server-http-conflict",
+    );
+    assert_eq!(row["title"], "Server edit");
 }
 
 #[test]
