@@ -2,6 +2,7 @@ use super::generated::{table_metadata, NewTask, TaskPatch};
 use super::migrations::{checksum, current_schema_version, split_sql_statements, MIGRATIONS};
 use crate::error::{Result, SyncularError};
 use crate::protocol::*;
+use crate::runtime_schema::RUNTIME_SYSTEM_SCHEMA_SQL;
 use crate::store::{
     now_ms, AppliedMigration, ConflictSummary, DemoTaskStore, OutboxCommit, OutboxSummary,
     SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx, Task, VerifiedRoot,
@@ -43,6 +44,9 @@ impl RusqliteStore {
             "#,
             [],
         )?;
+        for statement in split_sql_statements(RUNTIME_SYSTEM_SCHEMA_SQL) {
+            self.conn.execute(&statement, [])?;
+        }
 
         for migration in MIGRATIONS {
             let applied: Option<String> = self

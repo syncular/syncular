@@ -9,6 +9,8 @@ import { createBunSqliteDialect } from '../../../../packages/dialect-bun-sqlite/
 import { createServerHandler } from '../../../../packages/server/src/handlers';
 import type { SyncCoreDb } from '../../../../packages/server/src/schema';
 import {
+  ensureSyncularAppBaseSchema,
+  ensureSyncularAppSchema,
   type SyncularAppDb,
   syncularGeneratedCodecs,
   syncularGeneratedSchemaVersion,
@@ -348,6 +350,35 @@ describe('Syncular v2 live query dependencies', () => {
     await db.destroy();
 
     expect(probe.unsubscribed).toEqual(['query-1']);
+  });
+});
+
+describe('generated Syncular v2 schema migrations', () => {
+  it('advances older browser app schema metadata through generated app-only migrations', async () => {
+    const db = new Kysely<SyncularAppDb>({
+      dialect: createBunSqliteDialect({ path: ':memory:' }),
+    });
+
+    try {
+      await ensureSyncularAppBaseSchema(db);
+      await sql`
+        insert into syncular_app_schema (schema_id, schema_version, updated_at)
+        values ('syncular-app', 1, 1)
+      `.execute(db);
+
+      await ensureSyncularAppSchema(db);
+
+      const state = await sql<{ schema_version: number }>`
+        select schema_version
+        from syncular_app_schema
+        where schema_id = 'syncular-app'
+      `.execute(db);
+      expect(Number(state.rows[0]?.schema_version)).toBe(
+        syncularGeneratedSchemaVersion
+      );
+    } finally {
+      await db.destroy();
+    }
   });
 });
 

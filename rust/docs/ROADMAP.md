@@ -439,7 +439,7 @@ read-only review:
     current Rust-first public surfaces; remaining uppercase strings are
     downstream/test fixtures or old JS-client cleanup debt already tracked in
     the compatibility register.
-- `[~]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
+- `[x]` [`WP-16 Schema Evolution And Migration Safety`](work-packages/WP-16-schema-evolution-migration-safety.md)
   - First retained testkit slice lets `AppTestServer` / `AppTestHttpServer`
     simulate `requiredSchemaVersion` and `latestSchemaVersion`. The rolling
     deploy smoke proves a client can bootstrap existing rows, then reject a
@@ -448,14 +448,17 @@ read-only review:
     classification and fail-closed behavior through public native events.
     Browser Hono/WASM coverage now proves the public worker error/diagnostic
     surface rejects future required schemas without mutating worker-owned
-    SQLite. Generated browser clients now reject persisted local
-    `syncular_app_schema` version mismatches separately from configured runtime
-    version mismatches. Native Diesel now persists app schema state, rejects
-    future local schema versions, and exposes the state through the native
-    facade, C FFI, and Swift/Kotlin/Java BoltFFI wrappers. Browser generated
-    installers now fail closed with an explicit message instead of pretending
-    mixed app/runtime migrations can be replayed safely in WASM.
-- `[ ]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
+    SQLite. Native Diesel now persists app schema state, rejects future local
+    schema versions, and exposes the state through the native facade, C FFI,
+    and Swift/Kotlin/Java BoltFFI wrappers. Generated app migrations are now
+    app-owned only across Rust, Swift, Kotlin, and TypeScript outputs; stores
+    install Syncular runtime system tables themselves, and browser generated
+    clients can replay older local app schema versions before validating and
+    stamping the current version.
+- `[~]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
+  - Next active work package. Define a stable lifecycle event shape and wire one
+    browser worker test covering offline mutation queueing, reconnect recovery,
+    and final complete state.
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)

@@ -566,10 +566,7 @@ impl DieselSqliteStore {
         .execute(&mut self.conn)?;
         self.ensure_app_schema_state_table()?;
         self.reject_future_app_schema_state()?;
-
-        if self.app_schema.migrations.is_empty() {
-            self.ensure_runtime_system_schema()?;
-        }
+        self.ensure_runtime_system_schema()?;
 
         for migration in self.app_schema.migrations {
             let applied = sql_query(

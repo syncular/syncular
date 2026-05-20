@@ -55,6 +55,99 @@ export interface SyncularGeneratedTableConfig {
 export const syncularGeneratedSchemaVersion = 7 as const;
 const syncularGeneratedSchemaId = 'syncular-app';
 
+export interface SyncularGeneratedAppMigration {
+  version: string;
+  schemaVersion: number;
+  name: string;
+  appSql: readonly string[];
+  skippedSystemStatements: number;
+}
+
+export const syncularGeneratedAppMigrations: readonly SyncularGeneratedAppMigration[] = [
+  {
+    version: '0001',
+    schemaVersion: 1,
+    name: 'initial',
+    appSql: [
+      `CREATE TABLE IF NOT EXISTS projects (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  owner_id TEXT NOT NULL,
+  archived INTEGER NOT NULL DEFAULT 0,
+  server_version BIGINT NOT NULL DEFAULT 0
+) WITHOUT ROWID;`,
+      `CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  completed INTEGER NOT NULL DEFAULT 0,
+  user_id TEXT NOT NULL,
+  project_id TEXT NULL,
+  server_version BIGINT NOT NULL DEFAULT 0,
+  image TEXT NULL,
+  title_yjs_state TEXT NULL
+) WITHOUT ROWID;`,
+      `CREATE TABLE IF NOT EXISTS comments (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  project_id TEXT NULL,
+  body TEXT NOT NULL,
+  author_id TEXT NOT NULL,
+  deleted INTEGER NOT NULL DEFAULT 0,
+  server_version BIGINT NOT NULL DEFAULT 0
+) WITHOUT ROWID;`,
+    ],
+    skippedSystemStatements: 4,
+  },
+  {
+    version: '0002',
+    schemaVersion: 2,
+    name: 'blob_client_tables',
+    appSql: [
+    ],
+    skippedSystemStatements: 4,
+  },
+  {
+    version: '0003',
+    schemaVersion: 3,
+    name: 'retry_backoff',
+    appSql: [
+    ],
+    skippedSystemStatements: 5,
+  },
+  {
+    version: '0004',
+    schemaVersion: 4,
+    name: 'encrypted_crdt_tables',
+    appSql: [
+    ],
+    skippedSystemStatements: 6,
+  },
+  {
+    version: '0005',
+    schemaVersion: 5,
+    name: 'encrypted_crdt_server_seq',
+    appSql: [
+    ],
+    skippedSystemStatements: 4,
+  },
+  {
+    version: '0006',
+    schemaVersion: 6,
+    name: 'crdt_document_persistence',
+    appSql: [
+    ],
+    skippedSystemStatements: 5,
+  },
+  {
+    version: '0007',
+    schemaVersion: 7,
+    name: 'verified_roots',
+    appSql: [
+    ],
+    skippedSystemStatements: 1,
+  },
+];
+
 export const syncularGeneratedRequiredRuntimeFeatures = [
   'web-owned-sqlite-core',
   'blobs',
@@ -585,10 +678,22 @@ async function ensureSyncularAppSchemaMetadata(db: Kysely<any>): Promise<number 
   const version = rows.rows[0]?.schema_version;
   if (version == null) return null;
   const localVersion = Number(version);
-  if (localVersion !== syncularGeneratedSchemaVersion) {
-    throw new Error(`Syncular app schema version mismatch: local ${localVersion}, generated ${syncularGeneratedSchemaVersion}. Browser app schema migration replay is not available for this generated client; recreate the local database or provide an app migration path before opening Syncular.`);
+  if (localVersion > syncularGeneratedSchemaVersion) {
+    throw new Error(`Syncular app schema version mismatch: local ${localVersion}, generated ${syncularGeneratedSchemaVersion}. Regenerate the client before opening this database.`);
+  }
+  if (localVersion < syncularGeneratedSchemaVersion) {
+    await applySyncularGeneratedAppMigrations(db, localVersion);
   }
   return localVersion;
+}
+
+async function applySyncularGeneratedAppMigrations(db: Kysely<any>, localVersion: number): Promise<void> {
+  for (const migration of syncularGeneratedAppMigrations) {
+    if (migration.schemaVersion <= localVersion || migration.schemaVersion > syncularGeneratedSchemaVersion) continue;
+    for (const statement of migration.appSql) {
+      await sql.raw(statement).execute(db);
+    }
+  }
 }
 
 async function syncularGeneratedTableExists(db: Kysely<any>, table: string): Promise<boolean> {
@@ -720,7 +825,7 @@ export async function assertSyncularAppRuntime(database: Pick<SyncularAppDatabas
   if (schemaState.currentSchemaVersion !== syncularGeneratedSchemaVersion) {
     throw new Error(`Syncular Rust app schema version mismatch: ${schemaState.currentSchemaVersion}, expected ${syncularGeneratedSchemaVersion}`);
   }
-  if (schemaState.schemaVersion !== null && schemaState.schemaVersion !== syncularGeneratedSchemaVersion) {
+  if (schemaState.schemaVersion !== null && schemaState.schemaVersion > syncularGeneratedSchemaVersion) {
     throw new Error(`Syncular Rust local app schema version mismatch: local ${schemaState.schemaVersion}, generated ${syncularGeneratedSchemaVersion}`);
   }
 }

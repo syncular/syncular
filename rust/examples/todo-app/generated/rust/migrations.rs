@@ -9,64 +9,43 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         version: "0001",
         schema_version: 1,
         name: "initial",
-        up_sql: include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/0001_initial/up.sql"
-        )),
+        up_sql: "CREATE TABLE IF NOT EXISTS projects (\n  id TEXT PRIMARY KEY,\n  name TEXT NOT NULL,\n  owner_id TEXT NOT NULL,\n  archived INTEGER NOT NULL DEFAULT 0,\n  server_version BIGINT NOT NULL DEFAULT 0\n) WITHOUT ROWID;\n\nCREATE TABLE IF NOT EXISTS tasks (\n  id TEXT PRIMARY KEY,\n  title TEXT NOT NULL,\n  completed INTEGER NOT NULL DEFAULT 0,\n  user_id TEXT NOT NULL,\n  project_id TEXT NULL,\n  server_version BIGINT NOT NULL DEFAULT 0,\n  image TEXT NULL,\n  title_yjs_state TEXT NULL\n) WITHOUT ROWID;\n\nCREATE TABLE IF NOT EXISTS comments (\n  id TEXT PRIMARY KEY,\n  task_id TEXT NOT NULL,\n  project_id TEXT NULL,\n  body TEXT NOT NULL,\n  author_id TEXT NOT NULL,\n  deleted INTEGER NOT NULL DEFAULT 0,\n  server_version BIGINT NOT NULL DEFAULT 0\n) WITHOUT ROWID;",
     },
     EmbeddedMigration {
         version: "0002",
         schema_version: 2,
         name: "blob_client_tables",
-        up_sql: include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/0002_blob_client_tables/up.sql"
-        )),
+        up_sql: "",
     },
     EmbeddedMigration {
         version: "0003",
         schema_version: 3,
         name: "retry_backoff",
-        up_sql: include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/0003_retry_backoff/up.sql"
-        )),
+        up_sql: "",
     },
     EmbeddedMigration {
         version: "0004",
         schema_version: 4,
         name: "encrypted_crdt_tables",
-        up_sql: include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/0004_encrypted_crdt_tables/up.sql"
-        )),
+        up_sql: "",
     },
     EmbeddedMigration {
         version: "0005",
         schema_version: 5,
         name: "encrypted_crdt_server_seq",
-        up_sql: include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/0005_encrypted_crdt_server_seq/up.sql"
-        )),
+        up_sql: "",
     },
     EmbeddedMigration {
         version: "0006",
         schema_version: 6,
         name: "crdt_document_persistence",
-        up_sql: include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/0006_crdt_document_persistence/up.sql"
-        )),
+        up_sql: "",
     },
     EmbeddedMigration {
         version: "0007",
         schema_version: 7,
         name: "verified_roots",
-        up_sql: include_str!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/migrations/0007_verified_roots/up.sql"
-        )),
+        up_sql: "",
     },
 ];
 

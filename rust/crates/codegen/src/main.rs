@@ -501,6 +501,174 @@ fn split_sql_statements(sql: &str) -> impl Iterator<Item = String> + '_ {
         .map(|statement| format!("{statement};"))
 }
 
+#[derive(Debug, Clone)]
+struct AppMigrationSpec {
+    version: String,
+    schema_version: i32,
+    name: String,
+    app_sql: Vec<String>,
+    skipped_system_statements: usize,
+}
+
+fn sql_identifier_tokens(statement: &str) -> Vec<String> {
+    let chars = statement.chars().collect::<Vec<_>>();
+    let mut tokens = Vec::new();
+    let mut index = 0;
+
+    while index < chars.len() {
+        let ch = chars[index];
+        if ch == '-' && chars.get(index + 1) == Some(&'-') {
+            index += 2;
+            while index < chars.len() && chars[index] != '\n' {
+                index += 1;
+            }
+            continue;
+        }
+
+        if ch == '\'' {
+            index += 1;
+            while index < chars.len() {
+                if chars[index] == '\'' {
+                    index += 1;
+                    if chars.get(index) == Some(&'\'') {
+                        index += 1;
+                        continue;
+                    }
+                    break;
+                }
+                index += 1;
+            }
+            continue;
+        }
+
+        if ch == '"' || ch == '`' || ch == '[' {
+            let closing = if ch == '[' { ']' } else { ch };
+            index += 1;
+            let start = index;
+            while index < chars.len() && chars[index] != closing {
+                index += 1;
+            }
+            if start < index {
+                tokens.push(
+                    chars[start..index]
+                        .iter()
+                        .collect::<String>()
+                        .to_lowercase(),
+                );
+            }
+            index += usize::from(index < chars.len());
+            continue;
+        }
+
+        if ch == '_' || ch.is_ascii_alphabetic() {
+            let start = index;
+            index += 1;
+            while index < chars.len()
+                && (chars[index] == '_'
+                    || chars[index].is_ascii_alphanumeric()
+                    || chars[index] == '$')
+            {
+                index += 1;
+            }
+            tokens.push(
+                chars[start..index]
+                    .iter()
+                    .collect::<String>()
+                    .to_lowercase(),
+            );
+            continue;
+        }
+
+        index += 1;
+    }
+
+    tokens
+}
+
+fn previous_sql_object_context(tokens: &[String], index: usize) -> Option<&str> {
+    let mut cursor = index.checked_sub(1)?;
+    loop {
+        let token = tokens[cursor].as_str();
+        if !matches!(
+            token,
+            "if" | "not" | "exists" | "unique" | "temp" | "temporary"
+        ) {
+            return Some(token);
+        }
+        cursor = cursor.checked_sub(1)?;
+    }
+}
+
+fn is_syncular_system_identifier(identifier: &str) -> bool {
+    identifier.starts_with("sync_")
+        || identifier.starts_with("syncular_")
+        || identifier.starts_with("idx_sync_")
+}
+
+fn statement_touches_syncular_system_object(statement: &str) -> bool {
+    let tokens = sql_identifier_tokens(statement);
+    tokens.iter().enumerate().any(|(index, token)| {
+        is_syncular_system_identifier(token)
+            && matches!(
+                previous_sql_object_context(&tokens, index),
+                Some(
+                    "table"
+                        | "index"
+                        | "trigger"
+                        | "view"
+                        | "into"
+                        | "from"
+                        | "join"
+                        | "update"
+                        | "on"
+                        | "references"
+                )
+            )
+    })
+}
+
+fn app_migration_specs(migrations_dir: &Path) -> Result<Vec<AppMigrationSpec>> {
+    migration_dirs(migrations_dir)?
+        .into_iter()
+        .enumerate()
+        .map(|(index, migration_dir)| {
+            let dir_name = migration_dir
+                .file_name()
+                .and_then(|value| value.to_str())
+                .with_context(|| {
+                    format!("invalid migration dir name {}", migration_dir.display())
+                })?;
+            let (version, name) = dir_name
+                .split_once('_')
+                .map(|(version, name)| (version, name))
+                .unwrap_or((dir_name, dir_name));
+            let up_sql_path = migration_dir.join("up.sql");
+            let up_sql = fs::read_to_string(&up_sql_path)
+                .with_context(|| format!("read migration {}", up_sql_path.display()))?;
+            let mut app_sql = Vec::new();
+            let mut skipped_system_statements = 0;
+            for statement in split_sql_statements(&up_sql) {
+                if statement_touches_syncular_system_object(&statement) {
+                    skipped_system_statements += 1;
+                } else {
+                    app_sql.push(statement);
+                }
+            }
+            Ok(AppMigrationSpec {
+                version: version.to_string(),
+                schema_version: i32::try_from(index + 1).context("migration count exceeds i32")?,
+                name: name.to_string(),
+                app_sql,
+                skipped_system_statements,
+            })
+        })
+        .collect()
+}
+
+fn app_migration_up_sql(migration: &AppMigrationSpec) -> String {
+    migration.app_sql.join("\n\n")
+}
+
 fn migration_dirs(migrations_dir: &Path) -> Result<Vec<PathBuf>> {
     let mut migration_dirs = fs::read_dir(migrations_dir)
         .with_context(|| format!("read migrations dir {}", migrations_dir.display()))?
@@ -535,36 +703,14 @@ fn rust_string_literal(value: &str) -> String {
     out
 }
 
-fn slash_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
-}
-
-fn include_str_expr(manifest_dir: &Path, path: &Path) -> Result<String> {
-    let manifest_dir = fs::canonicalize(manifest_dir)
-        .with_context(|| format!("canonicalize {}", manifest_dir.display()))?;
-    let path =
-        fs::canonicalize(path).with_context(|| format!("canonicalize {}", path.display()))?;
-    if let Ok(relative) = path.strip_prefix(&manifest_dir) {
-        return Ok(format!(
-            "include_str!(concat!(env!(\"CARGO_MANIFEST_DIR\"), {}))",
-            rust_string_literal(&format!("/{}", slash_path(relative)))
-        ));
-    }
-
-    Ok(format!(
-        "include_str!({})",
-        rust_string_literal(&slash_path(&path))
-    ))
-}
-
 fn generate_migrations_module(
-    manifest_dir: &Path,
+    _manifest_dir: &Path,
     migrations_dir: &Path,
     tables: &[TableInfo],
     config: &CodegenConfig,
 ) -> Result<String> {
     let runtime_crate = config.rust_runtime_crate_path()?;
-    let migrations = migration_dirs(migrations_dir)?;
+    let migrations = app_migration_specs(migrations_dir)?;
     let mut out = String::from(
         "// @generated by `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen --`\n\
          // Source: migrations/*.sql\n\n",
@@ -574,23 +720,13 @@ fn generate_migrations_module(
          use {runtime_crate}::app_schema::current_schema_version as latest_schema_version;\n\n"
     ));
     out.push_str("pub const MIGRATIONS: &[EmbeddedMigration] = &[\n");
-    for (index, migration_dir) in migrations.iter().enumerate() {
-        let dir_name = migration_dir
-            .file_name()
-            .and_then(|value| value.to_str())
-            .with_context(|| format!("invalid migration dir name {}", migration_dir.display()))?;
-        let (version, name) = dir_name
-            .split_once('_')
-            .map(|(version, name)| (version, name))
-            .unwrap_or((dir_name, dir_name));
-        let up_sql_path = migration_dir.join("up.sql");
-        let include_expr = include_str_expr(manifest_dir, &up_sql_path)?;
+    for migration in &migrations {
         out.push_str(&format!(
             "    EmbeddedMigration {{\n        version: {},\n        schema_version: {},\n        name: {},\n        up_sql: {},\n    }},\n",
-            rust_string_literal(version),
-            index + 1,
-            rust_string_literal(name),
-            include_expr
+            rust_string_literal(&migration.version),
+            migration.schema_version,
+            rust_string_literal(&migration.name),
+            rust_string_literal(&app_migration_up_sql(migration))
         ));
     }
     out.push_str("];\n\n");
@@ -1048,31 +1184,17 @@ fn generate_runtime_app_schema_json(
     }
 
     let migrations = if let Some(migrations_dir) = migrations_dir {
-        migration_dirs(migrations_dir)?
+        app_migration_specs(migrations_dir)?
             .into_iter()
-            .enumerate()
-            .map(|(index, migration_dir)| {
-                let dir_name = migration_dir
-                    .file_name()
-                    .and_then(|value| value.to_str())
-                    .with_context(|| {
-                        format!("invalid migration dir name {}", migration_dir.display())
-                    })?;
-                let (version, name) = dir_name
-                    .split_once('_')
-                    .map(|(version, name)| (version, name))
-                    .unwrap_or((dir_name, dir_name));
-                let up_sql_path = migration_dir.join("up.sql");
-                let up_sql = fs::read_to_string(&up_sql_path)
-                    .with_context(|| format!("read migration {}", up_sql_path.display()))?;
-                Ok(serde_json::json!({
-                    "version": version,
-                    "schemaVersion": i32::try_from(index + 1).context("migration count exceeds i32")?,
-                    "name": name,
-                    "upSql": up_sql,
-                }))
+            .map(|migration| {
+                serde_json::json!({
+                    "version": migration.version,
+                    "schemaVersion": migration.schema_version,
+                    "name": migration.name,
+                    "upSql": app_migration_up_sql(&migration),
+                })
             })
-            .collect::<Result<Vec<_>>>()?
+            .collect::<Vec<_>>()
     } else {
         Vec::new()
     };
@@ -4752,12 +4874,17 @@ fn generate_typescript_module(
     tables: &[TableInfo],
     config: &CodegenConfig,
     schema_version: i32,
+    migrations_dir: Option<&Path>,
 ) -> Result<String> {
     let user_tables = tables
         .iter()
         .filter(|table| !table.name.starts_with("sync_"))
         .cloned()
         .collect::<Vec<_>>();
+    let app_migrations = migrations_dir
+        .map(app_migration_specs)
+        .transpose()?
+        .unwrap_or_default();
     let local_read_models = local_read_model_sqls(&user_tables, config)?;
     let local_read_model_tables = local_read_model_table_infos(&user_tables, config)?;
     let mut out = String::from(
@@ -4834,6 +4961,41 @@ fn generate_typescript_module(
         "export const syncularGeneratedSchemaVersion = {schema_version} as const;\n"
     ));
     out.push_str("const syncularGeneratedSchemaId = 'syncular-app';\n\n");
+    out.push_str("export interface SyncularGeneratedAppMigration {\n");
+    out.push_str("  version: string;\n");
+    out.push_str("  schemaVersion: number;\n");
+    out.push_str("  name: string;\n");
+    out.push_str("  appSql: readonly string[];\n");
+    out.push_str("  skippedSystemStatements: number;\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "export const syncularGeneratedAppMigrations: readonly SyncularGeneratedAppMigration[] = [\n",
+    );
+    for migration in &app_migrations {
+        out.push_str("  {\n");
+        out.push_str(&format!(
+            "    version: {},\n",
+            ts_string(&migration.version)
+        ));
+        out.push_str(&format!(
+            "    schemaVersion: {},\n",
+            migration.schema_version
+        ));
+        out.push_str(&format!("    name: {},\n", ts_string(&migration.name)));
+        out.push_str("    appSql: [\n");
+        for statement in &migration.app_sql {
+            out.push_str("      `");
+            out.push_str(&ts_template_literal_content(statement));
+            out.push_str("`,\n");
+        }
+        out.push_str("    ],\n");
+        out.push_str(&format!(
+            "    skippedSystemStatements: {},\n",
+            migration.skipped_system_statements
+        ));
+        out.push_str("  },\n");
+    }
+    out.push_str("];\n\n");
     out.push_str("export const syncularGeneratedRequiredRuntimeFeatures = [\n");
     for feature in required_browser_runtime_features(&user_tables, config) {
         out.push_str(&format!("  {},\n", ts_string(feature)));
@@ -5373,10 +5535,23 @@ fn generate_typescript_module(
     out.push_str("  const version = rows.rows[0]?.schema_version;\n");
     out.push_str("  if (version == null) return null;\n");
     out.push_str("  const localVersion = Number(version);\n");
-    out.push_str("  if (localVersion !== syncularGeneratedSchemaVersion) {\n");
-    out.push_str("    throw new Error(`Syncular app schema version mismatch: local ${localVersion}, generated ${syncularGeneratedSchemaVersion}. Browser app schema migration replay is not available for this generated client; recreate the local database or provide an app migration path before opening Syncular.`);\n");
+    out.push_str("  if (localVersion > syncularGeneratedSchemaVersion) {\n");
+    out.push_str("    throw new Error(`Syncular app schema version mismatch: local ${localVersion}, generated ${syncularGeneratedSchemaVersion}. Regenerate the client before opening this database.`);\n");
+    out.push_str("  }\n");
+    out.push_str("  if (localVersion < syncularGeneratedSchemaVersion) {\n");
+    out.push_str("    await applySyncularGeneratedAppMigrations(db, localVersion);\n");
     out.push_str("  }\n");
     out.push_str("  return localVersion;\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "async function applySyncularGeneratedAppMigrations(db: Kysely<any>, localVersion: number): Promise<void> {\n",
+    );
+    out.push_str("  for (const migration of syncularGeneratedAppMigrations) {\n");
+    out.push_str("    if (migration.schemaVersion <= localVersion || migration.schemaVersion > syncularGeneratedSchemaVersion) continue;\n");
+    out.push_str("    for (const statement of migration.appSql) {\n");
+    out.push_str("      await sql.raw(statement).execute(db);\n");
+    out.push_str("    }\n");
+    out.push_str("  }\n");
     out.push_str("}\n\n");
     if !local_read_models.is_empty() {
         out.push_str("async function syncularGeneratedTableExists(db: Kysely<any>, table: string): Promise<boolean> {\n");
@@ -5506,7 +5681,7 @@ fn generate_typescript_module(
     out.push_str("  if (schemaState.currentSchemaVersion !== syncularGeneratedSchemaVersion) {\n");
     out.push_str("    throw new Error(`Syncular Rust app schema version mismatch: ${schemaState.currentSchemaVersion}, expected ${syncularGeneratedSchemaVersion}`);\n");
     out.push_str("  }\n");
-    out.push_str("  if (schemaState.schemaVersion !== null && schemaState.schemaVersion !== syncularGeneratedSchemaVersion) {\n");
+    out.push_str("  if (schemaState.schemaVersion !== null && schemaState.schemaVersion > syncularGeneratedSchemaVersion) {\n");
     out.push_str("    throw new Error(`Syncular Rust local app schema version mismatch: local ${schemaState.schemaVersion}, generated ${syncularGeneratedSchemaVersion}`);\n");
     out.push_str("  }\n");
     out.push_str("}\n\n");
@@ -9384,8 +9559,12 @@ fn main() -> Result<()> {
         Some(&migrations_dir),
         schema_version,
     )?;
-    let generated_ts =
-        generate_typescript_module(&schema_tables, &schema_codegen_config, schema_version)?;
+    let generated_ts = generate_typescript_module(
+        &schema_tables,
+        &schema_codegen_config,
+        schema_version,
+        Some(&migrations_dir),
+    )?;
     let generated_ts_server =
         generate_typescript_server_module(&schema_tables, &schema_codegen_config)?;
     let generated_swift = generate_swift_module(
@@ -9645,6 +9824,51 @@ mod tests {
         schema_version: i32,
     ) -> Result<String> {
         generate_runtime_app_schema_json(tables, config, None, schema_version)
+    }
+
+    #[test]
+    fn app_migrations_strip_runtime_system_sql() -> Result<()> {
+        let migrations_dir = temp_test_dir("app-migrations")?;
+        fs::create_dir_all(migrations_dir.join("0001_initial"))?;
+        fs::write(
+            migrations_dir.join("0001_initial/up.sql"),
+            r#"
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY,
+  sync_status TEXT NULL
+);
+
+CREATE TABLE sync_outbox_commits (
+  id TEXT PRIMARY KEY
+);
+
+CREATE INDEX idx_sync_outbox_commits_due
+  ON sync_outbox_commits (id);
+"#,
+        )?;
+        fs::create_dir_all(migrations_dir.join("0002_add_title"))?;
+        fs::write(
+            migrations_dir.join("0002_add_title/up.sql"),
+            r#"
+ALTER TABLE tasks ADD COLUMN title TEXT NULL;
+ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 0;
+"#,
+        )?;
+
+        let migrations = app_migration_specs(&migrations_dir)?;
+
+        assert_eq!(migrations.len(), 2);
+        assert_eq!(migrations[0].app_sql.len(), 1);
+        assert!(migrations[0].app_sql[0].contains("sync_status"));
+        assert_eq!(migrations[0].skipped_system_statements, 2);
+        assert_eq!(
+            migrations[1].app_sql,
+            vec!["ALTER TABLE tasks ADD COLUMN title TEXT NULL;".to_string()]
+        );
+        assert_eq!(migrations[1].skipped_system_statements, 1);
+
+        let _ = fs::remove_dir_all(&migrations_dir);
+        Ok(())
     }
 
     #[test]
@@ -9971,8 +10195,8 @@ mod tests {
             generate_diesel_tables(&tables, &config)?
         );
         assert_eq!(
-            generate_typescript_module(&schema_tables, &schema_config, schema_version)?,
-            generate_typescript_module(&tables, &config, 2)?
+            generate_typescript_module(&schema_tables, &schema_config, schema_version, None)?,
+            generate_typescript_module(&tables, &config, 2, None)?
         );
         assert_eq!(
             generate_typescript_server_module(&schema_tables, &schema_config)?,
@@ -10073,7 +10297,7 @@ mod tests {
             ..CodegenConfig::default()
         };
 
-        let output = generate_typescript_module(&tables, &config, 7)?;
+        let output = generate_typescript_module(&tables, &config, 7, None)?;
 
         assert!(output.contains(
             "import { SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularRustSqliteDatabase, withSyncularV2SchemaWrites } from '@app/sync-runtime';"
@@ -10118,7 +10342,7 @@ mod tests {
             output.contains("schemaState.currentSchemaVersion !== syncularGeneratedSchemaVersion")
         );
         assert!(output.contains(
-            "schemaState.schemaVersion !== null && schemaState.schemaVersion !== syncularGeneratedSchemaVersion"
+            "schemaState.schemaVersion !== null && schemaState.schemaVersion > syncularGeneratedSchemaVersion"
         ));
         assert!(output.contains("export const syncularGeneratedRequiredRuntimeFeatures = ["));
         assert!(output.contains("  'web-owned-sqlite-core',"));
@@ -10172,8 +10396,12 @@ mod tests {
             "  const syncularGeneratedDerivedTimings = await ensureSyncularAppDerivedSchemaWithTimings(db);"
         ));
         assert!(output.contains("export const syncularGeneratedSchemaVersion = 7 as const;"));
+        assert!(output.contains("export interface SyncularGeneratedAppMigration"));
+        assert!(output.contains("export const syncularGeneratedAppMigrations"));
+        assert!(output.contains("async function applySyncularGeneratedAppMigrations"));
         assert!(output.contains("await ensureSyncularAppSchemaMetadata(db);"));
-        assert!(output.contains("Browser app schema migration replay is not available"));
+        assert!(output.contains("Regenerate the client before opening this database"));
+        assert!(!output.contains("Browser app schema migration replay is not available"));
         assert!(output.contains("async function validateSyncularAppSchema(db: Kysely<any>)"));
         assert!(output.contains("    .createTable('projects')"));
         assert!(output.contains("    .addColumn('owner_id', 'text', (col) => col.notNull())"));
@@ -10314,7 +10542,7 @@ mod tests {
             ..CodegenConfig::default()
         };
 
-        let output = generate_typescript_module(&tables, &config, 3)?;
+        let output = generate_typescript_module(&tables, &config, 3, None)?;
 
         assert!(output.contains("CREATE TABLE IF NOT EXISTS \"tasks\" ("));
         assert!(output.contains("\"id\" TEXT PRIMARY KEY"));
@@ -10356,7 +10584,7 @@ mod tests {
             ..CodegenConfig::default()
         };
 
-        let output = generate_typescript_module(&[tasks], &config, 3)?;
+        let output = generate_typescript_module(&[tasks], &config, 3, None)?;
 
         assert!(output.contains(
             "export const syncularGeneratedLocalIndexes: readonly SyncularGeneratedLocalIndex[] = ["
@@ -10423,7 +10651,7 @@ mod tests {
             ..CodegenConfig::default()
         };
 
-        let output = generate_typescript_module(&[tasks], &config, 3)?;
+        let output = generate_typescript_module(&[tasks], &config, 3, None)?;
 
         assert!(!output.contains("name: 'idx_tasks_project_owner_completed'"));
         assert!(output.contains("name: 'idx_tasks_project_owner_completed_updated_at'"));
@@ -10466,7 +10694,7 @@ mod tests {
             ..CodegenConfig::default()
         };
 
-        let output = generate_typescript_module(&[tasks], &config, 3)?;
+        let output = generate_typescript_module(&[tasks], &config, 3, None)?;
 
         assert!(output.contains("syncular_task_counts: SyncularTaskCountRow;"));
         assert!(output.contains("export interface SyncularTaskCountRow"));
@@ -11112,7 +11340,7 @@ mod tests {
             "SyncularEncryptedCrdtUpdateRequest(table = \"tasks\", field = \"title\", rowId = rowId, nextText = nextText)"
         ));
 
-        let typescript = generate_typescript_module(&tables, &config, 9)?;
+        let typescript = generate_typescript_module(&tables, &config, 9, None)?;
         assert!(typescript.contains("  'web-owned-sqlite-core',"));
         assert!(typescript.contains("  'crdt-yjs',"));
         assert!(typescript.contains("  'e2ee',"));
@@ -11157,7 +11385,7 @@ mod tests {
         assert!(!rust.contains("pub fn title_yjs_state(mut self"));
         assert!(rust.contains("pub fn title_yjs_update"));
 
-        let typescript = generate_typescript_module(&tables, &config, 9)?;
+        let typescript = generate_typescript_module(&tables, &config, 9, None)?;
         assert!(typescript.contains("title_yjs_state: string | null;"));
         assert!(!typescript.contains("title_yjs_state?: string | null;"));
         assert!(typescript.contains(
