@@ -66,16 +66,14 @@ the correct sync path easy and make incorrect paths hard to reach.
 
 ## Next Action
 
-Use the generated TypeScript mutation shape as the reference for the next native
-generated-client pass:
+Continue tightening generated app surfaces:
 
-1. Align Swift/Kotlin/JVM generated mutation entry points with the same
-   generated-input/public-patch shape where the native runtime already exposes
-   the required low-level JSON enqueue/apply calls.
-2. Add generated diagnostics helpers that surface WP-13 snapshots/events without
-   making apps parse raw JSON strings.
-3. Revisit CRDT state-column exposure in generated mutation input types so app
+1. Revisit CRDT state-column exposure in generated mutation input types so app
    code cannot accidentally write CRDT persistence columns directly.
+2. Add documentation examples that show diagnostics alongside typed reads,
+   subscriptions, mutations, conflicts, and live query refresh.
+3. Review native generated mutation naming for cross-platform consistency
+   without adding table-specific read/ORM helpers.
 
 ## Progress
 
@@ -88,3 +86,15 @@ generated-client pass:
   hatches or change runtime semantics.
 - Added browser generated-conformance coverage proving the typed generated
   mutation surface produces the same clean outbox/local-row payloads.
+- Swift and Kotlin generated native clients now expose `diagnosticSnapshot()`
+  helpers over the runtime `diagnosticSnapshotJson()` host method, so apps can
+  inspect WP-13 snapshots without parsing raw JSON strings.
+- The generated native diagnostics helper is covered by codegen assertions and
+  Swift/Kotlin generated-client smokes; BoltFFI-backed native smoke wrappers
+  delegate the host diagnostic method directly.
+
+## Latest Evidence
+
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `bash rust/examples/todo-app/native-smokes/run-local.sh`

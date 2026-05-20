@@ -27,6 +27,10 @@ private final class MockNativeClient: SyncularNativeJsonClient {
         return "command-swift"
     }
 
+    func diagnosticSnapshotJson() throws -> String {
+        #"{"storage":{"backend":"mock"},"worker":{"running":false},"sync":{"pending":0},"outbox":{"pending":0},"blobs":{"pending":0},"events":{"running":false},"configuration":{"redacted":true}}"#
+    }
+
     func openCrdtFieldJson(requestJson: String) throws -> String {
         crdtFieldRequests.append(requestJson)
         return #"{"table":"tasks","rowId":"task-native","field":"title","stateColumn":"title_yjs_state","containerKey":"title","rowIdField":"id","kind":"text","syncMode":"server-merge"}"#
@@ -208,6 +212,12 @@ private enum GeneratedClientSmoke {
             mimeType: jsonString(blobImage, "mimeType")
         )
         let client = MockNativeClient(imageJson: blobImageJson)
+        let diagnostics = try client.diagnosticSnapshot()
+        if case .object(let diagnosticObject) = diagnostics {
+            expect(diagnosticObject["configuration"] != nil, "Swift diagnostics helper should decode snapshot JSON")
+        } else {
+            fatalError("Swift diagnostics helper should return a JSON object")
+        }
         let query = TaskQuery
             .select()
             .filter(TaskQuery.userId.eq(jsonString(taskInput, "user_id")))

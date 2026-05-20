@@ -189,7 +189,10 @@ read-only review:
     `database.mutations` to generated inputs and patches. App code can now call
     `database.mutations.tasks.insert(NewTask)` without supplying server-owned
     columns such as `server_version`, while runtime execution still goes
-    through the existing Rust-first mutation/outbox path.
+    through the existing Rust-first mutation/outbox path. Swift and Kotlin
+    generated native clients now also expose `diagnosticSnapshot()` helpers over
+    the WP-13 runtime snapshot host method, covered by codegen assertions and
+    native smokes.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin
@@ -291,9 +294,9 @@ read-only review:
 
 ## Next
 
-- Continue WP-14 generated-client ergonomics by aligning native generated
-  mutation surfaces and adding generated diagnostic helpers that consume WP-13
-  snapshots/events without raw JSON parsing.
+- Continue WP-14 generated-client ergonomics by tightening generated CRDT
+  state-column exposure and adding docs that show diagnostics beside typed
+  reads, subscriptions, mutations, conflicts, and live query refresh.
 - Continue the larger bootstrap/performance architecture in
   [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md):
   artifact apply is now fast enough that the remaining useful work is a larger

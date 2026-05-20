@@ -921,6 +921,7 @@ public protocol SyncularNativeJsonClient {
     func queryJson(requestJson: String) throws -> String
     func registerQueryJson(queryJson: String) throws -> String
     func unregisterQuery(id: String) throws -> Bool
+    func diagnosticSnapshotJson() throws -> String
 }
 
 public extension SyncularNativeJsonClient {
@@ -930,6 +931,10 @@ public extension SyncularNativeJsonClient {
 
     func enqueue(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {
         try enqueueMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)
+    }
+
+    func diagnosticSnapshot() throws -> SyncularJsonValue {
+        try syncularDecodeJson(diagnosticSnapshotJson(), as: SyncularJsonValue.self)
     }
 
     func openCrdtField(_ request: SyncularCrdtFieldRequest) throws -> SyncularCrdtFieldDescriptor {

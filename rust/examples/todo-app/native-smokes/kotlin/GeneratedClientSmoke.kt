@@ -28,6 +28,9 @@ private class MockNativeClient(private val imageJson: String? = null) : Syncular
         return "command-kotlin"
     }
 
+    override fun diagnosticSnapshotJson(): String =
+        """{"storage":{"backend":"mock"},"worker":{"running":false},"sync":{"pending":0},"outbox":{"pending":0},"blobs":{"pending":0},"events":{"running":false},"configuration":{"redacted":true}}"""
+
     override fun openCrdtFieldJson(requestJson: String): String {
         crdtFieldRequests += requestJson
         return """{"table":"tasks","rowId":"task-native","field":"title","stateColumn":"title_yjs_state","containerKey":"title","rowIdField":"id","kind":"text","syncMode":"server-merge"}"""
@@ -155,6 +158,8 @@ fun main(args: Array<String>) {
         mimeType = blobImage.str("mimeType"),
     )
     val client = MockNativeClient(imageJson = blobImage.toString())
+    val diagnostics = client.diagnosticSnapshot()
+    expect(diagnostics["configuration"] != null, "Kotlin diagnostics helper should decode snapshot JSON")
     val query = TaskQuery
         .select()
         .filter(TaskQuery.userId.eq(taskInput.str("user_id")))

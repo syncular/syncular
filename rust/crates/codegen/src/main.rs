@@ -6834,6 +6834,7 @@ fn generate_swift_module(
     out.push_str("    func queryJson(requestJson: String) throws -> String\n");
     out.push_str("    func registerQueryJson(queryJson: String) throws -> String\n");
     out.push_str("    func unregisterQuery(id: String) throws -> Bool\n");
+    out.push_str("    func diagnosticSnapshotJson() throws -> String\n");
     out.push_str("}\n\n");
     out.push_str("public extension SyncularNativeJsonClient {\n");
     out.push_str("    func apply(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {\n");
@@ -6844,6 +6845,12 @@ fn generate_swift_module(
     out.push_str("\n");
     out.push_str("    func enqueue(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {\n");
     out.push_str("        try enqueueMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)\n");
+    out.push_str("    }\n");
+    out.push_str("\n");
+    out.push_str("    func diagnosticSnapshot() throws -> SyncularJsonValue {\n");
+    out.push_str(
+        "        try syncularDecodeJson(diagnosticSnapshotJson(), as: SyncularJsonValue.self)\n",
+    );
     out.push_str("    }\n");
     out.push_str("\n");
     if has_native_crdt {
@@ -8453,11 +8460,14 @@ fn generate_kotlin_module(
     out.push_str("    fun queryJson(requestJson: String): String\n");
     out.push_str("    fun registerQueryJson(queryJson: String): String\n");
     out.push_str("    fun unregisterQuery(id: String): Boolean\n");
+    out.push_str("    fun diagnosticSnapshotJson(): String\n");
     out.push_str("}\n\n");
     out.push_str("fun SyncularNativeJsonClient.apply(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =\n");
     out.push_str("    applyMutationJson(operation.toJsonString(), localRowJson)\n\n");
     out.push_str("fun SyncularNativeJsonClient.enqueue(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =\n");
     out.push_str("    enqueueMutationJson(operation.toJsonString(), localRowJson)\n\n");
+    out.push_str("fun SyncularNativeJsonClient.diagnosticSnapshot(): JsonObject =\n");
+    out.push_str("    Json.parseToJsonElement(diagnosticSnapshotJson()).jsonObject\n\n");
     if has_native_crdt {
         out.push_str("fun SyncularNativeJsonClient.openCrdtField(request: SyncularCrdtFieldRequest): SyncularCrdtFieldDescriptor =\n");
         out.push_str(
@@ -10620,6 +10630,8 @@ mod tests {
         assert!(swift.contains("func queryJson(requestJson: String"));
         assert!(swift.contains("func registerQueryJson(queryJson: String"));
         assert!(swift.contains("func unregisterQuery(id: String"));
+        assert!(swift.contains("func diagnosticSnapshotJson() throws -> String"));
+        assert!(swift.contains("func diagnosticSnapshot() throws -> SyncularJsonValue"));
         assert!(swift.contains("func query<Row: Decodable>(_ query: SyncularReadonlyQuery"));
         assert!(
             swift.contains("func registerLiveQuery(_ registration: SyncularLiveQueryRegistration")
@@ -10712,6 +10724,8 @@ mod tests {
         assert!(kotlin.contains("fun queryJson(requestJson: String): String"));
         assert!(kotlin.contains("fun registerQueryJson(queryJson: String): String"));
         assert!(kotlin.contains("fun unregisterQuery(id: String): Boolean"));
+        assert!(kotlin.contains("fun diagnosticSnapshotJson(): String"));
+        assert!(kotlin.contains("fun SyncularNativeJsonClient.diagnosticSnapshot(): JsonObject"));
         assert!(kotlin.contains("fun SyncularNativeJsonClient.query(query: SyncularReadonlyQuery)"));
         assert!(kotlin.contains("fun SyncularNativeJsonClient.registerLiveQuery"));
         assert!(kotlin.contains("fun refresh(client: SyncularNativeJsonClient): List<Row>"));
