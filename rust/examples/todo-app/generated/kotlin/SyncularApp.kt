@@ -87,7 +87,11 @@ data class SyncularBlobRef(
 data class SyncularSubscriptionArgs(
     val actorId: String,
     val projectId: String? = null,
+    val bootstrapPhases: Map<String, Long> = emptyMap(),
 )
+
+private fun syncularBootstrapPhase(args: SyncularSubscriptionArgs, table: String, subscriptionId: String): Long =
+    args.bootstrapPhases[subscriptionId] ?: args.bootstrapPhases[table] ?: 0L
 
 data class SyncularSubscriptionSpec(
     val id: String,
@@ -110,8 +114,8 @@ data class SyncularSubscriptionSpec(
 fun syncularSubscriptionsJson(subscriptions: List<SyncularSubscriptionSpec>): String =
     syncularJsonValue(subscriptions.map { it.toJsonValue() })
 
-fun syncularDefaultSubscriptionsJson(actorId: String, projectId: String? = null): String =
-    syncularSubscriptionsJson(syncularDefaultSubscriptions(SyncularSubscriptionArgs(actorId = actorId, projectId = projectId)))
+fun syncularDefaultSubscriptionsJson(actorId: String, projectId: String? = null, bootstrapPhases: Map<String, Long> = emptyMap()): String =
+    syncularSubscriptionsJson(syncularDefaultSubscriptions(SyncularSubscriptionArgs(actorId = actorId, projectId = projectId, bootstrapPhases = bootstrapPhases)))
 
 fun syncularDefaultSubscriptions(args: SyncularSubscriptionArgs): List<SyncularSubscriptionSpec> = listOf(
     commentSubscription(args),
@@ -123,20 +127,20 @@ fun commentSubscription(args: SyncularSubscriptionArgs): SyncularSubscriptionSpe
     val scopes = linkedMapOf<String, Any?>()
     scopes["user_id"] = args.actorId
     args.projectId?.let { scopes["project_id"] = it }
-    return SyncularSubscriptionSpec(id = "sub-comments", table = "comments", scopes = scopes, params = emptyMap<String, Any?>())
+    return SyncularSubscriptionSpec(id = "sub-comments", table = "comments", scopes = scopes, params = emptyMap<String, Any?>(), bootstrapPhase = syncularBootstrapPhase(args, "comments", "sub-comments"))
 }
 
 fun projectSubscription(args: SyncularSubscriptionArgs): SyncularSubscriptionSpec {
     val scopes = linkedMapOf<String, Any?>()
     scopes["user_id"] = args.actorId
-    return SyncularSubscriptionSpec(id = "sub-projects", table = "projects", scopes = scopes, params = emptyMap<String, Any?>())
+    return SyncularSubscriptionSpec(id = "sub-projects", table = "projects", scopes = scopes, params = emptyMap<String, Any?>(), bootstrapPhase = syncularBootstrapPhase(args, "projects", "sub-projects"))
 }
 
 fun taskSubscription(args: SyncularSubscriptionArgs): SyncularSubscriptionSpec {
     val scopes = linkedMapOf<String, Any?>()
     scopes["user_id"] = args.actorId
     args.projectId?.let { scopes["project_id"] = it }
-    return SyncularSubscriptionSpec(id = "sub-tasks", table = "tasks", scopes = scopes, params = emptyMap<String, Any?>())
+    return SyncularSubscriptionSpec(id = "sub-tasks", table = "tasks", scopes = scopes, params = emptyMap<String, Any?>(), bootstrapPhase = syncularBootstrapPhase(args, "tasks", "sub-tasks"))
 }
 
 data class SyncularFieldEncryptionRule(

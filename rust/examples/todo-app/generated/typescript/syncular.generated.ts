@@ -26,6 +26,11 @@ export interface SyncularSubscriptionSpec {
 export interface SyncularSubscriptionArgs {
   actorId: string;
   projectId?: string | null;
+  bootstrapPhases?: Record<string, number>;
+}
+
+function syncularBootstrapPhase(args: SyncularSubscriptionArgs, table: string, subscriptionId: string): number {
+  return args.bootstrapPhases?.[subscriptionId] ?? args.bootstrapPhases?.[table] ?? 0;
 }
 
 export interface SyncularAppDb {
@@ -555,6 +560,7 @@ export type SyncularAppSubscriptionsOption =
 
 export interface CreateSyncularAppDatabaseOptions extends CreateSyncularRustSqliteDatabaseOptions {
   subscriptions?: SyncularAppSubscriptionsOption;
+  bootstrapPhases?: Record<string, number>;
   schemaInstallMode?: 'full' | 'base' | 'none';
 }
 
@@ -590,6 +596,7 @@ function resolveSyncularAppSubscriptions(options: CreateSyncularAppDatabaseOptio
   const args: SyncularSubscriptionArgs = {
     actorId: options.config.actorId,
     projectId: options.config.projectId,
+    bootstrapPhases: options.bootstrapPhases,
   };
   const subscriptions = options.subscriptions;
   if (subscriptions === false) return [];
@@ -739,6 +746,7 @@ export function commentSubscription(args: SyncularSubscriptionArgs): SyncularSub
     table: 'comments',
     scopes,
     params: {},
+    bootstrapPhase: syncularBootstrapPhase(args, 'comments', 'sub-comments'),
   };
 }
 
@@ -822,6 +830,7 @@ export function projectSubscription(args: SyncularSubscriptionArgs): SyncularSub
     table: 'projects',
     scopes,
     params: {},
+    bootstrapPhase: syncularBootstrapPhase(args, 'projects', 'sub-projects'),
   };
 }
 
@@ -931,5 +940,6 @@ export function taskSubscription(args: SyncularSubscriptionArgs): SyncularSubscr
     table: 'tasks',
     scopes,
     params: {},
+    bootstrapPhase: syncularBootstrapPhase(args, 'tasks', 'sub-tasks'),
   };
 }

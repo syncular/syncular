@@ -282,6 +282,105 @@ Use `syncularDefaultSubscriptionsJson(actorId:projectId:)` /
 wants all generated table subscriptions. Use the per-table helpers when a view
 or app shell intentionally syncs a smaller set.
 
+### Staged Bootstrap
+
+Generated subscriptions support local-only bootstrap phases. Lower phases start
+first; ready or already-bootstrapping later phases continue to participate in
+pull requests. Use this to make the app shell usable without pretending that
+later scopes are complete.
+
+Rust:
+
+```rust
+let config = SyncularClientConfig {
+    db_path: "syncular.sqlite".to_string(),
+    base_url: "http://localhost:9811/api/sync".to_string(),
+    client_id: "rust-local-client".to_string(),
+    actor_id: "user-rust".to_string(),
+    project_id: Some("project-rust".to_string()),
+};
+
+let subscriptions = syncular::default_subscriptions_with_bootstrap_phases(
+    &config,
+    &[
+        ("projects", 0),
+        ("tasks", 1),
+        ("comments", 2),
+    ],
+);
+
+let mut client = SyncularClient::open_with_schema(config, app_schema())?;
+client.set_subscriptions(subscriptions);
+```
+
+Browser/TypeScript generated app client:
+
+```ts
+const syncular = await createSyncularAppDatabase({
+  config: {
+    baseUrl: '/sync',
+    actorId,
+    clientId,
+    projectId,
+    pull: {
+      criticalBootstrapPhase: 0,
+      interactiveBootstrapPhase: 1,
+    },
+  },
+  bootstrapPhases: {
+    projects: 0,
+    tasks: 1,
+    comments: 2,
+  },
+});
+
+const result = await syncular.client.syncOnce();
+
+if (result.bootstrap.criticalReady) {
+  showShell();
+}
+
+syncular.client.addEventListener('bootstrapChanged', (bootstrap) => {
+  if (bootstrap.interactiveReady) showPrimaryViews();
+  if (bootstrap.complete) showAllViews();
+});
+```
+
+Swift/Kotlin generated subscriptions accept the same phase map:
+
+```swift
+let subscriptionsJson = try syncularDefaultSubscriptionsJson(
+    actorId: actorId,
+    projectId: projectId,
+    bootstrapPhases: [
+        "projects": 0,
+        "tasks": 1,
+        "comments": 2,
+    ]
+)
+```
+
+```kotlin
+val subscriptionsJson = syncularDefaultSubscriptionsJson(
+    actorId = actorId,
+    projectId = projectId,
+    bootstrapPhases = mapOf(
+        "projects" to 0L,
+        "tasks" to 1L,
+        "comments" to 2L,
+    ),
+)
+```
+
+Browser sync results expose aggregate readiness as `result.bootstrap` and emit
+`bootstrapChanged` events after worker/realtime syncs. Rust/native currently
+use the same phase-aware subscription contract and ordered sync events, but do
+not yet expose a stable aggregate readiness payload. Add that to the native
+event stream before app code depends on native-side staged readiness decisions.
+
+Do not render missing later-phase data as an empty result while
+`complete == false`. Gate each view on the relevant phase or subscription id.
+
 ## 8. Client-Side Field Encryption
 
 The Rust client can encrypt configured fields on push and decrypt them on pull

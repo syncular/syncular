@@ -4083,6 +4083,15 @@ fn generate_generated_module(tables: &[TableInfo], config: &CodegenConfig) -> Re
         out.push_str("    ]\n");
     }
     out.push_str("}\n\n");
+    out.push_str(
+        "pub fn default_subscriptions_with_bootstrap_phases(\n    config: &SyncularClientConfig,\n    bootstrap_phases: &[(&str, i64)],\n) -> Vec<SubscriptionSpec> {\n    let mut subscriptions = default_subscriptions(config);\n    apply_bootstrap_phases(&mut subscriptions, bootstrap_phases);\n    subscriptions\n}\n\n",
+    );
+    out.push_str(
+        "pub fn apply_bootstrap_phases(\n    subscriptions: &mut [SubscriptionSpec],\n    bootstrap_phases: &[(&str, i64)],\n) {\n    for subscription in subscriptions {\n        if let Some((_, phase)) = bootstrap_phases\n            .iter()\n            .find(|(key, _)| *key == subscription.id || *key == subscription.table)\n        {\n            subscription.bootstrap_phase = *phase;\n        }\n    }\n}\n\n",
+    );
+    out.push_str(
+        "pub fn with_bootstrap_phase(mut subscription: SubscriptionSpec, bootstrap_phase: i64) -> SubscriptionSpec {\n    subscription.bootstrap_phase = bootstrap_phase;\n    subscription\n}\n\n",
+    );
 
     for table in &user_tables {
         let table_config = config.table(&table.name);
@@ -4622,6 +4631,12 @@ fn generate_typescript_module(
     out.push_str("export interface SyncularSubscriptionArgs {\n");
     out.push_str("  actorId: string;\n");
     out.push_str("  projectId?: string | null;\n");
+    out.push_str("  bootstrapPhases?: Record<string, number>;\n");
+    out.push_str("}\n\n");
+    out.push_str("function syncularBootstrapPhase(args: SyncularSubscriptionArgs, table: string, subscriptionId: string): number {\n");
+    out.push_str(
+        "  return args.bootstrapPhases?.[subscriptionId] ?? args.bootstrapPhases?.[table] ?? 0;\n",
+    );
     out.push_str("}\n\n");
     out.push_str("export interface SyncularAppDb {\n");
     for table in &user_tables {
@@ -5147,6 +5162,7 @@ fn generate_typescript_module(
     );
     out.push_str("export interface CreateSyncularAppDatabaseOptions extends CreateSyncularRustSqliteDatabaseOptions {\n");
     out.push_str("  subscriptions?: SyncularAppSubscriptionsOption;\n");
+    out.push_str("  bootstrapPhases?: Record<string, number>;\n");
     out.push_str("  schemaInstallMode?: 'full' | 'base' | 'none';\n");
     out.push_str("}\n\n");
     out.push_str("export async function assertSyncularAppRuntime(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {\n");
@@ -5183,6 +5199,7 @@ fn generate_typescript_module(
     out.push_str("  const args: SyncularSubscriptionArgs = {\n");
     out.push_str("    actorId: options.config.actorId,\n");
     out.push_str("    projectId: options.config.projectId,\n");
+    out.push_str("    bootstrapPhases: options.bootstrapPhases,\n");
     out.push_str("  };\n");
     out.push_str("  const subscriptions = options.subscriptions;\n");
     out.push_str("  if (subscriptions === false) return [];\n");
@@ -5515,14 +5532,17 @@ fn generate_typescript_module(
         ));
         out.push_str(&format!("    table: {},\n", ts_string(&table.name)));
         out.push_str(&format!(
-            "    scopes,\n    params: {},\n  }};\n}}\n\n",
-            ts_record_literal(&config.subscription_params)
+            "    scopes,\n    params: {},\n    bootstrapPhase: syncularBootstrapPhase(args, {}, {}),\n  }};\n}}\n\n",
+            ts_record_literal(&config.subscription_params),
+            ts_string(&table.name),
+            ts_string(&config.subscription_id(&table.name))
         ));
         for field in encrypted_update_log_crdt_fields(&config) {
             for (suffix, system_table) in [
                 ("updates", "sync_crdt_updates"),
                 ("checkpoints", "sync_crdt_checkpoints"),
             ] {
+                let subscription_id = format!("sub-{}-{}-crdt-{}", table.name, field.field, suffix);
                 out.push_str(&format!(
                     "export function {}(args: SyncularSubscriptionArgs): SyncularSubscriptionSpec {{\n",
                     ts_encrypted_crdt_subscription_fn(table, field, suffix)
@@ -5547,18 +5567,14 @@ fn generate_typescript_module(
                     }
                 }
                 out.push_str("  return {\n");
-                out.push_str(&format!(
-                    "    id: {},\n",
-                    ts_string(&format!(
-                        "sub-{}-{}-crdt-{}",
-                        table.name, field.field, suffix
-                    ))
-                ));
+                out.push_str(&format!("    id: {},\n", ts_string(&subscription_id)));
                 out.push_str(&format!("    table: {},\n", ts_string(system_table)));
                 out.push_str(&format!(
-                    "    scopes,\n    params: {{ app_table: {}, field_name: {} }},\n  }};\n}}\n\n",
+                    "    scopes,\n    params: {{ app_table: {}, field_name: {} }},\n    bootstrapPhase: syncularBootstrapPhase(args, {}, {}),\n  }};\n}}\n\n",
                     ts_string(&table.name),
-                    ts_string(&field.field)
+                    ts_string(&field.field),
+                    ts_string(system_table),
+                    ts_string(&subscription_id)
                 ));
             }
         }
@@ -5773,10 +5789,15 @@ fn generate_swift_module(
     out.push_str("public struct SyncularSubscriptionArgs: Equatable {\n");
     out.push_str("    public let actorId: String\n");
     out.push_str("    public let projectId: String?\n\n");
-    out.push_str("    public init(actorId: String, projectId: String? = nil) {\n");
+    out.push_str("    public let bootstrapPhases: [String: Int64]\n\n");
+    out.push_str("    public init(actorId: String, projectId: String? = nil, bootstrapPhases: [String: Int64] = [:]) {\n");
     out.push_str("        self.actorId = actorId\n");
     out.push_str("        self.projectId = projectId\n");
+    out.push_str("        self.bootstrapPhases = bootstrapPhases\n");
     out.push_str("    }\n");
+    out.push_str("}\n\n");
+    out.push_str("private func syncularBootstrapPhase(args: SyncularSubscriptionArgs, table: String, subscriptionId: String) -> Int64 {\n");
+    out.push_str("    args.bootstrapPhases[subscriptionId] ?? args.bootstrapPhases[table] ?? 0\n");
     out.push_str("}\n\n");
     out.push_str("public struct SyncularSubscriptionSpec: Codable, Equatable {\n");
     out.push_str("    public let id: String\n");
@@ -5802,8 +5823,8 @@ fn generate_swift_module(
     out.push_str("    encoder.outputFormatting = [.sortedKeys]\n");
     out.push_str("    return String(data: try encoder.encode(subscriptions), encoding: .utf8)!\n");
     out.push_str("}\n\n");
-    out.push_str("public func syncularDefaultSubscriptionsJson(actorId: String, projectId: String? = nil) throws -> String {\n");
-    out.push_str("    try syncularSubscriptionsJson(syncularDefaultSubscriptions(args: SyncularSubscriptionArgs(actorId: actorId, projectId: projectId)))\n");
+    out.push_str("public func syncularDefaultSubscriptionsJson(actorId: String, projectId: String? = nil, bootstrapPhases: [String: Int64] = [:]) throws -> String {\n");
+    out.push_str("    try syncularSubscriptionsJson(syncularDefaultSubscriptions(args: SyncularSubscriptionArgs(actorId: actorId, projectId: projectId, bootstrapPhases: bootstrapPhases)))\n");
     out.push_str("}\n\n");
     out.push_str("public func syncularDefaultSubscriptions(args: SyncularSubscriptionArgs) -> [SyncularSubscriptionSpec] {\n");
     out.push_str("    [\n");
@@ -5859,10 +5880,12 @@ fn generate_swift_module(
             }
         }
         out.push_str(&format!(
-            "    return SyncularSubscriptionSpec(id: {}, table: {}, scopes: scopes, params: {})\n",
+            "    return SyncularSubscriptionSpec(id: {}, table: {}, scopes: scopes, params: {}, bootstrapPhase: syncularBootstrapPhase(args: args, table: {}, subscriptionId: {}))\n",
             double_quoted_string(&table_config.subscription_id(&table.name)),
             double_quoted_string(&table.name),
-            swift_json_record_literal(&table_config.subscription_params)
+            swift_json_record_literal(&table_config.subscription_params),
+            double_quoted_string(&table.name),
+            double_quoted_string(&table_config.subscription_id(&table.name))
         ));
         out.push_str("}\n\n");
         for field in encrypted_update_log_crdt_fields(&table_config) {
@@ -5901,11 +5924,13 @@ fn generate_swift_module(
                     }
                 }
                 out.push_str(&format!(
-                    "    return SyncularSubscriptionSpec(id: {}, table: {}, scopes: scopes, params: [\"app_table\": .string({}), \"field_name\": .string({})])\n",
+                    "    return SyncularSubscriptionSpec(id: {}, table: {}, scopes: scopes, params: [\"app_table\": .string({}), \"field_name\": .string({})], bootstrapPhase: syncularBootstrapPhase(args: args, table: {}, subscriptionId: {}))\n",
                     double_quoted_string(&format!("sub-{}-{}-crdt-{}", table.name, field.field, suffix)),
                     double_quoted_string(system_table),
                     double_quoted_string(&table.name),
-                    double_quoted_string(&field.field)
+                    double_quoted_string(&field.field),
+                    double_quoted_string(system_table),
+                    double_quoted_string(&format!("sub-{}-{}-crdt-{}", table.name, field.field, suffix))
                 ));
                 out.push_str("}\n\n");
             }
@@ -7306,7 +7331,12 @@ fn generate_kotlin_module(
     out.push_str("data class SyncularSubscriptionArgs(\n");
     out.push_str("    val actorId: String,\n");
     out.push_str("    val projectId: String? = null,\n");
+    out.push_str("    val bootstrapPhases: Map<String, Long> = emptyMap(),\n");
     out.push_str(")\n\n");
+    out.push_str("private fun syncularBootstrapPhase(args: SyncularSubscriptionArgs, table: String, subscriptionId: String): Long =\n");
+    out.push_str(
+        "    args.bootstrapPhases[subscriptionId] ?: args.bootstrapPhases[table] ?: 0L\n\n",
+    );
     out.push_str("data class SyncularSubscriptionSpec(\n");
     out.push_str("    val id: String,\n");
     out.push_str("    val table: String,\n");
@@ -7327,8 +7357,8 @@ fn generate_kotlin_module(
         "fun syncularSubscriptionsJson(subscriptions: List<SyncularSubscriptionSpec>): String =\n",
     );
     out.push_str("    syncularJsonValue(subscriptions.map { it.toJsonValue() })\n\n");
-    out.push_str("fun syncularDefaultSubscriptionsJson(actorId: String, projectId: String? = null): String =\n");
-    out.push_str("    syncularSubscriptionsJson(syncularDefaultSubscriptions(SyncularSubscriptionArgs(actorId = actorId, projectId = projectId)))\n\n");
+    out.push_str("fun syncularDefaultSubscriptionsJson(actorId: String, projectId: String? = null, bootstrapPhases: Map<String, Long> = emptyMap()): String =\n");
+    out.push_str("    syncularSubscriptionsJson(syncularDefaultSubscriptions(SyncularSubscriptionArgs(actorId = actorId, projectId = projectId, bootstrapPhases = bootstrapPhases)))\n\n");
     out.push_str("fun syncularDefaultSubscriptions(args: SyncularSubscriptionArgs): List<SyncularSubscriptionSpec> = listOf(\n");
     for table in &user_tables {
         let table_config = config.table(&table.name);
@@ -7378,10 +7408,12 @@ fn generate_kotlin_module(
             }
         }
         out.push_str(&format!(
-            "    return SyncularSubscriptionSpec(id = {}, table = {}, scopes = scopes, params = {})\n",
+            "    return SyncularSubscriptionSpec(id = {}, table = {}, scopes = scopes, params = {}, bootstrapPhase = syncularBootstrapPhase(args, {}, {}))\n",
             double_quoted_string(&table_config.subscription_id(&table.name)),
             double_quoted_string(&table.name),
-            kotlin_json_record_literal(&table_config.subscription_params)
+            kotlin_json_record_literal(&table_config.subscription_params),
+            double_quoted_string(&table.name),
+            double_quoted_string(&table_config.subscription_id(&table.name))
         ));
         out.push_str("}\n\n");
         for field in encrypted_update_log_crdt_fields(&table_config) {
@@ -7417,11 +7449,13 @@ fn generate_kotlin_module(
                     }
                 }
                 out.push_str(&format!(
-                    "    return SyncularSubscriptionSpec(id = {}, table = {}, scopes = scopes, params = linkedMapOf(\"app_table\" to {}, \"field_name\" to {}))\n",
+                    "    return SyncularSubscriptionSpec(id = {}, table = {}, scopes = scopes, params = linkedMapOf(\"app_table\" to {}, \"field_name\" to {}), bootstrapPhase = syncularBootstrapPhase(args, {}, {}))\n",
                     double_quoted_string(&format!("sub-{}-{}-crdt-{}", table.name, field.field, suffix)),
                     double_quoted_string(system_table),
                     double_quoted_string(&table.name),
-                    double_quoted_string(&field.field)
+                    double_quoted_string(&field.field),
+                    double_quoted_string(system_table),
+                    double_quoted_string(&format!("sub-{}-{}-crdt-{}", table.name, field.field, suffix))
                 ));
                 out.push_str("}\n\n");
             }
@@ -9305,8 +9339,12 @@ mod tests {
             "export interface CreateSyncularAppDatabaseOptions extends CreateSyncularRustSqliteDatabaseOptions"
         ));
         assert!(output.contains("subscriptions?: SyncularAppSubscriptionsOption;"));
+        assert!(output.contains("bootstrapPhases?: Record<string, number>;"));
         assert!(output.contains("function resolveSyncularAppSubscriptions("));
         assert!(output.contains("if (subscriptions === false) return [];"));
+        assert!(
+            output.contains("bootstrapPhase: syncularBootstrapPhase(args, 'tasks', 'sub-tasks')")
+        );
         assert!(output.contains(
             "export async function assertSyncularAppRuntime(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {"
         ));
@@ -9707,6 +9745,10 @@ mod tests {
         assert!(swift.contains("public struct TaskPatch"));
         assert!(swift.contains("public struct SyncularReadonlyQuery"));
         assert!(swift.contains("public struct SyncularSubscriptionSpec"));
+        assert!(swift.contains("public let bootstrapPhases: [String: Int64]"));
+        assert!(swift.contains(
+            "bootstrapPhase: syncularBootstrapPhase(args: args, table: \"tasks\", subscriptionId: \"sub-tasks\")"
+        ));
         assert!(swift.contains("public func syncularSubscriptionsJson"));
         assert!(swift.contains("public func syncularDefaultSubscriptionsJson"));
         assert!(swift.contains("public func taskSubscription(args: SyncularSubscriptionArgs)"));
@@ -9795,6 +9837,9 @@ mod tests {
         assert!(kotlin.contains("data class TaskPatch"));
         assert!(kotlin.contains("data class SyncularReadonlyQuery"));
         assert!(kotlin.contains("data class SyncularSubscriptionSpec"));
+        assert!(kotlin.contains("val bootstrapPhases: Map<String, Long> = emptyMap()"));
+        assert!(kotlin
+            .contains("bootstrapPhase = syncularBootstrapPhase(args, \"tasks\", \"sub-tasks\")"));
         assert!(kotlin.contains("fun syncularSubscriptionsJson"));
         assert!(kotlin.contains("fun syncularDefaultSubscriptionsJson"));
         assert!(kotlin.contains("fun taskSubscription(args: SyncularSubscriptionArgs)"));
@@ -9937,6 +9982,9 @@ mod tests {
         assert!(output.contains("columns: TASKS_COLUMNS"));
         assert!(output.contains("params.insert(\"includeArchived\".to_string(), json!(true));"));
         assert!(output.contains("use syncular_client::client::{SubscriptionSpec, SyncChangedRow, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor, SyncularMutationExecutor};"));
+        assert!(output.contains("pub fn default_subscriptions_with_bootstrap_phases("));
+        assert!(output.contains("pub fn apply_bootstrap_phases("));
+        assert!(output.contains("pub fn with_bootstrap_phase("));
         assert!(output.contains("use syncular_client::encryption::FieldEncryptionRule;"));
         assert!(output
             .contains("pub fn generated_field_encryption_rules() -> Vec<FieldEncryptionRule>"));

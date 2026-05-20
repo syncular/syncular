@@ -84,6 +84,48 @@ Generated helpers intentionally do not emit table constants, column constants,
 or canned queries. Reads stay plain Kysely. Sync-aware writes go through
 `syncular.mutations` or generated operation helpers.
 
+Use `bootstrapPhases` when the app should become usable before every
+subscription has finished its first snapshot. Keys can be generated table names
+or subscription ids. Phase `0` is critical by default, phase `1` is
+interactive by default, and higher phases continue in the background:
+
+```ts
+const syncular = await createSyncularAppDatabase({
+  config: {
+    baseUrl: '/sync',
+    actorId: 'user-1',
+    clientId: 'client-1',
+    pull: {
+      criticalBootstrapPhase: 0,
+      interactiveBootstrapPhase: 1,
+    },
+  },
+  bootstrapPhases: {
+    projects: 0,
+    tasks: 1,
+    comments: 2,
+  },
+});
+
+const result = await syncular.client.syncOnce();
+
+if (result.bootstrap.criticalReady) {
+  renderShell();
+}
+
+const unsubscribeBootstrap = syncular.client.addEventListener(
+  'bootstrapChanged',
+  (bootstrap) => {
+    if (bootstrap.interactiveReady) enableMainViews();
+    if (bootstrap.complete) enableFullDataViews();
+  }
+);
+```
+
+Do not treat missing scopes as empty data while `bootstrap.complete` is false.
+Use `bootstrap.pendingSubscriptionIds`, `bootstrap.phases`, or generated
+subscription ids to decide which views can render complete results.
+
 For apps that want a lifecycle-managed surface instead of wiring startup by
 hand, `createSyncularV2Client` wraps `createSyncularV2Database` with
 subscription setup, initial sync, realtime, reconnect catchup, and

@@ -56,6 +56,22 @@ Retained first slice:
 - Browser worker/realtime now emits `bootstrapChanged` events through the
   normal client event bus.
 
+Retained docs/API slice:
+
+- Generated Rust app clients now include
+  `default_subscriptions_with_bootstrap_phases`, `apply_bootstrap_phases`, and
+  `with_bootstrap_phase` helpers so app code can assign phases by table name or
+  subscription id without rebuilding subscription structs by hand.
+- Generated TypeScript app clients accept `bootstrapPhases` in
+  `createSyncularAppDatabase` options and in `SyncularSubscriptionArgs`; table
+  and encrypted-CRDT subscription helpers write the local-only
+  `bootstrapPhase` field automatically.
+- Generated Swift and Kotlin subscription helpers accept the same phase map in
+  `syncularDefaultSubscriptionsJson(...)`.
+- Browser and local-project docs now show staged bootstrap setup, the
+  `result.bootstrap` readiness object, and the `bootstrapChanged` event. The
+  docs explicitly warn that incomplete later phases are not empty data.
+
 Correctness gates passed:
 
 ```bash
@@ -83,6 +99,6 @@ Benchmark guard:
 
 ## Next Action
 
-Add app-facing docs for staged bootstrap and decide whether native Rust/FFI
-should expose an aggregate bootstrap status helper or continue exposing only
-phase-aware subscription configuration plus worker events.
+Decide whether native Rust/FFI should expose an aggregate bootstrap status
+event/helper, or whether phase-aware generated subscriptions plus ordered sync
+events are enough for the first real app integration.

@@ -151,6 +151,9 @@ read-only review:
     browser worker/realtime event bus now emits `bootstrapChanged`. Release
     package size remains under budget (`3.29MiB` raw, `1.36MiB` gzip), and the
     local 100k release artifact guard stayed flat (`147.84ms -> 147.15ms`).
+    Generated Rust/TypeScript/Swift/Kotlin app clients now expose ergonomic
+    phase maps/helpers, and the browser/local integration docs show the
+    app-facing staged-bootstrap flow.
 - `[x]` [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
   - First retained slice adds explicit `countBy` read models to
     `syncular.codegen.json`. The generator now emits the read-model contract in
