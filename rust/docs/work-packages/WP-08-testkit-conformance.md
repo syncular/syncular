@@ -79,6 +79,8 @@ tests.
 - Moved the Rust loader for
   `examples/todo-app/conformance/sync-scenarios.json` into `syncular-testkit`
   so runtime, SDK, and app tests can share one conformance scenario source.
+- Updated native blob transport tests to consume the same `syncular-testkit`
+  conformance loader instead of parsing a private fixture copy.
 - Added a stateful HTTP conflict smoke proving version conflicts are reported
   through the production native HTTP transport shape while the same sync can
   pull the server-winning row.
@@ -88,6 +90,8 @@ tests.
   passed with `28` smoke tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   protocol_contract` passed with `40` protocol tests.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
+  blob_transport` passed with `3` blob tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-client
   --no-default-features --features cli --bin syncular-rust-perf --no-run`
   passed.
