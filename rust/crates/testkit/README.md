@@ -17,6 +17,8 @@ Initial scope:
   applies pushed commits, returns later pull snapshots/commits, merges
   server-merge CRDT/Yjs payloads, filters self commits, can reverse/duplicate
   delivery, and emits realtime sync wakeups.
+- `AppTestHttpServer` for stateful HTTP/WebSocket app tests over the production
+  native transport shape.
 - `TestBlobServer` for local HTTP blob upload/download integration tests.
 - `FaultTransport` for scripted transport failures and latency.
 - Protocol builders for snapshot pages/chunks, pull commits, conflict,
@@ -118,6 +120,44 @@ fn two_clients_sync_through_stateful_test_server() {
 
     reader.client.sync_http().unwrap();
     assert_table_has_row(&mut reader.client, "notes", "id", "note-1");
+}
+```
+
+For binding or app-shell tests that need the production HTTP/WebSocket transport
+shape, wrap the same stateful server in `AppTestHttpServer`:
+
+```rust
+use syncular_runtime::transport::{HttpSyncTransport, SyncTransportConfig};
+use syncular_testkit::{
+    AppFixtureOptions, AppTestHttpServer, assert_table_has_row,
+    open_app_client_with_transport,
+};
+
+#[test]
+fn syncs_against_stateful_http_server() {
+    let app_schema = my_app::generated::app_schema();
+    let server = AppTestHttpServer::start(app_schema).unwrap();
+    let options = AppFixtureOptions {
+        base_url: server.url(),
+        client_id: "reader".to_string(),
+        ..AppFixtureOptions::default()
+    };
+    let transport = HttpSyncTransport::new(SyncTransportConfig::new(
+        options.base_url.clone(),
+        options.client_id.clone(),
+        options.actor_id.clone(),
+    ));
+    let mut fixture =
+        open_app_client_with_transport(app_schema, transport, options).unwrap();
+
+    server.app_server().commit_row("notes", serde_json::json!({
+        "id": "note-1",
+        "title": "Server note",
+        "owner_id": "user-rust"
+    })).unwrap();
+
+    fixture.client.sync_http().unwrap();
+    assert_table_has_row(&mut fixture.client, "notes", "id", "note-1");
 }
 ```
 

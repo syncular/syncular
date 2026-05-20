@@ -2029,8 +2029,10 @@ dependencies = [
 name = "syncular-testkit"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "serde_json",
  "syncular-runtime",
+ "tungstenite",
  "uuid",
 ]
 

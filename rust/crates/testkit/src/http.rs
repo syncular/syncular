@@ -2,13 +2,22 @@ use std::collections::{BTreeMap, VecDeque};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::{self, Sender};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
 use serde_json::{json, Value};
 use syncular_runtime::error::Result;
-use syncular_runtime::protocol::CombinedResponse;
+use syncular_runtime::protocol::{
+    CombinedRequest, CombinedResponse, PushBatchRequest, PushCommitRequest, SyncOperation,
+    SYNC_PACK_ENCODING_BINARY_V1,
+};
+use syncular_runtime::transport::SyncTransport;
+use tungstenite::Message;
+
+use crate::app_server::AppTestServer;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TestHttpRequest {
@@ -76,6 +85,27 @@ pub struct TestSyncServer {
     url: String,
     stop: Arc<AtomicBool>,
     state: Arc<Mutex<TestHttpState>>,
+    join: Option<JoinHandle<()>>,
+}
+
+type WsBroadcaster = Arc<Mutex<Vec<Sender<()>>>>;
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct TestWsPushMessage {
+    #[serde(rename = "type")]
+    message_type: String,
+    request_id: String,
+    client_commit_id: String,
+    operations: Vec<SyncOperation>,
+    schema_version: i32,
+}
+
+pub struct AppTestHttpServer {
+    addr: SocketAddr,
+    app_server: AppTestServer,
+    broadcaster: WsBroadcaster,
+    stop: Arc<AtomicBool>,
     join: Option<JoinHandle<()>>,
 }
 
@@ -323,6 +353,93 @@ impl Drop for TestSyncServer {
     }
 }
 
+impl AppTestHttpServer {
+    pub fn start(app_schema: syncular_runtime::app_schema::AppSchema) -> Result<Self> {
+        Self::start_with_server(AppTestServer::new(app_schema))
+    }
+
+    pub fn start_with_server(app_server: AppTestServer) -> Result<Self> {
+        let listener = TcpListener::bind("127.0.0.1:0")?;
+        listener.set_nonblocking(true)?;
+        let addr = listener.local_addr()?;
+        let broadcaster: WsBroadcaster = Arc::new(Mutex::new(Vec::new()));
+        let stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = stop.clone();
+        let thread_server = app_server.clone();
+        let thread_broadcaster = broadcaster.clone();
+        let join = thread::spawn(move || {
+            while !thread_stop.load(Ordering::Relaxed) {
+                match listener.accept() {
+                    Ok((stream, _)) => {
+                        if thread_stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                        let _ = stream.set_nonblocking(false);
+                        let connection_server = thread_server.clone();
+                        let connection_broadcaster = thread_broadcaster.clone();
+                        let connection_stop = thread_stop.clone();
+                        thread::spawn(move || {
+                            handle_app_test_http_connection(
+                                stream,
+                                &connection_server,
+                                &connection_broadcaster,
+                                &connection_stop,
+                            );
+                        });
+                    }
+                    Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                        thread::sleep(Duration::from_millis(5));
+                    }
+                    Err(_) => break,
+                }
+            }
+        });
+
+        Ok(Self {
+            addr,
+            app_server,
+            broadcaster,
+            stop,
+            join: Some(join),
+        })
+    }
+
+    pub fn addr(&self) -> SocketAddr {
+        self.addr
+    }
+
+    pub fn url(&self) -> String {
+        format!("http://{}/sync", self.addr)
+    }
+
+    pub fn realtime_url(&self, client_id: &str) -> String {
+        format!(
+            "ws://{}/sync/realtime?clientId={}",
+            self.addr,
+            client_id.replace(' ', "%20")
+        )
+    }
+
+    pub fn app_server(&self) -> &AppTestServer {
+        &self.app_server
+    }
+
+    pub fn push_realtime_sync(&self) {
+        broadcast_realtime_sync(&self.broadcaster);
+    }
+}
+
+impl Drop for AppTestHttpServer {
+    fn drop(&mut self) {
+        let _ = self.broadcaster.lock().map(|peers| peers.len());
+        self.stop.store(true, Ordering::Relaxed);
+        let _ = TcpStream::connect(self.addr);
+        if let Some(join) = self.join.take() {
+            let _ = join.join();
+        }
+    }
+}
+
 pub fn empty_success_response() -> TestHttpResponse {
     TestHttpResponse::json(json!({
         "ok": true,
@@ -336,6 +453,219 @@ pub fn empty_success_response() -> TestHttpResponse {
 
 pub fn encoded_blob_hash(hash: &str) -> String {
     hash.replace(':', "%3A")
+}
+
+fn handle_app_test_http_connection(
+    mut stream: TcpStream,
+    server: &AppTestServer,
+    broadcaster: &WsBroadcaster,
+    stop: &Arc<AtomicBool>,
+) {
+    if is_websocket_request(&stream) {
+        handle_app_test_ws_connection(stream, server, broadcaster, stop);
+        return;
+    }
+
+    let request = read_http_request(&mut stream);
+    if request.body.is_empty() && request.method.is_empty() {
+        return;
+    }
+    if request.method != "POST" || request.path != "/sync" {
+        write_http_response(
+            &mut stream,
+            TestHttpResponse::status(404, "Not Found", "not found"),
+        );
+        return;
+    }
+
+    let response = (|| {
+        let request = serde_json::from_str::<CombinedRequest>(&request.body)?;
+        let before_commits = server.commits().len();
+        let response = server.post_sync(&request)?;
+        let broadcast = server.commits().len() > before_commits;
+        let body = serde_json::to_string(&response)?;
+        Ok::<_, syncular_runtime::error::SyncularError>((body, broadcast))
+    })();
+
+    match response {
+        Ok((body, broadcast)) => {
+            write_http_response(
+                &mut stream,
+                TestHttpResponse {
+                    status: 200,
+                    reason: "OK".to_string(),
+                    content_type: "application/json".to_string(),
+                    body,
+                },
+            );
+            if broadcast {
+                broadcast_realtime_sync(broadcaster);
+            }
+        }
+        Err(error) => {
+            write_http_response(
+                &mut stream,
+                TestHttpResponse {
+                    status: 500,
+                    reason: "Internal Server Error".to_string(),
+                    content_type: "application/json".to_string(),
+                    body: json!({ "error": error.to_string() }).to_string(),
+                },
+            );
+        }
+    }
+}
+
+fn is_websocket_request(stream: &TcpStream) -> bool {
+    let mut buffer = [0u8; 4];
+    match stream.peek(&mut buffer) {
+        Ok(read) => read >= 3 && buffer[..read].starts_with(b"GET"),
+        Err(_) => false,
+    }
+}
+
+fn handle_app_test_ws_connection(
+    stream: TcpStream,
+    server: &AppTestServer,
+    broadcaster: &WsBroadcaster,
+    stop: &Arc<AtomicBool>,
+) {
+    let mut client_id = String::new();
+    let mut socket = match tungstenite::accept_hdr(
+        stream,
+        |request: &tungstenite::handshake::server::Request, response| {
+            client_id = query_param(request.uri().query().unwrap_or_default(), "clientId")
+                .unwrap_or_else(|| "app-test-ws-client".to_string());
+            Ok(response)
+        },
+    ) {
+        Ok(socket) => socket,
+        Err(_) => return,
+    };
+    set_ws_stream_read_timeout(&mut socket, Duration::from_millis(50));
+    let (tx, rx) = mpsc::channel::<()>();
+    broadcaster
+        .lock()
+        .expect("app test ws broadcaster")
+        .push(tx);
+
+    while !stop.load(Ordering::Relaxed) {
+        while rx.try_recv().is_ok() {
+            if socket
+                .send(Message::Text(json!({ "event": "sync" }).to_string().into()))
+                .is_err()
+            {
+                let _ = socket.close(None);
+                return;
+            }
+        }
+        let message = match socket.read() {
+            Ok(Message::Text(text)) => text.to_string(),
+            Ok(Message::Ping(bytes)) => {
+                let _ = socket.send(Message::Pong(bytes));
+                continue;
+            }
+            Ok(Message::Close(_)) => break,
+            Ok(_) => continue,
+            Err(tungstenite::Error::Io(error))
+                if error.kind() == std::io::ErrorKind::WouldBlock
+                    || error.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue;
+            }
+            Err(_) => break,
+        };
+
+        let response = handle_ws_push_message(server, &client_id, &message);
+        match response {
+            Ok(response) => {
+                if socket
+                    .send(Message::Text(response.to_string().into()))
+                    .is_err()
+                {
+                    break;
+                }
+                broadcast_realtime_sync(broadcaster);
+            }
+            Err(error) => {
+                let _ = socket.send(Message::Text(
+                    json!({
+                        "event": "error",
+                        "data": { "message": error.to_string() }
+                    })
+                    .to_string()
+                    .into(),
+                ));
+                break;
+            }
+        }
+    }
+
+    let _ = socket.close(None);
+}
+
+fn handle_ws_push_message(server: &AppTestServer, client_id: &str, message: &str) -> Result<Value> {
+    let message = serde_json::from_str::<TestWsPushMessage>(message)?;
+    if message.message_type != "push" {
+        return Err(syncular_runtime::error::SyncularError::protocol_message(
+            format!(
+                "unsupported websocket message type: {}",
+                message.message_type
+            ),
+        ));
+    }
+    let request_id = message.request_id;
+    let request = CombinedRequest {
+        client_id: client_id.to_string(),
+        sync_pack_encodings: vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()],
+        push: Some(PushBatchRequest {
+            commits: vec![PushCommitRequest {
+                client_commit_id: message.client_commit_id,
+                operations: message.operations,
+                schema_version: message.schema_version,
+            }],
+        }),
+        pull: None,
+    };
+    let combined = server.post_sync(&request)?;
+    let response = combined
+        .push
+        .and_then(|push| push.commits.into_iter().next())
+        .ok_or_else(|| {
+            syncular_runtime::error::SyncularError::protocol_message(
+                "missing websocket push response",
+            )
+        })?;
+    Ok(json!({
+        "event": "push-response",
+        "data": {
+            "requestId": request_id,
+            "clientCommitId": response.client_commit_id,
+            "status": response.status,
+            "commitSeq": response.commit_seq,
+            "results": response.results,
+        }
+    }))
+}
+
+fn broadcast_realtime_sync(broadcaster: &WsBroadcaster) {
+    let mut peers = broadcaster.lock().expect("app test ws broadcaster");
+    peers.retain(|sender| sender.send(()).is_ok());
+}
+
+fn set_ws_stream_read_timeout(socket: &mut tungstenite::WebSocket<TcpStream>, timeout: Duration) {
+    let _ = socket.get_mut().set_read_timeout(Some(timeout));
+}
+
+fn query_param(query: &str, name: &str) -> Option<String> {
+    query.split('&').find_map(|pair| {
+        let (key, value) = pair.split_once('=')?;
+        if key == name {
+            Some(value.replace("%20", " "))
+        } else {
+            None
+        }
+    })
 }
 
 fn handle_blob_connection(
