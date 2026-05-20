@@ -35,14 +35,20 @@ describe('Syncular v2 worker client', () => {
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
       ok: false,
       error: {
-        code: 'not_open',
+        code: 'sync.schema_mismatch',
         message: 'not open',
+        category: 'schema-mismatch',
+        retryable: false,
+        recommendedAction: 'regenerateClient',
         details: { method: request.type },
       },
     });
 
     await expect(promise).rejects.toMatchObject({
-      code: 'not_open',
+      code: 'sync.schema_mismatch',
+      category: 'schema-mismatch',
+      retryable: false,
+      recommendedAction: 'regenerateClient',
       message: 'not open',
       details: { method: 'executeSql' },
     });

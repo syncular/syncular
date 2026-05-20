@@ -549,6 +549,21 @@ export type SyncularV2ClientEventSink<T extends SyncularV2ClientEventType> = (
   event: SyncularV2ClientEventMap[T]
 ) => void;
 
+export type SyncularV2ErrorCode =
+  | 'sync.auth_required'
+  | 'sync.schema_mismatch'
+  | 'sync.integrity_rejected';
+
+export type SyncularV2ErrorCategory =
+  | 'auth-required'
+  | 'schema-mismatch'
+  | 'integrity-rejected';
+
+export type SyncularV2ErrorRecommendedAction =
+  | 'refreshAuth'
+  | 'regenerateClient'
+  | 'forceResync';
+
 export interface SyncularV2SyncResult {
   changedTables: string[];
   changedRows: SyncularV2ChangedRow[];

@@ -166,12 +166,18 @@ export function createDefaultSyncularV2Worker(): Worker {
 
 export class SyncularV2WorkerError extends Error {
   readonly code: SyncularV2WorkerErrorPayload['code'];
+  readonly category: SyncularV2WorkerErrorPayload['category'];
+  readonly retryable: boolean;
+  readonly recommendedAction: SyncularV2WorkerErrorPayload['recommendedAction'];
   readonly details: unknown;
 
   constructor(payload: SyncularV2WorkerErrorPayload) {
     super(payload.message);
     this.name = payload.name ?? 'SyncularV2WorkerError';
     this.code = payload.code;
+    this.category = payload.category;
+    this.retryable = payload.retryable === true;
+    this.recommendedAction = payload.recommendedAction;
     this.details = payload.details;
     if (payload.stack) this.stack = payload.stack;
   }
