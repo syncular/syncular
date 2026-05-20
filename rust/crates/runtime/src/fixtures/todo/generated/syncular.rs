@@ -1047,7 +1047,6 @@ pub struct NewTask {
     pub user_id: String,
     pub project_id: Option<String>,
     pub image: Option<String>,
-    pub title_yjs_state: Option<String>,
     yjs_updates: Map<String, Value>,
 }
 
@@ -1060,7 +1059,6 @@ impl NewTask {
             user_id: user_id.to_string(),
             project_id: project_id.map(str::to_string),
             image: None,
-            title_yjs_state: None,
             yjs_updates: Map::new(),
         }
     }
@@ -1073,7 +1071,6 @@ impl NewTask {
             user_id: user_id.to_string(),
             project_id: project_id.map(str::to_string),
             image: None,
-            title_yjs_state: None,
             yjs_updates: Map::new(),
         }
     }
@@ -1100,9 +1097,6 @@ impl NewTask {
         if let Some(value) = &self.image {
             row.insert("image".to_string(), json!(value));
         }
-        if let Some(value) = &self.title_yjs_state {
-            row.insert("title_yjs_state".to_string(), json!(value));
-        }
         Value::Object(row)
     }
 
@@ -1118,11 +1112,6 @@ impl NewTask {
         }
         if let Some(value) = &self.image {
             payload.insert("image".to_string(), json!(value));
-        }
-        if !self.yjs_updates.contains_key("title") {
-            if let Some(value) = &self.title_yjs_state {
-                payload.insert("title_yjs_state".to_string(), json!(value));
-            }
         }
         if !self.yjs_updates.is_empty() {
             payload.insert(
@@ -1164,7 +1153,6 @@ pub struct TaskPatch {
     user_id: Option<String>,
     project_id: Option<Option<String>>,
     image: Option<Option<String>>,
-    title_yjs_state: Option<Option<String>>,
     yjs_updates: Map<String, Value>,
 }
 
@@ -1178,7 +1166,6 @@ impl TaskPatch {
             user_id: None,
             project_id: None,
             image: None,
-            title_yjs_state: None,
             yjs_updates: Map::new(),
         }
     }
@@ -1213,11 +1200,6 @@ impl TaskPatch {
         self
     }
 
-    pub fn title_yjs_state(mut self, title_yjs_state: Option<&str>) -> Self {
-        self.title_yjs_state = Some(title_yjs_state.map(str::to_string));
-        self
-    }
-
     pub fn title_yjs_update(mut self, update: YjsUpdateEnvelope) -> Self {
         self.yjs_updates.insert("title".to_string(), json!(update));
         self
@@ -1246,11 +1228,6 @@ impl TaskPatch {
         }
         if let Some(value) = &self.image {
             payload.insert("image".to_string(), json!(value));
-        }
-        if !self.yjs_updates.contains_key("title") {
-            if let Some(value) = &self.title_yjs_state {
-                payload.insert("title_yjs_state".to_string(), json!(value));
-            }
         }
         if !self.yjs_updates.is_empty() {
             payload.insert(

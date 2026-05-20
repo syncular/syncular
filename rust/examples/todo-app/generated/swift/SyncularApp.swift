@@ -1358,16 +1358,14 @@ public struct NewTask: Codable, Equatable {
     public let userId: String
     public let projectId: String?
     public let image: SyncularBlobRef?
-    public let titleYjsState: String?
 
-    public init(id: String, title: String, completed: Int64? = nil, userId: String, projectId: String? = nil, image: SyncularBlobRef? = nil, titleYjsState: String? = nil) {
+    public init(id: String, title: String, completed: Int64? = nil, userId: String, projectId: String? = nil, image: SyncularBlobRef? = nil) {
         self.id = id
         self.title = title
         self.completed = completed
         self.userId = userId
         self.projectId = projectId
         self.image = image
-        self.titleYjsState = titleYjsState
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1377,7 +1375,6 @@ public struct NewTask: Codable, Equatable {
         case userId = "user_id"
         case projectId = "project_id"
         case image
-        case titleYjsState = "title_yjs_state"
     }
 }
 
@@ -1387,15 +1384,13 @@ public struct TaskPatch: Codable, Equatable {
     public let userId: String?
     public let projectId: String?
     public let image: SyncularBlobRef?
-    public let titleYjsState: String?
 
-    public init(title: String? = nil, completed: Int64? = nil, userId: String? = nil, projectId: String? = nil, image: SyncularBlobRef? = nil, titleYjsState: String? = nil) {
+    public init(title: String? = nil, completed: Int64? = nil, userId: String? = nil, projectId: String? = nil, image: SyncularBlobRef? = nil) {
         self.title = title
         self.completed = completed
         self.userId = userId
         self.projectId = projectId
         self.image = image
-        self.titleYjsState = titleYjsState
     }
 
     private enum CodingKeys: String, CodingKey {
@@ -1404,7 +1399,6 @@ public struct TaskPatch: Codable, Equatable {
         case userId = "user_id"
         case projectId = "project_id"
         case image
-        case titleYjsState = "title_yjs_state"
     }
 }
 
@@ -1553,9 +1547,6 @@ public enum SyncularAppOperations {
         if let value = input.image {
             payload["image"] = value.syncularPayloadValue
         }
-        if let value = input.titleYjsState {
-            payload["title_yjs_state"] = .string(value)
-        }
         return SyncularGeneratedOperation(
             table: "tasks",
             rowId: input.id,
@@ -1581,9 +1572,6 @@ public enum SyncularAppOperations {
         }
         if let value = patch.image {
             payload["image"] = value.syncularPayloadValue
-        }
-        if let value = patch.titleYjsState {
-            payload["title_yjs_state"] = .string(value)
         }
         return SyncularGeneratedOperation(
             table: "tasks",

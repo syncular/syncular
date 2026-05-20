@@ -1002,7 +1002,6 @@ export interface NewTask extends SyncularYjsPayloadEnvelope<'title'> {
   user_id: string;
   project_id?: string | null;
   image?: BlobRef | null;
-  title_yjs_state?: string | null;
 }
 
 export interface NewTaskPayload {
@@ -1011,10 +1010,9 @@ export interface NewTaskPayload {
   user_id: string;
   project_id?: string | null;
   image?: BlobRef | null;
-  title_yjs_state?: string | null;
 }
 
-export type TaskPatch = Partial<Pick<TaskRow, 'title' | 'completed' | 'user_id' | 'project_id' | 'image' | 'title_yjs_state'>> & SyncularYjsPayloadEnvelope<'title'>;
+export type TaskPatch = Partial<Pick<TaskRow, 'title' | 'completed' | 'user_id' | 'project_id' | 'image'>> & SyncularYjsPayloadEnvelope<'title'>;
 
 export function newTaskPayload(input: NewTask): NewTaskPayload {
   const payload: Partial<NewTaskPayload> = {
@@ -1024,7 +1022,6 @@ export function newTaskPayload(input: NewTask): NewTaskPayload {
   payload.completed = input.completed ?? 0;
   if (input.project_id !== undefined) payload.project_id = input.project_id;
   if (input.image !== undefined) payload.image = input.image;
-  if (input.title_yjs_state !== undefined) payload.title_yjs_state = input.title_yjs_state;
   if (input.__yjs !== undefined) (payload as Record<string, unknown>).__yjs = input.__yjs;
   if (input.__yjs?.title !== undefined) {
     delete (payload as Record<string, unknown>).title;
@@ -1040,7 +1037,6 @@ export function taskPatchPayload(patch: TaskPatch): TaskPatch {
   if (patch.user_id !== undefined) payload.user_id = patch.user_id;
   if (patch.project_id !== undefined) payload.project_id = patch.project_id;
   if (patch.image !== undefined) payload.image = patch.image;
-  if (patch.title_yjs_state !== undefined) payload.title_yjs_state = patch.title_yjs_state;
   if (patch.__yjs !== undefined) (payload as Record<string, unknown>).__yjs = patch.__yjs;
   if (patch.__yjs?.title !== undefined) {
     delete (payload as Record<string, unknown>).title;

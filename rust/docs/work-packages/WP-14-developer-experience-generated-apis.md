@@ -68,12 +68,12 @@ the correct sync path easy and make incorrect paths hard to reach.
 
 Continue tightening generated app surfaces:
 
-1. Revisit CRDT state-column exposure in generated mutation input types so app
-   code cannot accidentally write CRDT persistence columns directly.
-2. Add documentation examples that show diagnostics alongside typed reads,
+1. Add documentation examples that show diagnostics alongside typed reads,
    subscriptions, mutations, conflicts, and live query refresh.
-3. Review native generated mutation naming for cross-platform consistency
+2. Review native generated mutation naming for cross-platform consistency
    without adding table-specific read/ORM helpers.
+3. Add explicit generated-client examples for CRDT field writes so app code uses
+   CRDT helpers instead of trying to write persistence columns.
 
 ## Progress
 
@@ -92,9 +92,19 @@ Continue tightening generated app surfaces:
 - The generated native diagnostics helper is covered by codegen assertions and
   Swift/Kotlin generated-client smokes; BoltFFI-backed native smoke wrappers
   delegate the host diagnostic method directly.
+- Generated Rust, TypeScript, Swift, and Kotlin mutation input/payload types now
+  omit CRDT `stateColumn` fields. Rows, query builders, changed-row helpers,
+  and table metadata still expose those fields for observation/debugging, but
+  app-facing synced writes must use generated CRDT helpers or Yjs envelopes.
+- Added a generator regression test proving CRDT state columns remain readable
+  while being removed from generated insert/patch mutation surfaces across Rust,
+  TypeScript, Swift, and Kotlin.
 
 ## Latest Evidence
 
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`
+- `bun test rust/bindings/browser/src/generated-app-conformance.test.ts`
+- `bun run --cwd rust/bindings/browser tsgo`
 - `bash rust/examples/todo-app/native-smokes/run-local.sh`

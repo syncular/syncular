@@ -1306,6 +1306,17 @@ fn is_server_managed_column(column: &ColumnRow, config: &TableCodegenConfig) -> 
         .is_some_and(|name| column.name == name)
 }
 
+fn is_crdt_state_column(column: &ColumnRow, config: &TableCodegenConfig) -> bool {
+    config
+        .crdt_yjs_fields
+        .iter()
+        .any(|field| field.state_column == column.name)
+}
+
+fn is_app_mutation_column(column: &ColumnRow, config: &TableCodegenConfig) -> bool {
+    !is_server_managed_column(column, config) && !is_crdt_state_column(column, config)
+}
+
 fn is_scope_column(column: &ColumnRow, config: &TableCodegenConfig) -> bool {
     config
         .scopes()
@@ -1426,7 +1437,7 @@ fn mutation_required_columns(table: &TableInfo, config: &TableCodegenConfig) -> 
     table
         .columns
         .iter()
-        .filter(|column| !is_server_managed_column(column, config))
+        .filter(|column| is_app_mutation_column(column, config))
         .filter(|column| !is_nullable(column) || is_scope_column(column, config))
         .filter(|column| {
             !has_sql_default(column) || column.pk > 0 || is_scope_column(column, config)
@@ -3416,7 +3427,7 @@ fn generate_mutation_struct(table: &TableInfo, config: &TableCodegenConfig) -> S
     let mutation_columns = table
         .columns
         .iter()
-        .filter(|column| !is_server_managed_column(column, config))
+        .filter(|column| is_app_mutation_column(column, config))
         .cloned()
         .collect::<Vec<_>>();
     let required_columns = mutation_required_columns(table, config);
@@ -3698,7 +3709,7 @@ fn generate_patch_struct(table: &TableInfo, config: &TableCodegenConfig) -> Stri
         .columns
         .iter()
         .filter(|column| column.pk == 0)
-        .filter(|column| !is_server_managed_column(column, config))
+        .filter(|column| is_app_mutation_column(column, config))
         .cloned()
         .collect::<Vec<_>>();
 
@@ -5674,7 +5685,7 @@ fn generate_typescript_module(
         let insert_columns = table
             .columns
             .iter()
-            .filter(|column| !is_server_managed_column(column, &config))
+            .filter(|column| is_app_mutation_column(column, &config))
             .collect::<Vec<_>>();
         for column in &insert_columns {
             let optional = ts_input_optional(column, &config);
@@ -5691,7 +5702,7 @@ fn generate_typescript_module(
             .columns
             .iter()
             .filter(|column| column.pk == 0)
-            .filter(|column| !is_server_managed_column(column, &config))
+            .filter(|column| is_app_mutation_column(column, &config))
             .collect::<Vec<_>>();
 
         out.push_str(&format!("export interface New{type_name}Payload {{\n"));
@@ -7104,13 +7115,13 @@ fn generate_swift_module(
         let insert_columns = table
             .columns
             .iter()
-            .filter(|column| !is_server_managed_column(column, &table_config))
+            .filter(|column| is_app_mutation_column(column, &table_config))
             .collect::<Vec<_>>();
         let payload_columns = table
             .columns
             .iter()
             .filter(|column| column.pk == 0)
-            .filter(|column| !is_server_managed_column(column, &table_config))
+            .filter(|column| is_app_mutation_column(column, &table_config))
             .collect::<Vec<_>>();
 
         out.push_str(&format!(
@@ -7237,7 +7248,7 @@ fn generate_swift_module(
             .columns
             .iter()
             .filter(|column| column.pk == 0)
-            .filter(|column| !is_server_managed_column(column, &table_config))
+            .filter(|column| is_app_mutation_column(column, &table_config))
             .collect::<Vec<_>>();
 
         out.push_str(&format!(
@@ -8636,13 +8647,13 @@ fn generate_kotlin_module(
         let insert_columns = table
             .columns
             .iter()
-            .filter(|column| !is_server_managed_column(column, &table_config))
+            .filter(|column| is_app_mutation_column(column, &table_config))
             .collect::<Vec<_>>();
         let payload_columns = table
             .columns
             .iter()
             .filter(|column| column.pk == 0)
-            .filter(|column| !is_server_managed_column(column, &table_config))
+            .filter(|column| is_app_mutation_column(column, &table_config))
             .collect::<Vec<_>>();
 
         out.push_str(&format!("data class {type_name}Row(\n"));
@@ -8720,7 +8731,7 @@ fn generate_kotlin_module(
             .columns
             .iter()
             .filter(|column| column.pk == 0)
-            .filter(|column| !is_server_managed_column(column, &table_config))
+            .filter(|column| is_app_mutation_column(column, &table_config))
             .collect::<Vec<_>>();
 
         out.push_str(&format!(
@@ -11034,6 +11045,67 @@ mod tests {
         assert!(typescript.contains("  'web-owned-sqlite-core',"));
         assert!(typescript.contains("  'crdt-yjs',"));
         assert!(typescript.contains("  'e2ee',"));
+        Ok(())
+    }
+
+    #[test]
+    fn generated_mutation_inputs_omit_crdt_state_columns() -> Result<()> {
+        let tables = vec![table(
+            "tasks",
+            vec![
+                column("id", "TEXT", false, true, None),
+                column("title", "TEXT", true, false, None),
+                column("title_yjs_state", "TEXT", false, false, None),
+                column("user_id", "TEXT", true, false, None),
+                column("server_version", "BIGINT", true, false, Some("0")),
+            ],
+        )];
+        let mut table_configs = BTreeMap::new();
+        let mut tasks_config = table_config(
+            "sub-tasks",
+            "server_version",
+            vec![scope("user_id", "user_id", "actorId", true)],
+        );
+        tasks_config.crdt_yjs_fields = vec![CrdtYjsFieldConfig {
+            field: "title".to_string(),
+            state_column: "title_yjs_state".to_string(),
+            container_key: Some("title".to_string()),
+            row_id_field: Some("id".to_string()),
+            kind: "text".to_string(),
+            sync_mode: "server-merge".to_string(),
+        }];
+        table_configs.insert("tasks".to_string(), tasks_config);
+        let config = CodegenConfig {
+            tables: table_configs,
+            ..CodegenConfig::default()
+        };
+
+        let rust = generate_generated_module(&tables, &config)?;
+        assert!(rust.contains("pub title_yjs_state: bool"));
+        assert!(!rust.contains("pub title_yjs_state: Option<String>"));
+        assert!(!rust.contains("pub fn title_yjs_state(mut self"));
+        assert!(rust.contains("pub fn title_yjs_update"));
+
+        let typescript = generate_typescript_module(&tables, &config, 9)?;
+        assert!(typescript.contains("title_yjs_state: string | null;"));
+        assert!(!typescript.contains("title_yjs_state?: string | null;"));
+        assert!(typescript.contains(
+            "export type TaskPatch = Partial<Pick<TaskRow, 'title' | 'user_id'>> & SyncularYjsPayloadEnvelope<'title'>;"
+        ));
+
+        let app_schema_json = test_app_schema_json(&tables, &config, 9)?;
+        let swift = generate_swift_module(&tables, &config, 9, &app_schema_json)?;
+        assert!(swift.contains("public let titleYjsState: String?"));
+        assert!(!swift.contains("titleYjsState: String? = nil"));
+        assert!(swift.contains("func applyTaskTitleText(rowId: String, nextText: String)"));
+
+        let kotlin = generate_kotlin_module(&tables, &config, 9, &app_schema_json, None)?;
+        assert!(kotlin.contains("val titleYjsState: String?,"));
+        assert!(!kotlin.contains("val titleYjsState: String? = null,"));
+        assert!(kotlin.contains(
+            "fun SyncularNativeJsonClient.applyTaskTitleText(rowId: String, nextText: String)"
+        ));
+
         Ok(())
     }
 }

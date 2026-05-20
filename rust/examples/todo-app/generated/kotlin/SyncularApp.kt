@@ -1001,7 +1001,6 @@ data class NewTask(
     val userId: String,
     val projectId: String? = null,
     val image: SyncularBlobRef? = null,
-    val titleYjsState: String? = null,
 )
 
 data class TaskPatch(
@@ -1010,7 +1009,6 @@ data class TaskPatch(
     val userId: String? = null,
     val projectId: String? = null,
     val image: SyncularBlobRef? = null,
-    val titleYjsState: String? = null,
 )
 
 object CommentQuery {
@@ -1132,7 +1130,6 @@ object SyncularAppOperations {
         payload["user_id"] = input.userId
         input.projectId?.let { payload["project_id"] = it }
         input.image?.let { payload["image"] = it.toJsonValue() }
-        input.titleYjsState?.let { payload["title_yjs_state"] = it }
         return SyncularGeneratedOperation(
             table = "tasks",
             rowId = input.id,
@@ -1149,7 +1146,6 @@ object SyncularAppOperations {
         patch.userId?.let { payload["user_id"] = it }
         patch.projectId?.let { payload["project_id"] = it }
         patch.image?.let { payload["image"] = it.toJsonValue() }
-        patch.titleYjsState?.let { payload["title_yjs_state"] = it }
         return SyncularGeneratedOperation(
             table = "tasks",
             rowId = rowId,
