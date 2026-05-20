@@ -4784,7 +4784,9 @@ fn generate_typescript_module(
     out.push_str("  setupSql: readonly string[];\n");
     out.push_str("  rebuildSql: readonly string[];\n");
     out.push_str("}\n\n");
-    out.push_str("export const syncularGeneratedLocalReadModels = [\n");
+    out.push_str(
+        "export const syncularGeneratedLocalReadModels: readonly SyncularGeneratedLocalReadModel[] = [\n",
+    );
     for read_model in &local_read_models {
         out.push_str("  {\n");
         out.push_str(&format!("    name: {},\n", ts_string(&read_model.name)));
@@ -4808,13 +4810,15 @@ fn generate_typescript_module(
         out.push_str("    ],\n");
         out.push_str("  },\n");
     }
-    out.push_str("] as const satisfies readonly SyncularGeneratedLocalReadModel[];\n\n");
+    out.push_str("];\n\n");
     out.push_str("export interface SyncularGeneratedLocalIndex {\n");
     out.push_str("  table: keyof SyncularAppDb;\n");
     out.push_str("  name: string;\n");
     out.push_str("  sql: string;\n");
     out.push_str("}\n\n");
-    out.push_str("export const syncularGeneratedLocalIndexes = [\n");
+    out.push_str(
+        "export const syncularGeneratedLocalIndexes: readonly SyncularGeneratedLocalIndex[] = [\n",
+    );
     for table in &user_tables {
         for index in &table.indexes {
             out.push_str("  {\n");
@@ -4828,7 +4832,7 @@ fn generate_typescript_module(
             out.push_str("  },\n");
         }
     }
-    out.push_str("] as const satisfies readonly SyncularGeneratedLocalIndex[];\n\n");
+    out.push_str("];\n\n");
     out.push_str("export const syncularGeneratedAppSchema = {\n");
     out.push_str("  schemaVersion: syncularGeneratedSchemaVersion,\n");
     out.push_str("  tables: [\n");
@@ -9833,7 +9837,9 @@ mod tests {
 
         let output = generate_typescript_module(&[tasks], &config, 3)?;
 
-        assert!(output.contains("export const syncularGeneratedLocalIndexes = ["));
+        assert!(output.contains(
+            "export const syncularGeneratedLocalIndexes: readonly SyncularGeneratedLocalIndex[] = ["
+        ));
         assert!(output.contains("name: 'idx_tasks_user_project_id'"));
         assert!(output.contains(
             "CREATE INDEX IF NOT EXISTS idx_tasks_user_project_id ON tasks (user_id, project_id, id)"

@@ -112,7 +112,7 @@ export interface SyncularGeneratedLocalReadModel {
   rebuildSql: readonly string[];
 }
 
-export const syncularGeneratedLocalReadModels = [
+export const syncularGeneratedLocalReadModels: readonly SyncularGeneratedLocalReadModel[] = [
   {
     name: 'taskCountsByUserCompletion',
     outputTable: 'syncular_task_counts',
@@ -164,7 +164,7 @@ FROM "tasks"
 GROUP BY "user_id", "completed"`,
     ],
   },
-] as const satisfies readonly SyncularGeneratedLocalReadModel[];
+];
 
 export interface SyncularGeneratedLocalIndex {
   table: keyof SyncularAppDb;
@@ -172,8 +172,8 @@ export interface SyncularGeneratedLocalIndex {
   sql: string;
 }
 
-export const syncularGeneratedLocalIndexes = [
-] as const satisfies readonly SyncularGeneratedLocalIndex[];
+export const syncularGeneratedLocalIndexes: readonly SyncularGeneratedLocalIndex[] = [
+];
 
 export const syncularGeneratedAppSchema = {
   schemaVersion: syncularGeneratedSchemaVersion,

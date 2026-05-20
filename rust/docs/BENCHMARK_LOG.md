@@ -144,6 +144,8 @@ Change:
 - Generated app creation now also accepts `schemaInstallMode: 'liveSetup'`,
   which installs base tables, local indexes, and read-model triggers without a
   read-model rebuild only when app tables are empty or already marked current.
+- Browser E2E scoreboard now accepts `--rust-schema-install-mode` so schema
+  install strategies can be compared without modifying app harness code.
 - The default `ensureSyncularAppDerivedSchema(...)` path keeps the existing
   behavior, but the generated contract now exposes the local derived-schema
   phases that app adapters and benchmarks need instead of forcing hand-written
@@ -155,6 +157,7 @@ Correctness gates:
 cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
 bun run --cwd rust/examples/todo-app tsgo
 bun run --cwd rust/bindings/browser tsgo
+bun run --cwd tests/runtime tsgo
 bun test rust/bindings/browser/src/database.test.ts rust/bindings/browser/src/generated-app-conformance.test.ts
 ```
 
@@ -175,19 +178,20 @@ bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
   --wasm-profile=release \
   --sync-snapshot-artifacts \
   --sync-snapshot-artifact-row-limit=50000 \
-  --output=.context/benchmarks/wp06-live-setup-schema-mode-100k.json
+  --rust-schema-install-mode=liveSetup \
+  --output=.context/benchmarks/wp06-live-setup-benchmark-switch-100k.json
 ```
 
 Comparison:
 
 | Metric | Previous accepted | Phase helpers | `liveSetup` mode |
 | --- | ---: | ---: | ---: |
-| Rust 100k artifact bootstrap | `147.84ms` | `146.94ms` | `145.89ms` |
+| Rust 100k artifact bootstrap | `147.84ms` | `146.94ms` | `147.50ms` |
 | Rust local list p50 | `0.23ms` | `0.21ms` | `0.23ms` |
-| Rust local search p50 | `1.51ms` | `1.40ms` | `1.51ms` |
-| Rust raw aggregate p50 | `21.98ms` | `24.42ms` | `23.99ms` |
+| Rust local search p50 | `1.51ms` | `1.40ms` | `1.43ms` |
+| Rust raw aggregate p50 | `21.98ms` | `24.42ms` | `24.34ms` |
 | Rust read-model aggregate p50 | `0.05ms` | `0.05ms` | `0.05ms` |
-| Browser entry JS bytes | n/a | `1,273,894` | `1,274,897` |
+| Browser entry JS bytes | n/a | `1,273,894` | `1,275,029` |
 
 Decision:
 
