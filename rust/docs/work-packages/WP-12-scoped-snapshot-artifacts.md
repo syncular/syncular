@@ -940,6 +940,10 @@ Retained checkpointed artifact page follow-up:
   app-style 500k bootstrap stayed healthy (`1002.06ms -> 995.58ms`), and
   `snapshotChunkCount` stayed `0`; external peak memory moved slightly worse
   (`668.20MB -> 671.13MB`).
+- Browser Rust sync timings and the browser E2E scoreboard now expose artifact
+  checkpoint count/time directly. The local 100k release artifact gate stayed
+  in band (`135.50ms -> 133.64ms`) and reports
+  `rust_snapshot_artifact_checkpoint_count=1`.
 
 Rejected artifact cap-1 probe:
 

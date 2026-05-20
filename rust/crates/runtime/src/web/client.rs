@@ -151,6 +151,8 @@ pub struct WebSyncTimings {
     pub scope_clear_ms: f64,
     pub snapshot_row_apply_ms: f64,
     pub snapshot_artifact_apply_ms: f64,
+    pub snapshot_artifact_checkpoint_ms: f64,
+    pub snapshot_artifact_checkpoint_count: u64,
     pub snapshot_chunk_apply_ms: f64,
     pub snapshot_chunk_materialize_ms: f64,
     pub snapshot_chunk_reset_ms: f64,
@@ -655,7 +657,11 @@ where
                             elapsed_ms_since(subscription_state_started_at);
                     }
                     if checkpoint_after_snapshot {
+                        let checkpoint_started_at = timing_now_ms();
                         self.store.checkpoint_apply_batch().await?;
+                        result.timings.snapshot_artifact_checkpoint_ms +=
+                            elapsed_ms_since(checkpoint_started_at);
+                        result.timings.snapshot_artifact_checkpoint_count += 1;
                     }
                 }
             }

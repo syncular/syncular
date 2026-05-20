@@ -188,7 +188,9 @@ read-only review:
     resumes from the committed page instead of restarting; the follow-up gate
     stayed healthy at external 500k bootstrap `995.58ms` with
     `snapshotChunkCount=0`, while peak memory moved slightly worse
-    (`668.20MB -> 671.13MB`).
+    (`668.20MB -> 671.13MB`). Artifact checkpoint count/time are now explicit
+    browser sync/scoreboard metrics, and the local 100k guard reports one
+    checkpoint with neutral wall time.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   - First retained TypeScript generated-client slice narrows
     `database.mutations` to generated inputs and patches. App code can now call
@@ -305,12 +307,13 @@ read-only review:
 
 ## Next
 
-- Continue WP-14 generated-client ergonomics only when real integration
-  feedback exposes remaining app-flow doc gaps or naming friction.
 - Continue the larger bootstrap/performance architecture in
   [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md):
   artifact apply is now fast enough that the remaining useful work is a larger
   bootstrap state model, not more local derived-schema/install micro-probes.
+- Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
+  only when real integration feedback exposes remaining app-flow doc gaps or
+  naming friction.
 
 ## Later
 

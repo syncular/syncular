@@ -906,6 +906,8 @@ const rustTimingKeys: Array<keyof SyncularV2SyncTimings> = [
   'scopeClearMs',
   'snapshotRowApplyMs',
   'snapshotArtifactApplyMs',
+  'snapshotArtifactCheckpointMs',
+  'snapshotArtifactCheckpointCount',
   'snapshotChunkApplyMs',
   'snapshotChunkMaterializeMs',
   'snapshotChunkResetMs',
@@ -930,6 +932,8 @@ function emptyRustTimings(): SyncularV2SyncTimings {
     scopeClearMs: 0,
     snapshotRowApplyMs: 0,
     snapshotArtifactApplyMs: 0,
+    snapshotArtifactCheckpointMs: 0,
+    snapshotArtifactCheckpointCount: 0,
     snapshotChunkApplyMs: 0,
     snapshotChunkMaterializeMs: 0,
     snapshotChunkResetMs: 0,
@@ -1261,6 +1265,15 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
       rustRun.timings.snapshotArtifactApplyMs
     );
     pushMetric(
+      'rust_snapshot_artifact_checkpoint_ms',
+      rustRun.timings.snapshotArtifactCheckpointMs
+    );
+    pushMetric(
+      'rust_snapshot_artifact_checkpoint_count',
+      rustRun.timings.snapshotArtifactCheckpointCount,
+      'count'
+    );
+    pushMetric(
       'rust_snapshot_chunk_apply_ms',
       rustRun.timings.snapshotChunkApplyMs
     );
@@ -1433,6 +1446,15 @@ async function runE2eScoreboard(options: E2eScoreboardOptions): Promise<{
     pushMetric(
       'rust_cached_snapshot_artifact_apply_ms',
       cachedRustRun.timings.snapshotArtifactApplyMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_artifact_checkpoint_ms',
+      cachedRustRun.timings.snapshotArtifactCheckpointMs
+    );
+    pushMetric(
+      'rust_cached_snapshot_artifact_checkpoint_count',
+      cachedRustRun.timings.snapshotArtifactCheckpointCount,
+      'count'
     );
     pushMetric(
       'rust_cached_snapshot_chunk_apply_ms',
