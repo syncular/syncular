@@ -7,6 +7,7 @@
 pub mod app;
 pub mod app_server;
 pub mod assertions;
+pub mod auth_lease;
 pub mod conformance;
 pub mod crdt;
 pub mod deterministic;
@@ -20,6 +21,7 @@ pub mod transport;
 pub use app::*;
 pub use app_server::*;
 pub use assertions::*;
+pub use auth_lease::*;
 pub use conformance::*;
 pub use crdt::*;
 pub use deterministic::*;

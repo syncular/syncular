@@ -406,8 +406,10 @@ read-only review:
     lease model is now explicit in
     `reference/OFFLINE_AUTH_LEASE_MODEL.md`: signed bounded leases are for
     offline intent capture and audit only, not server acceptance or a bypass of
-    current handler authorization. Next implementation should start with Rust
-    protocol structs plus testkit issuer/verifier helpers, not a server rewrite.
+    current handler authorization. Rust protocol lease structs/constants and
+    deterministic ES256 testkit issue/verify helpers now exist, with valid,
+    expired, and tampered-token smoke coverage. Next narrow slice is local lease
+    storage plus outbox provenance behind a migration, not a server rewrite.
 - `[~]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus

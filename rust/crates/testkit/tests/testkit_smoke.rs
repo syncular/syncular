@@ -2,14 +2,17 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
-use serde_json::json;
+use serde_json::{json, Map};
 use syncular_runtime::encryption::{
     FieldEncryption, FieldEncryptionRule, StaticFieldEncryptionConfig,
 };
 use syncular_runtime::error::ErrorKind;
 use syncular_runtime::fixtures::todo;
 use syncular_runtime::native::{NativeClientOptions, NativeEventKind};
-use syncular_runtime::protocol::{CombinedRequest, PushCommitRequest, SyncOperation};
+use syncular_runtime::protocol::{
+    AuthLeaseCapabilities, AuthLeasePayload, AuthLeaseScope, CombinedRequest, PushCommitRequest,
+    SyncOperation, AUTH_LEASE_CODE_EXPIRED, AUTH_LEASE_CODE_INVALID, AUTH_LEASE_VERSION,
+};
 use syncular_runtime::transport::{
     HttpSyncTransport, RealtimeEvent, RealtimeTransport, SyncAuthHeaderStore, SyncAuthHeaders,
     SyncTransport, SyncTransportConfig,
@@ -24,15 +27,15 @@ use syncular_testkit::{
     assert_native_diagnostic_detail, assert_native_error_code, assert_native_error_kind,
     assert_native_rows_changed, assert_native_table_row_count, assert_no_conflicts,
     assert_outbox_empty, assert_outbox_statuses, assert_table_has_row, assert_table_row_count,
-    default_combined_response, encoded_blob_hash, open_app_client, open_app_client_in_memory,
-    open_app_client_with_server, open_app_client_with_transport,
+    default_combined_response, encoded_blob_hash, issue_test_auth_lease, open_app_client,
+    open_app_client_in_memory, open_app_client_with_server, open_app_client_with_transport,
     open_native_client_with_schema_json_options, open_native_client_with_schema_options,
     open_todo_client, open_todo_client_with_transport, push_conflict_response,
     snapshot_combined_response, sync_conformance_fixture, todo_app_schema_json,
-    todo_snapshot_response, todo_task_row, AppFixtureOptions, AppTestHttpServer, AppTestServer,
-    AppTestServerOptions, FaultOperation, FaultPhase, FaultStep, FaultTransport,
-    NativeFixtureOptions, TestBlobServer, TestBlobServerOptions, TestSyncServer, TestTransport,
-    TodoFixtureOptions,
+    todo_snapshot_response, todo_task_row, verify_test_auth_lease, AppFixtureOptions,
+    AppTestHttpServer, AppTestServer, AppTestServerOptions, FaultOperation, FaultPhase, FaultStep,
+    FaultTransport, NativeFixtureOptions, TestAuthLeaseKeyPair, TestBlobServer,
+    TestBlobServerOptions, TestSyncServer, TestTransport, TodoFixtureOptions,
 };
 use tungstenite::{connect, stream::MaybeTlsStream, Message};
 
@@ -1437,6 +1440,51 @@ fn blob_queue_assertions_use_real_store() {
 }
 
 #[test]
+fn auth_lease_testkit_issues_and_verifies_es256_tokens() {
+    let key = TestAuthLeaseKeyPair::default();
+    let payload = test_auth_lease_payload(1_779_360_000_000, 1_779_446_400_000);
+    let token = issue_test_auth_lease(&payload, &key);
+
+    let verified = verify_test_auth_lease(&token, key.verifying_key(), 1_779_360_001_000)
+        .expect("verify auth lease");
+    assert_eq!(verified.header.alg, "ES256");
+    assert_eq!(verified.header.kid, key.kid());
+    assert_eq!(verified.payload.lease_id, payload.lease_id);
+    assert_eq!(verified.payload.scopes[0].table, "tasks");
+}
+
+#[test]
+fn auth_lease_testkit_rejects_expired_tokens() {
+    let key = TestAuthLeaseKeyPair::default();
+    let payload = test_auth_lease_payload(1_779_360_000_000, 1_779_360_060_000);
+    let token = issue_test_auth_lease(&payload, &key);
+
+    let error = verify_test_auth_lease(&token, key.verifying_key(), 1_779_360_120_001)
+        .expect_err("expired auth lease should fail");
+    assert!(!error.ok);
+    assert_eq!(error.code.as_deref(), Some(AUTH_LEASE_CODE_EXPIRED));
+    assert_eq!(error.lease_id.as_deref(), Some(payload.lease_id.as_str()));
+    assert_eq!(error.kid.as_deref(), Some(key.kid()));
+    assert_eq!(error.expires_at_ms, Some(payload.expires_at_ms));
+}
+
+#[test]
+fn auth_lease_testkit_rejects_tampered_tokens() {
+    let key = TestAuthLeaseKeyPair::default();
+    let payload = test_auth_lease_payload(1_779_360_000_000, 1_779_446_400_000);
+    let token = issue_test_auth_lease(&payload, &key);
+    let mut bytes = token.into_bytes();
+    let last = bytes.len() - 1;
+    bytes[last] = if bytes[last] == b'A' { b'B' } else { b'A' };
+    let tampered = String::from_utf8(bytes).expect("tampered token");
+
+    let error = verify_test_auth_lease(&tampered, key.verifying_key(), 1_779_360_001_000)
+        .expect_err("tampered auth lease should fail");
+    assert!(!error.ok);
+    assert_eq!(error.code.as_deref(), Some(AUTH_LEASE_CODE_INVALID));
+}
+
+#[test]
 fn default_response_acknowledges_pushes() {
     let request = syncular_runtime::protocol::CombinedRequest {
         client_id: "client".to_string(),
@@ -1496,6 +1544,51 @@ fn stateful_test_field_encryption() -> FieldEncryption {
         envelope_prefix: Some(e2ee.envelope_prefix),
     })
     .expect("stateful test field encryption")
+}
+
+fn test_auth_lease_payload(now_ms: i64, expires_at_ms: i64) -> AuthLeasePayload {
+    let scenario = sync_conformance_fixture();
+    let mut subject = Map::new();
+    subject.insert("teamId".to_string(), json!("team-testkit"));
+    let mut values = Map::new();
+    values.insert(
+        "user_id".to_string(),
+        json!([scenario.actors.rust.actor_id.clone()]),
+    );
+    values.insert(
+        "project_id".to_string(),
+        json!([scenario.actors.rust.project_id.clone()]),
+    );
+
+    AuthLeasePayload {
+        version: AUTH_LEASE_VERSION,
+        lease_id: "lease-testkit-valid".to_string(),
+        issuer: "syncular-testkit".to_string(),
+        audience: "syncular-todo-app".to_string(),
+        actor_id: scenario.actors.rust.actor_id,
+        subject,
+        schema_version: todo::app_schema().current_schema_version(),
+        protocol_version: 1,
+        issued_at_ms: now_ms,
+        not_before_ms: now_ms,
+        expires_at_ms,
+        max_clock_skew_ms: 30_000,
+        scopes: vec![AuthLeaseScope {
+            subscription_id: scenario.subscription.id,
+            table: scenario.subscription.table,
+            values,
+            operations: vec![
+                "insert".to_string(),
+                "update".to_string(),
+                "delete".to_string(),
+            ],
+        }],
+        capabilities: AuthLeaseCapabilities {
+            allow_blobs: true,
+            allow_crdt: true,
+            allow_encrypted_fields: true,
+        },
+    }
 }
 
 fn raw_http_request(

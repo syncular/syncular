@@ -1,5 +1,7 @@
 use crate::app_schema::{AppTableMetadata, CrdtYjsFieldMetadata};
-use crate::error::{Result, SyncularError, FULL_SNAPSHOT_RESYNC_REQUIRED};
+#[cfg(feature = "crdt-yjs")]
+use crate::error::FULL_SNAPSHOT_RESYNC_REQUIRED;
+use crate::error::{Result, SyncularError};
 use crate::limits::{
     MAX_CRDT_REQUEST_JSON_BYTES, MAX_CRDT_STATE_BASE64_BYTES, MAX_CRDT_STATE_VECTOR_BASE64_BYTES,
     MAX_CRDT_TEXT_BYTES, MAX_CRDT_UPDATE_BASE64_BYTES,
@@ -798,6 +800,7 @@ fn apply_updates(doc: &Doc, updates: &[YjsUpdateEnvelope]) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn required_state_vector(update: &YjsUpdateEnvelope) -> Option<&str> {
     update
         .requires_state_vector_base64
