@@ -6601,6 +6601,28 @@ fn generate_swift_module(
     out.push_str("    public let message: String\n");
     out.push_str("    public let debug: String?\n");
     out.push_str("}\n\n");
+    out.push_str("public struct SyncularNativeLifecycleBootstrap: Decodable, Equatable {\n");
+    out.push_str("    public let complete: Bool\n");
+    out.push_str("    public let criticalReady: Bool\n");
+    out.push_str("    public let interactiveReady: Bool\n");
+    out.push_str("    public let isBootstrapping: Bool\n");
+    out.push_str("    public let progressPercent: Int64\n");
+    out.push_str("}\n\n");
+    out.push_str("public struct SyncularNativeLifecycleOutbox: Decodable, Equatable {\n");
+    out.push_str("    public let pending: UInt64\n");
+    out.push_str("}\n\n");
+    out.push_str("public struct SyncularNativeLifecycleConflicts: Decodable, Equatable {\n");
+    out.push_str("    public let unresolved: UInt64\n");
+    out.push_str("}\n\n");
+    out.push_str("public struct SyncularNativeLifecycleState: Decodable, Equatable {\n");
+    out.push_str("    public let phase: String\n");
+    out.push_str("    public let online: Bool\n");
+    out.push_str("    public let requiresAction: Bool\n");
+    out.push_str("    public let pendingRequests: UInt64\n");
+    out.push_str("    public let bootstrap: SyncularNativeLifecycleBootstrap?\n");
+    out.push_str("    public let outbox: SyncularNativeLifecycleOutbox?\n");
+    out.push_str("    public let conflicts: SyncularNativeLifecycleConflicts?\n");
+    out.push_str("}\n\n");
     out.push_str("public struct SyncularNativeEvent: Decodable, Equatable {\n");
     out.push_str("    public let eventSeq: UInt64\n");
     out.push_str("    public let kind: String\n");
@@ -6613,9 +6635,10 @@ fn generate_swift_module(
     out.push_str("    public let durationMs: UInt64?\n");
     out.push_str("    public let droppedCount: UInt64?\n");
     out.push_str("    public let bootstrap: SyncularBootstrapStatus?\n");
+    out.push_str("    public let lifecycle: SyncularNativeLifecycleState?\n");
     out.push_str("    public let resyncRequired: Bool\n\n");
     out.push_str(
-        "    public init(eventSeq: UInt64 = 0, kind: String, error: SyncularNativeErrorInfo? = nil, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, bootstrap: SyncularBootstrapStatus? = nil, resyncRequired: Bool = false) {\n",
+        "    public init(eventSeq: UInt64 = 0, kind: String, error: SyncularNativeErrorInfo? = nil, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, bootstrap: SyncularBootstrapStatus? = nil, lifecycle: SyncularNativeLifecycleState? = nil, resyncRequired: Bool = false) {\n",
     );
     out.push_str("        self.eventSeq = eventSeq\n");
     out.push_str("        self.kind = kind\n");
@@ -6628,6 +6651,7 @@ fn generate_swift_module(
     out.push_str("        self.durationMs = durationMs\n");
     out.push_str("        self.droppedCount = droppedCount\n");
     out.push_str("        self.bootstrap = bootstrap\n");
+    out.push_str("        self.lifecycle = lifecycle\n");
     out.push_str("        self.resyncRequired = resyncRequired\n");
     out.push_str("    }\n\n");
     out.push_str("    private enum CodingKeys: String, CodingKey {\n");
@@ -6642,6 +6666,7 @@ fn generate_swift_module(
     out.push_str("        case durationMs = \"duration_ms\"\n");
     out.push_str("        case droppedCount\n");
     out.push_str("        case bootstrap\n");
+    out.push_str("        case lifecycle\n");
     out.push_str("        case resyncRequired\n");
     out.push_str("    }\n\n");
     out.push_str("    public init(from decoder: Decoder) throws {\n");
@@ -6671,6 +6696,7 @@ fn generate_swift_module(
     );
     out.push_str("        droppedCount = try container.decodeIfPresent(UInt64.self, forKey: .droppedCount)\n");
     out.push_str("        bootstrap = try container.decodeIfPresent(SyncularBootstrapStatus.self, forKey: .bootstrap)\n");
+    out.push_str("        lifecycle = try container.decodeIfPresent(SyncularNativeLifecycleState.self, forKey: .lifecycle)\n");
     out.push_str("        resyncRequired = (try container.decodeIfPresent(Bool.self, forKey: .resyncRequired)) ?? (kind == \"EventsOverflowed\")\n");
     out.push_str("    }\n");
     out.push_str("\n");
@@ -8256,6 +8282,28 @@ fn generate_kotlin_module(
     out.push_str("    val message: String,\n");
     out.push_str("    val debug: String? = null,\n");
     out.push_str(")\n\n");
+    out.push_str("data class SyncularNativeLifecycleBootstrap(\n");
+    out.push_str("    val complete: Boolean = false,\n");
+    out.push_str("    val criticalReady: Boolean = false,\n");
+    out.push_str("    val interactiveReady: Boolean = false,\n");
+    out.push_str("    val isBootstrapping: Boolean = false,\n");
+    out.push_str("    val progressPercent: Long = 0,\n");
+    out.push_str(")\n\n");
+    out.push_str("data class SyncularNativeLifecycleOutbox(\n");
+    out.push_str("    val pending: Long = 0,\n");
+    out.push_str(")\n\n");
+    out.push_str("data class SyncularNativeLifecycleConflicts(\n");
+    out.push_str("    val unresolved: Long = 0,\n");
+    out.push_str(")\n\n");
+    out.push_str("data class SyncularNativeLifecycleState(\n");
+    out.push_str("    val phase: String,\n");
+    out.push_str("    val online: Boolean = false,\n");
+    out.push_str("    val requiresAction: Boolean = false,\n");
+    out.push_str("    val pendingRequests: Long = 0,\n");
+    out.push_str("    val bootstrap: SyncularNativeLifecycleBootstrap? = null,\n");
+    out.push_str("    val outbox: SyncularNativeLifecycleOutbox? = null,\n");
+    out.push_str("    val conflicts: SyncularNativeLifecycleConflicts? = null,\n");
+    out.push_str(")\n\n");
     out.push_str("data class SyncularNativeEvent(\n");
     out.push_str("    val eventSeq: Long = 0,\n");
     out.push_str("    val kind: String,\n");
@@ -8268,6 +8316,7 @@ fn generate_kotlin_module(
     out.push_str("    val durationMs: Long? = null,\n");
     out.push_str("    val droppedCount: Long? = null,\n");
     out.push_str("    val bootstrap: SyncularBootstrapStatus? = null,\n");
+    out.push_str("    val lifecycle: SyncularNativeLifecycleState? = null,\n");
     out.push_str("    val resyncRequired: Boolean = false,\n");
     out.push_str(") {\n");
     out.push_str(
@@ -8532,6 +8581,38 @@ fn generate_kotlin_module(
     out.push_str("        debug = syncularOptionalString(error[\"debug\"]),\n");
     out.push_str("    )\n");
     out.push_str("}\n\n");
+    out.push_str("private fun syncularDecodeNativeLifecycleState(value: JsonElement?): SyncularNativeLifecycleState? {\n");
+    out.push_str("    if (value == null || value is JsonNull) return null\n");
+    out.push_str("    val state = value.jsonObject\n");
+    out.push_str(
+        "    val bootstrap = state[\"bootstrap\"]?.takeUnless { it is JsonNull }?.jsonObject\n",
+    );
+    out.push_str("    val outbox = state[\"outbox\"]?.takeUnless { it is JsonNull }?.jsonObject\n");
+    out.push_str(
+        "    val conflicts = state[\"conflicts\"]?.takeUnless { it is JsonNull }?.jsonObject\n",
+    );
+    out.push_str("    return SyncularNativeLifecycleState(\n");
+    out.push_str("        phase = state[\"phase\"]?.jsonPrimitive?.content ?: \"offline\",\n");
+    out.push_str("        online = state[\"online\"]?.jsonPrimitive?.booleanOrNull ?: false,\n");
+    out.push_str("        requiresAction = state[\"requiresAction\"]?.jsonPrimitive?.booleanOrNull ?: false,\n");
+    out.push_str(
+        "        pendingRequests = state[\"pendingRequests\"]?.jsonPrimitive?.longOrNull ?: 0L,\n",
+    );
+    out.push_str("        bootstrap = bootstrap?.let { SyncularNativeLifecycleBootstrap(\n");
+    out.push_str(
+        "            complete = it[\"complete\"]?.jsonPrimitive?.booleanOrNull ?: false,\n",
+    );
+    out.push_str("            criticalReady = it[\"criticalReady\"]?.jsonPrimitive?.booleanOrNull ?: false,\n");
+    out.push_str("            interactiveReady = it[\"interactiveReady\"]?.jsonPrimitive?.booleanOrNull ?: false,\n");
+    out.push_str("            isBootstrapping = it[\"isBootstrapping\"]?.jsonPrimitive?.booleanOrNull ?: false,\n");
+    out.push_str(
+        "            progressPercent = it[\"progressPercent\"]?.jsonPrimitive?.longOrNull ?: 0L,\n",
+    );
+    out.push_str("        ) },\n");
+    out.push_str("        outbox = outbox?.let { SyncularNativeLifecycleOutbox(pending = it[\"pending\"]?.jsonPrimitive?.longOrNull ?: 0L) },\n");
+    out.push_str("        conflicts = conflicts?.let { SyncularNativeLifecycleConflicts(unresolved = it[\"unresolved\"]?.jsonPrimitive?.longOrNull ?: 0L) },\n");
+    out.push_str("    )\n");
+    out.push_str("}\n\n");
     out.push_str("fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {\n");
     out.push_str("    val event = Json.parseToJsonElement(eventJson).jsonObject\n");
     out.push_str("    return SyncularNativeEvent(\n");
@@ -8546,6 +8627,7 @@ fn generate_kotlin_module(
     out.push_str("        durationMs = event[\"duration_ms\"]?.jsonPrimitive?.longOrNull,\n");
     out.push_str("        droppedCount = event[\"droppedCount\"]?.jsonPrimitive?.longOrNull,\n");
     out.push_str("        bootstrap = syncularDecodeBootstrapStatus(event[\"bootstrap\"]),\n");
+    out.push_str("        lifecycle = syncularDecodeNativeLifecycleState(event[\"lifecycle\"]),\n");
     out.push_str("        resyncRequired = event[\"resyncRequired\"]?.jsonPrimitive?.booleanOrNull ?: (event[\"kind\"]?.jsonPrimitive?.content == \"EventsOverflowed\"),\n");
     out.push_str("    )\n");
     out.push_str("}\n\n");
@@ -10894,6 +10976,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(swift.contains("public struct SyncularChangedRow"));
         assert!(swift.contains("public struct SyncularBootstrapStatus"));
         assert!(swift.contains("public struct SyncularNativeErrorInfo"));
+        assert!(swift.contains("public struct SyncularNativeLifecycleState"));
         assert!(swift.contains("public struct SyncularNativeEvent"));
         assert!(swift.contains("public let error: SyncularNativeErrorInfo?"));
         assert!(swift.contains("public let recommendedAction: String"));
@@ -10901,6 +10984,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(swift.contains("public let commandId: String?"));
         assert!(swift.contains("public let droppedCount: UInt64?"));
         assert!(swift.contains("public let bootstrap: SyncularBootstrapStatus?"));
+        assert!(swift.contains("public let lifecycle: SyncularNativeLifecycleState?"));
         assert!(swift.contains("public let resyncRequired: Bool"));
         assert!(swift.contains("public var eventStreamLost: Bool"));
         assert!(swift.contains("public func syncularNativeEventRequiresFullRefresh"));
@@ -10999,6 +11083,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(kotlin.contains("data class SyncularChangedRow"));
         assert!(kotlin.contains("data class SyncularBootstrapStatus"));
         assert!(kotlin.contains("data class SyncularNativeErrorInfo"));
+        assert!(kotlin.contains("data class SyncularNativeLifecycleState"));
         assert!(kotlin.contains("data class SyncularNativeEvent"));
         assert!(kotlin.contains("val error: SyncularNativeErrorInfo? = null"));
         assert!(kotlin.contains("val recommendedAction: String"));
@@ -11006,6 +11091,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(kotlin.contains("val commandId: String? = null"));
         assert!(kotlin.contains("val droppedCount: Long? = null"));
         assert!(kotlin.contains("val bootstrap: SyncularBootstrapStatus? = null"));
+        assert!(kotlin.contains("val lifecycle: SyncularNativeLifecycleState? = null"));
         assert!(kotlin.contains("val resyncRequired: Boolean = false"));
         assert!(kotlin.contains("val eventStreamLost: Boolean"));
         assert!(kotlin.contains("fun syncularNativeEventRequiresFullRefresh"));
@@ -11016,6 +11102,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         ));
         assert!(kotlin.contains("fun syncularGeneratedFieldEncryptionConfigJson("));
         assert!(kotlin.contains("fun syncularDecodeNativeEvent(eventJson: String)"));
+        assert!(kotlin.contains("syncularDecodeNativeLifecycleState"));
         assert!(kotlin.contains("interface SyncularNativeEventJsonSource"));
         assert!(kotlin.contains("fun SyncularNativeEventJsonSource.forEachNativeEvent"));
         assert!(kotlin.contains("class SyncularNativeLiveQuery<Row>"));

@@ -13,8 +13,8 @@ use syncular_runtime::error::{ErrorKind, Result, SyncularError, FULL_SNAPSHOT_RE
 use syncular_runtime::fixtures::todo::app_schema as demo_todo_app_schema;
 use syncular_runtime::native::{
     native_event_json_from_worker_event, native_events_from_worker_event_with_observed_queries,
-    NativeClientConfig, NativeClientOptions, NativeEventKind, NativeObservedQuery,
-    NativeSyncularClient, NativeWorkerEventConverter,
+    NativeClientConfig, NativeClientOptions, NativeEventKind, NativeLifecyclePhase,
+    NativeObservedQuery, NativeSyncularClient, NativeWorkerEventConverter,
 };
 use syncular_runtime::worker::SyncWorkerEvent;
 use syncular_testkit::{
@@ -358,6 +358,17 @@ fn native_facade_successful_empty_sync_emits_completion_only() -> Result<()> {
     assert_eq!(event.kind, NativeEventKind::SyncCompleted);
     assert!(event.error.is_none());
     assert!(event.tables.is_empty());
+    assert_eq!(
+        event.lifecycle.as_ref().map(|state| &state.phase),
+        Some(&NativeLifecyclePhase::Complete)
+    );
+    assert_eq!(
+        event
+            .lifecycle
+            .as_ref()
+            .and_then(|state| state.outbox.as_ref()),
+        Some(&syncular_runtime::native::NativeLifecycleOutbox { pending: 0 })
+    );
     assert!(client
         .next_event_timeout(Duration::from_millis(100))
         .is_none());
@@ -510,6 +521,18 @@ fn native_worker_event_converter_preserves_rows_queries_and_sequence() -> Result
     assert_eq!(events[0].event_seq, 1);
     assert_eq!(events[0].kind, NativeEventKind::SyncCompleted);
     assert_eq!(events[0].changed_rows, vec![changed_row.clone()]);
+    assert_eq!(
+        events[0].lifecycle.as_ref().map(|state| &state.phase),
+        Some(&NativeLifecyclePhase::Complete)
+    );
+    assert_eq!(
+        events[0]
+            .lifecycle
+            .as_ref()
+            .and_then(|state| state.bootstrap.as_ref())
+            .map(|bootstrap| bootstrap.progress_percent),
+        Some(100)
+    );
     assert!(events[0]
         .bootstrap
         .as_ref()
@@ -591,6 +614,8 @@ fn native_worker_event_converter_preserves_rows_queries_and_sequence() -> Result
     assert_eq!(first_json["kind"], "SyncCompleted");
     assert_eq!(first_json["changedRows"][0]["rowId"], "converter-task");
     assert_eq!(first_json["bootstrap"]["complete"], true);
+    assert_eq!(first_json["lifecycle"]["phase"], "complete");
+    assert_eq!(first_json["lifecycle"]["outbox"]["pending"], 0);
 
     let overflow_json = native_event_json_from_worker_event(SyncWorkerEvent::EventsOverflowed {
         dropped_count: 7,
@@ -1057,6 +1082,18 @@ fn native_facade_enqueues_mutation_on_worker() -> Result<()> {
     assert_eq!(committed.changed_rows[0].operation, "insert");
     assert!(committed.client_commit_id.is_some());
     assert!(committed.event_seq > 0);
+    assert_eq!(
+        committed.lifecycle.as_ref().map(|state| &state.phase),
+        Some(&NativeLifecyclePhase::Offline)
+    );
+    assert_eq!(
+        committed
+            .lifecycle
+            .as_ref()
+            .and_then(|state| state.outbox.as_ref())
+            .map(|outbox| outbox.pending),
+        Some(1)
+    );
 
     let rows = client
         .next_event_timeout(Duration::from_secs(2))

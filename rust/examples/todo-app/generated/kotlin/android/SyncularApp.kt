@@ -280,6 +280,32 @@ data class SyncularNativeErrorInfo(
     val debug: String? = null,
 )
 
+data class SyncularNativeLifecycleBootstrap(
+    val complete: Boolean = false,
+    val criticalReady: Boolean = false,
+    val interactiveReady: Boolean = false,
+    val isBootstrapping: Boolean = false,
+    val progressPercent: Long = 0,
+)
+
+data class SyncularNativeLifecycleOutbox(
+    val pending: Long = 0,
+)
+
+data class SyncularNativeLifecycleConflicts(
+    val unresolved: Long = 0,
+)
+
+data class SyncularNativeLifecycleState(
+    val phase: String,
+    val online: Boolean = false,
+    val requiresAction: Boolean = false,
+    val pendingRequests: Long = 0,
+    val bootstrap: SyncularNativeLifecycleBootstrap? = null,
+    val outbox: SyncularNativeLifecycleOutbox? = null,
+    val conflicts: SyncularNativeLifecycleConflicts? = null,
+)
+
 data class SyncularNativeEvent(
     val eventSeq: Long = 0,
     val kind: String,
@@ -292,6 +318,7 @@ data class SyncularNativeEvent(
     val durationMs: Long? = null,
     val droppedCount: Long? = null,
     val bootstrap: SyncularBootstrapStatus? = null,
+    val lifecycle: SyncularNativeLifecycleState? = null,
     val resyncRequired: Boolean = false,
 ) {
     val eventStreamLost: Boolean get() = kind == "EventsOverflowed" || resyncRequired
@@ -522,6 +549,29 @@ private fun syncularDecodeNativeErrorInfo(value: JsonElement?): SyncularNativeEr
     )
 }
 
+private fun syncularDecodeNativeLifecycleState(value: JsonElement?): SyncularNativeLifecycleState? {
+    if (value == null || value is JsonNull) return null
+    val state = value.jsonObject
+    val bootstrap = state["bootstrap"]?.takeUnless { it is JsonNull }?.jsonObject
+    val outbox = state["outbox"]?.takeUnless { it is JsonNull }?.jsonObject
+    val conflicts = state["conflicts"]?.takeUnless { it is JsonNull }?.jsonObject
+    return SyncularNativeLifecycleState(
+        phase = state["phase"]?.jsonPrimitive?.content ?: "offline",
+        online = state["online"]?.jsonPrimitive?.booleanOrNull ?: false,
+        requiresAction = state["requiresAction"]?.jsonPrimitive?.booleanOrNull ?: false,
+        pendingRequests = state["pendingRequests"]?.jsonPrimitive?.longOrNull ?: 0L,
+        bootstrap = bootstrap?.let { SyncularNativeLifecycleBootstrap(
+            complete = it["complete"]?.jsonPrimitive?.booleanOrNull ?: false,
+            criticalReady = it["criticalReady"]?.jsonPrimitive?.booleanOrNull ?: false,
+            interactiveReady = it["interactiveReady"]?.jsonPrimitive?.booleanOrNull ?: false,
+            isBootstrapping = it["isBootstrapping"]?.jsonPrimitive?.booleanOrNull ?: false,
+            progressPercent = it["progressPercent"]?.jsonPrimitive?.longOrNull ?: 0L,
+        ) },
+        outbox = outbox?.let { SyncularNativeLifecycleOutbox(pending = it["pending"]?.jsonPrimitive?.longOrNull ?: 0L) },
+        conflicts = conflicts?.let { SyncularNativeLifecycleConflicts(unresolved = it["unresolved"]?.jsonPrimitive?.longOrNull ?: 0L) },
+    )
+}
+
 fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {
     val event = Json.parseToJsonElement(eventJson).jsonObject
     return SyncularNativeEvent(
@@ -536,6 +586,7 @@ fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {
         durationMs = event["duration_ms"]?.jsonPrimitive?.longOrNull,
         droppedCount = event["droppedCount"]?.jsonPrimitive?.longOrNull,
         bootstrap = syncularDecodeBootstrapStatus(event["bootstrap"]),
+        lifecycle = syncularDecodeNativeLifecycleState(event["lifecycle"]),
         resyncRequired = event["resyncRequired"]?.jsonPrimitive?.booleanOrNull ?: (event["kind"]?.jsonPrimitive?.content == "EventsOverflowed"),
     )
 }

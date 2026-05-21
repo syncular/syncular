@@ -175,6 +175,7 @@ pub enum SyncWorkerEvent {
         client_commit_id: String,
         changed_tables: Vec<String>,
         changed_rows: Vec<SyncChangedRow>,
+        outbox_count: usize,
         duration_ms: u64,
     },
     CrdtFieldChanged {
@@ -275,12 +276,14 @@ impl Clone for SyncWorkerEvent {
                 client_commit_id,
                 changed_tables,
                 changed_rows,
+                outbox_count,
                 duration_ms,
             } => Self::LocalWriteCommitted {
                 command_id: command_id.clone(),
                 client_commit_id: client_commit_id.clone(),
                 changed_tables: changed_tables.clone(),
                 changed_rows: changed_rows.clone(),
+                outbox_count: *outbox_count,
                 duration_ms: *duration_ms,
             },
             Self::CrdtFieldChanged {
@@ -2489,11 +2492,13 @@ where
                 })
                 .into_iter()
                 .collect();
+            let outbox_count = worker_outbox_count(client);
             let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
                 command_id,
                 client_commit_id,
                 changed_tables: vec![table],
                 changed_rows,
+                outbox_count,
                 duration_ms: duration_ms(started),
             });
             auto_sync
@@ -2526,11 +2531,13 @@ where
     match client.apply_worker_encrypted_crdt_update_json(request_json) {
         Ok(receipt) => {
             let crdt_event = WorkerEncryptedCrdtRequest::from_json(request_json).ok();
+            let outbox_count = worker_outbox_count(client);
             let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
                 command_id: command_id.clone(),
                 client_commit_id: receipt.client_commit_id.clone(),
                 changed_tables: receipt.changed_tables.clone(),
                 changed_rows: receipt.changed_rows.clone(),
+                outbox_count,
                 duration_ms: duration_ms(started),
             });
             if let Some(request) = crdt_event.and_then(WorkerEncryptedCrdtRequest::field_identity) {
@@ -2576,11 +2583,13 @@ where
     match client.apply_worker_encrypted_crdt_checkpoint_json(request_json) {
         Ok(Some(receipt)) => {
             let crdt_event = WorkerEncryptedCrdtRequest::from_json(request_json).ok();
+            let outbox_count = worker_outbox_count(client);
             let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
                 command_id: command_id.clone(),
                 client_commit_id: receipt.client_commit_id.clone(),
                 changed_tables: receipt.changed_tables.clone(),
                 changed_rows: receipt.changed_rows.clone(),
+                outbox_count,
                 duration_ms: duration_ms(started),
             });
             if let Some(request) = crdt_event.and_then(WorkerEncryptedCrdtRequest::field_identity) {
@@ -2637,11 +2646,13 @@ where
     match client.apply_worker_crdt_field_text_json(request_json) {
         Ok(receipt) => {
             let crdt_event = WorkerCrdtFieldTextRequest::from_json(request_json).ok();
+            let outbox_count = worker_outbox_count(client);
             let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
                 command_id: command_id.clone(),
                 client_commit_id: receipt.client_commit_id.clone(),
                 changed_tables: receipt.changed_tables.clone(),
                 changed_rows: receipt.changed_rows.clone(),
+                outbox_count,
                 duration_ms: duration_ms(started),
             });
             if let Some(request) = crdt_event {
@@ -2687,11 +2698,13 @@ where
     match client.compact_worker_crdt_field_json(request_json) {
         Ok(Some(receipt)) => {
             let crdt_event = WorkerCrdtFieldCompactionRequest::from_json(request_json).ok();
+            let outbox_count = worker_outbox_count(client);
             let _ = event_tx.publish_event(SyncWorkerEvent::LocalWriteCommitted {
                 command_id: command_id.clone(),
                 client_commit_id: receipt.client_commit_id.clone(),
                 changed_tables: receipt.changed_tables.clone(),
                 changed_rows: receipt.changed_rows.clone(),
+                outbox_count,
                 duration_ms: duration_ms(started),
             });
             if let Some(request) = crdt_event {
@@ -3067,6 +3080,7 @@ where
                     .worker_crdt_field_event_payload_json(&key.table, &key.row_id, &key.field)
                     .ok()
                     .flatten();
+                let outbox_count = worker_outbox_count(client);
                 let changed_rows = client
                     .worker_crdt_field_changed_row(
                         &key.table,
@@ -3097,6 +3111,7 @@ where
                         client_commit_id: client_commit_id.clone(),
                         changed_tables: vec![key.table.clone()],
                         changed_rows: changed_rows.clone(),
+                        outbox_count,
                         duration_ms: duration_ms(started),
                     });
                     let _ = event_tx.publish_event(SyncWorkerEvent::CrdtFieldChanged {
@@ -3145,6 +3160,16 @@ where
         .count();
     let conflict_count = client.conflict_summaries()?.len();
     Ok((outbox_count, conflict_count))
+}
+
+fn worker_outbox_count<S, T>(client: &mut SyncularClient<S, T>) -> usize
+where
+    S: SyncStore + SyncStateStore,
+    T: SyncTransport,
+{
+    worker_counts(client)
+        .map(|(outbox_count, _)| outbox_count)
+        .unwrap_or(0)
 }
 
 fn retry_scheduled_after_error<S, T>(client: &mut SyncularClient<S, T>) -> bool

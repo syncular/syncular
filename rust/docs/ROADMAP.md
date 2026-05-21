@@ -463,8 +463,10 @@ read-only review:
     auth-required action, and final complete transitions. Browser/Hono
     integration now covers offline generated mutations, pending outbox
     lifecycle state, retry backoff, reconnect push recovery, and final
-    complete state. Next step is native/runtime parity for the same lifecycle
-    contract.
+    complete state. Native runtime events now carry typed lifecycle snapshots
+    through Rust and generated Swift/Kotlin event models. Next step is explicit
+    browser/native background-resume hooks that trigger recovery and lifecycle
+    emission without app-side guessing.
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)

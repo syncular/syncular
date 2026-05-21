@@ -58,9 +58,9 @@ mechanics into app-state APIs that developers can render and test.
 
 ## Next Action
 
-Add native/runtime parity for the same lifecycle contract so app-specific Rust
-wrappers can consume the canonical event stream without rebuilding state
-machines.
+Add explicit browser/native background-resume hooks that perform runtime-owned
+recovery checks and emit lifecycle state instead of relying on app code to
+guess when to sync.
 
 ## Progress
 
@@ -77,6 +77,11 @@ machines.
   pending outbox and failed sync state, retry backoff is honored, reconnect
   pushes the queued commit, and lifecycle reaches `complete` after the server
   has the row.
+- Native runtime events now carry a typed lifecycle snapshot on sync start,
+  sync completion, sync/auth failure, local write commits, command failures,
+  conflict changes, and event overflow. Generated Swift and Kotlin native event
+  models decode the same lifecycle shape, including phase, bootstrap readiness,
+  outbox count, conflict count, and recovery/action state.
 
 ## Latest Evidence
 
@@ -86,3 +91,8 @@ machines.
 - `bun test rust/bindings/browser/src/public-api.test.ts rust/bindings/browser/src/react.test.ts`
 - `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts -t "lifecycle state"`
 - `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture --test native_facade`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `bun run rust:conformance:native`
