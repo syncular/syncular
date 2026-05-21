@@ -42,6 +42,95 @@ export const ScopeValuesSchema = z.record(
 );
 
 // ============================================================================
+// Auth Lease Schemas
+// ============================================================================
+
+export const SYNC_AUTH_LEASE_VERSION = 1;
+export const SYNC_AUTH_LEASE_PROTOCOL_VERSION = 1;
+export const SYNC_AUTH_LEASE_ALG_ES256 = 'ES256';
+export const SYNC_AUTH_LEASE_TYP = 'syncular-auth-lease+jws';
+export const SYNC_AUTH_LEASE_CODE_MISSING = 'sync.auth_lease_missing';
+export const SYNC_AUTH_LEASE_CODE_INVALID = 'sync.auth_lease_invalid';
+export const SYNC_AUTH_LEASE_CODE_EXPIRED = 'sync.auth_lease_expired';
+export const SYNC_AUTH_LEASE_CODE_SCHEMA_MISMATCH =
+  'sync.auth_lease_schema_mismatch';
+export const SYNC_AUTH_LEASE_CODE_SCOPE_MISMATCH =
+  'sync.auth_lease_scope_mismatch';
+export const SYNC_AUTH_LEASE_CODE_SCOPE_REVOKED =
+  'sync.auth_lease_scope_revoked';
+export const SYNC_AUTH_LEASE_CODE_BUSINESS_REJECTED =
+  'sync.auth_lease_business_rejected';
+
+export const SyncAuthLeaseProtectedHeaderSchema = z.object({
+  alg: z.literal(SYNC_AUTH_LEASE_ALG_ES256),
+  kid: z.string().min(1),
+  typ: z.literal(SYNC_AUTH_LEASE_TYP),
+});
+
+export type SyncAuthLeaseProtectedHeader = z.infer<
+  typeof SyncAuthLeaseProtectedHeaderSchema
+>;
+
+export const SyncAuthLeaseCapabilitiesSchema = z.object({
+  allowBlobs: z.boolean(),
+  allowCrdt: z.boolean(),
+  allowEncryptedFields: z.boolean(),
+});
+
+export type SyncAuthLeaseCapabilities = z.infer<
+  typeof SyncAuthLeaseCapabilitiesSchema
+>;
+
+export const SyncAuthLeaseScopeSchema = z.object({
+  subscriptionId: z.string().min(1),
+  table: z.string().min(1),
+  values: ScopeValuesSchema,
+  operations: z.array(SyncOpSchema).min(1),
+});
+
+export type SyncAuthLeaseScope = z.infer<typeof SyncAuthLeaseScopeSchema>;
+
+export const SyncAuthLeasePayloadSchema = z.object({
+  version: z.literal(SYNC_AUTH_LEASE_VERSION),
+  leaseId: z.string().min(1),
+  issuer: z.string().min(1),
+  audience: z.string().min(1),
+  actorId: z.string().min(1),
+  subject: z.record(z.string(), z.unknown()).default({}),
+  schemaVersion: z.number().int().min(1),
+  protocolVersion: z.literal(SYNC_AUTH_LEASE_PROTOCOL_VERSION),
+  issuedAtMs: z.number().int(),
+  notBeforeMs: z.number().int(),
+  expiresAtMs: z.number().int(),
+  maxClockSkewMs: z.number().int().min(0),
+  scopes: z.array(SyncAuthLeaseScopeSchema).min(1),
+  capabilities: SyncAuthLeaseCapabilitiesSchema,
+});
+
+export type SyncAuthLeasePayload = z.infer<typeof SyncAuthLeasePayloadSchema>;
+
+export const SyncAuthLeaseIssueRequestSchema = z.object({
+  schemaVersion: z.number().int().min(1),
+  ttlMs: z.number().int().positive().optional(),
+  scopes: z.array(SyncAuthLeaseScopeSchema).min(1),
+});
+
+export type SyncAuthLeaseIssueRequest = z.infer<
+  typeof SyncAuthLeaseIssueRequestSchema
+>;
+
+export const SyncAuthLeaseIssueResponseSchema = z.object({
+  ok: z.literal(true),
+  token: z.string().min(1),
+  protectedHeader: SyncAuthLeaseProtectedHeaderSchema,
+  payload: SyncAuthLeasePayloadSchema,
+});
+
+export type SyncAuthLeaseIssueResponse = z.infer<
+  typeof SyncAuthLeaseIssueResponseSchema
+>;
+
+// ============================================================================
 // Sync Operation Schema
 // ============================================================================
 

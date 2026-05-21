@@ -415,9 +415,15 @@ read-only review:
     `authLease` provenance through Rust/browser/server/Hono without bypassing
     current request auth, and server-side lease rejections use stable
     `sync.auth_lease_*` diagnostics that the Rust client preserves as local
-    conflict/recovery state. Next narrow slice is server-issued lease
-    issue/refresh/verification semantics and testkit stateful rejection
-    coverage, not a server rewrite.
+    conflict/recovery state. Hono sync routes now expose a current-auth
+    `POST /auth-leases/issue` endpoint backed by shared TS auth-lease schemas,
+    WebCrypto ES256 signing helpers, scope resolution through the existing
+    handler policy, and route coverage for successful issue, auth-required,
+    disallowed scope, malformed scope, and expiry diagnostics. Next narrow
+    slice is replay enforcement for issued leases: push replay still carries
+    provenance only, so it needs either the stored signed token on the wire or a
+    server-side lease registry before signature/scope/revocation checks are
+    real.
 - `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus
