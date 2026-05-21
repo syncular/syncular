@@ -1216,6 +1216,13 @@ describe('console timeline route filters', () => {
         requiredScopeKeys: string[];
         missingScopeKeys: string[];
       };
+      subscriptionEvidence: {
+        status: string;
+        matchingEventCount: number;
+        latestRequestId: string | null;
+        latestSubscriptionCount: number | null;
+        observedScopeKeys: string[];
+      };
       findings: Array<{ code: string }>;
       history: Array<{ fields: string[]; rowJson?: unknown }>;
       relevantEvents: Array<{ requestId: string }>;
@@ -1231,6 +1238,13 @@ describe('console timeline route filters', () => {
       status: 'not_eligible',
       requiredScopeKeys: ['org_id'],
       missingScopeKeys: ['org_id'],
+    });
+    expect(payload.subscriptionEvidence).toMatchObject({
+      status: 'observed',
+      matchingEventCount: 1,
+      latestRequestId: 'req-investigate',
+      latestSubscriptionCount: 1,
+      observedScopeKeys: ['org_id'],
     });
     expect(payload.findings.map((finding) => finding.code)).toEqual(
       expect.arrayContaining(['client.cursor_behind', 'scope.not_eligible'])

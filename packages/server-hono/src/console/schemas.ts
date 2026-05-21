@@ -153,6 +153,21 @@ export type ConsoleRowInvestigationFinding = z.infer<
   typeof ConsoleRowInvestigationFindingSchema
 >;
 
+export const ConsoleRowInvestigationSubscriptionEvidenceSchema = z.object({
+  status: z.enum(['observed', 'not_observed', 'unknown']),
+  matchingEventCount: z.number().int().nonnegative(),
+  latestEventId: z.number().int().nullable(),
+  latestRequestId: z.string().nullable(),
+  latestEventOutcome: z.string().nullable(),
+  latestSubscriptionCount: z.number().int().nullable(),
+  requestedTableObserved: z.boolean(),
+  observedScopeKeys: z.array(z.string()),
+});
+
+export type ConsoleRowInvestigationSubscriptionEvidence = z.infer<
+  typeof ConsoleRowInvestigationSubscriptionEvidenceSchema
+>;
+
 export const ConsoleDebugExportCommitSchema =
   ConsoleCommitListItemSchema.extend({
     changes: z.array(ConsoleChangeSchema),
@@ -325,6 +340,7 @@ export const ConsoleRowInvestigationResponseSchema = z.object({
   latestOp: z.enum(['upsert', 'delete']).nullable(),
   client: ConsoleRowInvestigationClientSchema.nullable(),
   scopeEligibility: ConsoleRowInvestigationScopeEligibilitySchema,
+  subscriptionEvidence: ConsoleRowInvestigationSubscriptionEvidenceSchema,
   history: z.array(ConsoleRowHistoryEntrySchema),
   relevantEvents: z.array(ConsoleRequestEventSchema),
   findings: z.array(ConsoleRowInvestigationFindingSchema),

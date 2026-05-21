@@ -2125,6 +2125,17 @@ export interface operations {
                             matchedScopeKeys: string[];
                             missingScopeKeys: string[];
                         };
+                        subscriptionEvidence: {
+                            /** @enum {string} */
+                            status: "observed" | "not_observed" | "unknown";
+                            matchingEventCount: number;
+                            latestEventId: number | null;
+                            latestRequestId: string | null;
+                            latestEventOutcome: string | null;
+                            latestSubscriptionCount: number | null;
+                            requestedTableObserved: boolean;
+                            observedScopeKeys: string[];
+                        };
                         history: {
                             commitSeq: number;
                             actorId: string;

@@ -110,6 +110,7 @@ import {
   type ConsoleRowInvestigationResponse,
   ConsoleRowInvestigationResponseSchema,
   type ConsoleRowInvestigationScopeEligibility,
+  type ConsoleRowInvestigationSubscriptionEvidence,
   type ConsoleTimelineItem,
   ConsoleTimelineItemSchema,
   ConsoleTimelineQuerySchema,
@@ -288,6 +289,39 @@ function assessScopeEligibility(args: {
     requiredScopeKeys,
     matchedScopeKeys,
     missingScopeKeys,
+  };
+}
+
+function summarizeSubscriptionEvidence(
+  events: readonly ConsoleRequestEvent[]
+): ConsoleRowInvestigationSubscriptionEvidence {
+  const subscriptionEvents = events.filter(
+    (event) =>
+      event.eventType === 'pull' ||
+      (event.eventType === 'sync' && event.subscriptionCount !== null)
+  );
+  const latest = subscriptionEvents[0] ?? null;
+  const observedScopeKeys = new Set<string>();
+  for (const event of subscriptionEvents) {
+    for (const key of Object.keys(event.scopesSummary ?? {})) {
+      observedScopeKeys.add(key);
+    }
+  }
+
+  return {
+    status:
+      subscriptionEvents.length === 0
+        ? 'unknown'
+        : subscriptionEvents.some((event) => (event.subscriptionCount ?? 0) > 0)
+          ? 'observed'
+          : 'not_observed',
+    matchingEventCount: subscriptionEvents.length,
+    latestEventId: latest?.eventId ?? null,
+    latestRequestId: latest?.requestId ?? null,
+    latestEventOutcome: latest?.outcome ?? null,
+    latestSubscriptionCount: latest?.subscriptionCount ?? null,
+    requestedTableObserved: events.length > 0,
+    observedScopeKeys: Array.from(observedScopeKeys).sort(),
   };
 }
 
@@ -2302,6 +2336,8 @@ export function createConsoleRoutes<
         .map((row) => mapRequestEvent(row))
         .filter((event) => (event.tables ?? []).includes(table))
         .slice(0, limit);
+      const subscriptionEvidence =
+        summarizeSubscriptionEvidence(relevantEvents);
 
       const latestClientEvent = relevantEvents.find(
         (event) => !clientId || event.clientId === clientId
@@ -2389,10 +2425,22 @@ export function createConsoleRoutes<
           message:
             'No recent request events mention this table for the selected filters.',
         });
-      } else if (
-        latestClientEvent &&
-        latestClientEvent.responseStatus !== 'success'
-      ) {
+      } else if (subscriptionEvidence.status === 'unknown') {
+        findings.push({
+          severity: 'info',
+          code: 'subscription.not_recorded',
+          message:
+            'Relevant events exist, but none include subscription-count evidence.',
+        });
+      } else if (subscriptionEvidence.status === 'not_observed') {
+        findings.push({
+          severity: 'warning',
+          code: 'subscription.not_observed',
+          message:
+            'Relevant pull events did not report an active subscription for this table.',
+        });
+      }
+      if (latestClientEvent && latestClientEvent.responseStatus !== 'success') {
         findings.push({
           severity: 'warning',
           code: 'events.latest_not_success',
@@ -2411,6 +2459,7 @@ export function createConsoleRoutes<
         latestOp,
         client,
         scopeEligibility,
+        subscriptionEvidence,
         history,
         relevantEvents,
         findings,
