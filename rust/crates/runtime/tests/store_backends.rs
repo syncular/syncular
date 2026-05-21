@@ -480,6 +480,91 @@ fn diesel_store_accepts_encrypted_crdt_system_rows() -> Result<()> {
 }
 
 #[test]
+fn diesel_store_clears_encrypted_crdt_system_rows_by_scope() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-encrypted-crdt-scope-clear");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+
+    store.transaction(|tx| {
+        for (suffix, user_id) in [("allowed", "user-rust"), ("other", "user-other")] {
+            tx.apply_change(&SyncChange {
+                table: CRDT_UPDATES_TABLE.to_string(),
+                row_id: format!("update-{suffix}"),
+                op: "upsert".to_string(),
+                row_json: Some(json!({
+                    "stream_id": format!("tasks:task-{suffix}:body"),
+                    "app_table": "tasks",
+                    "row_id": format!("task-{suffix}"),
+                    "field_name": "body",
+                    "update_id": format!("update-{suffix}"),
+                    "key_id": "kid-1",
+                    "ciphertext": format!("ciphertext-{suffix}"),
+                    "scopes": { "user_id": user_id }
+                })),
+                row_version: Some(1),
+                scopes: ScopeValues::new(),
+            })?;
+            tx.apply_change(&SyncChange {
+                table: CRDT_CHECKPOINTS_TABLE.to_string(),
+                row_id: format!("checkpoint-{suffix}"),
+                op: "upsert".to_string(),
+                row_json: Some(json!({
+                    "stream_id": format!("tasks:task-{suffix}:body"),
+                    "app_table": "tasks",
+                    "row_id": format!("task-{suffix}"),
+                    "field_name": "body",
+                    "checkpoint_id": format!("checkpoint-{suffix}"),
+                    "covers_seq": 1,
+                    "key_id": "kid-1",
+                    "ciphertext": format!("checkpoint-ciphertext-{suffix}"),
+                    "scopes": { "user_id": user_id }
+                })),
+                row_version: Some(1),
+                scopes: ScopeValues::new(),
+            })?;
+        }
+
+        let mut scopes = ScopeValues::new();
+        scopes.insert("user_id".to_string(), json!("user-rust"));
+        tx.clear_table_for_scopes(CRDT_UPDATES_TABLE, &scopes)?;
+        tx.clear_table_for_scopes(CRDT_CHECKPOINTS_TABLE, &scopes)?;
+        Ok(())
+    })?;
+
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    assert_eq!(
+        count_rows(
+            &mut conn,
+            "select count(*) as count from sync_crdt_updates where update_id = 'update-allowed'"
+        )?,
+        0
+    );
+    assert_eq!(
+        count_rows(
+            &mut conn,
+            "select count(*) as count from sync_crdt_checkpoints where checkpoint_id = 'checkpoint-allowed'"
+        )?,
+        0
+    );
+    assert_eq!(
+        count_rows(
+            &mut conn,
+            "select count(*) as count from sync_crdt_updates where update_id = 'update-other'"
+        )?,
+        1
+    );
+    assert_eq!(
+        count_rows(
+            &mut conn,
+            "select count(*) as count from sync_crdt_checkpoints where checkpoint_id = 'checkpoint-other'"
+        )?,
+        1
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn diesel_client_applies_local_encrypted_crdt_text_update() -> Result<()> {
     let path = temp_db_path("syncular-diesel-encrypted-crdt-local");
     let store = DieselSqliteStore::open_with_schema(&path, encrypted_app_schema())?;
