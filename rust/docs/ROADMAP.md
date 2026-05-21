@@ -147,8 +147,8 @@ read-only review:
     source of truth. Post-contract external guards showed generated local-base
     DDL is not the cause of the current slow 500k session because hardcoded DDL
     was similarly slow; keeping local-base metadata off the hot copied
-    `AppSchema` value recovered release 500k bootstrap to `1143.42ms` and
-    local apply to `219ms`. Keep the previous accepted external baseline until
+    `AppSchema` value recovered release 500k bootstrap to `1115.31ms` and
+    local apply to `211ms`. Keep the previous accepted external baseline until
     a stable release guard is re-established. The before-bootstrap derived-schema
     install probe was rejected because it
     regressed 500k bootstrap (`1396.01ms -> 1827.83ms`), local apply
