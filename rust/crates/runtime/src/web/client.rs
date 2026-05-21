@@ -821,6 +821,7 @@ where
                 .unwrap_or_else(|| sub.id.clone());
 
             let mut snapshot_rows = Vec::new();
+            let mut last_checkpointed_bootstrap_state: Option<BootstrapState> = None;
             if let Some(snapshots) = &sub.snapshots {
                 let continuing_cleared_snapshot = previous_state.as_ref().is_some_and(|state| {
                     state.bootstrap_state.is_some()
@@ -1080,12 +1081,13 @@ where
                                 table: table.clone(),
                                 scopes: sub.scopes.clone(),
                                 cursor: sub.next_cursor,
-                                bootstrap_state: Some(bootstrap_state_after),
+                                bootstrap_state: Some(bootstrap_state_after.clone()),
                                 status: sub.status.clone(),
                             })
                             .await?;
                         result.timings.subscription_state_ms +=
                             elapsed_ms_since(subscription_state_started_at);
+                        last_checkpointed_bootstrap_state = Some(bootstrap_state_after);
                     }
                     if checkpoint_after_snapshot {
                         let checkpoint_started_at = timing_now_ms();
@@ -1147,16 +1149,21 @@ where
                         self.store.delete_verified_root(&sub.id).await?;
                     }
                 }
-                self.store
-                    .upsert_subscription_state(WebSubscriptionState {
-                        subscription_id: sub.id.clone(),
-                        table: table.clone(),
-                        scopes: sub.scopes.clone(),
-                        cursor: sub.next_cursor,
-                        bootstrap_state: sub.bootstrap_state.clone(),
-                        status: sub.status.clone(),
-                    })
-                    .await?;
+                let subscription_state_already_checkpointed = last_checkpointed_bootstrap_state
+                    .as_ref()
+                    .is_some_and(|state| Some(state) == sub.bootstrap_state.as_ref());
+                if !subscription_state_already_checkpointed {
+                    self.store
+                        .upsert_subscription_state(WebSubscriptionState {
+                            subscription_id: sub.id.clone(),
+                            table: table.clone(),
+                            scopes: sub.scopes.clone(),
+                            cursor: sub.next_cursor,
+                            bootstrap_state: sub.bootstrap_state.clone(),
+                            status: sub.status.clone(),
+                        })
+                        .await?;
+                }
                 if let Some(root) = verified_root {
                     self.store
                         .upsert_verified_root(WebVerifiedRoot {
