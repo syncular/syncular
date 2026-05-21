@@ -404,6 +404,9 @@ struct LiveQuery {
     dependency_hints: Vec<LiveQueryDependencyHint>,
     last_hash: String,
     stmt: *mut ffi::sqlite3_stmt,
+    rerun_count: u64,
+    skipped_rerun_count: u64,
+    emitted_event_count: u64,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -423,6 +426,23 @@ struct LiveQueryEvent {
     version: i64,
     changed_rows: Vec<SyncChangedRow>,
     rows: Vec<Value>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveQueryDiagnostics {
+    queries: Vec<LiveQueryDiagnostic>,
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveQueryDiagnostic {
+    id: String,
+    tables: Vec<String>,
+    dependency_hint_count: usize,
+    rerun_count: u64,
+    skipped_rerun_count: u64,
+    emitted_event_count: u64,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -627,6 +647,12 @@ impl SyncularRustOwnedSqlite {
         let events = std::mem::take(&mut self.live_events);
         serde_json::to_string(&events)
             .map_err(SyncularError::protocol)
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = liveQueryDiagnosticsJson)]
+    pub fn live_query_diagnostics_json(&self) -> std::result::Result<String, JsValue> {
+        self.live_query_diagnostics_json_inner()
             .map_err(error_to_js)
     }
 
@@ -1565,6 +1591,11 @@ impl SyncularRustOwnedSqliteClient {
     #[wasm_bindgen(js_name = drainLiveQueryEventsJson)]
     pub fn drain_live_query_events_json(&mut self) -> std::result::Result<String, JsValue> {
         self.inner.store_mut().drain_live_query_events_json()
+    }
+
+    #[wasm_bindgen(js_name = liveQueryDiagnosticsJson)]
+    pub fn live_query_diagnostics_json(&self) -> std::result::Result<String, JsValue> {
+        self.inner.store().live_query_diagnostics_json()
     }
 
     #[wasm_bindgen(js_name = drainRowsChangedEventsJson)]
@@ -4000,6 +4031,9 @@ impl SyncularRustOwnedSqlite {
             dependency_hints,
             last_hash,
             stmt,
+            rerun_count: 0,
+            skipped_rerun_count: 0,
+            emitted_event_count: 0,
         });
         Ok(serde_json::to_string(&serde_json::json!({
             "id": id,
@@ -4208,9 +4242,14 @@ impl SyncularRustOwnedSqlite {
                 changed_rows,
                 changed_rows_truncated,
             ) {
+                self.live_queries[index].skipped_rerun_count = self.live_queries[index]
+                    .skipped_rerun_count
+                    .saturating_add(1);
                 continue;
             }
 
+            self.live_queries[index].rerun_count =
+                self.live_queries[index].rerun_count.saturating_add(1);
             let rows = execute_prepared_sql(
                 self.db,
                 self.live_queries[index].stmt,
@@ -4220,6 +4259,9 @@ impl SyncularRustOwnedSqlite {
             let hash = result_hash(&rows)?;
             if hash != self.live_queries[index].last_hash {
                 self.live_queries[index].last_hash = hash;
+                self.live_queries[index].emitted_event_count = self.live_queries[index]
+                    .emitted_event_count
+                    .saturating_add(1);
                 next_events.push(LiveQueryEvent {
                     query_id: self.live_queries[index].id.clone(),
                     version: now_ms(),
@@ -4230,6 +4272,23 @@ impl SyncularRustOwnedSqlite {
         }
         self.live_events.extend(next_events);
         Ok(())
+    }
+
+    fn live_query_diagnostics_json_inner(&self) -> Result<String> {
+        Ok(serde_json::to_string(&LiveQueryDiagnostics {
+            queries: self
+                .live_queries
+                .iter()
+                .map(|query| LiveQueryDiagnostic {
+                    id: query.id.clone(),
+                    tables: query.tables.clone(),
+                    dependency_hint_count: query.dependency_hints.len(),
+                    rerun_count: query.rerun_count,
+                    skipped_rerun_count: query.skipped_rerun_count,
+                    emitted_event_count: query.emitted_event_count,
+                })
+                .collect(),
+        })?)
     }
 
     fn live_query_should_rerun(

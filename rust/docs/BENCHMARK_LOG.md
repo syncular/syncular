@@ -158,6 +158,65 @@ Decision:
   WP-21 task is to add an explicit skip-rerun counter or benchmark for
   unrelated row churn.
 
+## 2026-05-21 - Retained Live-Query Skip-Rerun Diagnostics
+
+Commit: retained slice
+
+Work package:
+[`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
+
+Change:
+
+- Added per-query live diagnostics counters for browser/Rust-owned SQLite:
+  `rerunCount`, `skippedRerunCount`, and `emittedEventCount`.
+- Added a Hono/WASM regression proving an inferred primary-key live-query hint
+  increments `skippedRerunCount` for an unrelated row and increments
+  `rerunCount`/`emittedEventCount` when the hinted row changes.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test --cwd rust/bindings/browser \
+  src/__tests__/sync-hono.wasm.test.ts -t "skips hinted live-query reruns"
+bun test --cwd rust/bindings/browser src/database.test.ts -t "live query"
+bun test --cwd rust/bindings/browser src/worker-client.test.ts -t "live"
+bun run --cwd rust/bindings/browser test
+bun test --cwd rust/bindings/browser src/__tests__/sync-hono.wasm.test.ts
+```
+
+Performance gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 \
+  --output=.context/benchmarks/wp21-live-query-diagnostics-current.json
+```
+
+Comparison to `.context/benchmarks/wp21-live-query-hints-current.json`:
+
+| Metric | Previous | Current | Decision |
+| --- | ---: | ---: | --- |
+| 10k Rust bootstrap | `48.19ms` | `44.48ms` | neutral/better |
+| Rust incremental pull | `20.82ms` | `22.13ms` | neutral |
+| Rust realtime live p50 / p95 | `125.20ms` / `127.41ms` | `127.18ms` / `127.93ms` | neutral |
+| Rust realtime overhead p50 / p95 | `14.29ms` / `15.04ms` | `12.88ms` / `15.15ms` | neutral |
+| Rust realtime notify total / p95 | `1ms` / `1ms` | `1ms` / `1ms` | unchanged |
+| Browser served Rust WASM bytes | `2,372,720` | `2,374,522` | `+1,802 bytes` |
+
+Decision:
+
+- Retained. The counter adds a small diagnostic surface and a tiny WASM-size
+  increase, while giving a deterministic gate for the main WP-21 performance
+  claim: unrelated row churn can avoid live-query reruns when row/field
+  metadata is precise.
+
 ## 2026-05-20 - Retained Browser Sync Attempt Trace Plumbing
 
 Commit: retained slice

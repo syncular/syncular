@@ -216,6 +216,8 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return true;
     case 'drainLiveQueryEvents':
       return requireClient().drainLiveQueryEvents();
+    case 'liveQueryDiagnostics':
+      return requireClient().liveQueryDiagnostics();
     case 'applyMutation':
       return requireClient().applyMutation(request.operation, request.localRow);
     case 'applyMutationsBatch':

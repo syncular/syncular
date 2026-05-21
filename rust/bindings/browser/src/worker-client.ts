@@ -47,6 +47,7 @@ import type {
   SyncularV2EncryptionHelperMethod,
   SyncularV2FieldEncryptionConfig,
   SyncularV2LiveQueryDependencyHint,
+  SyncularV2LiveQueryDiagnostics,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQuerySnapshot,
   SyncularV2LocalHealthRepairReport,
@@ -454,6 +455,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(): Promise<Array<SyncularV2LiveQueryEvent<Row>>> {
     return this.#request({ type: 'drainLiveQueryEvents' });
+  }
+
+  liveQueryDiagnostics(): Promise<SyncularV2LiveQueryDiagnostics> {
+    return this.#request({ type: 'liveQueryDiagnostics' });
   }
 
   async applyMutation(

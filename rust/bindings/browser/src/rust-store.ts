@@ -8,6 +8,8 @@ import type {
   SyncularV2AppSchema,
   SyncularV2ChangedRow,
   SyncularV2ClientConfig,
+  SyncularV2LiveQueryDependencyHint,
+  SyncularV2LiveQueryDiagnostics,
   SyncularV2RowsChangedEvent,
   SyncularV2SqlResult,
   SyncularV2Storage,
@@ -93,10 +95,12 @@ export interface RawSyncularRustOwnedSqlite {
   subscribeQueryJson(
     sql: string,
     paramsJson: string,
-    tablesJson: string
+    tablesJson: string,
+    hintsJson: string
   ): string;
   unsubscribeQuery(id: string): void;
   drainLiveQueryEventsJson(): string;
+  liveQueryDiagnosticsJson(): string;
   drainRowsChangedEventsJson(): string;
   applyMutationsBatchJson(operationsJson: string): string;
   applyMutationsCommitJson(operationsJson: string): string;
@@ -196,13 +200,15 @@ export class SyncularRustOwnedSqlite implements SyncularRustSqliteExecutor {
   subscribeQuery<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params: readonly unknown[],
-    tables: readonly string[]
+    tables: readonly string[],
+    hints: readonly SyncularV2LiveQueryDependencyHint[] = []
   ): RustOwnedLiveQuerySnapshot<Row> {
     return parseJson(
       this.raw.subscribeQueryJson(
         sql,
         stringifyParams(params),
-        JSON.stringify(tables)
+        JSON.stringify(tables),
+        JSON.stringify(hints)
       )
     );
   }
@@ -215,6 +221,10 @@ export class SyncularRustOwnedSqlite implements SyncularRustSqliteExecutor {
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(): Array<RustOwnedLiveQueryEvent<Row>> {
     return parseJson(this.raw.drainLiveQueryEventsJson());
+  }
+
+  liveQueryDiagnostics(): SyncularV2LiveQueryDiagnostics {
+    return parseJson(this.raw.liveQueryDiagnosticsJson());
   }
 
   drainRowsChangedEvents(): SyncularV2RowsChangedEvent[] {
