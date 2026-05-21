@@ -497,9 +497,12 @@ read-only review:
     audit history, optional client cursor/scope-key coverage, relevant request
     events, request-event subscription-count evidence, stable finding codes,
     generated OpenAPI types/docs, and a console
-    `/investigate/row/:table/:rowId` page. Remaining drilldown work should add
-    stronger recovery/revocation evidence only when the server persists that
-    metadata explicitly.
+    `/investigate/row/:table/:rowId` page. Server request events now persist a
+    redacted pull response summary with active/revoked/bootstrap subscription,
+    commit, change, and snapshot-page counts, allowing row investigation to
+    report explicit revoked-subscription evidence without payload snapshots.
+    Remaining drilldown work should add stronger recovery evidence only when the
+    server persists that metadata explicitly.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
 - `[x]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
   - Browser worker error payloads now carry stable public error `code`,
@@ -826,6 +829,24 @@ read-only review:
     Tauri, React Native, Expo, and testkit host surfaces expose leased
     mutations, auth leases, lifecycle resume, row/field event metadata, and
     diagnostic snapshots without reviving a JavaScript sync client.
+
+## Planned Server / Relay Rust Work
+
+- `[ ]` [`WP-27 Rust Relay Protocol Boundary`](work-packages/WP-27-rust-relay-protocol-boundary.md)
+  - Prove `syncular-protocol` as the shared protocol authority for relay/proxy
+    fixture validation before any production relay behavior changes.
+- `[ ]` [`WP-28 Relay Production Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
+  - Use the Rust protocol boundary inside the existing TypeScript relay path to
+    validate protocol traffic without moving relay app semantics into Rust.
+- `[!]` [`WP-29 Rust Edge Proxy`](work-packages/WP-29-rust-edge-proxy.md)
+  - Blocked until WP-27 evidence and a concrete product target justify a Rust
+    edge proxy for auth/rate-limit/websocket/network offload.
+- `[!]` [`WP-30 Rust Realtime Fanout`](work-packages/WP-30-rust-realtime-fanout.md)
+  - Blocked until WP-27 evidence and realtime product pressure justify a
+    Rust-owned websocket fanout component.
+- `[!]` [`WP-31 Rust Server Trait Model`](work-packages/WP-31-rust-server-trait-model.md)
+  - Blocked until relay/edge evidence justifies a pure Rust server product that
+    owns app mutation semantics.
 
 ## Blocked / External
 
