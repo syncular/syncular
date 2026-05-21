@@ -562,6 +562,7 @@ export interface SyncularV2LifecycleState {
   >;
   outbox?: SyncularV2OutboxStats;
   conflicts?: SyncularV2ConflictStats;
+  blobUploads?: SyncularV2BlobUploadQueueStats;
   lastDiagnostic?: SyncularV2DiagnosticEvent;
   lastError?: {
     message: string;
@@ -575,6 +576,7 @@ export interface SyncularV2ClientEventMap {
   bootstrapChanged: SyncularV2BootstrapStatus;
   outboxChanged: SyncularV2OutboxStats;
   conflictsChanged: SyncularV2ConflictStats;
+  blobUploadsChanged: SyncularV2BlobUploadQueueStats;
   blobUploadCompleted: SyncularV2BlobUploadEvent;
   blobUploadFailed: SyncularV2BlobUploadErrorEvent;
   presenceChanged: SyncularV2PresenceChangeEvent;
@@ -791,6 +793,7 @@ export interface SyncularV2DiagnosticSnapshot {
   transportStats?: SyncularV2TransportStats;
   outboxStats?: SyncularV2OutboxStats;
   conflictStats?: SyncularV2ConflictStats;
+  blobUploadStats?: SyncularV2BlobUploadQueueStats;
 }
 
 export interface SyncularV2SqlResult<

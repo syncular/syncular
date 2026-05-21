@@ -269,7 +269,11 @@ In Swift/Kotlin/Java BoltFFI hosts, call `resumeFromBackground()` on the native
 client. The native runtime resumes the worker if needed, restarts realtime, and
 enqueues a command-correlated sync; the browser worker marks lifecycle as
 `recovering`, restarts remembered realtime options, and resolves with the
-normal `syncOnce` result.
+normal `syncOnce` result. Foreground resume is intentionally limited to
+sync/realtime recovery. Blob uploads, blob cache maintenance, and storage
+compaction should be scheduled through their explicit queued APIs only when the
+host app has enough background execution budget and the current battery/network
+policy allows that work.
 
 Swift/Kotlin/JVM native apps also need subscriptions before sync when opening
 with injected `appSchemaJson`. Generated app clients now emit subscription
@@ -902,7 +906,9 @@ as a long-lived runtime object, not as a per-screen helper:
 - start the native event stream once, read `nextEventJson()` from a background
   task, and update UI state by ordered `eventSeq` plus `commandId`. Events
   include rows/query changes, command completion/failure, sync state, conflicts,
-  CRDT field changes, and blob work.
+  CRDT field changes, and blob work. `BlobUploadsChanged` carries
+  `lifecycle.blobUploads` with pending/uploading/failed counts, so UI shells
+  can show failed or pending uploads without polling Syncular system tables.
   `RowsChanged`, `QueriesChanged`, `SyncCompleted`, and
   `LocalWriteCommitted` also include `changedRows` when the runtime can derive
   precise row/field deltas. Use those deltas to route active-document CRDT
@@ -915,7 +921,9 @@ as a long-lived runtime object, not as a per-screen helper:
 - set generated subscriptions with `setSubscriptionsJson` before the first sync
   when opening native clients with injected `appSchemaJson`.
 - when backgrounding, only enqueue sync/blob/compaction work that fits the host
-  platform's background execution budget.
+  platform's background execution budget. Prefer `resumeFromBackground()` for
+  foreground sync/realtime recovery, and schedule queued blob upload/cache or
+  compaction work separately based on app policy.
 - close the event stream and call the explicit native lifecycle method
   (`shutdown()` in BoltFFI wrappers) during app teardown.
 - initialize CRDT-backed text fields empty or with existing Yjs state before

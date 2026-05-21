@@ -426,6 +426,12 @@ public struct SyncularNativeLifecycleConflicts: Decodable, Equatable {
     public let unresolved: UInt64
 }
 
+public struct SyncularNativeLifecycleBlobUploads: Decodable, Equatable {
+    public let pending: Int64
+    public let uploading: Int64
+    public let failed: Int64
+}
+
 public struct SyncularNativeLifecycleState: Decodable, Equatable {
     public let phase: String
     public let online: Bool
@@ -434,6 +440,7 @@ public struct SyncularNativeLifecycleState: Decodable, Equatable {
     public let bootstrap: SyncularNativeLifecycleBootstrap?
     public let outbox: SyncularNativeLifecycleOutbox?
     public let conflicts: SyncularNativeLifecycleConflicts?
+    public let blobUploads: SyncularNativeLifecycleBlobUploads?
 }
 
 public struct SyncularNativeEvent: Decodable, Equatable {

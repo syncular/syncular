@@ -220,6 +220,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     | undefined;
   #lastOutboxStats: SyncularV2OutboxStats | undefined;
   #lastConflictStats: SyncularV2ConflictStats | undefined;
+  #lastBlobUploadStats: SyncularV2BlobUploadQueueStats | undefined;
   #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
   #rowsChangedListeners = new Set<SyncularV2RowsChangedSink>();
   #eventListeners = new Map<
@@ -601,8 +602,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     return result;
   }
 
-  blobUploadQueueStats(): Promise<SyncularV2BlobUploadQueueStats> {
-    return this.#request({ type: 'blobUploadQueueStats' });
+  async blobUploadQueueStats(): Promise<SyncularV2BlobUploadQueueStats> {
+    const stats = await this.#readBlobUploadStats();
+    this.#lastBlobUploadStats = stats;
+    return stats;
   }
 
   blobCacheStats(): Promise<SyncularV2BlobCacheStats> {
@@ -732,6 +735,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   #computeLifecycleState(): SyncularV2LifecycleState {
     const outbox = this.#lastOutboxStats;
     const conflicts = this.#lastConflictStats;
+    const blobUploads = this.#lastBlobUploadStats;
     const bootstrap = this.#lastBootstrap
       ? {
           complete: this.#lastBootstrap.complete,
@@ -743,6 +747,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       : undefined;
     const hasFailedOutbox = (outbox?.failed ?? 0) > 0;
     const hasConflicts = (conflicts?.unresolved ?? 0) > 0;
+    const hasFailedBlobUploads = (blobUploads?.failed ?? 0) > 0;
     const authRequired =
       this.#authRequired || this.#lastError?.code === 'sync.auth_required';
     const phase: SyncularV2LifecycleState['phase'] = this.#closed
@@ -755,7 +760,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
             ? 'syncing'
             : this.#realtimeState === 'connecting'
               ? 'connecting'
-              : hasFailedOutbox || hasConflicts
+              : hasFailedOutbox || hasConflicts || hasFailedBlobUploads
                 ? 'degraded'
                 : bootstrap?.complete === true
                   ? 'complete'
@@ -766,11 +771,12 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       realtime: this.#realtimeState,
       online: this.#realtimeState === 'connected',
       requiresAction:
-        authRequired || hasFailedOutbox || hasConflicts,
+        authRequired || hasFailedOutbox || hasConflicts || hasFailedBlobUploads,
       pendingRequests: this.#pending.size,
       ...(bootstrap ? { bootstrap } : {}),
       ...(outbox ? { outbox } : {}),
       ...(conflicts ? { conflicts } : {}),
+      ...(blobUploads ? { blobUploads } : {}),
       ...(this.#lastDiagnostic ? { lastDiagnostic: this.#lastDiagnostic } : {}),
       ...(this.#lastError ? { lastError: this.#lastError } : {}),
     };
@@ -789,6 +795,9 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       this.#lastConflictStats ??
       (await this.#readConflictStats().catch(() => undefined));
     if (conflictStats) this.#lastConflictStats = conflictStats;
+    const blobUploadStats =
+      this.#lastBlobUploadStats ??
+      (await this.blobUploadQueueStats().catch(() => undefined));
     return {
       generatedAt: Date.now(),
       runtime,
@@ -803,6 +812,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       ...(transportStats ? { transportStats } : {}),
       ...(outboxStats ? { outboxStats } : {}),
       ...(conflictStats ? { conflictStats } : {}),
+      ...(blobUploadStats ? { blobUploadStats } : {}),
     };
   }
 
@@ -1348,16 +1358,26 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async #emitOperationalState(): Promise<void> {
-    if (
-      !this.#hasClientEventListeners('outboxChanged') &&
-      !this.#hasClientEventListeners('conflictsChanged') &&
-      !this.#hasClientEventListeners('lifecycleChanged')
-    ) {
+    const observeLifecycle = this.#hasClientEventListeners('lifecycleChanged');
+    const observeOutbox =
+      observeLifecycle || this.#hasClientEventListeners('outboxChanged');
+    const observeConflicts =
+      observeLifecycle || this.#hasClientEventListeners('conflictsChanged');
+    const observeBlobUploads =
+      observeLifecycle || this.#hasClientEventListeners('blobUploadsChanged');
+    if (!observeOutbox && !observeConflicts && !observeBlobUploads) {
       return;
     }
-    const [outboxStats, conflictStats] = await Promise.all([
-      this.#readOutboxStats().catch(() => undefined),
-      this.#readConflictStats().catch(() => undefined),
+    const [outboxStats, conflictStats, blobUploadStats] = await Promise.all([
+      observeOutbox
+        ? this.#readOutboxStats().catch(() => undefined)
+        : Promise.resolve(undefined),
+      observeConflicts
+        ? this.#readConflictStats().catch(() => undefined)
+        : Promise.resolve(undefined),
+      observeBlobUploads
+        ? this.#readBlobUploadStats().catch(() => undefined)
+        : Promise.resolve(undefined),
     ]);
     if (outboxStats && !sameJson(this.#lastOutboxStats, outboxStats)) {
       this.#lastOutboxStats = outboxStats;
@@ -1367,7 +1387,18 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       this.#lastConflictStats = conflictStats;
       this.#emitClientEvent('conflictsChanged', conflictStats);
     }
+    if (
+      blobUploadStats &&
+      !sameJson(this.#lastBlobUploadStats, blobUploadStats)
+    ) {
+      this.#lastBlobUploadStats = blobUploadStats;
+      this.#emitClientEvent('blobUploadsChanged', blobUploadStats);
+    }
     this.#emitLifecycleChanged();
+  }
+
+  #readBlobUploadStats(): Promise<SyncularV2BlobUploadQueueStats> {
+    return this.#request({ type: 'blobUploadQueueStats' });
   }
 
   async #readOutboxStats(): Promise<SyncularV2OutboxStats> {
