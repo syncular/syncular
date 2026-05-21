@@ -781,7 +781,10 @@ read-only review:
     `set_blob_encryption_json`, with native and Hono/WASM tests proving
     encrypted upload/download roundtrips. Browser upload completion events now
     preserve encrypted `BlobRef` metadata when reconstructed from the Rust-owned
-    SQLite outbox, including failure events.
+    SQLite outbox, including failure events. Browser package blob calls now
+    enforce explicit `blobLimits.maxPayloadBytes` before high-level
+    `Blob`/`File` conversion, worker posting, or direct WASM calls, and emit
+    `blob.too_large` diagnostics with safe size/ref metadata.
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry

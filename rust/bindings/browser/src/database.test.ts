@@ -24,6 +24,7 @@ import {
 } from './database';
 import type {
   SyncularV2Client,
+  SyncularV2DiagnosticEvent,
   SyncularV2LiveQueryDependencyHint,
 } from './types';
 
@@ -180,6 +181,66 @@ describe('Syncular v2 blobs', () => {
         options: { mimeType: 'text/plain' },
       },
     ]);
+  });
+
+  it('rejects oversized blob-like inputs before arrayBuffer conversion', async () => {
+    let converted = false;
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const blobLike = {
+      size: 3,
+      async arrayBuffer() {
+        converted = true;
+        return new ArrayBuffer(3);
+      },
+    } as unknown as Blob;
+    const blobs = createSyncularV2BlobClient(
+      {
+        async storeBlob() {
+          throw new Error('storeBlob should not be called');
+        },
+        async retrieveBlob() {
+          return new Uint8Array();
+        },
+        async isBlobLocal() {
+          return true;
+        },
+        async processBlobUploadQueue() {
+          return { uploaded: 0, failed: 0 };
+        },
+        async blobUploadQueueStats() {
+          return { pending: 0, uploading: 0, failed: 0 };
+        },
+        async blobCacheStats() {
+          return { count: 0, totalBytes: 0 };
+        },
+        async pruneBlobCache() {
+          return 0;
+        },
+        async clearBlobCache() {},
+      },
+      {
+        limits: { maxPayloadBytes: 2 },
+        diagnostics: (event) => diagnostics.push(event),
+      }
+    );
+
+    await expect(
+      blobs.store(blobLike, { mimeType: 'application/octet-stream' })
+    ).rejects.toMatchObject({
+      code: 'blob.too_large',
+      details: {
+        operation: 'store',
+        size: 3,
+        maxPayloadBytes: 2,
+        mimeType: 'application/octet-stream',
+      },
+    });
+    expect(converted).toBe(false);
+    expect(diagnostics.at(-1)).toMatchObject({
+      source: 'blob',
+      code: 'blob.too_large',
+      details: { operation: 'store', size: 3, maxPayloadBytes: 2 },
+    });
   });
 });
 

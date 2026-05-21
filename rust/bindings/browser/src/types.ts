@@ -203,6 +203,7 @@ export interface CreateSyncularV2DatabaseOptions {
   runtime?: SyncularV2RuntimeArtifact;
   runtimeArtifacts?: readonly SyncularV2RuntimeArtifactCandidate[];
   requiredRuntimeFeatures?: readonly string[];
+  blobLimits?: SyncularV2BlobLimits;
   codecs?: ColumnCodecSource;
   appTables?: readonly string[];
   tableConfig?: SyncularV2TableConfigMap;
@@ -1070,6 +1071,10 @@ export interface SyncularV2UnsafeSqlClient extends SyncularV2SqlClient {
 export interface SyncularV2BlobStoreOptions {
   mimeType?: string;
   immediate?: boolean;
+}
+
+export interface SyncularV2BlobLimits {
+  maxPayloadBytes?: number;
 }
 
 export interface SyncularV2BlobUploadQueueStats {

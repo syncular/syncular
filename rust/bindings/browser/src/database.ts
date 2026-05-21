@@ -18,6 +18,11 @@ import {
 } from 'kysely';
 import { BaseSqliteDialect, BaseSqliteDriver } from 'kysely-generic-sqlite';
 import {
+  assertSyncularV2BlobPayloadLimit,
+  syncularV2BlobInputSize,
+  type SyncularV2BlobLimitInput,
+} from './blob-limits';
+import {
   createMutationsApi,
   type MutationsApi,
   type MutationsCommitFn,
@@ -174,6 +179,8 @@ export async function createSyncularV2Database<DB>(
     afterCommit: () => mutationSyncScheduler.schedule(),
   });
   const blobs = createSyncularV2BlobClient(client, {
+    diagnostics: options.diagnostics,
+    limits: options.blobLimits,
     afterStore: ({ options }) => {
       if (options?.immediate) return;
       blobUploadScheduler.schedule();
@@ -330,14 +337,31 @@ export function createSyncularV2BlobClient(
     | 'clearBlobCache'
   >,
   hooks: {
+    limits?: CreateSyncularV2DatabaseOptions['blobLimits'];
+    diagnostics?: CreateSyncularV2DatabaseOptions['diagnostics'];
     afterStore?: (args: {
       ref: BlobRef;
       options?: SyncularV2BlobStoreOptions;
     }) => void | Promise<void>;
   } = {}
 ): SyncularV2Blobs {
+  const assertRetrieveWithinLimit = (ref: BlobRef) =>
+    assertSyncularV2BlobPayloadLimit({
+      operation: 'retrieve',
+      size: ref.size,
+      limits: hooks.limits,
+      refHash: ref.hash,
+      diagnostics: hooks.diagnostics,
+    });
   return {
     async store(data, storeOptions) {
+      assertSyncularV2BlobPayloadLimit({
+        operation: 'store',
+        size: syncularV2BlobInputSize(data as SyncularV2BlobLimitInput),
+        limits: hooks.limits,
+        options: storeOptions,
+        diagnostics: hooks.diagnostics,
+      });
       const ref = await client.storeBlob(
         await toUint8Array(data),
         storeOptions
@@ -348,13 +372,15 @@ export function createSyncularV2BlobClient(
       });
       return ref;
     },
-    retrieve(ref) {
+    async retrieve(ref) {
+      assertRetrieveWithinLimit(ref);
       return client.retrieveBlob(ref);
     },
     isLocal(hash) {
       return client.isBlobLocal(hash);
     },
     async preload(refs) {
+      for (const ref of refs) assertRetrieveWithinLimit(ref);
       await Promise.all(refs.map((ref) => client.retrieveBlob(ref)));
     },
     processUploadQueue() {

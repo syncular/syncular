@@ -5,6 +5,7 @@ import type {
   SyncOperation,
 } from '@syncular/core';
 import { issueSyncularV2AuthLease } from './auth-leases';
+import { assertSyncularV2BlobPayloadLimit } from './blob-limits';
 import {
   resolveSyncularV2ClientConfig,
   SYNCULAR_V2_DEFAULT_STORAGE,
@@ -145,6 +146,7 @@ export async function createSyncularV2WorkerClient(
     authLifecycle: options.authLifecycle,
     diagnostics: options.diagnostics,
     rowsChangedDebounceMs: options.sync?.rowsChangedDebounceMs,
+    blobLimits: options.blobLimits,
   });
   try {
     await client.open(config, runtime);
@@ -241,6 +243,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   #lastOutboxStats: SyncularV2OutboxStats | undefined;
   #lastConflictStats: SyncularV2ConflictStats | undefined;
   #lastBlobUploadStats: SyncularV2BlobUploadQueueStats | undefined;
+  #blobLimits: CreateSyncularV2DatabaseOptions['blobLimits'];
   #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
   #rowsChangedListeners = new Set<SyncularV2RowsChangedSink>();
   #eventListeners = new Map<
@@ -263,12 +266,14 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       authLifecycle?: CreateSyncularV2DatabaseOptions['authLifecycle'];
       diagnostics?: SyncularV2DiagnosticSink;
       rowsChangedDebounceMs?: number | false;
+      blobLimits?: CreateSyncularV2DatabaseOptions['blobLimits'];
     }
   ) {
     this.#requestTimeoutMs =
       options.requestTimeoutMs ?? DEFAULT_SYNCULAR_V2_WORKER_REQUEST_TIMEOUT_MS;
     this.#getHeaders = options.getHeaders;
     this.#authLifecycle = options.authLifecycle;
+    this.#blobLimits = options.blobLimits;
     this.#rowsChangedDebounceMs =
       options.rowsChangedDebounceMs === false
         ? false
@@ -684,6 +689,17 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     data: Uint8Array,
     options?: SyncularV2BlobStoreOptions
   ): Promise<BlobRef> {
+    try {
+      assertSyncularV2BlobPayloadLimit({
+        operation: 'store',
+        size: data.byteLength,
+        limits: this.#blobLimits,
+        options,
+        diagnostics: (event) => this.#emitDiagnostic(event),
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
     const request = { type: 'storeBlob' as const, data, options };
     const result = options?.immediate
       ? this.#requestWithAuthRetry<BlobRef>(request, 'blobInitiateUpload')
@@ -698,6 +714,17 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   retrieveBlob(ref: BlobRef): Promise<Uint8Array> {
+    try {
+      assertSyncularV2BlobPayloadLimit({
+        operation: 'retrieve',
+        size: ref.size,
+        limits: this.#blobLimits,
+        refHash: ref.hash,
+        diagnostics: (event) => this.#emitDiagnostic(event),
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
     return this.#requestWithAuthRetry(
       { type: 'retrieveBlob', ref },
       'blobGetDownloadUrl'
