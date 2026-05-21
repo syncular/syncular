@@ -12,6 +12,7 @@ import {
   captureSyncException,
   countSyncMetric,
   createSyncTimer,
+  createSyncularErrorResponse,
   distributionSyncMetric,
   ErrorResponseSchema,
   encodeBinarySyncPack,
@@ -72,7 +73,7 @@ import { describeRoute, resolver } from 'hono-openapi';
 import { type Kysely, sql } from 'kysely';
 import { z } from 'zod';
 import { isBenignConsoleSchemaError } from './console/schema-errors';
-import { syncError, syncErrorResponse } from './errors';
+import { syncError, syncErrorResponse, syncLimitExceeded } from './errors';
 import {
   createRateLimiter,
   DEFAULT_SYNC_RATE_LIMITS,
@@ -228,6 +229,31 @@ export interface SyncRoutesConfigWithRateLimit {
    * Default: 200
    */
   maxOperationsPerPush?: number;
+  /**
+   * Maximum JSON request body accepted by POST /.
+   * Default: 4 MiB.
+   */
+  maxSyncRequestJsonBytes?: number;
+  /**
+   * Maximum JSON response body emitted by POST /.
+   * Default: 16 MiB.
+   */
+  maxSyncResponseJsonBytes?: number;
+  /**
+   * Maximum binary sync-pack response body emitted by POST /.
+   * Default: 16 MiB.
+   */
+  maxSyncBinaryPackBytes?: number;
+  /**
+   * Maximum snapshot chunk body emitted by GET /snapshot-chunks/:chunkId.
+   * Default: 64 MiB.
+   */
+  maxSnapshotChunkResponseBytes?: number;
+  /**
+   * Maximum snapshot artifact body emitted by GET /snapshot-artifacts/:artifactId.
+   * Default: 256 MiB.
+   */
+  maxSnapshotArtifactResponseBytes?: number;
   /**
    * Request/response payload snapshots recorded for console inspection.
    */
@@ -405,6 +431,11 @@ const auditCommitDetailResponseSchema = z.object({
 });
 
 const DEFAULT_REQUEST_PAYLOAD_SNAPSHOT_MAX_BYTES = 128 * 1024;
+const DEFAULT_MAX_SYNC_REQUEST_JSON_BYTES = 4 * 1024 * 1024;
+const DEFAULT_MAX_SYNC_RESPONSE_JSON_BYTES = 16 * 1024 * 1024;
+const DEFAULT_MAX_SYNC_BINARY_PACK_BYTES = 16 * 1024 * 1024;
+const DEFAULT_MAX_SNAPSHOT_CHUNK_RESPONSE_BYTES = 64 * 1024 * 1024;
+const DEFAULT_MAX_SNAPSHOT_ARTIFACT_RESPONSE_BYTES = 256 * 1024 * 1024;
 const SNAPSHOT_SCOPES_HEADER = 'x-syncular-snapshot-scopes';
 
 type TraceContext = {
@@ -666,6 +697,104 @@ function readOptionalPositiveInteger(
     return undefined;
   }
   return Math.floor(value);
+}
+
+class SyncJsonBodyLimitError extends Error {
+  constructor(
+    public readonly limit: string,
+    public readonly observed: number,
+    public readonly max: number
+  ) {
+    super(`${limit} exceeded: ${observed} bytes > ${max} bytes`);
+    this.name = 'SyncJsonBodyLimitError';
+  }
+}
+
+function isSyncJsonBodyLimitError(
+  error: unknown
+): error is SyncJsonBodyLimitError {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { name?: string }).name === 'SyncJsonBodyLimitError'
+  );
+}
+
+function readRequestContentLength(c: Context): number | null | 'invalid' {
+  const header = c.req.header('Content-Length');
+  if (!header) return null;
+  const value = Number(header);
+  if (!Number.isFinite(value) || value < 0) return 'invalid';
+  return Math.floor(value);
+}
+
+async function readRequestBodyBytesWithLimit(
+  request: Request,
+  args: { maxBytes: number; limit: string }
+): Promise<Uint8Array> {
+  const body = request.body;
+  if (!body) return new Uint8Array();
+
+  const reader = body.getReader();
+  const chunks: Uint8Array[] = [];
+  let totalBytes = 0;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value || value.length === 0) continue;
+
+    totalBytes += value.length;
+    if (totalBytes > args.maxBytes) {
+      throw new SyncJsonBodyLimitError(args.limit, totalBytes, args.maxBytes);
+    }
+    chunks.push(value);
+  }
+
+  const merged = new Uint8Array(totalBytes);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return merged;
+}
+
+function byteLengthUtf8(value: string): number {
+  return new TextEncoder().encode(value).length;
+}
+
+function responseBodyOverLimit(
+  c: Context,
+  args: { limit: string; observed: number; max: number; message?: string }
+): Response | null {
+  if (args.observed <= args.max) return null;
+  return syncLimitExceeded(c, args);
+}
+
+function syncValidationError(
+  c: Context,
+  target: string,
+  issues: readonly { path?: unknown; message?: unknown }[]
+): Response {
+  return c.json(
+    createSyncularErrorResponse('sync.invalid_request', {
+      message: 'Invalid request.',
+      details: {
+        target,
+        issues: issues.map((issue) => ({
+          message:
+            typeof issue.message === 'string'
+              ? issue.message
+              : 'Validation failed.',
+          path: Array.isArray(issue.path)
+            ? issue.path.map((segment) => String(segment))
+            : [],
+        })),
+      },
+    }),
+    400
+  );
 }
 
 function readTraceContext(c: Context): TraceContext {
@@ -936,6 +1065,26 @@ export function createSyncRoutes<
   const maxPullLimitSnapshotRows = config.maxPullLimitSnapshotRows ?? 50000;
   const maxPullMaxSnapshotPages = config.maxPullMaxSnapshotPages ?? 50;
   const maxOperationsPerPush = config.maxOperationsPerPush ?? 200;
+  const maxSyncRequestJsonBytes = readPositiveInteger(
+    config.maxSyncRequestJsonBytes,
+    DEFAULT_MAX_SYNC_REQUEST_JSON_BYTES
+  );
+  const maxSyncResponseJsonBytes = readPositiveInteger(
+    config.maxSyncResponseJsonBytes,
+    DEFAULT_MAX_SYNC_RESPONSE_JSON_BYTES
+  );
+  const maxSyncBinaryPackBytes = readPositiveInteger(
+    config.maxSyncBinaryPackBytes,
+    DEFAULT_MAX_SYNC_BINARY_PACK_BYTES
+  );
+  const maxSnapshotChunkResponseBytes = readPositiveInteger(
+    config.maxSnapshotChunkResponseBytes,
+    DEFAULT_MAX_SNAPSHOT_CHUNK_RESPONSE_BYTES
+  );
+  const maxSnapshotArtifactResponseBytes = readPositiveInteger(
+    config.maxSnapshotArtifactResponseBytes,
+    DEFAULT_MAX_SNAPSHOT_ARTIFACT_RESPONSE_BYTES
+  );
   const requiredSchemaVersion = readOptionalPositiveInteger(
     config.requiredSchemaVersion
   );
@@ -981,6 +1130,77 @@ export function createSyncRoutes<
     });
     throw error;
   });
+  type SyncJsonReadResult =
+    | { ok: true; value: unknown }
+    | { ok: false; response: Response };
+  const syncJsonBodyCache = new WeakMap<Request, Promise<SyncJsonReadResult>>();
+  const readLimitedSyncJsonBody = (c: Context): Promise<SyncJsonReadResult> => {
+    const cached = syncJsonBodyCache.get(c.req.raw);
+    if (cached) return cached;
+
+    const pending = (async (): Promise<SyncJsonReadResult> => {
+      const declaredLength = readRequestContentLength(c);
+      if (declaredLength === 'invalid') {
+        return {
+          ok: false,
+          response: syncError(
+            c,
+            400,
+            'sync.invalid_request',
+            'Invalid Content-Length'
+          ),
+        };
+      }
+      if (
+        typeof declaredLength === 'number' &&
+        declaredLength > maxSyncRequestJsonBytes
+      ) {
+        return {
+          ok: false,
+          response: syncLimitExceeded(c, {
+            limit: 'maxSyncRequestJsonBytes',
+            observed: declaredLength,
+            max: maxSyncRequestJsonBytes,
+          }),
+        };
+      }
+
+      let bytes: Uint8Array;
+      try {
+        bytes = await readRequestBodyBytesWithLimit(c.req.raw, {
+          maxBytes: maxSyncRequestJsonBytes,
+          limit: 'maxSyncRequestJsonBytes',
+        });
+      } catch (error) {
+        if (isSyncJsonBodyLimitError(error)) {
+          return {
+            ok: false,
+            response: syncLimitExceeded(c, {
+              limit: error.limit,
+              observed: error.observed,
+              max: error.max,
+            }),
+          };
+        }
+        throw error;
+      }
+
+      try {
+        const text = new TextDecoder().decode(bytes);
+        return { ok: true, value: JSON.parse(text) };
+      } catch {
+        return {
+          ok: false,
+          response: syncValidationError(c, 'json', [
+            { message: 'Invalid JSON body.', path: [] },
+          ]),
+        };
+      }
+    })();
+
+    syncJsonBodyCache.set(c.req.raw, pending);
+    return pending;
+  };
 
   // -------------------------------------------------------------------------
   // Optional WebSocket manager (scope-key based wake-ups)
@@ -1848,14 +2068,13 @@ export function createSyncRoutes<
       let shouldApplyPush = pushLimiter !== null;
 
       if (pullLimiter && pushLimiter && c.req.method === 'POST') {
-        try {
-          const parsed = await c.req.raw.clone().json();
-          if (parsed !== null && typeof parsed === 'object') {
-            shouldApplyPull = Reflect.get(parsed, 'pull') !== undefined;
-            shouldApplyPush = Reflect.get(parsed, 'push') !== undefined;
-          }
-        } catch {
-          // Keep default behavior and apply both limiters when payload parsing fails.
+        const parsed = await readLimitedSyncJsonBody(c);
+        if (!parsed.ok) {
+          return parsed.response;
+        }
+        if (parsed.value !== null && typeof parsed.value === 'object') {
+          shouldApplyPull = Reflect.get(parsed.value, 'pull') !== undefined;
+          shouldApplyPush = Reflect.get(parsed.value, 'push') !== undefined;
         }
       }
 
@@ -2159,14 +2378,19 @@ export function createSyncRoutes<
         },
       },
     }),
-    zValidator('json', SyncCombinedRequestSchema),
     async (c) => {
       const auth = await getAuth(c);
       if (!auth) return syncError(c, 401, 'sync.auth_required');
       const partitionId = auth.partitionId ?? 'default';
       const transportPath = readTransportPath(c);
 
-      const body = c.req.valid('json');
+      const bodyRead = await readLimitedSyncJsonBody(c);
+      if (!bodyRead.ok) return bodyRead.response;
+      const parsedBody = SyncCombinedRequestSchema.safeParse(bodyRead.value);
+      if (!parsedBody.success) {
+        return syncValidationError(c, 'json', parsedBody.error.issues);
+      }
+      const body = parsedBody.data;
       const clientId = body.clientId;
       const requestId = readRequestId(c);
       const traceContext = readTraceContext(c);
@@ -2530,6 +2754,12 @@ export function createSyncRoutes<
         const encoded = encodeBinarySyncPack(combinedResponse, {
           changeRowEncoders: binarySyncPackChangeRowEncoders,
         });
+        const limitResponse = responseBodyOverLimit(c, {
+          limit: 'maxSyncBinaryPackBytes',
+          observed: encoded.byteLength,
+          max: maxSyncBinaryPackBytes,
+        });
+        if (limitResponse) return limitResponse;
         const body = encoded.buffer.slice(
           encoded.byteOffset,
           encoded.byteOffset + encoded.byteLength
@@ -2538,7 +2768,16 @@ export function createSyncRoutes<
         return c.body(body, 200);
       }
 
-      return c.json(combinedResponse, 200);
+      const jsonResponse = JSON.stringify(combinedResponse);
+      const limitResponse = responseBodyOverLimit(c, {
+        limit: 'maxSyncResponseJsonBytes',
+        observed: byteLengthUtf8(jsonResponse),
+        max: maxSyncResponseJsonBytes,
+      });
+      if (limitResponse) return limitResponse;
+
+      c.header('content-type', 'application/json');
+      return c.body(jsonResponse, 200);
     }
   );
 
@@ -2664,6 +2903,13 @@ export function createSyncRoutes<
           },
         });
       }
+
+      const limitResponse = responseBodyOverLimit(c, {
+        limit: 'maxSnapshotChunkResponseBytes',
+        observed: chunk.byteLength,
+        max: maxSnapshotChunkResponseBytes,
+      });
+      if (limitResponse) return limitResponse;
 
       return new Response(chunk.body as BodyInit, {
         status: 200,
@@ -2804,6 +3050,13 @@ export function createSyncRoutes<
           },
         });
       }
+
+      const limitResponse = responseBodyOverLimit(c, {
+        limit: 'maxSnapshotArtifactResponseBytes',
+        observed: artifact.byteLength,
+        max: maxSnapshotArtifactResponseBytes,
+      });
+      if (limitResponse) return limitResponse;
 
       let body: Uint8Array | ReadableStream<Uint8Array> | null = null;
       if (artifactStorage.readArtifactStream) {

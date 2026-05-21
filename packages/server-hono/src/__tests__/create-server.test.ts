@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createDatabase, decodeBinarySyncPack } from '@syncular/core';
+import {
+  createDatabase,
+  decodeBinarySyncPack,
+  SYNC_PACK_ENCODING_BINARY_V1,
+} from '@syncular/core';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
   createServerHandler,
@@ -313,6 +317,102 @@ describe('createSyncServer console configuration', () => {
 
     throw new Error(`Timed out waiting for payload snapshot: ${payloadRef}`);
   }
+
+  it('rejects oversized sync JSON request bodies with a stable limit envelope', async () => {
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      routes: {
+        maxSyncRequestJsonBytes: 96,
+      },
+    });
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const response = await app.request('http://localhost/sync', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        clientId: `client-${'x'.repeat(200)}`,
+        pull: {
+          limitCommits: 10,
+          subscriptions: [],
+        },
+      }),
+    });
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      error: 'runtime.limit_exceeded',
+      code: 'runtime.limit_exceeded',
+      category: 'limit-exceeded',
+      retryable: false,
+      recommendedAction: 'reduceInput',
+      details: {
+        limit: 'maxSyncRequestJsonBytes',
+        max: 96,
+      },
+    });
+  });
+
+  it('rejects oversized sync JSON responses with a stable limit envelope', async () => {
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      routes: {
+        maxSyncResponseJsonBytes: 48,
+      },
+    });
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const response = await app.request(
+      createEmptyPullRequest({ clientId: 'client-json-limit', userId: 'u1' })
+    );
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      error: 'runtime.limit_exceeded',
+      details: {
+        limit: 'maxSyncResponseJsonBytes',
+        max: 48,
+      },
+    });
+  });
+
+  it('rejects oversized binary sync-pack responses with a stable limit envelope', async () => {
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      routes: {
+        maxSyncBinaryPackBytes: 1,
+      },
+    });
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const response = await app.request('http://localhost/sync', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        clientId: 'client-binary-limit',
+        syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
+        pull: {
+          limitCommits: 10,
+          subscriptions: [],
+        },
+      }),
+    });
+
+    expect(response.status).toBe(413);
+    expect(await response.json()).toMatchObject({
+      error: 'runtime.limit_exceeded',
+      details: {
+        limit: 'maxSyncBinaryPackBytes',
+        max: 1,
+      },
+    });
+  });
 
   it('keeps console routes disabled when console config is omitted', () => {
     const server = createSyncServer(createOptions());
