@@ -140,7 +140,10 @@ describe('Syncular v2 worker client', () => {
       ],
     });
     await expect(summaries).resolves.toEqual([
-      expect.objectContaining({ id: 'conflict-1', code: 'sync.version_conflict' }),
+      expect.objectContaining({
+        id: 'conflict-1',
+        code: 'sync.version_conflict',
+      }),
     ]);
 
     const retry = client.retryConflictKeepLocal('conflict-1');
@@ -256,6 +259,142 @@ describe('Syncular v2 worker client', () => {
       value: [lease],
     });
     await expect(active).resolves.toEqual([lease]);
+  });
+
+  it('issues auth leases through the sync route and stores the returned lease', async () => {
+    const worker = new FakeWorker();
+    let fetchRequest: Request | null = null;
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (input, init) => {
+      fetchRequest = new Request(input, init);
+      return Response.json({
+        ok: true,
+        token: 'signed-lease-token',
+        protectedHeader: {
+          alg: 'ES256',
+          kid: 'lease-key-1',
+          typ: 'syncular-auth-lease+jws',
+        },
+        payload: {
+          version: 1,
+          leaseId: 'lease-issued-worker',
+          issuer: 'syncular-test',
+          audience: 'syncular-browser',
+          actorId: 'user-rust',
+          subject: {},
+          schemaVersion: 7,
+          protocolVersion: 1,
+          issuedAtMs: 10,
+          notBeforeMs: 10,
+          expiresAtMs: 70,
+          maxClockSkewMs: 5,
+          scopes: [
+            {
+              subscriptionId: 'sub-tasks',
+              table: 'tasks',
+              values: { user_id: 'user-rust' },
+              operations: ['upsert'],
+            },
+          ],
+          capabilities: {
+            allowBlobs: false,
+            allowCrdt: false,
+            allowEncryptedFields: false,
+          },
+        },
+      });
+    }) as typeof fetch;
+
+    try {
+      const clientPromise = createSyncularV2WorkerClient({
+        worker: worker.asWorker(),
+        requestTimeoutMs: 100,
+        getHeaders: () => ({ authorization: 'Bearer fresh-token' }),
+        config: {
+          baseUrl: 'https://example.test/sync',
+          actorId: 'user-rust',
+          clientId: 'client-rust',
+        },
+      });
+      await waitForMessages(worker, 1);
+      worker.respond({
+        id: worker.messages[0]!.id,
+        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        ok: true,
+        value: true,
+      });
+      await waitForMessages(worker, 2);
+      worker.respond({
+        id: worker.messages[1]!.id,
+        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        ok: true,
+        value: true,
+      });
+      const client = await clientPromise;
+
+      const issued = client.issueAuthLease({
+        schemaVersion: 7,
+        scopes: [
+          {
+            subscriptionId: 'sub-tasks',
+            table: 'tasks',
+            values: { user_id: 'user-rust' },
+            operations: ['upsert'],
+          },
+        ],
+      });
+
+      await waitForMessages(worker, 3);
+      expect(worker.messages[2]).toMatchObject({
+        type: 'setAuthHeaders',
+        headers: { authorization: 'Bearer fresh-token' },
+      });
+      worker.respond({
+        id: worker.messages[2]!.id,
+        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        ok: true,
+        value: true,
+      });
+
+      await waitForMessages(worker, 4);
+      expect(fetchRequest?.url).toBe(
+        'https://example.test/sync/auth-leases/issue'
+      );
+      expect(fetchRequest?.method).toBe('POST');
+      expect(fetchRequest?.headers.get('authorization')).toBe(
+        'Bearer fresh-token'
+      );
+      expect(worker.messages[3]).toMatchObject({
+        type: 'upsertAuthLease',
+        lease: expect.objectContaining({
+          leaseId: 'lease-issued-worker',
+          kid: 'lease-key-1',
+          actorId: 'user-rust',
+          token: 'signed-lease-token',
+          status: 'active',
+        }),
+      });
+      worker.respond({
+        id: worker.messages[3]!.id,
+        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        ok: true,
+        value: true,
+      });
+      await waitForMessages(worker, 5);
+      worker.respond({
+        id: worker.messages[4]!.id,
+        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        ok: true,
+        value: [],
+      });
+
+      await expect(issued).resolves.toMatchObject({
+        leaseId: 'lease-issued-worker',
+        expiresAtMs: 70,
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
   });
 
   it('forwards generic CRDT field requests to the worker', async () => {
@@ -674,7 +813,9 @@ describe('Syncular v2 worker client', () => {
 
     const process = client.processBlobUploadQueue();
     await waitForMessages(worker, 5);
-    expect(worker.messages[4]).toMatchObject({ type: 'processBlobUploadQueue' });
+    expect(worker.messages[4]).toMatchObject({
+      type: 'processBlobUploadQueue',
+    });
     worker.respond({
       id: worker.messages[4]!.id,
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
@@ -1760,7 +1901,8 @@ describe('Syncular v2 worker client', () => {
             severity: 'error',
             code: 'local.subscription_state_orphaned',
             component: 'subscriptionState',
-            message: 'stored subscription state is not configured on this client',
+            message:
+              'stored subscription state is not configured on this client',
             subscriptionId: 'old-subscription',
             table: 'tasks',
             repairAction: 'clearOrphanedState',

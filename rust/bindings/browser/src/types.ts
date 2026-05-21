@@ -1,10 +1,11 @@
 import type {
   BlobRef,
   ColumnCodecSource,
-  SyncAuthLifecycle,
   SyncularErrorCategory as CoreSyncularErrorCategory,
   SyncularErrorCode as CoreSyncularErrorCode,
   SyncularErrorRecommendedAction as CoreSyncularErrorRecommendedAction,
+  SyncAuthLeaseIssueRequest,
+  SyncAuthLifecycle,
   SyncOperation,
 } from '@syncular/core';
 import type { CompiledQuery } from 'kysely';
@@ -1108,6 +1109,9 @@ export interface SyncularV2Blobs {
 
 export interface SyncularV2Client extends SyncularV2SqlClient {
   setAuthHeaders(headers: SyncularV2AuthHeaders): Promise<void>;
+  issueAuthLease(
+    request: SyncAuthLeaseIssueRequest
+  ): Promise<SyncularV2AuthLeaseRecord>;
   upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void>;
   authLease(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null>;
   activeAuthLeases(
