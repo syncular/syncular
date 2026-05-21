@@ -512,6 +512,9 @@ read-only review:
     Diesel, browser-owned SQLite, and web-memory local writes now reject new
     commits once pending/sending/failed outbox pressure reaches
     `maxUnresolvedOutboxCommits`; acked commits do not count against the cap.
+    Console stats now expose partition-aware snapshot chunk/artifact cache
+    pressure counters, and the command dashboard surfaces total/expired
+    snapshot cache pressure as KPIs.
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)

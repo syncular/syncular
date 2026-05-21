@@ -79,6 +79,9 @@ routes: ... })` and return `runtime.limit_exceeded` envelopes when exceeded.
   pressure. Pre-parse HTTP combined failures use event type `sync`; oversized
   response failures are recorded as rejected events and do not record successful
   pull cursor side effects.
+- Server console stats expose snapshot chunk/artifact cache pressure counters,
+  including total cached rows/bytes and expired rows/bytes, filtered by
+  partition where requested.
 - Server snapshot bundling currently uses `512 KiB` default row-frame bundle
   bytes, `4 MiB` adaptive max bundle bytes, `256 KiB` inline row-frame bytes,
   `50000` binary bundle rows, and gzip level `1`.

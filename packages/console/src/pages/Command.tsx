@@ -71,6 +71,19 @@ function formatTime(
   return `${Math.floor(diffS / 86400)}d ago`;
 }
 
+function formatByteCount(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB'];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex += 1;
+  }
+  const precision = value >= 10 || unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(precision)} ${units[unitIndex]}`;
+}
+
 function resolveStreamHref(pathname: string): string {
   const normalized =
     pathname.length > 1 && pathname.endsWith('/')
@@ -160,6 +173,14 @@ function CommandInner() {
 
   const kpiItems = useMemo((): MetricItem[] => {
     if (!stats) return [];
+    const snapshotCacheCount =
+      stats.snapshotChunkCount + stats.snapshotArtifactCount;
+    const snapshotCacheBytes =
+      stats.snapshotChunkBytes + stats.snapshotArtifactBytes;
+    const expiredSnapshotCacheCount =
+      stats.expiredSnapshotChunkCount + stats.expiredSnapshotArtifactCount;
+    const expiredSnapshotCacheBytes =
+      stats.expiredSnapshotChunkBytes + stats.expiredSnapshotArtifactBytes;
     return [
       {
         label: 'Ops (Range)',
@@ -189,6 +210,16 @@ function CommandInner() {
             ? stats.maxCommitSeq - (stats.minActiveClientCursor ?? 0)
             : 0,
         color: 'relay',
+      },
+      {
+        label: 'Snapshot Cache',
+        value: `${snapshotCacheCount} / ${formatByteCount(snapshotCacheBytes)}`,
+        color: 'muted',
+      },
+      {
+        label: 'Expired Cache',
+        value: `${expiredSnapshotCacheCount} / ${formatByteCount(expiredSnapshotCacheBytes)}`,
+        color: expiredSnapshotCacheCount > 0 ? 'offline' : 'muted',
       },
     ];
   }, [stats, latencyData, eventSummary.errorRate, eventSummary.totalEvents]);

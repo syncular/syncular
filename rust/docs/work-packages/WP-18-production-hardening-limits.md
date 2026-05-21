@@ -58,9 +58,8 @@ product-level limits.
 
 ## Next Action
 
-Review whether blob/artifact pressure should get first-class console summary
-counters, then decide if WP-18 has enough limit coverage to close or should
-add larger server/browser stress fixtures.
+Run a closing review against the acceptance criteria and decide whether WP-18
+can move to accepted or needs larger browser/server stress fixtures.
 
 ## Progress
 
@@ -112,9 +111,25 @@ add larger server/browser stress fixtures.
   toward the cap; acked commits do not. Full outbox pressure fails the local
   write transaction with `runtime.limit_exceeded` before a new commit is
   retained.
+- Console stats now include first-class snapshot chunk/artifact cache pressure
+  counters: total cached rows, total bytes, expired rows, and expired bytes.
+  The counters honor partition filters and the console gateway sums them across
+  selected instances. The command dashboard surfaces total and expired snapshot
+  cache pressure as top-level KPIs.
 
 ## Latest Evidence
 
+- `bun test src/__tests__` from `packages/server-hono`
+- `bun test --pass-with-no-tests` from `packages/server`
+- `bun test src/__tests__` from `packages/console`
+- `bun run tsgo` from `packages/server`
+- `bun run tsgo` from `packages/server-hono`
+- `bun run tsgo` from `packages/console`
+- `bun run tsgo` from `packages/ui`
+- `bun run tsgo` from `packages/transport-http`
+- `git diff --check`
+- Benchmark gate not run: this slice adds console summary reads and generated
+  stats typing. It does not change client sync/apply/query hot paths.
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends diesel_store_rejects_local_writes_when_unresolved_outbox_is_full --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_ffi native_ffi_exposes_runtime_manifest_without_handle`

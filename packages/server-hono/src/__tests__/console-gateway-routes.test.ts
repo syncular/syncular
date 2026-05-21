@@ -445,6 +445,14 @@ describe('createConsoleGatewayRoutes', () => {
     activeClientCount: 1,
     minActiveClientCursor: 35,
     maxActiveClientCursor: 35,
+    snapshotChunkCount: 2,
+    snapshotChunkBytes: 120,
+    expiredSnapshotChunkCount: 1,
+    expiredSnapshotChunkBytes: 40,
+    snapshotArtifactCount: 1,
+    snapshotArtifactBytes: 1024,
+    expiredSnapshotArtifactCount: 0,
+    expiredSnapshotArtifactBytes: 0,
   };
 
   const betaStats: SyncStats = {
@@ -456,6 +464,14 @@ describe('createConsoleGatewayRoutes', () => {
     activeClientCount: 1,
     minActiveClientCursor: 18,
     maxActiveClientCursor: 18,
+    snapshotChunkCount: 3,
+    snapshotChunkBytes: 240,
+    expiredSnapshotChunkCount: 2,
+    expiredSnapshotChunkBytes: 160,
+    snapshotArtifactCount: 2,
+    snapshotArtifactBytes: 2048,
+    expiredSnapshotArtifactCount: 1,
+    expiredSnapshotArtifactBytes: 512,
   };
 
   const alphaTimeseries: TimeseriesStatsResponse = {
@@ -903,6 +919,8 @@ describe('createConsoleGatewayRoutes', () => {
 
     expect(body.commitCount).toBe(alphaStats.commitCount);
     expect(body.changeCount).toBe(alphaStats.changeCount);
+    expect(body.snapshotChunkBytes).toBe(alphaStats.snapshotChunkBytes);
+    expect(body.snapshotArtifactCount).toBe(alphaStats.snapshotArtifactCount);
     expect(body.maxCommitSeqByInstance.alpha).toBe(alphaStats.maxCommitSeq);
     expect(body.minCommitSeqByInstance.alpha).toBe(alphaStats.minCommitSeq);
     expect(body.partial).toBe(true);

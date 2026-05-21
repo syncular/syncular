@@ -31,6 +31,14 @@ const defaultStats: SyncStats = {
   activeClientCount: 3,
   minActiveClientCursor: 80,
   maxActiveClientCursor: 100,
+  snapshotChunkCount: 0,
+  snapshotChunkBytes: 0,
+  expiredSnapshotChunkCount: 0,
+  expiredSnapshotChunkBytes: 0,
+  snapshotArtifactCount: 0,
+  snapshotArtifactBytes: 0,
+  expiredSnapshotArtifactCount: 0,
+  expiredSnapshotArtifactBytes: 0,
 };
 
 describe('inferType (via adaptConsoleClientsToTopology)', () => {

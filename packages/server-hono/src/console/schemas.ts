@@ -17,6 +17,14 @@ export const SyncStatsSchema = z.object({
   activeClientCount: z.number().int(),
   minActiveClientCursor: z.number().int().nullable(),
   maxActiveClientCursor: z.number().int().nullable(),
+  snapshotChunkCount: z.number().int().nonnegative(),
+  snapshotChunkBytes: z.number().int().nonnegative(),
+  expiredSnapshotChunkCount: z.number().int().nonnegative(),
+  expiredSnapshotChunkBytes: z.number().int().nonnegative(),
+  snapshotArtifactCount: z.number().int().nonnegative(),
+  snapshotArtifactBytes: z.number().int().nonnegative(),
+  expiredSnapshotArtifactCount: z.number().int().nonnegative(),
+  expiredSnapshotArtifactBytes: z.number().int().nonnegative(),
 });
 
 export type SyncStats = z.infer<typeof SyncStatsSchema>;
