@@ -120,6 +120,44 @@ Decision:
   next live-query precision change must compare against
   `.context/benchmarks/wp21-live-query-hints-current.json`.
 
+## 2026-05-21 - Retained Native Observed-Query Row/Field Hints
+
+Commit: retained slice
+
+Work package:
+[`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
+
+Change:
+
+- Native `register_query_json` now accepts observed-query `dependencyHints`
+  with table, row-id, and field metadata.
+- Native event conversion still emits `RowsChanged` for every local/remote row
+  change, but `QueriesChanged` now skips hinted observers when complete
+  row/field metadata proves the query cannot be affected.
+
+Correctness gates:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --test native_facade native_facade_filters_query_observers_with_row_field_hints \
+  --features native,crdt-yjs,demo-todo-native-fixture
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --test native_facade \
+  --features native,crdt-yjs,demo-todo-native-fixture
+cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features native,crdt-yjs
+```
+
+Result: passed.
+
+Decision:
+
+- Retained. This slice is native-only, so the browser E2E guardrail was not
+  rerun. The next browser/runtime invalidation change must still compare
+  against `.context/benchmarks/wp21-live-query-hints-current.json`; the next
+  WP-21 task is to add an explicit skip-rerun counter or benchmark for
+  unrelated row churn.
+
 ## 2026-05-20 - Retained Browser Sync Attempt Trace Plumbing
 
 Commit: retained slice

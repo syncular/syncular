@@ -520,6 +520,7 @@ fn native_worker_event_converter_preserves_rows_queries_and_sequence() -> Result
         &[NativeObservedQuery {
             id: "task-list".to_string(),
             tables: vec!["tasks".to_string()],
+            dependency_hints: Vec::new(),
             label: None,
         }],
     );
@@ -1936,6 +1937,194 @@ fn native_facade_emits_query_observer_events_for_changed_tables() -> Result<()> 
             .to_string(),
         )
         .expect_err("internal table should not be observable");
+    assert_eq!(error.kind(), ErrorKind::Config);
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_facade_filters_query_observers_with_row_field_hints() -> Result<()> {
+    let path = temp_db_path("syncular-native-query-observer-hints");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-query-observer-hints"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+
+    client.register_query_json(
+        &json!({
+            "id": "observed-title",
+            "tables": ["tasks"],
+            "dependencyHints": [{
+                "table": "tasks",
+                "rowIds": ["observed-task"],
+                "fields": ["title"]
+            }]
+        })
+        .to_string(),
+    )?;
+
+    let observed: Value = serde_json::from_str(&client.observed_queries_json()?)?;
+    assert_eq!(observed.as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        observed[0]["dependencyHints"][0]["rowIds"],
+        json!(["observed-task"])
+    );
+
+    client.apply_mutation_json(
+        &json!({
+            "table": "tasks",
+            "row_id": "other-task",
+            "op": "upsert",
+            "payload": {
+                "title": "Other task",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0"
+            },
+            "base_version": 0
+        })
+        .to_string(),
+        None,
+    )?;
+    let event = client
+        .next_event_timeout(Duration::from_millis(100))
+        .expect("unrelated task rows changed event");
+    assert_eq!(event.kind, NativeEventKind::RowsChanged);
+    assert_eq!(
+        event
+            .changed_rows
+            .first()
+            .and_then(|row| row.row_id.as_deref()),
+        Some("other-task")
+    );
+    assert!(client
+        .next_event_timeout(Duration::from_millis(100))
+        .is_none());
+
+    client.apply_mutation_json(
+        &json!({
+            "table": "tasks",
+            "row_id": "observed-task",
+            "op": "upsert",
+            "payload": {
+                "title": "Observed task",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0"
+            },
+            "base_version": 0
+        })
+        .to_string(),
+        None,
+    )?;
+    let event = client
+        .next_event_timeout(Duration::from_millis(100))
+        .expect("observed task rows changed event");
+    assert_eq!(event.kind, NativeEventKind::RowsChanged);
+    let event = client
+        .next_event_timeout(Duration::from_millis(100))
+        .expect("observed task query changed event");
+    assert_eq!(event.kind, NativeEventKind::QueriesChanged);
+    assert_eq!(event.queries, vec!["observed-title".to_string()]);
+
+    client.register_query_json(
+        &json!({
+            "id": "observed-completed",
+            "tables": ["tasks"],
+            "dependencyHints": [{
+                "table": "tasks",
+                "rowIds": ["observed-task"],
+                "fields": ["completed"]
+            }]
+        })
+        .to_string(),
+    )?;
+    client.apply_mutation_json(
+        &json!({
+            "table": "tasks",
+            "row_id": "observed-task",
+            "op": "upsert",
+            "payload": {
+                "completed": 1
+            },
+            "base_version": 0
+        })
+        .to_string(),
+        None,
+    )?;
+    let event = client
+        .next_event_timeout(Duration::from_millis(100))
+        .expect("observed completed rows changed event");
+    assert_eq!(event.kind, NativeEventKind::RowsChanged);
+    assert_eq!(
+        event.changed_rows[0].changed_fields,
+        vec!["completed".to_string()]
+    );
+    let event = client
+        .next_event_timeout(Duration::from_millis(100))
+        .expect("observed completed query changed event");
+    assert_eq!(event.kind, NativeEventKind::QueriesChanged);
+    assert_eq!(event.queries, vec!["observed-completed".to_string()]);
+
+    client.apply_mutation_json(
+        &json!({
+            "table": "tasks",
+            "row_id": "observed-task",
+            "op": "upsert",
+            "payload": {
+                "title": "Observed task updated"
+            },
+            "base_version": 0
+        })
+        .to_string(),
+        None,
+    )?;
+    let event = client
+        .next_event_timeout(Duration::from_millis(100))
+        .expect("observed title rows changed event");
+    assert_eq!(event.kind, NativeEventKind::RowsChanged);
+    assert_eq!(
+        event.changed_rows[0].changed_fields,
+        vec!["title".to_string()]
+    );
+    let event = client
+        .next_event_timeout(Duration::from_millis(100))
+        .expect("observed title query changed event");
+    assert_eq!(event.kind, NativeEventKind::QueriesChanged);
+    assert_eq!(event.queries, vec!["observed-title".to_string()]);
+
+    let error = client
+        .register_query_json(
+            &json!({
+                "id": "invalid-hint-table",
+                "tables": ["tasks"],
+                "dependencyHints": [{
+                    "table": "projects",
+                    "rowIds": ["p0"]
+                }]
+            })
+            .to_string(),
+        )
+        .expect_err("hint table must be part of observed tables");
+    assert_eq!(error.kind(), ErrorKind::Config);
+
+    let error = client
+        .register_query_json(
+            &json!({
+                "id": "invalid-hint-field",
+                "tables": ["tasks"],
+                "dependencyHints": [{
+                    "table": "tasks",
+                    "fields": ["missing_column"]
+                }]
+            })
+            .to_string(),
+        )
+        .expect_err("hint field must be a generated column");
     assert_eq!(error.kind(), ErrorKind::Config);
 
     client.close()?;
