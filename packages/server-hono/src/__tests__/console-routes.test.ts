@@ -16,7 +16,7 @@ interface SyncRequestEventsTable {
   request_id: string | null;
   trace_id: string | null;
   span_id: string | null;
-  event_type: 'push' | 'pull';
+  event_type: 'sync' | 'push' | 'pull';
   sync_path: 'http-combined' | 'ws-push';
   actor_id: string;
   client_id: string;
@@ -91,7 +91,7 @@ type TimelineResponse = {
       eventId: number;
       actorId: string;
       clientId: string;
-      eventType: 'push' | 'pull';
+      eventType: 'sync' | 'push' | 'pull';
       outcome: string;
       tables: string[];
     } | null;
@@ -104,7 +104,7 @@ type TimelineResponse = {
 type EventsResponse = {
   items: Array<{
     eventId: number;
-    eventType: 'push' | 'pull';
+    eventType: 'sync' | 'push' | 'pull';
     traceId: string | null;
   }>;
   total: number;
@@ -554,6 +554,31 @@ describe('console timeline route filters', () => {
       .values([
         {
           partition_id: 'default',
+          request_id: 'req-sync-limit',
+          trace_id: 'trace-sync-limit',
+          span_id: null,
+          event_type: 'sync',
+          sync_path: 'http-combined',
+          actor_id: 'actor-z',
+          client_id: 'client-sync-limit',
+          transport_path: 'direct',
+          status_code: 413,
+          outcome: 'rejected',
+          response_status: 'client_error',
+          error_code: 'runtime.limit_exceeded',
+          duration_ms: 3,
+          commit_seq: null,
+          operation_count: null,
+          row_count: null,
+          subscription_count: null,
+          scopes_summary: null,
+          tables: [],
+          error_message: 'maxSyncRequestJsonBytes exceeded',
+          payload_ref: null,
+          created_at: atIso(5),
+        },
+        {
+          partition_id: 'default',
           request_id: 'req-1',
           trace_id: 'trace-1',
           span_id: 'span-1',
@@ -714,6 +739,11 @@ describe('console timeline route filters', () => {
     expect(eventTypeFiltered.total).toBe(1);
     expect(eventTypeFiltered.items[0]?.type).toBe('event');
     expect(eventTypeFiltered.items[0]?.event?.eventType).toBe('push');
+
+    const syncTypeFiltered = await readTimeline({ eventType: 'sync' });
+    expect(syncTypeFiltered.total).toBe(1);
+    expect(syncTypeFiltered.items[0]?.type).toBe('event');
+    expect(syncTypeFiltered.items[0]?.event?.eventType).toBe('sync');
   });
 
   it('applies request-id, trace-id, and sync-attempt filters to event rows', async () => {
@@ -757,8 +787,8 @@ describe('console timeline route filters', () => {
     const pageOne = await readTimeline({ limit: 2, offset: 0 });
     const pageTwo = await readTimeline({ limit: 2, offset: 2 });
 
-    expect(pageOne.total).toBe(5);
-    expect(pageTwo.total).toBe(5);
+    expect(pageOne.total).toBe(6);
+    expect(pageTwo.total).toBe(6);
     expect(pageOne.items.length).toBe(2);
     expect(pageTwo.items.length).toBe(2);
 

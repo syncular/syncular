@@ -52,7 +52,7 @@ type ListParams = {
 };
 type TimelineParams = ListParams & {
   view?: 'all' | 'commits' | 'events';
-  eventType?: 'push' | 'pull';
+  eventType?: 'sync' | 'push' | 'pull';
   actorId?: string;
   clientId?: string;
   requestId?: string;

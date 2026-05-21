@@ -25,7 +25,7 @@ import {
 import type { ConsoleTimelineItem, TimeseriesRange } from '../lib/types';
 
 type ViewMode = 'all' | 'commits' | 'events';
-type EventTypeFilter = 'all' | 'push' | 'pull';
+type EventTypeFilter = 'all' | 'sync' | 'push' | 'pull';
 type OutcomeFilter = 'all' | 'applied' | 'error' | 'rejected';
 
 function formatTime(iso: string, timeFormat: 'relative' | 'absolute'): string {
@@ -348,7 +348,7 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
       }
 
       return {
-        type: event.eventType as 'push' | 'pull',
+        type: event.eventType,
         id: resolveEventEntryId(event, sourceInstanceId),
         outcome: event.outcome,
         duration: `${event.durationMs}ms`,
@@ -405,6 +405,7 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
       label: 'Type',
       options: [
         { id: 'all', label: 'All' },
+        { id: 'sync', label: 'Sync' },
         { id: 'push', label: 'Push' },
         { id: 'pull', label: 'Pull' },
       ],

@@ -235,6 +235,13 @@ function parseScopesSummary(
   return Object.keys(summary).length > 0 ? summary : null;
 }
 
+function normalizeRequestEventType(value: unknown): 'sync' | 'push' | 'pull' {
+  if (value === 'sync' || value === 'push' || value === 'pull') {
+    return value;
+  }
+  return 'pull';
+}
+
 function getClientActivityState(args: {
   connectionCount: number;
   updatedAt: string | null | undefined;
@@ -396,7 +403,7 @@ const eventIdParamSchema = z.object({ id: z.coerce.number().int() });
 const apiKeyIdParamSchema = z.object({ id: z.string().min(1) });
 
 const eventsQuerySchema = ConsolePartitionedPaginationQuerySchema.extend({
-  eventType: z.enum(['push', 'pull']).optional(),
+  eventType: z.enum(['sync', 'push', 'pull']).optional(),
   actorId: z.string().optional(),
   clientId: z.string().optional(),
   requestId: z.string().optional(),
@@ -682,7 +689,7 @@ export function createConsoleRoutes<
     requestId: row.request_id ?? '',
     traceId: row.trace_id ?? null,
     spanId: row.span_id ?? null,
-    eventType: row.event_type === 'push' ? 'push' : 'pull',
+    eventType: normalizeRequestEventType(row.event_type),
     syncPath: row.sync_path === 'ws-push' ? 'ws-push' : 'http-combined',
     transportPath: row.transport_path === 'relay' ? 'relay' : 'direct',
     actorId: row.actor_id ?? '',
@@ -1116,6 +1123,7 @@ export function createConsoleRoutes<
             bucket: unknown;
             push_count: unknown;
             pull_count: unknown;
+            event_count: unknown;
             error_count: unknown;
             avg_latency_ms: unknown;
           }>`
@@ -1123,6 +1131,7 @@ export function createConsoleRoutes<
               strftime(${bucketFormat}, created_at) as bucket,
               sum(case when event_type = 'push' then 1 else 0 end) as push_count,
               sum(case when event_type = 'pull' then 1 else 0 end) as pull_count,
+              count(*) as event_count,
               sum(case when outcome = 'error' then 1 else 0 end) as error_count,
               avg(duration_ms) as avg_latency_ms
             from ${sql.table('sync_request_events')}
@@ -1144,9 +1153,9 @@ export function createConsoleRoutes<
 
             const pushCount = coerceNumber(row.push_count) ?? 0;
             const pullCount = coerceNumber(row.pull_count) ?? 0;
+            const rowEventCount = coerceNumber(row.event_count) ?? 0;
             const errorCount = coerceNumber(row.error_count) ?? 0;
             const avgLatencyMs = coerceNumber(row.avg_latency_ms);
-            const rowEventCount = pushCount + pullCount;
 
             bucket.pushCount += pushCount;
             bucket.pullCount += pullCount;
@@ -1161,6 +1170,7 @@ export function createConsoleRoutes<
             bucket: unknown;
             push_count: unknown;
             pull_count: unknown;
+            event_count: unknown;
             error_count: unknown;
             avg_latency_ms: unknown;
           }>`
@@ -1168,6 +1178,7 @@ export function createConsoleRoutes<
               date_trunc(${interval}, created_at::timestamptz) as bucket,
               count(*) filter (where event_type = 'push') as push_count,
               count(*) filter (where event_type = 'pull') as pull_count,
+              count(*) as event_count,
               count(*) filter (where outcome = 'error') as error_count,
               avg(duration_ms) as avg_latency_ms
             from ${sql.table('sync_request_events')}
@@ -1189,9 +1200,9 @@ export function createConsoleRoutes<
 
             const pushCount = coerceNumber(row.push_count) ?? 0;
             const pullCount = coerceNumber(row.pull_count) ?? 0;
+            const rowEventCount = coerceNumber(row.event_count) ?? 0;
             const errorCount = coerceNumber(row.error_count) ?? 0;
             const avgLatencyMs = coerceNumber(row.avg_latency_ms);
-            const rowEventCount = pushCount + pullCount;
 
             bucket.pushCount += pushCount;
             bucket.pullCount += pullCount;
@@ -1275,7 +1286,8 @@ export function createConsoleRoutes<
         const pull: LatencyPercentiles = { p50: 0, p90: 0, p99: 0 };
 
         for (const row of rowsResult.rows) {
-          const eventType = row.event_type === 'push' ? 'push' : 'pull';
+          const eventType = normalizeRequestEventType(row.event_type);
+          if (eventType === 'sync') continue;
           const target = eventType === 'push' ? push : pull;
           target.p50 = coerceNumber(row.p50) ?? 0;
           target.p90 = coerceNumber(row.p90) ?? 0;
@@ -1875,7 +1887,7 @@ export function createConsoleRoutes<
         string,
         {
           createdAt: string;
-          eventType: 'push' | 'pull';
+          eventType: 'sync' | 'push' | 'pull';
           outcome: string;
           transportPath: 'direct' | 'relay';
         }
@@ -1911,7 +1923,7 @@ export function createConsoleRoutes<
             continue;
           }
 
-          const eventType = row.event_type === 'push' ? 'push' : 'pull';
+          const eventType = normalizeRequestEventType(row.event_type);
 
           latestEventsByClientId.set(clientId, {
             createdAt: row.created_at ?? '',

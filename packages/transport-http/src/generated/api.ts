@@ -1301,7 +1301,7 @@ export interface operations {
                 offset?: number;
                 partitionId?: string;
                 view?: "all" | "commits" | "events";
-                eventType?: "push" | "pull";
+                eventType?: "sync" | "push" | "pull";
                 actorId?: string;
                 clientId?: string;
                 requestId?: string;
@@ -1346,7 +1346,7 @@ export interface operations {
                                 traceId: string | null;
                                 spanId: string | null;
                                 /** @enum {string} */
-                                eventType: "push" | "pull";
+                                eventType: "sync" | "push" | "pull";
                                 /** @enum {string} */
                                 syncPath: "http-combined" | "ws-push";
                                 /** @enum {string} */
@@ -1554,7 +1554,7 @@ export interface operations {
                             /** @enum {string} */
                             activityState: "active" | "idle" | "stale";
                             lastRequestAt: string | null;
-                            lastRequestType: ("push" | "pull") | null;
+                            lastRequestType: ("sync" | "push" | "pull") | null;
                             lastRequestOutcome: string | null;
                             effectiveScopes: {
                                 [key: string]: unknown;
@@ -1885,7 +1885,7 @@ export interface operations {
                 limit?: number;
                 offset?: number;
                 partitionId?: string;
-                eventType?: "push" | "pull";
+                eventType?: "sync" | "push" | "pull";
                 actorId?: string;
                 clientId?: string;
                 requestId?: string;
@@ -1913,7 +1913,7 @@ export interface operations {
                             traceId: string | null;
                             spanId: string | null;
                             /** @enum {string} */
-                            eventType: "push" | "pull";
+                            eventType: "sync" | "push" | "pull";
                             /** @enum {string} */
                             syncPath: "http-combined" | "ws-push";
                             /** @enum {string} */
@@ -2017,7 +2017,7 @@ export interface operations {
                         traceId: string | null;
                         spanId: string | null;
                         /** @enum {string} */
-                        eventType: "push" | "pull";
+                        eventType: "sync" | "push" | "pull";
                         /** @enum {string} */
                         syncPath: "http-combined" | "ws-push";
                         /** @enum {string} */
