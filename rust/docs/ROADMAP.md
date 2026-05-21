@@ -357,6 +357,10 @@ read-only review:
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when WP-26 finds concrete generated-client naming, discoverability,
   conflict, blob, or subscription ergonomics gaps.
+- No local [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
+  foundation slice remains. Future console/debugging work should be driven by
+  concrete app feedback and retain the redacted, server-authoritative
+  investigation contract.
 
 ## Later
 
@@ -487,7 +491,7 @@ read-only review:
     `i64` timestamps correctly. No local WP-11 implementation slice remains for
     the current Rust-client foundation; future Rust server or edge-proxy work is
     deferred until there is a concrete product target.
-- `[~]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
+- `[x]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus
     schema-mismatch smokes, so app suites can assert stable diagnostic contracts
@@ -510,6 +514,9 @@ read-only review:
     websocket lifecycle/recovery events, and row investigation surfaces
     connected, ACK, pull-required, rejected, and error counts for the selected
     client. Console event pruning covers the realtime event table as well.
+    WP-13 is accepted for the current foundation; future drilldowns should be
+    triggered by concrete app/debugging feedback rather than speculative
+    diagnostics.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
 - `[x]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
   - Browser worker error payloads now carry stable public error `code`,
