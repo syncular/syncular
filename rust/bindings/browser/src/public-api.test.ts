@@ -16,6 +16,7 @@ import {
   SYNCULAR_V2_WASM_GLUE_FILE,
   SyncularV2CommandHistoryError,
 } from './index';
+import { createSyncularReact } from './react';
 
 describe('@syncular/client public API', () => {
   it('exports the stable v2 runtime contract', () => {
@@ -59,6 +60,13 @@ describe('@syncular/client public API', () => {
   it('exports generated command-history helpers', () => {
     expect(typeof createSyncularV2CommandHistory).toBe('function');
     expect(typeof SyncularV2CommandHistoryError).toBe('function');
+  });
+
+  it('exports the React host-binding hooks', () => {
+    const react = createSyncularReact<Record<string, Record<string, unknown>>>();
+    expect(typeof react.useMutations).toBe('function');
+    expect(typeof react.useLeasedMutations).toBe('function');
+    expect(typeof react.useSyncQuery).toBe('function');
   });
 
   it('defaults generated app storage to OPFS SAH', () => {

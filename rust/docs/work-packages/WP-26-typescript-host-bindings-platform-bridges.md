@@ -1,6 +1,6 @@
 # WP-26 TypeScript Host Bindings And Platform Bridges
 
-Status: `[ ]` planned
+Status: `[x]` accepted
 
 ## Goal
 
@@ -158,6 +158,16 @@ or keep old naming assumptions.
   command-history only through generated platform clients once those generated
   mutation wrappers are mature, not as a generic bridge-level JavaScript undo
   stack.
+- Docs/package polish slice:
+  - Browser package README now describes `@syncular/client` as a TypeScript host
+    binding over the Rust client, not a JavaScript sync client.
+  - React examples now return a Kysely builder from `useSyncQuery(...)` so the
+    hook can use runtime live-query observation.
+  - Browser README now shows auth lease issue, leased mutations,
+    `resumeFromBackground()`, platform bridge usage, and explicit bridge
+    live-query/command-history capability constraints.
+  - Tauri, React Native, and Expo bridge packages now have focused READMEs for
+    the current Rust-backed host-binding surface.
 
 Latest evidence:
 
@@ -215,9 +225,7 @@ paths.
 
 ## Next Action
 
-Continue the export audit with docs/package polish: update browser/platform docs
-to consistently say TypeScript host bindings and platform bridges, show leased
-mutation/auth lease/resume/live-query usage against the current APIs, and make
-the bridge live-query and command-history deferrals explicit capability
-constraints. Do not add new feature behavior in this WP until the owning
-feature WP states the canonical semantics and red lines.
+Closed for the current Rust-first foundation. Future TypeScript host-binding
+changes should be driven by the owning feature WP's `Interface Impact` section,
+with WP-26 used as the parity checklist if a new browser/React/platform bridge
+surface is added.
