@@ -469,9 +469,12 @@ read-only review:
     `resumeFromBackground()` restarts remembered realtime and syncs through the
     lifecycle stream, while native `resume_from_background` resumes the worker,
     restarts realtime, and enqueues a command-correlated sync through C FFI and
-    generated Swift/Kotlin/Java BoltFFI wrappers. Next step is app-shell
-    guidance/examples plus lifecycle coverage for foreground auth refresh and
-    offline scope revocation.
+    generated Swift/Kotlin/Java BoltFFI wrappers. Hono/browser tests now cover
+    foreground resume auth refresh and lifecycle-visible scope revocation, and
+    native Swift/Kotlin/iOS/Android lifecycle smokes use `resumeFromBackground`
+    as the app-shell foreground recovery API. Next step is explicit
+    battery/network/background-budget policy for queued sync, blob, compaction,
+    and realtime recovery work.
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)

@@ -140,14 +140,14 @@ enum SyncularIOSLifecycleScenario {
             "iOS lifecycle live query should refresh from native event"
         )
 
-        let syncCommandId = try native.enqueueSyncNow()
+        let syncCommandId = try native.resumeFromBackground()
         let (syncEvent, _) = try waitForEvent(
             from: native,
             kind: "SyncFailed",
             commandId: syncCommandId,
             timeoutMs: 8_000
         )
-        try lifecycleExpect(syncEvent.commandId == syncCommandId, "iOS lifecycle sync failure should carry command id")
+        try lifecycleExpect(syncEvent.commandId == syncCommandId, "iOS lifecycle foreground resume sync failure should carry command id")
 
         let outbox = try native.outboxSummariesJson()
         try lifecycleExpect(

@@ -58,9 +58,9 @@ mechanics into app-state APIs that developers can render and test.
 
 ## Next Action
 
-Add app-shell guidance and generated host examples for when to call
-`resumeFromBackground` / `resume_from_background`, then extend lifecycle tests
-around offline scope revocation and auth refresh during foreground recovery.
+Define the remaining app lifecycle policy surface: background execution budgets,
+battery/network-aware sync gating, and whether queued blob/compaction work
+needs dedicated foreground-resume hooks or can stay on the generic worker queue.
 
 ## Progress
 
@@ -91,6 +91,14 @@ around offline scope revocation and auth refresh during foreground recovery.
   `resumeFromBackground()`. The runtime resumes the worker if needed, restarts
   realtime, and enqueues a command-correlated sync instead of making host apps
   poke worker/realtime/sync primitives separately.
+- Browser/Hono auth coverage now proves `resumeFromBackground()` refreshes a
+  stale token on 401, retries once with fresh headers, emits `recovering`, and
+  reaches `complete` after recovery.
+- Browser/Hono scope-revocation coverage now proves the lifecycle stream
+  carries `sync.scope_revoked` while revoked scoped rows are cleared locally.
+- Swift, Kotlin, iOS, and Android lifecycle smokes now call
+  `resumeFromBackground()` as the foreground recovery API instead of using
+  lower-level sync pokes in the app-shell examples.
 
 ## Latest Evidence
 
@@ -98,6 +106,8 @@ around offline scope revocation and auth refresh during foreground recovery.
 - `bun test rust/bindings/browser/src/worker-client.test.ts -t "resumes from background"`
 - `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/client.test.ts`
 - `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/generated-app-conformance.test.ts`
+- `bun test rust/bindings/browser/src/__tests__/auth-hono.wasm.test.ts`
+- `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts -t "clears scoped local rows"`
 - `bun run --cwd rust/bindings/browser tsgo`
 - `bun test rust/bindings/browser/src/public-api.test.ts rust/bindings/browser/src/react.test.ts`
 - `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts -t "lifecycle state"`

@@ -121,6 +121,10 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       diagnostics: (event) => diagnostics.push(event),
     });
     await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+    const lifecycleEvents: SyncularV2LifecycleState[] = [];
+    client.addEventListener('lifecycleChanged', (event) => {
+      lifecycleEvents.push(event);
+    });
     await client.syncOnce();
     await expect(client.listTable('tasks')).resolves.toContainEqual(
       expect.objectContaining({ id: scenario.seedTask.id, user_id: ACTOR_A })
@@ -146,6 +150,15 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
         }),
       })
     );
+    const revokedLifecycle = await waitForLifecycle(
+      lifecycleEvents,
+      (event) => event.lastDiagnostic?.code === 'sync.scope_revoked'
+    );
+    expect(revokedLifecycle).toMatchObject({
+      lastDiagnostic: expect.objectContaining({
+        code: 'sync.scope_revoked',
+      }),
+    });
     await expect(client.listTable('tasks')).resolves.toEqual([]);
   });
 

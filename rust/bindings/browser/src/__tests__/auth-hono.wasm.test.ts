@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { createSyncularErrorResponse } from '@syncular/core';
 import { taskSubscription } from '../../../../examples/todo-app/generated/typescript/syncular.generated';
-import type { SyncularV2Client } from '../types';
+import type { SyncularV2Client, SyncularV2LifecycleState } from '../types';
 import {
   createHonoSyncHarness,
   type HonoSyncHarness,
@@ -44,6 +44,41 @@ describe('Syncular v2 worker auth against Hono sync routes', () => {
         user_id: ACTOR_ID,
       })
     );
+  });
+
+  it('refreshes auth headers during foreground resume recovery', async () => {
+    const harness = await openAuthHarness({
+      clientId: 'client-rust-auth-resume',
+      expectedStatus: 401,
+    });
+    const lifecycleEvents: SyncularV2LifecycleState[] = [];
+    harness.client.addEventListener('lifecycleChanged', (event) => {
+      lifecycleEvents.push(event);
+    });
+
+    const result = await harness.client.resumeFromBackground();
+
+    expect(lifecycleEvents.some((event) => event.phase === 'recovering')).toBe(
+      true
+    );
+    expect(harness.refreshCount()).toBe(1);
+    expect(harness.expiredStatuses).toEqual([401]);
+    expect(harness.retryStatuses).toEqual([401]);
+    expect(harness.syncRouteAuthHeaders[0]).toBe(STALE_TOKEN);
+    expect(harness.syncRouteAuthHeaders.at(-1)).toBe(FRESH_TOKEN);
+    expect(result.subscriptions[0]).toMatchObject({
+      id: 'sub-tasks',
+      table: 'tasks',
+      status: 'active',
+    });
+    const complete = await waitForLifecycle(
+      lifecycleEvents,
+      (event) => event.phase === 'complete' && event.bootstrap?.complete === true
+    );
+    expect(complete).toMatchObject({
+      phase: 'complete',
+      bootstrap: { complete: true },
+    });
   });
 
   it('refreshes auth headers after a server-side 403 gate and retries once', async () => {
@@ -151,4 +186,18 @@ interface AuthHarness {
   refreshCount(): number;
   retryStatuses: number[];
   syncRouteAuthHeaders: string[];
+}
+
+async function waitForLifecycle(
+  events: readonly SyncularV2LifecycleState[],
+  predicate: (event: SyncularV2LifecycleState) => boolean
+): Promise<SyncularV2LifecycleState> {
+  for (let attempt = 0; attempt < 80; attempt += 1) {
+    for (let index = events.length - 1; index >= 0; index -= 1) {
+      const event = events[index];
+      if (event && predicate(event)) return event;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('Timed out waiting for lifecycle event');
 }

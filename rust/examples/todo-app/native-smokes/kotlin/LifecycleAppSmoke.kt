@@ -174,14 +174,14 @@ fun main(args: Array<String>) {
         expect(rows[0].image?.hash == blobRef.hash, "Kotlin lifecycle query should decode blob ref")
         expect(live.refreshIfChanged(queryEvent, client)?.size == 1, "Kotlin lifecycle live query should refresh from native event")
 
-        val syncCommandId = raw.enqueueSyncNow()
+        val syncCommandId = raw.resumeFromBackground()
         val syncEvent = waitForEvent(
             raw,
             kind = "SyncFailed",
             commandId = syncCommandId,
             timeoutMs = 8_000,
         ).event
-        expect(syncEvent.commandId == syncCommandId, "Kotlin lifecycle sync failure should carry command id")
+        expect(syncEvent.commandId == syncCommandId, "Kotlin lifecycle foreground resume sync failure should carry command id")
 
         val outbox = raw.outboxSummariesJson()
         expect(outbox.contains(mutationEvent.clientCommitId!!), "Kotlin lifecycle outbox should contain queued mutation")
