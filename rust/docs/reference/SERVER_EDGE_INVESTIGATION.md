@@ -130,12 +130,9 @@ The follow-up sequence is captured as planned work packages:
 
 1. [`WP-27 Rust Relay Protocol Boundary`](../work-packages/WP-27-rust-relay-protocol-boundary.md)
    proves the shared protocol authority for relay/proxy fixtures.
-2. [`WP-28 Relay Production Protocol Validation`](../work-packages/WP-28-relay-production-protocol-validation.md)
-   can wire that boundary into the existing TypeScript relay path.
-3. [`WP-29 Rust Edge Proxy`](../work-packages/WP-29-rust-edge-proxy.md) stays
-   blocked until there is a concrete edge/offload product target.
-4. [`WP-30 Rust Realtime Fanout`](../work-packages/WP-30-rust-realtime-fanout.md)
-   stays blocked until realtime fanout pressure justifies a Rust component.
-5. [`WP-31 Rust Server Trait Model`](../work-packages/WP-31-rust-server-trait-model.md)
-   stays blocked until we explicitly decide Rust should own app mutation
-   semantics.
+2. [`WP-28 Relay Rust Evaluation And Protocol Validation`](../work-packages/WP-28-relay-production-protocol-validation.md)
+   baselines relay/server paths, evaluates where Rust could help, and records
+   the next decision.
+
+Do not pre-create Rust edge proxy, realtime fanout, or pure server WPs. Create
+those only if WP-28 produces measured evidence and a concrete product target.

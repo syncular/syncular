@@ -48,7 +48,4 @@ to this shape.
 25. [`WP-25 File Asset Sync`](WP-25-file-asset-sync.md)
 26. [`WP-26 TypeScript Host Bindings And Platform Bridges`](WP-26-typescript-host-bindings-platform-bridges.md)
 27. [`WP-27 Rust Relay Protocol Boundary`](WP-27-rust-relay-protocol-boundary.md)
-28. [`WP-28 Relay Production Protocol Validation`](WP-28-relay-production-protocol-validation.md)
-29. [`WP-29 Rust Edge Proxy`](WP-29-rust-edge-proxy.md)
-30. [`WP-30 Rust Realtime Fanout`](WP-30-rust-realtime-fanout.md)
-31. [`WP-31 Rust Server Trait Model`](WP-31-rust-server-trait-model.md)
+28. [`WP-28 Relay Rust Evaluation And Protocol Validation`](WP-28-relay-production-protocol-validation.md)
