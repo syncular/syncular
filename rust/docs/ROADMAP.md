@@ -355,10 +355,10 @@ read-only review:
   WP-22, WP-23, and WP-24. The first bridge parity slice added direct
   TypeScript host access to leased mutations, auth leases, and
   resume-from-background across browser bridge, Tauri, React Native, Expo, and
-  testkit. Next, continue the export audit with React and generated-client
-  projection: leased mutation hooks, query-observer-backed live queries instead
-  of broad `rowsChanged` refreshes, and explicit command-history ownership by
-  generated clients/platform wrappers.
+  testkit. React now also exposes leased mutation hooks over the same generated
+  mutation shape. Next, continue the export audit with query-observer-backed
+  React live queries instead of broad `rowsChanged` refreshes, and explicit
+  command-history ownership by generated clients/platform wrappers.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when WP-26 finds concrete generated-client naming, discoverability,
   conflict, blob, or subscription ergonomics gaps.
