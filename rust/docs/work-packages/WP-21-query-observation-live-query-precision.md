@@ -1,6 +1,6 @@
 # WP-21 Query Observation And Live Query Precision
 
-Status: `[ ]` planned
+Status: `[~] started`
 
 ## Goal
 
@@ -59,8 +59,17 @@ The product contract already says live queries/events must be precise enough to
 avoid app-side table guessing. WP-04 also showed realtime notification overhead
 is measurable and should stay visible in benchmarks.
 
+First retained slice:
+
+- Added a browser/Hono regression proving a Kysely live query can omit
+  explicit `{ tables: [...] }`, infer `tasks` from the compiled query, and
+  refresh after a remote row-level sync apply. The emitted live-query event
+  carries the affected `changedRows` entry (`table`, `rowId`, `operation`) so
+  app code does not need broad table guessing for that path.
+
 ## Next Action
 
-Add one browser worker live-query test that proves row-level sync apply
-invalidates the affected query without requiring the app to supply a broad
-table-only dependency list.
+Extend live-query registration with optional row/field dependency hints for
+simple generated-query shapes, starting with primary-key equality, so the
+runtime can skip rerunning queries when `changedRows` prove the changed row
+cannot affect the result.

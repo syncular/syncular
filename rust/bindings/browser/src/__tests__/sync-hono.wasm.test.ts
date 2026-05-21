@@ -5,9 +5,10 @@ import {
   type SyncCombinedRequest,
   type SyncCombinedResponse,
 } from '@syncular/core';
-import { sql } from 'kysely';
+import { Kysely, sql } from 'kysely';
 import {
   newTaskOperation,
+  type SyncularAppDb,
   syncularGeneratedAppSchema,
   syncularGeneratedSchemaVersion,
   taskSubscription,
@@ -21,6 +22,7 @@ import type {
   SyncularV2RowsChangedEvent,
   SyncularV2UnsafeSqlClient,
 } from '../types';
+import { createSyncularV2Dialect } from '../database';
 import { SyncularV2WorkerError } from '../worker-client';
 import {
   createHonoSyncHarness,
@@ -1796,6 +1798,73 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     ).resolves.toBeUndefined();
     await pushTaskAndPull(clientB, clientA, scenario.thirdTask);
     expect(events).toHaveLength(scenario.expectedEventsAfterUnsubscribe);
+  });
+
+  it('infers live-query dependencies and refreshes from row-level sync apply', async () => {
+    const scenario = syncConformance.liveQuery;
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+    });
+    harnesses.push(sync);
+
+    const clientA = await sync.openWorkerClient({
+      clientId: `${scenario.clientAId}-inferred`,
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    await clientA.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+    await clientA.syncOnce();
+
+    const clientB = await sync.openWorkerClient({
+      clientId: `${scenario.clientBId}-inferred`,
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+
+    const dialect = createSyncularV2Dialect(clientA, {
+      appTables: syncularGeneratedAppSchema.tables.map((table) => table.name),
+    });
+    const db = new Kysely<SyncularAppDb>({ dialect });
+    const events: Array<SyncularV2LiveQueryEvent<{ id: string; title: string }>> =
+      [];
+
+    try {
+      await dialect.live(
+        db
+          .selectFrom('tasks')
+          .select(['id', 'title'])
+          .where('user_id', '=', ACTOR_A)
+          .orderBy('id'),
+        {
+          onChange(rows, event) {
+            events.push({ ...event, rows });
+          },
+        }
+      );
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        initial: true,
+        rows: [],
+        changedRows: [],
+      });
+
+      await pushTaskAndPull(clientB, clientA, scenario.firstTask);
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({
+        initial: false,
+        rows: [{ id: scenario.firstTask.id, title: scenario.firstTask.title }],
+        changedRows: [
+          expect.objectContaining({
+            table: 'tasks',
+            rowId: scenario.firstTask.id,
+            operation: 'insert',
+          }),
+        ],
+      });
+    } finally {
+      await dialect.destroyLiveQueries();
+      await db.destroy();
+    }
   });
 
   it('keeps duplicate pushes acked once and does not create conflicts', async () => {
