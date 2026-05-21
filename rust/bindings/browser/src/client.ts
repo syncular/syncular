@@ -1,6 +1,9 @@
+import type { BlobRef } from '@syncular/core';
 import { createSyncularV2Database, type SyncularV2Database } from './database';
+import type { MutationsApi } from './mutations';
 import type {
   CreateSyncularV2DatabaseOptions,
+  SyncularV2BlobUploadQueueStats,
   SyncularV2Client,
   SyncularV2ClientEventMap,
   SyncularV2ClientEventSink,
@@ -63,25 +66,53 @@ export interface SyncularClient<DB> extends SyncularV2ManagedClient<DB> {
   setSubscriptions(
     subscriptions: readonly SyncularV2SubscriptionSpec[]
   ): Promise<void>;
-  presence: {
-    get<TMetadata = Record<string, unknown>>(
-      scopeKey: string
-    ): SyncularV2PresenceEntry<TMetadata>[];
-    join(scopeKey: string, metadata?: Record<string, unknown>): void;
-    leave(scopeKey: string): void;
-    updateMetadata(scopeKey: string, metadata: Record<string, unknown>): void;
-    onChange<TMetadata = Record<string, unknown>>(
-      listener: SyncularV2PresenceSink<TMetadata>
-    ): () => void;
-  };
-  conflicts: {
-    list(): Promise<SyncularV2ConflictSummary[]>;
-    retryKeepLocal(id: string): Promise<string>;
-    resolve(
-      id: string,
-      resolution: SyncularV2ConflictResolution
-    ): Promise<void>;
-  };
+  presence: SyncularPresenceClientLike;
+  conflicts: SyncularConflictsClientLike;
+}
+
+export interface SyncularBlobClientLike {
+  getUploadQueueStats(): Promise<SyncularV2BlobUploadQueueStats>;
+  processUploadQueue(): Promise<{ uploaded: number; failed: number }>;
+  retrieve(ref: BlobRef): Promise<Uint8Array>;
+}
+
+export interface SyncularPresenceClientLike {
+  get<TMetadata = Record<string, unknown>>(
+    scopeKey: string
+  ): SyncularV2PresenceEntry<TMetadata>[];
+  join(scopeKey: string, metadata?: Record<string, unknown>): void;
+  leave(scopeKey: string): void;
+  updateMetadata(scopeKey: string, metadata: Record<string, unknown>): void;
+  onChange<TMetadata = Record<string, unknown>>(
+    listener: SyncularV2PresenceSink<TMetadata>
+  ): () => void;
+}
+
+export interface SyncularConflictsClientLike {
+  list(): Promise<SyncularV2ConflictSummary[]>;
+  retryKeepLocal(id: string): Promise<string>;
+  resolve(id: string, resolution: SyncularV2ConflictResolution): Promise<void>;
+}
+
+export interface SyncularClientLike<DB> {
+  db: SyncularV2Database<DB>['db'];
+  dialect?: SyncularV2Database<DB>['dialect'] | unknown;
+  mutations: MutationsApi<DB, any>;
+  blobs: SyncularBlobClientLike;
+  on<T extends SyncularV2ClientEventType>(
+    event: T,
+    listener: SyncularV2ClientEventSink<T>
+  ): () => void;
+  getStatus(): SyncularClientStatus;
+  setSubscriptions(
+    subscriptions: readonly SyncularV2SubscriptionSpec[]
+  ): Promise<void>;
+  presence: SyncularPresenceClientLike;
+  conflicts: SyncularConflictsClientLike;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  sync(): Promise<SyncularV2SyncResult>;
+  destroy(): Promise<void>;
 }
 
 export type SyncularClientEventType = SyncularV2ClientEventType;

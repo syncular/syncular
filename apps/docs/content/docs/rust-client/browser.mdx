@@ -62,6 +62,48 @@ requested, and shuts everything down through `destroy()`/`close()`. Realtime is
 treated as a wakeup path: websocket reconnects trigger HTTP catchup sync, and
 interval polling stays opt-in through `lifecycle.pollIntervalMs`.
 
+## Tauri, React Native, and Expo
+
+Desktop and mobile JS shells use separate bridge packages. They return the same
+ergonomic client shape as the browser preset, but execute SQL, mutations,
+sync, presence, and events through a platform host:
+
+```ts
+import { createSyncularTauriClient } from '@syncular/client-tauri';
+import { createSyncularNativeClient } from '@syncular/client-react-native';
+import { createSyncularExpoClient } from '@syncular/client-expo';
+```
+
+React usage stays the same. Create a platform client, then pass it to the
+platform React factory's `SyncProvider`:
+
+```tsx
+import {
+  createSyncularNativeClient,
+  createSyncularNativeReact,
+} from '@syncular/client-react-native';
+
+const syncular = await createSyncularNativeClient<AppDb>({
+  module: SyncularNativeModule,
+});
+
+const { SyncProvider, useSyncQuery, useMutations } =
+  createSyncularNativeReact<AppDb>();
+
+function App() {
+  return (
+    <SyncProvider client={syncular}>
+      <Tasks />
+    </SyncProvider>
+  );
+}
+```
+
+The platform packages depend on `@syncular/client` for shared TypeScript types,
+Kysely query execution, generated/table mutation ergonomics, events, presence,
+conflicts, and the React hook surface. They do not use the browser Worker/WASM
+runtime.
+
 ## Query with Kysely
 
 Reads are normal Kysely queries:
