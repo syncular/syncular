@@ -110,6 +110,10 @@ Native/Rust parity foundation is implemented:
   fields, and CRDT state columns are not automatically inverted. Replay rejects
   commands that changed those fields with
   `sync.command_history_unsafe_field` before writing a compensating commit.
+- Native Diesel tracked commits record command history inside the same SQLite
+  transaction as the mutation/outbox write. The trait keeps a non-atomic
+  default for alternate clients, but the canonical native runtime path is
+  atomic.
 
 Gates:
 
@@ -137,10 +141,7 @@ in one TypeScript generated example:
 
 Extend the command-history proof beyond browser TypeScript:
 
-1. Decide whether native command-history recording must be atomic with the
-   mutation transaction, rather than current browser-aligned record-after-commit
-   behavior.
-2. Add leased-mutation/scope-revocation coverage for undo when auth authority
+1. Add leased-mutation/scope-revocation coverage for undo when auth authority
    is lost after the original command.
-3. Decide whether Swift/Kotlin generated clients should expose command-history
+2. Decide whether Swift/Kotlin generated clients should expose command-history
    wrappers now or wait until their mutation APIs mature further.

@@ -727,7 +727,9 @@ read-only review:
     replay restores/toggles the generated soft-delete column. Rust also proves
     undo-generated commits persist server conflicts through the normal sync
     path, and unsafe blob/encrypted/CRDT-backed field replay is rejected before
-    a compensating commit is written.
+    a compensating commit is written. Native Diesel tracked commits now record
+    the command history row inside the same SQLite transaction as the local
+    mutation/outbox write.
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)

@@ -1425,13 +1425,6 @@ pub struct SyncularAppCommandHistory<'a, C: SyncularCommandHistoryExecutor + ?Si
     client: &'a mut C,
 }
 
-#[derive(Debug, Clone)]
-struct SyncularPendingCommandHistoryEntry {
-    table: String,
-    row_id: String,
-    before: Option<Value>,
-}
-
 impl<C> SyncularAppCommandHistory<'_, C>
 where
     C: SyncularCommandHistoryExecutor + ?Sized,
@@ -1482,63 +1475,8 @@ where
         let mut tx = SyncularAppMutationTx { batch: &mut batch };
         f(&mut tx)?
     };
-    let pending = syncular_pending_command_history_entries(client, batch.mutations())?;
-    let commit = client.apply_command_history_batch(mutation_scope, batch)?;
-    let entries = syncular_committed_command_history_entries(client, pending)?;
-    if !entries.is_empty() {
-        client.command_history_record(mutation_scope, &entries, &commit)?;
-    }
+    let commit = client.apply_command_history_tracked_batch(mutation_scope, batch)?;
     Ok(MutationCommit { result, commit })
-}
-
-fn syncular_pending_command_history_entries<C>(
-    client: &mut C,
-    mutations: &[PendingSyncularMutation],
-) -> Result<Vec<SyncularPendingCommandHistoryEntry>>
-where
-    C: SyncularCommandHistoryExecutor + ?Sized,
-{
-    let mut entries = Vec::new();
-    for mutation in mutations {
-        if entries
-            .iter()
-            .any(|entry: &SyncularPendingCommandHistoryEntry| {
-                entry.table == mutation.table && entry.row_id == mutation.row_id
-            })
-        {
-            continue;
-        }
-        let before = client.command_history_current_row_json(&mutation.table, &mutation.row_id)?;
-        entries.push(SyncularPendingCommandHistoryEntry {
-            table: mutation.table.clone(),
-            row_id: mutation.row_id.clone(),
-            before,
-        });
-    }
-    Ok(entries)
-}
-
-fn syncular_committed_command_history_entries<C>(
-    client: &mut C,
-    pending: Vec<SyncularPendingCommandHistoryEntry>,
-) -> Result<Vec<CommandHistoryEntry>>
-where
-    C: SyncularCommandHistoryExecutor + ?Sized,
-{
-    let mut entries = Vec::new();
-    for entry in pending {
-        let after = client.command_history_current_row_json(&entry.table, &entry.row_id)?;
-        if entry.before == after {
-            continue;
-        }
-        entries.push(CommandHistoryEntry {
-            table: entry.table,
-            row_id: entry.row_id,
-            before: entry.before,
-            after,
-        });
-    }
-    Ok(entries)
 }
 
 fn syncular_replay_command_history<C>(
