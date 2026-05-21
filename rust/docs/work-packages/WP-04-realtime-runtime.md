@@ -1,6 +1,6 @@
 # WP-04 Realtime Runtime
 
-Status: `[~]` started
+Status: `[x]` accepted for the current Rust-first foundation
 
 ## Goal
 
@@ -565,7 +565,8 @@ Release measurement checkpoint:
 
 ## Next Action
 
-Pause WP-04 micro-optimizations unless a release-mode benchmark shows a real
+No local WP-04 implementation work remains for the current foundation. Pause
+WP-04 micro-optimizations unless a release-mode benchmark shows a real
 regression. Future realtime protocol changes should compare against
 `.context/benchmarks/wp04-realtime-release-current-2026-05-19.json` and keep
 `rust_realtime_http_request_count=0` for the normal websocket fast path.
