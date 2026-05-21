@@ -525,24 +525,16 @@ export class SyncularV2RustClient {
     params: readonly unknown[] = []
   ): SyncularV2SqlResult<Row> {
     assertSyncularV2ReadonlySql(sql);
-    if (typeof this.raw.executeSqlValue === 'function') {
-      return this.raw.executeSqlValue(sql, params) as SyncularV2SqlResult<Row>;
-    }
-    return parseJson(this.raw.executeSqlJson(sql, stringifyParams(params)));
+    return this.raw.executeSqlValue(sql, params) as SyncularV2SqlResult<Row>;
   }
 
   executeUnsafeSql<
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(sql: string, params: readonly unknown[] = []): SyncularV2SqlResult<Row> {
-    if (typeof this.raw.executeUnsafeSqlValue === 'function') {
-      return this.raw.executeUnsafeSqlValue(
-        sql,
-        params
-      ) as SyncularV2SqlResult<Row>;
-    }
-    return parseJson(
-      this.raw.executeUnsafeSqlJson(sql, stringifyParams(params))
-    );
+    return this.raw.executeUnsafeSqlValue(
+      sql,
+      params
+    ) as SyncularV2SqlResult<Row>;
   }
 
   subscribeQuery<Row extends Record<string, unknown> = Record<string, unknown>>(
@@ -605,17 +597,13 @@ export class SyncularV2RustClient {
   }
 
   async retrieveBlob(ref: BlobRef): Promise<Uint8Array> {
-    try {
-      assertSyncularV2BlobPayloadLimit({
-        operation: 'retrieve',
-        size: ref.size,
-        limits: this.blobLimits,
-        refHash: ref.hash,
-        diagnostics: (event) => this.#emitDiagnostic(event),
-      });
-    } catch (error) {
-      throw error;
-    }
+    assertSyncularV2BlobPayloadLimit({
+      operation: 'retrieve',
+      size: ref.size,
+      limits: this.blobLimits,
+      refHash: ref.hash,
+      diagnostics: (event) => this.#emitDiagnostic(event),
+    });
     const wasLocal = this.#hasDiagnosticListeners()
       ? this.raw.isBlobLocal(ref.hash)
       : undefined;

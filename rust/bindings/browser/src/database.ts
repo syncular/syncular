@@ -19,8 +19,8 @@ import {
 import { BaseSqliteDialect, BaseSqliteDriver } from 'kysely-generic-sqlite';
 import {
   assertSyncularV2BlobPayloadLimit,
-  syncularV2BlobInputSize,
   type SyncularV2BlobLimitInput,
+  syncularV2BlobInputSize,
 } from './blob-limits';
 import {
   createMutationsApi,
@@ -127,10 +127,6 @@ export interface SyncularV2MutationsOptions {
   afterCommit?: (meta: SyncularV2MutationsMeta) => void | Promise<void>;
 }
 
-export type CreateSyncularRustSqliteDatabaseOptions =
-  CreateSyncularV2DatabaseOptions;
-export type SyncularRustSqliteDatabase<DB> = SyncularV2Database<DB>;
-
 export async function createSyncularV2Database<DB>(
   options: CreateSyncularV2DatabaseOptions
 ): Promise<SyncularV2Database<DB>> {
@@ -209,8 +205,6 @@ export async function createSyncularV2Database<DB>(
     },
   };
 }
-
-export const createSyncularRustSqliteDatabase = createSyncularV2Database;
 
 function createMutationSyncScheduler(
   client: Pick<SyncularV2Client, 'syncOnce'>,

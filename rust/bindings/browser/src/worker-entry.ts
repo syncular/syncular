@@ -7,6 +7,12 @@ import {
   syncularV2ErrorMessage,
   syncularV2ErrorStatus,
 } from './errors';
+import {
+  dispatchGeneratedSyncularV2WorkerRequest,
+  generatedSyncularV2WorkerRequestDiagnosticSource,
+  isGeneratedSyncularV2AbortableWorkerRequestType,
+  isGeneratedSyncularV2DiagnosedSuccessWorkerRequestType,
+} from './generated-bridge';
 import { createSyncularV2RuntimeInfo } from './runtime-contract';
 import {
   openSyncularV2RustClient,
@@ -155,177 +161,62 @@ async function handleRequest(request: SyncularV2WorkerRequest): Promise<void> {
 }
 
 async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
-  switch (request.type) {
-    case 'open':
-      {
-        const config = resolveSyncularV2ClientConfig(request.config);
+  return dispatchGeneratedSyncularV2WorkerRequest(
+    {
+      requireClient,
+      openClient,
+      startRealtime: (options) => {
+        realtime.start(options);
+        return true;
+      },
+      stopRealtime: () => {
         realtime.stop();
-        detachRowsChangedListener();
-        client?.close();
-        client = undefined;
-        openedConfig = undefined;
-        openedRuntime = undefined;
-        const runtime = request.runtime;
-        client = await openSyncularV2RustClient({
-          config,
-          module: runtime?.wasmGlueUrl
-            ? loadWorkerWasmGlue(runtime.wasmGlueUrl)
-            : undefined,
-          wasmGlueUrl: runtime?.wasmGlueUrl,
-          wasmUrl: runtime?.wasmUrl,
-        });
-        attachRowsChangedListener(client);
-        openedConfig = config;
-        openedRuntime = runtime;
-      }
-      return true;
-    case 'setSubscriptions':
-      return requireClient().setSubscriptions(request.subscriptions);
-    case 'forceSubscriptionsBootstrap':
-      return requireClient().forceSubscriptionsBootstrap(
-        request.subscriptionIds ?? []
-      );
-    case 'setAuthHeaders':
-      return requireClient().setAuthHeaders(request.headers);
-    case 'upsertAuthLease':
-      return requireClient().upsertAuthLease(request.lease);
-    case 'authLease':
-      return requireClient().authLease(request.leaseId);
-    case 'activeAuthLeases':
-      return requireClient().activeAuthLeases(request.actorId, request.nowMs);
-    case 'setFieldEncryption':
-      return requireClient().setFieldEncryption(request.config);
-    case 'setEncryptedCrdt':
-      return requireClient().setEncryptedCrdt(request.config);
-    case 'setBlobEncryption':
-      return requireClient().setBlobEncryption(request.config);
-    case 'startRealtime':
-      realtime.start(request.options);
-      return true;
-    case 'stopRealtime':
-      realtime.stop();
-      return true;
-    case 'sendPresence':
-      realtime.sendPresence(request.action, request.scopeKey, request.metadata);
-      return true;
-    case 'executeSql':
-      return requireClient().executeSql(request.sql, request.params);
-    case 'executeUnsafeSql':
-      return requireClient().executeUnsafeSql(request.sql, request.params);
-    case 'subscribeQuery':
-      return requireClient().subscribeQuery(
-        request.sql,
-        request.params,
-        request.tables,
-        request.hints ?? []
-      );
-    case 'unsubscribeQuery':
-      requireClient().unsubscribeQuery(request.queryId);
-      return true;
-    case 'drainLiveQueryEvents':
-      return requireClient().drainLiveQueryEvents();
-    case 'liveQueryDiagnostics':
-      return requireClient().liveQueryDiagnostics();
-    case 'applyMutation':
-      return requireClient().applyMutation(request.operation, request.localRow);
-    case 'applyLeasedMutation':
-      return requireClient().applyLeasedMutation(
-        request.operation,
-        request.localRow
-      );
-    case 'applyMutationsBatch':
-      return requireClient().applyMutationsBatch(request.operations);
-    case 'applyMutationsCommit':
-      return requireClient().applyMutationsCommit(request.operations);
-    case 'applyLeasedMutationsCommit':
-      return requireClient().applyLeasedMutationsCommit(request.operations);
-    case 'syncPull':
-      return requireClient().syncPull({ syncAttempt: request.syncAttempt });
-    case 'syncPush':
-      return requireClient().syncPush({ syncAttempt: request.syncAttempt });
-    case 'syncOnce':
-      return requireClient().syncOnce({ syncAttempt: request.syncAttempt });
-    case 'transportStats':
-      return requireClient().transportStats();
-    case 'resetTransportStats':
-      requireClient().resetTransportStats();
-      return true;
-    case 'conflictSummaries':
-      return requireClient().conflictSummaries();
-    case 'retryConflictKeepLocal':
-      return requireClient().retryConflictKeepLocal(request.conflictId);
-    case 'resolveConflict':
-      return requireClient().resolveConflict(
-        request.conflictId,
-        request.resolution
-      );
-    case 'listTable':
-      return requireClient().listTable(request.table);
-    case 'storeBlob':
-      return requireClient().storeBlob(request.data, request.options);
-    case 'retrieveBlob':
-      return requireClient().retrieveBlob(request.ref);
-    case 'isBlobLocal':
-      return requireClient().isBlobLocal(request.hash);
-    case 'processBlobUploadQueue':
-      return requireClient().processBlobUploadQueue();
-    case 'blobUploadQueueStats':
-      return requireClient().blobUploadQueueStats();
-    case 'blobCacheStats':
-      return requireClient().blobCacheStats();
-    case 'pruneBlobCache':
-      return requireClient().pruneBlobCache(request.maxBytes);
-    case 'clearBlobCache':
-      return requireClient().clearBlobCache();
-    case 'compactStorage':
-      return requireClient().compactStorage(request.options);
-    case 'generatedSchemaState':
-      return requireClient().generatedSchemaState();
-    case 'localHealthCheck':
-      return requireClient().localHealthCheck();
-    case 'exportLocalSupportBundle':
-      return requireClient().exportLocalSupportBundle();
-    case 'importLocalSupportBundle':
-      return requireClient().importLocalSupportBundle(request.bundleJson);
-    case 'repairLocalHealth':
-      return requireClient().repairLocalHealth(request.request);
-    case 'resetLocalSyncState':
-      return requireClient().resetLocalSyncState(request.request);
-    case 'buildYjsTextUpdate':
-      return requireClient().buildYjsTextUpdate(request.args);
-    case 'applyYjsTextUpdates':
-      return requireClient().applyYjsTextUpdates(request.args);
-    case 'applyYjsEnvelopeToPayload':
-      return requireClient().applyYjsEnvelopeToPayload(request.args);
-    case 'openCrdtField':
-      return requireClient().openCrdtField(request.request);
-    case 'applyCrdtFieldText':
-      return requireClient().applyCrdtFieldText(request.request);
-    case 'applyCrdtFieldYjsUpdate':
-      return requireClient().applyCrdtFieldYjsUpdate(request.request);
-    case 'materializeCrdtField':
-      return requireClient().materializeCrdtField(request.request);
-    case 'crdtDocumentSnapshot':
-      return requireClient().crdtDocumentSnapshot(request.request);
-    case 'crdtUpdateLog':
-      return requireClient().crdtUpdateLog(request.request);
-    case 'snapshotCrdtFieldStateVector':
-      return requireClient().snapshotCrdtFieldStateVector(request.request);
-    case 'compactCrdtField':
-      return requireClient().compactCrdtField(request.request);
-    case 'encryptionHelper':
-      return requireClient().encryptionHelper(request.method, request.args);
-    case 'runtimeInfo':
-      return runtimeInfo();
-    case 'close':
-      realtime.stop();
-      detachRowsChangedListener();
-      client?.close();
-      client = undefined;
-      openedConfig = undefined;
-      openedRuntime = undefined;
-      return true;
-  }
+        return true;
+      },
+      sendPresence: (action, scopeKey, metadata) => {
+        realtime.sendPresence(action, scopeKey, metadata);
+        return true;
+      },
+      runtimeInfo,
+      closeClient,
+    },
+    request
+  );
+}
+
+async function openClient(
+  request: Extract<SyncularV2WorkerRequest, { type: 'open' }>
+): Promise<boolean> {
+  const config = resolveSyncularV2ClientConfig(request.config);
+  realtime.stop();
+  detachRowsChangedListener();
+  client?.close();
+  client = undefined;
+  openedConfig = undefined;
+  openedRuntime = undefined;
+  const runtime = request.runtime;
+  client = await openSyncularV2RustClient({
+    config,
+    module: runtime?.wasmGlueUrl
+      ? loadWorkerWasmGlue(runtime.wasmGlueUrl)
+      : undefined,
+    wasmGlueUrl: runtime?.wasmGlueUrl,
+    wasmUrl: runtime?.wasmUrl,
+  });
+  attachRowsChangedListener(client);
+  openedConfig = config;
+  openedRuntime = runtime;
+  return true;
+}
+
+function closeClient(): boolean {
+  realtime.stop();
+  detachRowsChangedListener();
+  client?.close();
+  client = undefined;
+  openedConfig = undefined;
+  openedRuntime = undefined;
+  return true;
 }
 
 async function runtimeInfo(): Promise<
@@ -396,14 +287,7 @@ function createAbortController(
 }
 
 function isAbortableRequest(type: SyncularV2WorkerRequest['type']): boolean {
-  return (
-    type === 'syncPull' ||
-    type === 'syncPush' ||
-    type === 'syncOnce' ||
-    type === 'storeBlob' ||
-    type === 'retrieveBlob' ||
-    type === 'processBlobUploadQueue'
-  );
+  return isGeneratedSyncularV2AbortableWorkerRequestType(type);
 }
 
 function clearClientAbortSignal(): void {
@@ -494,76 +378,13 @@ function requestSyncAttemptDiagnosticFields(
 function isDiagnosedSuccessRequest(
   type: SyncularV2WorkerRequest['type']
 ): boolean {
-  return (
-    type === 'open' ||
-    type === 'close' ||
-    type === 'setAuthHeaders' ||
-    type === 'setFieldEncryption' ||
-    type === 'setEncryptedCrdt' ||
-    type === 'setBlobEncryption' ||
-    type === 'startRealtime' ||
-    type === 'stopRealtime' ||
-    type === 'forceSubscriptionsBootstrap' ||
-    type === 'syncPull' ||
-    type === 'syncPush' ||
-    type === 'syncOnce' ||
-    type === 'storeBlob' ||
-    type === 'retrieveBlob' ||
-    type === 'processBlobUploadQueue' ||
-    type === 'clearBlobCache' ||
-    type === 'pruneBlobCache' ||
-    type === 'compactStorage' ||
-    type === 'exportLocalSupportBundle' ||
-    type === 'importLocalSupportBundle' ||
-    type === 'repairLocalHealth' ||
-    type === 'resetLocalSyncState'
-  );
+  return isGeneratedSyncularV2DiagnosedSuccessWorkerRequestType(type);
 }
 
 function requestDiagnosticSource(
   type: SyncularV2WorkerRequest['type']
 ): SyncularV2DiagnosticEvent['source'] {
-  if (type === 'setAuthHeaders') return 'auth';
-  if (type === 'setFieldEncryption') return 'client';
-  if (type === 'setEncryptedCrdt') return 'client';
-  if (type === 'setBlobEncryption') return 'client';
-  if (type === 'encryptionHelper') return 'client';
-  if (type === 'startRealtime' || type === 'stopRealtime') return 'realtime';
-  if (
-    type === 'syncPull' ||
-    type === 'syncPush' ||
-    type === 'syncOnce' ||
-    type === 'setSubscriptions' ||
-    type === 'forceSubscriptionsBootstrap'
-  ) {
-    return 'sync';
-  }
-  if (
-    type === 'storeBlob' ||
-    type === 'retrieveBlob' ||
-    type === 'processBlobUploadQueue' ||
-    type === 'blobUploadQueueStats' ||
-    type === 'blobCacheStats' ||
-    type === 'clearBlobCache' ||
-    type === 'pruneBlobCache' ||
-    type === 'isBlobLocal'
-  ) {
-    return 'blob';
-  }
-  if (
-    type === 'open' ||
-    type === 'close' ||
-    type === 'generatedSchemaState' ||
-    type === 'localHealthCheck' ||
-    type === 'exportLocalSupportBundle' ||
-    type === 'importLocalSupportBundle' ||
-    type === 'repairLocalHealth' ||
-    type === 'resetLocalSyncState' ||
-    type === 'compactStorage'
-  ) {
-    return 'storage';
-  }
-  return 'worker';
+  return generatedSyncularV2WorkerRequestDiagnosticSource(type);
 }
 
 function requestDiagnosticLevel(

@@ -225,8 +225,6 @@ export async function createSyncularClient<DB>(
   return managed;
 }
 
-export const createSyncularV2Client = createSyncularClient;
-
 function getSyncularClientStatus(
   client: Pick<SyncularV2Client, 'connectionState' | 'lifecycleState'>
 ): SyncularClientStatus {

@@ -5273,11 +5273,11 @@ fn generate_typescript_module(
     out.push_str("// Source: migrations/*.sql and syncular.codegen.json\n\n");
     let runtime_import_path = config.typescript_runtime_import_path()?;
     out.push_str(&format!(
-        "import {{ SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularRustSqliteDatabase, createSyncularV2CommandHistory, withSyncularV2SchemaWrites }} from {};\n",
+        "import {{ SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularV2CommandHistory, createSyncularV2Database, withSyncularV2SchemaWrites }} from {};\n",
         ts_string(runtime_import_path)
     ));
     out.push_str(&format!(
-        "import type {{ CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedCrdtField, SyncularV2ChangedRow, SyncularV2CommandHistory, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
+        "import type {{ CreateSyncularV2DatabaseOptions, SyncularV2AppSchema, SyncularV2ChangedCrdtField, SyncularV2ChangedRow, SyncularV2CommandHistory, SyncularV2Database, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
         ts_string(runtime_import_path)
     ));
     out.push_str("import { sql, type Kysely } from 'kysely';\n");
@@ -6026,7 +6026,7 @@ fn generate_typescript_module(
         ));
     }
     out.push_str("}\n\n");
-    out.push_str("export type SyncularAppDatabase = Omit<SyncularRustSqliteDatabase<SyncularAppDb>, 'mutations' | 'leasedMutations'> & {\n");
+    out.push_str("export type SyncularAppDatabase = Omit<SyncularV2Database<SyncularAppDb>, 'mutations' | 'leasedMutations'> & {\n");
     out.push_str("  mutations: SyncularAppMutations;\n");
     out.push_str("  leasedMutations: SyncularAppMutations;\n");
     out.push_str("  commandHistory: SyncularV2CommandHistory;\n");
@@ -6037,7 +6037,7 @@ fn generate_typescript_module(
     out.push_str(
         "  | ((args: SyncularSubscriptionArgs) => readonly SyncularSubscriptionSpec[]);\n\n",
     );
-    out.push_str("export interface CreateSyncularAppDatabaseOptions extends CreateSyncularRustSqliteDatabaseOptions {\n");
+    out.push_str("export interface CreateSyncularAppDatabaseOptions extends CreateSyncularV2DatabaseOptions {\n");
     out.push_str("  subscriptions?: SyncularAppSubscriptionsOption;\n");
     out.push_str("  bootstrapPhases?: Record<string, number>;\n");
     out.push_str("  schemaInstallMode?: 'full' | 'base' | 'none';\n");
@@ -6092,7 +6092,7 @@ fn generate_typescript_module(
     out.push_str("export async function createSyncularAppDatabase(\n");
     out.push_str("  options: CreateSyncularAppDatabaseOptions\n");
     out.push_str("): Promise<SyncularAppDatabase> {\n");
-    out.push_str("  const database = await createSyncularRustSqliteDatabase<SyncularAppDb>({\n");
+    out.push_str("  const database = await createSyncularV2Database<SyncularAppDb>({\n");
     out.push_str("    ...options,\n");
     out.push_str("    config: {\n");
     out.push_str("      ...options.config,\n");
@@ -10589,10 +10589,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
     #[test]
     fn typescript_runtime_import_path_defaults_to_v2_client_package() -> Result<()> {
         let config = CodegenConfig::default();
-        assert_eq!(
-            config.typescript_runtime_import_path()?,
-            "@syncular/client"
-        );
+        assert_eq!(config.typescript_runtime_import_path()?, "@syncular/client");
         Ok(())
     }
 
@@ -10993,10 +10990,10 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         let output = generate_typescript_module(&tables, &config, 7, None)?;
 
         assert!(output.contains(
-            "import { SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularRustSqliteDatabase, createSyncularV2CommandHistory, withSyncularV2SchemaWrites } from '@app/sync-runtime';"
+            "import { SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularV2CommandHistory, createSyncularV2Database, withSyncularV2SchemaWrites } from '@app/sync-runtime';"
         ));
         assert!(output.contains(
-            "import type { CreateSyncularRustSqliteDatabaseOptions, SyncularRustSqliteDatabase, SyncularV2AppSchema, SyncularV2ChangedCrdtField, SyncularV2ChangedRow, SyncularV2CommandHistory, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
+            "import type { CreateSyncularV2DatabaseOptions, SyncularV2AppSchema, SyncularV2ChangedCrdtField, SyncularV2ChangedRow, SyncularV2CommandHistory, SyncularV2Database, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
         ));
         assert!(output.contains("import { sql, type Kysely } from 'kysely';"));
         assert!(output.contains(
@@ -11006,13 +11003,13 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(output.contains("export interface SyncularAppMutations {"));
         assert!(output.contains("tasks: SyncularGeneratedTableMutations<NewTask, TaskPatch>;"));
         assert!(output.contains(
-            "export type SyncularAppDatabase = Omit<SyncularRustSqliteDatabase<SyncularAppDb>, 'mutations' | 'leasedMutations'> &"
+            "export type SyncularAppDatabase = Omit<SyncularV2Database<SyncularAppDb>, 'mutations' | 'leasedMutations'> &"
         ));
         assert!(output.contains("leasedMutations: SyncularAppMutations;"));
         assert!(output.contains("commandHistory: SyncularV2CommandHistory;"));
         assert!(output.contains("export async function createSyncularAppDatabase("));
         assert!(output.contains(
-            "export interface CreateSyncularAppDatabaseOptions extends CreateSyncularRustSqliteDatabaseOptions"
+            "export interface CreateSyncularAppDatabaseOptions extends CreateSyncularV2DatabaseOptions"
         ));
         assert!(output.contains("subscriptions?: SyncularAppSubscriptionsOption;"));
         assert!(output.contains("bootstrapPhases?: Record<string, number>;"));
