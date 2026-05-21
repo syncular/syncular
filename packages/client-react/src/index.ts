@@ -1,3 +1,22 @@
+import {
+  type CreateSyncularV2ClientOptions,
+  createSyncularClient,
+  type MutationReceipt,
+  type MutationsApi,
+  type SyncularClientLike,
+  type SyncularV2BlobUploadQueueStats,
+  type SyncularV2ChangedRow,
+  type SyncularV2ClientEventMap,
+  type SyncularV2ClientEventType,
+  type SyncularV2ConflictStats,
+  type SyncularV2ConnectionState,
+  type SyncularV2LiveQueryOptions,
+  type SyncularV2LiveQuerySubscription,
+  type SyncularV2OutboxStats,
+  type SyncularV2PresenceEntry,
+  type SyncularV2RowsChangedEvent,
+  type TableMutations,
+} from '@syncular/client';
 import type { BlobRef } from '@syncular/core';
 import type { CompiledQuery, Kysely } from 'kysely';
 import {
@@ -13,29 +32,6 @@ import {
   useState,
   useSyncExternalStore,
 } from 'react';
-import {
-  type CreateSyncularV2ClientOptions,
-  createSyncularClient,
-  type SyncularClientLike,
-} from './client';
-import type {
-  MutationReceipt,
-  MutationsApi,
-  TableMutations,
-} from './mutations';
-import type {
-  SyncularV2BlobUploadQueueStats,
-  SyncularV2ChangedRow,
-  SyncularV2ClientEventMap,
-  SyncularV2ClientEventType,
-  SyncularV2ConflictStats,
-  SyncularV2ConnectionState,
-  SyncularV2LiveQueryOptions,
-  SyncularV2LiveQuerySubscription,
-  SyncularV2OutboxStats,
-  SyncularV2PresenceEntry,
-  SyncularV2RowsChangedEvent,
-} from './types';
 
 export type SyncularReactStatus = 'idle' | 'loading' | 'ready' | 'error';
 
@@ -511,7 +507,6 @@ export function createSyncularReact<DB>() {
       options.refreshOnDataChange,
       publishResult,
       queryRef,
-      tablesKey,
       tablesRef,
       watchedTables,
     ]);
@@ -885,7 +880,9 @@ function isExecutableQuery<TResult>(
 function isCompilableExecutableQuery<TResult>(
   value: unknown
 ): value is ExecutableQuery<TResult> & { compile: () => CompiledQuery } {
-  return isExecutableQuery<TResult>(value) && typeof value.compile === 'function';
+  return (
+    isExecutableQuery<TResult>(value) && typeof value.compile === 'function'
+  );
 }
 
 type LiveQueryCapableClient<DB> = SyncularClientLike<DB> & {

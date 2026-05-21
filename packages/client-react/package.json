@@ -1,14 +1,14 @@
 {
-  "name": "@syncular/client-tauri",
+  "name": "@syncular/react",
   "version": "0.0.0",
-  "description": "Tauri bridge client for the Syncular Rust runtime",
+  "description": "React hooks and provider for the Syncular Rust client",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
   "repository": {
     "type": "git",
     "url": "https://github.com/syncular/syncular.git",
-    "directory": "packages/client-tauri"
+    "directory": "packages/client-react"
   },
   "bugs": {
     "url": "https://github.com/syncular/syncular/issues"
@@ -16,14 +16,14 @@
   "keywords": [
     "sync",
     "offline-first",
-    "tauri",
-    "rust",
-    "sqlite"
+    "react",
+    "rust"
   ],
   "private": false,
   "publishConfig": {
     "access": "public"
   },
+  "sideEffects": false,
   "type": "module",
   "exports": {
     ".": {
@@ -42,20 +42,24 @@
   },
   "dependencies": {
     "@syncular/client": "workspace:*",
-    "@syncular/react": "workspace:*"
+    "@syncular/core": "workspace:*"
   },
   "peerDependencies": {
     "kysely": "^0.28.0",
     "react": "^18.0.0 || ^19.0.0"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.8.9",
     "@syncular/config": "workspace:*",
-    "@syncular/testkit": "workspace:*",
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.2.14",
     "react": "*"
   },
   "files": [
     "dist",
     "src",
-    "!src/**/*.test.ts"
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__/**"
   ]
 }

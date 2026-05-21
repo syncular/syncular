@@ -8,6 +8,7 @@ If you prefer, you can write imports like `syncular/client` instead of
 For plugins and runtime-specific helpers, use explicit umbrella subpaths. Examples:
 
 - `syncular/client`
+- `syncular/react`
 - `syncular/dialect-neon`
 - `syncular/server-dialect-neon`
 

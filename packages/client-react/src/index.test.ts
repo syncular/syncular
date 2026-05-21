@@ -17,13 +17,13 @@ import type {
   SyncularV2PresenceSink,
   SyncularV2RowsChangedEvent,
 } from './index';
-import { createSyncularReact } from './react';
+import { createSyncularReact } from './index';
 
 if (!GlobalRegistrator.isRegistered) {
   GlobalRegistrator.register();
 }
 
-describe('@syncular/client/react', () => {
+describe('@syncular/react', () => {
   it('runs ergonomic sync queries and refreshes on watched table changes', async () => {
     const fake = new FakeManagedClient();
     const { SyncProvider, useSyncQuery } = createSyncularReact<TestDb>();

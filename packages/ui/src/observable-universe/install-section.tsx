@@ -71,7 +71,7 @@ export const InstallSection = forwardRef<HTMLElement, InstallSectionProps>(
                   <span className="text-white">bun add @syncular/client \</span>
                   {'\n'}
                   <span className="text-white">
-                    {'  '}@syncular/client/react \
+                    {'  '}@syncular/react \
                   </span>
                   {'\n'}
                   <span className="text-white">

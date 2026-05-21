@@ -45,6 +45,13 @@
         "default": "./dist/client.js"
       }
     },
+    "./react": {
+      "bun": "./src/react.ts",
+      "import": {
+        "types": "./dist/react.d.ts",
+        "default": "./dist/react.js"
+      }
+    },
     "./core": {
       "bun": "./src/core.ts",
       "import": {
@@ -294,6 +301,7 @@
     "@syncular/dialect-wa-sqlite": "workspace:*",
     "@syncular/migrations": "workspace:*",
     "@syncular/observability-sentry": "workspace:*",
+    "@syncular/react": "workspace:*",
     "@syncular/relay": "workspace:*",
     "@syncular/server": "workspace:*",
     "@syncular/server-cloudflare": "workspace:*",

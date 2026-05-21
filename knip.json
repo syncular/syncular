@@ -141,6 +141,12 @@
     "packages/client-expo": {
       "includeEntryExports": false
     },
+    "packages/client-react": {
+      "includeEntryExports": false,
+      "entry": [
+        "src/**/*.test.ts"
+      ]
+    },
     "packages/client-react-native": {
       "includeEntryExports": false
     },
