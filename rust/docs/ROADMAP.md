@@ -525,7 +525,8 @@ read-only review:
     coverage now also proves forbidden actors cannot mint signed download URLs
     for existing completed blobs. Encrypted CRDT coverage now proves pending
     server-bound outbox operations carry ciphertext without plaintext text or
-    raw Yjs update/state fields.
+    raw Yjs update/state fields. Native diagnostic snapshot coverage now also
+    proves host auth headers are not serialized.
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)

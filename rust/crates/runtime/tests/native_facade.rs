@@ -1952,6 +1952,13 @@ fn native_facade_exposes_redacted_diagnostic_snapshot() -> Result<()> {
             auto_sync_local_writes: false,
         },
     )?;
+    client.set_auth_headers_json(
+        &json!({
+            "authorization": "Bearer diagnostic-secret-token",
+            "x-api-key": "diagnostic-secret-key"
+        })
+        .to_string(),
+    )?;
 
     client.set_subscriptions_json(
         &json!([
@@ -2029,6 +2036,10 @@ fn native_facade_exposes_redacted_diagnostic_snapshot() -> Result<()> {
     assert!(!snapshot_json.contains("secret-user"));
     assert!(!snapshot_json.contains("secret-project-1"));
     assert!(!snapshot_json.contains("secret-project-2"));
+    assert!(!snapshot_json.contains("diagnostic-secret-token"));
+    assert!(!snapshot_json.contains("diagnostic-secret-key"));
+    assert!(!snapshot_json.contains("authorization"));
+    assert!(!snapshot_json.contains("x-api-key"));
     assert_eq!(snapshot["outboxStats"]["pending"], 1);
     assert_eq!(snapshot["outboxStats"]["total"], 1);
     assert_eq!(snapshot["conflictStats"]["total"], 0);
