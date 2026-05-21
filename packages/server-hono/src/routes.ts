@@ -1108,6 +1108,11 @@ function summarizePullResponseForRequestEvent(
   commitCount: number;
   changeCount: number;
   snapshotPageCount: number;
+  snapshotInlineRowCount: number;
+  snapshotChunkCount: number;
+  snapshotChunkBytes: number;
+  snapshotArtifactCount: number;
+  snapshotArtifactBytes: number;
 } {
   let activeSubscriptionCount = 0;
   let revokedSubscriptionCount = 0;
@@ -1115,6 +1120,11 @@ function summarizePullResponseForRequestEvent(
   let commitCount = 0;
   let changeCount = 0;
   let snapshotPageCount = 0;
+  let snapshotInlineRowCount = 0;
+  let snapshotChunkCount = 0;
+  let snapshotChunkBytes = 0;
+  let snapshotArtifactCount = 0;
+  let snapshotArtifactBytes = 0;
 
   for (const subscription of response.subscriptions) {
     if (subscription.status === 'revoked') {
@@ -1130,7 +1140,18 @@ function summarizePullResponseForRequestEvent(
       (totalChanges, commit) => totalChanges + commit.changes.length,
       0
     );
-    snapshotPageCount += subscription.snapshots?.length ?? 0;
+    for (const snapshot of subscription.snapshots ?? []) {
+      snapshotPageCount += 1;
+      snapshotInlineRowCount += snapshot.rows.length;
+      for (const chunk of snapshot.chunks ?? []) {
+        snapshotChunkCount += 1;
+        snapshotChunkBytes += chunk.byteLength;
+      }
+      for (const artifact of snapshot.artifacts ?? []) {
+        snapshotArtifactCount += 1;
+        snapshotArtifactBytes += artifact.byteLength;
+      }
+    }
   }
 
   return {
@@ -1141,6 +1162,11 @@ function summarizePullResponseForRequestEvent(
     commitCount,
     changeCount,
     snapshotPageCount,
+    snapshotInlineRowCount,
+    snapshotChunkCount,
+    snapshotChunkBytes,
+    snapshotArtifactCount,
+    snapshotArtifactBytes,
   };
 }
 

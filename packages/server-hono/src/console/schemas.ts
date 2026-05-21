@@ -188,6 +188,19 @@ export type ConsoleRowInvestigationRequestEvidence = z.infer<
   typeof ConsoleRowInvestigationRequestEvidenceSchema
 >;
 
+export const ConsoleRowInvestigationSnapshotEvidenceSchema = z.object({
+  pageCount: z.number().int().nonnegative(),
+  inlineRowCount: z.number().int().nonnegative(),
+  chunkCount: z.number().int().nonnegative(),
+  chunkBytes: z.number().int().nonnegative(),
+  artifactCount: z.number().int().nonnegative(),
+  artifactBytes: z.number().int().nonnegative(),
+});
+
+export type ConsoleRowInvestigationSnapshotEvidence = z.infer<
+  typeof ConsoleRowInvestigationSnapshotEvidenceSchema
+>;
+
 export const ConsoleRequestEventResponseSummarySchema = z
   .object({
     subscriptionCount: z.number().int().nonnegative().optional(),
@@ -197,6 +210,11 @@ export const ConsoleRequestEventResponseSummarySchema = z
     commitCount: z.number().int().nonnegative().optional(),
     changeCount: z.number().int().nonnegative().optional(),
     snapshotPageCount: z.number().int().nonnegative().optional(),
+    snapshotInlineRowCount: z.number().int().nonnegative().optional(),
+    snapshotChunkCount: z.number().int().nonnegative().optional(),
+    snapshotChunkBytes: z.number().int().nonnegative().optional(),
+    snapshotArtifactCount: z.number().int().nonnegative().optional(),
+    snapshotArtifactBytes: z.number().int().nonnegative().optional(),
   })
   .passthrough();
 
@@ -380,6 +398,7 @@ export const ConsoleRowInvestigationResponseSchema = z.object({
   scopeEligibility: ConsoleRowInvestigationScopeEligibilitySchema,
   subscriptionEvidence: ConsoleRowInvestigationSubscriptionEvidenceSchema,
   requestEvidence: ConsoleRowInvestigationRequestEvidenceSchema,
+  snapshotEvidence: ConsoleRowInvestigationSnapshotEvidenceSchema,
   history: z.array(ConsoleRowHistoryEntrySchema),
   relevantEvents: z.array(ConsoleRequestEventSchema),
   findings: z.array(ConsoleRowInvestigationFindingSchema),

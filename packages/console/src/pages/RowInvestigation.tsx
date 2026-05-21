@@ -390,6 +390,52 @@ export function RowInvestigation({ table, rowId }: RowInvestigationProps) {
                 </div>
               </div>
             </SectionCard>
+
+            <SectionCard
+              title="Bootstrap"
+              description="Snapshot transport evidence from pull summaries."
+              contentClassName="space-y-3"
+            >
+              <div className="font-mono text-[11px] space-y-2">
+                <Badge
+                  variant={
+                    data.snapshotEvidence.artifactCount > 0
+                      ? 'healthy'
+                      : data.snapshotEvidence.chunkCount > 0
+                        ? 'ghost'
+                        : data.snapshotEvidence.pageCount > 0
+                          ? 'ghost'
+                          : 'offline'
+                  }
+                >
+                  {data.snapshotEvidence.artifactCount > 0
+                    ? 'artifact'
+                    : data.snapshotEvidence.chunkCount > 0
+                      ? 'chunk'
+                      : data.snapshotEvidence.pageCount > 0
+                        ? 'inline'
+                        : 'none'}
+                </Badge>
+                <div className="text-neutral-400">
+                  pages: {data.snapshotEvidence.pageCount}
+                </div>
+                <div className="text-neutral-400">
+                  inline rows: {data.snapshotEvidence.inlineRowCount}
+                </div>
+                <div className="text-neutral-400">
+                  chunks: {data.snapshotEvidence.chunkCount}
+                </div>
+                <div className="text-neutral-400">
+                  chunk bytes: {data.snapshotEvidence.chunkBytes}
+                </div>
+                <div className="text-neutral-400">
+                  artifacts: {data.snapshotEvidence.artifactCount}
+                </div>
+                <div className="text-neutral-400">
+                  artifact bytes: {data.snapshotEvidence.artifactBytes}
+                </div>
+              </div>
+            </SectionCard>
           </div>
 
           <SectionCard title="Findings" contentClassName="space-y-2">
