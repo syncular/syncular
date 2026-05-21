@@ -478,7 +478,7 @@ If you don't see logs or traces:
 
 For working production examples in this repo:
 
-- Browser init: `apps/demo/src/main.tsx`
-- Browser Sentry options: `apps/demo/src/client/sentry.ts`
-- Service worker server init: `apps/demo/src/sw/server.ts`
-- Cloudflare worker init: `apps/demo/src/cf/index.ts`
+- Browser init: configure diagnostics through `@syncular/client`
+- Browser Sentry options: forward client diagnostic events into your app sink
+- Service worker server init: expose the Hono/server routes used by your app
+- Cloudflare worker init: wire `@syncular/server-cloudflare` routes in the Worker

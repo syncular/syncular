@@ -1,4 +1,4 @@
-# @syncular/client-rust
+# @syncular/client
 
 Rust-owned SQLite browser client for Syncular v2.
 
@@ -15,7 +15,7 @@ Configure Rust codegen to emit your browser helper into your app package:
 ```json
 {
   "typescriptOutputPath": "src/generated/syncular.browser.ts",
-  "typescriptRuntimeImportPath": "@syncular/client-rust",
+  "typescriptRuntimeImportPath": "@syncular/client",
   "tables": {
     "profiles": {
       "serverVersionColumn": "server_version",
@@ -132,7 +132,7 @@ subscription setup, initial sync, realtime, reconnect catchup, and
 coordinated shutdown:
 
 ```ts
-import { createSyncularV2Client } from '@syncular/client-rust';
+import { createSyncularV2Client } from '@syncular/client';
 
 const syncular = await createSyncularV2Client<AppDb>({
   config: {
@@ -160,12 +160,12 @@ inline/binary websocket applies already fall back to pull. Use
 
 ## React
 
-React apps can import the optional `@syncular/client-rust/react` entrypoint.
+React apps can import the optional `@syncular/client/react` entrypoint.
 The adapter owns the Rust browser client lifecycle when passed `options`, or
 can wrap an already-created managed client:
 
 ```ts
-import { createSyncularV2React } from '@syncular/client-rust/react';
+import { createSyncularV2React } from '@syncular/client/react';
 
 const {
   SyncularProvider,
@@ -465,7 +465,7 @@ native event payloads: `rowsChanged`, `outboxChanged`, `conflictsChanged`,
 The default API always uses a Worker. `createSyncularAppDatabase()` validates
 the runtime before returning:
 
-- package name/version must match `@syncular/client-rust`
+- package name/version must match `@syncular/client`
 - Worker protocol version must match the generated helper
 - generated app schema version must match the local SQLite schema state
 - Rust runtime must include the generated schema's required feature list
@@ -527,7 +527,7 @@ methods. Keep editor-specific code above this package: TipTap schemas,
 ProseMirror transforms, Excalidraw save policy, selection, undo, and WebView
 messages belong in app code or optional app adapters.
 
-Use `@syncular/client-rust-crdt-adapters` for app-layer editor glue above this
+Use `@syncular/client-crdt-adapters` for app-layer editor glue above this
 package. It connects Yjs binary update streams to Syncular's durable CRDT field
 API, preserves pending updates across failed writes, exposes backpressure,
 prefers queued native host writes when available, and refreshes app view models
@@ -559,7 +559,7 @@ Generated app code can select from that catalog without changing the public
 query/mutation API:
 
 ```ts
-import { resolveSyncularV2RuntimeArtifactCatalog } from '@syncular/client-rust';
+import { resolveSyncularV2RuntimeArtifactCatalog } from '@syncular/client';
 
 const catalogUrl = '/syncular/syncular-v2-runtime-artifacts.json';
 const catalog = await fetch(catalogUrl).then((response) => response.json());
@@ -625,8 +625,6 @@ bun run test
 bun run test:wasm:auth
 bun run test:wasm:hono
 bun run test:wasm:variants
-bun run benchmark:browser -- --operations=100 --rounds=5 --warmup=10
-bun run benchmark:browser:features
 bun run size:wasm
 bun run size:wasm:check
 bun run size:wasm:core
@@ -637,16 +635,6 @@ bun run catalog:wasm
 smokes for auth retry, sync protocol edge cases, realtime wakeups, and blob
 transport behavior.
 
-`benchmark:browser` builds/serves the browser runtime and compares Rust-owned
-SQLite local mutation batches against the legacy JS/wa-sqlite host-store fixture.
-That JS path is a benchmark baseline only, not a supported v2 client runtime.
-From this package directory, pass
-`--output=../../.context/benchmarks/rust-sqlite.json` to keep a JSON report.
-
-`benchmark:browser:features` uses the Rust-owned v2 package only and records
-read-heavy Kysely queries, live-query refreshes, CRDT text writes, encrypted
-field pushes, encrypted CRDT text writes, blob metadata stores, large local
-snapshot reads, and multi-table commits into
-`.context/benchmarks/browser-feature-workloads.json`.
-Browser benchmarks rebuild dev WASM for speed; run `bun run build:wasm` before
-checking release size or preparing a package.
+`build:wasm`, `size:wasm:check`, and the conformance gates are the current
+browser package validation path. The old JS/wa-sqlite comparison benchmark was
+removed with the legacy TypeScript client runtime.

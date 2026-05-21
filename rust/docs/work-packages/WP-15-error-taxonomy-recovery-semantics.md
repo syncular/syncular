@@ -134,7 +134,7 @@ public surfaces without stable taxonomy entries.
 - Public per-operation push result codes now use the stable Syncular taxonomy
   instead of legacy uppercase strings. Server handlers, encrypted CRDT
   operations, testkit fixtures, Rust app-server fixtures, browser worker tests,
-  demo handlers, docs, generated protocol fixtures, and todo conformance
+  docs, generated protocol fixtures, and todo conformance
   scenarios now agree on `sync.version_conflict`, `sync.unknown_table`,
   `sync.row_missing`, `sync.empty_commit`, `sync.unsupported_operation`,
   `sync.missing_scopes`, `sync.idempotency_cache_miss`, and
@@ -193,16 +193,14 @@ public surfaces without stable taxonomy entries.
 - `bun run --cwd packages/core fixtures:protocol`
 - `bun run --cwd packages/core tsgo`
 - `bun run --cwd packages/server-hono tsgo`
-- `bun run --cwd apps/demo tsgo`
 - `bun test packages/core/src/__tests__/error-responses.test.ts packages/server-hono/src/__tests__/blob-routes.test.ts packages/server-hono/src/__tests__/console-gateway-live-routes.test.ts packages/server-hono/src/__tests__/console-gateway-routes.test.ts --test-name-pattern "invalid upload|direct upload|auth token|no instances|filters|requires exactly one|console gateway classifications|route errors"`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
-- `rg -n "error:\\s*['\\\"][A-Z_]+['\\\"]|code:\\s*['\\\"][A-Z_]+['\\\"]|message:\\s*['\\\"][A-Z_]+['\\\"]" packages/core packages/server packages/server-hono packages/relay packages/testkit rust/bindings/browser rust/crates/runtime rust/crates/testkit apps/demo -g '!**/node_modules/**' -g '!**/target/**' -g '!**/dist/**'`
+- `rg -n "error:\\s*['\\\"][A-Z_]+['\\\"]|code:\\s*['\\\"][A-Z_]+['\\\"]|message:\\s*['\\\"][A-Z_]+['\\\"]" packages/core packages/server packages/server-hono packages/relay packages/testkit rust/bindings/browser rust/crates/runtime rust/crates/testkit -g '!**/node_modules/**' -g '!**/target/**' -g '!**/dist/**'`
 - `bun run --cwd packages/core fixtures:protocol`
 - `bun run --cwd packages/core tsgo`
 - `bun run --cwd packages/server tsgo`
 - `bun run --cwd packages/testkit tsgo`
 - `bun test packages/server/src/push-operation-codes.test.ts packages/core/src/__tests__/error-responses.test.ts packages/core/src/__tests__/sync-packs.test.ts packages/server/src/encrypted-crdt.test.ts`
-- `bun run --cwd apps/demo tsgo`
 - `bun run --cwd rust/bindings/browser tsgo`
 - `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/__tests__/auth-hono.wasm.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures`
@@ -212,7 +210,7 @@ public surfaces without stable taxonomy entries.
 - `bun run --cwd packages/server-hono tsgo`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
-- `rg -n "\\b(VERSION_CONFLICT|UNKNOWN_TABLE|ROW_MISSING|EMPTY_COMMIT|INVALID_SCOPE|UNSUPPORTED_OPERATION|FORBIDDEN|INVALID_REQUEST|READ_ONLY|MISSING_PROJECT_ID|MISSING_SCOPES|IDEMPOTENCY_CACHE_MISS|CONSTRAINT_VIOLATION|NOT_NULL_CONSTRAINT|UNIQUE_CONSTRAINT|FOREIGN_KEY_CONSTRAINT)\\b" packages/server packages/testkit packages/core apps/demo apps/docs rust/bindings/browser rust/crates/testkit rust/crates/runtime rust/examples/todo-app -g '!node_modules' -g '!target'`
+- `rg -n "\\b(VERSION_CONFLICT|UNKNOWN_TABLE|ROW_MISSING|EMPTY_COMMIT|INVALID_SCOPE|UNSUPPORTED_OPERATION|FORBIDDEN|INVALID_REQUEST|READ_ONLY|MISSING_PROJECT_ID|MISSING_SCOPES|IDEMPOTENCY_CACHE_MISS|CONSTRAINT_VIOLATION|NOT_NULL_CONSTRAINT|UNIQUE_CONSTRAINT|FOREIGN_KEY_CONSTRAINT)\\b" packages/server packages/testkit packages/core apps/docs rust/bindings/browser rust/crates/testkit rust/crates/runtime rust/examples/todo-app -g '!node_modules' -g '!target'`
 - `bun run --cwd packages/core tsgo`
 - `bun run --cwd rust/bindings/browser tsgo`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime error::tests --lib`

@@ -18,56 +18,45 @@
     "happy-dom",
     "tailwindcss"
   ],
-  "ignoreBinaries": ["act", "k6", "maestro", "version"],
+  "ignoreBinaries": [
+    "act",
+    "k6",
+    "maestro",
+    "version"
+  ],
   "ignoreIssues": {
-    "plugins/blob/client/src/index.ts": ["exports", "types"],
-    "plugins/blob/client/src/migrate.ts": ["exports"],
-    "plugins/blob/client/src/types.ts": ["exports", "types"],
-    "plugins/blob/server-storage-filesystem/src/index.ts": ["types"],
-    "plugins/blob/server-storage-s3/src/index.ts": ["types"],
-    "plugins/encryption/client/src/index.ts": ["types"],
-    "packages/server-hono/src/websocket-origin.ts": ["exports"],
-    "plugins/encryption/client/src/key-sharing.ts": ["exports"],
-    "rust/bindings/browser/src/database.ts": ["duplicates"],
-    "rust/bindings/browser/src/worker-protocol.ts": ["types"],
-    "rust/bindings/browser/src/worker-realtime.ts": ["types"]
+    "plugins/blob/server-storage-filesystem/src/index.ts": [
+      "types"
+    ],
+    "plugins/blob/server-storage-s3/src/index.ts": [
+      "types"
+    ],
+    "packages/server-hono/src/websocket-origin.ts": [
+      "exports"
+    ],
+    "rust/bindings/browser/src/database.ts": [
+      "duplicates"
+    ],
+    "rust/bindings/browser/src/worker-protocol.ts": [
+      "types"
+    ],
+    "rust/bindings/browser/src/worker-realtime.ts": [
+      "types"
+    ]
   },
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.ts"]
+      "entry": [
+        "scripts/*.ts"
+      ]
     },
     "packages/core": {
       "includeEntryExports": false,
-      "entry": ["src/**/*.test.ts"]
-    },
-    "packages/client": {
-      "includeEntryExports": false
-    },
-    "packages/client-react": {
-      "includeEntryExports": false,
       "entry": [
-        "src/**/*.test.ts",
-        "src/**/*.test.tsx",
-        "src/__tests__/test-utils.ts",
-        "src/__tests__/integration/test-setup.ts"
+        "src/**/*.test.ts"
       ]
     },
-    "packages/client-plugin-encryption": {
-      "includeEntryExports": false
-    },
-    "plugins/yjs/client": {
-      "includeEntryExports": false
-    },
     "plugins/yjs/server": {
-      "includeEntryExports": false
-    },
-    "plugins/offline-auth/client": {
-      "includeEntryExports": false
-    },
-    "plugins/offline-auth/react": {
-      "includeEntryExports": false
-    },
-    "plugins/blob/client": {
       "includeEntryExports": false
     },
     "plugins/blob/server-storage-filesystem": {
@@ -84,7 +73,10 @@
     },
     "packages/server-hono": {
       "includeEntryExports": false,
-      "entry": ["src/**/*.test.ts", "scripts/*.ts"]
+      "entry": [
+        "src/**/*.test.ts",
+        "scripts/*.ts"
+      ]
     },
     "packages/server-cloudflare": {
       "includeEntryExports": false
@@ -172,14 +164,6 @@
     "packages/ui": {
       "includeEntryExports": false
     },
-    "apps/demo": {
-      "includeEntryExports": false,
-      "entry": [
-        "src/main.tsx!",
-        "src/sw/server.ts!",
-        "scripts/*.ts"
-      ]
-    },
     "apps/console": {
       "entry": [
         "src/main.tsx!"
@@ -194,14 +178,15 @@
       ]
     },
     "tests/unit": {
-      "entry": ["**/*.test.ts"]
+      "entry": [
+        "**/*.test.ts"
+      ]
     },
     "tests/dialects": {
       "includeEntryExports": false,
-      "entry": ["**/*.ts"]
-    },
-    "tests/perf": {
-      "entry": ["**/*.ts"]
+      "entry": [
+        "**/*.ts"
+      ]
     },
     "tests/load": {
       "includeEntryExports": false,
@@ -210,23 +195,21 @@
         "scripts/*.js",
         "*.ts"
       ],
-      "ignoreDependencies": ["k6"]
-    },
-    "tests/integration": {
-      "includeEntryExports": false,
-      "entry": ["**/*.ts"]
-    },
-    "tests/runtime": {
-      "includeEntryExports": false,
-      "entry": ["**/*.ts"],
-      "ignoreDependencies": ["better-sqlite3"]
+      "ignoreDependencies": [
+        "k6"
+      ]
     },
     "tests/typegen": {
       "includeEntryExports": false,
-      "entry": ["**/*.ts"]
+      "entry": [
+        "**/*.ts"
+      ]
     },
     "tests/expo-app": {
-      "entry": ["**/*.ts", "**/*.tsx"]
+      "entry": [
+        "**/*.ts",
+        "**/*.tsx"
+      ]
     }
   }
 }

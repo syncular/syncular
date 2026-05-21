@@ -89,7 +89,7 @@ After each successful sync, the retry counter resets to 0. Non-retryable errors 
 </SyncProvider>
 ```
 
-Setting `maxRetries` to `0` disables automatic retries. You can still trigger manual syncs via `useSyncEngine().sync()`.
+Setting `maxRetries` to `0` disables automatic retries. You can still trigger manual syncs via `useSyncularV2ManagedClient().sync()`.
 
 ## The onError Callback
 
@@ -256,7 +256,7 @@ For more granular control, subscribe to sync engine events directly:
 
 ```tsx
 function useErrorLogger() {
-  const { state, sync } = useSyncEngine();
+  const { state, sync } = useSyncularV2ManagedClient();
 
   useEffect(() => {
     // Access the engine directly for event subscriptions
@@ -296,7 +296,7 @@ import { Button } from '@syncular/ui/primitives';
 
 function OfflineBanner() {
   const status = useSyncStatus();
-  const { reconnect, sync } = useSyncEngine();
+  const { reconnect, sync } = useSyncularV2ManagedClient();
 
   if (status.isOnline) return null;
 

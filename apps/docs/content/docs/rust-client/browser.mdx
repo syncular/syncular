@@ -38,7 +38,7 @@ Apps that want startup and shutdown handled in one place can use the managed
 browser preset:
 
 ```ts
-import { createSyncularV2Client } from '@syncular/client-rust';
+import { createSyncularV2Client } from '@syncular/client';
 
 const syncular = await createSyncularV2Client<AppDb>({
   config: {

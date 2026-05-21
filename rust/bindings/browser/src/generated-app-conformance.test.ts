@@ -372,7 +372,7 @@ function fakeClient(): SyncularV2Client {
     },
     async runtimeInfo() {
       return {
-        packageName: '@syncular/client-rust',
+        packageName: '@syncular/client',
         packageVersion: '0.0.0',
         workerProtocolVersion: 1,
         storage: 'memory',

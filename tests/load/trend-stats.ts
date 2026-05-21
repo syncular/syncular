@@ -1,7 +1,5 @@
 /**
- * Reusable statistical functions for trend and change-point analysis.
- *
- * Shared between perf and load test trend-ci scripts.
+ * Reusable statistical functions for load trend and change-point analysis.
  */
 
 export function median(values: number[]): number {
@@ -55,13 +53,6 @@ export function parseIntOrDefault(
   return parsed;
 }
 
-/**
- * Robust Z-score change-point detection.
- *
- * Given a current value, historical median, and MAD, compute a robust Z-score
- * using the consistency constant 1.4826. Returns the raw Z-score and flags
- * for regression/improvement change points based on the provided thresholds.
- */
 export function detectChangePoint(
   current: number,
   historyMedian: number,

@@ -1,7 +1,7 @@
 {
-  "name": "@syncular/client-rust-crdt-adapters",
+  "name": "@syncular/client-crdt-adapters",
   "version": "0.0.0",
-  "description": "Rich-editor CRDT adapters for the Syncular Rust client",
+  "description": "Rich-editor CRDT adapters for the Syncular client",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
@@ -41,7 +41,7 @@
     "release": "bunx syncular-publish"
   },
   "peerDependencies": {
-    "@syncular/client-rust": ">=0.0.0",
+    "@syncular/client": ">=0.0.0",
     "yjs": "^13.6.30"
   },
   "devDependencies": {
