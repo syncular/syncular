@@ -1,6 +1,6 @@
 # WP-25 File Asset Sync
 
-Status: `[~]` in progress
+Status: `[x]` accepted for the current Rust-first foundation
 
 ## Goal
 
@@ -189,6 +189,22 @@ Fifth retained slice:
 - Benchmark gate: not applicable; this adds testkit/reference semantics only and
   does not touch runtime apply/query/transport paths.
 
+Sixth retained slice:
+
+- Added file asset conformance for the native file-path blob APIs. A writer
+  stores/uploads a file body from a local path, commits normal `files` and
+  `file_versions` metadata, a reader pulls only the metadata, then retrieves the
+  referenced blob body to a local file path.
+- This proves the reference file asset shape works with the platform-native
+  large-file path and does not require putting file bytes in synced app rows or
+  moving bytes through JavaScript-style in-memory payloads.
+- Gates:
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit
+    file_asset`
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
+- Benchmark gate: not applicable; this exercises existing native blob file APIs
+  through file-version metadata without changing runtime hot paths.
+
 ## Suggested App Schema
 
 Initial generated/reference schema:
@@ -219,9 +235,32 @@ Add a reference file asset schema and conformance scenario:
    `AppTestServer`, and the Hono route now proves the same row-backed
    file-version authorization shape for download URL access.
 
-## Next Action
+## Acceptance Sweep
 
-Add the production server/browser side of the reference path:
+WP-25 is accepted for the current Rust-first foundation:
+
+- File/folder/version metadata is represented as normal app tables.
+- File bytes stay in content-addressed blob storage and are referenced through
+  `file_versions.blob_ref`.
+- Browser, Hono/server, native file-path, and Rust testkit flows prove the same
+  row-backed blob reference shape.
+- Conflict, trash/restore, delete-vs-update, concurrent version edit,
+  revocation, missing body, and corrupted body scenarios are covered by
+  Syncular-owned tests.
+- The reference schema remains a testkit fixture, not a framework-mandated
+  product model or codegen template.
+
+Future file-product work should be driven by a concrete app surface:
+
+- app-specific sharing joins and inherited folder grants,
+- app-specific file availability/cache policy tables,
+- app-specific conflict UI rows,
+- console file/blob dashboards,
+- platform UI shell integration for very large files.
+
+## Completed Action Checklist
+
+Production server/browser/native reference path:
 
 1. `[x]` Add Hono blob authorization coverage using `file_versions.blob_ref` as the
    visible row-backed blob reference.
@@ -234,3 +273,5 @@ Add the production server/browser side of the reference path:
    optional template. Decision: keep it as a testkit/reference app schema for
    now; apps use normal migrations and `syncular.codegen.json` for generated
    clients.
+5. `[x]` Prove the reference path with native file-path blob APIs so
+   platform-native large-file flows do not require in-memory app-row payloads.

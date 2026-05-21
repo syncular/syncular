@@ -350,10 +350,10 @@ read-only review:
 
 ## Next
 
-- Start [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md).
-  WP-24 blob hardening is accepted for the Rust-first foundation; file-asset UX,
-  platform-native large-file bridges, and console file/blob surfaces should stay
-  scoped to WP-25 rather than reopening blob protocol behavior.
+- No local WP-25 foundation slice remains. Future file-product work should be
+  driven by a concrete app surface and stay scoped to
+  [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md) rather than
+  reopening blob protocol behavior.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when WP-26 finds concrete generated-client naming, discoverability,
   conflict, blob, or subscription ergonomics gaps.
@@ -794,7 +794,7 @@ read-only review:
     and not cached. Hono blob routes now have explicit `blob.too_large`
     coverage for upload initiation and direct upload `Content-Length`
     enforcement.
-- `[~]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
+- `[x]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
   - First retained slice adds `syncular-testkit::file_assets`, a reference
     scoped file metadata schema with `files` and `file_versions` tables,
     `file_versions.blob_ref` as the only blob column, mutation builders for
@@ -808,10 +808,12 @@ read-only review:
     subscription revocation. Testkit file asset conformance now also covers
     rename, move, trash, restore, delete-vs-update, version conflict
     persistence, concurrent version edits, missing blob bodies, and corrupted
-    blob integrity failures. Decision: keep the file asset schema as a
-    testkit/reference app schema, not a framework codegen template, until a real
-    app proves reusable file-product semantics beyond normal migrations and
-    `syncular.codegen.json`.
+    blob integrity failures. Native file-path blob conformance now proves the
+    reference metadata shape works for platform-native large-file flows without
+    putting bytes in app rows. Decision: keep the file asset schema as a
+    testkit/reference app schema, not a framework codegen template, until a
+    real app proves reusable file-product semantics beyond normal migrations
+    and `syncular.codegen.json`.
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry
     explicit TypeScript/platform `Interface Impact` sections. Browser, React,
