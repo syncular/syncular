@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createDatabase, type SyncPushRequest } from '@syncular/core';
 import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../server-dialect-sqlite/src';
+import { parseJsonValue } from './dialect/helpers';
 import { createServerHandler, createServerHandlerCollection } from './handlers';
 import { ensureSyncSchema } from './migrate';
 import { pushCommit } from './push';
@@ -110,6 +111,86 @@ describe('push operation result error codes', () => {
           retriable: false,
         },
       ],
+    });
+  });
+
+  it('surfaces auth lease rejection codes without treating the lease as authorization', async () => {
+    const leaseAwareHandlers = createServerHandlerCollection<TestDb>([
+      createServerHandler<TestDb, ClientDb, 'tasks'>({
+        table: 'tasks',
+        scopes: ['user:{user_id}'],
+        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+        authorize: async (ctx) => {
+          expect(ctx.actorId).toBe('u1');
+          expect(ctx.authLease?.leaseId).toBe('lease-expired');
+          if (ctx.authLease?.leaseStatusAtEnqueue === 'expired') {
+            return {
+              error: 'Auth lease expired',
+              code: 'sync.auth_lease_expired',
+              retriable: true,
+            };
+          }
+          return true;
+        },
+      }),
+    ]);
+    const authLease = {
+      leaseId: 'lease-expired',
+      leaseExpiresAtMs: 1_779_360_000_000,
+      leaseStatusAtEnqueue: 'expired',
+      leaseScopeSummaryJson: JSON.stringify({ user_id: ['u1'] }),
+    };
+
+    const result = await pushCommit({
+      db,
+      dialect,
+      handlers: leaseAwareHandlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'client-auth-lease',
+        clientCommitId: 'commit-auth-lease-expired',
+        schemaVersion: 1,
+        authLease,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'task-auth-lease',
+            op: 'upsert',
+            payload: { title: 'should not apply', user_id: 'u1' },
+            base_version: null,
+          },
+        ],
+      },
+    });
+
+    expect(result.response).toMatchObject({
+      status: 'rejected',
+      results: [
+        {
+          status: 'error',
+          code: 'sync.auth_lease_expired',
+          error: 'Auth lease expired',
+          retriable: true,
+        },
+      ],
+    });
+
+    const task = await db
+      .selectFrom('tasks')
+      .selectAll()
+      .where('id', '=', 'task-auth-lease')
+      .executeTakeFirst();
+    expect(task).toBeUndefined();
+
+    const commit = await db
+      .selectFrom('sync_commits')
+      .select(['meta', 'result_json'])
+      .where('client_commit_id', '=', 'commit-auth-lease-expired')
+      .executeTakeFirstOrThrow();
+    expect(parseJsonValue(commit.meta)).toEqual({ authLease });
+    expect(parseJsonValue(commit.result_json)).toMatchObject({
+      status: 'rejected',
+      results: [{ code: 'sync.auth_lease_expired' }],
     });
   });
 

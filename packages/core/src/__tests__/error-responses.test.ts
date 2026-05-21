@@ -86,6 +86,27 @@ describe('Syncular error responses', () => {
       retryable: false,
       recommendedAction: 'checkPermissions',
     });
+    expect(createSyncularErrorResponse('sync.auth_lease_expired')).toMatchObject(
+      {
+        category: 'auth-required',
+        retryable: true,
+        recommendedAction: 'refreshAuth',
+      }
+    );
+    expect(
+      createSyncularErrorResponse('sync.auth_lease_scope_revoked')
+    ).toMatchObject({
+      category: 'scope-revoked',
+      retryable: false,
+      recommendedAction: 'checkPermissions',
+    });
+    expect(
+      createSyncularErrorResponse('sync.auth_lease_business_rejected')
+    ).toMatchObject({
+      category: 'conflict',
+      retryable: false,
+      recommendedAction: 'resolveConflict',
+    });
     expect(createSyncularErrorResponse('sync.offline')).toMatchObject({
       category: 'offline',
       retryable: true,

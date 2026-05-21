@@ -7,6 +7,48 @@
       "recommendedAction": "refreshAuth",
       "message": "Authentication is required."
     },
+    "sync.auth_lease_missing": {
+      "category": "auth-required",
+      "retryable": true,
+      "recommendedAction": "refreshAuth",
+      "message": "The queued commit is missing required auth lease provenance."
+    },
+    "sync.auth_lease_invalid": {
+      "category": "auth-required",
+      "retryable": true,
+      "recommendedAction": "refreshAuth",
+      "message": "The queued commit auth lease provenance is invalid."
+    },
+    "sync.auth_lease_expired": {
+      "category": "auth-required",
+      "retryable": true,
+      "recommendedAction": "refreshAuth",
+      "message": "The queued commit auth lease expired before replay."
+    },
+    "sync.auth_lease_schema_mismatch": {
+      "category": "schema-mismatch",
+      "retryable": false,
+      "recommendedAction": "regenerateClient",
+      "message": "The queued commit auth lease was issued for an incompatible schema."
+    },
+    "sync.auth_lease_scope_mismatch": {
+      "category": "forbidden",
+      "retryable": false,
+      "recommendedAction": "checkPermissions",
+      "message": "The queued commit auth lease does not cover the pushed scopes."
+    },
+    "sync.auth_lease_scope_revoked": {
+      "category": "scope-revoked",
+      "retryable": false,
+      "recommendedAction": "checkPermissions",
+      "message": "The queued commit auth lease scope was revoked."
+    },
+    "sync.auth_lease_business_rejected": {
+      "category": "conflict",
+      "retryable": false,
+      "recommendedAction": "resolveConflict",
+      "message": "The queued commit auth lease was rejected by application policy."
+    },
     "sync.forbidden": {
       "category": "forbidden",
       "retryable": false,

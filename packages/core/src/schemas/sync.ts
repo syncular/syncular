@@ -59,11 +59,23 @@ export type SyncOperation = z.infer<typeof SyncOperationSchema>;
 // Push Request/Response Schemas
 // ============================================================================
 
+export const SyncAuthLeaseProvenanceSchema = z.object({
+  leaseId: z.string().min(1),
+  leaseExpiresAtMs: z.number().int(),
+  leaseStatusAtEnqueue: z.string().min(1),
+  leaseScopeSummaryJson: z.string().optional(),
+});
+
+export type SyncAuthLeaseProvenance = z.infer<
+  typeof SyncAuthLeaseProvenanceSchema
+>;
+
 export const SyncPushRequestSchema = z.object({
   clientId: z.string().min(1),
   clientCommitId: z.string().min(1),
   operations: z.array(SyncOperationSchema).min(1),
   schemaVersion: z.number().int().min(1),
+  authLease: SyncAuthLeaseProvenanceSchema.optional(),
 });
 
 export type SyncPushRequest = z.infer<typeof SyncPushRequestSchema>;

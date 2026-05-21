@@ -42,16 +42,17 @@ designing offline auth leases honestly.
 The current decision is to defer a pure Rust server. Offline auth must not
 weaken strict online `/sync` authorization. The legacy JS offline-auth package
 is a local UX/session-cache primitive, not a signed server authorization model.
-The Rust foundation now covers protocol/testkit lease types and local client
-storage. Leases remain offline intent/audit records only; they do not bypass
-normal reconnect authorization.
+The Rust foundation now covers protocol/testkit lease types, local client
+storage, replay provenance, server handler context, and stable rejection
+diagnostics. Leases remain offline intent/audit records only; they do not
+bypass normal reconnect authorization.
 
 ## Next Action
 
-Next narrow slice is a current-auth replay check: queued commits that carry
-lease provenance must still be sent with normal request auth, and any server
-lease rejection must surface through stable diagnostics/conflict-style recovery
-without treating the lease as authorization.
+Next narrow slice is turning the model into an actual server-issued lease flow:
+issue/refresh endpoint semantics, server verification helpers, and a testkit
+stateful server path that can reject expired/revoked leases while still
+requiring current request auth.
 
 ## Progress
 
@@ -80,9 +81,34 @@ without treating the lease as authorization.
   BoltFFI wrapper.
 - Added native store coverage for lease roundtrip, active-lease filtering, and
   outbox provenance on summaries plus pending push rows.
+- Added optional `authLease` provenance to HTTP and websocket push requests in
+  the Rust protocol/runtime/browser paths. Replay still uses normal request
+  auth; the lease is audit/recovery context only.
+- Added server-side `authLease` propagation into push handler context and
+  commit metadata, including Hono HTTP batch/single pushes, websocket pushes,
+  and request payload snapshots.
+- Added stable core taxonomy entries for `sync.auth_lease_*` rejection modes and
+  regenerated the Rust error taxonomy fixture.
+- Added server coverage proving an expired lease returned from handler
+  authorization is surfaced as `sync.auth_lease_expired`, does not materialize
+  the row, and persists lease provenance in `sync_commits.meta`.
+- Added Rust runtime coverage proving Diesel-backed queued commits send
+  provenance on sync, preserve rejected lease diagnostics as local conflicts,
+  and keep the failed outbox row with provenance for recovery.
+- Fixed the testkit websocket app-server push parser so production realtime
+  push messages can carry `authLease` into stateful test servers.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol -p
   syncular-testkit` passed with `15` protocol tests and `36` testkit smoke
   tests.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
+  protocol_contract` passed with `42` tests after replay provenance.
+- Gate: `bun test packages/core/src/__tests__/error-responses.test.ts` passed
+  after adding auth-lease taxonomy entries.
+- Gate: `bun test packages/server/src/push-operation-codes.test.ts` passed with
+  the auth-lease rejection/metadata coverage.
+- Gate: `bun run --cwd packages/core tsgo`, `bun run --cwd packages/server
+  tsgo`, and `bun run --cwd packages/server-hono tsgo` passed after the wire
+  contract slice.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   store_backends` passed with `36` tests after the local lease storage slice.
 - Gate: `bun run rust:conformance:fast` passed after the protocol/testkit

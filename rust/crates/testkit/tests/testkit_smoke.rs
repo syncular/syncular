@@ -375,6 +375,7 @@ fn app_test_http_server_accepts_production_realtime_pushes() {
                 base_version: Some(0),
             }],
             schema_version,
+            auth_lease: None,
         })
         .expect("websocket push");
 
@@ -1500,6 +1501,7 @@ fn default_response_acknowledges_pushes() {
                     base_version: None,
                 }],
                 schema_version: 1,
+                auth_lease: None,
             }],
         }),
         pull: None,
