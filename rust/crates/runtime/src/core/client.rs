@@ -3483,6 +3483,60 @@ where
         Ok(serde_json::to_string(&self.local_health_check()?)?)
     }
 
+    pub fn export_local_support_bundle(&mut self) -> Result<crate::health::LocalSupportBundle> {
+        let mut states = Vec::new();
+        let mut roots = Vec::new();
+        self.store.transaction(|tx| {
+            states = tx.subscription_states(DEFAULT_STATE_ID)?;
+            roots = tx.verified_roots(DEFAULT_STATE_ID)?;
+            Ok(())
+        })?;
+        let mut health = crate::health::check_local_health_records(
+            DEFAULT_STATE_ID,
+            &self.subscriptions,
+            &states,
+            &roots,
+        );
+        let app_schema_state = self.app_schema_state()?;
+        let outbox = self.outbox_summaries()?;
+        let conflicts = self.conflict_summaries()?;
+        let scoped_rows = self.store.scoped_rows_health_summary(&self.subscriptions)?;
+        let blob_health = self.store.blob_health_summary()?;
+        let crdt_health = self.store.crdt_health_summary()?;
+        crate::health::check_local_sync_state_health(
+            &mut health,
+            self.app_schema.current_schema_version(),
+            &app_schema_state,
+            &outbox,
+            &conflicts,
+            scoped_rows.as_ref(),
+            blob_health.as_ref(),
+            crdt_health.as_ref(),
+        );
+        Ok(crate::health::local_support_bundle_from_records(
+            "rust",
+            health,
+            &self.subscriptions,
+            &states,
+            &roots,
+            app_schema_state,
+            &outbox,
+            &conflicts,
+            blob_health,
+            crdt_health,
+        ))
+    }
+
+    pub fn export_local_support_bundle_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(&self.export_local_support_bundle()?)?)
+    }
+
+    pub fn import_local_support_bundle_json(&mut self, bundle_json: &str) -> Result<String> {
+        Ok(serde_json::to_string(
+            &crate::health::import_local_support_bundle_json(bundle_json)?,
+        )?)
+    }
+
     pub fn repair_local_health(
         &mut self,
         request: crate::health::LocalHealthRepairRequest,

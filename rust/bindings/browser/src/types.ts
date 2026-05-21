@@ -791,6 +791,87 @@ export interface SyncularV2LocalSyncResetReport {
   clearedTables: string[];
 }
 
+export interface SyncularV2LocalSupportSubscription {
+  id: string;
+  table: string;
+  scopeKeys: string[];
+  scopeValueCount: number;
+  paramsKeys: string[];
+  paramsValueCount: number;
+  bootstrapPhase: number;
+}
+
+export interface SyncularV2LocalSupportSubscriptionState {
+  stateId: string;
+  subscriptionId: string;
+  table: string;
+  scopeKeys: string[];
+  scopeValueCount: number;
+  paramsKeys: string[];
+  paramsValueCount: number;
+  cursor: number;
+  status: string;
+  bootstrapStatePresent: boolean;
+  bootstrapStateByteLen: number;
+}
+
+export interface SyncularV2LocalSupportVerifiedRoot {
+  stateId: string;
+  subscriptionId: string;
+  partitionIdPresent: boolean;
+  partitionIdByteLen: number;
+  commitSeq: number;
+  rootByteLen: number;
+  rootIsCanonicalHex: boolean;
+}
+
+export interface SyncularV2LocalSupportOutboxSummary {
+  total: number;
+  byStatus: Record<string, number>;
+  bySchemaVersion: Record<string, number>;
+}
+
+export interface SyncularV2LocalSupportConflictSummary {
+  total: number;
+  unresolved: number;
+  resolved: number;
+  byResultStatus: Record<string, number>;
+  byCode: Record<string, number>;
+}
+
+export interface SyncularV2LocalSupportBundle {
+  formatVersion: number;
+  generatedAt: number;
+  redacted: true;
+  source: string;
+  health: SyncularV2LocalHealthReport;
+  appSchemaState: SyncularV2SchemaState;
+  subscriptions: SyncularV2LocalSupportSubscription[];
+  subscriptionStates: SyncularV2LocalSupportSubscriptionState[];
+  verifiedRoots: SyncularV2LocalSupportVerifiedRoot[];
+  outbox: SyncularV2LocalSupportOutboxSummary;
+  conflicts: SyncularV2LocalSupportConflictSummary;
+  blob?: Record<string, number>;
+  crdt?: Record<string, number>;
+}
+
+export interface SyncularV2LocalSupportBundleImportReport {
+  formatVersion: number;
+  generatedAt: number;
+  redacted: boolean;
+  source: string;
+  healthOk: boolean;
+  findingCount: number;
+  subscriptionCount: number;
+  subscriptionStateCount: number;
+  verifiedRootCount: number;
+  checkedSubscriptionStates: number;
+  checkedVerifiedRoots: number;
+  checkedOutboxCommits: number;
+  checkedConflicts: number;
+  checkedSyncedRows: number;
+}
+
 export interface SyncularV2RustRuntimeInfo {
   crateName: string;
   crateVersion: string;
@@ -1053,6 +1134,10 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   resetLocalSyncState(
     request?: SyncularV2LocalSyncResetRequest
   ): Promise<SyncularV2LocalSyncResetReport>;
+  exportLocalSupportBundle(): Promise<SyncularV2LocalSupportBundle>;
+  importLocalSupportBundle(
+    bundle: SyncularV2LocalSupportBundle | string
+  ): Promise<SyncularV2LocalSupportBundleImportReport>;
   buildYjsTextUpdate(
     args: SyncularBuildYjsTextUpdateArgs
   ): Promise<SyncularBuildYjsTextUpdateResult>;

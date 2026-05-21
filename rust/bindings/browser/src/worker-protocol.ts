@@ -292,6 +292,17 @@ export type SyncularV2WorkerRequest =
   | {
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'exportLocalSupportBundle';
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'importLocalSupportBundle';
+      bundleJson: string;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'repairLocalHealth';
       request: SyncularV2LocalHealthRepairRequest;
     }

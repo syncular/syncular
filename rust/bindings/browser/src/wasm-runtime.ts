@@ -37,6 +37,8 @@ export interface RawSyncularV2RustClient {
   setSubscriptionsJson(subscriptionsJson: string): void;
   forceSubscriptionsBootstrapJson(subscriptionIdsJson: string): Promise<string>;
   localHealthCheckJson(): Promise<string>;
+  exportLocalSupportBundleJson(): Promise<string>;
+  importLocalSupportBundleJson(bundleJson: string): Promise<string>;
   repairLocalHealthJson(requestJson: string): Promise<string>;
   resetLocalSyncStateJson(requestJson: string): Promise<string>;
   setAuthHeadersJson(headersJson: string): void;

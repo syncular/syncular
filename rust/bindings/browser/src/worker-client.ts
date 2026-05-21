@@ -51,6 +51,8 @@ import type {
   SyncularV2LocalHealthRepairReport,
   SyncularV2LocalHealthRepairRequest,
   SyncularV2LocalHealthReport,
+  SyncularV2LocalSupportBundle,
+  SyncularV2LocalSupportBundleImportReport,
   SyncularV2LocalSyncResetReport,
   SyncularV2LocalSyncResetRequest,
   SyncularV2LifecycleState,
@@ -637,6 +639,19 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   localHealthCheck(): Promise<SyncularV2LocalHealthReport> {
     return this.#request({ type: 'localHealthCheck' });
+  }
+
+  exportLocalSupportBundle(): Promise<SyncularV2LocalSupportBundle> {
+    return this.#request({ type: 'exportLocalSupportBundle' });
+  }
+
+  importLocalSupportBundle(
+    bundle: SyncularV2LocalSupportBundle | string
+  ): Promise<SyncularV2LocalSupportBundleImportReport> {
+    return this.#request({
+      type: 'importLocalSupportBundle',
+      bundleJson: typeof bundle === 'string' ? bundle : JSON.stringify(bundle),
+    });
   }
 
   async repairLocalHealth(

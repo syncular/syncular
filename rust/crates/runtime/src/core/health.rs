@@ -1,5 +1,5 @@
 use crate::client::SubscriptionSpec;
-use crate::error::Result;
+use crate::error::{Result, SyncularError};
 use crate::protocol::{BootstrapState, ScopeValues, COMMIT_INTEGRITY_HEX_LENGTH};
 use crate::store::{
     now_ms, AppSchemaState, BlobHealthSummary, ConflictSummary, CrdtHealthSummary, OutboxSummary,
@@ -8,6 +8,8 @@ use crate::store::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+pub const LOCAL_SUPPORT_BUNDLE_FORMAT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -88,6 +90,103 @@ pub struct LocalSyncResetReport {
     pub deleted_verified_roots: usize,
     pub cleared_synced_rows: i64,
     pub cleared_tables: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSupportBundle {
+    pub format_version: u32,
+    pub generated_at: i64,
+    pub redacted: bool,
+    pub source: String,
+    pub health: LocalHealthReport,
+    pub app_schema_state: AppSchemaState,
+    pub subscriptions: Vec<LocalSupportSubscription>,
+    pub subscription_states: Vec<LocalSupportSubscriptionState>,
+    pub verified_roots: Vec<LocalSupportVerifiedRoot>,
+    pub outbox: LocalSupportOutboxSummary,
+    pub conflicts: LocalSupportConflictSummary,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob: Option<BlobHealthSummary>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub crdt: Option<CrdtHealthSummary>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSupportSubscription {
+    pub id: String,
+    pub table: String,
+    pub scope_keys: Vec<String>,
+    pub scope_value_count: usize,
+    pub params_keys: Vec<String>,
+    pub params_value_count: usize,
+    pub bootstrap_phase: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSupportSubscriptionState {
+    pub state_id: String,
+    pub subscription_id: String,
+    pub table: String,
+    pub scope_keys: Vec<String>,
+    pub scope_value_count: usize,
+    pub params_keys: Vec<String>,
+    pub params_value_count: usize,
+    pub cursor: i64,
+    pub status: String,
+    pub bootstrap_state_present: bool,
+    pub bootstrap_state_byte_len: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSupportVerifiedRoot {
+    pub state_id: String,
+    pub subscription_id: String,
+    pub partition_id_present: bool,
+    pub partition_id_byte_len: usize,
+    pub commit_seq: i64,
+    pub root_byte_len: usize,
+    pub root_is_canonical_hex: bool,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSupportOutboxSummary {
+    pub total: usize,
+    pub by_status: BTreeMap<String, usize>,
+    pub by_schema_version: BTreeMap<i32, usize>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSupportConflictSummary {
+    pub total: usize,
+    pub unresolved: usize,
+    pub resolved: usize,
+    pub by_result_status: BTreeMap<String, usize>,
+    pub by_code: BTreeMap<String, usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSupportBundleImportReport {
+    pub format_version: u32,
+    pub generated_at: i64,
+    pub redacted: bool,
+    pub source: String,
+    pub health_ok: bool,
+    pub finding_count: usize,
+    pub subscription_count: usize,
+    pub subscription_state_count: usize,
+    pub verified_root_count: usize,
+    pub checked_subscription_states: usize,
+    pub checked_verified_roots: usize,
+    pub checked_outbox_commits: usize,
+    pub checked_conflicts: usize,
+    pub checked_synced_rows: i64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -227,6 +326,179 @@ pub fn check_local_sync_state_health(
     if let Some(crdt) = crdt {
         check_crdt_health_summary(report, crdt);
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn local_support_bundle_from_records(
+    source: impl Into<String>,
+    health: LocalHealthReport,
+    subscriptions: &[SubscriptionSpec],
+    states: &[SubscriptionState],
+    roots: &[VerifiedRoot],
+    app_schema_state: AppSchemaState,
+    outbox: &[OutboxSummary],
+    conflicts: &[ConflictSummary],
+    blob: Option<BlobHealthSummary>,
+    crdt: Option<CrdtHealthSummary>,
+) -> LocalSupportBundle {
+    LocalSupportBundle {
+        format_version: LOCAL_SUPPORT_BUNDLE_FORMAT_VERSION,
+        generated_at: now_ms(),
+        redacted: true,
+        source: source.into(),
+        health,
+        app_schema_state,
+        subscriptions: subscriptions
+            .iter()
+            .map(redacted_subscription)
+            .collect::<Vec<_>>(),
+        subscription_states: states
+            .iter()
+            .map(redacted_subscription_state)
+            .collect::<Vec<_>>(),
+        verified_roots: roots.iter().map(redacted_verified_root).collect::<Vec<_>>(),
+        outbox: redacted_outbox_summary(outbox),
+        conflicts: redacted_conflict_summary(conflicts),
+        blob,
+        crdt,
+    }
+}
+
+pub fn import_local_support_bundle_json(
+    bundle_json: &str,
+) -> Result<LocalSupportBundleImportReport> {
+    let bundle: LocalSupportBundle = serde_json::from_str(bundle_json)?;
+    if bundle.format_version != LOCAL_SUPPORT_BUNDLE_FORMAT_VERSION {
+        return Err(SyncularError::config(format!(
+            "unsupported local support bundle format version {}",
+            bundle.format_version
+        )));
+    }
+    if !bundle.redacted {
+        return Err(SyncularError::config(
+            "local support bundle import requires a redacted bundle",
+        ));
+    }
+    Ok(LocalSupportBundleImportReport {
+        format_version: bundle.format_version,
+        generated_at: bundle.generated_at,
+        redacted: bundle.redacted,
+        source: bundle.source,
+        health_ok: bundle.health.ok,
+        finding_count: bundle.health.findings.len(),
+        subscription_count: bundle.subscriptions.len(),
+        subscription_state_count: bundle.subscription_states.len(),
+        verified_root_count: bundle.verified_roots.len(),
+        checked_subscription_states: bundle.health.checked_subscription_states,
+        checked_verified_roots: bundle.health.checked_verified_roots,
+        checked_outbox_commits: bundle.health.checked_outbox_commits,
+        checked_conflicts: bundle.health.checked_conflicts,
+        checked_synced_rows: bundle.health.checked_synced_rows,
+    })
+}
+
+fn redacted_subscription(spec: &SubscriptionSpec) -> LocalSupportSubscription {
+    let mut scope_keys = spec.scopes.keys().cloned().collect::<Vec<_>>();
+    scope_keys.sort();
+    let mut params_keys = spec.params.keys().cloned().collect::<Vec<_>>();
+    params_keys.sort();
+    LocalSupportSubscription {
+        id: spec.id.clone(),
+        table: spec.table.clone(),
+        scope_keys,
+        scope_value_count: count_json_values(spec.scopes.values()),
+        params_keys,
+        params_value_count: count_json_values(spec.params.values()),
+        bootstrap_phase: spec.bootstrap_phase,
+    }
+}
+
+fn redacted_subscription_state(state: &SubscriptionState) -> LocalSupportSubscriptionState {
+    let (scope_keys, scope_value_count) = redacted_json_map_shape(&state.scopes_json);
+    let (params_keys, params_value_count) = redacted_json_map_shape(&state.params_json);
+    LocalSupportSubscriptionState {
+        state_id: state.state_id.clone(),
+        subscription_id: state.subscription_id.clone(),
+        table: state.table.clone(),
+        scope_keys,
+        scope_value_count,
+        params_keys,
+        params_value_count,
+        cursor: state.cursor,
+        status: state.status.clone(),
+        bootstrap_state_present: state.bootstrap_state_json.is_some(),
+        bootstrap_state_byte_len: state
+            .bootstrap_state_json
+            .as_ref()
+            .map_or(0, |value| value.len()),
+    }
+}
+
+fn redacted_verified_root(root: &VerifiedRoot) -> LocalSupportVerifiedRoot {
+    LocalSupportVerifiedRoot {
+        state_id: root.state_id.clone(),
+        subscription_id: root.subscription_id.clone(),
+        partition_id_present: !root.partition_id.is_empty(),
+        partition_id_byte_len: root.partition_id.len(),
+        commit_seq: root.commit_seq,
+        root_byte_len: root.root.len(),
+        root_is_canonical_hex: is_canonical_hex_root(&root.root),
+    }
+}
+
+fn redacted_outbox_summary(outbox: &[OutboxSummary]) -> LocalSupportOutboxSummary {
+    let mut by_status = BTreeMap::new();
+    let mut by_schema_version = BTreeMap::new();
+    for item in outbox {
+        *by_status.entry(item.status.clone()).or_insert(0) += 1;
+        *by_schema_version.entry(item.schema_version).or_insert(0) += 1;
+    }
+    LocalSupportOutboxSummary {
+        total: outbox.len(),
+        by_status,
+        by_schema_version,
+    }
+}
+
+fn redacted_conflict_summary(conflicts: &[ConflictSummary]) -> LocalSupportConflictSummary {
+    let mut by_result_status = BTreeMap::new();
+    let mut by_code = BTreeMap::new();
+    let mut resolved = 0usize;
+    for item in conflicts {
+        *by_result_status
+            .entry(item.result_status.clone())
+            .or_insert(0) += 1;
+        if let Some(code) = &item.code {
+            *by_code.entry(code.clone()).or_insert(0) += 1;
+        }
+        if item.resolved_at.is_some() || item.resolution.is_some() {
+            resolved += 1;
+        }
+    }
+    LocalSupportConflictSummary {
+        total: conflicts.len(),
+        unresolved: conflicts.len().saturating_sub(resolved),
+        resolved,
+        by_result_status,
+        by_code,
+    }
+}
+
+fn redacted_json_map_shape(json: &str) -> (Vec<String>, usize) {
+    match serde_json::from_str::<BTreeMap<String, Value>>(json) {
+        Ok(map) => {
+            let keys = map.keys().cloned().collect::<Vec<_>>();
+            let value_count = count_json_values(map.values());
+            (keys, value_count)
+        }
+        Err(_) => (Vec::new(), 0),
+    }
+}
+
+fn count_json_values<'a>(values: impl Iterator<Item = &'a Value>) -> usize {
+    values
+        .map(|value| value.as_array().map_or(1, Vec::len))
+        .sum()
 }
 
 fn check_app_schema_state(

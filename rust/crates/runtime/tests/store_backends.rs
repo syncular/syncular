@@ -189,6 +189,105 @@ fn local_health_check_reports_corrupted_verified_root_without_mutating_rows() ->
 }
 
 #[test]
+fn local_support_bundle_is_redacted_and_importable() -> Result<()> {
+    let path = temp_db_path("syncular-support-bundle");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let mut secret_scopes = ScopeValues::new();
+    secret_scopes.insert("user_id".to_string(), json!("secret-user-id"));
+    secret_scopes.insert(
+        "project_id".to_string(),
+        json!(["secret-project-a", "secret-project-b"]),
+    );
+    let mut secret_params = serde_json::Map::new();
+    secret_params.insert("preview".to_string(), json!("secret-param-value"));
+    let root_value = "0123456789abcdef".repeat(4);
+    store.transaction(|tx| {
+        tx.upsert_row(
+            "tasks",
+            &json!({
+                "id": "support-secret-task",
+                "title": "support secret title",
+                "completed": 0,
+                "user_id": "secret-user-id",
+                "project_id": "secret-project-a",
+                "server_version": 9,
+                "image": null,
+                "title_yjs_state": null
+            }),
+            None,
+        )?;
+        tx.upsert_subscription_state(&SubscriptionState {
+            state_id: "default".to_string(),
+            subscription_id: "sub-secret".to_string(),
+            table: "tasks".to_string(),
+            scopes_json: serde_json::to_string(&secret_scopes)?,
+            params_json: serde_json::to_string(&secret_params)?,
+            cursor: 9,
+            bootstrap_state_json: Some(
+                json!({
+                    "asOfCommitSeq": 9,
+                    "tables": ["tasks"],
+                    "tableIndex": 0,
+                    "rowCursor": "secret-row-cursor"
+                })
+                .to_string(),
+            ),
+            status: "active".to_string(),
+        })?;
+        tx.upsert_verified_root(&VerifiedRoot {
+            state_id: "default".to_string(),
+            subscription_id: "sub-secret".to_string(),
+            partition_id: "secret-partition-id".to_string(),
+            commit_seq: 9,
+            root: root_value.clone(),
+        })
+    })?;
+
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    client.set_subscriptions(vec![SubscriptionSpec {
+        id: "sub-secret".to_string(),
+        table: "tasks".to_string(),
+        scopes: secret_scopes,
+        params: secret_params,
+        bootstrap_phase: 2,
+    }])?;
+
+    let bundle_json = client.export_local_support_bundle_json()?;
+    assert!(bundle_json.contains("\"redacted\":true"));
+    assert!(bundle_json.contains("\"scopeKeys\":[\"project_id\",\"user_id\"]"));
+    assert!(bundle_json.contains("\"scopeValueCount\":3"));
+    assert!(bundle_json.contains("\"paramsKeys\":[\"preview\"]"));
+    assert!(bundle_json.contains("\"rootIsCanonicalHex\":true"));
+    assert!(!bundle_json.contains("secret-user-id"));
+    assert!(!bundle_json.contains("secret-project-a"));
+    assert!(!bundle_json.contains("secret-project-b"));
+    assert!(!bundle_json.contains("secret-param-value"));
+    assert!(!bundle_json.contains("support secret title"));
+    assert!(!bundle_json.contains("secret-partition-id"));
+    assert!(!bundle_json.contains("secret-row-cursor"));
+    assert!(!bundle_json.contains(&root_value));
+
+    let import_report: Value =
+        serde_json::from_str(&client.import_local_support_bundle_json(&bundle_json)?)?;
+    assert_eq!(import_report["redacted"], true);
+    assert_eq!(import_report["source"], "rust");
+    assert_eq!(import_report["healthOk"], true);
+    assert_eq!(import_report["subscriptionCount"], 1);
+    assert_eq!(import_report["subscriptionStateCount"], 1);
+    assert_eq!(import_report["verifiedRootCount"], 1);
+
+    let unredacted_json = bundle_json.replacen("\"redacted\":true", "\"redacted\":false", 1);
+    let error = client
+        .import_local_support_bundle_json(&unredacted_json)
+        .unwrap_err();
+    assert_eq!(error.kind(), ErrorKind::Config);
+    assert!(error.message_text().contains("requires a redacted bundle"));
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn local_health_check_reports_orphaned_subscription_state_and_root() -> Result<()> {
     let path = temp_db_path("syncular-health-orphaned-state");
     let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;

@@ -538,6 +538,14 @@ impl SyncularBoltClient {
         self.with_client_mut(|client| client.local_health_check_json())
     }
 
+    pub fn export_local_support_bundle_json(&self) -> Result<String, String> {
+        self.with_client_mut(|client| client.export_local_support_bundle_json())
+    }
+
+    pub fn import_local_support_bundle_json(&self, bundle_json: &str) -> Result<String, String> {
+        self.with_client_mut(|client| client.import_local_support_bundle_json(bundle_json))
+    }
+
     pub fn repair_local_health_json(&self, request_json: &str) -> Result<String, String> {
         self.with_client_mut(|client| client.repair_local_health_json(request_json))
     }
