@@ -184,13 +184,13 @@ The first dedicated console drilldown is now in place:
 `GET /console/row-investigation/:table/:rowId` plus the console
 `/investigate/row/:table/:rowId` page. It can answer the initial
 `clientId + table + rowId` visibility question from redacted audit history,
-client cursor/scope-key metadata, relevant request events, and stable finding
-codes without storing or exposing row payloads.
+client cursor/scope-key metadata, relevant request events, subscription-count
+evidence from request metadata, and stable finding codes without storing or
+exposing row payloads.
 
-Next: extend the row investigation view with stronger subscription/recovery
-evidence as the server persists more structured pull-subscription diagnostics.
-Do not infer missing-row causes from app tables or add payload capture by
-default.
+Next: add stronger recovery/revocation drilldowns only when the server persists
+that evidence explicitly. Do not infer missing-row causes from app tables or add
+payload capture by default.
 
 ## Progress
 
@@ -256,6 +256,10 @@ default.
   scope-key coverage, relevant request events, stable finding codes, and
   no row payload or scope values. The console page links from commit change
   rows and exposes `/investigate/row/:table/:rowId` for direct debugging.
+- Added row-investigation subscription evidence derived from existing
+  request-event metadata: observed/not-observed/unknown status, latest request
+  id, latest subscription count, matching event count, and observed scope keys
+  without exposing scope values.
 - Generated OpenAPI types/docs for the row investigation endpoint so the
   console consumes it through the normal transport contract.
 - Gates:

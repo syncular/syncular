@@ -495,9 +495,10 @@ read-only review:
     observability is complete enough for the current Rust-client foundation.
     The first console row investigation drilldown is now in place with redacted
     audit history, optional client cursor/scope-key coverage, relevant request
-    events, stable finding codes, generated OpenAPI types/docs, and a console
+    events, request-event subscription-count evidence, stable finding codes,
+    generated OpenAPI types/docs, and a console
     `/investigate/row/:table/:rowId` page. Remaining drilldown work should add
-    stronger subscription/recovery evidence only when the server persists that
+    stronger recovery/revocation evidence only when the server persists that
     metadata explicitly.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
 - `[x]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)

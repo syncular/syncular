@@ -219,7 +219,7 @@ export function RowInvestigation({ table, rowId }: RowInvestigationProps) {
         </Alert>
       ) : data ? (
         <>
-          <div className="grid gap-4 xl:grid-cols-3">
+          <div className="grid gap-4 xl:grid-cols-4">
             <SectionCard
               title="Row"
               description="Payload redacted by default."
@@ -316,6 +316,41 @@ export function RowInvestigation({ table, rowId }: RowInvestigationProps) {
                 <div className="text-neutral-400">
                   missing:{' '}
                   {data.scopeEligibility.missingScopeKeys.join(', ') || '--'}
+                </div>
+              </div>
+            </SectionCard>
+
+            <SectionCard
+              title="Subscription"
+              description="Derived from request-event metadata."
+              contentClassName="space-y-3"
+            >
+              <div className="font-mono text-[11px] space-y-2">
+                <Badge
+                  variant={
+                    data.subscriptionEvidence.status === 'observed'
+                      ? 'healthy'
+                      : data.subscriptionEvidence.status === 'not_observed'
+                        ? 'offline'
+                        : 'ghost'
+                  }
+                >
+                  {data.subscriptionEvidence.status}
+                </Badge>
+                <div className="text-neutral-400">
+                  events: {data.subscriptionEvidence.matchingEventCount}
+                </div>
+                <div className="text-neutral-400">
+                  latest: {data.subscriptionEvidence.latestRequestId ?? '--'}
+                </div>
+                <div className="text-neutral-400">
+                  count:{' '}
+                  {data.subscriptionEvidence.latestSubscriptionCount ?? '--'}
+                </div>
+                <div className="text-neutral-400">
+                  scope keys:{' '}
+                  {data.subscriptionEvidence.observedScopeKeys.join(', ') ||
+                    '--'}
                 </div>
               </div>
             </SectionCard>
