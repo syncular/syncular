@@ -77,7 +77,7 @@ read-only review:
     The accepted browser path is binary-table direct payload apply. Further
     client apply micro-probes are stopped; the remaining large-bootstrap work
     needs a scoped artifact design.
-- `[~]` [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+- `[x]` [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
   - New continuation of the WP-03 performance findings. Design and benchmark a
     scoped, content-addressed artifact path without whole-partition assumptions
     or Worker-hot-path SQLite file generation. The shared TS/Rust manifest
@@ -218,8 +218,11 @@ read-only review:
     was rejected because peak memory regressed to `655.05MB`. The generated
     schema JSON contract now also carries `localBaseSchema.tableSetupSql`, so
     non-TS adapters and benchmarks can consume generated local table DDL instead
-    of hardcoding it. The next WP-12 slice must keep recovering wall time while
-    preserving the lower peak-memory profile.
+    of hardcoding it. The final index-before-import probe was rejected after it
+    modestly improved wall time but regressed local apply and peak memory.
+    WP-12 is accepted for the Rust-client foundation; further artifact work is
+    deferred until it changes the SQLite/artifact state model rather than
+    repeating install-order, page-size, or staging micro-probes.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   - First retained TypeScript generated-client slice narrows
     `database.mutations` to generated inputs and patches. App code can now call
@@ -336,10 +339,10 @@ read-only review:
 
 ## Next
 
-- Continue the larger bootstrap/performance architecture in
-  [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md):
-  artifact apply is now fast enough that the remaining useful work is a larger
-  bootstrap state model, not more local derived-schema/install micro-probes.
+- Start [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
+  with a narrow design and first runtime/browser generated-client proof:
+  command-level undo/redo must emit new mutations through the normal outbox
+  path and must not rewrite commits, cursors, verified roots, or audit history.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when real integration feedback exposes remaining app-flow doc gaps or
   naming friction.

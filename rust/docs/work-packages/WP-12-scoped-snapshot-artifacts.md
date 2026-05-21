@@ -1,6 +1,6 @@
 # WP-12 Scoped Snapshot Artifacts
 
-Status: `[~]` started
+Status: `[x]` accepted for Rust-client foundation; further SQLite artifact state work deferred
 
 ## Goal
 
@@ -1108,8 +1108,24 @@ Retained generated runtime local-base schema slice:
 
 ## Next Action
 
-Recover the lazy apply transaction wall-time regression without giving back the
-external memory improvement.
+No more WP-12 micro-probes should run by default. Scoped SQLite artifacts are
+accepted for the Rust-client foundation, with the current browser-owned SQLite
+path using verified artifact pages, bounded direct pages, explicit checkpoint
+resume, and generated schema installation after bulk load.
+
+Future WP-12 work should start only if it changes the bootstrap state model or
+SQLite integration constraint materially. Good candidates are:
+
+- a raw SQLite/deserialization path that can release or detach artifact
+  databases without holding them until transaction commit;
+- protocol-level artifact phase/checkpoint semantics that make partial
+  artifact progress safe across process restarts without staging-table copies;
+- a native Diesel/raw-SQLite artifact apply path that avoids JSON projection
+  without weakening verification.
+
+Do not reopen app-index install order, page-size, temp-table staging, nullable
+column, attached-PRAGMA, SQLite-owned-buffer, or row-streaming probes unless a
+new external app workload changes the benchmark target.
 
 - The retained resource-state guard is now external Rust 500k bootstrap
   `1062.50ms`, local apply `208ms`, response bytes `3537767`, peak memory
