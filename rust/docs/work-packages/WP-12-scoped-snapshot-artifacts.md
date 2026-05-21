@@ -1090,8 +1090,8 @@ Retained generated runtime local-base schema slice:
   generated local-base DDL and the previous hardcoded DDL were similarly slow in
   the same session, so the schema contract is not the observed cause. Removing
   the local-base field from the hot runtime `AppSchema` recovered the release
-  guard to 500k bootstrap `1143.42ms`, local apply `219ms`, peak memory
-  `643.39MB`, and `snapshotChunkCount=0`. Keep the retained WP-12 baseline at
+  guard to 500k bootstrap `1115.31ms`, local apply `211ms`, peak memory
+  `634.28MB`, and `snapshotChunkCount=0`. Keep the retained WP-12 baseline at
   external Rust 500k bootstrap `1062.50ms` until a stable release guard proves
   otherwise.
 - Correctness gates passed:
