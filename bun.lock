@@ -98,6 +98,18 @@
         "@types/node": "^25.5.2",
       },
     },
+    "packages/client-crdt-adapters": {
+      "name": "@syncular/client-crdt-adapters",
+      "version": "0.0.0",
+      "devDependencies": {
+        "@syncular/config": "workspace:*",
+        "yjs": "^13.6.30",
+      },
+      "peerDependencies": {
+        "@syncular/client": ">=0.0.0",
+        "yjs": "^13.6.30",
+      },
+    },
     "packages/client-expo": {
       "name": "@syncular/client-expo",
       "version": "0.0.0",
@@ -690,18 +702,6 @@
         "@happy-dom/global-registrator": "^20.8.9",
         "@syncular/config": "workspace:*",
         "hono": "^4.12.15",
-      },
-    },
-    "rust/bindings/crdt-adapters": {
-      "name": "@syncular/client-crdt-adapters",
-      "version": "0.0.0",
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
-        "yjs": "^13.6.30",
-      },
-      "peerDependencies": {
-        "@syncular/client": ">=0.0.0",
-        "yjs": "^13.6.30",
       },
     },
     "rust/examples/todo-app": {
@@ -1947,7 +1947,7 @@
 
     "@syncular/client": ["@syncular/client@workspace:rust/bindings/browser"],
 
-    "@syncular/client-crdt-adapters": ["@syncular/client-crdt-adapters@workspace:rust/bindings/crdt-adapters"],
+    "@syncular/client-crdt-adapters": ["@syncular/client-crdt-adapters@workspace:packages/client-crdt-adapters"],
 
     "@syncular/client-expo": ["@syncular/client-expo@workspace:packages/client-expo"],
 

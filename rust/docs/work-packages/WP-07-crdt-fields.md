@@ -168,10 +168,10 @@ Gate evidence:
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_binding_scaffold`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --features native,boltffi-bindings`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
-- `bun run --cwd rust/bindings/crdt-adapters test`
+- `bun run --cwd packages/client-crdt-adapters test`
 - `bun run --cwd rust/bindings/browser tsgo`
 - `bun test --cwd rust/bindings/browser src/generated-app-conformance.test.ts`
-- `bun run --cwd rust/bindings/crdt-adapters tsgo`
+- `bun run --cwd packages/client-crdt-adapters tsgo`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-client --no-default-features --features native,crdt-yjs`
 - `swiftc rust/examples/todo-app/generated/swift/SyncularApp.swift rust/examples/todo-app/native-smokes/swift/GeneratedClientSmoke.swift -o .context/native-smokes/generated-swift-smoke && .context/native-smokes/generated-swift-smoke rust/examples/todo-app/conformance/generated-client.json rust/examples/todo-app/conformance/sync-scenarios.json`
