@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { codecs, type BlobRef } from '@syncular/core';
 import {
   createServerHandler,
   type SyncCoreDb,
@@ -33,6 +34,32 @@ interface BasicServerDb extends SyncCoreDb {
 
 interface BasicClientDb {
   basic_tasks: BasicTaskRow;
+}
+
+interface FileVersionServerRow {
+  id: string;
+  file_id: string;
+  owner_id: string;
+  blob_ref: string;
+  content_hash: string;
+  byte_size: number;
+  server_version: number;
+}
+
+interface FileVersionClientRow extends Omit<FileVersionServerRow, 'blob_ref'> {
+  blob_ref: BlobRef;
+}
+
+interface FileAssetDb {
+  file_versions: FileVersionClientRow;
+}
+
+interface FileAssetServerDb extends SyncCoreDb {
+  file_versions: FileVersionServerRow;
+}
+
+interface FileAssetClientDb {
+  file_versions: FileVersionClientRow;
 }
 
 const basicAppSchema: SyncularV2AppSchema = {
@@ -119,6 +146,74 @@ const blobAppSchema: SyncularV2AppSchema = {
         },
       ],
       blobColumns: ['image'],
+    },
+  ],
+};
+
+const fileVersionAppSchema: SyncularV2AppSchema = {
+  schemaVersion: 1,
+  tables: [
+    {
+      name: 'file_versions',
+      primaryKeyColumn: 'id',
+      serverVersionColumn: 'server_version',
+      softDeleteColumn: null,
+      subscriptionId: 'sub-file-versions',
+      columns: [
+        {
+          name: 'id',
+          typeFamily: 'text',
+          notnullRequired: false,
+          primaryKey: true,
+        },
+        {
+          name: 'file_id',
+          typeFamily: 'text',
+          notnullRequired: true,
+          primaryKey: false,
+        },
+        {
+          name: 'owner_id',
+          typeFamily: 'text',
+          notnullRequired: true,
+          primaryKey: false,
+        },
+        {
+          name: 'blob_ref',
+          typeFamily: 'text',
+          notnullRequired: true,
+          primaryKey: false,
+        },
+        {
+          name: 'content_hash',
+          typeFamily: 'text',
+          notnullRequired: true,
+          primaryKey: false,
+        },
+        {
+          name: 'byte_size',
+          typeFamily: 'integer',
+          notnullRequired: true,
+          primaryKey: false,
+        },
+        {
+          name: 'server_version',
+          typeFamily: 'integer',
+          notnullRequired: true,
+          primaryKey: false,
+        },
+      ],
+      blobColumns: ['blob_ref'],
+      crdtYjsFields: [],
+      encryptedFields: [],
+      scopes: [
+        {
+          name: 'owner_id',
+          column: 'owner_id',
+          source: 'actorId',
+          required: true,
+        },
+      ],
     },
   ],
 };
@@ -347,6 +442,108 @@ describe('Syncular v2 core WASM artifact', () => {
     }
   });
 
+  it('syncs file-version BlobRef rows through Hono and clears them on revocation', async () => {
+    const actorId = 'actor-file-assets';
+    const token = 'token-file-assets';
+    const server = await createHttpServerFixture<FileAssetServerDb>({
+      serverDialect: 'sqlite',
+      createTables: ensureFileAssetServerTables,
+      handlers: [
+        createServerHandler<
+          FileAssetServerDb,
+          FileAssetClientDb,
+          'file_versions'
+        >({
+          table: 'file_versions',
+          scopes: ['user:{owner_id}'],
+          codecs: fileAssetCodecs,
+          resolveScopes: async (ctx) => ({ owner_id: [ctx.actorId] }),
+        }),
+      ],
+      authenticate: async (c) => {
+        const authorization = c.req.header('authorization');
+        return authorization === token ? { actorId } : null;
+      },
+    });
+    const clients: SyncularV2Database<FileAssetDb>[] = [];
+
+    try {
+      const writer = await openFileAssetDatabase({
+        baseUrl: `${server.baseUrl}/sync`,
+        actorId,
+        clientId: `client-file-assets-writer-${Date.now()}`,
+        token,
+      });
+      clients.push(writer);
+      const reader = await openFileAssetDatabase({
+        baseUrl: `${server.baseUrl}/sync`,
+        actorId,
+        clientId: `client-file-assets-reader-${Date.now()}`,
+        token,
+      });
+      clients.push(reader);
+      const blob = {
+        hash: `sha256:${'1'.repeat(64)}`,
+        size: 23,
+        mimeType: 'text/plain',
+      } satisfies BlobRef;
+
+      await writer.mutations.file_versions.insert({
+        id: 'version-browser-1',
+        file_id: 'file-browser-1',
+        owner_id: actorId,
+        blob_ref: blob,
+        content_hash: blob.hash,
+        byte_size: blob.size,
+        server_version: 0,
+      });
+      await expect(writer.client.syncPush()).resolves.toMatchObject({
+        pushedCommits: 1,
+      });
+      const serverRow = await server.db
+        .selectFrom('file_versions')
+        .select(['id', 'blob_ref', 'content_hash'])
+        .where('id', '=', 'version-browser-1')
+        .executeTakeFirstOrThrow();
+      expect(serverRow).toMatchObject({
+        id: 'version-browser-1',
+        content_hash: blob.hash,
+      });
+      expect(JSON.parse(serverRow.blob_ref)).toEqual(blob);
+
+      await expect(reader.client.syncPull()).resolves.toMatchObject({
+        changedTables: ['file_versions'],
+        pushedCommits: 0,
+      });
+      await expect(
+        reader.db
+          .selectFrom('file_versions')
+          .select(['id', 'blob_ref', 'content_hash'])
+          .execute()
+      ).resolves.toEqual([
+        {
+          id: 'version-browser-1',
+          blob_ref: blob,
+          content_hash: blob.hash,
+        },
+      ]);
+
+      await reader.client.setSubscriptions([fileVersionSubscription('other')]);
+      const revoked = await reader.client.syncPull();
+      expect(revoked.subscriptions[0]).toMatchObject({
+        id: 'sub-file-versions',
+        table: 'file_versions',
+        status: 'revoked',
+      });
+      await expect(
+        reader.db.selectFrom('file_versions').select(['id']).execute()
+      ).resolves.toEqual([]);
+    } finally {
+      while (clients.length > 0) await clients.pop()!.close();
+      await server.destroy();
+    }
+  });
+
   it('rejects a CRDT schema against the core artifact', async () => {
     await expect(
       createSyncularV2Database<BasicDb>({
@@ -448,6 +645,98 @@ async function ensureBasicServerTables(
     .addColumn('user_id', 'text', (col) => col.notNull())
     .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
     .execute();
+}
+
+const fileAssetCodecs = (column: { table: string; column: string }) => {
+  if (column.table === 'file_versions' && column.column === 'blob_ref') {
+    return codecs.stringJson<BlobRef>();
+  }
+  return undefined;
+};
+
+async function openFileAssetDatabase(args: {
+  baseUrl: string;
+  actorId: string;
+  clientId: string;
+  token: string;
+}): Promise<SyncularV2Database<FileAssetDb>> {
+  const syncular = await createSyncularV2Database<FileAssetDb>({
+    config: {
+      baseUrl: args.baseUrl,
+      actorId: args.actorId,
+      clientId: args.clientId,
+      storage: 'memory',
+      clearOnInit: true,
+      appSchema: fileVersionAppSchema,
+    },
+    getHeaders: () => ({ authorization: args.token }),
+    sync: { autoSyncAfterMutation: false },
+    codecs: fileAssetCodecs,
+    appTables: ['file_versions'],
+    tableConfig: {
+      file_versions: {
+        primaryKeyColumn: 'id',
+        serverVersionColumn: 'server_version',
+        blobColumns: ['blob_ref'],
+      },
+    },
+    requiredRuntimeFeatures: ['web-owned-sqlite'],
+  });
+  try {
+    await installFileAssetClientSchema(syncular);
+    await syncular.client.setSubscriptions([
+      fileVersionSubscription(args.actorId),
+    ]);
+    return syncular;
+  } catch (error) {
+    await syncular.close();
+    throw error;
+  }
+}
+
+async function installFileAssetClientSchema(
+  syncular: SyncularV2Database<FileAssetDb>
+): Promise<void> {
+  await withSyncularV2SchemaWrites(syncular, async (db) => {
+    await db.schema
+      .createTable('file_versions')
+      .ifNotExists()
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('file_id', 'text', (col) => col.notNull())
+      .addColumn('owner_id', 'text', (col) => col.notNull())
+      .addColumn('blob_ref', 'text', (col) => col.notNull())
+      .addColumn('content_hash', 'text', (col) => col.notNull())
+      .addColumn('byte_size', 'integer', (col) => col.notNull())
+      .addColumn('server_version', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .execute();
+  });
+}
+
+async function ensureFileAssetServerTables(
+  db: import('kysely').Kysely<FileAssetServerDb>
+): Promise<void> {
+  await db.schema
+    .createTable('file_versions')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('file_id', 'text', (col) => col.notNull())
+    .addColumn('owner_id', 'text', (col) => col.notNull())
+    .addColumn('blob_ref', 'text', (col) => col.notNull())
+    .addColumn('content_hash', 'text', (col) => col.notNull())
+    .addColumn('byte_size', 'integer', (col) => col.notNull())
+    .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
+    .execute();
+}
+
+function fileVersionSubscription(ownerId: string): SyncularV2SubscriptionSpec {
+  return {
+    id: 'sub-file-versions',
+    table: 'file_versions',
+    scopes: { owner_id: ownerId },
+    params: {},
+  };
 }
 
 function basicTaskSubscription(actorId: string): SyncularV2SubscriptionSpec {

@@ -134,6 +134,22 @@ Second retained slice:
 - Benchmark gate: not applicable; this is authorization coverage over existing
   route/helper behavior.
 
+Third retained slice:
+
+- Added browser/WASM coverage for a reference `file_versions` app schema with
+  `blob_ref` typed through the normal blob-column codec path.
+- The test drives the low-level Rust-owned SQLite database API against Hono
+  sync routes: writer commits a file-version row with a `BlobRef`, server
+  stores the row as JSON text, reader pulls it back as an app-shaped
+  `BlobRef`, and subscription revocation clears the local table.
+- Gates:
+  - `bun --cwd rust/bindings/browser tsgo`
+  - `bun test rust/bindings/browser/src/__tests__/variant-core.wasm.test.ts -t
+    file-version`
+  - `bun test rust/bindings/browser/src/__tests__/variant-core.wasm.test.ts`
+- Benchmark gate: not applicable; this adds conformance coverage and does not
+  change runtime sync/apply/query code.
+
 ## Suggested App Schema
 
 Initial generated/reference schema:
@@ -170,7 +186,7 @@ Add the production server/browser side of the reference path:
 
 1. `[x]` Add Hono blob authorization coverage using `file_versions.blob_ref` as the
    visible row-backed blob reference.
-2. `[ ]` Add browser/WASM coverage that generated app rows with a file-version
+2. `[x]` Add browser/WASM coverage that generated app rows with a file-version
    `BlobRef` sync and clear on revocation.
 3. `[ ]` Expand testkit file scenarios for rename, move, delete-vs-update, version
    conflict, trash/restore, and missing/corrupted blob bodies.
