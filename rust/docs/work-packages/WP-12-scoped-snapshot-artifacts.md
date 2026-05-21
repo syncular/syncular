@@ -1066,6 +1066,35 @@ Retained local base schema contract slice:
   `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`,
   and `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`.
 
+Retained generated runtime local-base schema slice:
+
+- The generated runtime/native app schema JSON now carries the same
+  `localBaseSchema.tableSetupSql` contract as `syncular.schema.json`.
+- Rust `AppSchema` parses and exposes the local-base schema, generated Rust
+  migration modules export `LOCAL_BASE_TABLE_SETUP_SQL`, and the example/native
+  app schemas wire it into `AppSchema`.
+- Generated browser setup now executes
+  `syncularGeneratedAppSchema.localBaseSchema.tableSetupSql` directly instead
+  of generating a separate Kysely table-builder path. This keeps app table
+  shape in generated metadata and removes another schema-layout source of
+  drift.
+- Native Swift/Kotlin generated schema JSON now includes the local-base contract
+  for host adapters that need to inspect or install generated local schema.
+- While running the browser package gate, a stale worker realtime test was
+  updated to expect the current worker protocol version instead of hard-coded
+  `1`.
+- Correctness gates passed:
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`,
+  `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`,
+  `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`,
+  `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`,
+  `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`,
+  `bun run tsgo` from `rust/bindings/browser`,
+  `bun test src/database.test.ts src/generated-runtime.test.ts` from
+  `rust/bindings/browser`, `bun test src/*.test.ts` from
+  `rust/bindings/browser`, and `git diff --check`.
+
 ## Next Action
 
 Recover the lazy apply transaction wall-time regression without giving back the
@@ -1100,10 +1129,10 @@ external memory improvement.
 - Derived-schema setup is now a first-class performance input for app-style
   bootstrap comparisons. Keep optimizing only generated, app-declared local
   indexes/read models; do not introduce hidden runtime caches.
-- The generated schema contract now carries local base-table setup SQL. Update
-  external app-style adapters and native bindings to consume it before the next
-  schema-layout benchmark so local table shape is measured from generated
-  framework metadata, not benchmark-specific hardcoding.
+- Before the next external schema-layout benchmark, rebuild the external
+  app-style Rust client distribution and confirm the benchmark adapter consumes
+  generated local-base and local-derived schema metadata rather than
+  benchmark-specific DDL.
 - The remaining derived-schema bottleneck is still app-declared index creation,
   but the obvious redundant-prefix case is handled. Avoid additional
   index-order/read-model rebuild changes unless the external app-style gate

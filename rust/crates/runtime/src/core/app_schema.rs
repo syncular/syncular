@@ -73,6 +73,15 @@ pub struct EmbeddedMigration {
     pub up_sql: &'static str,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct LocalBaseSchema {
+    pub table_setup_sql: &'static [&'static str],
+}
+
+pub const EMPTY_LOCAL_BASE_SCHEMA: LocalBaseSchema = LocalBaseSchema {
+    table_setup_sql: &[],
+};
+
 #[cfg(feature = "native")]
 pub trait DieselTableAdapter: Sync {
     fn name(&self) -> &'static str;
@@ -103,6 +112,7 @@ pub struct AppSchema {
     pub app_tables: &'static [&'static str],
     pub app_table_metadata: &'static [AppTableMetadata],
     pub migrations: &'static [EmbeddedMigration],
+    pub local_base_schema: LocalBaseSchema,
     pub schema_version: Option<i32>,
     pub default_subscriptions: fn(&SyncularClientConfig) -> Vec<SubscriptionSpec>,
     #[cfg(feature = "native")]
@@ -172,6 +182,15 @@ pub struct AppSchemaJson {
     pub tables: Vec<AppTableMetadataJson>,
     #[serde(default)]
     pub migrations: Vec<EmbeddedMigrationJson>,
+    #[serde(default)]
+    pub local_base_schema: LocalBaseSchemaJson,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalBaseSchemaJson {
+    #[serde(default)]
+    pub table_setup_sql: Vec<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -249,6 +268,16 @@ pub fn app_schema_from_json(schema_json: &str) -> crate::error::Result<AppSchema
 }
 
 pub fn app_schema_from_config(schema: AppSchemaJson) -> AppSchema {
+    let local_base_schema = LocalBaseSchema {
+        table_setup_sql: leak_static_slice(
+            schema
+                .local_base_schema
+                .table_setup_sql
+                .into_iter()
+                .map(leak_static_str)
+                .collect(),
+        ),
+    };
     let migrations = leak_static_slice(
         schema
             .migrations
@@ -275,6 +304,7 @@ pub fn app_schema_from_config(schema: AppSchemaJson) -> AppSchema {
         app_tables,
         app_table_metadata,
         migrations,
+        local_base_schema,
         schema_version: Some(schema.schema_version),
         default_subscriptions: empty_default_subscriptions,
         #[cfg(feature = "native")]
@@ -291,6 +321,7 @@ pub fn empty_app_schema(schema_version: i32) -> AppSchema {
         app_tables: &[],
         app_table_metadata: &[],
         migrations: &[],
+        local_base_schema: EMPTY_LOCAL_BASE_SCHEMA,
         schema_version: Some(schema_version),
         default_subscriptions: empty_default_subscriptions,
         #[cfg(feature = "native")]
@@ -501,6 +532,7 @@ mod runtime_feature_tests {
             app_tables: TABLES,
             app_table_metadata: metadata,
             migrations: &[],
+            local_base_schema: EMPTY_LOCAL_BASE_SCHEMA,
             schema_version: Some(1),
             default_subscriptions: empty_default_subscriptions,
             #[cfg(feature = "native")]

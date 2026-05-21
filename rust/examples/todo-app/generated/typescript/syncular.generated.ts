@@ -289,6 +289,13 @@ export interface SyncularGeneratedSchemaInstallTimings extends SyncularGenerated
 
 export const syncularGeneratedAppSchema = {
   schemaVersion: syncularGeneratedSchemaVersion,
+  localBaseSchema: {
+    tableSetupSql: [
+      'CREATE TABLE IF NOT EXISTS "comments" (\n  "id" TEXT PRIMARY KEY,\n  "task_id" TEXT NOT NULL,\n  "project_id" TEXT,\n  "body" TEXT NOT NULL,\n  "author_id" TEXT NOT NULL,\n  "deleted" INTEGER NOT NULL DEFAULT 0,\n  "server_version" INTEGER NOT NULL DEFAULT 0\n) WITHOUT ROWID',
+      'CREATE TABLE IF NOT EXISTS "projects" (\n  "id" TEXT PRIMARY KEY,\n  "name" TEXT NOT NULL,\n  "owner_id" TEXT NOT NULL,\n  "archived" INTEGER NOT NULL DEFAULT 0,\n  "server_version" INTEGER NOT NULL DEFAULT 0\n) WITHOUT ROWID',
+      'CREATE TABLE IF NOT EXISTS "tasks" (\n  "id" TEXT PRIMARY KEY,\n  "title" TEXT NOT NULL,\n  "completed" INTEGER NOT NULL DEFAULT 0,\n  "user_id" TEXT NOT NULL,\n  "project_id" TEXT,\n  "server_version" INTEGER NOT NULL DEFAULT 0,\n  "image" TEXT,\n  "title_yjs_state" TEXT\n) WITHOUT ROWID',
+    ],
+  },
   tables: [
     {
       name: 'comments',
@@ -510,41 +517,9 @@ function withSyncularGeneratedCodecs(userCodecs?: ColumnCodecSource): ColumnCode
 
 export async function ensureSyncularAppBaseSchema(db: Kysely<any>): Promise<void> {
   await ensureSyncularAppSchemaMetadata(db);
-  await sql`
-    CREATE TABLE IF NOT EXISTS "comments" (
-      "id" TEXT PRIMARY KEY,
-      "task_id" TEXT NOT NULL,
-      "project_id" TEXT,
-      "body" TEXT NOT NULL,
-      "author_id" TEXT NOT NULL,
-      "deleted" INTEGER NOT NULL DEFAULT 0,
-      "server_version" INTEGER NOT NULL DEFAULT 0
-    ) WITHOUT ROWID
-  `.execute(db);
-
-  await sql`
-    CREATE TABLE IF NOT EXISTS "projects" (
-      "id" TEXT PRIMARY KEY,
-      "name" TEXT NOT NULL,
-      "owner_id" TEXT NOT NULL,
-      "archived" INTEGER NOT NULL DEFAULT 0,
-      "server_version" INTEGER NOT NULL DEFAULT 0
-    ) WITHOUT ROWID
-  `.execute(db);
-
-  await sql`
-    CREATE TABLE IF NOT EXISTS "tasks" (
-      "id" TEXT PRIMARY KEY,
-      "title" TEXT NOT NULL,
-      "completed" INTEGER NOT NULL DEFAULT 0,
-      "user_id" TEXT NOT NULL,
-      "project_id" TEXT,
-      "server_version" INTEGER NOT NULL DEFAULT 0,
-      "image" TEXT,
-      "title_yjs_state" TEXT
-    ) WITHOUT ROWID
-  `.execute(db);
-
+  for (const statement of syncularGeneratedAppSchema.localBaseSchema.tableSetupSql) {
+    await sql.raw(statement).execute(db);
+  }
 }
 
 function syncularGeneratedNowMs(): number {
