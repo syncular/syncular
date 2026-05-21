@@ -712,10 +712,11 @@ read-only review:
     and wrap generated regular/leased mutations with command-history capture.
     Command groups persist before/after row snapshots in local SQLite and
     undo/redo replays snapshots through the normal mutation/outbox path. The
-    first generated-client proof covers `update -> undo -> redo`, verifies
-    three ordinary mutation intents, and verifies stale-row undo fails with
-    `sync.command_history_conflict`. Native/Rust parity and broader operation
-    coverage remain.
+    generated-client proof covers update, insert, hard delete, soft delete, and
+    grouped multi-row commits; verifies three ordinary mutation intents for
+    `update -> undo -> redo`; and verifies stale-row undo fails with
+    `sync.command_history_conflict`. Native/Rust parity and unsafe field
+    rejection rules remain.
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)

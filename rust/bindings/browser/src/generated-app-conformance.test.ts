@@ -438,6 +438,112 @@ describe('generated app conformance', () => {
       commandId: 'cmd-conflict-1',
     } satisfies Partial<SyncularV2CommandHistoryError>);
   });
+
+  it('replays command history for insert, hard delete, soft delete, and grouped commits', async () => {
+    const state = createCommandHistoryFakeState();
+    state.rows.set('projects:project-history-delete', {
+      id: 'project-history-delete',
+      name: 'Project to delete',
+      owner_id: 'user-rust',
+      archived: 0,
+      server_version: 0,
+    });
+    state.rows.set('comments:comment-history-soft-delete', {
+      id: 'comment-history-soft-delete',
+      task_id: 'task-history',
+      project_id: 'project-rust',
+      body: 'Comment to soft delete',
+      author_id: 'user-rust',
+      deleted: 0,
+      server_version: 0,
+    });
+    state.rows.set('tasks:task-history-batch-a', {
+      id: 'task-history-batch-a',
+      title: 'Batch A',
+      completed: 0,
+      user_id: 'user-rust',
+      project_id: 'project-rust',
+      server_version: 0,
+      image: null,
+      title_yjs_state: null,
+    });
+    state.rows.set('tasks:task-history-batch-b', {
+      id: 'task-history-batch-b',
+      title: 'Batch B',
+      completed: 0,
+      user_id: 'user-rust',
+      project_id: 'project-rust',
+      server_version: 0,
+      image: null,
+      title_yjs_state: null,
+    });
+
+    const client = commandHistoryFakeClient(state);
+    const baseMutationApi = createSyncularV2Mutations<SyncularAppDb>({
+      client,
+      tableConfig: syncularGeneratedTableConfig,
+    });
+    const commandHistory = createSyncularV2CommandHistory<SyncularAppDb>({
+      client,
+      tableConfig: syncularGeneratedTableConfig,
+      mutations: baseMutationApi,
+      leasedMutations: baseMutationApi,
+      idFactory: () => `cmd-history-${state.historyRows.length + 1}`,
+      nowMs: () => 3000 + state.nowTick++,
+    });
+    const mutations = commandHistory.wrapMutations(
+      baseMutationApi,
+      'mutations'
+    ) as unknown as SyncularAppMutations;
+
+    await mutations.projects.insert({
+      id: 'project-history-insert',
+      name: 'Project to insert',
+      owner_id: 'user-rust',
+      archived: 0,
+    });
+    await commandHistory.history.undoLast();
+    expect(state.rows.has('projects:project-history-insert')).toBe(false);
+    await commandHistory.history.redoLast();
+    expect(state.rows.get('projects:project-history-insert')?.name).toBe(
+      'Project to insert'
+    );
+
+    await mutations.projects.delete('project-history-delete');
+    expect(state.rows.has('projects:project-history-delete')).toBe(false);
+    await commandHistory.history.undoLast();
+    expect(state.rows.get('projects:project-history-delete')?.name).toBe(
+      'Project to delete'
+    );
+    await commandHistory.history.redoLast();
+    expect(state.rows.has('projects:project-history-delete')).toBe(false);
+
+    await mutations.comments.delete('comment-history-soft-delete');
+    expect(state.rows.get('comments:comment-history-soft-delete')?.deleted).toBe(
+      1
+    );
+    await commandHistory.history.undoLast();
+    expect(state.rows.get('comments:comment-history-soft-delete')?.deleted).toBe(
+      0
+    );
+    await commandHistory.history.redoLast();
+    expect(state.rows.get('comments:comment-history-soft-delete')?.deleted).toBe(
+      1
+    );
+
+    await mutations.$commit(async (tx) => {
+      await tx.tasks.update('task-history-batch-a', { completed: 1 });
+      await tx.tasks.update('task-history-batch-b', { completed: 1 });
+    });
+    expect(state.rows.get('tasks:task-history-batch-a')?.completed).toBe(1);
+    expect(state.rows.get('tasks:task-history-batch-b')?.completed).toBe(1);
+    await commandHistory.history.undoLast();
+    expect(state.rows.get('tasks:task-history-batch-a')?.completed).toBe(0);
+    expect(state.rows.get('tasks:task-history-batch-b')?.completed).toBe(0);
+    await commandHistory.history.redoLast();
+    expect(state.rows.get('tasks:task-history-batch-a')?.completed).toBe(1);
+    expect(state.rows.get('tasks:task-history-batch-b')?.completed).toBe(1);
+  });
 });
 
 function fakeClient(): SyncularV2Client {
@@ -656,7 +762,9 @@ function commandHistoryFakeClient(
           );
         return { rows: rows.slice(0, 1) as Row[] };
       }
-      const table = normalized.includes('from "tasks"') ? 'tasks' : null;
+      const table = ['tasks', 'projects', 'comments'].find((candidate) =>
+        normalized.includes(`from "${candidate}"`)
+      );
       if (table) {
         const row = state.rows.get(`${table}:${String(params[0])}`);
         return { rows: (row ? [{ ...row }] : []) as Row[] };
@@ -727,6 +835,15 @@ function commandHistoryFakeClient(
         }
         const existing = state.rows.get(key) ?? {};
         const patch = objectRecordForTest(localRow ?? operation.payload);
+        const tableConfig = syncularGeneratedTableConfig[operation.table];
+        const serverVersionColumn = tableConfig?.serverVersionColumn;
+        if (
+          serverVersionColumn &&
+          patch[serverVersionColumn] === undefined
+        ) {
+          patch[serverVersionColumn] =
+            operation.base_version ?? existing[serverVersionColumn] ?? 0;
+        }
         state.rows.set(key, {
           ...existing,
           ...patch,
