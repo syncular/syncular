@@ -786,6 +786,8 @@ struct SchemaJsonDocument {
     app_schema_version: i32,
     migrations: Vec<SchemaJsonMigration>,
     tables: Vec<SchemaJsonTable>,
+    #[serde(default)]
+    local_base_schema: SchemaJsonLocalBaseSchema,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     local_read_models: Vec<SchemaJsonLocalReadModel>,
     #[serde(default)]
@@ -835,6 +837,12 @@ struct SchemaJsonIndex {
 struct SchemaJsonIndexColumn {
     name: Option<String>,
     descending: bool,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaJsonLocalBaseSchema {
+    table_setup_sql: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -953,6 +961,7 @@ fn generate_schema_json(
     app_schema_version: i32,
 ) -> Result<String> {
     let mut schema_tables = Vec::new();
+    let mut local_base_table_setup_sql = Vec::new();
     for table in tables
         .iter()
         .filter(|table| !table.name.starts_with("sync_"))
@@ -1063,6 +1072,10 @@ fn generate_schema_json(
             },
             sqlite_without_rowid: table_config.sqlite_without_rowid.unwrap_or(false),
         });
+        local_base_table_setup_sql.push(ts_raw_sql_create_table(
+            table,
+            table_config.sqlite_without_rowid.unwrap_or(false),
+        ));
     }
 
     let local_read_models = config
@@ -1115,6 +1128,9 @@ fn generate_schema_json(
         app_schema_version,
         migrations: migration_specs(migrations_dir)?,
         tables: schema_tables,
+        local_base_schema: SchemaJsonLocalBaseSchema {
+            table_setup_sql: local_base_table_setup_sql,
+        },
         local_read_models,
         local_derived_schema,
     };
@@ -10398,6 +10414,10 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert_eq!(
             table["indexes"][0]["sql"],
             "CREATE INDEX IF NOT EXISTS idx_tasks_project_id ON tasks (project_id, id)"
+        );
+        assert_eq!(
+            json["localBaseSchema"]["tableSetupSql"][0],
+            "CREATE TABLE IF NOT EXISTS \"tasks\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"title\" TEXT NOT NULL,\n  \"project_id\" TEXT,\n  \"image\" TEXT,\n  \"deleted\" INTEGER NOT NULL DEFAULT 0,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0\n)"
         );
         assert_eq!(json["localReadModels"][0]["name"], "taskCountsByDeleted");
         assert_eq!(json["localReadModels"][0]["kind"], "countBy");

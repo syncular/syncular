@@ -69,6 +69,28 @@ fn assert_schema_contract(path: &Path) {
         }
     }
 
+    let local_base = json["localBaseSchema"]
+        .as_object()
+        .expect("localBaseSchema object");
+    let table_setup_sql = local_base["tableSetupSql"]
+        .as_array()
+        .expect("localBaseSchema.tableSetupSql array");
+    assert_eq!(
+        table_setup_sql.len(),
+        tables.len(),
+        "localBaseSchema.tableSetupSql should install every app table"
+    );
+    for statement in table_setup_sql {
+        let sql = statement
+            .as_str()
+            .expect("localBaseSchema.tableSetupSql entries are strings");
+        assert!(
+            sql.to_ascii_uppercase()
+                .contains("CREATE TABLE IF NOT EXISTS"),
+            "localBaseSchema.tableSetupSql entries must be idempotent table DDL"
+        );
+    }
+
     let read_models = json["localReadModels"]
         .as_array()
         .expect("localReadModels array");

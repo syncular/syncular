@@ -18,6 +18,60 @@ Decision:
 Notes:
 ```
 
+## 2026-05-21 - Rejected External Local WITHOUT ROWID Probe
+
+Commit: rejected external benchmark probe, no Syncular code changed
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change tried:
+
+- Temporarily patched the external `offline-sync-bench` Rust adapter to create
+  local benchmark app tables as `WITHOUT ROWID`.
+- This tested whether the large external derived-schema bucket was mainly
+  caused by local rowid table/index shape before making a framework default.
+- The external adapter file was restored after the probe.
+
+Fresh baseline:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Fresh baseline result:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T12-49-58-834Z/syncular-rust/bootstrap.json`
+
+Probe result:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T12-51-15-146Z/syncular-rust/bootstrap.json`
+
+| Metric | Fresh baseline | Local WITHOUT ROWID |
+| --- | ---: | ---: |
+| 500k bootstrap | `1174.29ms` | `1076.13ms` |
+| 500k derived schema | `709.37ms` | `628.17ms` |
+| 500k sync total | `451ms` | `421ms` |
+| 500k pull apply | `331ms` | `308ms` |
+| 500k local apply | `208ms` | `204ms` |
+| 500k response bytes | `3,537,682` | `3,537,744` |
+| 500k peak memory | `629.56MB` | `655.05MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Decision:
+
+- Rejected. The probe improves the same-session noisy wall time, but it is
+  still slower than the retained `1062.50ms` guard and gives back too much of
+  the retained memory improvement (`633.50MB -> 655.05MB` against the accepted
+  guard).
+- Keep `WITHOUT ROWID` as an explicit generated-table option for apps that want
+  it, not as the next WP-12 default. Revisit only if a real app contract opts in
+  and the external gate preserves the lower-memory profile.
+
 ## 2026-05-21 - Rejected Skip Final Artifact Page Checkpoint
 
 Commit: rejected probe, code reverted
