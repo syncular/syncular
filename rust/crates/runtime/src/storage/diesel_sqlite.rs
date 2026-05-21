@@ -3351,6 +3351,18 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
         Ok(row.map(SubscriptionState::from))
     }
 
+    fn subscription_states(&mut self, state_id_value: &str) -> Result<Vec<SubscriptionState>> {
+        use schema::sync_subscription_state::dsl as s;
+
+        let rows: Vec<SubscriptionStateRow> = s::sync_subscription_state
+            .select(SubscriptionStateRow::as_select())
+            .filter(s::state_id.eq(state_id_value))
+            .order(s::subscription_id.asc())
+            .load(self.conn)?;
+
+        Ok(rows.into_iter().map(SubscriptionState::from).collect())
+    }
+
     fn upsert_subscription_state(&mut self, state: &SubscriptionState) -> Result<()> {
         sql_query(
             r#"
@@ -3419,6 +3431,20 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
         .get_result(self.conn)
         .optional()?;
         Ok(row.map(VerifiedRoot::from))
+    }
+
+    fn verified_roots(&mut self, state_id_value: &str) -> Result<Vec<VerifiedRoot>> {
+        let rows: Vec<VerifiedRootRow> = sql_query(
+            r#"
+            select state_id, subscription_id, partition_id, commit_seq, root
+            from sync_verified_roots
+            where state_id = ?1
+            order by subscription_id asc
+            "#,
+        )
+        .bind::<Text, _>(state_id_value)
+        .load(self.conn)?;
+        Ok(rows.into_iter().map(VerifiedRoot::from).collect())
     }
 
     fn upsert_verified_root(&mut self, root: &VerifiedRoot) -> Result<()> {

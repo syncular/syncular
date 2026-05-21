@@ -616,6 +616,22 @@ impl SyncStoreTx for RusqliteTx<'_> {
             .map_err(Into::into)
     }
 
+    fn subscription_states(&mut self, state_id: &str) -> Result<Vec<SubscriptionState>> {
+        let mut statement = self.tx.prepare(
+            r#"
+            select state_id, subscription_id, "table", scopes_json, params_json,
+                   cursor, bootstrap_state_json, status
+            from sync_subscription_state
+            where state_id = ?1
+            order by subscription_id asc
+            "#,
+        )?;
+        let rows = statement
+            .query_map(params![state_id], subscription_state_from_row)?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
+    }
+
     fn upsert_subscription_state(&mut self, state: &SubscriptionState) -> Result<()> {
         let now = now_ms();
         self.tx.execute(
@@ -686,6 +702,29 @@ impl SyncStoreTx for RusqliteTx<'_> {
             )
             .optional()
             .map_err(Into::into)
+    }
+
+    fn verified_roots(&mut self, state_id: &str) -> Result<Vec<VerifiedRoot>> {
+        let mut statement = self.tx.prepare(
+            r#"
+            select state_id, subscription_id, partition_id, commit_seq, root
+            from sync_verified_roots
+            where state_id = ?1
+            order by subscription_id asc
+            "#,
+        )?;
+        let rows = statement
+            .query_map(params![state_id], |row| {
+                Ok(VerifiedRoot {
+                    state_id: row.get(0)?,
+                    subscription_id: row.get(1)?,
+                    partition_id: row.get(2)?,
+                    commit_seq: row.get(3)?,
+                    root: row.get(4)?,
+                })
+            })?
+            .collect::<std::result::Result<Vec<_>, _>>()?;
+        Ok(rows)
     }
 
     fn upsert_verified_root(&mut self, root: &VerifiedRoot) -> Result<()> {

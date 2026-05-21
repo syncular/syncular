@@ -70,17 +70,21 @@ First retained slice:
 - Runtime coverage proves a corrupted persisted verified root is reported with
   `repairAction: "forceRebootstrap"` without mutating an existing local app
   row.
+- The second retained slice teaches native stores to enumerate persisted
+  subscription states and verified roots. The health check now reports orphaned
+  subscription state and orphaned verified roots with
+  `repairAction: "clearOrphanedState"` without clearing data implicitly.
 
 Gates:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends local_health_check_reports_corrupted_verified_root_without_mutating_rows --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends local_health_check --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_binding_scaffold --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings`
 
 ## Next Action
 
-Extend the health check beyond configured subscriptions: detect orphaned
-verified roots/subscription states, app-schema state mismatches, unresolved
-outbox/conflict hazards, blob reference issues, and CRDT document/log hazards
-with explicit repair actions but no background mutation.
+Add app-schema state, unresolved outbox/conflict, blob reference, and CRDT
+document/log health findings with explicit repair actions but no background
+mutation.
