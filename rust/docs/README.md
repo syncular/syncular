@@ -31,6 +31,7 @@ delivery.
 - [`reference/NATIVE_PACKAGING.md`](reference/NATIVE_PACKAGING.md)
 - [`reference/LOCAL_PROJECT_INTEGRATION.md`](reference/LOCAL_PROJECT_INTEGRATION.md)
 - [`reference/SERVER_EDGE_INVESTIGATION.md`](reference/SERVER_EDGE_INVESTIGATION.md)
+- [`reference/OFFLINE_AUTH_LEASE_MODEL.md`](reference/OFFLINE_AUTH_LEASE_MODEL.md)
 
 Reference docs preserve architecture decisions and investigation details. They
 should not be used as the day-to-day status board. If reference material changes

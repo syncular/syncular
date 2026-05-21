@@ -1,6 +1,6 @@
 # WP-11 Server Edge And Offline Auth
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -40,10 +40,23 @@ designing offline auth leases honestly.
 ## Current Evidence
 
 The current decision is to defer a pure Rust server. Offline auth remains a
-design item and should not weaken strict online `/sync` authorization.
+design item and should not weaken strict online `/sync` authorization. The
+legacy JS offline-auth package is a local UX/session-cache primitive, not a
+signed server authorization model.
 
 ## Next Action
 
-Write the offline auth lease model before implementation: lease issue/expiry,
-revocation behavior, local UX state, and how sync reports expired or revoked
-leases.
+Implement only the first narrow lease slice after review: Rust protocol structs
+and testkit issuer/verifier helpers. Do not start a Rust server rewrite.
+
+## Progress
+
+- Added [`../reference/OFFLINE_AUTH_LEASE_MODEL.md`](../reference/OFFLINE_AUTH_LEASE_MODEL.md)
+  as the explicit lease contract before implementation. The model keeps the
+  server authoritative, uses signed bounded leases only for offline intent
+  capture, records lease provenance on queued commits, and requires normal
+  request auth plus current handler authorization at replay.
+- The model defines v1 token shape, recommended `ES256` signature header,
+  lease payload fields, client storage/outbox provenance, server replay order,
+  stable `sync.auth_lease_*` error codes, diagnostics, and testkit/conformance
+  requirements.
