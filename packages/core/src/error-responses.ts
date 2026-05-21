@@ -149,6 +149,12 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     recommendedAction: 'retryLater',
     message: 'The Syncular runtime is busy.',
   },
+  'runtime.limit_exceeded': {
+    category: 'limit-exceeded',
+    retryable: false,
+    recommendedAction: 'reduceInput',
+    message: 'A Syncular runtime limit was exceeded.',
+  },
   'runtime.config_invalid': {
     category: 'invalid-request',
     retryable: false,

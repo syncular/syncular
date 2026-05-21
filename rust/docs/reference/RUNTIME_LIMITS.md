@@ -46,11 +46,28 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
 | `maxRealtimeSyncPackBytes` | 16777216 | Maximum realtime binary sync-pack payload accepted by browser runtime |
 | `maxWebsocketTextFrameBytes` | 8388608 | Maximum native websocket text frame sent or accepted by realtime transport |
 
+## Server Route Defaults
+
+`@syncular/server-hono` enforces these boundaries at HTTP route edges. They are
+configured through `createSyncRoutes({ sync: ... })` / `createSyncServer({
+routes: ... })` and return `runtime.limit_exceeded` envelopes when exceeded.
+
+| Limit | Default | Meaning |
+| --- | ---: | --- |
+| `maxSyncRequestJsonBytes` | 4194304 | Maximum JSON body accepted by combined `POST /` sync requests |
+| `maxSyncResponseJsonBytes` | 16777216 | Maximum JSON body emitted by combined `POST /` sync responses |
+| `maxSyncBinaryPackBytes` | 16777216 | Maximum binary sync-pack body emitted by combined `POST /` sync responses |
+| `maxSnapshotChunkResponseBytes` | 67108864 | Maximum snapshot chunk body emitted by `GET /snapshot-chunks/:chunkId` |
+| `maxSnapshotArtifactResponseBytes` | 268435456 | Maximum scoped snapshot artifact body emitted by `GET /snapshot-artifacts/:artifactId` |
+
 ## Current Inventory
 
 - Server pull currently clamps requests to `1..1000` commits, `1..50000`
   snapshot rows, and `1..50` snapshot pages. The Rust client requests the
   defaults above.
+- Server Hono sync routes reject oversized request JSON, JSON responses, binary
+  sync packs, snapshot chunk downloads, and scoped snapshot artifact downloads
+  with stable `runtime.limit_exceeded` envelopes.
 - Server snapshot bundling currently uses `512 KiB` default row-frame bundle
   bytes, `4 MiB` adaptive max bundle bytes, `256 KiB` inline row-frame bytes,
   `50000` binary bundle rows, and gzip level `1`.

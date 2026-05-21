@@ -1,5 +1,5 @@
-import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'bun:test';
+import { readFileSync } from 'node:fs';
 import {
   createSyncularErrorResponse,
   SYNCULAR_ERROR_DEFINITIONS,
@@ -60,6 +60,14 @@ describe('Syncular error responses', () => {
       retryable: false,
       recommendedAction: 'inspectServer',
     });
+
+    expect(createSyncularErrorResponse('runtime.limit_exceeded')).toMatchObject(
+      {
+        category: 'limit-exceeded',
+        retryable: false,
+        recommendedAction: 'reduceInput',
+      }
+    );
   });
 
   it('includes push operation result classifications', () => {
@@ -127,11 +135,13 @@ describe('Syncular error responses', () => {
       retryable: true,
       recommendedAction: 'refreshAuth',
     });
-    expect(createSyncularErrorResponse('proxy.connection_limit')).toMatchObject({
-      category: 'rate-limited',
-      retryable: true,
-      recommendedAction: 'retryLater',
-    });
+    expect(createSyncularErrorResponse('proxy.connection_limit')).toMatchObject(
+      {
+        category: 'rate-limited',
+        retryable: true,
+        recommendedAction: 'retryLater',
+      }
+    );
   });
 
   it('includes blob storage configuration classification', () => {

@@ -499,7 +499,11 @@ read-only review:
     recent-event payloads instead of retaining full app data. Snapshot
     chunk/artifact transports now validate declared, compressed, and
     decompressed payload sizes, while native websocket text frames and browser
-    realtime sync-pack bytes have explicit runtime limits.
+    realtime sync-pack bytes have explicit runtime limits. The shared TS/Rust
+    error taxonomy now includes `runtime.limit_exceeded`, and Hono sync routes
+    bound combined request JSON, JSON/binary sync responses, snapshot chunk
+    downloads, and scoped snapshot artifact downloads with that same stable
+    envelope.
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)

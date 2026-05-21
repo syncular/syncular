@@ -129,7 +129,7 @@ describe('realtime broadcaster bridge', () => {
     });
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(onSync).toHaveBeenCalledWith(commitSeq, undefined, {
+    expect(onSync).toHaveBeenCalledWith(commitSeq, {
       reason: 'server-wakeup',
       requiresPull: true,
     });

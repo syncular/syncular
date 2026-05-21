@@ -173,7 +173,10 @@ export const SyncSubscriptionRequestSchema = z.object({
   cursor: z.number().int(),
   bootstrapState: SyncBootstrapStateSchema.nullable().optional(),
   verifiedRoot: z.string().optional(),
-  crdtStateVectors: z.array(SyncCrdtStateVectorHintSchema),
+  crdtStateVectors: z
+    .array(SyncCrdtStateVectorHintSchema)
+    .optional()
+    .default([]),
 });
 
 export type SyncSubscriptionRequest = z.infer<

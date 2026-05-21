@@ -24,3 +24,27 @@ export function syncErrorResponse(
     status,
   });
 }
+
+export function syncLimitExceeded(
+  c: Context,
+  args: {
+    limit: string;
+    observed: number;
+    max: number;
+    message?: string;
+  }
+): Response {
+  return c.json(
+    createSyncularErrorResponse('runtime.limit_exceeded', {
+      message:
+        args.message ??
+        `${args.limit} exceeded: ${args.observed} bytes > ${args.max} bytes`,
+      details: {
+        limit: args.limit,
+        observed: args.observed,
+        max: args.max,
+      },
+    }),
+    413
+  );
+}

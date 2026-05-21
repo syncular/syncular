@@ -58,8 +58,8 @@ product-level limits.
 
 ## Next Action
 
-Add stable limit failures and diagnostics for pull response JSON, server route
-payload limits, and stress coverage.
+Add stress coverage for configured server/runtime limits and decide which
+remaining retry/blob queue constants should become public diagnostic limits.
 
 ## Progress
 
@@ -89,6 +89,12 @@ payload limits, and stress coverage.
   decompressed payloads before hash/decode/apply work where possible.
 - Native websocket text frames and browser realtime binary sync-pack payloads
   now reject oversized frames with stable `runtime.limit_exceeded` errors.
+- `@syncular/core` now includes `runtime.limit_exceeded` in the shared public
+  error taxonomy, including the `limit-exceeded` category and `reduceInput`
+  recovery action used by Rust.
+- Hono sync routes now bound combined request JSON, JSON responses, binary
+  sync-pack responses, snapshot chunk downloads, and scoped snapshot artifact
+  downloads with stable `runtime.limit_exceeded` envelopes.
 
 ## Latest Evidence
 
@@ -101,6 +107,12 @@ payload limits, and stress coverage.
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime protocol::tests::oversized_blob_ref_returns_stable_limit_error`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime protocol::tests::oversized_snapshot_refs_return_stable_limit_errors`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime protocol::tests::oversized_realtime_payloads_return_stable_limit_errors`
+- `bun test src/__tests__` from `packages/core`
+- `bun test src/__tests__` from `packages/server-hono`
+- `bun run tsgo` from `packages/core`
+- `bun run tsgo` from `packages/server-hono`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime error_taxonomy`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`

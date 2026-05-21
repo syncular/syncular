@@ -585,6 +585,91 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     ]);
   });
 
+  it('rejects oversized snapshot chunk downloads with a stable limit envelope', async () => {
+    await db
+      .insertInto('tasks')
+      .values({
+        id: 't1',
+        user_id: 'u1',
+        title: 'Task 1',
+        server_version: 1,
+      })
+      .execute();
+
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    const routes = createSyncRoutes({
+      db,
+      dialect,
+      handlers: [tasksHandler],
+      authenticate: async (c) => {
+        const actorId = c.req.header('x-user-id');
+        return actorId ? { actorId } : null;
+      },
+      sync: {
+        maxSnapshotChunkResponseBytes: 1,
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', routes);
+
+    const pullResponse = await app.request(
+      new Request('http://localhost/sync', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-user-id': 'u1',
+        },
+        body: JSON.stringify({
+          clientId: 'client-1',
+          pull: {
+            limitCommits: 10,
+            limitSnapshotRows: 100,
+            maxSnapshotPages: 1,
+            subscriptions: [
+              {
+                id: 'sub-1',
+                table: 'tasks',
+                scopes: { user_id: 'u1' },
+                cursor: -1,
+                crdtStateVectors: [],
+              },
+            ],
+          },
+        }),
+      })
+    );
+
+    expect(pullResponse.status).toBe(200);
+    const combined = SyncCombinedResponseSchema.parse(
+      await pullResponse.json()
+    );
+    const chunkId = mustGetFirstChunkId(combined.pull!);
+
+    const oversizedResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-chunks/${chunkId}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+        },
+      })
+    );
+
+    expect(oversizedResponse.status).toBe(413);
+    expect(await oversizedResponse.json()).toMatchObject({
+      error: 'runtime.limit_exceeded',
+      details: {
+        limit: 'maxSnapshotChunkResponseBytes',
+        max: 1,
+      },
+    });
+  });
+
   it('requires scope-bound authorization for scoped snapshot artifact downloads', async () => {
     const artifactBodies = new Map<string, Uint8Array>();
     const body = new Uint8Array([1, 2, 3, 4]);
@@ -694,6 +779,89 @@ describe('createSyncRoutes chunkStorage wiring', () => {
       })
     );
     expect(cachedResponse.status).toBe(304);
+  });
+
+  it('rejects oversized scoped snapshot artifact downloads with a stable limit envelope', async () => {
+    const artifactBodies = new Map<string, Uint8Array>();
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const scopeKey = await createScopedSnapshotArtifactScopeCacheKey({
+      partitionId: 'default',
+      subscriptionId: 'sub-1',
+      scopes: { user_id: 'u1' },
+      schemaVersion: 7,
+      features: ['blobs'],
+    });
+
+    const inserted = await insertScopedSnapshotArtifact(db, {
+      artifactId: 'artifact-limit',
+      partitionId: 'default',
+      scopeKey,
+      subscriptionId: 'sub-1',
+      table: 'tasks',
+      schemaVersion: 7,
+      asOfCommitSeq: 42,
+      rowCursor: null,
+      rowLimit: 50_000,
+      rowCount: 1,
+      nextRowCursor: null,
+      isFirstPage: true,
+      isLastPage: true,
+      sha256: 'c'.repeat(64),
+      byteLength: body.length,
+      featureSet: ['blobs'],
+      blobHash: 'sha256:artifact-limit-body',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    artifactBodies.set(inserted.id, body);
+
+    const artifactStorage: SnapshotArtifactStorage = {
+      name: 'memory-artifacts',
+      async readArtifact(artifact) {
+        const bytes = artifactBodies.get(artifact.id);
+        return bytes ? new Uint8Array(bytes) : null;
+      },
+    };
+
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    const routes = createSyncRoutes({
+      db,
+      dialect,
+      handlers: [tasksHandler],
+      authenticate: async (c) => {
+        const actorId = c.req.header('x-user-id');
+        return actorId ? { actorId } : null;
+      },
+      snapshotArtifactStorage: artifactStorage,
+      sync: {
+        maxSnapshotArtifactResponseBytes: 1,
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', routes);
+
+    const oversizedResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-artifacts/${inserted.id}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+        },
+      })
+    );
+
+    expect(oversizedResponse.status).toBe(413);
+    expect(await oversizedResponse.json()).toMatchObject({
+      error: 'runtime.limit_exceeded',
+      details: {
+        limit: 'maxSnapshotArtifactResponseBytes',
+        max: 1,
+      },
+    });
   });
 
   it('rejects reusing a client id from another actor', async () => {
