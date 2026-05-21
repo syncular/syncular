@@ -94,6 +94,9 @@ The first server API slice now exists:
 - `@syncular/testkit` now exports audit assertions for canonical redaction
   markers and forbidden-payload leak checks so app tests can verify Syncular
   audit responses without mocking the runtime.
+- OpenAPI/transport types now include the row-history endpoints and redacted
+  commit-change shape. The console Stream view renders change kind, field
+  names, sensitive field names, and redaction state instead of raw row JSON.
 
 Evidence:
 
@@ -105,6 +108,8 @@ Evidence:
 - `bun --cwd packages/server-dialect-postgres tsgo`
 - `bun --cwd packages/server-hono tsgo`
 - `bun --cwd packages/testkit tsgo`
+- `bun --cwd packages/transport-http tsgo`
+- `bun --cwd packages/console tsgo`
 
 ## First Slice
 
@@ -118,6 +123,5 @@ Add read-only row history and commit diff inspection for server audit APIs:
 
 ## Next Action
 
-Decide whether the console UI should render the new field/sensitivity summary
-directly or wait for the generated OpenAPI/type pass, then add a redacted debug
-export route.
+Add a redacted debug export route and decide how much of WP-23 should move into
+shared conformance/testkit scenarios versus server-specific route tests.

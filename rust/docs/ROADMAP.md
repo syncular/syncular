@@ -748,7 +748,8 @@ read-only review:
     scoped to the authenticated actor's visible row scopes and returns redacted
     summaries rather than raw row payloads; console commit detail uses the same
     redaction classifier. Testkit now exports audit redaction/leak assertions
-    for app-side tests.
+    for app-side tests. OpenAPI/transport types and the console Stream view now
+    use the redacted change summary shape.
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 

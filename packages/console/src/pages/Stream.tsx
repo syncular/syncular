@@ -592,9 +592,24 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
                             ? ` | version: ${change.rowVersion}`
                             : ''}
                         </div>
-                        <pre className="font-mono text-[10px] rounded bg-surface p-2 overflow-x-auto text-neutral-200">
-                          {formatJson(change.rowJson)}
-                        </pre>
+                        <div className="font-mono text-[10px] rounded bg-surface p-2 space-y-1 text-neutral-200">
+                          <div>kind: {change.changeKind}</div>
+                          <div>
+                            fields:{' '}
+                            {change.fields.length > 0
+                              ? change.fields.join(', ')
+                              : '--'}
+                          </div>
+                          {change.sensitiveFields.length > 0 ? (
+                            <div>
+                              sensitive: {change.sensitiveFields.join(', ')}
+                            </div>
+                          ) : null}
+                          <div>
+                            redaction: {change.redaction.payload} /{' '}
+                            {change.redaction.reason}
+                          </div>
+                        </div>
                       </div>
                     ))
                   )}
