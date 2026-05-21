@@ -838,18 +838,9 @@ read-only review:
 - `[ ]` [`WP-27 Rust Relay Protocol Boundary`](work-packages/WP-27-rust-relay-protocol-boundary.md)
   - Prove `syncular-protocol` as the shared protocol authority for relay/proxy
     fixture validation before any production relay behavior changes.
-- `[ ]` [`WP-28 Relay Production Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
-  - Use the Rust protocol boundary inside the existing TypeScript relay path to
-    validate protocol traffic without moving relay app semantics into Rust.
-- `[!]` [`WP-29 Rust Edge Proxy`](work-packages/WP-29-rust-edge-proxy.md)
-  - Blocked until WP-27 evidence and a concrete product target justify a Rust
-    edge proxy for auth/rate-limit/websocket/network offload.
-- `[!]` [`WP-30 Rust Realtime Fanout`](work-packages/WP-30-rust-realtime-fanout.md)
-  - Blocked until WP-27 evidence and realtime product pressure justify a
-    Rust-owned websocket fanout component.
-- `[!]` [`WP-31 Rust Server Trait Model`](work-packages/WP-31-rust-server-trait-model.md)
-  - Blocked until relay/edge evidence justifies a pure Rust server product that
-    owns app mutation semantics.
+- `[ ]` [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
+  - Baseline relay/server paths, evaluate where Rust protocol/edge code would
+    actually help, and create follow-up WPs only from measured evidence.
 
 ## Blocked / External
 

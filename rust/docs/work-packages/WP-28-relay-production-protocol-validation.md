@@ -1,30 +1,49 @@
-# WP-28 Relay Production Protocol Validation
+# WP-28 Relay Rust Evaluation And Protocol Validation
 
 Status: `[ ]` planned, depends on WP-27
 
 ## Goal
 
-Use the Rust protocol boundary in the existing TypeScript relay path to validate
-relay-facing protocol traffic before forwarding or serving it, while keeping
-relay app semantics in the current TypeScript/Kysely server model.
+Evaluate where more Rust-owned relay/server-edge code would actually help, then
+retain only the smallest proven integration point. Protocol validation in the
+existing TypeScript relay path is the first candidate, not a guaranteed final
+shape.
 
 ## Why
 
-WP-27 proves the Rust protocol boundary in tests. This WP is the first
-production-facing use of that boundary: relay can reject malformed binary
-sync-packs, snapshot artifact references, blob metadata, auth lease provenance,
-and realtime frames with the same rules used by Rust clients.
+WP-27 proves the Rust protocol boundary in tests. Before creating separate Rust
+edge proxy, realtime fanout, or server WPs, we need evidence about where Rust
+would improve relay/server behavior versus where it would only add boundary
+cost, deployment complexity, or duplicate ownership.
+
+The working hypothesis is that Rust may help most where the code is protocol,
+binary, verification, or connection-oriented. Rust should not move into relay
+app semantics unless a later product decision says Rust owns server-side table
+handlers, authorization, scope resolution, and mutation application.
 
 ## Scope
 
-- Add an internal relay protocol-validation layer that calls the Rust protocol
-  validator through the smallest practical boundary.
-- Validate upstream responses from the main server before relay-local apply.
-- Validate local-client requests before relay forwarding or local relay server
-  handling when validation can be done without consuming app semantics.
-- Emit relay diagnostics for protocol validation failures.
-- Keep protocol-body forwarding byte-for-byte where the relay is operating as a
-  proxy rather than a semantic server.
+- Baseline current relay/server paths before adding Rust:
+  - local client push into relay;
+  - relay forward to main server;
+  - relay pull from main server and local apply;
+  - local client pull from relay;
+  - realtime wakeup/delta handling where relay/server coverage exists;
+  - blob/snapshot artifact paths if they are relay-relevant.
+- Evaluate candidate Rust boundaries:
+  - protocol validation only;
+  - binary sync-pack decode/inspect/validate;
+  - snapshot chunk/artifact reference validation;
+  - blob metadata/hash validation;
+  - auth lease provenance validation;
+  - realtime frame validation and ACK/overflow semantics;
+  - edge/proxy byte-preserving forwarding feasibility.
+- Prototype one or more candidate boundaries behind tests or a dev-only path
+  when measurement requires code.
+- Measure boundary overhead explicitly: JSON materialization, byte copies,
+  wasm/native call cost, startup cost, package size, memory, and deployability.
+- Brainstorm follow-up shapes from the evidence and record the decision:
+  stop, retain a small validation path, or create a new scoped WP.
 
 ## Non-Scope
 
@@ -35,18 +54,57 @@ and realtime frames with the same rules used by Rust clients.
   application.
 - No fallback from failed Rust validation to legacy TypeScript protocol
   acceptance.
+- No pre-created Rust edge proxy, realtime fanout, or pure server WP until this
+  evaluation produces a concrete target.
+
+## Evaluation Questions
+
+1. Which relay/server paths are protocol-heavy enough that Rust reuse matters?
+2. Which paths are app-semantics-heavy and should stay TypeScript/Kysely-owned?
+3. Does Rust validation catch meaningful drift or malformed inputs that current
+   TypeScript relay/server tests miss?
+4. Is the Rust call boundary cheap enough for hot paths, or only suitable for
+   offline/dev/test validation?
+5. Can binary payloads stay binary across the boundary, or does the integration
+   force JSON/map materialization?
+6. Does Rust make realtime fanout, ACK/replay, or overflow behavior simpler or
+   more measurable than the current server manager?
+7. Would an edge proxy preserve protocol bodies byte-for-byte, or would it
+   become a partial server rewrite?
+8. What follow-up WP would be justified by evidence, if any?
+
+## Measurement Plan
+
+Before retaining production behavior, capture before/after or candidate/control
+evidence for the relevant paths:
+
+- Relay push/forward latency and CPU time.
+- Relay pull/apply latency and CPU time.
+- Local client pull from relay latency and response bytes.
+- Realtime delivery p50/p95, dropped frames, ACK latency, reconnect recovery,
+  and HTTP pull-required count.
+- Blob/snapshot validation cost when those paths are in scope.
+- Boundary overhead: wasm/native call count, payload bytes copied, JSON
+  serialization time, memory delta, and startup/package cost.
+- Correctness value: malformed fixture classes rejected, protocol drift caught,
+  and diagnostics quality.
+
+If a metric cannot be collected with existing tests, add a focused benchmark or
+instrumentation point before deciding.
 
 ## Acceptance Criteria
 
-- Relay can validate current combined sync and realtime protocol fixtures
-  through the Rust boundary.
-- Relay rejects malformed binary sync-pack, snapshot artifact, blob, and
-  realtime fixtures with stable diagnostics.
-- Valid relay flows remain behaviorally unchanged in the existing relay tests.
-- Validation failures are observable in logs/events without leaking row payloads
-  or secret material.
-- Any runtime cost is measured on the relay tests or a targeted relay
-  benchmark before the validation path is retained.
+- Current relay/server baselines are recorded for the paths being evaluated.
+- At least one Rust boundary candidate is evaluated with correctness and cost
+  evidence, even if the decision is to stop.
+- Valid relay flows remain behaviorally unchanged in existing relay tests.
+- Malformed protocol fixtures produce stable diagnostics without leaking row
+  payloads or secret material.
+- The final WP note records one decision:
+  - retain a small Rust validation path;
+  - keep Rust protocol checks in tests/dev tooling only;
+  - create a new scoped WP for a specific Rust relay/server component;
+  - or stop because TypeScript relay/server ownership is still the right shape.
 
 ## Required Gates
 
@@ -54,24 +112,43 @@ and realtime frames with the same rules used by Rust clients.
 - `bun test packages/relay`
 - `bun run --cwd packages/relay tsgo`
 - Server/Hono realtime tests if relay websocket handling is touched.
-- Targeted relay validation benchmark if validation is placed on a hot path.
+- Targeted relay/server benchmark for any candidate placed on a hot path.
 
 ## Accept / Reject Rule
 
-- Retain only if validation strengthens relay correctness without changing app
-  authorization or mutation semantics.
+- Retain only if the evidence shows a correctness, performance,
+  observability, or maintainability benefit that is larger than the Rust
+  boundary cost.
+- Retain production validation only if it strengthens relay correctness without
+  changing app authorization or mutation semantics.
 - Reject if the boundary forces JSON materialization on a binary hot path
   without a measured reason.
 - Reject if production relay behavior gains a compatibility fallback around the
   current protocol.
+- Reject new Rust server/relay component WPs that are not backed by this
+  evaluation's measurements and product reasoning.
 
 ## Current Evidence
 
 - Relay currently imports protocol and server types from TypeScript packages.
 - Server-edge docs recommend starting with the protocol boundary before any
   Rust edge/proxy product.
+- WP-02 accepted `syncular-protocol` as the shared Rust protocol owner.
+- WP-11 deferred Rust server/proxy work until there is a concrete target.
+
+## Candidate Follow-Ups
+
+- Rust protocol validation retained inside the TypeScript relay path.
+- Rust protocol validation used only in fixtures/dev tooling.
+- Rust realtime fanout WP if realtime measurements show connection/fanout
+  pressure.
+- Rust edge proxy WP if deployment/auth/rate-limit/network offload is the
+  concrete product need.
+- Rust server trait-model WP only if we explicitly decide Rust should own app
+  mutation semantics.
 
 ## Next Action
 
-After WP-27, choose the lowest-risk call boundary for relay validation and add
-one production relay validation path behind normal tests.
+After WP-27, baseline the existing relay/server paths and choose the first
+candidate boundary to evaluate. Do not create additional Rust relay/server WPs
+until this evaluation records evidence and a concrete follow-up target.

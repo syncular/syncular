@@ -101,10 +101,10 @@ concrete product target and the sequencing in
 [`../reference/SERVER_EDGE_INVESTIGATION.md`](../reference/SERVER_EDGE_INVESTIGATION.md).
 The follow-up WP sequence is now explicit:
 [`WP-27 Rust Relay Protocol Boundary`](WP-27-rust-relay-protocol-boundary.md),
-[`WP-28 Relay Production Protocol Validation`](WP-28-relay-production-protocol-validation.md),
-[`WP-29 Rust Edge Proxy`](WP-29-rust-edge-proxy.md),
-[`WP-30 Rust Realtime Fanout`](WP-30-rust-realtime-fanout.md), and
-[`WP-31 Rust Server Trait Model`](WP-31-rust-server-trait-model.md).
+then
+[`WP-28 Relay Rust Evaluation And Protocol Validation`](WP-28-relay-production-protocol-validation.md).
+Create any later Rust edge, realtime fanout, or server-trait WPs only from the
+WP-28 evidence and a concrete product target.
 Do not add manual outbox lease marking to app-facing APIs; generated leased
 mutations must keep selecting stored lease provenance transactionally.
 
