@@ -84,6 +84,19 @@ Rust-first client clearly.
   - `bun test packages tests/unit tests/dialects tests/typegen`: passed,
     `703` tests.
 
+2026-05-21 Rust-client demo retained:
+
+- Added `apps/demo`, a Vite/React split-view todo demo using the generated
+  todo TypeScript bindings and canonical `@syncular/client` Rust browser
+  package. The demo starts an in-memory Hono/Bun sync server, enables the
+  canonical `/sync/realtime` websocket route, opens two separate browser
+  clients, and syncs todos between them.
+- Gates run:
+  - `bun --cwd apps/demo tsgo`: passed.
+  - `bun --cwd apps/demo build`: passed.
+  - Headless Chrome smoke: adding a todo in Client A appeared in Client B over
+    websocket with both panes `Ready`.
+
 The full Rust/WASM artifact and a smaller core artifact have been measured.
 Feature variants remain optional and should be driven by package-size evidence;
 the current product decision is to ship the full artifact by default rather than

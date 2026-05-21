@@ -100,8 +100,12 @@ export class SyncularV2WorkerRealtimeController {
   constructor(
     private readonly controllerOptions: SyncularV2WorkerRealtimeControllerOptions
   ) {
-    this.#setTimeout = controllerOptions.setTimeout ?? setTimeout;
-    this.#clearTimeout = controllerOptions.clearTimeout ?? clearTimeout;
+    this.#setTimeout =
+      controllerOptions.setTimeout ??
+      (globalThis.setTimeout.bind(globalThis) as typeof setTimeout);
+    this.#clearTimeout =
+      controllerOptions.clearTimeout ??
+      (globalThis.clearTimeout.bind(globalThis) as typeof clearTimeout);
   }
 
   start(options: SyncularV2WorkerRealtimeOptions): void {

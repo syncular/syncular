@@ -47,6 +47,7 @@
     "build": "bun build:packages",
     "build:packages": "turbo build --filter='./packages/*' --cache-dir=.turbo --concurrency=100% --force",
     "build:rust": "turbo build --filter='./rust/bindings/*' --cache-dir=.turbo --concurrency=100% --force",
+    "demo": "bun --cwd apps/demo dev",
     "docs": "bun --cwd apps/docs dev",
     "docs:build": "bun --cwd apps/docs build",
     "mobile": "bun --cwd tests/expo-app start",
