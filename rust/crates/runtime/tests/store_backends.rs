@@ -24,6 +24,7 @@ use syncular_runtime::encrypted_crdt::{
 };
 use syncular_runtime::encryption::{key_to_base64url, FieldEncryptionContext};
 use syncular_runtime::error::{ErrorKind, Result, SyncularError};
+use syncular_runtime::fixtures::todo::generated::SyncularGeneratedMutationsExt;
 use syncular_runtime::fixtures::todo::migrations::{current_schema_version, MIGRATIONS};
 use syncular_runtime::fixtures::todo::rusqlite_sqlite::RusqliteStore;
 use syncular_runtime::fixtures::todo::{
@@ -756,6 +757,113 @@ fn diesel_store_persists_auth_leases_and_outbox_provenance() -> Result<()> {
             .as_ref()
             .and_then(|lease| lease.lease_token.as_deref()),
         Some("test-token")
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn diesel_generated_leased_mutations_select_active_auth_lease() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-generated-leased-mutation");
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let now = now_ms();
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    client.upsert_auth_lease(&AuthLeaseRecord {
+        lease_id: "lease-generated-active".to_string(),
+        kid: "test-kid".to_string(),
+        actor_id: "user-rust".to_string(),
+        issued_at_ms: now - 10,
+        not_before_ms: now - 10,
+        expires_at_ms: now + 60_000,
+        schema_version: current_schema_version(),
+        payload_json: json!({
+            "version": 1,
+            "leaseId": "lease-generated-active",
+            "issuer": "syncular-test",
+            "audience": "syncular-test-app",
+            "actorId": "user-rust",
+            "subject": {},
+            "schemaVersion": current_schema_version(),
+            "protocolVersion": 1,
+            "issuedAtMs": now - 10,
+            "notBeforeMs": now - 10,
+            "expiresAtMs": now + 60_000,
+            "maxClockSkewMs": 0,
+            "scopes": [{
+                "subscriptionId": "sub-tasks",
+                "table": "tasks",
+                "values": { "user_id": "user-rust", "project_id": "p0" },
+                "operations": ["upsert", "delete"]
+            }],
+            "capabilities": {
+                "allowBlobs": false,
+                "allowCrdt": false,
+                "allowEncryptedFields": false
+            }
+        })
+        .to_string(),
+        token: "lease-generated-token".to_string(),
+        status: "active".to_string(),
+        last_validation_error: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+    })?;
+
+    let receipt = client
+        .leased_mutations()
+        .tasks()
+        .insert(generated::NewTask::new(
+            "leased-task",
+            "generated lease task",
+            "user-rust",
+            Some("p0"),
+        ))?;
+    assert_eq!(receipt.id, "leased-task");
+
+    let summaries = client.outbox_summaries()?;
+    let provenance = summaries
+        .iter()
+        .find(|summary| summary.client_commit_id == receipt.commit.client_commit_id)
+        .and_then(|summary| summary.auth_lease.as_ref())
+        .expect("leased mutation should tag the queued outbox commit");
+    assert_eq!(provenance.lease_id, "lease-generated-active");
+    assert_eq!(
+        provenance.lease_token.as_deref(),
+        Some("lease-generated-token")
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn diesel_generated_leased_mutations_fail_closed_without_covering_lease() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-generated-leased-missing");
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+
+    let error = client
+        .leased_mutations()
+        .tasks()
+        .insert(generated::NewTask::new(
+            "leased-missing",
+            "missing lease task",
+            "user-rust",
+            Some("p0"),
+        ))
+        .expect_err("strict leased mutation should fail without a covering lease");
+    assert!(error.message_text().contains("sync.auth_lease_missing"));
+    assert!(client.outbox_summaries()?.is_empty());
+    drop(client);
+
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    assert_eq!(
+        count_rows(
+            &mut conn,
+            "select count(*) as count from tasks where id = 'leased-missing'"
+        )?,
+        0
     );
 
     let _ = std::fs::remove_file(path);

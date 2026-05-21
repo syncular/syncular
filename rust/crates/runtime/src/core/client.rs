@@ -106,6 +106,27 @@ pub trait SyncularMutationExecutor {
     }
 }
 
+pub trait SyncularLeasedMutationExecutor: SyncularMutationExecutor {
+    fn apply_leased_mutation<M>(&mut self, mutation: M) -> Result<MutationReceipt>
+    where
+        M: IntoSyncularMutation;
+
+    fn apply_leased_mutation_batch(
+        &mut self,
+        batch: SyncularMutationBatch,
+    ) -> Result<MutationReceipt>;
+
+    fn commit_leased_mutations<R>(
+        &mut self,
+        f: impl FnOnce(&mut SyncularMutationBatch) -> Result<R>,
+    ) -> Result<MutationCommit<R>> {
+        let mut batch = SyncularMutationBatch::new();
+        let result = f(&mut batch)?;
+        let commit = self.apply_leased_mutation_batch(batch)?;
+        Ok(MutationCommit { result, commit })
+    }
+}
+
 pub trait SyncularEncryptedCrdtMutationExecutor {
     fn apply_encrypted_crdt_text_update(
         &mut self,
@@ -3230,6 +3251,36 @@ where
 
     fn apply_mutation_batch(&mut self, batch: SyncularMutationBatch) -> Result<MutationReceipt> {
         self.store.apply_syncular_mutations(batch.into_mutations())
+    }
+}
+
+#[cfg(feature = "native")]
+impl<T> SyncularLeasedMutationExecutor for SyncularClient<DieselSqliteStore, T>
+where
+    T: SyncTransport,
+{
+    fn apply_leased_mutation<M>(&mut self, mutation: M) -> Result<MutationReceipt>
+    where
+        M: IntoSyncularMutation,
+    {
+        let actor_id = self.config.actor_id.clone();
+        self.store.apply_syncular_mutations_with_active_auth_lease(
+            Some(&actor_id),
+            now_ms(),
+            vec![mutation.into_syncular_mutation()],
+        )
+    }
+
+    fn apply_leased_mutation_batch(
+        &mut self,
+        batch: SyncularMutationBatch,
+    ) -> Result<MutationReceipt> {
+        let actor_id = self.config.actor_id.clone();
+        self.store.apply_syncular_mutations_with_active_auth_lease(
+            Some(&actor_id),
+            now_ms(),
+            batch.into_mutations(),
+        )
     }
 }
 

@@ -3924,6 +3924,12 @@ fn generate_rust_mutations_api(
     out.push_str("    {\n");
     out.push_str("        SyncularAppMutations { client: self }\n");
     out.push_str("    }\n\n");
+    out.push_str("    fn leased_mutations(&mut self) -> SyncularAppLeasedMutations<'_, Self>\n");
+    out.push_str("    where\n");
+    out.push_str("        Self: Sized + SyncularLeasedMutationExecutor,\n");
+    out.push_str("    {\n");
+    out.push_str("        SyncularAppLeasedMutations { client: self }\n");
+    out.push_str("    }\n\n");
     out.push_str("    fn commit<R>(\n");
     out.push_str("        &mut self,\n");
     out.push_str("        f: impl FnOnce(&mut SyncularAppMutationTx<'_>) -> Result<R>,\n");
@@ -3939,11 +3945,31 @@ fn generate_rust_mutations_api(
     out.push_str("        let commit = self.apply_mutation_batch(batch)?;\n");
     out.push_str("        Ok(MutationCommit { result, commit })\n");
     out.push_str("    }\n");
+    out.push_str("\n    fn commit_leased<R>(\n");
+    out.push_str("        &mut self,\n");
+    out.push_str("        f: impl FnOnce(&mut SyncularAppMutationTx<'_>) -> Result<R>,\n");
+    out.push_str("    ) -> Result<MutationCommit<R>>\n");
+    out.push_str("    where\n");
+    out.push_str("        Self: Sized + SyncularLeasedMutationExecutor,\n");
+    out.push_str("    {\n");
+    out.push_str("        let mut batch = SyncularMutationBatch::new();\n");
+    out.push_str("        let result = {\n");
+    out.push_str("            let mut tx = SyncularAppMutationTx { batch: &mut batch };\n");
+    out.push_str("            f(&mut tx)?\n");
+    out.push_str("        };\n");
+    out.push_str("        let commit = self.apply_leased_mutation_batch(batch)?;\n");
+    out.push_str("        Ok(MutationCommit { result, commit })\n");
+    out.push_str("    }\n");
     out.push_str("}\n\n");
     out.push_str(
         "impl<C> SyncularGeneratedMutationsExt for C where C: SyncularMutationExecutor {}\n\n",
     );
     out.push_str("pub struct SyncularAppMutations<'a, C: SyncularMutationExecutor + ?Sized> {\n");
+    out.push_str("    client: &'a mut C,\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "pub struct SyncularAppLeasedMutations<'a, C: SyncularLeasedMutationExecutor + ?Sized> {\n",
+    );
     out.push_str("    client: &'a mut C,\n");
     out.push_str("}\n\n");
     out.push_str("pub struct SyncularAppMutationTx<'a> {\n");
@@ -3957,6 +3983,7 @@ fn generate_rust_mutations_api(
         let table_fn = rust_column_name(&table.name);
         let singular = singular_pascal_case(&table.name);
         let mutations_name = format!("{singular}Mutations");
+        let leased_mutations_name = format!("{singular}LeasedMutations");
         let tx_name = format!("{singular}MutationTx");
         let new_name = format!("New{singular}");
         let patch_name = format!("{singular}Patch");
@@ -3965,6 +3992,9 @@ fn generate_rust_mutations_api(
 
         out.push_str(&format!(
             "impl<'a, C> SyncularAppMutations<'a, C>\nwhere\n    C: SyncularMutationExecutor + ?Sized,\n{{\n    pub fn {table_fn}(self) -> {mutations_name}<'a, C> {{\n        {mutations_name} {{ client: self.client }}\n    }}\n}}\n\n"
+        ));
+        out.push_str(&format!(
+            "impl<'a, C> SyncularAppLeasedMutations<'a, C>\nwhere\n    C: SyncularLeasedMutationExecutor + ?Sized,\n{{\n    pub fn {table_fn}(self) -> {leased_mutations_name}<'a, C> {{\n        {leased_mutations_name} {{ client: self.client }}\n    }}\n}}\n\n"
         ));
         out.push_str(&format!(
             "impl<'a> SyncularAppMutationTx<'a> {{\n    pub fn {table_fn}(&mut self) -> {tx_name}<'_> {{\n        {tx_name} {{ batch: self.batch }}\n    }}\n}}\n\n"
@@ -3990,6 +4020,12 @@ fn generate_rust_mutations_api(
         }
         out.push_str("}\n\n");
         out.push_str(&format!(
+            "pub struct {leased_mutations_name}<'a, C: SyncularLeasedMutationExecutor + ?Sized> {{\n    client: &'a mut C,\n}}\n\n"
+        ));
+        out.push_str(&format!(
+            "impl<C> {leased_mutations_name}<'_, C>\nwhere\n    C: SyncularLeasedMutationExecutor + ?Sized,\n{{\n    pub fn insert(self, row: {new_name}) -> Result<InsertReceipt> {{\n        let id = row.{primary_key}.clone();\n        let commit = self.client.apply_leased_mutation(row)?;\n        Ok(InsertReceipt {{ id, commit }})\n    }}\n\n    pub fn insert_many(self, rows: impl IntoIterator<Item = {new_name}>) -> Result<InsertManyReceipt> {{\n        let mut batch = SyncularMutationBatch::new();\n        let mut ids = Vec::new();\n        for row in rows {{\n            ids.push(row.{primary_key}.clone());\n            batch.push(row);\n        }}\n        let commit = self.client.apply_leased_mutation_batch(batch)?;\n        Ok(InsertManyReceipt {{ ids, commit }})\n    }}\n\n    pub fn update(self, patch: {patch_name}) -> Result<MutationReceipt> {{\n        self.client.apply_leased_mutation(patch)\n    }}\n\n    pub fn delete(self, row_id: &str) -> Result<MutationReceipt> {{\n        self.client.apply_leased_mutation({delete_name}::new(row_id))\n    }}\n}}\n\n"
+        ));
+        out.push_str(&format!(
             "pub struct {tx_name}<'a> {{\n    batch: &'a mut SyncularMutationBatch,\n}}\n\n"
         ));
         out.push_str(&format!(
@@ -4000,13 +4036,14 @@ fn generate_rust_mutations_api(
     out.push_str("pub mod prelude {\n");
     out.push_str("    pub use super::{\n");
     out.push_str(
-        "        InsertManyReceipt, InsertReceipt, SyncularAppMutationTx, SyncularAppMutations,\n",
+        "        InsertManyReceipt, InsertReceipt, SyncularAppLeasedMutations, SyncularAppMutationTx,\n",
     );
+    out.push_str("        SyncularAppMutations,\n");
     out.push_str("        SyncularGeneratedMutationsExt,\n");
     for table in tables {
         let singular = singular_pascal_case(&table.name);
         out.push_str(&format!(
-            "        Delete{singular}, New{singular}, {singular}Mutations, {singular}MutationTx, {singular}Patch,\n"
+            "        Delete{singular}, New{singular}, {singular}LeasedMutations, {singular}Mutations, {singular}MutationTx, {singular}Patch,\n"
         ));
     }
     out.push_str("    };\n");
@@ -4269,7 +4306,7 @@ fn generate_generated_module(tables: &[TableInfo], config: &CodegenConfig) -> Re
     out.push_str(&format!(
         "pub use {runtime_crate}::app_schema::{{AppTableMetadata, ColumnMetadata, CrdtYjsFieldMetadata, EncryptedFieldMetadata, ScopeMetadata, ScopeSource}};\n\
          #[allow(unused_imports)]\n\
-         use {runtime_crate}::client::{{SubscriptionSpec, SyncChangedRow, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor, SyncularMutationExecutor}};\n\
+        use {runtime_crate}::client::{{SubscriptionSpec, SyncChangedRow, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor, SyncularLeasedMutationExecutor, SyncularMutationExecutor}};\n\
          use {runtime_crate}::crdt_yjs::{{YjsUpdateEnvelope, YJS_PAYLOAD_KEY}};\n\
          use {runtime_crate}::encryption::FieldEncryptionRule;\n\
          use {runtime_crate}::error::Result;\n\
@@ -11246,7 +11283,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(output.contains("encrypted_fields: TASKS_ENCRYPTED_FIELDS"));
         assert!(output.contains("columns: TASKS_COLUMNS"));
         assert!(output.contains("params.insert(\"includeArchived\".to_string(), json!(true));"));
-        assert!(output.contains("use syncular_client::client::{SubscriptionSpec, SyncChangedRow, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor, SyncularMutationExecutor};"));
+        assert!(output.contains("use syncular_client::client::{SubscriptionSpec, SyncChangedRow, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor, SyncularLeasedMutationExecutor, SyncularMutationExecutor};"));
         assert!(output.contains("pub fn default_subscriptions_with_bootstrap_phases("));
         assert!(output.contains("pub fn apply_bootstrap_phases("));
         assert!(output.contains("pub fn with_bootstrap_phase("));
@@ -11265,9 +11302,14 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(output.contains("pub struct DeleteTask"));
         assert!(output.contains("pub trait SyncularGeneratedMutationsExt"));
         assert!(output.contains("fn mutations(&mut self) -> SyncularAppMutations<'_, Self>"));
+        assert!(output
+            .contains("fn leased_mutations(&mut self) -> SyncularAppLeasedMutations<'_, Self>"));
         assert!(output.contains("fn commit<R>("));
+        assert!(output.contains("fn commit_leased<R>("));
         assert!(output.contains("pub struct TaskMutations"));
+        assert!(output.contains("pub struct TaskLeasedMutations"));
         assert!(output.contains("pub fn insert(self, row: NewTask) -> Result<InsertReceipt>"));
+        assert!(output.contains("self.client.apply_leased_mutation(row)?"));
         assert!(output.contains("pub fn update(self, patch: TaskPatch) -> Result<MutationReceipt>"));
 
         let diesel_tables = generate_diesel_tables(&tables, &config)?;

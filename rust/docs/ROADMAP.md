@@ -427,9 +427,12 @@ read-only review:
     `leaseToken` from `sync_auth_leases` when an outbox commit is marked with
     lease provenance. Server replay now derives row scopes through the table
     handler, verifies signed lease coverage per operation, and re-resolves
-    current handler scopes to reject revoked access before writes. Remaining
-    WP-11 gap: generated/local mutation APIs need a strict leased-offline mode
-    that selects an active covering lease automatically.
+    current handler scopes to reject revoked access before writes. Rust
+    generated mutations now expose `leased_mutations()` / `commit_leased()`,
+    and native Diesel selects an active covering lease transactionally before
+    retaining the local row/outbox write. Remaining WP-11 gap: Swift, Kotlin,
+    and browser generated APIs need the same explicit strict leased-offline
+    mutation mode.
 - `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus
