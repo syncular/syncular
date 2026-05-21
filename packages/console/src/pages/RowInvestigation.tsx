@@ -355,6 +355,41 @@ export function RowInvestigation({ table, rowId }: RowInvestigationProps) {
                 </div>
               </div>
             </SectionCard>
+
+            <SectionCard
+              title="Requests"
+              description="Success and rejection evidence for this table."
+              contentClassName="space-y-3"
+            >
+              <div className="font-mono text-[11px] space-y-2">
+                <Badge
+                  variant={
+                    data.requestEvidence.latestResponseStatus === 'success'
+                      ? 'healthy'
+                      : data.requestEvidence.latestResponseStatus
+                        ? 'offline'
+                        : 'ghost'
+                  }
+                >
+                  {data.requestEvidence.latestResponseStatus ?? 'none'}
+                </Badge>
+                <div className="text-neutral-400">
+                  events: {data.requestEvidence.matchingEventCount}
+                </div>
+                <div className="text-neutral-400">
+                  success: {data.requestEvidence.successEventCount}
+                </div>
+                <div className="text-neutral-400">
+                  non-success: {data.requestEvidence.nonSuccessEventCount}
+                </div>
+                <div className="text-neutral-400">
+                  latest: {data.requestEvidence.latestRequestId ?? '--'}
+                </div>
+                <div className="text-neutral-400">
+                  latest error: {data.requestEvidence.latestErrorCode ?? '--'}
+                </div>
+              </div>
+            </SectionCard>
           </div>
 
           <SectionCard title="Findings" contentClassName="space-y-2">

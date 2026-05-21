@@ -1211,6 +1211,35 @@ describe('console timeline route filters', () => {
         created_at: atIso(58),
       })
       .execute();
+    await db
+      .insertInto('sync_request_events')
+      .values({
+        partition_id: 'default',
+        request_id: 'req-investigate-rejected',
+        trace_id: 'trace-investigate-rejected',
+        span_id: null,
+        event_type: 'push',
+        sync_path: 'http-combined',
+        actor_id: 'actor-investigate',
+        client_id: 'client-investigate',
+        transport_path: 'direct',
+        status_code: 401,
+        outcome: 'rejected',
+        response_status: 'client_error',
+        error_code: 'sync.auth_required',
+        duration_ms: 3,
+        commit_seq: null,
+        operation_count: null,
+        row_count: null,
+        subscription_count: null,
+        scopes_summary: null,
+        response_summary: null,
+        tables: ['tasks'],
+        error_message: 'Authentication is required',
+        payload_ref: null,
+        created_at: atIso(59),
+      })
+      .execute();
 
     const response = await requestRowInvestigation('tasks', 'row-investigate', {
       partitionId: 'default',
@@ -1232,6 +1261,15 @@ describe('console timeline route filters', () => {
         latestRequestId: string | null;
         latestSubscriptionCount: number | null;
         observedScopeKeys: string[];
+      };
+      requestEvidence: {
+        matchingEventCount: number;
+        successEventCount: number;
+        nonSuccessEventCount: number;
+        latestRequestId: string | null;
+        latestResponseStatus: string | null;
+        latestErrorCode: string | null;
+        latestNonSuccessRequestId: string | null;
       };
       findings: Array<{ code: string }>;
       history: Array<{ fields: string[]; rowJson?: unknown }>;
@@ -1256,16 +1294,28 @@ describe('console timeline route filters', () => {
       latestSubscriptionCount: 1,
       observedScopeKeys: ['org_id'],
     });
+    expect(payload.requestEvidence).toMatchObject({
+      matchingEventCount: 2,
+      successEventCount: 1,
+      nonSuccessEventCount: 1,
+      latestRequestId: 'req-investigate-rejected',
+      latestResponseStatus: 'client_error',
+      latestErrorCode: 'sync.auth_required',
+      latestNonSuccessRequestId: 'req-investigate-rejected',
+    });
     expect(payload.findings.map((finding) => finding.code)).toEqual(
       expect.arrayContaining([
         'client.cursor_behind',
         'scope.not_eligible',
         'subscription.revoked',
+        'events.latest_not_success',
       ])
     );
     expect(payload.history[0]?.fields).toEqual(['id', 'org_id', 'title']);
     expect(payload.history[0]).not.toHaveProperty('rowJson');
-    expect(payload.relevantEvents[0]?.requestId).toBe('req-investigate');
+    expect(payload.relevantEvents[0]?.requestId).toBe(
+      'req-investigate-rejected'
+    );
     expect(JSON.stringify(payload)).not.toContain('Investigation Secret');
     expect(JSON.stringify(payload)).not.toContain('org-visible');
 
