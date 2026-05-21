@@ -4,7 +4,7 @@ use crate::protocol::{BootstrapState, ScopeValues, COMMIT_INTEGRITY_HEX_LENGTH};
 use crate::store::{now_ms, SubscriptionState, SyncStore, SyncStoreTx, VerifiedRoot};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -12,6 +12,7 @@ pub struct LocalHealthReport {
     pub generated_at: i64,
     pub ok: bool,
     pub checked_subscriptions: usize,
+    pub checked_subscription_states: usize,
     pub checked_verified_roots: usize,
     pub findings: Vec<LocalHealthFinding>,
 }
@@ -45,6 +46,7 @@ pub enum LocalHealthSeverity {
 #[serde(rename_all = "camelCase")]
 pub enum LocalHealthRepairAction {
     ForceRebootstrap,
+    ClearOrphanedState,
     ManualInspection,
 }
 
@@ -54,6 +56,7 @@ impl LocalHealthReport {
             generated_at: now_ms(),
             ok: true,
             checked_subscriptions,
+            checked_subscription_states: 0,
             checked_verified_roots: 0,
             findings: Vec::new(),
         }
@@ -73,17 +76,48 @@ pub fn check_local_health<S: SyncStore>(
     subscriptions: &[SubscriptionSpec],
 ) -> Result<LocalHealthReport> {
     let mut report = LocalHealthReport::new(subscriptions.len());
+    let specs_by_id = subscriptions
+        .iter()
+        .map(|spec| (spec.id.as_str(), spec))
+        .collect::<HashMap<_, _>>();
     store.transaction(|tx| {
-        for spec in subscriptions {
-            let state = tx.subscription_state(state_id, &spec.id)?;
-            if let Some(state) = state.as_ref() {
-                check_subscription_state(&mut report, spec, state);
-            }
+        let states = tx.subscription_states(state_id)?;
+        let roots = tx.verified_roots(state_id)?;
+        report.checked_subscription_states = states.len();
+        report.checked_verified_roots = roots.len();
 
-            let root = tx.verified_root(state_id, &spec.id)?;
-            if let Some(root) = root.as_ref() {
-                report.checked_verified_roots += 1;
-                check_verified_root(&mut report, spec, state.as_ref(), root, state_id);
+        let states_by_id = states
+            .iter()
+            .map(|state| (state.subscription_id.as_str(), state))
+            .collect::<HashMap<_, _>>();
+        let rooted_subscription_ids = roots
+            .iter()
+            .map(|root| root.subscription_id.as_str())
+            .collect::<HashSet<_>>();
+
+        for state in &states {
+            if let Some(spec) = specs_by_id.get(state.subscription_id.as_str()) {
+                check_subscription_state(&mut report, spec, state);
+            } else {
+                check_orphaned_subscription_state(
+                    &mut report,
+                    state,
+                    rooted_subscription_ids.contains(state.subscription_id.as_str()),
+                );
+            }
+        }
+
+        for root in &roots {
+            if let Some(spec) = specs_by_id.get(root.subscription_id.as_str()) {
+                check_verified_root(
+                    &mut report,
+                    spec,
+                    states_by_id.get(root.subscription_id.as_str()).copied(),
+                    root,
+                    state_id,
+                );
+            } else {
+                check_orphaned_verified_root(&mut report, root);
             }
         }
         Ok(())
@@ -173,6 +207,49 @@ fn check_subscription_state(
             ));
         }
     }
+}
+
+fn check_orphaned_subscription_state(
+    report: &mut LocalHealthReport,
+    state: &SubscriptionState,
+    has_verified_root: bool,
+) {
+    let mut details = BTreeMap::new();
+    details.insert("status".to_string(), Value::String(state.status.clone()));
+    details.insert("cursor".to_string(), Value::from(state.cursor));
+    details.insert(
+        "hasVerifiedRoot".to_string(),
+        Value::from(has_verified_root),
+    );
+    report.add_finding(finding(
+        LocalHealthSeverity::Error,
+        "local.subscription_state_orphaned",
+        "subscriptionState",
+        "stored subscription state is not configured on this client",
+        Some(&state.subscription_id),
+        Some(&state.table),
+        Some(LocalHealthRepairAction::ClearOrphanedState),
+        details,
+    ));
+}
+
+fn check_orphaned_verified_root(report: &mut LocalHealthReport, root: &VerifiedRoot) {
+    let mut details = BTreeMap::new();
+    details.insert("commitSeq".to_string(), Value::from(root.commit_seq));
+    details.insert(
+        "partitionId".to_string(),
+        Value::String(root.partition_id.clone()),
+    );
+    report.add_finding(finding(
+        LocalHealthSeverity::Error,
+        "local.verified_root_orphaned",
+        "verifiedRoot",
+        "stored verified root is not configured on this client",
+        Some(&root.subscription_id),
+        None,
+        Some(LocalHealthRepairAction::ClearOrphanedState),
+        details,
+    ));
 }
 
 fn check_verified_root(

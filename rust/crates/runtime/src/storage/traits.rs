@@ -174,6 +174,9 @@ pub trait SyncStoreTx {
         state_id: &str,
         subscription_id: &str,
     ) -> Result<Option<SubscriptionState>>;
+    fn subscription_states(&mut self, _state_id: &str) -> Result<Vec<SubscriptionState>> {
+        Ok(Vec::new())
+    }
     fn upsert_subscription_state(&mut self, state: &SubscriptionState) -> Result<()>;
     fn delete_subscription_state(&mut self, state_id: &str, subscription_id: &str) -> Result<()>;
     fn verified_root(
@@ -182,6 +185,9 @@ pub trait SyncStoreTx {
         _subscription_id: &str,
     ) -> Result<Option<VerifiedRoot>> {
         Ok(None)
+    }
+    fn verified_roots(&mut self, _state_id: &str) -> Result<Vec<VerifiedRoot>> {
+        Ok(Vec::new())
     }
     fn upsert_verified_root(&mut self, _root: &VerifiedRoot) -> Result<()> {
         Ok(())

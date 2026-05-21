@@ -169,6 +169,7 @@ fn local_health_check_reports_corrupted_verified_root_without_mutating_rows() ->
     let report = client.local_health_check()?;
     assert!(!report.ok);
     assert_eq!(report.checked_subscriptions, 1);
+    assert_eq!(report.checked_subscription_states, 1);
     assert_eq!(report.checked_verified_roots, 1);
     assert!(report.findings.iter().any(|finding| {
         finding.code == "local.verified_root_invalid_hex"
@@ -180,6 +181,66 @@ fn local_health_check_reports_corrupted_verified_root_without_mutating_rows() ->
     assert!(!report_json.contains("bad-root"));
     assert_eq!(
         client.current_row_json("tasks", "health-task")?.unwrap()["title"],
+        "Parity task"
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn local_health_check_reports_orphaned_subscription_state_and_root() -> Result<()> {
+    let path = temp_db_path("syncular-health-orphaned-state");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    store.transaction(|tx| {
+        tx.upsert_row("tasks", &task_row("orphan-health-task"), None)?;
+        tx.upsert_subscription_state(&SubscriptionState {
+            state_id: "default".to_string(),
+            subscription_id: "stale-subscription".to_string(),
+            table: "tasks".to_string(),
+            scopes_json: serde_json::to_string(&scopes())?,
+            params_json: "{}".to_string(),
+            cursor: 8,
+            bootstrap_state_json: None,
+            status: "active".to_string(),
+        })?;
+        tx.upsert_verified_root(&VerifiedRoot {
+            state_id: "default".to_string(),
+            subscription_id: "stale-subscription".to_string(),
+            partition_id: "default".to_string(),
+            commit_seq: 8,
+            root: "a".repeat(64),
+        })
+    })?;
+
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    client.set_subscriptions(vec![SubscriptionSpec {
+        id: "sub-tasks".to_string(),
+        table: "tasks".to_string(),
+        scopes: scopes(),
+        params: serde_json::Map::new(),
+        bootstrap_phase: 0,
+    }])?;
+
+    let report = client.local_health_check()?;
+    assert!(!report.ok);
+    assert_eq!(report.checked_subscriptions, 1);
+    assert_eq!(report.checked_subscription_states, 1);
+    assert_eq!(report.checked_verified_roots, 1);
+    assert!(report.findings.iter().any(|finding| {
+        finding.code == "local.subscription_state_orphaned"
+            && finding.repair_action
+                == Some(syncular_runtime::health::LocalHealthRepairAction::ClearOrphanedState)
+    }));
+    assert!(report.findings.iter().any(|finding| {
+        finding.code == "local.verified_root_orphaned"
+            && finding.repair_action
+                == Some(syncular_runtime::health::LocalHealthRepairAction::ClearOrphanedState)
+    }));
+    assert_eq!(
+        client
+            .current_row_json("tasks", "orphan-health-task")?
+            .unwrap()["title"],
         "Parity task"
     );
 
