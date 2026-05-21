@@ -12,6 +12,8 @@ import { scopeKeysFromScopeValues } from '../helpers/scope-commit-index';
 import type { SyncChangeRow, SyncCommitRow, SyncCoreDb } from '../schema';
 import { coerceIsoString, coerceNumber, parseScopes } from './helpers';
 import type {
+  AuditRowHistoryArgs,
+  AuditRowHistoryRow,
   DbExecutor,
   IncrementalPullRow,
   IncrementalPullRowsArgs,
@@ -123,6 +125,11 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
       partitionId?: string;
     }
   ): Promise<SyncChangeRow[]>;
+
+  abstract readAuditRowHistory<DB extends SyncCoreDb>(
+    db: DbExecutor<DB>,
+    args: AuditRowHistoryArgs
+  ): Promise<AuditRowHistoryRow[]>;
 
   protected abstract readIncrementalPullRowsBatch<DB extends SyncCoreDb>(
     db: DbExecutor<DB>,

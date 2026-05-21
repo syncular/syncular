@@ -10,6 +10,7 @@
 
 import {
   captureSyncException,
+  collectScopeVars,
   countSyncMetric,
   createSyncTimer,
   createSyncularErrorResponse,
@@ -18,6 +19,7 @@ import {
   encodeBinarySyncPack,
   logSyncEvent,
   prefersBinarySyncPack,
+  type ScopeValues,
   ScopeValuesSchema,
   SYNC_AUTH_LEASE_CODE_EXPIRED,
   SYNC_AUTH_LEASE_CODE_INVALID,
@@ -435,6 +437,28 @@ const auditCommitParamsSchema = z.object({
   commitSeq: z.coerce.number().int().min(1),
 });
 
+const auditRowHistoryParamsSchema = z.object({
+  table: z.string().min(1),
+  rowId: z.string().min(1),
+});
+
+const auditRowHistoryQuerySchema = z
+  .object({
+    limit: z.coerce.number().int().min(1).max(200).optional(),
+    beforeCommitSeq: z.coerce.number().int().min(1).optional(),
+    afterCommitSeq: z.coerce.number().int().min(1).optional(),
+  })
+  .refine(
+    (query) =>
+      query.beforeCommitSeq === undefined ||
+      query.afterCommitSeq === undefined ||
+      query.afterCommitSeq < query.beforeCommitSeq,
+    {
+      message: 'afterCommitSeq must be lower than beforeCommitSeq',
+      path: ['afterCommitSeq'],
+    }
+  );
+
 const auditCommitSummarySchema = z.object({
   commitSeq: z.number().int(),
   actorId: z.string(),
@@ -465,6 +489,29 @@ const auditCommitDetailResponseSchema = z.object({
   ok: z.literal(true),
   commit: auditCommitSummarySchema,
   changes: z.array(auditChangeSchema),
+});
+
+const auditRowHistoryEntrySchema = z.object({
+  commitSeq: z.number().int(),
+  actorId: z.string(),
+  clientId: z.string(),
+  clientCommitId: z.string(),
+  createdAt: z.string(),
+  changeId: z.number().int(),
+  table: z.string(),
+  rowId: z.string(),
+  op: z.enum(['upsert', 'delete']),
+  rowVersion: z.number().int().nullable(),
+  fields: z.array(z.string()),
+  scopeFields: z.array(z.string()),
+});
+
+const auditRowHistoryResponseSchema = z.object({
+  ok: z.literal(true),
+  table: z.string(),
+  rowId: z.string(),
+  history: z.array(auditRowHistoryEntrySchema),
+  nextCursor: z.number().int().nullable(),
 });
 
 const DEFAULT_REQUEST_PAYLOAD_SNAPSHOT_MAX_BYTES = 128 * 1024;
@@ -2700,6 +2747,120 @@ export function createSyncRoutes<
   );
 
   // -------------------------------------------------------------------------
+  // GET /audit/rows/:table/:rowId
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/audit/rows/:table/:rowId',
+    describeRoute({
+      tags: ['sync'],
+      summary: 'Read scoped row audit history',
+      description:
+        'Returns redacted row-level audit history for one row within the authenticated partition and allowed scopes.',
+      responses: {
+        200: {
+          description: 'Scoped row audit history',
+          content: {
+            'application/json': {
+              schema: resolver(auditRowHistoryResponseSchema),
+            },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        404: {
+          description: 'Row history not found in the authenticated scopes',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('param', auditRowHistoryParamsSchema),
+    zValidator('query', auditRowHistoryQuerySchema),
+    async (c) => {
+      const auth = await getAuth(c);
+      if (!auth) return syncError(c, 401, 'sync.auth_required');
+
+      const partitionId = auth.partitionId ?? 'default';
+      const { table, rowId } = c.req.valid('param');
+      const query = c.req.valid('query');
+      const limit = query.limit ?? 50;
+      const handler = handlerRegistry.byTable.get(table);
+      if (!handler) {
+        return syncError(c, 404, 'sync.not_found');
+      }
+
+      let allowedScopes: ScopeValues;
+      try {
+        allowedScopes = await handler.resolveScopes({
+          db: options.db,
+          actorId: auth.actorId,
+          auth,
+        });
+      } catch {
+        return syncError(c, 404, 'sync.not_found');
+      }
+
+      const auditScopes = selectRequiredAuditScopes(
+        handler.scopePatterns,
+        allowedScopes
+      );
+      if (!auditScopes) {
+        return syncError(c, 404, 'sync.not_found');
+      }
+
+      const rows = await options.dialect.readAuditRowHistory(options.db, {
+        partitionId,
+        table,
+        rowId,
+        scopes: auditScopes,
+        limit,
+        beforeCommitSeq: query.beforeCommitSeq,
+        afterCommitSeq: query.afterCommitSeq,
+      });
+      if (rows.length === 0) {
+        return syncError(c, 404, 'sync.not_found');
+      }
+
+      const hasMore = rows.length > limit;
+      const selectedRows = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore
+        ? Number(selectedRows[selectedRows.length - 1]?.commit_seq ?? 0)
+        : null;
+
+      return c.json(
+        {
+          ok: true,
+          table,
+          rowId,
+          history: selectedRows.map((row) => ({
+            commitSeq: Number(row.commit_seq),
+            actorId: row.actor_id,
+            clientId: row.client_id,
+            clientCommitId: row.client_commit_id,
+            createdAt: row.created_at,
+            changeId: Number(row.change_id),
+            table: row.table,
+            rowId: row.row_id,
+            op: row.op,
+            rowVersion:
+              row.row_version === null ? null : Number(row.row_version),
+            fields: auditObjectKeys(row.row_json),
+            scopeFields: auditObjectKeys(row.scopes),
+          })),
+          nextCursor,
+        },
+        200
+      );
+    }
+  );
+
+  // -------------------------------------------------------------------------
   // POST /  (combined push + pull in one round-trip)
   // -------------------------------------------------------------------------
 
@@ -4235,6 +4396,37 @@ function scopeValuesToScopeKeys(scopes: unknown): string[] {
   }
 
   return Array.from(scopeKeys);
+}
+
+function selectRequiredAuditScopes(
+  scopePatterns: readonly string[],
+  allowedScopes: ScopeValues
+): ScopeValues | null {
+  const requiredScopeKeys = Array.from(collectScopeVars(scopePatterns));
+  if (requiredScopeKeys.length === 0) {
+    return {};
+  }
+
+  const auditScopes: ScopeValues = {};
+  for (const key of requiredScopeKeys) {
+    const value = allowedScopes[key];
+    if (value === undefined) {
+      return null;
+    }
+    if (Array.isArray(value) && value.length === 0) {
+      return null;
+    }
+    auditScopes[key] = value;
+  }
+  return auditScopes;
+}
+
+function auditObjectKeys(value: unknown): string[] {
+  const parsed = parseJsonValue(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return [];
+  }
+  return Object.keys(parsed).sort();
 }
 
 function partitionScopeKey(partitionId: string, scopeKey: string): string {

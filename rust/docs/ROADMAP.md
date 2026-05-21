@@ -734,7 +734,13 @@ read-only review:
     while keeping the command undoable. Swift/Kotlin command-history wrappers
     are deferred until those generated mutation APIs are mature enough to avoid
     baking a second app-facing shape.
-- `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
+- `[~]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
+  - First server API slice is in place. `GET /audit/rows/:table/:rowId` uses
+    dialect-level scoped row-history reads, supports commit-range pagination,
+    returns redacted field/scope summaries instead of raw payloads, and fails
+    unauthorized scope reads as `sync.not_found` without leaking hidden content.
+    SQLite and Postgres dialects implement the new reader. Next: console
+    timeline integration and richer commit-diff categories.
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 
