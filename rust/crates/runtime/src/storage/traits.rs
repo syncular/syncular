@@ -1,4 +1,5 @@
 use crate::binary_snapshot::SnapshotChunkRows;
+use crate::client::SubscriptionSpec;
 use crate::error::{Result, SyncularError};
 use crate::protocol::*;
 use serde::{Deserialize, Serialize};
@@ -149,6 +150,22 @@ pub struct CrdtHealthSummary {
     pub log_updates: i64,
     pub orphaned_documents: i64,
     pub orphaned_log_entries: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopedRowsHealthSummary {
+    pub checked_synced_rows: i64,
+    pub orphaned_synced_rows: i64,
+    pub tables: Vec<ScopedRowsTableHealth>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScopedRowsTableHealth {
+    pub table: String,
+    pub checked_synced_rows: i64,
+    pub orphaned_synced_rows: i64,
 }
 
 pub trait SyncStore {
@@ -305,6 +322,13 @@ pub trait SyncStateStore {
     }
 
     fn crdt_health_summary(&mut self) -> Result<Option<CrdtHealthSummary>> {
+        Ok(None)
+    }
+
+    fn scoped_rows_health_summary(
+        &mut self,
+        _subscriptions: &[SubscriptionSpec],
+    ) -> Result<Option<ScopedRowsHealthSummary>> {
         Ok(None)
     }
 

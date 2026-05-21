@@ -3,7 +3,7 @@ use crate::error::Result;
 use crate::protocol::{BootstrapState, ScopeValues, COMMIT_INTEGRITY_HEX_LENGTH};
 use crate::store::{
     now_ms, AppSchemaState, BlobHealthSummary, ConflictSummary, CrdtHealthSummary, OutboxSummary,
-    SubscriptionState, SyncStore, SyncStoreTx, VerifiedRoot,
+    ScopedRowsHealthSummary, SubscriptionState, SyncStore, SyncStoreTx, VerifiedRoot,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,6 +19,7 @@ pub struct LocalHealthReport {
     pub checked_verified_roots: usize,
     pub checked_outbox_commits: usize,
     pub checked_conflicts: usize,
+    pub checked_synced_rows: i64,
     pub checked_blob_references: i64,
     pub checked_crdt_documents: i64,
     pub checked_crdt_update_log_entries: i64,
@@ -111,6 +112,7 @@ impl LocalHealthReport {
             checked_verified_roots: 0,
             checked_outbox_commits: 0,
             checked_conflicts: 0,
+            checked_synced_rows: 0,
             checked_blob_references: 0,
             checked_crdt_documents: 0,
             checked_crdt_update_log_entries: 0,
@@ -204,12 +206,16 @@ pub fn check_local_sync_state_health(
     app_schema_state: &AppSchemaState,
     outbox: &[OutboxSummary],
     conflicts: &[ConflictSummary],
+    scoped_rows: Option<&ScopedRowsHealthSummary>,
     blob: Option<&BlobHealthSummary>,
     crdt: Option<&CrdtHealthSummary>,
 ) {
     check_app_schema_state(report, current_schema_version, app_schema_state);
     check_outbox_summaries(report, current_schema_version, outbox);
     check_conflict_summaries(report, conflicts);
+    if let Some(scoped_rows) = scoped_rows {
+        check_scoped_rows_health_summary(report, scoped_rows);
+    }
     if let Some(blob) = blob {
         check_blob_health_summary(report, blob);
     }
@@ -353,6 +359,39 @@ fn check_conflict_summaries(report: &mut LocalHealthReport, conflicts: &[Conflic
         Some(LocalHealthRepairAction::ManualInspection),
         details,
     ));
+}
+
+fn check_scoped_rows_health_summary(
+    report: &mut LocalHealthReport,
+    scoped_rows: &ScopedRowsHealthSummary,
+) {
+    report.checked_synced_rows = scoped_rows.checked_synced_rows;
+    for table in scoped_rows
+        .tables
+        .iter()
+        .filter(|table| table.orphaned_synced_rows > 0)
+    {
+        let mut details = BTreeMap::new();
+        details.insert("count".to_string(), Value::from(table.orphaned_synced_rows));
+        details.insert(
+            "checkedSyncedRows".to_string(),
+            Value::from(table.checked_synced_rows),
+        );
+        details.insert(
+            "totalOrphanedSyncedRows".to_string(),
+            Value::from(scoped_rows.orphaned_synced_rows),
+        );
+        report.add_finding(finding(
+            LocalHealthSeverity::Error,
+            "local.synced_rows_orphaned",
+            "appRows",
+            "local synced app rows are outside the configured subscription scopes",
+            None,
+            Some(&table.table),
+            Some(LocalHealthRepairAction::ManualInspection),
+            details,
+        ));
+    }
 }
 
 fn check_blob_health_summary(report: &mut LocalHealthReport, blob: &BlobHealthSummary) {
