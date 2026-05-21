@@ -5,7 +5,7 @@ use std::time::Duration;
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
 use syncular_runtime::diesel_sqlite::DieselSqliteStore;
 use syncular_runtime::error::Result;
-use syncular_runtime::protocol::blob_hash;
+use syncular_runtime::protocol::{blob_hash, BlobRef};
 use syncular_runtime::transport::SyncAuthHeaders;
 use syncular_testkit::{
     encoded_blob_hash, sync_conformance_bytes, sync_conformance_i32, sync_conformance_i64,
@@ -142,6 +142,62 @@ fn native_blob_encryption_stores_uploads_and_downloads_ciphertext() -> Result<()
 
     let requests = server.wait_for_requests(5, Duration::from_secs(1));
     assert_eq!(requests[1].body, cached_ciphertext);
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_http_blob_transport_rejects_corrupted_downloads_without_caching() -> Result<()> {
+    let bytes = blob_conformance_bytes(&["bytes"]);
+    let hash = blob_hash(&bytes);
+    let mut corrupted = bytes.clone();
+    corrupted[0] ^= 0xff;
+    let server = blob_server(corrupted, hash.clone())?;
+    let path = temp_db_path("syncular-native-blob-corrupt-download");
+    let mut client = SyncularClient::open(SyncularClientConfig {
+        db_path: path.clone(),
+        base_url: server.sync_base_url(),
+        client_id: blob_conformance_str(&["missingClientId"]),
+        actor_id: blob_conformance_str(&["actorId"]),
+        project_id: Some("p0".to_string()),
+    })?;
+    let mut headers = SyncAuthHeaders::new();
+    headers.insert(
+        "authorization".to_string(),
+        blob_conformance_str(&["authorization"]),
+    );
+    client.set_auth_headers(headers);
+    let blob = BlobRef {
+        hash: hash.clone(),
+        size: bytes.len() as i64,
+        mime_type: blob_conformance_str(&["mimeType"]),
+        encrypted: false,
+        key_id: None,
+    };
+
+    let error = client
+        .retrieve_blob_bytes(&blob)
+        .expect_err("corrupted blob body must be rejected");
+    assert!(
+        error.message_text().contains("hash")
+            || error.message_text().contains("digest")
+            || error.message_text().contains("integrity"),
+        "unexpected corrupted blob error: {error:?}"
+    );
+    assert!(!client.is_blob_local(&hash)?);
+
+    let requests = server.wait_for_requests(2, Duration::from_secs(1));
+    assert_eq!(
+        requests
+            .iter()
+            .map(|request| request.path.clone())
+            .collect::<Vec<_>>(),
+        vec![
+            format!("/sync/blobs/{}/url", encoded_blob_hash(&hash)),
+            blob_conformance_str(&["downloadPath"]),
+        ]
+    );
 
     let _ = std::fs::remove_file(path);
     Ok(())
