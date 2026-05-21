@@ -1,5 +1,6 @@
 use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
+use std::path::Path;
 use std::time::Duration;
 
 use serde_json::{json, Map, Value};
@@ -1133,6 +1134,92 @@ fn file_asset_two_clients_sync_metadata_blob_and_revocation() {
     reader.client.sync_http().expect("reader revocation pull");
     assert_table_row_count(&mut reader.client, FILES_TABLE, 0);
     assert_table_row_count(&mut reader.client, FILE_VERSIONS_TABLE, 0);
+}
+
+#[test]
+fn file_asset_file_path_blob_flow_syncs_version_metadata() {
+    let server = AppTestServer::new(file_asset_app_schema());
+    let mut writer = open_file_asset_client_with_server(
+        server.clone(),
+        app_server_options("file-assets-file-path-writer"),
+    )
+    .expect("writer fixture");
+    let mut reader = open_file_asset_client_with_server(
+        server,
+        app_server_options("file-assets-file-path-reader"),
+    )
+    .expect("reader fixture");
+    let bytes = b"file asset body through native file APIs".to_vec();
+    let input_path = syncular_testkit::unique_temp_file_path("syncular-file-asset-input");
+    let output_path = syncular_testkit::unique_temp_file_path("syncular-file-asset-output");
+    std::fs::write(&input_path, &bytes).expect("write input file");
+
+    let blob = writer
+        .client
+        .store_blob_file(
+            Path::new(&input_path),
+            "application/octet-stream",
+            true,
+            false,
+        )
+        .expect("store blob from file");
+    assert_eq!(blob.size, bytes.len() as i64);
+    assert_eq!(blob.hash, blob_hash(&bytes));
+    assert!(!writer
+        .client
+        .is_blob_local(&blob.hash)
+        .expect("writer blob local"));
+
+    writer
+        .client
+        .commit_mutations(|tx| {
+            tx.push(NewFileAsset::file(
+                "file-native-path",
+                "native-path.bin",
+                "user-rust",
+                Some("p0"),
+            ));
+            tx.push(NewFileVersion::new(
+                "version-native-path",
+                "file-native-path",
+                blob.clone(),
+                "user-rust",
+                "user-rust",
+                Some("p0"),
+                1,
+            ));
+            tx.push(
+                FileAssetPatch::new("file-native-path")
+                    .current_version_id(Some("version-native-path")),
+            );
+            Ok(())
+        })
+        .expect("commit file path metadata");
+    writer.client.sync_http().expect("writer sync");
+
+    reader.client.sync_http().expect("reader pull");
+    let version = assert_table_has_row(
+        &mut reader.client,
+        FILE_VERSIONS_TABLE,
+        "id",
+        "version-native-path",
+    );
+    let version_blob = blob_ref_from_file_version_row(&version);
+    reader
+        .client
+        .retrieve_blob_file(&version_blob, Path::new(&output_path), false)
+        .expect("retrieve blob to file");
+    assert_eq!(
+        std::fs::read(&output_path).expect("read output file"),
+        bytes
+    );
+    assert!(!reader
+        .client
+        .is_blob_local(&version_blob.hash)
+        .expect("reader blob local"));
+
+    let _ = std::fs::remove_file(input_path);
+    let _ = std::fs::remove_file(output_path);
 }
 
 #[test]
