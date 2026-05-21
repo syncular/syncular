@@ -43,16 +43,18 @@ The current decision is to defer a pure Rust server. Offline auth must not
 weaken strict online `/sync` authorization. The legacy JS offline-auth package
 is a local UX/session-cache primitive, not a signed server authorization model.
 The Rust foundation now covers protocol/testkit lease types, local client
-storage, replay provenance, server handler context, and stable rejection
-diagnostics. Leases remain offline intent/audit records only; they do not
-bypass normal reconnect authorization.
+storage, replay provenance, server handler context, stable rejection
+diagnostics, and the first current-auth Hono lease issue route. Leases remain
+offline intent/audit records only; they do not bypass normal reconnect
+authorization.
 
 ## Next Action
 
-Next narrow slice is turning the model into an actual server-issued lease flow:
-issue/refresh endpoint semantics, server verification helpers, and a testkit
-stateful server path that can reject expired/revoked leases while still
-requiring current request auth.
+Next narrow slice is replay enforcement for issued leases. The current push
+wire carries provenance, not the signed token or a server-side lease registry
+lookup result, so replay cannot yet verify signature/scope/revocation from the
+issued lease. Decide and implement the Rust-first path, likely sending the
+stored lease token with queued commits and validating it before handler auth.
 
 ## Progress
 
@@ -97,6 +99,19 @@ requiring current request auth.
   and keep the failed outbox row with provenance for recovery.
 - Fixed the testkit websocket app-server push parser so production realtime
   push messages can carry `authLease` into stateful test servers.
+- Added shared TS/core schemas and constants for auth lease protected headers,
+  payloads, capabilities, issue requests, and issue responses.
+- Added framework-agnostic TS server helpers for issuing signed auth lease
+  tokens, WebCrypto ES256 signing, token verification, and scope coverage
+  checks.
+- Added `POST /auth-leases/issue` to Hono sync routes behind normal
+  `authenticate()`. The route resolves requested scopes through the existing
+  Syncular table-handler scope logic, returns only effective scopes, rejects
+  unauthenticated requests with `sync.auth_required`, and rejects fully
+  disallowed scope requests with `sync.auth_lease_scope_mismatch`.
+- Added Hono route coverage for successful signed lease issue/verification,
+  auth-required failure, disallowed-scope failure, malformed scope requests,
+  and expiry diagnostics.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol -p
   syncular-testkit` passed with `15` protocol tests and `36` testkit smoke
   tests.
@@ -109,6 +124,12 @@ requiring current request auth.
 - Gate: `bun run --cwd packages/core tsgo`, `bun run --cwd packages/server
   tsgo`, and `bun run --cwd packages/server-hono tsgo` passed after the wire
   contract slice.
+- Gate: `bun test packages/server-hono/src/__tests__/auth-leases.test.ts`
+  passed after the issue-route slice.
+- Gate: `bunx biome check packages/core/src/schemas/sync.ts
+  packages/server/src/auth-leases.ts packages/server-hono/src/routes.ts
+  packages/server-hono/src/__tests__/auth-leases.test.ts` passed after the
+  issue-route slice.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   store_backends` passed with `36` tests after the local lease storage slice.
 - Gate: `bun run rust:conformance:fast` passed after the protocol/testkit

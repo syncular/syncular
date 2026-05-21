@@ -9,6 +9,7 @@
  */
 export * from '@syncular/core';
 
+export * from './auth-leases';
 export * from './blobs';
 export * from './clients';
 export * from './compaction';

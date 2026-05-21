@@ -21,6 +21,10 @@ import {
   ScopeValuesSchema,
   SYNC_PACK_CONTENT_TYPE,
   SYNC_PACK_ENCODING_BINARY_V1,
+  type SyncAuthLeaseCapabilities,
+  SyncAuthLeaseIssueRequestSchema,
+  type SyncAuthLeaseIssueResponse,
+  SyncAuthLeaseIssueResponseSchema,
   type SyncChange,
   SyncCombinedRequestSchema,
   type SyncCombinedResponse,
@@ -46,11 +50,13 @@ import type {
   SyncServerPushPlugin,
 } from '@syncular/server';
 import {
+  type AuthLeaseSigner,
   type CompactOptions,
   createServerHandlerCollection,
   createSyncRealtimeShardKey,
   createWireSubscriptionIntegrity,
   InvalidSubscriptionScopeError,
+  issueAuthLease,
   maybeCompactChanges,
   maybePruneSync,
   type PruneOptions,
@@ -324,6 +330,29 @@ export interface SyncRoutesConfigWithRateLimit {
   };
 }
 
+export interface SyncAuthLeaseRoutesConfig<
+  Auth extends SyncAuthResult = SyncAuthResult,
+> {
+  /**
+   * Set false to keep route config around without exposing the issue endpoint.
+   * Providing this config enables POST /auth-leases/issue by default.
+   */
+  enabled?: boolean;
+  issuer: string;
+  audience: string;
+  kid: string;
+  signer: AuthLeaseSigner;
+  ttlMs?: number;
+  maxTtlMs?: number;
+  maxClockSkewMs?: number;
+  capabilities?: SyncAuthLeaseCapabilities;
+  nowMs?: () => number;
+  leaseId?: () => string;
+  subject?: (
+    auth: Auth
+  ) => Record<string, unknown> | Promise<Record<string, unknown>>;
+}
+
 export interface CreateSyncRoutesOptions<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncAuthResult = SyncAuthResult,
@@ -336,6 +365,7 @@ export interface CreateSyncRoutesOptions<
   plugins?: SyncServerPushPlugin<DB, Auth>[];
   authenticate: (c: Context) => Promise<Auth | null>;
   sync?: SyncRoutesConfigWithRateLimit;
+  authLeases?: SyncAuthLeaseRoutesConfig<Auth>;
   wsConnectionManager?: WebSocketConnectionManager;
   /**
    * Optional snapshot chunk storage adapter.
@@ -2255,6 +2285,97 @@ export function createSyncRoutes<
       timestamp: new Date().toISOString(),
     });
   });
+
+  // -------------------------------------------------------------------------
+  // POST /auth-leases/issue
+  // -------------------------------------------------------------------------
+
+  const authLeaseRoutesConfig = options.authLeases;
+  if (authLeaseRoutesConfig && authLeaseRoutesConfig.enabled !== false) {
+    routes.post(
+      '/auth-leases/issue',
+      describeRoute({
+        tags: ['sync'],
+        summary: 'Issue an offline auth lease',
+        description:
+          'Issues a bounded signed auth lease for offline intent capture. The lease does not bypass current request auth or table-handler authorization on replay.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { type: 'object', additionalProperties: true },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: 'Issued auth lease',
+            content: {
+              'application/json': {
+                schema: resolver(SyncAuthLeaseIssueResponseSchema),
+              },
+            },
+          },
+          401: {
+            description: 'Unauthenticated',
+            content: {
+              'application/json': { schema: resolver(ErrorResponseSchema) },
+            },
+          },
+          403: {
+            description: 'Requested lease scopes are not allowed',
+            content: {
+              'application/json': { schema: resolver(ErrorResponseSchema) },
+            },
+          },
+        },
+      }),
+      zValidator('json', SyncAuthLeaseIssueRequestSchema),
+      async (c) => {
+        const auth = await getAuth(c);
+        if (!auth) return syncError(c, 401, 'sync.auth_required');
+
+        const request = c.req.valid('json');
+        let issued: SyncAuthLeaseIssueResponse | null;
+        try {
+          issued = await issueAuthLease({
+            db: options.db,
+            auth,
+            handlers: handlerRegistry,
+            scopeCache: options.scopeCache,
+            request,
+            issuer: authLeaseRoutesConfig.issuer,
+            audience: authLeaseRoutesConfig.audience,
+            kid: authLeaseRoutesConfig.kid,
+            signer: authLeaseRoutesConfig.signer,
+            capabilities: authLeaseRoutesConfig.capabilities,
+            defaultTtlMs: authLeaseRoutesConfig.ttlMs,
+            maxTtlMs: authLeaseRoutesConfig.maxTtlMs,
+            maxClockSkewMs: authLeaseRoutesConfig.maxClockSkewMs,
+            nowMs: authLeaseRoutesConfig.nowMs,
+            leaseId: authLeaseRoutesConfig.leaseId,
+            subject: authLeaseRoutesConfig.subject,
+          });
+        } catch (error) {
+          if (error instanceof InvalidSubscriptionScopeError) {
+            return syncError(c, 400, 'sync.invalid_request', error.message);
+          }
+          throw error;
+        }
+
+        if (!issued) {
+          return syncError(
+            c,
+            403,
+            'sync.auth_lease_scope_mismatch',
+            'Requested auth lease scopes are not allowed'
+          );
+        }
+
+        return c.json(issued, 200);
+      }
+    );
+  }
 
   // -------------------------------------------------------------------------
   // GET /audit/commits
