@@ -703,6 +703,108 @@ mod tests {
     }
 
     #[test]
+    fn rust_client_generated_command_history_undo_commit_persists_server_conflict() {
+        use syncular::prelude::SyncularGeneratedMutationsExt;
+
+        let base_url = rejecting_sync_server();
+        let db_path = temp_db_path("command-history-undo-server-conflict");
+        let config = SyncularClientConfig {
+            db_path: db_path.clone(),
+            base_url,
+            client_id: "client-rust-command-history-server-conflict".to_string(),
+            actor_id: "user-rust".to_string(),
+            project_id: Some("project-rust".to_string()),
+        };
+        let mut client =
+            SyncularClient::open_with_schema(config, generated_app_schema()).expect("open client");
+
+        client
+            .mutations()
+            .tasks()
+            .insert(syncular::NewTask::new(
+                "task-conflict",
+                "undo conflict",
+                "user-rust",
+                Some("project-rust"),
+            ))
+            .expect("seed conflict task");
+        client
+            .commit_with_history(|tx| {
+                tx.tasks()
+                    .update(syncular::TaskPatch::new("task-conflict").completed(1))?;
+                Ok(())
+            })
+            .expect("tracked update");
+        let undo = client
+            .command_history()
+            .undo_last()
+            .expect("undo tracked update");
+
+        let mut conn = SqliteConnection::establish(&db_path).expect("open test db");
+        diesel::sql_query(
+            "update sync_outbox_commits set status = 'acked' where client_commit_id <> ?1",
+        )
+        .bind::<Text, _>(&undo.commit.client_commit_id)
+        .execute(&mut conn)
+        .expect("mark setup commits acked");
+        drop(conn);
+
+        let report = client.sync_http().expect("sync undo conflict");
+        assert!(report.conflicts_changed);
+        let conflicts = client.conflict_summaries().expect("conflict summaries");
+        assert_eq!(conflicts.len(), 1);
+        assert_eq!(conflicts[0].client_commit_id, undo.commit.client_commit_id);
+        assert_eq!(conflicts[0].result_status, "conflict");
+        assert_eq!(conflicts[0].code.as_deref(), Some("sync.version_conflict"));
+
+        let _ = std::fs::remove_file(db_path);
+    }
+
+    #[test]
+    fn rust_client_generated_command_history_rejects_unsafe_field_replay() {
+        use syncular::prelude::SyncularGeneratedMutationsExt;
+
+        let config = SyncularClientConfig {
+            db_path: ":memory:".to_string(),
+            base_url: "http://localhost:9811/api/sync".to_string(),
+            client_id: "client-rust-command-history-unsafe".to_string(),
+            actor_id: "user-rust".to_string(),
+            project_id: Some("project-rust".to_string()),
+        };
+        let mut client =
+            SyncularClient::open_with_schema(config, generated_app_schema()).expect("open client");
+
+        client
+            .mutations()
+            .tasks()
+            .insert(syncular::NewTask::new(
+                "history-unsafe-task",
+                "unsafe before",
+                "user-rust",
+                Some("project-rust"),
+            ))
+            .expect("seed task");
+        client
+            .commit_with_history(|tx| {
+                tx.tasks().update(
+                    syncular::TaskPatch::new("history-unsafe-task").title("unsafe after"),
+                )?;
+                Ok(())
+            })
+            .expect("tracked unsafe update");
+
+        let error = client
+            .command_history()
+            .undo_last()
+            .expect_err("unsafe field undo should fail");
+        assert!(error
+            .message_text()
+            .contains("sync.command_history_unsafe_field"));
+        let outbox = client.outbox_summaries().expect("outbox");
+        assert_eq!(outbox.len(), 2);
+    }
+
+    #[test]
     fn rust_client_conflicts_have_ergonomic_resolution_helpers() {
         use syncular::prelude::SyncularGeneratedMutationsExt;
 
