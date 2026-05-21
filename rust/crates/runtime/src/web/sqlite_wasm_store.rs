@@ -35,6 +35,8 @@ use crate::encrypted_crdt::{
 use crate::encryption::encryption_helpers_json;
 use crate::encryption::FieldEncryptionContext;
 use crate::error::{ErrorKind, Result, SyncularError};
+#[cfg(feature = "web-blobs")]
+use crate::limits::DEFAULT_BLOB_UPLOAD_BATCH_LIMIT;
 use crate::limits::DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY;
 #[cfg(feature = "web-blobs")]
 use crate::protocol::{
@@ -2021,7 +2023,7 @@ impl SyncularRustOwnedSqlite {
         transport: &T,
     ) -> Result<BlobUploadQueueResult> {
         self.requeue_stale_blob_uploads()?;
-        let pending = self.pending_blob_uploads(10)?;
+        let pending = self.pending_blob_uploads(DEFAULT_BLOB_UPLOAD_BATCH_LIMIT)?;
         let mut result = BlobUploadQueueResult {
             uploaded: 0,
             failed: 0,

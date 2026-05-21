@@ -503,7 +503,9 @@ read-only review:
     error taxonomy now includes `runtime.limit_exceeded`, and Hono sync routes
     bound combined request JSON, JSON/binary sync responses, snapshot chunk
     downloads, and scoped snapshot artifact downloads with that same stable
-    envelope.
+    envelope. Retry/blob queue constants for sync retries, stale send/upload
+    timeouts, blob retry counts, blob batch processing, and SQLite busy timeout
+    are also visible in native manifests and diagnostics.
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)

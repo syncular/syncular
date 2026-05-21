@@ -58,8 +58,8 @@ product-level limits.
 
 ## Next Action
 
-Add stress coverage for configured server/runtime limits and decide which
-remaining retry/blob queue constants should become public diagnostic limits.
+Add stress coverage for configured server/runtime limits and review console
+visibility for limit pressure.
 
 ## Progress
 
@@ -95,6 +95,9 @@ remaining retry/blob queue constants should become public diagnostic limits.
 - Hono sync routes now bound combined request JSON, JSON responses, binary
   sync-pack responses, snapshot chunk downloads, and scoped snapshot artifact
   downloads with stable `runtime.limit_exceeded` envelopes.
+- Sync retry count, sending stale timeout, blob upload retry count, blob upload
+  stale timeout, blob upload batch size, and SQLite busy timeout are now visible
+  runtime limits in native manifests and diagnostics.
 
 ## Latest Evidence
 
@@ -113,6 +116,8 @@ remaining retry/blob queue constants should become public diagnostic limits.
 - `bun run tsgo` from `packages/server-hono`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime error_taxonomy`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_ffi native_ffi_exposes_runtime_manifest_without_handle`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_exposes_redacted_diagnostic_snapshot`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
