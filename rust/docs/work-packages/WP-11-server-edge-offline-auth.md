@@ -44,20 +44,18 @@ weaken strict online `/sync` authorization. The legacy JS offline-auth package
 is a local UX/session-cache primitive, not a signed server authorization model.
 The Rust foundation now covers protocol/testkit lease types, local client
 storage, replay provenance, server handler context, stable rejection
-diagnostics, and the first current-auth Hono lease issue route. Leases remain
-offline intent/audit records only; they do not bypass normal reconnect
-authorization.
+diagnostics, current-auth Hono lease issue, signed replay-token validation, and
+per-operation signed-scope/current-scope validation. Leases remain offline
+intent/audit records only; they do not bypass normal reconnect authorization.
 
 ## Next Action
 
-Next narrow slice is generated/local mutation lease policy plus full
-per-operation lease scope/revocation validation. The Rust stores can now attach
-the stored token once an outbox commit is marked with lease provenance, but
-generated mutation APIs still need a strict leased-offline mode that selects an
-active covering lease automatically. The server validator still needs to check
-the signed lease scopes against each operation and revocation state instead of
-only validating token issuer/audience/schema/actor/expiry before current
-handler auth.
+Next narrow slice is generated/local mutation lease policy. The Rust stores can
+now attach the stored token once an outbox commit is marked with lease
+provenance, and the server now verifies signed lease scope plus current scope
+revocation per operation before writes. Generated mutation APIs still need a
+strict leased-offline mode that selects an active covering lease automatically
+instead of requiring host code to mark outbox commits manually.
 
 ## Progress
 
@@ -137,6 +135,13 @@ handler auth.
 - Added Rust storage/protocol coverage proving outbox summaries and pending
   push rows include the filled token and auth lease replay JSON includes
   `leaseToken`.
+- Added reusable server-side auth lease operation validation that derives row
+  scopes through the table handler, checks the signed lease covers each
+  operation/table/scope, and re-resolves current handler scopes to reject
+  revoked access before writes.
+- Added Hono replay coverage for signed-scope mismatch and current-scope
+  revocation. Both reject the commit with stable `sync.auth_lease_*` codes and
+  leave app rows unapplied.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol -p
   syncular-testkit` passed with `15` protocol tests and `36` testkit smoke
   tests.
@@ -170,6 +175,17 @@ handler auth.
   protocol_contract` passed with `42` tests after Rust token replay.
 - Gate: `bun run build:wasm:dev` passed in `rust/bindings/browser` after
   browser Rust-owned SQLite token persistence.
+- Gate: `bun run --cwd packages/server tsgo` and `bun run --cwd
+  packages/server-hono tsgo` passed after per-operation lease scope/revocation
+  validation.
+- Gate: `bun test packages/server-hono/src/__tests__/auth-leases.test.ts`
+  passed with `7` tests after per-operation lease scope/revocation validation.
+- Gate: `bun test packages/server/src/push-operation-codes.test.ts` passed
+  after per-operation lease scope/revocation validation.
+- Gate: `bunx biome check packages/server/src/auth-leases.ts
+  packages/server-hono/src/routes.ts
+  packages/server-hono/src/__tests__/auth-leases.test.ts` passed after
+  per-operation lease scope/revocation validation.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   store_backends` passed with `36` tests after the local lease storage slice.
 - Gate: `bun run rust:conformance:fast` passed after the protocol/testkit

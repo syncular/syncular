@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
   createDatabase,
+  type ScopeValues,
   SyncAuthLeaseIssueResponseSchema,
 } from '@syncular/core';
 import {
@@ -65,11 +66,14 @@ describe('auth lease routes', () => {
     await db.destroy();
   });
 
-  function createApp() {
+  function createApp(
+    options: { resolveScopes?: (actorId: string) => ScopeValues } = {}
+  ) {
     const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
       table: 'tasks',
       scopes: ['user:{user_id}'],
-      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+      resolveScopes: async (ctx) =>
+        options.resolveScopes?.(ctx.actorId) ?? { user_id: [ctx.actorId] },
     });
     const routes = createSyncRoutes({
       db,
@@ -356,6 +360,196 @@ describe('auth lease routes', () => {
       .selectFrom('tasks')
       .selectAll()
       .where('id', '=', 'task-expired-lease')
+      .executeTakeFirst();
+    expect(task).toBeUndefined();
+  });
+
+  it('rejects pushed leased commits outside signed lease scopes', async () => {
+    const signed = await signAuthLeaseToken({
+      kid: 'lease-key-1',
+      signer: createWebCryptoEs256AuthLeaseSigner({
+        privateKey: keyPair.privateKey,
+      }),
+      payload: {
+        version: 1,
+        leaseId: 'lease-scope-u1',
+        issuer: 'syncular-test-server',
+        audience: 'syncular-test-app',
+        actorId: 'u1',
+        subject: {},
+        schemaVersion: 7,
+        protocolVersion: 1,
+        issuedAtMs: nowMs,
+        notBeforeMs: nowMs,
+        expiresAtMs: nowMs + 60_000,
+        maxClockSkewMs: 5_000,
+        scopes: [
+          {
+            subscriptionId: 'sub-tasks',
+            table: 'tasks',
+            values: { user_id: 'u1' },
+            operations: ['upsert'],
+          },
+        ],
+        capabilities: {
+          allowBlobs: true,
+          allowCrdt: true,
+          allowEncryptedFields: true,
+        },
+      },
+    });
+
+    const response = await createApp().request('http://localhost/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-id': 'u1',
+      },
+      body: JSON.stringify({
+        clientId: 'client-lease-scope',
+        push: {
+          commits: [
+            {
+              clientCommitId: 'commit-scope-mismatch',
+              schemaVersion: 7,
+              authLease: {
+                leaseId: 'lease-scope-u1',
+                leaseExpiresAtMs: nowMs + 60_000,
+                leaseStatusAtEnqueue: 'active',
+                leaseToken: signed.token,
+              },
+              operations: [
+                {
+                  table: 'tasks',
+                  row_id: 'task-scope-mismatch',
+                  op: 'upsert',
+                  base_version: null,
+                  payload: {
+                    id: 'task-scope-mismatch',
+                    user_id: 'u2',
+                    title: 'should not apply',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.push.commits[0]).toMatchObject({
+      clientCommitId: 'commit-scope-mismatch',
+      status: 'rejected',
+      results: [
+        {
+          status: 'error',
+          code: 'sync.auth_lease_scope_mismatch',
+          retriable: false,
+        },
+      ],
+    });
+    const task = await db
+      .selectFrom('tasks')
+      .selectAll()
+      .where('id', '=', 'task-scope-mismatch')
+      .executeTakeFirst();
+    expect(task).toBeUndefined();
+  });
+
+  it('rejects pushed leased commits when current scopes were revoked', async () => {
+    const signed = await signAuthLeaseToken({
+      kid: 'lease-key-1',
+      signer: createWebCryptoEs256AuthLeaseSigner({
+        privateKey: keyPair.privateKey,
+      }),
+      payload: {
+        version: 1,
+        leaseId: 'lease-revoked-u1',
+        issuer: 'syncular-test-server',
+        audience: 'syncular-test-app',
+        actorId: 'u1',
+        subject: {},
+        schemaVersion: 7,
+        protocolVersion: 1,
+        issuedAtMs: nowMs,
+        notBeforeMs: nowMs,
+        expiresAtMs: nowMs + 60_000,
+        maxClockSkewMs: 5_000,
+        scopes: [
+          {
+            subscriptionId: 'sub-tasks',
+            table: 'tasks',
+            values: { user_id: 'u1' },
+            operations: ['upsert'],
+          },
+        ],
+        capabilities: {
+          allowBlobs: true,
+          allowCrdt: true,
+          allowEncryptedFields: true,
+        },
+      },
+    });
+
+    const response = await createApp({
+      resolveScopes: () => ({ user_id: 'u2' }),
+    }).request('http://localhost/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-id': 'u1',
+      },
+      body: JSON.stringify({
+        clientId: 'client-lease-revoked',
+        push: {
+          commits: [
+            {
+              clientCommitId: 'commit-scope-revoked',
+              schemaVersion: 7,
+              authLease: {
+                leaseId: 'lease-revoked-u1',
+                leaseExpiresAtMs: nowMs + 60_000,
+                leaseStatusAtEnqueue: 'active',
+                leaseToken: signed.token,
+              },
+              operations: [
+                {
+                  table: 'tasks',
+                  row_id: 'task-scope-revoked',
+                  op: 'upsert',
+                  base_version: null,
+                  payload: {
+                    id: 'task-scope-revoked',
+                    user_id: 'u1',
+                    title: 'should not apply',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.push.commits[0]).toMatchObject({
+      clientCommitId: 'commit-scope-revoked',
+      status: 'rejected',
+      results: [
+        {
+          status: 'error',
+          code: 'sync.auth_lease_scope_revoked',
+          retriable: false,
+        },
+      ],
+    });
+    const task = await db
+      .selectFrom('tasks')
+      .selectAll()
+      .where('id', '=', 'task-scope-revoked')
       .executeTakeFirst();
     expect(task).toBeUndefined();
   });

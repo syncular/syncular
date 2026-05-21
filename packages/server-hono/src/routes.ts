@@ -74,6 +74,7 @@ import {
   recordClientCursor,
   resolveEffectiveScopesForSubscriptions,
   scopesToSnapshotChunkScopeKey,
+  validateAuthLeaseOperation,
   verifyAuthLeaseToken,
 } from '@syncular/server';
 import type { Context, MiddlewareHandler } from 'hono';
@@ -1222,7 +1223,7 @@ export function createSyncRoutes<
   };
   const validateAuthLeaseCommit: PushCommitValidator<DB, Auth> | undefined =
     authLeaseRoutesConfig && authLeaseRoutesConfig.enabled !== false
-      ? async ({ request, auth }) => {
+      ? async ({ trx, request, auth }) => {
           const authLease = request.authLease;
           if (!authLease) return null;
           if (!authLease.leaseToken) {
@@ -1252,9 +1253,10 @@ export function createSyncRoutes<
               retriable: isAuthLeaseRefreshRetriable(verification.code),
             };
           }
+          const verifiedPayload = verification.payload;
           if (
-            verification.payload.actorId !== auth.actorId ||
-            verification.payload.leaseId !== authLease.leaseId
+            verifiedPayload.actorId !== auth.actorId ||
+            verifiedPayload.leaseId !== authLease.leaseId
           ) {
             return {
               opIndex: 0,
@@ -1263,6 +1265,32 @@ export function createSyncRoutes<
               code: SYNC_AUTH_LEASE_CODE_INVALID,
               retriable: true,
             };
+          }
+          for (
+            let opIndex = 0;
+            opIndex < request.operations.length;
+            opIndex += 1
+          ) {
+            const operation = request.operations[opIndex]!;
+            const handler = handlerRegistry.byTable.get(operation.table);
+            if (!handler) {
+              return {
+                opIndex,
+                status: 'error',
+                error: 'Auth lease operation table is not registered',
+                code: SYNC_AUTH_LEASE_CODE_INVALID,
+                retriable: false,
+              };
+            }
+            const operationError = await validateAuthLeaseOperation({
+              db: trx,
+              auth,
+              handler,
+              payload: verifiedPayload,
+              operation,
+              opIndex,
+            });
+            if (operationError) return operationError;
           }
           return null;
         }

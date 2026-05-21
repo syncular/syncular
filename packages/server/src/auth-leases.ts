@@ -1,10 +1,13 @@
 import {
+  collectScopeVars,
   type ScopeValues,
+  type StoredScopes,
   SYNC_AUTH_LEASE_ALG_ES256,
   SYNC_AUTH_LEASE_CODE_EXPIRED,
   SYNC_AUTH_LEASE_CODE_INVALID,
   SYNC_AUTH_LEASE_CODE_SCHEMA_MISMATCH,
   SYNC_AUTH_LEASE_CODE_SCOPE_MISMATCH,
+  SYNC_AUTH_LEASE_CODE_SCOPE_REVOKED,
   SYNC_AUTH_LEASE_PROTOCOL_VERSION,
   SYNC_AUTH_LEASE_TYP,
   SYNC_AUTH_LEASE_VERSION,
@@ -14,10 +17,13 @@ import {
   type SyncAuthLeasePayload,
   SyncAuthLeasePayloadSchema,
   type SyncAuthLeaseProtectedHeader,
+  type SyncOperation,
+  type SyncOperationResult,
 } from '@syncular/core';
-import type { Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
+import type { DbExecutor } from './dialect/types';
 import type { ServerHandlerCollection } from './handlers';
-import type { SyncServerAuth } from './handlers/types';
+import type { ServerTableHandler, SyncServerAuth } from './handlers/types';
 import type { SyncCoreDb } from './schema';
 import { resolveEffectiveScopesForSubscriptions } from './subscriptions';
 import type { ScopeCacheBackend } from './subscriptions/cache';
@@ -92,6 +98,18 @@ export interface VerifyAuthLeaseTokenOptions {
   expectedIssuer?: string;
   expectedAudience?: string;
   expectedSchemaVersion?: number;
+}
+
+export interface ValidateAuthLeaseOperationOptions<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+> {
+  db: DbExecutor<DB>;
+  auth: Auth;
+  handler: ServerTableHandler<DB, Auth>;
+  payload: SyncAuthLeasePayload;
+  operation: SyncOperation;
+  opIndex: number;
 }
 
 export async function issueAuthLease<
@@ -363,6 +381,172 @@ export function authLeaseCoversOperation(args: {
     }
   }
   return null;
+}
+
+export async function validateAuthLeaseOperation<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(
+  options: ValidateAuthLeaseOperationOptions<DB, Auth>
+): Promise<SyncOperationResult | null> {
+  const requiredScopeKeys = Array.from(
+    collectScopeVars(options.handler.scopePatterns)
+  );
+  const extracted = await extractOperationScopes({
+    db: options.db,
+    handler: options.handler,
+    operation: options.operation,
+  });
+  const requiresScopeValues =
+    requiredScopeKeys.length > 0 && extracted.rowExistsOrWillBeWritten;
+  if (
+    requiresScopeValues &&
+    requiredScopeKeys.some(
+      (key) =>
+        typeof extracted.scopes[key] !== 'string' ||
+        extracted.scopes[key].length === 0
+    )
+  ) {
+    return authLeaseOperationError({
+      opIndex: options.opIndex,
+      code: SYNC_AUTH_LEASE_CODE_SCOPE_MISMATCH,
+      error: 'Auth lease operation scopes could not be extracted',
+    });
+  }
+
+  const leaseCoverage = authLeaseCoversOperation({
+    payload: options.payload,
+    table: options.operation.table,
+    op: options.operation.op,
+    scopes: extracted.scopes,
+  });
+  if (leaseCoverage) {
+    return authLeaseOperationError({
+      opIndex: options.opIndex,
+      code: leaseCoverage.code,
+      error: leaseCoverage.message,
+    });
+  }
+
+  if (requiresScopeValues) {
+    let currentScopes: ScopeValues;
+    try {
+      currentScopes = await options.handler.resolveScopes({
+        db: options.db,
+        actorId: options.auth.actorId,
+        auth: options.auth,
+      });
+    } catch {
+      return authLeaseOperationError({
+        opIndex: options.opIndex,
+        code: SYNC_AUTH_LEASE_CODE_SCOPE_REVOKED,
+        error: 'Auth lease scopes could not be resolved for replay',
+      });
+    }
+
+    if (
+      !storedScopesCoveredByScopeValues({
+        storedScopes: extracted.scopes,
+        allowedScopes: currentScopes,
+        requiredScopeKeys,
+      })
+    ) {
+      return authLeaseOperationError({
+        opIndex: options.opIndex,
+        code: SYNC_AUTH_LEASE_CODE_SCOPE_REVOKED,
+        error: 'Auth lease scope is no longer authorized',
+      });
+    }
+  }
+
+  return null;
+}
+
+async function extractOperationScopes<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(args: {
+  db: DbExecutor<DB>;
+  handler: ServerTableHandler<DB, Auth>;
+  operation: SyncOperation;
+}): Promise<{ scopes: StoredScopes; rowExistsOrWillBeWritten: boolean }> {
+  const existingRow = await readExistingRow({
+    db: args.db,
+    table: args.operation.table,
+    primaryKeyColumn: args.handler.primaryKeyColumn ?? 'id',
+    rowId: args.operation.row_id,
+  });
+
+  if (existingRow) {
+    return {
+      scopes: args.handler.extractScopes(existingRow),
+      rowExistsOrWillBeWritten: true,
+    };
+  }
+
+  if (args.operation.op === 'delete') {
+    return { scopes: {}, rowExistsOrWillBeWritten: false };
+  }
+
+  const payloadRecord =
+    args.operation.payload &&
+    typeof args.operation.payload === 'object' &&
+    !Array.isArray(args.operation.payload)
+      ? args.operation.payload
+      : {};
+  return {
+    scopes: args.handler.extractScopes({
+      ...payloadRecord,
+      [args.handler.primaryKeyColumn ?? 'id']: args.operation.row_id,
+    }),
+    rowExistsOrWillBeWritten: true,
+  };
+}
+
+async function readExistingRow<DB extends SyncCoreDb>(args: {
+  db: DbExecutor<DB>;
+  table: string;
+  primaryKeyColumn: string;
+  rowId: string;
+}): Promise<Record<string, unknown> | null> {
+  const result = await sql<Record<string, unknown>>`
+    SELECT *
+    FROM ${sql.table(args.table)}
+    WHERE ${sql.ref(args.primaryKeyColumn)} = ${args.rowId}
+    LIMIT 1
+  `.execute(args.db);
+  return result.rows[0] ?? null;
+}
+
+function storedScopesCoveredByScopeValues(args: {
+  storedScopes: StoredScopes;
+  allowedScopes: ScopeValues;
+  requiredScopeKeys: readonly string[];
+}): boolean {
+  for (const key of args.requiredScopeKeys) {
+    const storedValue = args.storedScopes[key];
+    if (typeof storedValue !== 'string' || storedValue.length === 0) {
+      return false;
+    }
+    if (!scopeValueCovers(args.allowedScopes[key], storedValue)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function authLeaseOperationError(args: {
+  opIndex: number;
+  code: string;
+  error: string;
+}): SyncOperationResult {
+  return {
+    opIndex: args.opIndex,
+    status: 'error',
+    error: args.error,
+    code: args.code,
+    retriable: false,
+  };
 }
 
 function scopeValueCovers(
