@@ -318,6 +318,72 @@ fn local_health_check_reports_schema_outbox_and_conflict_hazards() -> Result<()>
 }
 
 #[test]
+fn local_health_check_reports_blob_and_crdt_metadata_hazards() -> Result<()> {
+    let path = temp_db_path("syncular-health-blob-crdt");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    store.transaction(|tx| tx.upsert_row("tasks", &task_row("blob-crdt-health-task"), None))?;
+
+    let now = now_ms();
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    sql_query("update tasks set image = 'not-json' where id = 'blob-crdt-health-task'")
+        .execute(&mut conn)?;
+    sql_query(
+        r#"
+        insert into sync_blob_outbox (
+            hash, size, mime_type, body, encrypted, status, attempt_count,
+            error, created_at, updated_at, next_attempt_at
+        ) values (
+            'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+            1, 'application/octet-stream', x'01', 0, 'failed', 5,
+            'upload failed', ?1, ?1, 0
+        )
+        "#,
+    )
+    .bind::<BigInt, _>(now)
+    .execute(&mut conn)?;
+    sql_query(
+        r#"
+        insert into sync_crdt_documents (
+            document_key, app_table, row_id, field_name, state_column, sync_mode,
+            state_base64, state_vector_base64, pending_updates, flushed_updates,
+            acked_updates, log_updates, created_at, updated_at, compacted_at
+        ) values (
+            'tasks:missing-crdt-row:title', 'tasks', 'missing-crdt-row', 'title',
+            'title_yjs_state', 'state-column', null, '', 0, 0, 0, 0, ?1, ?1, null
+        )
+        "#,
+    )
+    .bind::<BigInt, _>(now)
+    .execute(&mut conn)?;
+    drop(conn);
+
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    let report = client.local_health_check()?;
+    assert!(!report.ok);
+    assert_eq!(report.checked_blob_references, 1);
+    assert_eq!(report.checked_crdt_documents, 1);
+    for code in [
+        "local.blob_refs_invalid",
+        "local.blob_uploads_failed",
+        "local.crdt_documents_orphaned",
+    ] {
+        assert!(
+            report.findings.iter().any(|finding| finding.code == code),
+            "missing health finding {code}"
+        );
+    }
+    assert_eq!(
+        client
+            .current_row_json("tasks", "blob-crdt-health-task")?
+            .unwrap()["title"],
+        "Parity task"
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn diesel_default_schema_installs_runtime_tables_without_demo_app_tables() -> Result<()> {
     let path = temp_db_path("syncular-diesel-default-schema");
     let mut store = DieselSqliteStore::open(&path)?;

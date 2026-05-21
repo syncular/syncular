@@ -29,10 +29,10 @@ use crate::protocol::{sync_operations_json_for_outbox, validate_pending_mutation
 use crate::runtime_schema::RUNTIME_SYSTEM_SCHEMA_SQL;
 use crate::schema;
 use crate::store::{
-    now_ms, AppSchemaState, AppliedMigration, ConflictSummary, OutboxCommit, OutboxSummary,
-    SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx, VerifiedRoot, APP_SCHEMA_ID,
-    BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES, MAX_SYNC_RETRIES,
-    SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
+    now_ms, AppSchemaState, AppliedMigration, BlobHealthSummary, ConflictSummary,
+    CrdtHealthSummary, OutboxCommit, OutboxSummary, SubscriptionState, SyncStateStore, SyncStore,
+    SyncStoreTx, VerifiedRoot, APP_SCHEMA_ID, BLOB_UPLOAD_STALE_TIMEOUT_MS,
+    MAX_BLOB_UPLOAD_RETRIES, MAX_SYNC_RETRIES, SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
 };
 #[cfg(feature = "demo-todo-fixture")]
 use crate::store::{DemoTaskStore, Task};
@@ -456,6 +456,34 @@ struct CountRow {
 struct StringValueRow {
     #[diesel(sql_type = Text)]
     value: String,
+}
+
+#[derive(QueryableByName)]
+struct NullableStringValueRow {
+    #[diesel(sql_type = Nullable<Text>)]
+    value: Option<String>,
+}
+
+#[derive(QueryableByName)]
+struct CrdtHealthStatsRow {
+    #[diesel(sql_type = BigInt)]
+    document_count: i64,
+    #[diesel(sql_type = BigInt)]
+    pending_updates: i64,
+    #[diesel(sql_type = BigInt)]
+    flushed_updates: i64,
+    #[diesel(sql_type = BigInt)]
+    acked_updates: i64,
+    #[diesel(sql_type = BigInt)]
+    log_updates: i64,
+}
+
+#[derive(QueryableByName)]
+struct CrdtDocumentIdentityRow {
+    #[diesel(sql_type = Text)]
+    app_table: String,
+    #[diesel(sql_type = Text)]
+    row_id: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -945,6 +973,104 @@ impl DieselSqliteStore {
             count: row.count,
             total_bytes: row.total_bytes,
         })
+    }
+
+    fn blob_reference_health_counts(&mut self) -> Result<(i64, i64)> {
+        let mut checked = 0i64;
+        let mut invalid = 0i64;
+        for metadata in self.app_schema.app_table_metadata {
+            validate_app_table_metadata(metadata)?;
+            for column in metadata.blob_columns {
+                validate_identifier(column)?;
+                let sql = format!(
+                    "select {column} as value from {table} where {column} is not null and {column} <> ''",
+                    table = metadata.name
+                );
+                let rows = sql_query(sql).load::<NullableStringValueRow>(&mut self.conn)?;
+                for row in rows {
+                    let Some(value) = row.value else {
+                        continue;
+                    };
+                    checked += 1;
+                    let parsed = serde_json::from_str::<BlobRef>(&value);
+                    match parsed {
+                        Ok(blob) if validate_blob_ref_size(&blob).is_ok() => {}
+                        _ => invalid += 1,
+                    }
+                }
+            }
+        }
+        Ok((checked, invalid))
+    }
+
+    pub fn crdt_health_summary(&mut self) -> Result<CrdtHealthSummary> {
+        let stats = sql_query(
+            r#"
+            select
+              count(*) as document_count,
+              coalesce(sum(pending_updates), 0) as pending_updates,
+              coalesce(sum(flushed_updates), 0) as flushed_updates,
+              coalesce(sum(acked_updates), 0) as acked_updates,
+              coalesce(sum(log_updates), 0) as log_updates
+            from sync_crdt_documents
+            "#,
+        )
+        .load::<CrdtHealthStatsRow>(&mut self.conn)?
+        .into_iter()
+        .next()
+        .unwrap_or(CrdtHealthStatsRow {
+            document_count: 0,
+            pending_updates: 0,
+            flushed_updates: 0,
+            acked_updates: 0,
+            log_updates: 0,
+        });
+        let orphaned_log_entries = sql_query(
+            r#"
+            select count(*) as count
+            from sync_crdt_update_log log
+            left join sync_crdt_documents documents
+              on documents.document_key = log.document_key
+            where documents.document_key is null
+            "#,
+        )
+        .load::<CountRow>(&mut self.conn)?
+        .into_iter()
+        .next()
+        .map(|row| row.count)
+        .unwrap_or(0);
+
+        Ok(CrdtHealthSummary {
+            document_count: stats.document_count,
+            pending_updates: stats.pending_updates,
+            flushed_updates: stats.flushed_updates,
+            acked_updates: stats.acked_updates,
+            log_updates: stats.log_updates,
+            orphaned_documents: self.orphaned_crdt_document_count()?,
+            orphaned_log_entries,
+        })
+    }
+
+    fn orphaned_crdt_document_count(&mut self) -> Result<i64> {
+        let documents = sql_query(
+            r#"
+            select app_table, row_id
+            from sync_crdt_documents
+            order by app_table asc, row_id asc
+            "#,
+        )
+        .load::<CrdtDocumentIdentityRow>(&mut self.conn)?;
+        let mut orphaned = 0i64;
+        for document in documents {
+            let Some(metadata) = self.app_schema.table_metadata(&document.app_table) else {
+                orphaned += 1;
+                continue;
+            };
+            if get_app_row_json_generic(&mut self.conn, metadata, &document.row_id)?.is_none() {
+                orphaned += 1;
+            }
+        }
+        Ok(orphaned)
     }
 
     pub fn apply_crdt_field_yjs_update(
@@ -1512,6 +1638,25 @@ impl SyncStateStore for DieselSqliteStore {
         .load::<ConflictSummaryRow>(&mut self.conn)?;
 
         Ok(rows.into_iter().map(ConflictSummary::from).collect())
+    }
+
+    fn blob_health_summary(&mut self) -> Result<Option<BlobHealthSummary>> {
+        let upload = self.blob_upload_queue_stats()?;
+        let cache = self.blob_cache_stats()?;
+        let (checked_references, invalid_references) = self.blob_reference_health_counts()?;
+        Ok(Some(BlobHealthSummary {
+            cache_count: cache.count,
+            cache_bytes: cache.total_bytes,
+            upload_pending: upload.pending,
+            upload_uploading: upload.uploading,
+            upload_failed: upload.failed,
+            checked_references,
+            invalid_references,
+        }))
+    }
+
+    fn crdt_health_summary(&mut self) -> Result<Option<CrdtHealthSummary>> {
+        Ok(Some(DieselSqliteStore::crdt_health_summary(self)?))
     }
 
     fn resolve_conflict(&mut self, id_value: &str, resolution_value: &str) -> Result<()> {

@@ -120,6 +120,30 @@ pub struct ConflictSummary {
     pub resolution: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BlobHealthSummary {
+    pub cache_count: i64,
+    pub cache_bytes: i64,
+    pub upload_pending: i64,
+    pub upload_uploading: i64,
+    pub upload_failed: i64,
+    pub checked_references: i64,
+    pub invalid_references: i64,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CrdtHealthSummary {
+    pub document_count: i64,
+    pub pending_updates: i64,
+    pub flushed_updates: i64,
+    pub acked_updates: i64,
+    pub log_updates: i64,
+    pub orphaned_documents: i64,
+    pub orphaned_log_entries: i64,
+}
+
 pub trait SyncStore {
     type Tx<'a>: SyncStoreTx
     where
@@ -263,6 +287,14 @@ pub trait SyncStateStore {
     }
 
     fn conflict_summaries(&mut self) -> Result<Vec<ConflictSummary>>;
+
+    fn blob_health_summary(&mut self) -> Result<Option<BlobHealthSummary>> {
+        Ok(None)
+    }
+
+    fn crdt_health_summary(&mut self) -> Result<Option<CrdtHealthSummary>> {
+        Ok(None)
+    }
 
     fn resolve_conflict(&mut self, id: &str, resolution: &str) -> Result<()>;
 
