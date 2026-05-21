@@ -13,6 +13,7 @@ import type {
   SyncularV2ConflictStats,
   SyncularV2ConflictSummary,
   SyncularV2ConnectionState,
+  SyncularV2DiagnosticSnapshot,
   SyncularV2LifecycleState,
   SyncularV2PresenceChangeEvent,
   SyncularV2PresenceEntry,
@@ -70,6 +71,7 @@ export interface ClientBridgeNativeModule {
     actorId?: string | null,
     nowMs?: number
   ): Promise<SyncularV2AuthLeaseRecord[]>;
+  diagnosticSnapshot?(): Promise<SyncularV2DiagnosticSnapshot>;
   addListener?<T extends SyncularV2ClientEventType>(
     event: T,
     listener: SyncularV2ClientEventSink<T>
@@ -127,6 +129,7 @@ export interface ClientBridgeHarness {
   setConflicts(conflicts: readonly SyncularV2ConflictSummary[]): void;
   authLease(leaseId: string): SyncularV2AuthLeaseRecord | null;
   authLeases(): SyncularV2AuthLeaseRecord[];
+  diagnosticSnapshot(): SyncularV2DiagnosticSnapshot;
   emit<T extends SyncularV2ClientEventType>(
     event: T,
     payload: SyncularV2ClientEventMap[T]
@@ -202,6 +205,7 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
     authLease: async (leaseId) => this.authLease(leaseId),
     activeAuthLeases: async (actorId, nowMs) =>
       this.activeAuthLeases(actorId, nowMs),
+    diagnosticSnapshot: async () => this.diagnosticSnapshot(),
     on: (event, listener) => this.addEventListener(event, listener),
     presence: {
       get: (scopeKey) => this.presence(scopeKey),
@@ -274,6 +278,7 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
       authLease: async (leaseId) => this.authLease(leaseId),
       activeAuthLeases: async (actorId, nowMs) =>
         this.activeAuthLeases(actorId, nowMs),
+      diagnosticSnapshot: async () => this.diagnosticSnapshot(),
       addListener: (event, listener) =>
         this.reactNativeSubscription(this.addEventListener(event, listener)),
       getPresence: (scopeKey) => this.presence(scopeKey),
@@ -502,6 +507,8 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
           args?.actorId == null ? null : String(args.actorId),
           typeof args?.nowMs === 'number' ? args.nowMs : undefined
         );
+      case 'syncular_diagnostic_snapshot':
+        return this.diagnosticSnapshot();
       case 'syncular_join_presence':
         return this.joinPresence(
           String(args?.scopeKey),
@@ -623,6 +630,48 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
         lease.expiresAtMs > nowMs &&
         (actorId == null || lease.actorId === actorId)
     );
+  }
+
+  diagnosticSnapshot(): SyncularV2DiagnosticSnapshot {
+    const status = this.#status;
+    return {
+      generatedAt: Date.now(),
+      runtime: {
+        packageName: '@syncular/testkit',
+        packageVersion: '0.0.0',
+        workerProtocolVersion: 0,
+        wasmGlueUrl: '',
+        wasmUrl: '',
+      },
+      connection: status.connection ?? {
+        closed: false,
+        pendingRequests: 0,
+        realtime: 'disconnected',
+      },
+      subscriptions: [],
+      recentDiagnostics: [],
+      recentSyncTimings: [],
+      ...(status.lifecycle
+        ? {
+            bootstrap: {
+              channelPhase: 'idle',
+              progressPercent: 100,
+              isBootstrapping: false,
+              criticalReady: true,
+              interactiveReady: true,
+              complete: true,
+              activePhase: null,
+              expectedSubscriptionIds: [],
+              readySubscriptionIds: [],
+              pendingSubscriptionIds: [],
+              subscriptions: [],
+              phases: [],
+            },
+          }
+        : {}),
+      ...(status.outbox ? { outboxStats: status.outbox } : {}),
+      ...(status.conflicts ? { conflictStats: status.conflicts } : {}),
+    };
   }
 
   private applyOperation(operation: SyncOperation): void {

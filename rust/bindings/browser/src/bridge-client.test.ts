@@ -89,6 +89,10 @@ describe('Syncular bridge client', () => {
       });
       expect(client.getStatus().isConnected).toBe(true);
       expect(client.getStatus().hasPendingMutations).toBe(true);
+      await expect(client.diagnosticSnapshot()).resolves.toMatchObject({
+        runtime: { packageName: '@syncular/testkit' },
+        outboxStats: { pending: 1 },
+      });
 
       await client.resumeFromBackground();
       expect(client.getStatus().isConnected).toBe(true);

@@ -13,6 +13,7 @@ import {
   type SyncularV2ClientEventType,
   type SyncularV2ConflictResolution,
   type SyncularV2ConflictSummary,
+  type SyncularV2DiagnosticSnapshot,
   type SyncularV2PresenceEntry,
   type SyncularV2PresenceSink,
   type SyncularV2SubscriptionSpec,
@@ -50,6 +51,7 @@ export interface SyncularNativeModule {
     actorId?: string | null,
     nowMs?: number
   ): Promise<SyncularV2AuthLeaseRecord[]>;
+  diagnosticSnapshot?(): Promise<SyncularV2DiagnosticSnapshot>;
   addListener?<T extends SyncularV2ClientEventType>(
     event: T,
     listener: SyncularV2ClientEventSink<T>
@@ -108,6 +110,7 @@ export function createSyncularNativeBridge(
     upsertAuthLease: module.upsertAuthLease?.bind(module),
     authLease: module.authLease?.bind(module),
     activeAuthLeases: module.activeAuthLeases?.bind(module),
+    diagnosticSnapshot: module.diagnosticSnapshot?.bind(module),
     on: (event, listener) => removeable(module.addListener?.(event, listener)),
     presence: {
       get: (scopeKey) => module.getPresence?.(scopeKey) ?? [],

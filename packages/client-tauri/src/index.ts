@@ -15,6 +15,7 @@ import {
   type SyncularV2ConflictSummary,
   type SyncularV2PresenceEntry,
   type SyncularV2PresenceSink,
+  type SyncularV2DiagnosticSnapshot,
   type SyncularV2SubscriptionSpec,
   type SyncularV2SyncResult,
 } from '@syncular/client';
@@ -44,6 +45,7 @@ export interface SyncularTauriCommands {
   upsertAuthLease: string;
   authLease: string;
   activeAuthLeases: string;
+  diagnosticSnapshot: string;
   joinPresence: string;
   leavePresence: string;
   updatePresenceMetadata: string;
@@ -73,6 +75,7 @@ const DEFAULT_COMMANDS: SyncularTauriCommands = {
   upsertAuthLease: 'syncular_upsert_auth_lease',
   authLease: 'syncular_auth_lease',
   activeAuthLeases: 'syncular_active_auth_leases',
+  diagnosticSnapshot: 'syncular_diagnostic_snapshot',
   joinPresence: 'syncular_join_presence',
   leavePresence: 'syncular_leave_presence',
   updatePresenceMetadata: 'syncular_update_presence_metadata',
@@ -141,6 +144,8 @@ export function createSyncularTauriBridge(
         actorId,
         nowMs,
       }),
+    diagnosticSnapshot: () =>
+      invoke<SyncularV2DiagnosticSnapshot>(commands.diagnosticSnapshot),
     on: (event, listener) =>
       listen(options.listen, `${eventPrefix}:${event}`, (payload) => {
         if (event === 'lifecycleChanged') {
