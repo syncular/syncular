@@ -1004,6 +1004,24 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
 
     @Throws(FfiException::class)
+    fun applyLeasedMutationJson(mutationJson: String, localRowJson: String?): String {
+        val wire_writer_local_row_json = WireWriterPool.acquire((localRowJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
+            kotlin.run {
+                val wire = wire_writer_local_row_json.writer
+                localRowJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
+            }
+        try {
+            val buf = Native.boltffi_syncular_bolt_client_apply_leased_mutation_json(handle, mutationJson.toByteArray(Charsets.UTF_8), wire_writer_local_row_json.buffer)
+                ?: throw FfiException(-1, "Null buffer returned")
+            val reader = WireReader(buf)
+            return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+        } finally {
+            wire_writer_local_row_json.close()
+        }
+    }
+
+
+    @Throws(FfiException::class)
     fun enqueueMutationJson(mutationJson: String, localRowJson: String?): String {
         val wire_writer_local_row_json = WireWriterPool.acquire((localRowJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
             kotlin.run {
@@ -1012,6 +1030,24 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
             }
         try {
             val buf = Native.boltffi_syncular_bolt_client_enqueue_mutation_json(handle, mutationJson.toByteArray(Charsets.UTF_8), wire_writer_local_row_json.buffer)
+                ?: throw FfiException(-1, "Null buffer returned")
+            val reader = WireReader(buf)
+            return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+        } finally {
+            wire_writer_local_row_json.close()
+        }
+    }
+
+
+    @Throws(FfiException::class)
+    fun enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?): String {
+        val wire_writer_local_row_json = WireWriterPool.acquire((localRowJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
+            kotlin.run {
+                val wire = wire_writer_local_row_json.writer
+                localRowJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
+            }
+        try {
+            val buf = Native.boltffi_syncular_bolt_client_enqueue_leased_mutation_json(handle, mutationJson.toByteArray(Charsets.UTF_8), wire_writer_local_row_json.buffer)
                 ?: throw FfiException(-1, "Null buffer returned")
             val reader = WireReader(buf)
             return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
@@ -1490,6 +1526,60 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
 
     @Throws(FfiException::class)
+    fun upsertAuthLeaseJson(leaseJson: String): Boolean {
+        val buf = Native.boltffi_syncular_bolt_client_upsert_auth_lease_json(handle, leaseJson.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun authLeaseJson(leaseId: String): String {
+        val buf = Native.boltffi_syncular_bolt_client_auth_lease_json(handle, leaseId.toByteArray(Charsets.UTF_8))
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
+    fun activeAuthLeasesJson(actorId: String?, nowMs: Long): String {
+        val wire_writer_actor_id = WireWriterPool.acquire((actorId?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
+            kotlin.run {
+                val wire = wire_writer_actor_id.writer
+                actorId?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
+            }
+        try {
+            val buf = Native.boltffi_syncular_bolt_client_active_auth_leases_json(handle, wire_writer_actor_id.buffer, nowMs)
+                ?: throw FfiException(-1, "Null buffer returned")
+            val reader = WireReader(buf)
+            return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+        } finally {
+            wire_writer_actor_id.close()
+        }
+    }
+
+
+    @Throws(FfiException::class)
+    fun setOutboxAuthLeaseJson(clientCommitId: String, provenanceJson: String?): Boolean {
+        val wire_writer_provenance_json = WireWriterPool.acquire((provenanceJson?.let { v -> 1 + (4 + Utf8Codec.maxBytes(v)) } ?: 1))
+            kotlin.run {
+                val wire = wire_writer_provenance_json.writer
+                provenanceJson?.let { v -> wire.writeU8(1u); wire.writeString(v) } ?: wire.writeU8(0u)
+            }
+        try {
+            val buf = Native.boltffi_syncular_bolt_client_set_outbox_auth_lease_json(handle, clientCommitId.toByteArray(Charsets.UTF_8), wire_writer_provenance_json.buffer)
+                ?: throw FfiException(-1, "Null buffer returned")
+            val reader = WireReader(buf)
+            return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
+        } finally {
+            wire_writer_provenance_json.close()
+        }
+    }
+
+
+    @Throws(FfiException::class)
     fun conflictSummariesJson(): String {
         val buf = Native.boltffi_syncular_bolt_client_conflict_summaries_json(handle)
             ?: throw FfiException(-1, "Null buffer returned")
@@ -1709,7 +1799,9 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_next_event_json_timeout(handle: Long, timeout_ms: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_close_event_stream(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_apply_mutation_json(handle: Long, mutation_json: ByteArray, local_row_json: ByteBuffer): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_apply_leased_mutation_json(handle: Long, mutation_json: ByteArray, local_row_json: ByteBuffer): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_mutation_json(handle: Long, mutation_json: ByteArray, local_row_json: ByteBuffer): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_leased_mutation_json(handle: Long, mutation_json: ByteArray, local_row_json: ByteBuffer): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_yjs_update_json(handle: Long, update_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_open_crdt_field_json(handle: Long, request_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_apply_crdt_field_text_json(handle: Long, request_json: ByteArray): ByteArray?
@@ -1756,6 +1848,10 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_import_local_support_bundle_json(handle: Long, bundle_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_repair_local_health_json(handle: Long, request_json: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_outbox_summaries_json(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_upsert_auth_lease_json(handle: Long, lease_json: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_auth_lease_json(handle: Long, lease_id: ByteArray): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_active_auth_leases_json(handle: Long, actor_id: ByteBuffer, now_ms: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_set_outbox_auth_lease_json(handle: Long, client_commit_id: ByteArray, provenance_json: ByteBuffer): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_conflict_summaries_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_resolve_conflict(handle: Long, id: ByteArray, resolution: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_resolve_conflict(handle: Long, id: ByteArray, resolution: ByteArray): ByteArray?

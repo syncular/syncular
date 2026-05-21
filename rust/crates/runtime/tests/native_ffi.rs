@@ -35,6 +35,7 @@ use syncular_runtime::native_ffi::{
     syncular_native_runtime_manifest_json, syncular_string_free, SyncularNativeEventSubscription,
     SyncularNativeHandle,
 };
+use syncular_runtime::runtime_schema::runtime_schema_version;
 use syncular_testkit::{todo_app_schema_json, unique_temp_db_path, unique_temp_file_path};
 
 #[test]
@@ -47,7 +48,7 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
     assert_eq!(manifest["ffi_abi_version"], 2);
     assert_eq!(manifest["crate_name"], "syncular-runtime");
     assert_eq!(manifest["crate_version"], "0.1.0");
-    assert_eq!(manifest["schema_version"], current_schema_version());
+    assert_eq!(manifest["schema_version"], runtime_schema_version());
     assert_eq!(manifest["storage_backend"], "diesel-sqlite");
     assert_eq!(manifest["transport_backends"][0], "http");
     assert_eq!(manifest["transport_backends"][1], "websocket");
@@ -89,7 +90,9 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
             "generated-json-table-reads",
             "generated-json-local-operations",
             "generated-json-mutations",
+            "generated-json-leased-mutations",
             "queued-json-local-operations",
+            "queued-json-leased-mutations",
             "queued-yjs-updates",
             "queued-snapshot-refresh",
             "queued-storage-compaction",

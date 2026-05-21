@@ -2932,6 +2932,23 @@ where
         self.store.apply_local_operation(operation, local_row)
     }
 
+    pub fn apply_leased_mutation_json(
+        &mut self,
+        mutation_json: &str,
+        local_row_json: Option<&str>,
+    ) -> Result<String> {
+        validate_mutation_json_input_size(mutation_json, local_row_json)?;
+        let operation: SyncOperation = serde_json::from_str(mutation_json)?;
+        let local_row = local_row_json.map(serde_json::from_str).transpose()?;
+        let actor_id = self.config.actor_id.clone();
+        self.store.apply_local_operation_with_active_auth_lease(
+            Some(&actor_id),
+            now_ms(),
+            operation,
+            local_row,
+        )
+    }
+
     pub fn apply_encrypted_crdt_update_json(
         &mut self,
         request_json: &str,

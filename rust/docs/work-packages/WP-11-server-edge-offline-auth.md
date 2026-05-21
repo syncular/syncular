@@ -46,16 +46,18 @@ The Rust foundation now covers protocol/testkit lease types, local client
 storage, replay provenance, server handler context, stable rejection
 diagnostics, current-auth Hono lease issue, signed replay-token validation,
 per-operation signed-scope/current-scope validation, and strict Rust generated
-leased mutations. Leases remain offline intent/audit records only; they do not
-bypass normal reconnect authorization.
+leased mutations. Native JSON, C FFI, BoltFFI, Swift, Kotlin, and Java now have
+the same strict leased mutation entry points for immediate and queued writes.
+Leases remain offline intent/audit records only; they do not bypass normal
+reconnect authorization.
 
 ## Next Action
 
-Next narrow slice is binding parity for leased-offline mutation ergonomics. Rust
-generated mutations now have `leased_mutations()` / `commit_leased()` backed by
-transactional active-lease selection, but Swift/Kotlin/browser generated APIs
-still need the same explicit strict leased mode instead of requiring host code
-to mark outbox commits manually.
+Next narrow slice is browser parity for leased-offline mutation ergonomics. Rust
+and native generated APIs now have strict leased modes backed by transactional
+active-lease selection. Browser generated/Kysely APIs still need an explicit
+strict leased mutation mode instead of requiring host code to mark outbox
+commits manually.
 
 ## Progress
 
@@ -150,6 +152,15 @@ to mark outbox commits manually.
 - Updated generated Rust fixture/example outputs and documented the Rust
   leased mutation API in
   [`../reference/GENERATED_CLIENT_API.md`](../reference/GENERATED_CLIENT_API.md).
+- Added schema-agnostic `apply_leased_mutation_json` and
+  `enqueue_leased_mutation_json` to the native runtime, worker, C FFI, and
+  BoltFFI bindings. These methods select and attach active auth lease
+  provenance in the same SQLite transaction as the local row/outbox write, and
+  fail closed when no covering lease exists.
+- Regenerated Swift, Kotlin, Android Kotlin, Java, and BoltFFI outputs with
+  leased mutation methods plus generated `leasedMutations` and
+  `queuedLeasedMutations` app helpers. Native smoke adapters now compile
+  against the stricter low-level protocol.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol -p
   syncular-testkit` passed with `15` protocol tests and `36` testkit smoke
   tests.
@@ -205,6 +216,28 @@ to mark outbox commits manually.
   `leased_mutations()` / `commit_leased()`.
 - Gate: `bun run rust:check:no-default` passed after adding the public leased
   mutation executor trait.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+  passed after adding Swift/Kotlin leased mutation generation assertions.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime
+  --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test
+  store_backends` passed with `40` tests after adding leased JSON and worker
+  leased mutation coverage.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime
+  --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test
+  protocol_contract` passed with `42` tests after the native leased JSON slice.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime
+  --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test
+  native_facade --test native_ffi --test native_binding_scaffold` passed after
+  regenerating low-level native bindings.
+- Gate: `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime
+  --no-default-features --features native,crdt-yjs,boltffi-bindings` passed for
+  the Notsuru-style native feature profile.
+- Gate: `bun run rust:check:no-default` passed after the native leased JSON
+  slice.
+- Gate: `bash rust/examples/todo-app/native-smokes/run-local.sh` passed,
+  compiling and running Swift generated, Swift Bolt host, Swift lifecycle,
+  Kotlin generated, Kotlin Bolt host, Kotlin lifecycle, and Swift/Kotlin Hono
+  server-sync smokes against the new leased binding contract.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   store_backends` passed with `36` tests after the local lease storage slice.
 - Gate: `bun run rust:conformance:fast` passed after the protocol/testkit

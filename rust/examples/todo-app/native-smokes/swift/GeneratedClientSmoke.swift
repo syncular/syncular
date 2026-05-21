@@ -22,9 +22,19 @@ private final class MockNativeClient: SyncularNativeJsonClient {
         return "commit-swift"
     }
 
+    func applyLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String {
+        capturedMutations.append(mutationJson)
+        return "commit-leased-swift"
+    }
+
     func enqueueMutationJson(mutationJson: String, localRowJson: String?) throws -> String {
         capturedMutations.append(mutationJson)
         return "command-swift"
+    }
+
+    func enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String {
+        capturedMutations.append(mutationJson)
+        return "command-leased-swift"
     }
 
     func diagnosticSnapshotJson() throws -> String {
@@ -341,6 +351,26 @@ private enum GeneratedClientSmoke {
         ))
         expect(enqueueCommandId == "command-swift", "Swift enqueue mutation helper should return command id")
         try expectJsonEqual(try parseJson(client.capturedMutations[3]), jsonValue(taskFixture, "newOperation"), "Swift enqueue mutation should match shared new task operation")
+
+        let leasedCommitId = try client.leasedMutations.tasks.insert(NewTask(
+            id: jsonString(taskInput, "id"),
+            title: jsonString(taskInput, "title"),
+            completed: jsonInt(taskInput, "completed"),
+            userId: jsonString(taskInput, "user_id"),
+            projectId: jsonString(taskInput, "project_id")
+        ))
+        expect(leasedCommitId == "commit-leased-swift", "Swift leased mutation helper should return commit id")
+        try expectJsonEqual(try parseJson(client.capturedMutations[4]), jsonValue(taskFixture, "newOperation"), "Swift leased mutation should match shared new task operation")
+
+        let queuedLeasedCommandId = try client.queuedLeasedMutations.tasks.insert(NewTask(
+            id: jsonString(taskInput, "id"),
+            title: jsonString(taskInput, "title"),
+            completed: jsonInt(taskInput, "completed"),
+            userId: jsonString(taskInput, "user_id"),
+            projectId: jsonString(taskInput, "project_id")
+        ))
+        expect(queuedLeasedCommandId == "command-leased-swift", "Swift queued leased mutation helper should return command id")
+        try expectJsonEqual(try parseJson(client.capturedMutations[5]), jsonValue(taskFixture, "newOperation"), "Swift queued leased mutation should match shared new task operation")
 
         let blobOperation = try encodedJsonObject(SyncularAppOperations.newTask(NewTask(
             id: jsonString(blobTask, "id"),

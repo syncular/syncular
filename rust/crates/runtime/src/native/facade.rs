@@ -541,7 +541,9 @@ pub fn native_runtime_manifest() -> NativeRuntimeManifest {
             "generated-json-table-reads",
             "generated-json-local-operations",
             "generated-json-mutations",
+            "generated-json-leased-mutations",
             "queued-json-local-operations",
+            "queued-json-leased-mutations",
             "queued-yjs-updates",
             "queued-snapshot-refresh",
             "queued-storage-compaction",
@@ -685,6 +687,21 @@ impl NativeSyncularClient {
     ) -> Result<String> {
         let command_id = self.next_command_id("mutation")?;
         self.worker()?.enqueue_mutation_json(
+            command_id.clone(),
+            mutation_json.to_string(),
+            local_row_json.map(str::to_string),
+            self.auto_sync_local_writes,
+        )?;
+        Ok(command_id)
+    }
+
+    pub fn enqueue_leased_mutation_json(
+        &self,
+        mutation_json: &str,
+        local_row_json: Option<&str>,
+    ) -> Result<String> {
+        let command_id = self.next_command_id("leased-mutation")?;
+        self.worker()?.enqueue_leased_mutation_json(
             command_id.clone(),
             mutation_json.to_string(),
             local_row_json.map(str::to_string),
@@ -1139,6 +1156,39 @@ impl NativeSyncularClient {
         let client_commit_id = self
             .writer
             .apply_mutation_json(mutation_json, local_row_json)?;
+        let changed_rows = sync_changed_row_for_local_operation(
+            self.writer.app_schema(),
+            &operation,
+            previous_row.as_ref(),
+            local_row.as_ref(),
+            Some(client_commit_id.clone()),
+        )
+        .into_iter()
+        .collect();
+        self.events.push_rows_changed_events_with_details(
+            [table.as_str()],
+            changed_rows,
+            Some("localWrite"),
+        );
+        self.trigger_after_local_write()?;
+        Ok(client_commit_id)
+    }
+
+    pub fn apply_leased_mutation_json(
+        &mut self,
+        mutation_json: &str,
+        local_row_json: Option<&str>,
+    ) -> Result<String> {
+        validate_mutation_json_input_size(mutation_json, local_row_json)?;
+        let operation: crate::protocol::SyncOperation = serde_json::from_str(mutation_json)?;
+        let table = operation.table.clone();
+        let previous_row = self
+            .writer
+            .current_row_json(&operation.table, &operation.row_id)?;
+        let local_row = local_row_json.map(serde_json::from_str).transpose()?;
+        let client_commit_id = self
+            .writer
+            .apply_leased_mutation_json(mutation_json, local_row_json)?;
         let changed_rows = sync_changed_row_for_local_operation(
             self.writer.app_schema(),
             &operation,

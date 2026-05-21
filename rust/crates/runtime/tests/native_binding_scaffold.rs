@@ -35,7 +35,9 @@ fn boltffi_rust_surface_exposes_the_syncular_runtime_boundary() {
     assert!(source.contains("pub fn enqueue_sync_now"));
     assert!(source.contains("pub fn resume_from_background"));
     assert!(source.contains("pub fn apply_mutation_json"));
+    assert!(source.contains("pub fn apply_leased_mutation_json"));
     assert!(source.contains("pub fn enqueue_mutation_json"));
+    assert!(source.contains("pub fn enqueue_leased_mutation_json"));
     assert!(!source.contains("pub fn apply_local_operation_json"));
     assert!(!source.contains("pub fn enqueue_local_operation_json"));
     assert!(source.contains("pub fn enqueue_yjs_update_json"));
@@ -100,7 +102,13 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
         "func applyMutationJson(mutationJson: String, localRowJson: String?) throws -> String"
     ));
     assert!(swift.contains(
+        "func applyLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String"
+    ));
+    assert!(swift.contains(
         "func enqueueMutationJson(mutationJson: String, localRowJson: String?) throws -> String"
+    ));
+    assert!(swift.contains(
+        "func enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String"
     ));
     assert!(swift.contains("func enqueueYjsUpdateJson(updateJson: String) throws -> String"));
     assert!(swift.contains("func openCrdtFieldJson(requestJson: String) throws -> String"));
@@ -156,8 +164,14 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(kotlin.contains("fun syncularEncryptionHelperJson"));
     assert!(kotlin
         .contains("fun applyMutationJson(mutationJson: String, localRowJson: String?): String"));
+    assert!(kotlin.contains(
+        "fun applyLeasedMutationJson(mutationJson: String, localRowJson: String?): String"
+    ));
     assert!(kotlin
         .contains("fun enqueueMutationJson(mutationJson: String, localRowJson: String?): String"));
+    assert!(kotlin.contains(
+        "fun enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?): String"
+    ));
     assert!(kotlin.contains("fun enqueueYjsUpdateJson(updateJson: String): String"));
     assert!(kotlin.contains("fun openCrdtFieldJson(requestJson: String): String"));
     assert!(kotlin.contains("fun applyCrdtFieldTextJson(requestJson: String): String"));
@@ -202,7 +216,13 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
         "public String applyMutationJson(String mutationJson, java.util.Optional<String> localRowJson)"
     ));
     assert!(java.contains(
+        "public String applyLeasedMutationJson(String mutationJson, java.util.Optional<String> localRowJson)"
+    ));
+    assert!(java.contains(
         "public String enqueueMutationJson(String mutationJson, java.util.Optional<String> localRowJson)"
+    ));
+    assert!(java.contains(
+        "public String enqueueLeasedMutationJson(String mutationJson, java.util.Optional<String> localRowJson)"
     ));
     assert!(java.contains("public String enqueueYjsUpdateJson(String updateJson)"));
     assert!(java.contains("public String openCrdtFieldJson(String requestJson)"));
@@ -237,6 +257,10 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(!java.contains("public boolean close()"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_open"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_open"));
+    assert!(android_header.contains("boltffi_syncular_bolt_client_apply_leased_mutation_json"));
+    assert!(java_header.contains("boltffi_syncular_bolt_client_apply_leased_mutation_json"));
+    assert!(android_header.contains("boltffi_syncular_bolt_client_enqueue_leased_mutation_json"));
+    assert!(java_header.contains("boltffi_syncular_bolt_client_enqueue_leased_mutation_json"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_start_event_stream"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_start_event_stream"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_next_event_json_timeout"));
@@ -301,7 +325,11 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(swift.contains("func openCrdtField(_ request: SyncularCrdtFieldRequest) throws -> SyncularCrdtFieldDescriptor"));
     assert!(swift.contains("public final class SyncularNativeLiveQuery"));
     assert!(swift.contains("func applyMutationJson(mutationJson: String"));
+    assert!(swift.contains("func applyLeasedMutationJson(mutationJson: String"));
     assert!(swift.contains("try applyMutationJson(mutationJson: operation.jsonString()"));
+    assert!(swift.contains("try applyLeasedMutationJson(mutationJson: operation.jsonString()"));
+    assert!(swift.contains("var leasedMutations: SyncularAppMutations"));
+    assert!(swift.contains("var queuedLeasedMutations: SyncularAppMutations"));
     assert!(swift.contains("queryJson(requestJson: query.jsonString())"));
     assert!(swift.contains("func registerQueryJson(queryJson: String"));
     assert!(swift.contains("func unregisterQuery(id: String"));
@@ -339,7 +367,11 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(kotlin.contains("fun SyncularNativeJsonClient.openCrdtField(request: SyncularCrdtFieldRequest): SyncularCrdtFieldDescriptor"));
     assert!(kotlin.contains("class SyncularNativeLiveQuery<Row>"));
     assert!(kotlin.contains("fun applyMutationJson(mutationJson: String"));
+    assert!(kotlin.contains("fun applyLeasedMutationJson(mutationJson: String"));
     assert!(kotlin.contains("applyMutationJson(operation.toJsonString(), localRowJson)"));
+    assert!(kotlin.contains("applyLeasedMutationJson(operation.toJsonString(), localRowJson)"));
+    assert!(kotlin.contains("val SyncularNativeJsonClient.leasedMutations"));
+    assert!(kotlin.contains("val SyncularNativeJsonClient.queuedLeasedMutations"));
     assert!(kotlin.contains("syncularGeneratedQueryRows(queryJson(query.toJsonString()))"));
     assert!(kotlin.contains("fun registerQueryJson(queryJson: String): String"));
     assert!(kotlin.contains("fun unregisterQuery(id: String): Boolean"));
@@ -358,7 +390,11 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(!kotlin.contains("fun SyncularNativeJsonClient.applyNewTask(input: NewTask"));
     assert!(android_kotlin.contains("package dev.syncular.client.generated"));
     assert!(android_kotlin.contains("fun applyMutationJson(mutationJson: String"));
+    assert!(android_kotlin.contains("fun applyLeasedMutationJson(mutationJson: String"));
     assert!(android_kotlin.contains("applyMutationJson(operation.toJsonString(), localRowJson)"));
+    assert!(
+        android_kotlin.contains("applyLeasedMutationJson(operation.toJsonString(), localRowJson)")
+    );
     assert!(android_kotlin.contains("syncularGeneratedQueryRows(queryJson(query.toJsonString()))"));
     assert!(android_kotlin.contains("data class SyncularLiveQueryRegistration"));
     assert!(android_kotlin.contains("data class SyncularChangedRow"));

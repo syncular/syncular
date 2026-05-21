@@ -178,6 +178,14 @@ let commandId = try client.queuedMutations.tasks.insert(NewTask(
     projectId: projectId
 ))
 
+let leasedCommandId = try client.queuedLeasedMutations.tasks.insert(NewTask(
+    id: "task-ios-offline",
+    title: "Queue under auth lease",
+    completed: 0,
+    userId: actorId,
+    projectId: projectId
+))
+
 let receipt = try client.applyTaskTitleText(
     rowId: "task-ios",
     nextText: "Edited from Swift"
@@ -213,6 +221,16 @@ val commandId = client.queuedMutations.tasks.insert(
     NewTask(
         id = "task-android",
         title = "Ship Android client",
+        completed = 0,
+        userId = actorId,
+        projectId = projectId,
+    ),
+)
+
+val leasedCommandId = client.queuedLeasedMutations.tasks.insert(
+    NewTask(
+        id = "task-android-offline",
+        title = "Queue under auth lease",
         completed = 0,
         userId = actorId,
         projectId = projectId,

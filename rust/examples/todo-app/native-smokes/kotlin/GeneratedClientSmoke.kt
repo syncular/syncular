@@ -23,9 +23,19 @@ private class MockNativeClient(private val imageJson: String? = null) : Syncular
         return "commit-kotlin"
     }
 
+    override fun applyLeasedMutationJson(mutationJson: String, localRowJson: String?): String {
+        capturedMutations += mutationJson
+        return "commit-leased-kotlin"
+    }
+
     override fun enqueueMutationJson(mutationJson: String, localRowJson: String?): String {
         capturedMutations += mutationJson
         return "command-kotlin"
+    }
+
+    override fun enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?): String {
+        capturedMutations += mutationJson
+        return "command-leased-kotlin"
     }
 
     override fun diagnosticSnapshotJson(): String =
@@ -289,6 +299,30 @@ fun main(args: Array<String>) {
     )
     expect(enqueueCommandId == "command-kotlin", "Kotlin enqueue mutation helper should return command id")
     expect(parseJson(client.capturedMutations[3]) == taskFixture["newOperation"], "Kotlin enqueue mutation should match shared new task operation")
+
+    val leasedCommitId = client.leasedMutations.tasks.insert(
+        NewTask(
+            id = taskInput.str("id"),
+            title = taskInput.str("title"),
+            completed = taskInput.longValue("completed"),
+            userId = taskInput.str("user_id"),
+            projectId = taskInput.str("project_id"),
+        ),
+    )
+    expect(leasedCommitId == "commit-leased-kotlin", "Kotlin leased mutation helper should return commit id")
+    expect(parseJson(client.capturedMutations[4]) == taskFixture["newOperation"], "Kotlin leased mutation should match shared new task operation")
+
+    val queuedLeasedCommandId = client.queuedLeasedMutations.tasks.insert(
+        NewTask(
+            id = taskInput.str("id"),
+            title = taskInput.str("title"),
+            completed = taskInput.longValue("completed"),
+            userId = taskInput.str("user_id"),
+            projectId = taskInput.str("project_id"),
+        ),
+    )
+    expect(queuedLeasedCommandId == "command-leased-kotlin", "Kotlin queued leased mutation helper should return command id")
+    expect(parseJson(client.capturedMutations[5]) == taskFixture["newOperation"], "Kotlin queued leased mutation should match shared new task operation")
 
     val blobOperation = parseJson(
         SyncularAppOperations.newTask(

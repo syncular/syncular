@@ -430,9 +430,11 @@ read-only review:
     current handler scopes to reject revoked access before writes. Rust
     generated mutations now expose `leased_mutations()` / `commit_leased()`,
     and native Diesel selects an active covering lease transactionally before
-    retaining the local row/outbox write. Remaining WP-11 gap: Swift, Kotlin,
-    and browser generated APIs need the same explicit strict leased-offline
-    mutation mode.
+    retaining the local row/outbox write. Native JSON, C FFI, BoltFFI, Swift,
+    Kotlin, and Java now expose the same strict immediate/queued leased mutation
+    entry points. Remaining WP-11 gap: browser generated APIs need the same
+    explicit strict leased-offline mutation mode, followed by host-facing lease
+    refresh ergonomics.
 - `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus

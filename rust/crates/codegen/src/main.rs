@@ -6211,6 +6211,16 @@ fn generate_swift_module(
     out.push_str("    guard manifest.capabilities.contains(\"generated-json-mutations\") else {\n");
     out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust native runtime is missing generated-json-mutations\")\n");
     out.push_str("    }\n");
+    out.push_str(
+        "    guard manifest.capabilities.contains(\"generated-json-leased-mutations\") else {\n",
+    );
+    out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust native runtime is missing generated-json-leased-mutations\")\n");
+    out.push_str("    }\n");
+    out.push_str(
+        "    guard manifest.capabilities.contains(\"queued-json-leased-mutations\") else {\n",
+    );
+    out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust native runtime is missing queued-json-leased-mutations\")\n");
+    out.push_str("    }\n");
     out.push_str("    guard manifest.capabilities.contains(\"read-only-query-json\") else {\n");
     out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust native runtime is missing read-only-query-json\")\n");
     out.push_str("    }\n");
@@ -7046,7 +7056,9 @@ fn generate_swift_module(
     }
     out.push_str("public protocol SyncularNativeJsonClient {\n");
     out.push_str("    func applyMutationJson(mutationJson: String, localRowJson: String?) throws -> String\n");
+    out.push_str("    func applyLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String\n");
     out.push_str("    func enqueueMutationJson(mutationJson: String, localRowJson: String?) throws -> String\n");
+    out.push_str("    func enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String\n");
     if has_native_crdt {
         out.push_str("    func openCrdtFieldJson(requestJson: String) throws -> String\n");
         out.push_str("    func applyCrdtFieldTextJson(requestJson: String) throws -> String\n");
@@ -7092,8 +7104,18 @@ fn generate_swift_module(
     );
     out.push_str("    }\n");
     out.push_str("\n");
+    out.push_str("    func applyLeased(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {\n");
+    out.push_str(
+        "        try applyLeasedMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)\n",
+    );
+    out.push_str("    }\n");
+    out.push_str("\n");
     out.push_str("    func enqueue(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {\n");
     out.push_str("        try enqueueMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)\n");
+    out.push_str("    }\n");
+    out.push_str("\n");
+    out.push_str("    func enqueueLeased(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {\n");
+    out.push_str("        try enqueueLeasedMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)\n");
     out.push_str("    }\n");
     out.push_str("\n");
     out.push_str("    func diagnosticSnapshot() throws -> SyncularJsonValue {\n");
@@ -7595,14 +7617,15 @@ fn generate_swift_module(
 
     out.push_str("\npublic struct SyncularAppMutations {\n");
     out.push_str("    private let client: SyncularNativeJsonClient\n");
-    out.push_str("    private let queued: Bool\n\n");
+    out.push_str("    private let queued: Bool\n");
+    out.push_str("    private let leased: Bool\n\n");
     out.push_str(
-        "    init(client: SyncularNativeJsonClient, queued: Bool = false) {\n        self.client = client\n        self.queued = queued\n    }\n\n",
+        "    init(client: SyncularNativeJsonClient, queued: Bool = false, leased: Bool = false) {\n        self.client = client\n        self.queued = queued\n        self.leased = leased\n    }\n\n",
     );
     for table in &user_tables {
         let type_name = singular_pascal_case(&table.name);
         out.push_str(&format!(
-            "    public var {}: {type_name}Mutations {{ {type_name}Mutations(client: client, queued: queued) }}\n",
+            "    public var {}: {type_name}Mutations {{ {type_name}Mutations(client: client, queued: queued, leased: leased) }}\n",
             lower_camel_case(&table.name)
         ));
     }
@@ -7612,14 +7635,17 @@ fn generate_swift_module(
         "    var mutations: SyncularAppMutations { SyncularAppMutations(client: self) }\n",
     );
     out.push_str("    var queuedMutations: SyncularAppMutations { SyncularAppMutations(client: self, queued: true) }\n");
+    out.push_str("    var leasedMutations: SyncularAppMutations { SyncularAppMutations(client: self, leased: true) }\n");
+    out.push_str("    var queuedLeasedMutations: SyncularAppMutations { SyncularAppMutations(client: self, queued: true, leased: true) }\n");
     out.push_str("}\n\n");
     for table in &user_tables {
         let type_name = singular_pascal_case(&table.name);
         out.push_str(&format!("public struct {type_name}Mutations {{\n"));
         out.push_str("    private let client: SyncularNativeJsonClient\n");
-        out.push_str("    private let queued: Bool\n\n");
+        out.push_str("    private let queued: Bool\n");
+        out.push_str("    private let leased: Bool\n\n");
         out.push_str(
-            "    init(client: SyncularNativeJsonClient, queued: Bool) {\n        self.client = client\n        self.queued = queued\n    }\n\n",
+            "    init(client: SyncularNativeJsonClient, queued: Bool, leased: Bool) {\n        self.client = client\n        self.queued = queued\n        self.leased = leased\n    }\n\n",
         );
         out.push_str(&format!(
             "    public func insert(_ input: New{type_name}, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {{\n"
@@ -7628,11 +7654,9 @@ fn generate_swift_module(
             "        let operation = SyncularAppOperations.new{type_name}(input, baseVersion: baseVersion)\n"
         ));
         out.push_str("        if queued {\n");
-        out.push_str(
-            "            return try client.enqueue(operation, localRowJson: localRowJson)\n",
-        );
+        out.push_str("            return leased ? try client.enqueueLeased(operation, localRowJson: localRowJson) : try client.enqueue(operation, localRowJson: localRowJson)\n");
         out.push_str("        }\n");
-        out.push_str("        return try client.apply(operation, localRowJson: localRowJson)\n");
+        out.push_str("        return leased ? try client.applyLeased(operation, localRowJson: localRowJson) : try client.apply(operation, localRowJson: localRowJson)\n");
         out.push_str("    }\n\n");
         out.push_str(&format!(
             "    public func update(rowId: String, patch: {type_name}Patch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {{\n"
@@ -7641,11 +7665,9 @@ fn generate_swift_module(
             "        let operation = SyncularAppOperations.patch{type_name}(rowId: rowId, patch: patch, baseVersion: baseVersion)\n"
         ));
         out.push_str("        if queued {\n");
-        out.push_str(
-            "            return try client.enqueue(operation, localRowJson: localRowJson)\n",
-        );
+        out.push_str("            return leased ? try client.enqueueLeased(operation, localRowJson: localRowJson) : try client.enqueue(operation, localRowJson: localRowJson)\n");
         out.push_str("        }\n");
-        out.push_str("        return try client.apply(operation, localRowJson: localRowJson)\n");
+        out.push_str("        return leased ? try client.applyLeased(operation, localRowJson: localRowJson) : try client.apply(operation, localRowJson: localRowJson)\n");
         out.push_str("    }\n\n");
         out.push_str(&format!(
             "    public func delete(rowId: String, baseVersion: Int64? = nil) throws -> String {{\n"
@@ -7654,9 +7676,9 @@ fn generate_swift_module(
             "        let operation = SyncularAppOperations.delete{type_name}(rowId: rowId, baseVersion: baseVersion)\n"
         ));
         out.push_str("        if queued {\n");
-        out.push_str("            return try client.enqueue(operation)\n");
+        out.push_str("            return leased ? try client.enqueueLeased(operation) : try client.enqueue(operation)\n");
         out.push_str("        }\n");
-        out.push_str("        return try client.apply(operation)\n");
+        out.push_str("        return leased ? try client.applyLeased(operation) : try client.apply(operation)\n");
         out.push_str("    }\n\n");
         out.push_str("}\n\n");
     }
@@ -8001,6 +8023,8 @@ fn generate_kotlin_module(
     out.push_str("    require(manifest.storageBackend == \"diesel-sqlite\") { \"Rust storage backend ${manifest.storageBackend} is not diesel-sqlite\" }\n");
     out.push_str("    require(manifest.capabilities.contains(\"generated-json-local-operations\")) { \"Rust native runtime is missing generated-json-local-operations\" }\n");
     out.push_str("    require(manifest.capabilities.contains(\"generated-json-mutations\")) { \"Rust native runtime is missing generated-json-mutations\" }\n");
+    out.push_str("    require(manifest.capabilities.contains(\"generated-json-leased-mutations\")) { \"Rust native runtime is missing generated-json-leased-mutations\" }\n");
+    out.push_str("    require(manifest.capabilities.contains(\"queued-json-leased-mutations\")) { \"Rust native runtime is missing queued-json-leased-mutations\" }\n");
     out.push_str("    require(manifest.capabilities.contains(\"read-only-query-json\")) { \"Rust native runtime is missing read-only-query-json\" }\n");
     out.push_str("    require(manifest.capabilities.contains(\"query-observer-events\")) { \"Rust native runtime is missing query-observer-events\" }\n");
     if has_native_encrypted_crdt {
@@ -8801,7 +8825,13 @@ fn generate_kotlin_module(
         "    fun applyMutationJson(mutationJson: String, localRowJson: String? = null): String\n",
     );
     out.push_str(
+        "    fun applyLeasedMutationJson(mutationJson: String, localRowJson: String? = null): String\n",
+    );
+    out.push_str(
         "    fun enqueueMutationJson(mutationJson: String, localRowJson: String? = null): String\n",
+    );
+    out.push_str(
+        "    fun enqueueLeasedMutationJson(mutationJson: String, localRowJson: String? = null): String\n",
     );
     if has_native_crdt {
         out.push_str("    fun openCrdtFieldJson(requestJson: String): String\n");
@@ -8827,8 +8857,12 @@ fn generate_kotlin_module(
     out.push_str("}\n\n");
     out.push_str("fun SyncularNativeJsonClient.apply(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =\n");
     out.push_str("    applyMutationJson(operation.toJsonString(), localRowJson)\n\n");
+    out.push_str("fun SyncularNativeJsonClient.applyLeased(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =\n");
+    out.push_str("    applyLeasedMutationJson(operation.toJsonString(), localRowJson)\n\n");
     out.push_str("fun SyncularNativeJsonClient.enqueue(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =\n");
     out.push_str("    enqueueMutationJson(operation.toJsonString(), localRowJson)\n\n");
+    out.push_str("fun SyncularNativeJsonClient.enqueueLeased(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =\n");
+    out.push_str("    enqueueLeasedMutationJson(operation.toJsonString(), localRowJson)\n\n");
     out.push_str("fun SyncularNativeJsonClient.diagnosticSnapshot(): JsonObject =\n");
     out.push_str("    Json.parseToJsonElement(diagnosticSnapshotJson()).jsonObject\n\n");
     if has_native_crdt {
@@ -9184,11 +9218,12 @@ fn generate_kotlin_module(
     out.push_str("class SyncularAppMutations internal constructor(\n");
     out.push_str("    private val client: SyncularNativeJsonClient,\n");
     out.push_str("    private val queued: Boolean = false,\n");
+    out.push_str("    private val leased: Boolean = false,\n");
     out.push_str(") {\n");
     for table in &user_tables {
         let type_name = singular_pascal_case(&table.name);
         out.push_str(&format!(
-            "    val {}: {type_name}Mutations get() = {type_name}Mutations(client, queued)\n",
+            "    val {}: {type_name}Mutations get() = {type_name}Mutations(client, queued, leased)\n",
             lower_camel_case(&table.name)
         ));
     }
@@ -9197,6 +9232,10 @@ fn generate_kotlin_module(
     out.push_str("    get() = SyncularAppMutations(this)\n\n");
     out.push_str("val SyncularNativeJsonClient.queuedMutations: SyncularAppMutations\n");
     out.push_str("    get() = SyncularAppMutations(this, queued = true)\n\n");
+    out.push_str("val SyncularNativeJsonClient.leasedMutations: SyncularAppMutations\n");
+    out.push_str("    get() = SyncularAppMutations(this, leased = true)\n\n");
+    out.push_str("val SyncularNativeJsonClient.queuedLeasedMutations: SyncularAppMutations\n");
+    out.push_str("    get() = SyncularAppMutations(this, queued = true, leased = true)\n\n");
     for table in &user_tables {
         let type_name = singular_pascal_case(&table.name);
         out.push_str(&format!(
@@ -9204,6 +9243,7 @@ fn generate_kotlin_module(
         ));
         out.push_str("    private val client: SyncularNativeJsonClient,\n");
         out.push_str("    private val queued: Boolean,\n");
+        out.push_str("    private val leased: Boolean,\n");
         out.push_str(") {\n");
         out.push_str(&format!(
             "    fun insert(input: New{type_name}, baseVersion: Long? = 0, localRowJson: String? = null): String {{\n"
@@ -9211,7 +9251,14 @@ fn generate_kotlin_module(
         out.push_str(&format!(
             "        val operation = SyncularAppOperations.new{type_name}(input, baseVersion)\n"
         ));
-        out.push_str("        return if (queued) client.enqueue(operation, localRowJson) else client.apply(operation, localRowJson)\n");
+        out.push_str("        return when {\n");
+        out.push_str(
+            "            queued && leased -> client.enqueueLeased(operation, localRowJson)\n",
+        );
+        out.push_str("            queued -> client.enqueue(operation, localRowJson)\n");
+        out.push_str("            leased -> client.applyLeased(operation, localRowJson)\n");
+        out.push_str("            else -> client.apply(operation, localRowJson)\n");
+        out.push_str("        }\n");
         out.push_str("    }\n\n");
         out.push_str(&format!(
             "    fun update(rowId: String, patch: {type_name}Patch, baseVersion: Long? = null, localRowJson: String? = null): String {{\n"
@@ -9219,15 +9266,25 @@ fn generate_kotlin_module(
         out.push_str(&format!(
             "        val operation = SyncularAppOperations.patch{type_name}(rowId, patch, baseVersion)\n"
         ));
-        out.push_str("        return if (queued) client.enqueue(operation, localRowJson) else client.apply(operation, localRowJson)\n");
+        out.push_str("        return when {\n");
+        out.push_str(
+            "            queued && leased -> client.enqueueLeased(operation, localRowJson)\n",
+        );
+        out.push_str("            queued -> client.enqueue(operation, localRowJson)\n");
+        out.push_str("            leased -> client.applyLeased(operation, localRowJson)\n");
+        out.push_str("            else -> client.apply(operation, localRowJson)\n");
+        out.push_str("        }\n");
         out.push_str("    }\n\n");
         out.push_str("    fun delete(rowId: String, baseVersion: Long? = null): String {\n");
         out.push_str(&format!(
             "        val operation = SyncularAppOperations.delete{type_name}(rowId, baseVersion)\n"
         ));
-        out.push_str(
-            "        return if (queued) client.enqueue(operation) else client.apply(operation)\n",
-        );
+        out.push_str("        return when {\n");
+        out.push_str("            queued && leased -> client.enqueueLeased(operation)\n");
+        out.push_str("            queued -> client.enqueue(operation)\n");
+        out.push_str("            leased -> client.applyLeased(operation)\n");
+        out.push_str("            else -> client.apply(operation)\n");
+        out.push_str("        }\n");
         out.push_str("    }\n");
         out.push_str("}\n\n");
     }
@@ -11006,6 +11063,8 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(swift.contains("manifest.storageBackend == \"diesel-sqlite\""));
         assert!(swift.contains("generated-json-local-operations"));
         assert!(swift.contains("generated-json-mutations"));
+        assert!(swift.contains("generated-json-leased-mutations"));
+        assert!(swift.contains("queued-json-leased-mutations"));
         assert!(swift.contains("read-only-query-json"));
         assert!(swift.contains("query-observer-events"));
         assert!(swift.contains("public struct NewTask"));
@@ -11057,7 +11116,9 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(swift.contains("public final class SyncularNativeLiveQuery"));
         assert!(swift.contains("public protocol SyncularNativeJsonClient"));
         assert!(swift.contains("func applyMutationJson(mutationJson: String"));
+        assert!(swift.contains("func applyLeasedMutationJson(mutationJson: String"));
         assert!(swift.contains("func enqueueMutationJson(mutationJson: String"));
+        assert!(swift.contains("func enqueueLeasedMutationJson(mutationJson: String"));
         assert!(!swift.contains("func applyLocalOperationJson"));
         assert!(swift.contains("func queryJson(requestJson: String"));
         assert!(swift.contains("func registerQueryJson(queryJson: String"));
@@ -11071,10 +11132,14 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(swift.contains("public func refresh(on client: SyncularNativeJsonClient"));
         assert!(swift.contains("public func refreshIfChanged(event: SyncularNativeEvent"));
         assert!(swift.contains("func apply(_ operation: SyncularGeneratedOperation"));
+        assert!(swift.contains("func applyLeased(_ operation: SyncularGeneratedOperation"));
+        assert!(swift.contains("func enqueueLeased(_ operation: SyncularGeneratedOperation"));
         assert!(swift.contains("public enum SyncularAppOperations"));
         assert!(swift.contains("public struct SyncularAppMutations"));
         assert!(swift.contains("var mutations: SyncularAppMutations"));
         assert!(swift.contains("var queuedMutations: SyncularAppMutations"));
+        assert!(swift.contains("var leasedMutations: SyncularAppMutations"));
+        assert!(swift.contains("var queuedLeasedMutations: SyncularAppMutations"));
         assert!(swift.contains("public var tasks: TaskMutations"));
         assert!(swift.contains("public struct TaskMutations"));
         assert!(swift.contains("public enum TaskQuery"));
@@ -11115,6 +11180,8 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(kotlin.contains("manifest.storageBackend == \"diesel-sqlite\""));
         assert!(kotlin.contains("generated-json-local-operations"));
         assert!(kotlin.contains("generated-json-mutations"));
+        assert!(kotlin.contains("generated-json-leased-mutations"));
+        assert!(kotlin.contains("queued-json-leased-mutations"));
         assert!(kotlin.contains("read-only-query-json"));
         assert!(kotlin.contains("query-observer-events"));
         assert!(kotlin.contains("data class NewTask"));
@@ -11165,7 +11232,9 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(kotlin.contains("class SyncularNativeLiveQuery<Row>"));
         assert!(kotlin.contains("interface SyncularNativeJsonClient"));
         assert!(kotlin.contains("fun applyMutationJson(mutationJson: String"));
+        assert!(kotlin.contains("fun applyLeasedMutationJson(mutationJson: String"));
         assert!(kotlin.contains("fun enqueueMutationJson(mutationJson: String"));
+        assert!(kotlin.contains("fun enqueueLeasedMutationJson(mutationJson: String"));
         assert!(!kotlin.contains("fun applyLocalOperationJson"));
         assert!(kotlin.contains("fun queryJson(requestJson: String): String"));
         assert!(kotlin.contains("fun registerQueryJson(queryJson: String): String"));
@@ -11178,10 +11247,18 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(kotlin.contains("fun refreshIfChanged(event: SyncularNativeEvent"));
         assert!(kotlin
             .contains("fun SyncularNativeJsonClient.apply(operation: SyncularGeneratedOperation"));
+        assert!(kotlin.contains(
+            "fun SyncularNativeJsonClient.applyLeased(operation: SyncularGeneratedOperation"
+        ));
+        assert!(kotlin.contains(
+            "fun SyncularNativeJsonClient.enqueueLeased(operation: SyncularGeneratedOperation"
+        ));
         assert!(kotlin.contains("object SyncularAppOperations"));
         assert!(kotlin.contains("class SyncularAppMutations"));
         assert!(kotlin.contains("val SyncularNativeJsonClient.mutations"));
         assert!(kotlin.contains("val SyncularNativeJsonClient.queuedMutations"));
+        assert!(kotlin.contains("val SyncularNativeJsonClient.leasedMutations"));
+        assert!(kotlin.contains("val SyncularNativeJsonClient.queuedLeasedMutations"));
         assert!(kotlin.contains("val tasks: TaskMutations"));
         assert!(kotlin.contains("class TaskMutations"));
         assert!(kotlin.contains("object TaskQuery"));
