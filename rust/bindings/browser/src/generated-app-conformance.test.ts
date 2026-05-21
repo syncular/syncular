@@ -17,14 +17,14 @@ import {
   taskSubscription,
 } from '../../../examples/todo-app/generated/typescript/syncular.generated';
 import {
+  createSyncularV2CommandHistory,
+  type SyncularV2CommandHistoryError,
+} from './command-history';
+import {
   createSyncularV2Commit,
   createSyncularV2Dialect,
   createSyncularV2Mutations,
 } from './database';
-import {
-  SyncularV2CommandHistoryError,
-  createSyncularV2CommandHistory,
-} from './command-history';
 import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './runtime-contract';
 import type { SyncularV2Client, SyncularV2LiveQueryEvent } from './types';
 
@@ -622,17 +622,17 @@ describe('generated app conformance', () => {
     expect(state.rows.has('projects:project-history-delete')).toBe(false);
 
     await mutations.comments.delete('comment-history-soft-delete');
-    expect(state.rows.get('comments:comment-history-soft-delete')?.deleted).toBe(
-      1
-    );
+    expect(
+      state.rows.get('comments:comment-history-soft-delete')?.deleted
+    ).toBe(1);
     await commandHistory.history.undoLast();
-    expect(state.rows.get('comments:comment-history-soft-delete')?.deleted).toBe(
-      0
-    );
+    expect(
+      state.rows.get('comments:comment-history-soft-delete')?.deleted
+    ).toBe(0);
     await commandHistory.history.redoLast();
-    expect(state.rows.get('comments:comment-history-soft-delete')?.deleted).toBe(
-      1
-    );
+    expect(
+      state.rows.get('comments:comment-history-soft-delete')?.deleted
+    ).toBe(1);
 
     await mutations.$commit(async (tx) => {
       await tx.tasks.update('task-history-batch-a', { completed: 1 });
@@ -841,17 +841,18 @@ function createCommandHistoryFakeState() {
 function commandHistoryFakeClient(
   state: ReturnType<typeof createCommandHistoryFakeState>
 ): SyncularV2Client & {
-  executeUnsafeSql<Row extends Record<string, unknown> = Record<string, unknown>>(
+  executeUnsafeSql<
+    Row extends Record<string, unknown> = Record<string, unknown>,
+  >(
     sql: string,
     params?: readonly unknown[]
   ): Promise<{ rows: Row[]; numAffectedRows?: number }>;
 } {
   return {
     ...fakeClient(),
-    async executeSql<Row extends Record<string, unknown> = Record<string, unknown>>(
-      sql: string,
-      params: readonly unknown[] = []
-    ) {
+    async executeSql<
+      Row extends Record<string, unknown> = Record<string, unknown>,
+    >(sql: string, params: readonly unknown[] = []) {
       const normalized = sql.toLowerCase();
       if (normalized.includes('from sync_command_history')) {
         const wantedState = params[0];
@@ -940,10 +941,7 @@ function commandHistoryFakeClient(
         const patch = objectRecordForTest(localRow ?? operation.payload);
         const tableConfig = syncularGeneratedTableConfig[operation.table];
         const serverVersionColumn = tableConfig?.serverVersionColumn;
-        if (
-          serverVersionColumn &&
-          patch[serverVersionColumn] === undefined
-        ) {
+        if (serverVersionColumn && patch[serverVersionColumn] === undefined) {
           patch[serverVersionColumn] =
             operation.base_version ?? existing[serverVersionColumn] ?? 0;
         }

@@ -33,7 +33,8 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     category: 'schema-mismatch',
     retryable: false,
     recommendedAction: 'regenerateClient',
-    message: 'The queued commit auth lease was issued for an incompatible schema.',
+    message:
+      'The queued commit auth lease was issued for an incompatible schema.',
   },
   'sync.auth_lease_scope_mismatch': {
     category: 'forbidden',

@@ -2099,8 +2099,11 @@ export function createConsoleRoutes<
     }),
     zValidator('query', debugExportQuerySchema),
     async (c) => {
-      const { partitionId: requestedPartitionId, limitCommits, limitEvents } =
-        c.req.valid('query');
+      const {
+        partitionId: requestedPartitionId,
+        limitCommits,
+        limitEvents,
+      } = c.req.valid('query');
       const { from, to } = c.req.valid('query');
       const partitionId = requestedPartitionId ?? 'default';
 

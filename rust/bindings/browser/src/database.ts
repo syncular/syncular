@@ -679,7 +679,9 @@ function requireLeasedMutationClient(
     );
   }
   if (typeof client.applyLeasedMutation !== 'function') {
-    throw new Error('Syncular leased mutations require applyLeasedMutation support');
+    throw new Error(
+      'Syncular leased mutations require applyLeasedMutation support'
+    );
   }
   return client as Required<
     Pick<SyncularV2Client, 'applyLeasedMutation' | 'applyLeasedMutationsCommit'>

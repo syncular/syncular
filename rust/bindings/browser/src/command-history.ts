@@ -397,7 +397,9 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
 class CommandHistoryStore<DB> {
   #ready: Promise<void> | undefined;
 
-  constructor(private readonly options: CreateSyncularV2CommandHistoryOptions<DB>) {}
+  constructor(
+    private readonly options: CreateSyncularV2CommandHistoryOptions<DB>
+  ) {}
 
   ensureReady(): Promise<void> {
     this.#ready ??= this.#ensureReady();
@@ -523,8 +525,12 @@ function decodeEntries(row: HistoryRow): CommandEntry[] {
   return entries;
 }
 
-function normalizeSnapshot(row: Record<string, unknown>): Record<string, unknown> {
-  return Object.fromEntries(Object.entries(row).sort(([a], [b]) => a.localeCompare(b)));
+function normalizeSnapshot(
+  row: Record<string, unknown>
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(row).sort(([a], [b]) => a.localeCompare(b))
+  );
 }
 
 function sameSnapshot(left: RowSnapshot, right: RowSnapshot): boolean {
@@ -537,7 +543,8 @@ function unsafeChangedFields(
 ): string[] {
   const unsafeFields = new Set<string>();
   for (const column of config.blobColumns ?? []) unsafeFields.add(column);
-  for (const field of config.encryptedFields ?? []) unsafeFields.add(field.field);
+  for (const field of config.encryptedFields ?? [])
+    unsafeFields.add(field.field);
   for (const field of config.crdtYjsFields ?? []) {
     unsafeFields.add(field.field);
     unsafeFields.add(field.stateColumn);

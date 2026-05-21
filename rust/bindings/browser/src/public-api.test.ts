@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import {
   createSyncularClient,
+  createSyncularRustSqliteDatabase,
   createSyncularV2Client,
   createSyncularV2CommandHistory,
-  createSyncularRustSqliteDatabase,
   createSyncularV2Database,
   getSyncularV2PackagedRuntimeArtifacts,
   resolveSyncularV2ClientConfig,
