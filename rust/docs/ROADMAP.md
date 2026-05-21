@@ -553,8 +553,11 @@ read-only review:
     outbox commits, and unresolved conflicts without attempting unsafe automatic
     repair. Blob/CRDT findings now cover invalid blob refs, failed blob
     uploads, and CRDT document metadata pointing at missing app rows without
-    pruning or rewriting metadata. Next: add explicit repair commands for safe
-    cases while keeping manual-inspection hazards read-only.
+    pruning or rewriting metadata. Safe repair commands now cover
+    `clearOrphanedState` and explicit `forceRebootstrap`; manual-inspection
+    hazards remain non-repairable. Runtime coverage proves those repairs do not
+    mutate app rows and produce a clean follow-up health report. Next: add
+    browser/WASM parity and an explicit larger reset/rebootstrap flow.
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)

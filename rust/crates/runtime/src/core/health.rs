@@ -42,6 +42,23 @@ pub struct LocalHealthFinding {
     pub details: BTreeMap<String, Value>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalHealthRepairRequest {
+    pub action: LocalHealthRepairAction,
+    #[serde(default)]
+    pub subscription_ids: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalHealthRepairReport {
+    pub action: LocalHealthRepairAction,
+    pub deleted_subscription_states: usize,
+    pub deleted_verified_roots: usize,
+    pub forced_rebootstrap_subscriptions: usize,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LocalHealthSeverity {
