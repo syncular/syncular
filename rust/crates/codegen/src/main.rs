@@ -6222,6 +6222,9 @@ fn generate_swift_module(
     );
     out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust native runtime is missing queued-json-leased-mutations\")\n");
     out.push_str("    }\n");
+    out.push_str("    guard manifest.capabilities.contains(\"auth-lease-issue\") else {\n");
+    out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust native runtime is missing auth-lease-issue\")\n");
+    out.push_str("    }\n");
     out.push_str("    guard manifest.capabilities.contains(\"read-only-query-json\") else {\n");
     out.push_str("        throw SyncularNativeGeneratedError.runtimeManifestMismatch(\"Rust native runtime is missing read-only-query-json\")\n");
     out.push_str("    }\n");
@@ -6378,6 +6381,48 @@ fn generate_swift_module(
     out.push_str("        encoder.outputFormatting = [.sortedKeys]\n");
     out.push_str("        return String(data: try encoder.encode(self), encoding: .utf8)!\n");
     out.push_str("    }\n");
+    out.push_str("}\n\n");
+    out.push_str("public struct SyncularAuthLeaseScope: Codable, Equatable {\n");
+    out.push_str("    public let subscriptionId: String\n");
+    out.push_str("    public let table: String\n");
+    out.push_str("    public let values: [String: SyncularJsonValue]\n");
+    out.push_str("    public let operations: [String]\n\n");
+    out.push_str("    public init(subscriptionId: String, table: String, values: [String: SyncularJsonValue], operations: [String]) {\n");
+    out.push_str("        self.subscriptionId = subscriptionId\n");
+    out.push_str("        self.table = table\n");
+    out.push_str("        self.values = values\n");
+    out.push_str("        self.operations = operations\n");
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
+    out.push_str("public struct SyncularAuthLeaseIssueRequest: Codable, Equatable {\n");
+    out.push_str("    public let schemaVersion: Int\n");
+    out.push_str("    public let ttlMs: Int64?\n");
+    out.push_str("    public let scopes: [SyncularAuthLeaseScope]\n\n");
+    out.push_str("    public init(schemaVersion: Int = syncularNativeGeneratedSchemaVersion, ttlMs: Int64? = nil, scopes: [SyncularAuthLeaseScope]) {\n");
+    out.push_str("        self.schemaVersion = schemaVersion\n");
+    out.push_str("        self.ttlMs = ttlMs\n");
+    out.push_str("        self.scopes = scopes\n");
+    out.push_str("    }\n\n");
+    out.push_str("    public func jsonString() throws -> String {\n");
+    out.push_str("        let encoder = JSONEncoder()\n");
+    out.push_str("        encoder.outputFormatting = [.sortedKeys]\n");
+    out.push_str("        return String(data: try encoder.encode(self), encoding: .utf8)!\n");
+    out.push_str("    }\n");
+    out.push_str("}\n\n");
+    out.push_str("public struct SyncularAuthLeaseRecord: Codable, Equatable {\n");
+    out.push_str("    public let leaseId: String\n");
+    out.push_str("    public let kid: String\n");
+    out.push_str("    public let actorId: String\n");
+    out.push_str("    public let issuedAtMs: Int64\n");
+    out.push_str("    public let notBeforeMs: Int64\n");
+    out.push_str("    public let expiresAtMs: Int64\n");
+    out.push_str("    public let schemaVersion: Int\n");
+    out.push_str("    public let payloadJson: String\n");
+    out.push_str("    public let token: String\n");
+    out.push_str("    public let status: String\n");
+    out.push_str("    public let lastValidationError: String?\n");
+    out.push_str("    public let createdAtMs: Int64\n");
+    out.push_str("    public let updatedAtMs: Int64\n");
     out.push_str("}\n\n");
     out.push_str("public func syncularSubscriptionsJson(_ subscriptions: [SyncularSubscriptionSpec]) throws -> String {\n");
     out.push_str("    let encoder = JSONEncoder()\n");
@@ -7060,6 +7105,7 @@ fn generate_swift_module(
     out.push_str("    func applyLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String\n");
     out.push_str("    func enqueueMutationJson(mutationJson: String, localRowJson: String?) throws -> String\n");
     out.push_str("    func enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String\n");
+    out.push_str("    func issueAuthLeaseJson(requestJson: String) throws -> String\n");
     if has_native_crdt {
         out.push_str("    func openCrdtFieldJson(requestJson: String) throws -> String\n");
         out.push_str("    func applyCrdtFieldTextJson(requestJson: String) throws -> String\n");
@@ -7117,6 +7163,10 @@ fn generate_swift_module(
     out.push_str("\n");
     out.push_str("    func enqueueLeased(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {\n");
     out.push_str("        try enqueueLeasedMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)\n");
+    out.push_str("    }\n");
+    out.push_str("\n");
+    out.push_str("    func issueAuthLease(_ request: SyncularAuthLeaseIssueRequest) throws -> SyncularAuthLeaseRecord {\n");
+    out.push_str("        try syncularDecodeJson(issueAuthLeaseJson(requestJson: request.jsonString()), as: SyncularAuthLeaseRecord.self)\n");
     out.push_str("    }\n");
     out.push_str("\n");
     out.push_str("    func diagnosticSnapshot() throws -> SyncularJsonValue {\n");
@@ -8026,6 +8076,7 @@ fn generate_kotlin_module(
     out.push_str("    require(manifest.capabilities.contains(\"generated-json-mutations\")) { \"Rust native runtime is missing generated-json-mutations\" }\n");
     out.push_str("    require(manifest.capabilities.contains(\"generated-json-leased-mutations\")) { \"Rust native runtime is missing generated-json-leased-mutations\" }\n");
     out.push_str("    require(manifest.capabilities.contains(\"queued-json-leased-mutations\")) { \"Rust native runtime is missing queued-json-leased-mutations\" }\n");
+    out.push_str("    require(manifest.capabilities.contains(\"auth-lease-issue\")) { \"Rust native runtime is missing auth-lease-issue\" }\n");
     out.push_str("    require(manifest.capabilities.contains(\"read-only-query-json\")) { \"Rust native runtime is missing read-only-query-json\" }\n");
     out.push_str("    require(manifest.capabilities.contains(\"query-observer-events\")) { \"Rust native runtime is missing query-observer-events\" }\n");
     if has_native_encrypted_crdt {
@@ -8099,6 +8150,73 @@ fn generate_kotlin_module(
     out.push_str("        \"bootstrapPhase\" to bootstrapPhase,\n");
     out.push_str("    )\n\n");
     out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
+    out.push_str("}\n\n");
+    out.push_str("data class SyncularAuthLeaseScope(\n");
+    out.push_str("    val subscriptionId: String,\n");
+    out.push_str("    val table: String,\n");
+    out.push_str("    val values: Map<String, Any?>,\n");
+    out.push_str("    val operations: List<String>,\n");
+    out.push_str(") {\n");
+    out.push_str("    fun toJsonValue(): Map<String, Any?> = linkedMapOf(\n");
+    out.push_str("        \"subscriptionId\" to subscriptionId,\n");
+    out.push_str("        \"table\" to table,\n");
+    out.push_str("        \"values\" to values,\n");
+    out.push_str("        \"operations\" to operations,\n");
+    out.push_str("    )\n\n");
+    out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
+    out.push_str("}\n\n");
+    out.push_str("data class SyncularAuthLeaseIssueRequest(\n");
+    out.push_str("    val schemaVersion: Int = syncularNativeGeneratedSchemaVersion,\n");
+    out.push_str("    val ttlMs: Long? = null,\n");
+    out.push_str("    val scopes: List<SyncularAuthLeaseScope>,\n");
+    out.push_str(") {\n");
+    out.push_str("    fun toJsonValue(): Map<String, Any?> = linkedMapOf(\n");
+    out.push_str("        \"schemaVersion\" to schemaVersion,\n");
+    out.push_str("        \"ttlMs\" to ttlMs,\n");
+    out.push_str("        \"scopes\" to scopes.map { it.toJsonValue() },\n");
+    out.push_str("    )\n\n");
+    out.push_str("    fun toJsonString(): String = syncularJsonValue(toJsonValue())\n");
+    out.push_str("}\n\n");
+    out.push_str("data class SyncularAuthLeaseRecord(\n");
+    out.push_str("    val leaseId: String,\n");
+    out.push_str("    val kid: String,\n");
+    out.push_str("    val actorId: String,\n");
+    out.push_str("    val issuedAtMs: Long,\n");
+    out.push_str("    val notBeforeMs: Long,\n");
+    out.push_str("    val expiresAtMs: Long,\n");
+    out.push_str("    val schemaVersion: Int,\n");
+    out.push_str("    val payloadJson: String,\n");
+    out.push_str("    val token: String,\n");
+    out.push_str("    val status: String,\n");
+    out.push_str("    val lastValidationError: String? = null,\n");
+    out.push_str("    val createdAtMs: Long,\n");
+    out.push_str("    val updatedAtMs: Long,\n");
+    out.push_str(")\n\n");
+    out.push_str(
+        "fun syncularDecodeAuthLeaseRecord(recordJson: String): SyncularAuthLeaseRecord {\n",
+    );
+    out.push_str(
+        "    val value = syncularGeneratedJson.parseToJsonElement(recordJson).jsonObject\n",
+    );
+    out.push_str("    return SyncularAuthLeaseRecord(\n");
+    out.push_str("        leaseId = value.syncularRequiredString(\"leaseId\"),\n");
+    out.push_str("        kid = value.syncularRequiredString(\"kid\"),\n");
+    out.push_str("        actorId = value.syncularRequiredString(\"actorId\"),\n");
+    out.push_str("        issuedAtMs = value.syncularRequiredLong(\"issuedAtMs\"),\n");
+    out.push_str("        notBeforeMs = value.syncularRequiredLong(\"notBeforeMs\"),\n");
+    out.push_str("        expiresAtMs = value.syncularRequiredLong(\"expiresAtMs\"),\n");
+    out.push_str(
+        "        schemaVersion = value.syncularRequiredLong(\"schemaVersion\").toInt(),\n",
+    );
+    out.push_str("        payloadJson = value.syncularRequiredString(\"payloadJson\"),\n");
+    out.push_str("        token = value.syncularRequiredString(\"token\"),\n");
+    out.push_str("        status = value.syncularRequiredString(\"status\"),\n");
+    out.push_str(
+        "        lastValidationError = value.syncularOptionalString(\"lastValidationError\"),\n",
+    );
+    out.push_str("        createdAtMs = value.syncularRequiredLong(\"createdAtMs\"),\n");
+    out.push_str("        updatedAtMs = value.syncularRequiredLong(\"updatedAtMs\"),\n");
+    out.push_str("    )\n");
     out.push_str("}\n\n");
     out.push_str(
         "fun syncularSubscriptionsJson(subscriptions: List<SyncularSubscriptionSpec>): String =\n",
@@ -8834,6 +8952,7 @@ fn generate_kotlin_module(
     out.push_str(
         "    fun enqueueLeasedMutationJson(mutationJson: String, localRowJson: String? = null): String\n",
     );
+    out.push_str("    fun issueAuthLeaseJson(requestJson: String): String\n");
     if has_native_crdt {
         out.push_str("    fun openCrdtFieldJson(requestJson: String): String\n");
         out.push_str("    fun applyCrdtFieldTextJson(requestJson: String): String\n");
@@ -8864,6 +8983,10 @@ fn generate_kotlin_module(
     out.push_str("    enqueueMutationJson(operation.toJsonString(), localRowJson)\n\n");
     out.push_str("fun SyncularNativeJsonClient.enqueueLeased(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =\n");
     out.push_str("    enqueueLeasedMutationJson(operation.toJsonString(), localRowJson)\n\n");
+    out.push_str("fun SyncularNativeJsonClient.issueAuthLease(request: SyncularAuthLeaseIssueRequest): SyncularAuthLeaseRecord =\n");
+    out.push_str(
+        "    syncularDecodeAuthLeaseRecord(issueAuthLeaseJson(request.toJsonString()))\n\n",
+    );
     out.push_str("fun SyncularNativeJsonClient.diagnosticSnapshot(): JsonObject =\n");
     out.push_str("    Json.parseToJsonElement(diagnosticSnapshotJson()).jsonObject\n\n");
     if has_native_crdt {
@@ -11067,12 +11190,15 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(swift.contains("generated-json-mutations"));
         assert!(swift.contains("generated-json-leased-mutations"));
         assert!(swift.contains("queued-json-leased-mutations"));
+        assert!(swift.contains("auth-lease-issue"));
         assert!(swift.contains("read-only-query-json"));
         assert!(swift.contains("query-observer-events"));
         assert!(swift.contains("public struct NewTask"));
         assert!(swift.contains("public struct TaskPatch"));
         assert!(swift.contains("public struct SyncularReadonlyQuery"));
         assert!(swift.contains("public struct SyncularSubscriptionSpec"));
+        assert!(swift.contains("public struct SyncularAuthLeaseIssueRequest"));
+        assert!(swift.contains("public struct SyncularAuthLeaseRecord"));
         assert!(swift.contains("public let bootstrapPhases: [String: Int64]"));
         assert!(swift.contains(
             "bootstrapPhase: syncularBootstrapPhase(args: args, table: \"tasks\", subscriptionId: \"sub-tasks\")"
@@ -11121,6 +11247,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(swift.contains("func applyLeasedMutationJson(mutationJson: String"));
         assert!(swift.contains("func enqueueMutationJson(mutationJson: String"));
         assert!(swift.contains("func enqueueLeasedMutationJson(mutationJson: String"));
+        assert!(swift.contains("func issueAuthLeaseJson(requestJson: String"));
         assert!(!swift.contains("func applyLocalOperationJson"));
         assert!(swift.contains("func queryJson(requestJson: String"));
         assert!(swift.contains("func registerQueryJson(queryJson: String"));
@@ -11136,6 +11263,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(swift.contains("func apply(_ operation: SyncularGeneratedOperation"));
         assert!(swift.contains("func applyLeased(_ operation: SyncularGeneratedOperation"));
         assert!(swift.contains("func enqueueLeased(_ operation: SyncularGeneratedOperation"));
+        assert!(swift.contains("func issueAuthLease(_ request: SyncularAuthLeaseIssueRequest"));
         assert!(swift.contains("public enum SyncularAppOperations"));
         assert!(swift.contains("public struct SyncularAppMutations"));
         assert!(swift.contains("var mutations: SyncularAppMutations"));
@@ -11184,12 +11312,15 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(kotlin.contains("generated-json-mutations"));
         assert!(kotlin.contains("generated-json-leased-mutations"));
         assert!(kotlin.contains("queued-json-leased-mutations"));
+        assert!(kotlin.contains("auth-lease-issue"));
         assert!(kotlin.contains("read-only-query-json"));
         assert!(kotlin.contains("query-observer-events"));
         assert!(kotlin.contains("data class NewTask"));
         assert!(kotlin.contains("data class TaskPatch"));
         assert!(kotlin.contains("data class SyncularReadonlyQuery"));
         assert!(kotlin.contains("data class SyncularSubscriptionSpec"));
+        assert!(kotlin.contains("data class SyncularAuthLeaseIssueRequest"));
+        assert!(kotlin.contains("data class SyncularAuthLeaseRecord"));
         assert!(kotlin.contains("val bootstrapPhases: Map<String, Long> = emptyMap()"));
         assert!(kotlin
             .contains("bootstrapPhase = syncularBootstrapPhase(args, \"tasks\", \"sub-tasks\")"));
@@ -11237,6 +11368,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(kotlin.contains("fun applyLeasedMutationJson(mutationJson: String"));
         assert!(kotlin.contains("fun enqueueMutationJson(mutationJson: String"));
         assert!(kotlin.contains("fun enqueueLeasedMutationJson(mutationJson: String"));
+        assert!(kotlin.contains("fun issueAuthLeaseJson(requestJson: String): String"));
         assert!(!kotlin.contains("fun applyLocalOperationJson"));
         assert!(kotlin.contains("fun queryJson(requestJson: String): String"));
         assert!(kotlin.contains("fun registerQueryJson(queryJson: String): String"));
@@ -11254,6 +11386,9 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         ));
         assert!(kotlin.contains(
             "fun SyncularNativeJsonClient.enqueueLeased(operation: SyncularGeneratedOperation"
+        ));
+        assert!(kotlin.contains(
+            "fun SyncularNativeJsonClient.issueAuthLease(request: SyncularAuthLeaseIssueRequest)"
         ));
         assert!(kotlin.contains("object SyncularAppOperations"));
         assert!(kotlin.contains("class SyncularAppMutations"));

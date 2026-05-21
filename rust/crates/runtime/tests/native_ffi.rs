@@ -14,8 +14,8 @@ use syncular_runtime::native_ffi::{
     syncular_native_client_close, syncular_native_client_compact_storage_json,
     syncular_native_client_diagnostic_snapshot_json,
     syncular_native_client_enqueue_process_blob_upload_queue,
-    syncular_native_client_join_presence_handle, syncular_native_client_list_table_json,
-    syncular_native_client_materialize_crdt_field_json,
+    syncular_native_client_issue_auth_lease_json, syncular_native_client_join_presence_handle,
+    syncular_native_client_list_table_json, syncular_native_client_materialize_crdt_field_json,
     syncular_native_client_observed_queries_json, syncular_native_client_open,
     syncular_native_client_open_async, syncular_native_client_open_async_close,
     syncular_native_client_open_async_command_id, syncular_native_client_open_async_finish_timeout,
@@ -93,6 +93,7 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
             "generated-json-leased-mutations",
             "queued-json-local-operations",
             "queued-json-leased-mutations",
+            "auth-lease-issue",
             "queued-yjs-updates",
             "queued-snapshot-refresh",
             "queued-storage-compaction",
@@ -206,6 +207,20 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
         &mut error
     ));
     assert!(error.is_null());
+
+    let invalid_lease_request = CString::new("{}").unwrap();
+    let issued_lease = syncular_native_client_issue_auth_lease_json(
+        handle,
+        invalid_lease_request.as_ptr(),
+        &mut error,
+    );
+    assert!(issued_lease.is_null());
+    let error_value: Value = serde_json::from_str(&take_string(error)).unwrap();
+    assert_eq!(error_value["kind"], "Protocol");
+    assert!(error_value["message"]
+        .as_str()
+        .unwrap()
+        .contains("missing field `schemaVersion`"));
 
     let encryption_config = CString::new(
         json!({

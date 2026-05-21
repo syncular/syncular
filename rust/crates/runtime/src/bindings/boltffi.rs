@@ -578,6 +578,10 @@ impl SyncularBoltClient {
         self.with_client_mut(|client| client.upsert_auth_lease_json(lease_json).map(|_| true))
     }
 
+    pub fn issue_auth_lease_json(&self, request_json: &str) -> Result<String, String> {
+        self.with_client_mut(|client| client.issue_auth_lease_json(request_json))
+    }
+
     pub fn auth_lease_json(&self, lease_id: &str) -> Result<String, String> {
         self.with_client_mut(|client| client.auth_lease_json(lease_id))
     }

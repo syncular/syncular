@@ -15,11 +15,12 @@ pub mod snapshot_chunk;
 pub mod snapshot_manifest;
 
 pub use auth_lease::{
-    AuthLeaseCapabilities, AuthLeasePayload, AuthLeaseProtectedHeader, AuthLeaseProvenance,
-    AuthLeaseScope, AuthLeaseValidationResult, AUTH_LEASE_ALG_ES256,
-    AUTH_LEASE_CODE_BUSINESS_REJECTED, AUTH_LEASE_CODE_EXPIRED, AUTH_LEASE_CODE_INVALID,
-    AUTH_LEASE_CODE_MISSING, AUTH_LEASE_CODE_SCHEMA_MISMATCH, AUTH_LEASE_CODE_SCOPE_MISMATCH,
-    AUTH_LEASE_CODE_SCOPE_REVOKED, AUTH_LEASE_TYP, AUTH_LEASE_VERSION,
+    AuthLeaseCapabilities, AuthLeaseIssueRequest, AuthLeaseIssueResponse, AuthLeasePayload,
+    AuthLeaseProtectedHeader, AuthLeaseProvenance, AuthLeaseScope, AuthLeaseValidationResult,
+    AUTH_LEASE_ALG_ES256, AUTH_LEASE_CODE_BUSINESS_REJECTED, AUTH_LEASE_CODE_EXPIRED,
+    AUTH_LEASE_CODE_INVALID, AUTH_LEASE_CODE_MISSING, AUTH_LEASE_CODE_SCHEMA_MISMATCH,
+    AUTH_LEASE_CODE_SCOPE_MISMATCH, AUTH_LEASE_CODE_SCOPE_REVOKED, AUTH_LEASE_PROTOCOL_VERSION,
+    AUTH_LEASE_TYP, AUTH_LEASE_VERSION,
 };
 pub use blob::{
     blob_hash, validate_blob_bytes, validate_blob_digest, validate_blob_hash,

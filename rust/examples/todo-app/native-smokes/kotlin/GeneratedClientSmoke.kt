@@ -38,6 +38,9 @@ private class MockNativeClient(private val imageJson: String? = null) : Syncular
         return "command-leased-kotlin"
     }
 
+    override fun issueAuthLeaseJson(requestJson: String): String =
+        """{"leaseId":"lease-kotlin","kid":"kotlin-key","actorId":"user-rust","issuedAtMs":1,"notBeforeMs":1,"expiresAtMs":60001,"schemaVersion":8,"payloadJson":"{}","token":"signed-kotlin-lease","status":"active","lastValidationError":null,"createdAtMs":1,"updatedAtMs":2}"""
+
     override fun diagnosticSnapshotJson(): String =
         """{"storage":{"backend":"mock"},"worker":{"running":false},"sync":{"pending":0},"outbox":{"pending":0},"blobs":{"pending":0},"events":{"running":false},"configuration":{"redacted":true}}"""
 

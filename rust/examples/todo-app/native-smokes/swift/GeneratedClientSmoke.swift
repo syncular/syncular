@@ -37,6 +37,10 @@ private final class MockNativeClient: SyncularNativeJsonClient {
         return "command-leased-swift"
     }
 
+    func issueAuthLeaseJson(requestJson: String) throws -> String {
+        #"{"leaseId":"lease-swift","kid":"swift-key","actorId":"user-rust","issuedAtMs":1,"notBeforeMs":1,"expiresAtMs":60001,"schemaVersion":8,"payloadJson":"{}","token":"signed-swift-lease","status":"active","lastValidationError":null,"createdAtMs":1,"updatedAtMs":2}"#
+    }
+
     func diagnosticSnapshotJson() throws -> String {
         #"{"storage":{"backend":"mock"},"worker":{"running":false},"sync":{"pending":0},"outbox":{"pending":0},"blobs":{"pending":0},"events":{"running":false},"configuration":{"redacted":true}}"#
     }

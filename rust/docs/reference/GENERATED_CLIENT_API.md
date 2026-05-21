@@ -57,6 +57,27 @@ auth lease covering the mutation scope. If no covering lease exists, the local
 row and outbox write are rolled back in the same SQLite transaction:
 
 ```rust
+use syncular_client::protocol::{AuthLeaseIssueRequest, AuthLeaseScope};
+
+let scope_values = serde_json::json!({
+    "user_id": "user-rust",
+    "project_id": "project-rust"
+})
+.as_object()
+.unwrap()
+.clone();
+
+let _lease = client.issue_auth_lease(&AuthLeaseIssueRequest {
+    schema_version: crate::generated::migrations::current_schema_version(),
+    ttl_ms: Some(15 * 60_000),
+    scopes: vec![AuthLeaseScope {
+        subscription_id: "sub-tasks".to_string(),
+        table: "tasks".to_string(),
+        values: scope_values,
+        operations: vec!["upsert".to_string(), "delete".to_string()],
+    }],
+})?;
+
 let leased = client.leased_mutations().tasks().insert(
     syncular::NewTask::with_generated_id(
         "Queue offline",
@@ -195,9 +216,16 @@ await database.leasedMutations.$commit(async (tx) => {
 ```
 
 Do not mark outbox commits with auth leases manually from app code. The browser
-client stores issued leases through `issueAuthLease(...)`, and generated leased
-mutations select lease provenance inside the same runtime transaction as the
-local write.
+client stores issued leases through `issueAuthLease(...)`. Rust/native hosts
+use `issue_auth_lease(...)`, `issue_auth_lease_json(...)`, or the generated
+Swift/Kotlin `issueAuthLease(...)` wrappers. Generated leased mutations select
+lease provenance inside the same runtime transaction as the local write.
+
+Leases expire and can be revoked server-side. Apps should renew before
+`expiresAtMs` approaches, and should treat `sync.auth_lease_expired`,
+`sync.auth_lease_scope_revoked`, and `sync.auth_lease_scope_mismatch` replay
+conflicts as user-visible recovery states. A stored lease records offline intent;
+it does not guarantee server acceptance after reconnect.
 
 For Yjs-backed fields, send `__yjs` envelopes or use the generic CRDT field
 runtime APIs. Do not set `title_yjs_state` in app mutations:
@@ -228,6 +256,21 @@ let tasks = try TaskQuery
     .filter(TaskQuery.userId.eq(actorId))
     .orderBy(TaskQuery.serverVersion.desc())
     .fetch(on: client)
+
+let _ = try client.issueAuthLease(SyncularAuthLeaseIssueRequest(
+    ttlMs: 15 * 60_000,
+    scopes: [
+        SyncularAuthLeaseScope(
+            subscriptionId: "sub-tasks",
+            table: "tasks",
+            values: [
+                "user_id": .string(actorId),
+                "project_id": projectId.map { .string($0) } ?? .null,
+            ],
+            operations: ["upsert", "delete"]
+        )
+    ]
+))
 
 let commandId = try client.queuedMutations.tasks.insert(NewTask(
     id: "task-ios",
@@ -275,6 +318,23 @@ val tasks = TaskQuery
     .filter(TaskQuery.userId.eq(actorId))
     .orderBy(TaskQuery.serverVersion.desc())
     .fetch(client)
+
+client.issueAuthLease(
+    SyncularAuthLeaseIssueRequest(
+        ttlMs = 15L * 60_000,
+        scopes = listOf(
+            SyncularAuthLeaseScope(
+                subscriptionId = "sub-tasks",
+                table = "tasks",
+                values = mapOf(
+                    "user_id" to actorId,
+                    "project_id" to projectId,
+                ),
+                operations = listOf("upsert", "delete"),
+            ),
+        ),
+    ),
+)
 
 val commandId = client.queuedMutations.tasks.insert(
     NewTask(

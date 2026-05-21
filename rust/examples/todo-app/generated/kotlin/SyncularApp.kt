@@ -36,6 +36,7 @@ fun assertSyncularNativeRuntimeManifest(manifest: SyncularNativeRuntimeManifest)
     require(manifest.capabilities.contains("generated-json-mutations")) { "Rust native runtime is missing generated-json-mutations" }
     require(manifest.capabilities.contains("generated-json-leased-mutations")) { "Rust native runtime is missing generated-json-leased-mutations" }
     require(manifest.capabilities.contains("queued-json-leased-mutations")) { "Rust native runtime is missing queued-json-leased-mutations" }
+    require(manifest.capabilities.contains("auth-lease-issue")) { "Rust native runtime is missing auth-lease-issue" }
     require(manifest.capabilities.contains("read-only-query-json")) { "Rust native runtime is missing read-only-query-json" }
     require(manifest.capabilities.contains("query-observer-events")) { "Rust native runtime is missing query-observer-events" }
     require(manifest.capabilities.contains("generic-crdt-field-api")) { "Rust native runtime is missing generic-crdt-field-api" }
@@ -111,6 +112,71 @@ data class SyncularSubscriptionSpec(
     )
 
     fun toJsonString(): String = syncularJsonValue(toJsonValue())
+}
+
+data class SyncularAuthLeaseScope(
+    val subscriptionId: String,
+    val table: String,
+    val values: Map<String, Any?>,
+    val operations: List<String>,
+) {
+    fun toJsonValue(): Map<String, Any?> = linkedMapOf(
+        "subscriptionId" to subscriptionId,
+        "table" to table,
+        "values" to values,
+        "operations" to operations,
+    )
+
+    fun toJsonString(): String = syncularJsonValue(toJsonValue())
+}
+
+data class SyncularAuthLeaseIssueRequest(
+    val schemaVersion: Int = syncularNativeGeneratedSchemaVersion,
+    val ttlMs: Long? = null,
+    val scopes: List<SyncularAuthLeaseScope>,
+) {
+    fun toJsonValue(): Map<String, Any?> = linkedMapOf(
+        "schemaVersion" to schemaVersion,
+        "ttlMs" to ttlMs,
+        "scopes" to scopes.map { it.toJsonValue() },
+    )
+
+    fun toJsonString(): String = syncularJsonValue(toJsonValue())
+}
+
+data class SyncularAuthLeaseRecord(
+    val leaseId: String,
+    val kid: String,
+    val actorId: String,
+    val issuedAtMs: Long,
+    val notBeforeMs: Long,
+    val expiresAtMs: Long,
+    val schemaVersion: Int,
+    val payloadJson: String,
+    val token: String,
+    val status: String,
+    val lastValidationError: String? = null,
+    val createdAtMs: Long,
+    val updatedAtMs: Long,
+)
+
+fun syncularDecodeAuthLeaseRecord(recordJson: String): SyncularAuthLeaseRecord {
+    val value = syncularGeneratedJson.parseToJsonElement(recordJson).jsonObject
+    return SyncularAuthLeaseRecord(
+        leaseId = value.syncularRequiredString("leaseId"),
+        kid = value.syncularRequiredString("kid"),
+        actorId = value.syncularRequiredString("actorId"),
+        issuedAtMs = value.syncularRequiredLong("issuedAtMs"),
+        notBeforeMs = value.syncularRequiredLong("notBeforeMs"),
+        expiresAtMs = value.syncularRequiredLong("expiresAtMs"),
+        schemaVersion = value.syncularRequiredLong("schemaVersion").toInt(),
+        payloadJson = value.syncularRequiredString("payloadJson"),
+        token = value.syncularRequiredString("token"),
+        status = value.syncularRequiredString("status"),
+        lastValidationError = value.syncularOptionalString("lastValidationError"),
+        createdAtMs = value.syncularRequiredLong("createdAtMs"),
+        updatedAtMs = value.syncularRequiredLong("updatedAtMs"),
+    )
 }
 
 fun syncularSubscriptionsJson(subscriptions: List<SyncularSubscriptionSpec>): String =
@@ -830,6 +896,7 @@ interface SyncularNativeJsonClient {
     fun applyLeasedMutationJson(mutationJson: String, localRowJson: String? = null): String
     fun enqueueMutationJson(mutationJson: String, localRowJson: String? = null): String
     fun enqueueLeasedMutationJson(mutationJson: String, localRowJson: String? = null): String
+    fun issueAuthLeaseJson(requestJson: String): String
     fun openCrdtFieldJson(requestJson: String): String
     fun applyCrdtFieldTextJson(requestJson: String): String
     fun applyCrdtFieldYjsUpdateJson(requestJson: String): String
@@ -856,6 +923,9 @@ fun SyncularNativeJsonClient.enqueue(operation: SyncularGeneratedOperation, loca
 
 fun SyncularNativeJsonClient.enqueueLeased(operation: SyncularGeneratedOperation, localRowJson: String? = null): String =
     enqueueLeasedMutationJson(operation.toJsonString(), localRowJson)
+
+fun SyncularNativeJsonClient.issueAuthLease(request: SyncularAuthLeaseIssueRequest): SyncularAuthLeaseRecord =
+    syncularDecodeAuthLeaseRecord(issueAuthLeaseJson(request.toJsonString()))
 
 fun SyncularNativeJsonClient.diagnosticSnapshot(): JsonObject =
     Json.parseToJsonElement(diagnosticSnapshotJson()).jsonObject

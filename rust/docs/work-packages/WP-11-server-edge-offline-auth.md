@@ -49,15 +49,16 @@ per-operation signed-scope/current-scope validation, strict Rust generated
 leased mutations, native binding leased mutations, and browser generated/Kysely
 leased mutations. Native JSON, C FFI, BoltFFI, Swift, Kotlin, Java, browser
 worker, and browser Rust-owned SQLite now have strict leased mutation entry
-points. Leases remain offline intent/audit records only; they do not bypass
-normal reconnect authorization.
+points. Browser and Rust/native hosts now have first-class auth lease issue
+APIs that post through the normal auth transport, validate/store the returned
+signed lease, and feed generated leased mutations. Leases remain offline
+intent/audit records only; they do not bypass normal reconnect authorization.
 
 ## Next Action
 
-Next narrow slice is native/Rust host-facing lease issue ergonomics and
-expiry/revocation UX guidance. Browser hosts now have `issueAuthLease(...)`
-backed by the normal auth lifecycle. Do not add manual outbox lease marking to
-app-facing APIs.
+Next narrow slice is expiry/revocation app UX validation and server/proxy
+sequencing. Do not add manual outbox lease marking to app-facing APIs; generated
+leased mutations must keep selecting stored lease provenance transactionally.
 
 ## Progress
 
@@ -183,6 +184,21 @@ app-facing APIs.
 - Added browser/Hono app-style coverage proving stale auth refreshes during
   auth lease issue, the refreshed lease is stored, a generated leased mutation
   can use it locally, and server replay accepts the signed lease on push.
+- Added Rust protocol issue request/response structs and an `AUTH_LEASE_PROTOCOL_VERSION`
+  constant matching the TypeScript core schema.
+- Added native HTTP auth lease issue through `HttpSyncTransport`, using the same
+  dynamic auth headers/signing path as `/sync` and posting to
+  `/auth-leases/issue`.
+- Added `SyncularClient::issue_auth_lease(...)` /
+  `issue_auth_lease_json(...)`, converting a valid issue response into a stored
+  active `AuthLeaseRecord` before returning it to host code.
+- Added native facade, C FFI, BoltFFI, Java, Swift, and Kotlin issue methods.
+  Generated Swift/Kotlin clients now include typed `SyncularAuthLeaseIssueRequest`,
+  `SyncularAuthLeaseScope`, `SyncularAuthLeaseRecord`, and `issueAuthLease(...)`
+  helpers.
+- Documented Rust, Swift, and Kotlin lease issue usage plus expiry/revocation
+  recovery guidance in
+  [`../reference/GENERATED_CLIENT_API.md`](../reference/GENERATED_CLIENT_API.md).
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol -p
   syncular-testkit` passed with `15` protocol tests and `36` testkit smoke
   tests.
@@ -288,6 +304,19 @@ app-facing APIs.
   auth lease issue/storage worker coverage.
 - Gate: `bun test rust/bindings/browser/src/__tests__/auth-hono.wasm.test.ts`
   passed with the real Hono auth lease issue + leased mutation push flow.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+  passed after adding generated Swift/Kotlin auth lease issue helpers.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
+  passed after adding Rust auth lease issue protocol structs.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime
+  --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test
+  native_facade --test native_ffi --test native_binding_scaffold` passed after
+  native/Rust auth lease issue implementation and binding regeneration.
+- Gate: `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime
+  --no-default-features --features native,crdt-yjs,boltffi-bindings` passed for
+  the Notsuru-style native feature profile.
+- Gate: `bash rust/examples/todo-app/native-smokes/run-local.sh` passed after
+  regenerating the Swift/Kotlin/Java BoltFFI and generated app surfaces.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   store_backends` passed with `36` tests after the local lease storage slice.
 - Gate: `bun run rust:conformance:fast` passed after the protocol/testkit

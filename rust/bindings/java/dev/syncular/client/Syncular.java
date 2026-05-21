@@ -1008,6 +1008,7 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_repair_local_health_json(long handle, byte[] requestJson);
     static native byte[] boltffi_syncular_bolt_client_outbox_summaries_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_upsert_auth_lease_json(long handle, byte[] leaseJson);
+    static native byte[] boltffi_syncular_bolt_client_issue_auth_lease_json(long handle, byte[] requestJson);
     static native byte[] boltffi_syncular_bolt_client_auth_lease_json(long handle, byte[] leaseId);
     static native byte[] boltffi_syncular_bolt_client_active_auth_leases_json(long handle, ByteBuffer actorId, long nowMs);
     static native byte[] boltffi_syncular_bolt_client_set_outbox_auth_lease_json(long handle, byte[] clientCommitId, ByteBuffer provenanceJson);

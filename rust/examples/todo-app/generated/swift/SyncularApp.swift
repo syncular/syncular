@@ -61,6 +61,9 @@ public func assertSyncularNativeRuntimeManifest(_ manifest: SyncularNativeRuntim
     guard manifest.capabilities.contains("queued-json-leased-mutations") else {
         throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust native runtime is missing queued-json-leased-mutations")
     }
+    guard manifest.capabilities.contains("auth-lease-issue") else {
+        throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust native runtime is missing auth-lease-issue")
+    }
     guard manifest.capabilities.contains("read-only-query-json") else {
         throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust native runtime is missing read-only-query-json")
     }
@@ -215,6 +218,54 @@ public struct SyncularSubscriptionSpec: Codable, Equatable {
         encoder.outputFormatting = [.sortedKeys]
         return String(data: try encoder.encode(self), encoding: .utf8)!
     }
+}
+
+public struct SyncularAuthLeaseScope: Codable, Equatable {
+    public let subscriptionId: String
+    public let table: String
+    public let values: [String: SyncularJsonValue]
+    public let operations: [String]
+
+    public init(subscriptionId: String, table: String, values: [String: SyncularJsonValue], operations: [String]) {
+        self.subscriptionId = subscriptionId
+        self.table = table
+        self.values = values
+        self.operations = operations
+    }
+}
+
+public struct SyncularAuthLeaseIssueRequest: Codable, Equatable {
+    public let schemaVersion: Int
+    public let ttlMs: Int64?
+    public let scopes: [SyncularAuthLeaseScope]
+
+    public init(schemaVersion: Int = syncularNativeGeneratedSchemaVersion, ttlMs: Int64? = nil, scopes: [SyncularAuthLeaseScope]) {
+        self.schemaVersion = schemaVersion
+        self.ttlMs = ttlMs
+        self.scopes = scopes
+    }
+
+    public func jsonString() throws -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.sortedKeys]
+        return String(data: try encoder.encode(self), encoding: .utf8)!
+    }
+}
+
+public struct SyncularAuthLeaseRecord: Codable, Equatable {
+    public let leaseId: String
+    public let kid: String
+    public let actorId: String
+    public let issuedAtMs: Int64
+    public let notBeforeMs: Int64
+    public let expiresAtMs: Int64
+    public let schemaVersion: Int
+    public let payloadJson: String
+    public let token: String
+    public let status: String
+    public let lastValidationError: String?
+    public let createdAtMs: Int64
+    public let updatedAtMs: Int64
 }
 
 public func syncularSubscriptionsJson(_ subscriptions: [SyncularSubscriptionSpec]) throws -> String {
@@ -968,6 +1019,7 @@ public protocol SyncularNativeJsonClient {
     func applyLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String
     func enqueueMutationJson(mutationJson: String, localRowJson: String?) throws -> String
     func enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String
+    func issueAuthLeaseJson(requestJson: String) throws -> String
     func openCrdtFieldJson(requestJson: String) throws -> String
     func applyCrdtFieldTextJson(requestJson: String) throws -> String
     func applyCrdtFieldYjsUpdateJson(requestJson: String) throws -> String
@@ -998,6 +1050,10 @@ public extension SyncularNativeJsonClient {
 
     func enqueueLeased(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {
         try enqueueLeasedMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)
+    }
+
+    func issueAuthLease(_ request: SyncularAuthLeaseIssueRequest) throws -> SyncularAuthLeaseRecord {
+        try syncularDecodeJson(issueAuthLeaseJson(requestJson: request.jsonString()), as: SyncularAuthLeaseRecord.self)
     }
 
     func diagnosticSnapshot() throws -> SyncularJsonValue {

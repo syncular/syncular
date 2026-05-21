@@ -34,6 +34,9 @@ private class BoltNativeClient(
     override fun enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?): String =
         client.enqueueLeasedMutationJson(mutationJson, localRowJson)
 
+    override fun issueAuthLeaseJson(requestJson: String): String =
+        client.issueAuthLeaseJson(requestJson)
+
     override fun diagnosticSnapshotJson(): String =
         client.diagnosticSnapshotJson()
 

@@ -438,8 +438,12 @@ read-only review:
     can now call `client.issueAuthLease(...)`, which posts to
     `/auth-leases/issue`, uses normal auth refresh on `401`/`403`, stores the
     signed lease, and is covered by a real Hono leased mutation replay test.
-    Remaining WP-11 gap: native/Rust lease issue ergonomics and sharper
-    expiry/revocation UX guidance.
+    Rust/native hosts now have the same first-class issue path through
+    `HttpSyncTransport::issue_auth_lease`, `SyncularClient::issue_auth_lease`,
+    native JSON, C FFI, BoltFFI, Java, and generated Swift/Kotlin typed
+    `issueAuthLease(...)` helpers. Remaining WP-11 work is server/proxy
+    sequencing and broader app UX validation for lease expiry/revocation, not
+    missing client foundation.
 - `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus
