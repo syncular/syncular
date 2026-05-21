@@ -194,8 +194,14 @@ pages. Row investigation uses that explicit metadata to classify revoked
 subscription evidence without relying on payload snapshots or app-table
 inference.
 
-Next: add stronger recovery drilldowns only when the server persists that
-evidence explicitly. Do not infer missing-row causes from app tables or add
+Row investigation also summarizes request-event success and rejection evidence
+for the selected table: latest response status/error code, success versus
+non-success counts, and latest success/non-success request ids. This gives a
+durable recovery/rejection hint from persisted server metadata without payload
+capture.
+
+Next: add artifact/realtime recovery drilldowns only when the server persists
+that evidence explicitly. Do not infer missing-row causes from app tables or add
 payload capture by default.
 
 ## Progress
@@ -270,6 +276,10 @@ payload capture by default.
   responses. The summary stores only counts and lets row investigation surface
   explicit revoked-subscription evidence with a stable `subscription.revoked`
   finding.
+- Added row-investigation `requestEvidence` from persisted request events,
+  including latest response status/error code, success and non-success counts,
+  and latest success/non-success request ids. The console page now shows this as
+  a separate request evidence card.
 - Generated OpenAPI types/docs for the row investigation endpoint so the
   console consumes it through the normal transport contract.
 - Gates:
@@ -281,5 +291,10 @@ payload capture by default.
   `bun run --cwd packages/server-dialect-sqlite tsgo`, and
   `bun run --cwd packages/server-dialect-postgres tsgo` passed after the
   response-summary slice.
+- Gates:
+  `bun test packages/server-hono/src/__tests__/console-routes.test.ts`,
+  `bun run --cwd packages/server-hono tsgo`, and
+  `bun run --cwd packages/console tsgo` passed after the request-evidence
+  slice.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
   passed with `33` smoke tests after the diagnostic assertion slice.

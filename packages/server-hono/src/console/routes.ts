@@ -108,6 +108,7 @@ import {
   ConsoleRowHistoryResponseSchema,
   type ConsoleRowInvestigationClient,
   type ConsoleRowInvestigationFinding,
+  type ConsoleRowInvestigationRequestEvidence,
   type ConsoleRowInvestigationResponse,
   ConsoleRowInvestigationResponseSchema,
   type ConsoleRowInvestigationScopeEligibility,
@@ -347,6 +348,36 @@ function summarizeSubscriptionEvidence(
     latestSubscriptionCount: latest?.subscriptionCount ?? null,
     requestedTableObserved: events.length > 0,
     observedScopeKeys: Array.from(observedScopeKeys).sort(),
+  };
+}
+
+function summarizeRequestEvidence(
+  events: readonly ConsoleRequestEvent[]
+): ConsoleRowInvestigationRequestEvidence {
+  const latest = events[0] ?? null;
+  const successEvents = events.filter(
+    (event) => event.responseStatus === 'success'
+  );
+  const nonSuccessEvents = events.filter(
+    (event) => event.responseStatus !== 'success'
+  );
+  const latestSuccess = successEvents[0] ?? null;
+  const latestNonSuccess = nonSuccessEvents[0] ?? null;
+
+  return {
+    matchingEventCount: events.length,
+    successEventCount: successEvents.length,
+    nonSuccessEventCount: nonSuccessEvents.length,
+    latestEventId: latest?.eventId ?? null,
+    latestRequestId: latest?.requestId ?? null,
+    latestOutcome: latest?.outcome ?? null,
+    latestResponseStatus: latest?.responseStatus ?? null,
+    latestErrorCode: latest?.errorCode ?? null,
+    latestErrorMessage: latest?.errorMessage ?? null,
+    latestSuccessRequestId: latestSuccess?.requestId ?? null,
+    latestNonSuccessRequestId: latestNonSuccess?.requestId ?? null,
+    latestNonSuccessResponseStatus: latestNonSuccess?.responseStatus ?? null,
+    latestNonSuccessErrorCode: latestNonSuccess?.errorCode ?? null,
   };
 }
 
@@ -2367,6 +2398,7 @@ export function createConsoleRoutes<
         .slice(0, limit);
       const subscriptionEvidence =
         summarizeSubscriptionEvidence(relevantEvents);
+      const requestEvidence = summarizeRequestEvidence(relevantEvents);
 
       const latestClientEvent = relevantEvents.find(
         (event) => !clientId || event.clientId === clientId
@@ -2496,6 +2528,7 @@ export function createConsoleRoutes<
         client,
         scopeEligibility,
         subscriptionEvidence,
+        requestEvidence,
         history,
         relevantEvents,
         findings,

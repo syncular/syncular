@@ -2147,6 +2147,21 @@ export interface operations {
                             requestedTableObserved: boolean;
                             observedScopeKeys: string[];
                         };
+                        requestEvidence: {
+                            matchingEventCount: number;
+                            successEventCount: number;
+                            nonSuccessEventCount: number;
+                            latestEventId: number | null;
+                            latestRequestId: string | null;
+                            latestOutcome: string | null;
+                            latestResponseStatus: string | null;
+                            latestErrorCode: string | null;
+                            latestErrorMessage: string | null;
+                            latestSuccessRequestId: string | null;
+                            latestNonSuccessRequestId: string | null;
+                            latestNonSuccessResponseStatus: string | null;
+                            latestNonSuccessErrorCode: string | null;
+                        };
                         history: {
                             commitSeq: number;
                             actorId: string;

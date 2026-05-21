@@ -168,6 +168,26 @@ export type ConsoleRowInvestigationSubscriptionEvidence = z.infer<
   typeof ConsoleRowInvestigationSubscriptionEvidenceSchema
 >;
 
+export const ConsoleRowInvestigationRequestEvidenceSchema = z.object({
+  matchingEventCount: z.number().int().nonnegative(),
+  successEventCount: z.number().int().nonnegative(),
+  nonSuccessEventCount: z.number().int().nonnegative(),
+  latestEventId: z.number().int().nullable(),
+  latestRequestId: z.string().nullable(),
+  latestOutcome: z.string().nullable(),
+  latestResponseStatus: z.string().nullable(),
+  latestErrorCode: z.string().nullable(),
+  latestErrorMessage: z.string().nullable(),
+  latestSuccessRequestId: z.string().nullable(),
+  latestNonSuccessRequestId: z.string().nullable(),
+  latestNonSuccessResponseStatus: z.string().nullable(),
+  latestNonSuccessErrorCode: z.string().nullable(),
+});
+
+export type ConsoleRowInvestigationRequestEvidence = z.infer<
+  typeof ConsoleRowInvestigationRequestEvidenceSchema
+>;
+
 export const ConsoleRequestEventResponseSummarySchema = z
   .object({
     subscriptionCount: z.number().int().nonnegative().optional(),
@@ -359,6 +379,7 @@ export const ConsoleRowInvestigationResponseSchema = z.object({
   client: ConsoleRowInvestigationClientSchema.nullable(),
   scopeEligibility: ConsoleRowInvestigationScopeEligibilitySchema,
   subscriptionEvidence: ConsoleRowInvestigationSubscriptionEvidenceSchema,
+  requestEvidence: ConsoleRowInvestigationRequestEvidenceSchema,
   history: z.array(ConsoleRowHistoryEntrySchema),
   relevantEvents: z.array(ConsoleRequestEventSchema),
   findings: z.array(ConsoleRowInvestigationFindingSchema),
