@@ -152,6 +152,7 @@ pub enum NativeEventKind {
     ConflictsChanged,
     PresenceChanged,
     BlobUploadsChanged,
+    Diagnostic,
     EventsOverflowed,
 }
 
@@ -1392,6 +1393,11 @@ impl NativeSyncularClient {
             options.immediate.unwrap_or(false),
             options.cache_local.unwrap_or(true),
         )?;
+        self.events.push_diagnostic(blob_store_diagnostic(
+            &blob,
+            options.immediate.unwrap_or(false),
+            options.cache_local.unwrap_or(true),
+        ));
         Ok(serde_json::to_string(&blob)?)
     }
 
@@ -1411,18 +1417,39 @@ impl NativeSyncularClient {
             .transpose()?
             .unwrap_or_default();
         let blob: BlobRef = serde_json::from_str(ref_json)?;
-        self.writer
-            .retrieve_blob_file(&blob, Path::new(path), options.cache_local.unwrap_or(true))
+        let was_local = self.writer.is_blob_local(&blob.hash).unwrap_or(false);
+        match self.writer.retrieve_blob_file(
+            &blob,
+            Path::new(path),
+            options.cache_local.unwrap_or(true),
+        ) {
+            Ok(()) => {
+                self.events
+                    .push_diagnostic(blob_cache_retrieve_diagnostic(&blob, was_local));
+                Ok(())
+            }
+            Err(error) => {
+                self.events
+                    .push_diagnostic(blob_download_failed_diagnostic(&blob, &error));
+                Err(error)
+            }
+        }
     }
 
     pub fn is_blob_local(&mut self, hash: &str) -> Result<bool> {
-        self.writer.is_blob_local(hash)
+        let local = self.writer.is_blob_local(hash)?;
+        self.events
+            .push_diagnostic(blob_cache_lookup_diagnostic(hash, local));
+        Ok(local)
     }
 
     pub fn process_blob_upload_queue_json(&mut self) -> Result<String> {
-        Ok(serde_json::to_string(
-            &self.writer.process_blob_upload_queue()?,
-        )?)
+        let result = self.writer.process_blob_upload_queue()?;
+        self.events
+            .push_diagnostic(blob_upload_queue_processed_diagnostic(
+                serde_json::to_value(&result)?,
+            ));
+        Ok(serde_json::to_string(&result)?)
     }
 
     pub fn blob_upload_queue_stats_json(&mut self) -> Result<String> {
@@ -1436,11 +1463,16 @@ impl NativeSyncularClient {
     }
 
     pub fn prune_blob_cache(&mut self, max_bytes: i64) -> Result<i64> {
-        self.writer.prune_blob_cache(max_bytes)
+        let pruned_bytes = self.writer.prune_blob_cache(max_bytes)?;
+        self.events
+            .push_diagnostic(blob_cache_pruned_diagnostic(pruned_bytes, Some(max_bytes)));
+        Ok(pruned_bytes)
     }
 
     pub fn clear_blob_cache(&mut self) -> Result<()> {
-        self.writer.clear_blob_cache()
+        self.writer.clear_blob_cache()?;
+        self.events.push_diagnostic(blob_cache_cleared_diagnostic());
+        Ok(())
     }
 
     pub fn compact_storage_json(&mut self, options_json: Option<&str>) -> Result<String> {
@@ -2139,6 +2171,10 @@ impl NativeEventHub {
 
     fn push_rows_changed_events<'a>(&self, tables: impl IntoIterator<Item = &'a str>) {
         self.push_rows_changed_events_with_details(tables, Vec::new(), None);
+    }
+
+    fn push_diagnostic(&self, diagnostic: NativeDiagnostic) {
+        self.publish_event(diagnostic_event(diagnostic));
     }
 
     fn push_rows_changed_events_with_details<'a>(
@@ -3636,26 +3672,122 @@ fn snapshot_ready_event(command_id: String, payload_json: Value, duration_ms: u6
     event
 }
 
+fn worker_command_completed_diagnostic(
+    command_id: &str,
+    operation: &str,
+    payload_json: Option<&Value>,
+    duration_ms: u64,
+) -> NativeDiagnostic {
+    let mut details = vec![
+        ("commandId", json!(command_id)),
+        ("operation", json!(operation)),
+        ("durationMs", json!(duration_ms)),
+    ];
+    if let Some(payload_json) = payload_json {
+        details.push(("payload", payload_json.clone()));
+    }
+    let (source, code, message, level) = match operation {
+        "processBlobUploadQueue" => {
+            let failed = payload_json
+                .and_then(|payload| payload.get("failed"))
+                .and_then(Value::as_i64)
+                .unwrap_or_default();
+            (
+                "blob",
+                "blob.upload_queue_processed",
+                "Native Syncular blob upload queue processed",
+                if failed > 0 { "warn" } else { "info" },
+            )
+        }
+        "pruneBlobCache" => (
+            "blob",
+            "blob.cache_pruned",
+            "Native Syncular blob cache pruned",
+            "info",
+        ),
+        "clearBlobCache" => (
+            "blob",
+            "blob.cache_cleared",
+            "Native Syncular blob cache cleared",
+            "info",
+        ),
+        "retrieveBlobFile" => (
+            "blob",
+            "blob.download_completed",
+            "Native Syncular blob file retrieved",
+            "info",
+        ),
+        "storeBlobFile" => (
+            "blob",
+            "blob.store_queued",
+            "Native Syncular blob file stored through worker",
+            "info",
+        ),
+        _ => (
+            "worker",
+            "worker.command_completed",
+            "Native Syncular worker command completed",
+            "info",
+        ),
+    };
+    native_diagnostic(level, source, code, message, details)
+}
+
+fn worker_command_failed_diagnostic(
+    operation: &str,
+    details: Vec<(&'static str, Value)>,
+) -> NativeDiagnostic {
+    let (source, code, message) = match operation {
+        "retrieveBlobFile" => (
+            "blob",
+            "blob.download_failed",
+            "Native Syncular blob file retrieval failed",
+        ),
+        "processBlobUploadQueue" => (
+            "blob",
+            "blob.upload_failed",
+            "Native Syncular blob upload queue processing failed",
+        ),
+        "pruneBlobCache" => (
+            "blob",
+            "blob.cache_prune_failed",
+            "Native Syncular blob cache pruning failed",
+        ),
+        "clearBlobCache" => (
+            "blob",
+            "blob.cache_clear_failed",
+            "Native Syncular blob cache clearing failed",
+        ),
+        "storeBlobFile" => (
+            "blob",
+            "blob.store_failed",
+            "Native Syncular blob file storage failed",
+        ),
+        _ => (
+            "worker",
+            "worker.command_failed",
+            "Native Syncular worker command failed",
+        ),
+    };
+    native_diagnostic("error", source, code, message, details)
+}
+
 fn worker_command_completed_event(
     command_id: String,
     operation: &str,
     payload_json: Option<Value>,
     duration_ms: u64,
 ) -> NativeEvent {
+    let diagnostic = worker_command_completed_diagnostic(
+        &command_id,
+        operation,
+        payload_json.as_ref(),
+        duration_ms,
+    );
     let mut event = native_event(
         NativeEventKind::WorkerCommandCompleted,
         Vec::new(),
-        Some(native_diagnostic(
-            "info",
-            "worker",
-            "worker.command_completed",
-            "Native Syncular worker command completed",
-            [
-                ("commandId", json!(command_id.clone())),
-                ("operation", json!(operation)),
-                ("durationMs", json!(duration_ms)),
-            ],
-        )),
+        Some(diagnostic),
     );
     event.command_id = Some(command_id);
     event.payload_json = payload_json;
@@ -3675,13 +3807,7 @@ fn worker_command_failed_event(
         ("durationMs", json!(duration_ms)),
     ];
     push_native_error_details(&mut details, error);
-    let diagnostic = native_diagnostic(
-        "error",
-        "worker",
-        "worker.command_failed",
-        "Native Syncular worker command failed",
-        details,
-    );
+    let diagnostic = worker_command_failed_diagnostic(operation, details);
     let mut event = native_event(
         NativeEventKind::WorkerCommandFailed,
         Vec::new(),
@@ -3755,6 +3881,130 @@ fn native_event(
         lifecycle: None,
         payload_json: None,
     }
+}
+
+fn diagnostic_event(diagnostic: NativeDiagnostic) -> NativeEvent {
+    native_event(NativeEventKind::Diagnostic, Vec::new(), Some(diagnostic))
+}
+
+fn blob_store_diagnostic(blob: &BlobRef, immediate: bool, cache_local: bool) -> NativeDiagnostic {
+    let mut details = blob_ref_details(blob);
+    details.push(("immediate", json!(immediate)));
+    details.push(("cacheLocal", json!(cache_local)));
+    native_diagnostic(
+        "info",
+        "blob",
+        if immediate {
+            "blob.upload_completed"
+        } else {
+            "blob.store_queued"
+        },
+        if immediate {
+            "Native Syncular blob stored and uploaded"
+        } else {
+            "Native Syncular blob stored and queued for upload"
+        },
+        details,
+    )
+}
+
+fn blob_cache_lookup_diagnostic(hash: &str, local: bool) -> NativeDiagnostic {
+    native_diagnostic(
+        "debug",
+        "blob",
+        if local {
+            "blob.cache_hit"
+        } else {
+            "blob.cache_miss"
+        },
+        if local {
+            "Native Syncular blob is available in local cache"
+        } else {
+            "Native Syncular blob is not available in local cache"
+        },
+        [("hash", json!(hash))],
+    )
+}
+
+fn blob_cache_retrieve_diagnostic(blob: &BlobRef, was_local: bool) -> NativeDiagnostic {
+    native_diagnostic(
+        "info",
+        "blob",
+        if was_local {
+            "blob.cache_hit"
+        } else {
+            "blob.cache_miss"
+        },
+        if was_local {
+            "Native Syncular blob served from local cache"
+        } else {
+            "Native Syncular blob fetched after local cache miss"
+        },
+        blob_ref_details(blob),
+    )
+}
+
+fn blob_download_failed_diagnostic(blob: &BlobRef, error: &SyncularError) -> NativeDiagnostic {
+    let mut details = blob_ref_details(blob);
+    push_native_error_details(&mut details, error);
+    native_diagnostic(
+        "warn",
+        "blob",
+        "blob.download_failed",
+        "Native Syncular blob download failed",
+        details,
+    )
+}
+
+fn blob_upload_queue_processed_diagnostic(payload_json: Value) -> NativeDiagnostic {
+    let failed = payload_json
+        .get("failed")
+        .and_then(Value::as_i64)
+        .unwrap_or_default();
+    native_diagnostic(
+        if failed > 0 { "warn" } else { "info" },
+        "blob",
+        "blob.upload_queue_processed",
+        "Native Syncular blob upload queue processed",
+        [("result", payload_json)],
+    )
+}
+
+fn blob_cache_pruned_diagnostic(pruned_bytes: i64, max_bytes: Option<i64>) -> NativeDiagnostic {
+    let mut details = vec![("prunedBytes", json!(pruned_bytes))];
+    if let Some(max_bytes) = max_bytes {
+        details.push(("maxBytes", json!(max_bytes)));
+    }
+    native_diagnostic(
+        "info",
+        "blob",
+        "blob.cache_pruned",
+        "Native Syncular blob cache pruned",
+        details,
+    )
+}
+
+fn blob_cache_cleared_diagnostic() -> NativeDiagnostic {
+    native_diagnostic(
+        "info",
+        "blob",
+        "blob.cache_cleared",
+        "Native Syncular blob cache cleared",
+        std::iter::empty::<(&str, Value)>(),
+    )
+}
+
+fn blob_ref_details(blob: &BlobRef) -> Vec<(&'static str, Value)> {
+    let mut details = vec![
+        ("hash", json!(blob.hash.clone())),
+        ("size", json!(blob.size)),
+        ("mimeType", json!(blob.mime_type.clone())),
+        ("encrypted", json!(blob.encrypted)),
+    ];
+    if let Some(key_id) = &blob.key_id {
+        details.push(("keyId", json!(key_id)));
+    }
+    details
 }
 
 fn native_diagnostic<'a>(
