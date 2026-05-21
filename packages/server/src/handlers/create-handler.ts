@@ -53,6 +53,32 @@ type AuthorizeResult =
   | true
   | { error: string; code: SyncularErrorCode; retriable?: boolean };
 
+function scopeValueAllows(
+  allowed: ScopeValues[string] | undefined,
+  rowValue: string
+): boolean {
+  if (allowed === undefined) return false;
+  const allowedValues = Array.isArray(allowed) ? allowed : [allowed];
+  return allowedValues.includes('*') || allowedValues.includes(rowValue);
+}
+
+function rowScopesAllowed(args: {
+  rowScopes: StoredScopes;
+  allowedScopes: ScopeValues;
+  requiredScopeKeys: readonly string[];
+}): boolean {
+  for (const key of args.requiredScopeKeys) {
+    const rowValue = args.rowScopes[key];
+    if (typeof rowValue !== 'string' || rowValue.length === 0) {
+      return false;
+    }
+    if (!scopeValueAllows(args.allowedScopes[key], rowValue)) {
+      return false;
+    }
+  }
+  return true;
+}
+
 function classifyConstraintViolationCode(_message: string): SyncularErrorCode {
   return 'sync.constraint_violation';
 }
@@ -301,6 +327,7 @@ export function createServerHandler<
   const { scopePatterns, scopeColumnsByVariable: scopeColumns } =
     createSingleVariableScopeMetadata(scopeDefs);
   const scopeColumnEntries = Object.entries(scopeColumns);
+  const requiredScopeKeys = Object.keys(scopeColumns);
 
   // Default extractScopes from scope columns
   const defaultExtractScopes = (row: Record<string, unknown>): StoredScopes => {
@@ -330,6 +357,69 @@ export function createServerHandler<
     }
     return normalized;
   };
+  const writeScopeCache = new WeakMap<
+    ServerApplyOperationContext<ServerDB, Auth>,
+    Promise<ScopeValues>
+  >();
+
+  const resolveWriteScopes = (
+    ctx: ServerApplyOperationContext<ServerDB, Auth>
+  ): Promise<ScopeValues> => {
+    const cached = writeScopeCache.get(ctx);
+    if (cached) return cached;
+    const loaded = resolveScopesImpl(ctx);
+    writeScopeCache.set(ctx, loaded);
+    return loaded;
+  };
+
+  const authorizeRowScopes = async (
+    ctx: ServerApplyOperationContext<ServerDB, Auth>,
+    row: Record<string, unknown>
+  ): Promise<AuthorizeResult> => {
+    if (requiredScopeKeys.length === 0) return true;
+
+    let allowedScopes: ScopeValues;
+    try {
+      allowedScopes = await resolveWriteScopes(ctx);
+    } catch {
+      return {
+        error: 'Forbidden',
+        code: 'sync.forbidden',
+        retriable: false,
+      };
+    }
+
+    const rowScopes = extractScopesImpl(row);
+    if (
+      rowScopesAllowed({
+        rowScopes,
+        allowedScopes,
+        requiredScopeKeys,
+      })
+    ) {
+      return true;
+    }
+
+    return {
+      error: 'Forbidden',
+      code: 'sync.forbidden',
+      retriable: false,
+    };
+  };
+
+  const rejectionResult = (
+    opIndex: number,
+    rejection: Exclude<AuthorizeResult, true>
+  ): ApplyOperationResult => ({
+    result: {
+      opIndex,
+      status: 'error',
+      error: rejection.error,
+      code: rejection.code,
+      retriable: rejection.retriable ?? false,
+    },
+    emittedChanges: [],
+  });
 
   const applyOutboundTransform = (
     row: Selectable<ServerDB[TableName]>
@@ -499,6 +589,25 @@ export function createServerHandler<
 
     // Handle delete
     if (op.op === 'delete') {
+      const existingRow = (await (
+        trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+          ServerDB,
+          keyof ServerDB & string,
+          Record<string, unknown>
+        >
+      )
+        .where(ref<string>(primaryKey), '=', op.row_id)
+        .executeTakeFirst()) as Record<string, unknown> | undefined;
+
+      if (!existingRow) {
+        return { result: { opIndex, status: 'applied' }, emittedChanges: [] };
+      }
+
+      const scopeAuth = await authorizeRowScopes(ctx, existingRow);
+      if (scopeAuth !== true) {
+        return rejectionResult(opIndex, scopeAuth);
+      }
+
       const deleted = await (
         trx.deleteFrom(table) as DeleteQueryBuilder<
           ServerDB,
@@ -511,9 +620,8 @@ export function createServerHandler<
         .executeTakeFirst();
 
       const deletedRow = deleted as Record<string, unknown> | undefined;
-      if (!deletedRow) {
+      if (!deletedRow)
         return { result: { opIndex, status: 'applied' }, emittedChanges: [] };
-      }
 
       // Extract scopes from existing row for the delete emission
       const scopes = extractScopesImpl(deletedRow);
@@ -540,6 +648,29 @@ export function createServerHandler<
         ? (rawPayload as Record<string, unknown>)
         : {};
     const payload = applyInboundTransform(payloadRecord, ctx.schemaVersion);
+    const rowForInsertScopeCheck: Record<string, unknown> = {
+      ...payload,
+      [primaryKey]: op.row_id,
+      [versionColumn]: 1,
+    };
+
+    const existingRowBeforeWrite = (await (
+      trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+        ServerDB,
+        keyof ServerDB & string,
+        Record<string, unknown>
+      >
+    )
+      .where(ref<string>(primaryKey), '=', op.row_id)
+      .executeTakeFirst()) as Record<string, unknown> | undefined;
+
+    const rowScopeAuth = await authorizeRowScopes(
+      ctx,
+      existingRowBeforeWrite ?? rowForInsertScopeCheck
+    );
+    if (rowScopeAuth !== true) {
+      return rejectionResult(opIndex, rowScopeAuth);
+    }
 
     let updated: Record<string, unknown> | undefined;
     let constraintError: { message: string; code: string } | null = null;
@@ -630,6 +761,14 @@ export function createServerHandler<
           }
 
           if (!updated && conflictRow) {
+            const conflictScopeAuth = await authorizeRowScopes(
+              ctx,
+              conflictRow
+            );
+            if (conflictScopeAuth !== true) {
+              return rejectionResult(opIndex, conflictScopeAuth);
+            }
+
             const existingVersion =
               (conflictRow[versionColumn] as number | undefined) ?? 0;
             return {
@@ -780,7 +919,7 @@ export function createServerHandler<
       return sequential;
     };
 
-    if (operations.length === 1 || authorize) {
+    if (operations.length === 1 || authorize || requiredScopeKeys.length > 0) {
       return runSequentialFallback();
     }
 
