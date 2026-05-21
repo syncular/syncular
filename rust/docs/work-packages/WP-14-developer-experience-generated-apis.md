@@ -118,6 +118,10 @@ discoverability, conflict, blob, or subscription ergonomics gaps.
   `@syncular/client` for shared TypeScript ergonomics. They expose platform
   client factories plus React factories that reuse the same `SyncProvider` and
   hooks with a bridge-backed client instead of the browser Worker/WASM runtime.
+- `@syncular/testkit` now includes an in-process client bridge harness with
+  SQLite-backed reads/writes plus Tauri and React Native adapter surfaces, so
+  platform client packages test against a Syncular-owned host contract instead
+  of package-local mocks.
 - Generated TypeScript partial updates now keep sync payloads partial while
   materializing complete local SQLite rows for NOT NULL columns, so updates such
   as `{ completed: 1 }` no longer fail local apply when the row has required
@@ -127,7 +131,9 @@ discoverability, conflict, blob, or subscription ergonomics gaps.
 
 - `bun test rust/bindings/browser/src/react.test.ts rust/bindings/browser/src/generated-app-conformance.test.ts`
 - `bun test rust/bindings/browser/src/bridge-client.test.ts`
+- `bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts rust/bindings/browser/src/bridge-client.test.ts`
 - `bun run rust:browser:test`
+- `bun run --cwd packages/testkit tsgo`
 - `bun run --cwd packages/client-tauri tsgo`
 - `bun run --cwd packages/client-react-native tsgo`
 - `bun run --cwd packages/client-expo tsgo`

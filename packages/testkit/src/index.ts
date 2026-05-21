@@ -1,3 +1,4 @@
+export * from './client-bridge';
 export * from './deterministic';
 export * from './disposable';
 export * from './faults';
