@@ -717,7 +717,12 @@ read-only review:
     `update -> undo -> redo`; and verifies stale-row undo fails with
     `sync.command_history_conflict`. Blob, encrypted, and CRDT-backed field
     changes now fail replay with `sync.command_history_unsafe_field` until safe
-    inverse semantics are designed. Native/Rust parity remains.
+    inverse semantics are designed. Native/Rust now has the shared runtime
+    `sync_command_history` table, Diesel storage methods, a
+    `SyncularCommandHistoryExecutor` trait, generated `commit_with_history` /
+    `commit_leased_with_history`, and generated `command_history().undo_last()`
+    / `redo_last()` helpers. Example-app tests prove Rust undo/redo emits
+    normal outbox commits and stale undo fails before writing a replay commit.
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)

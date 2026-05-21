@@ -8,12 +8,16 @@ pub use syncular_runtime::app_schema::{
 };
 #[allow(unused_imports)]
 use syncular_runtime::client::{
-    SubscriptionSpec, SyncChangedRow, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor,
-    SyncularLeasedMutationExecutor, SyncularMutationExecutor,
+    SubscriptionSpec, SyncChangedRow, SyncularClientConfig, SyncularCommandHistoryExecutor,
+    SyncularEncryptedCrdtMutationExecutor, SyncularLeasedMutationExecutor,
+    SyncularMutationExecutor,
+};
+use syncular_runtime::command_history::{
+    CommandHistoryEntry, CommandHistoryReceipt, CommandHistoryRecord, CommandHistoryState,
 };
 use syncular_runtime::crdt_yjs::{YjsUpdateEnvelope, YJS_PAYLOAD_KEY};
 use syncular_runtime::encryption::FieldEncryptionRule;
-use syncular_runtime::error::Result;
+use syncular_runtime::error::{Result, SyncularError};
 use syncular_runtime::protocol::{
     random_syncular_id, IntoSyncularMutation, MutationCommit, MutationReceipt,
     PendingSyncularMutation, SyncOperation, SyncularMutationBatch, SyncularMutationKind,
@@ -1343,6 +1347,13 @@ pub trait SyncularGeneratedMutationsExt: SyncularMutationExecutor {
         SyncularAppLeasedMutations { client: self }
     }
 
+    fn command_history(&mut self) -> SyncularAppCommandHistory<'_, Self>
+    where
+        Self: Sized + SyncularCommandHistoryExecutor,
+    {
+        SyncularAppCommandHistory { client: self }
+    }
+
     fn commit<R>(
         &mut self,
         f: impl FnOnce(&mut SyncularAppMutationTx<'_>) -> Result<R>,
@@ -1357,6 +1368,16 @@ pub trait SyncularGeneratedMutationsExt: SyncularMutationExecutor {
         };
         let commit = self.apply_mutation_batch(batch)?;
         Ok(MutationCommit { result, commit })
+    }
+
+    fn commit_with_history<R>(
+        &mut self,
+        f: impl FnOnce(&mut SyncularAppMutationTx<'_>) -> Result<R>,
+    ) -> Result<MutationCommit<R>>
+    where
+        Self: Sized + SyncularCommandHistoryExecutor,
+    {
+        syncular_commit_with_history(self, "mutations", f)
     }
 
     fn commit_leased<R>(
@@ -1374,6 +1395,16 @@ pub trait SyncularGeneratedMutationsExt: SyncularMutationExecutor {
         let commit = self.apply_leased_mutation_batch(batch)?;
         Ok(MutationCommit { result, commit })
     }
+
+    fn commit_leased_with_history<R>(
+        &mut self,
+        f: impl FnOnce(&mut SyncularAppMutationTx<'_>) -> Result<R>,
+    ) -> Result<MutationCommit<R>>
+    where
+        Self: Sized + SyncularCommandHistoryExecutor,
+    {
+        syncular_commit_with_history(self, "leasedMutations", f)
+    }
 }
 
 impl<C> SyncularGeneratedMutationsExt for C where C: SyncularMutationExecutor {}
@@ -1388,6 +1419,325 @@ pub struct SyncularAppLeasedMutations<'a, C: SyncularLeasedMutationExecutor + ?S
 
 pub struct SyncularAppMutationTx<'a> {
     batch: &'a mut SyncularMutationBatch,
+}
+
+pub struct SyncularAppCommandHistory<'a, C: SyncularCommandHistoryExecutor + ?Sized> {
+    client: &'a mut C,
+}
+
+#[derive(Debug, Clone)]
+struct SyncularPendingCommandHistoryEntry {
+    table: String,
+    row_id: String,
+    before: Option<Value>,
+}
+
+impl<C> SyncularAppCommandHistory<'_, C>
+where
+    C: SyncularCommandHistoryExecutor + ?Sized,
+{
+    pub fn can_undo(&mut self) -> Result<bool> {
+        Ok(self
+            .client
+            .command_history_latest(CommandHistoryState::Done)?
+            .is_some())
+    }
+
+    pub fn can_redo(&mut self) -> Result<bool> {
+        Ok(self
+            .client
+            .command_history_latest(CommandHistoryState::Undone)?
+            .is_some())
+    }
+
+    pub fn latest_undo(&mut self) -> Result<Option<CommandHistoryRecord>> {
+        self.client
+            .command_history_latest(CommandHistoryState::Done)
+    }
+
+    pub fn latest_redo(&mut self) -> Result<Option<CommandHistoryRecord>> {
+        self.client
+            .command_history_latest(CommandHistoryState::Undone)
+    }
+
+    pub fn undo_last(&mut self) -> Result<CommandHistoryReceipt> {
+        syncular_replay_command_history(self.client, CommandHistoryState::Done)
+    }
+
+    pub fn redo_last(&mut self) -> Result<CommandHistoryReceipt> {
+        syncular_replay_command_history(self.client, CommandHistoryState::Undone)
+    }
+}
+
+fn syncular_commit_with_history<C, R>(
+    client: &mut C,
+    mutation_scope: &str,
+    f: impl FnOnce(&mut SyncularAppMutationTx<'_>) -> Result<R>,
+) -> Result<MutationCommit<R>>
+where
+    C: SyncularCommandHistoryExecutor + ?Sized,
+{
+    let mut batch = SyncularMutationBatch::new();
+    let result = {
+        let mut tx = SyncularAppMutationTx { batch: &mut batch };
+        f(&mut tx)?
+    };
+    let pending = syncular_pending_command_history_entries(client, batch.mutations())?;
+    let commit = client.apply_command_history_batch(mutation_scope, batch)?;
+    let entries = syncular_committed_command_history_entries(client, pending)?;
+    if !entries.is_empty() {
+        client.command_history_record(mutation_scope, &entries, &commit)?;
+    }
+    Ok(MutationCommit { result, commit })
+}
+
+fn syncular_pending_command_history_entries<C>(
+    client: &mut C,
+    mutations: &[PendingSyncularMutation],
+) -> Result<Vec<SyncularPendingCommandHistoryEntry>>
+where
+    C: SyncularCommandHistoryExecutor + ?Sized,
+{
+    let mut entries = Vec::new();
+    for mutation in mutations {
+        if entries
+            .iter()
+            .any(|entry: &SyncularPendingCommandHistoryEntry| {
+                entry.table == mutation.table && entry.row_id == mutation.row_id
+            })
+        {
+            continue;
+        }
+        let before = client.command_history_current_row_json(&mutation.table, &mutation.row_id)?;
+        entries.push(SyncularPendingCommandHistoryEntry {
+            table: mutation.table.clone(),
+            row_id: mutation.row_id.clone(),
+            before,
+        });
+    }
+    Ok(entries)
+}
+
+fn syncular_committed_command_history_entries<C>(
+    client: &mut C,
+    pending: Vec<SyncularPendingCommandHistoryEntry>,
+) -> Result<Vec<CommandHistoryEntry>>
+where
+    C: SyncularCommandHistoryExecutor + ?Sized,
+{
+    let mut entries = Vec::new();
+    for entry in pending {
+        let after = client.command_history_current_row_json(&entry.table, &entry.row_id)?;
+        if entry.before == after {
+            continue;
+        }
+        entries.push(CommandHistoryEntry {
+            table: entry.table,
+            row_id: entry.row_id,
+            before: entry.before,
+            after,
+        });
+    }
+    Ok(entries)
+}
+
+fn syncular_replay_command_history<C>(
+    client: &mut C,
+    state: CommandHistoryState,
+) -> Result<CommandHistoryReceipt>
+where
+    C: SyncularCommandHistoryExecutor + ?Sized,
+{
+    let command = client.command_history_latest(state)?.ok_or_else(|| {
+        syncular_command_history_error(
+            "sync.command_history_empty",
+            "there is no Syncular command to replay",
+        )
+    })?;
+    syncular_assert_command_history_safe(&command)?;
+    let undo = state == CommandHistoryState::Done;
+    syncular_assert_command_history_current_rows(client, &command, undo)?;
+
+    let mut batch = SyncularMutationBatch::new();
+    if undo {
+        for entry in command.entries.iter().rev() {
+            batch.push(syncular_command_history_mutation_for_snapshot(
+                &entry.table,
+                &entry.row_id,
+                &entry.before,
+            )?);
+        }
+    } else {
+        for entry in &command.entries {
+            batch.push(syncular_command_history_mutation_for_snapshot(
+                &entry.table,
+                &entry.row_id,
+                &entry.after,
+            )?);
+        }
+    }
+
+    let commit = client.apply_command_history_batch(&command.mutation_scope, batch)?;
+    let next_state = if undo {
+        CommandHistoryState::Undone
+    } else {
+        CommandHistoryState::Done
+    };
+    client.command_history_mark(&command.id, next_state, &commit)?;
+    Ok(CommandHistoryReceipt {
+        command_id: command.id,
+        commit,
+    })
+}
+
+fn syncular_assert_command_history_current_rows<C>(
+    client: &mut C,
+    command: &CommandHistoryRecord,
+    undo: bool,
+) -> Result<()>
+where
+    C: SyncularCommandHistoryExecutor + ?Sized,
+{
+    for entry in &command.entries {
+        let current = client.command_history_current_row_json(&entry.table, &entry.row_id)?;
+        let expected = if undo { &entry.after } else { &entry.before };
+        if &current != expected {
+            return Err(syncular_command_history_error(
+                "sync.command_history_conflict",
+                &format!(
+                    "cannot replay Syncular command {} because {}.{} changed since it was recorded",
+                    command.id, entry.table, entry.row_id
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn syncular_assert_command_history_safe(command: &CommandHistoryRecord) -> Result<()> {
+    for entry in &command.entries {
+        let unsafe_fields = syncular_command_history_unsafe_fields(entry)?;
+        if !unsafe_fields.is_empty() {
+            return Err(syncular_command_history_error(
+                "sync.command_history_unsafe_field",
+                &format!(
+                    "cannot replay Syncular command {} because {}.{} changed unsafe fields: {}",
+                    command.id,
+                    entry.table,
+                    entry.row_id,
+                    unsafe_fields.join(", ")
+                ),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn syncular_command_history_mutation_for_snapshot(
+    table: &str,
+    row_id: &str,
+    snapshot: &Option<Value>,
+) -> Result<PendingSyncularMutation> {
+    match snapshot {
+        None => Ok(PendingSyncularMutation {
+            kind: SyncularMutationKind::Delete,
+            table: table.to_string(),
+            row_id: row_id.to_string(),
+            payload: None,
+            base_version: None,
+            local_row: None,
+        }),
+        Some(snapshot) => Ok(PendingSyncularMutation {
+            kind: SyncularMutationKind::Upsert,
+            table: table.to_string(),
+            row_id: row_id.to_string(),
+            payload: Some(syncular_command_history_payload_for_snapshot(
+                table, snapshot,
+            )?),
+            base_version: None,
+            local_row: None,
+        }),
+    }
+}
+
+fn syncular_command_history_payload_for_snapshot(table: &str, snapshot: &Value) -> Result<Value> {
+    let Some(object) = snapshot.as_object() else {
+        return Err(syncular_command_history_error(
+            "sync.command_history_conflict",
+            "command history snapshot must be a JSON object",
+        ));
+    };
+    let mut payload: Map<String, Value> = object.clone();
+    match table {
+        "comments" => {
+            payload.remove("id");
+            payload.remove("server_version");
+            Ok(())
+        }
+        "projects" => {
+            payload.remove("id");
+            payload.remove("server_version");
+            Ok(())
+        }
+        "tasks" => {
+            payload.remove("id");
+            payload.remove("server_version");
+            payload.remove("title_yjs_state");
+            Ok(())
+        }
+        _ => Err(syncular_command_history_error(
+            "sync.command_history_table_unsupported",
+            &format!("cannot replay undo history for unsupported table {table}"),
+        )),
+    }?;
+    Ok(Value::Object(payload))
+}
+
+fn syncular_command_history_unsafe_fields(
+    entry: &CommandHistoryEntry,
+) -> Result<Vec<&'static str>> {
+    let mut fields = Vec::new();
+    match entry.table.as_str() {
+        "comments" => Ok(fields),
+        "projects" => Ok(fields),
+        "tasks" => {
+            syncular_command_history_push_unsafe_field(&mut fields, entry, "image");
+            syncular_command_history_push_unsafe_field(&mut fields, entry, "title");
+            syncular_command_history_push_unsafe_field(&mut fields, entry, "title_yjs_state");
+            Ok(fields)
+        }
+        _ => Err(syncular_command_history_error(
+            "sync.command_history_table_unsupported",
+            &format!(
+                "cannot replay undo history for unsupported table {}",
+                entry.table
+            ),
+        )),
+    }
+}
+
+fn syncular_command_history_push_unsafe_field(
+    fields: &mut Vec<&'static str>,
+    entry: &CommandHistoryEntry,
+    field: &'static str,
+) {
+    if syncular_command_history_snapshot_field(&entry.before, field)
+        != syncular_command_history_snapshot_field(&entry.after, field)
+        && !fields.contains(&field)
+    {
+        fields.push(field);
+    }
+}
+
+fn syncular_command_history_snapshot_field<'a>(
+    snapshot: &'a Option<Value>,
+    field: &str,
+) -> Option<&'a Value> {
+    snapshot.as_ref()?.as_object()?.get(field)
+}
+
+fn syncular_command_history_error(code: &str, message: &str) -> SyncularError {
+    SyncularError::config(format!("{code}: {message}"))
 }
 
 impl<'a, C> SyncularAppMutations<'a, C>
@@ -1790,8 +2140,8 @@ pub mod prelude {
         CommentLeasedMutations, CommentMutationTx, CommentMutations, CommentPatch, DeleteComment,
         DeleteProject, DeleteTask, InsertManyReceipt, InsertReceipt, NewComment, NewProject,
         NewTask, ProjectLeasedMutations, ProjectMutationTx, ProjectMutations, ProjectPatch,
-        SyncularAppLeasedMutations, SyncularAppMutationTx, SyncularAppMutations,
-        SyncularGeneratedMutationsExt, TaskLeasedMutations, TaskMutationTx, TaskMutations,
-        TaskPatch,
+        SyncularAppCommandHistory, SyncularAppLeasedMutations, SyncularAppMutationTx,
+        SyncularAppMutations, SyncularGeneratedMutationsExt, TaskLeasedMutations, TaskMutationTx,
+        TaskMutations, TaskPatch,
     };
 }

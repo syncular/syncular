@@ -13,6 +13,8 @@ pub mod binary_sync_pack;
 pub mod boltffi_bindings;
 #[path = "core/client.rs"]
 pub mod client;
+#[path = "core/command_history.rs"]
+pub mod command_history;
 #[path = "storage/compaction.rs"]
 pub mod compaction;
 #[path = "core/crdt_field.rs"]

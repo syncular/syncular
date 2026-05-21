@@ -85,6 +85,23 @@ First browser/generated-client slice is implemented:
   insert undo/redo, hard-delete undo/redo, soft-delete undo/redo, and grouped
   multi-row commits. The update proof verifies three normal mutation intents.
 
+Native/Rust parity foundation is implemented:
+
+- Runtime owns the shared `sync_command_history` system table.
+- Diesel storage exposes typed command-history record/latest/mark methods.
+- `SyncularCommandHistoryExecutor` gives generated Rust clients a stable trait
+  boundary for reading current rows, recording command snapshots, replaying
+  normal/leased mutation batches, and marking undo/redo commits.
+- Generated Rust clients expose `commit_with_history(...)`,
+  `commit_leased_with_history(...)`, and
+  `command_history().undo_last()` / `redo_last()`.
+- Generated Rust replay strips primary-key, server-version, and CRDT state
+  columns from snapshot payloads, rejects blob/encrypted/CRDT field changes as
+  unsafe, and emits compensating operations through the normal outbox path.
+- Example-app coverage proves tracked Rust update -> undo -> redo produces
+  four normal outbox commits including the seed insert, and stale-row undo
+  fails with `sync.command_history_conflict` before a replay commit is written.
+
 Gates:
 
 - `bun test rust/bindings/browser/src/generated-app-conformance.test.ts`
@@ -92,6 +109,8 @@ Gates:
 - `bun run --cwd rust/bindings/browser tsgo`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends diesel_store_persists_command_history_records --features native,crdt-yjs,e2ee,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example command_history`
 
 ## First Slice
 
@@ -109,9 +128,8 @@ in one TypeScript generated example:
 
 Extend the command-history proof beyond browser TypeScript:
 
-1. Add native/Rust command-history storage and generated API alignment.
-2. Add create/delete/batch coverage, including soft-delete tables.
-3. Decide which blob, encrypted-field, and CRDT-field mutations are safe to
+1. Add Rust create/delete/batch coverage, including soft-delete tables.
+2. Decide which blob, encrypted-field, and CRDT-field mutations are safe to
    invert automatically and reject unsafe cases with stable diagnostics.
-4. Add sync/conflict tests proving undo-generated commits interact with server
+3. Add sync/conflict tests proving undo-generated commits interact with server
    validation and conflict persistence through the normal outbox path.

@@ -1,4 +1,4 @@
-pub const RUNTIME_SCHEMA_VERSION: i32 = 8;
+pub const RUNTIME_SCHEMA_VERSION: i32 = 9;
 
 pub fn runtime_schema_version() -> i32 {
     RUNTIME_SCHEMA_VERSION
@@ -52,6 +52,21 @@ CREATE TABLE IF NOT EXISTS sync_outbox_commits (
 
 CREATE INDEX IF NOT EXISTS idx_sync_outbox_commits_due
   ON sync_outbox_commits (status, next_attempt_at, created_at);
+
+CREATE TABLE IF NOT EXISTS sync_command_history (
+  id TEXT PRIMARY KEY,
+  mutation_scope TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('done', 'undone')),
+  entries_json TEXT NOT NULL,
+  client_commit_id TEXT NOT NULL,
+  undo_client_commit_id TEXT NULL,
+  redo_client_commit_id TEXT NULL,
+  created_at BIGINT NOT NULL,
+  updated_at BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_command_history_state_updated
+  ON sync_command_history (state, updated_at, created_at);
 
 CREATE TABLE IF NOT EXISTS sync_auth_leases (
   lease_id TEXT PRIMARY KEY,

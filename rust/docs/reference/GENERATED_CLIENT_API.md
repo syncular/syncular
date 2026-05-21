@@ -52,6 +52,24 @@ client
     .update(syncular::TaskPatch::new(&inserted.id).completed(1))?;
 ```
 
+Generated Rust clients expose command-level undo/redo through opt-in tracked
+commits. Tracking records before/after row snapshots and replay emits new
+normal outbox mutations:
+
+```rust
+client.commit_with_history(|tx| {
+    tx.tasks()
+        .update(syncular::TaskPatch::new(&inserted.id).completed(1))?;
+    Ok(())
+})?;
+
+let undo = client.command_history().undo_last()?;
+println!("{}", undo.commit.client_commit_id);
+
+let redo = client.command_history().redo_last()?;
+println!("{}", redo.commit.client_commit_id);
+```
+
 Strict offline writes use the same generated DTOs but require an active stored
 auth lease covering the mutation scope. If no covering lease exists, the local
 row and outbox write are rolled back in the same SQLite transaction:

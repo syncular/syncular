@@ -5,6 +5,7 @@ use crate::binary_snapshot::{
     BinarySnapshotCell, BinarySnapshotPayload, BorrowedBinarySnapshotCell,
     DecodedBinarySnapshotRows, SnapshotChunkRows,
 };
+use crate::command_history::{CommandHistoryEntry, CommandHistoryRecord, CommandHistoryState};
 #[cfg(feature = "native")]
 use crate::crdt_field::{
     validate_crdt_field, CrdtDocumentSnapshot, CrdtField, CrdtFieldCompactionStats, CrdtFieldId,
@@ -125,6 +126,39 @@ pub trait SyncularLeasedMutationExecutor: SyncularMutationExecutor {
         let commit = self.apply_leased_mutation_batch(batch)?;
         Ok(MutationCommit { result, commit })
     }
+}
+
+pub trait SyncularCommandHistoryExecutor: SyncularMutationExecutor {
+    fn command_history_current_row_json(
+        &mut self,
+        table: &str,
+        row_id: &str,
+    ) -> Result<Option<Value>>;
+
+    fn command_history_record(
+        &mut self,
+        mutation_scope: &str,
+        entries: &[CommandHistoryEntry],
+        receipt: &MutationReceipt,
+    ) -> Result<CommandHistoryRecord>;
+
+    fn command_history_latest(
+        &mut self,
+        state: CommandHistoryState,
+    ) -> Result<Option<CommandHistoryRecord>>;
+
+    fn command_history_mark(
+        &mut self,
+        id: &str,
+        state: CommandHistoryState,
+        receipt: &MutationReceipt,
+    ) -> Result<()>;
+
+    fn apply_command_history_batch(
+        &mut self,
+        mutation_scope: &str,
+        batch: SyncularMutationBatch,
+    ) -> Result<MutationReceipt>;
 }
 
 pub trait SyncularEncryptedCrdtMutationExecutor {
@@ -3367,6 +3401,60 @@ where
             now_ms(),
             batch.into_mutations(),
         )
+    }
+}
+
+#[cfg(feature = "native")]
+impl<T> SyncularCommandHistoryExecutor for SyncularClient<DieselSqliteStore, T>
+where
+    T: SyncTransport,
+{
+    fn command_history_current_row_json(
+        &mut self,
+        table: &str,
+        row_id: &str,
+    ) -> Result<Option<Value>> {
+        self.current_row_json(table, row_id)
+    }
+
+    fn command_history_record(
+        &mut self,
+        mutation_scope: &str,
+        entries: &[CommandHistoryEntry],
+        receipt: &MutationReceipt,
+    ) -> Result<CommandHistoryRecord> {
+        self.store
+            .record_command_history(mutation_scope, entries, receipt)
+    }
+
+    fn command_history_latest(
+        &mut self,
+        state: CommandHistoryState,
+    ) -> Result<Option<CommandHistoryRecord>> {
+        self.store.latest_command_history(state)
+    }
+
+    fn command_history_mark(
+        &mut self,
+        id: &str,
+        state: CommandHistoryState,
+        receipt: &MutationReceipt,
+    ) -> Result<()> {
+        self.store.mark_command_history(id, state, receipt)
+    }
+
+    fn apply_command_history_batch(
+        &mut self,
+        mutation_scope: &str,
+        batch: SyncularMutationBatch,
+    ) -> Result<MutationReceipt> {
+        match mutation_scope {
+            "mutations" => self.apply_mutation_batch(batch),
+            "leasedMutations" => self.apply_leased_mutation_batch(batch),
+            other => Err(SyncularError::config(format!(
+                "sync.command_history_scope_unsupported: {other}"
+            ))),
+        }
     }
 }
 
