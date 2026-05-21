@@ -165,6 +165,30 @@ Fourth retained slice:
   - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
 - Benchmark gate: not applicable; this adds conformance coverage only.
 
+Fifth retained slice:
+
+- Added a reusable `FileAssetHardDelete` mutation builder for permanent-delete
+  scenarios while keeping soft delete/trash as the normal app-level file delete
+  path.
+- Expanded file asset conformance to cover both directions of delete-vs-update:
+  a stale local update against a server hard delete, and a stale local hard
+  delete against a server update.
+- Added concurrent file-version edit coverage. The winning server
+  `current_version_id` is preserved, the stale pointer update becomes an
+  explicit Syncular conflict, and the local unsynced version row remains
+  available for app-level conflict resolution.
+- Decision: do not add a file asset codegen template yet. The reference schema
+  stays in `syncular-testkit::file_assets` so apps can adopt, copy, or adapt it,
+  while normal `syncular.codegen.json` plus migrations remain the canonical
+  generator contract. This avoids baking Dropbox-specific names, cache policy,
+  sharing, or conflict-product semantics into framework codegen.
+- Gates:
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit
+    file_asset`
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
+- Benchmark gate: not applicable; this adds testkit/reference semantics only and
+  does not touch runtime apply/query/transport paths.
+
 ## Suggested App Schema
 
 Initial generated/reference schema:
@@ -203,10 +227,10 @@ Add the production server/browser side of the reference path:
    visible row-backed blob reference.
 2. `[x]` Add browser/WASM coverage that generated app rows with a file-version
    `BlobRef` sync and clear on revocation.
-3. `[~]` Expand testkit file scenarios for rename, move, delete-vs-update, version
-   conflict, trash/restore, and missing/corrupted blob bodies. Rename, move,
-   version conflict, trash/restore, missing body, and corrupted body are
-   covered; delete-vs-update and concurrent version edits remain.
-4. `[ ]` Decide whether the reference schema should also become a codegen optional
-   template, while keeping it optional app-layer metadata rather than Syncular
-   core tables.
+3. `[x]` Expand testkit file scenarios for rename, move, delete-vs-update,
+   version conflict, trash/restore, concurrent version edits, and
+   missing/corrupted blob bodies.
+4. `[x]` Decide whether the reference schema should also become a codegen
+   optional template. Decision: keep it as a testkit/reference app schema for
+   now; apps use normal migrations and `syncular.codegen.json` for generated
+   clients.

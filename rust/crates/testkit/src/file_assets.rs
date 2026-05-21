@@ -502,6 +502,39 @@ impl IntoSyncularMutation for FileAssetPatch {
 }
 
 #[derive(Debug, Clone)]
+pub struct FileAssetHardDelete {
+    row_id: String,
+    base_version: Option<i64>,
+}
+
+impl FileAssetHardDelete {
+    pub fn new(row_id: &str) -> Self {
+        Self {
+            row_id: row_id.to_string(),
+            base_version: None,
+        }
+    }
+
+    pub fn base_version(mut self, base_version: i64) -> Self {
+        self.base_version = Some(base_version);
+        self
+    }
+}
+
+impl IntoSyncularMutation for FileAssetHardDelete {
+    fn into_syncular_mutation(self) -> PendingSyncularMutation {
+        PendingSyncularMutation {
+            kind: SyncularMutationKind::Delete,
+            table: FILES_TABLE.to_string(),
+            row_id: self.row_id,
+            payload: None,
+            base_version: self.base_version,
+            local_row: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct NewFileVersion {
     id: String,
     file_id: String,

@@ -36,10 +36,10 @@ use syncular_testkit::{
     snapshot_combined_response, sync_conformance_fixture, todo_app_schema_json,
     todo_snapshot_response, todo_task_row, verify_test_auth_lease, AppFixtureOptions,
     AppTestHttpServer, AppTestServer, AppTestServerOptions, FaultOperation, FaultPhase, FaultStep,
-    FaultTransport, FileAssetPatch, NativeFixtureOptions, NewFileAsset, NewFileVersion,
-    TestAuthLeaseKeyPair, TestBlobServer, TestBlobServerOptions, TestSyncServer, TestTransport,
-    TodoFixtureOptions, FILES_SUBSCRIPTION_ID, FILES_TABLE, FILE_VERSIONS_SUBSCRIPTION_ID,
-    FILE_VERSIONS_TABLE,
+    FaultTransport, FileAssetHardDelete, FileAssetPatch, NativeFixtureOptions, NewFileAsset,
+    NewFileVersion, TestAuthLeaseKeyPair, TestBlobServer, TestBlobServerOptions, TestSyncServer,
+    TestTransport, TodoFixtureOptions, FILES_SUBSCRIPTION_ID, FILES_TABLE,
+    FILE_VERSIONS_SUBSCRIPTION_ID, FILE_VERSIONS_TABLE,
 };
 use tungstenite::{connect, stream::MaybeTlsStream, Message};
 
@@ -1267,6 +1267,242 @@ fn file_asset_version_conflict_is_persisted() {
 }
 
 #[test]
+fn file_asset_delete_vs_update_conflicts_are_explicit() {
+    let server = AppTestServer::new(file_asset_app_schema());
+    server
+        .seed_row(
+            FILES_TABLE,
+            json!({
+                "id": "server-delete-local-update",
+                "parent_id": null,
+                "name": "Before delete.txt",
+                "kind": "file",
+                "current_version_id": null,
+                "owner_id": "user-rust",
+                "project_id": "p0",
+                "deleted": 0,
+                "trashed_at": null,
+                "server_version": 1
+            }),
+        )
+        .expect("seed server-delete row");
+    server
+        .seed_row(
+            FILES_TABLE,
+            json!({
+                "id": "server-update-local-delete",
+                "parent_id": null,
+                "name": "Before update.txt",
+                "kind": "file",
+                "current_version_id": null,
+                "owner_id": "user-rust",
+                "project_id": "p0",
+                "deleted": 0,
+                "trashed_at": null,
+                "server_version": 2
+            }),
+        )
+        .expect("seed server-update row");
+
+    let mut update_client = open_file_asset_client_with_server(
+        server.clone(),
+        app_server_options("file-assets-delete-update-client"),
+    )
+    .expect("update client fixture");
+    update_client.client.sync_http().expect("bootstrap update");
+    server
+        .delete_row(FILES_TABLE, "server-delete-local-update")
+        .expect("server hard delete");
+    update_client
+        .client
+        .apply(
+            FileAssetPatch::new("server-delete-local-update")
+                .base_version(1)
+                .rename("Local after delete.txt"),
+        )
+        .expect("local stale update");
+    let update_report = update_client
+        .client
+        .sync_http()
+        .expect("sync server delete/local update");
+    assert!(update_report.conflicts_changed);
+    let update_conflicts = assert_conflict_count(&mut update_client.client, 1);
+    assert_eq!(
+        update_conflicts[0].code.as_deref(),
+        Some("sync.version_conflict")
+    );
+    assert_eq!(update_conflicts[0].server_version, Some(0));
+    assert_app_server_missing_row(&server, FILES_TABLE, "server-delete-local-update");
+    assert_table_row_count(&mut update_client.client, FILES_TABLE, 1);
+    assert_table_has_row(
+        &mut update_client.client,
+        FILES_TABLE,
+        "id",
+        "server-update-local-delete",
+    );
+
+    let mut delete_client = open_file_asset_client_with_server(
+        server.clone(),
+        app_server_options("file-assets-update-delete-client"),
+    )
+    .expect("delete client fixture");
+    delete_client.client.sync_http().expect("bootstrap delete");
+    server
+        .commit_row(
+            FILES_TABLE,
+            json!({
+                "id": "server-update-local-delete",
+                "parent_id": null,
+                "name": "Server update wins.txt",
+                "kind": "file",
+                "current_version_id": null,
+                "owner_id": "user-rust",
+                "project_id": "p0",
+                "deleted": 0,
+                "trashed_at": null
+            }),
+        )
+        .expect("server update");
+    delete_client
+        .client
+        .apply(FileAssetHardDelete::new("server-update-local-delete").base_version(2))
+        .expect("local stale hard delete");
+    let delete_report = delete_client
+        .client
+        .sync_http()
+        .expect("sync server update/local delete");
+    assert!(delete_report.conflicts_changed);
+    let delete_conflicts = assert_conflict_count(&mut delete_client.client, 1);
+    assert_eq!(
+        delete_conflicts[0].code.as_deref(),
+        Some("sync.version_conflict")
+    );
+    assert_eq!(delete_conflicts[0].server_version, Some(4));
+    let server_row = assert_app_server_has_row(&server, FILES_TABLE, "server-update-local-delete");
+    assert_eq!(server_row["name"], "Server update wins.txt");
+    let local_row = assert_table_has_row(
+        &mut delete_client.client,
+        FILES_TABLE,
+        "id",
+        "server-update-local-delete",
+    );
+    assert_eq!(local_row["name"], "Server update wins.txt");
+}
+
+#[test]
+fn file_asset_concurrent_version_edits_preserve_conflicted_local_version() {
+    let server = AppTestServer::new(file_asset_app_schema());
+    server
+        .seed_row(
+            FILES_TABLE,
+            json!({
+                "id": "file-version-race",
+                "parent_id": null,
+                "name": "Version race.txt",
+                "kind": "file",
+                "current_version_id": null,
+                "owner_id": "user-rust",
+                "project_id": "p0",
+                "deleted": 0,
+                "trashed_at": null,
+                "server_version": 1
+            }),
+        )
+        .expect("seed file");
+    let mut client = open_file_asset_client_with_server(
+        server.clone(),
+        app_server_options("file-assets-version-race-client"),
+    )
+    .expect("client fixture");
+    client.client.sync_http().expect("bootstrap file");
+
+    let server_blob = test_blob_ref(b"server version bytes", "text/plain");
+    server
+        .upload_blob(&server_blob, b"server version bytes")
+        .expect("seed server blob");
+    server
+        .commit_row(
+            FILE_VERSIONS_TABLE,
+            NewFileVersion::new(
+                "version-server",
+                "file-version-race",
+                server_blob.clone(),
+                "server-actor",
+                "user-rust",
+                Some("p0"),
+                2,
+            )
+            .row_json(),
+        )
+        .expect("server version row");
+    server
+        .commit_row(
+            FILES_TABLE,
+            json!({
+                "id": "file-version-race",
+                "parent_id": null,
+                "name": "Version race.txt",
+                "kind": "file",
+                "current_version_id": "version-server",
+                "owner_id": "user-rust",
+                "project_id": "p0",
+                "deleted": 0,
+                "trashed_at": null
+            }),
+        )
+        .expect("server current version update");
+
+    let local_blob = client
+        .client
+        .store_blob_bytes(b"local version bytes", "text/plain", false)
+        .expect("store local blob");
+    client
+        .client
+        .commit_mutations(|tx| {
+            tx.push(NewFileVersion::new(
+                "version-local",
+                "file-version-race",
+                local_blob,
+                "user-rust",
+                "user-rust",
+                Some("p0"),
+                3,
+            ));
+            tx.push(
+                FileAssetPatch::new("file-version-race")
+                    .base_version(1)
+                    .current_version_id(Some("version-local")),
+            );
+            Ok(())
+        })
+        .expect("local version commit");
+
+    let report = client.client.sync_http().expect("sync version race");
+    assert!(report.conflicts_changed);
+    let conflicts = assert_conflict_count(&mut client.client, 1);
+    assert_eq!(conflicts[0].code.as_deref(), Some("sync.version_conflict"));
+    assert_eq!(conflicts[0].server_version, Some(3));
+    assert_app_server_missing_row(&server, FILE_VERSIONS_TABLE, "version-local");
+    assert_app_server_has_row(&server, FILE_VERSIONS_TABLE, "version-server");
+    let file = assert_table_has_row(&mut client.client, FILES_TABLE, "id", "file-version-race");
+    assert_eq!(file["current_version_id"], "version-server");
+    let local_version = assert_table_has_row(
+        &mut client.client,
+        FILE_VERSIONS_TABLE,
+        "id",
+        "version-local",
+    );
+    assert_eq!(local_version["server_version"], 0);
+    let server_version = assert_table_has_row(
+        &mut client.client,
+        FILE_VERSIONS_TABLE,
+        "id",
+        "version-server",
+    );
+    assert_eq!(server_version["server_version"], 2);
+}
+
+#[test]
 fn file_asset_blob_body_failures_are_visible() {
     let server = AppTestServer::new(file_asset_app_schema());
     let expected = b"expected file bytes".to_vec();
@@ -1346,6 +1582,16 @@ fn file_asset_blob_body_failures_are_visible() {
             || corrupt_error.to_string().contains("blob hash mismatch"),
         "{corrupt_error}"
     );
+}
+
+fn test_blob_ref(bytes: &[u8], mime_type: &str) -> BlobRef {
+    BlobRef {
+        hash: blob_hash(bytes),
+        size: bytes.len() as i64,
+        mime_type: mime_type.to_string(),
+        encrypted: false,
+        key_id: None,
+    }
 }
 
 fn blob_ref_from_file_version_row(row: &serde_json::Value) -> BlobRef {
