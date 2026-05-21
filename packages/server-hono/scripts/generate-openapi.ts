@@ -102,7 +102,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 const outputPath = join(__dirname, '..', 'openapi.json');
 
-Bun.write(outputPath, JSON.stringify(document, null, 2));
+await Bun.write(outputPath, JSON.stringify(document, null, 2));
 
 console.log(`OpenAPI spec written to ${outputPath}`);
 

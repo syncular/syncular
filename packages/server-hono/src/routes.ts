@@ -2462,6 +2462,14 @@ export function createSyncRoutes<
       summary: 'Combined push and pull',
       description:
         'Perform push and/or pull in a single request to reduce round-trips',
+      requestBody: {
+        required: true,
+        content: {
+          'application/json': {
+            schema: { type: 'object', additionalProperties: true },
+          },
+        },
+      },
       responses: {
         200: {
           description: 'Combined sync response',

@@ -1972,6 +1972,22 @@ export function createConsoleGatewayRoutes(
           maxActiveClientCursor: maxNullable(
             statsValues.map((stats) => stats.maxActiveClientCursor)
           ),
+          snapshotChunkCount: sum((stats) => stats.snapshotChunkCount),
+          snapshotChunkBytes: sum((stats) => stats.snapshotChunkBytes),
+          expiredSnapshotChunkCount: sum(
+            (stats) => stats.expiredSnapshotChunkCount
+          ),
+          expiredSnapshotChunkBytes: sum(
+            (stats) => stats.expiredSnapshotChunkBytes
+          ),
+          snapshotArtifactCount: sum((stats) => stats.snapshotArtifactCount),
+          snapshotArtifactBytes: sum((stats) => stats.snapshotArtifactBytes),
+          expiredSnapshotArtifactCount: sum(
+            (stats) => stats.expiredSnapshotArtifactCount
+          ),
+          expiredSnapshotArtifactBytes: sum(
+            (stats) => stats.expiredSnapshotArtifactBytes
+          ),
           minCommitSeqByInstance,
           maxCommitSeqByInstance,
           partial: fetched.failedInstances.length > 0,

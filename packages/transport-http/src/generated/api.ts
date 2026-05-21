@@ -1181,6 +1181,14 @@ export interface operations {
                         activeClientCount: number;
                         minActiveClientCursor: number | null;
                         maxActiveClientCursor: number | null;
+                        snapshotChunkCount: number;
+                        snapshotChunkBytes: number;
+                        expiredSnapshotChunkCount: number;
+                        expiredSnapshotChunkBytes: number;
+                        snapshotArtifactCount: number;
+                        snapshotArtifactBytes: number;
+                        expiredSnapshotArtifactCount: number;
+                        expiredSnapshotArtifactBytes: number;
                     };
                 };
             };

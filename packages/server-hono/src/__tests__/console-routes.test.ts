@@ -703,6 +703,169 @@ describe('console timeline route filters', () => {
     await db.destroy();
   });
 
+  it('includes snapshot cache pressure in stats', async () => {
+    await db
+      .insertInto('sync_snapshot_chunks')
+      .values([
+        {
+          chunk_id: 'chunk-active-default',
+          partition_id: 'default',
+          scope_key: 'scope-a',
+          scope: 'tasks:user-a',
+          as_of_commit_seq: 2,
+          row_cursor: '',
+          row_limit: 100,
+          next_row_cursor: null,
+          is_last_page: 1,
+          encoding: 'binary-table-v1',
+          compression: 'gzip',
+          sha256: 'chunk-active-hash',
+          byte_length: 100,
+          blob_hash: 'blob:chunk-active',
+          expires_at: atIso(200),
+        },
+        {
+          chunk_id: 'chunk-expired-default',
+          partition_id: 'default',
+          scope_key: 'scope-a',
+          scope: 'tasks:user-a',
+          as_of_commit_seq: 2,
+          row_cursor: 'cursor-1',
+          row_limit: 100,
+          next_row_cursor: null,
+          is_last_page: 1,
+          encoding: 'binary-table-v1',
+          compression: 'gzip',
+          sha256: 'chunk-expired-hash',
+          byte_length: 40,
+          blob_hash: 'blob:chunk-expired',
+          expires_at: atIso(-10),
+        },
+        {
+          chunk_id: 'chunk-other-partition',
+          partition_id: 'other',
+          scope_key: 'scope-b',
+          scope: 'tasks:user-b',
+          as_of_commit_seq: 2,
+          row_cursor: '',
+          row_limit: 100,
+          next_row_cursor: null,
+          is_last_page: 1,
+          encoding: 'binary-table-v1',
+          compression: 'gzip',
+          sha256: 'chunk-other-hash',
+          byte_length: 200,
+          blob_hash: 'blob:chunk-other',
+          expires_at: atIso(200),
+        },
+      ])
+      .execute();
+
+    await db
+      .insertInto('sync_snapshot_artifacts')
+      .values([
+        {
+          artifact_id: 'artifact-active-default',
+          partition_id: 'default',
+          scope_key: 'scope-a',
+          subscription_id: 'sub-tasks',
+          table: 'tasks',
+          artifact_kind: 'sqlite-snapshot-v1',
+          schema_version: '1',
+          as_of_commit_seq: 2,
+          row_cursor: '',
+          row_limit: 100,
+          row_count: 100,
+          next_row_cursor: null,
+          is_first_page: 1,
+          is_last_page: 1,
+          compression: 'gzip',
+          sha256: 'artifact-active-hash',
+          byte_length: 1000,
+          manifest_digest: 'artifact-active-manifest',
+          feature_set_json: JSON.stringify([]),
+          manifest_json: JSON.stringify({ digest: 'artifact-active-manifest' }),
+          blob_hash: 'blob:artifact-active',
+          expires_at: atIso(200),
+        },
+        {
+          artifact_id: 'artifact-expired-default',
+          partition_id: 'default',
+          scope_key: 'scope-a',
+          subscription_id: 'sub-tasks',
+          table: 'tasks',
+          artifact_kind: 'sqlite-snapshot-v1',
+          schema_version: '1',
+          as_of_commit_seq: 2,
+          row_cursor: 'cursor-1',
+          row_limit: 100,
+          row_count: 40,
+          next_row_cursor: null,
+          is_first_page: 0,
+          is_last_page: 1,
+          compression: 'gzip',
+          sha256: 'artifact-expired-hash',
+          byte_length: 300,
+          manifest_digest: 'artifact-expired-manifest',
+          feature_set_json: JSON.stringify([]),
+          manifest_json: JSON.stringify({ digest: 'artifact-expired-manifest' }),
+          blob_hash: 'blob:artifact-expired',
+          expires_at: atIso(-10),
+        },
+        {
+          artifact_id: 'artifact-other-partition',
+          partition_id: 'other',
+          scope_key: 'scope-b',
+          subscription_id: 'sub-tasks',
+          table: 'tasks',
+          artifact_kind: 'sqlite-snapshot-v1',
+          schema_version: '1',
+          as_of_commit_seq: 2,
+          row_cursor: '',
+          row_limit: 100,
+          row_count: 100,
+          next_row_cursor: null,
+          is_first_page: 1,
+          is_last_page: 1,
+          compression: 'gzip',
+          sha256: 'artifact-other-hash',
+          byte_length: 500,
+          manifest_digest: 'artifact-other-manifest',
+          feature_set_json: JSON.stringify([]),
+          manifest_json: JSON.stringify({ digest: 'artifact-other-manifest' }),
+          blob_hash: 'blob:artifact-other',
+          expires_at: atIso(200),
+        },
+      ])
+      .execute();
+
+    const response = await app.request(
+      'http://localhost/console/stats?partitionId=default',
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      snapshotChunkCount: number;
+      snapshotChunkBytes: number;
+      expiredSnapshotChunkCount: number;
+      expiredSnapshotChunkBytes: number;
+      snapshotArtifactCount: number;
+      snapshotArtifactBytes: number;
+      expiredSnapshotArtifactCount: number;
+      expiredSnapshotArtifactBytes: number;
+    };
+    expect(body.snapshotChunkCount).toBe(2);
+    expect(body.snapshotChunkBytes).toBe(140);
+    expect(body.expiredSnapshotChunkCount).toBe(1);
+    expect(body.expiredSnapshotChunkBytes).toBe(40);
+    expect(body.snapshotArtifactCount).toBe(2);
+    expect(body.snapshotArtifactBytes).toBe(1300);
+    expect(body.expiredSnapshotArtifactCount).toBe(1);
+    expect(body.expiredSnapshotArtifactBytes).toBe(300);
+  });
+
   it('filters by actor, client, and table across merged timeline rows', async () => {
     const actorFiltered = await readTimeline({ actorId: 'actor-a' });
     expect(actorFiltered.total).toBe(3);
