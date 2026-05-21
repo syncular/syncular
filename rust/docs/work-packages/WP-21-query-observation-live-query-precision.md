@@ -182,6 +182,44 @@ bun test --cwd rust/bindings/browser \
 
 Result: passed. No benchmark was rerun for this test-only coverage slice.
 
+## Interface Impact
+
+Canonical semantics:
+
+- Runtime events should expose row/field-level deltas whenever the runtime
+  knows them. App code should not have to infer active-document behavior from
+  table-only events.
+- Incomplete metadata must degrade conservatively by rerunning affected queries
+  rather than dropping notifications.
+- Query-builder-first reads stay canonical; observation adds dependency hints
+  and refresh events, not predefined ORM reads.
+
+TypeScript/browser:
+
+- Kysely live-query helpers, `subscribeQuery(...)`, diagnostic counters, and
+  live-query event payloads must preserve `changedRows`, `changedFields`, CRDT
+  field metadata, and row-dependency hints.
+- Browser bindings should not reintroduce app-side broad table guessing when
+  precise runtime metadata exists.
+
+React:
+
+- Hooks should refresh from precise query events and row/field metadata. Broad
+  bootstrap reloads for active documents are a fallback only when the runtime
+  reports incomplete or overflowed event state.
+
+Tauri/React Native/Expo:
+
+- Bridge event JSON must preserve `changedRows`, `changedFields`,
+  CRDT-field metadata, `changedRowsTruncated`, and overflow/resync-required
+  signals.
+
+Testkit/docs:
+
+- Bridge and conformance scenarios should cover local writes, remote pulls,
+  conflicts, scope revocation, blob metadata updates, CRDT materialization, and
+  event overflow recovery.
+
 ## Next Action
 
 Closed. The remaining improvement is richer automatic field-level inference

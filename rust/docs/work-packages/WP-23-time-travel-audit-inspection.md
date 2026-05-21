@@ -111,6 +111,41 @@ Evidence:
 - `bun --cwd packages/transport-http tsgo`
 - `bun --cwd packages/console tsgo`
 
+## Interface Impact
+
+Canonical semantics:
+
+- Audit/time-travel inspection is read-only, redacted, scoped, and server
+  authoritative.
+- Normal clients should not receive hidden rows, raw row payload snapshots, or
+  history outside current authorization.
+- Debug exports are support artifacts with explicit redaction and size limits,
+  not a client-side rollback or raw data export surface.
+
+TypeScript/browser:
+
+- TypeScript host bindings may consume transport types and support-bundle
+  helpers, but normal app clients should not expose broad audit routes by
+  default.
+- Any support/debug export API must preserve redacted commit-change shapes and
+  stable error taxonomy.
+
+React:
+
+- React should not add general app hooks for audit history unless a product
+  support UI needs them. Support hooks, if added, should consume the same
+  redacted server/export surface.
+
+Tauri/React Native/Expo:
+
+- Bridge packages should expose only support-bundle/debug-export primitives
+  when needed and must not bridge raw row/request payloads to shells.
+
+Testkit/docs:
+
+- Testkit should provide reusable assertions for row history, commit diffs,
+  revocation, redacted exports, and forbidden-payload leak checks.
+
 ## First Slice
 
 Add read-only row history and commit diff inspection for server audit APIs:

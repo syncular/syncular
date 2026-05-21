@@ -123,6 +123,12 @@ The remaining risk is documentation and milestone drift: feature work can add
 new app-facing methods to one surface while other TypeScript host surfaces lag
 or keep old naming assumptions.
 
+## Progress
+
+- Added `Interface Impact` sections to WP-11, WP-17, WP-21, WP-22, WP-23, and
+  WP-24 so feature semantics stay owned by feature WPs while WP-26 tracks
+  TypeScript/platform projection.
+
 ## Interface Catch-Up Matrix
 
 | Feature WP | Semantic owner | TypeScript/browser impact | React impact | Tauri/RN/Expo bridge impact | Current decision |
@@ -162,5 +168,7 @@ or keep old naming assumptions.
 
 ## Next Action
 
-Start with the interface-impact audit. Do not add new feature behavior in this
-WP until the owning feature WP states the canonical semantics and red lines.
+Audit current TypeScript exports against the new interface-impact sections,
+starting with auth lease, lifecycle, live-query, command-history, audit/debug,
+and blob surfaces. Do not add new feature behavior in this WP until the owning
+feature WP states the canonical semantics and red lines.
