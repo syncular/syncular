@@ -4,7 +4,7 @@ wa-sqlite browser dialect for the legacy JavaScript Syncular runtime and
 runtime benchmarks.
 
 Rust-owned SQLite browser work lives in `@syncular/client` under
-`rust/bindings/browser`. Keep Rust client, WASM, and Kysely adapter code there;
+`packages/client`. Keep Rust client, WASM, and Kysely adapter code there;
 this package stays focused on the wa-sqlite baseline.
 
 ## Install

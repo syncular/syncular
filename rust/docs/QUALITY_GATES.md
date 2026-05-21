@@ -79,7 +79,7 @@ CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
 ```
 
 ```bash
-bun run --cwd rust/bindings/browser build:wasm
+bun run --cwd packages/client build:wasm
 ```
 
 ## TypeScript Packages
@@ -98,9 +98,9 @@ TypeScript client. Use Rust browser conformance and WASM size gates for package
 changes until the next Rust-only external benchmark harness is checked in.
 
 ```bash
-bun run rust:browser:test
-bun run rust:browser:build:wasm
-bun run rust:browser:size
+bun run client:test
+bun run client:build:wasm
+bun run client:size
 ```
 
 Performance-sensitive runtime changes still need before/after evidence in
@@ -131,14 +131,14 @@ cargo run --manifest-path /Users/bkniffler/conductor/workspaces/syncular/indiana
   --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
   --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
 
-bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
+bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client build:wasm
 
 SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
 SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=0 \
   docker compose -f stacks/syncular/docker-compose.yml up --build -d
 
 export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
-export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist
 export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
 export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=0
 

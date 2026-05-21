@@ -22,7 +22,7 @@ const attribution = process.argv.includes('--attribution');
 const json = process.argv.includes('--json');
 const reportPath = readArgValue('--report');
 const packageRoot = path.resolve(import.meta.dir, '..');
-const repoRoot = path.resolve(packageRoot, '../../..');
+const repoRoot = path.resolve(packageRoot, '../..');
 const wasmArg = readArgValue('--wasm');
 const wasmPath = wasmArg
   ? path.resolve(process.cwd(), wasmArg)

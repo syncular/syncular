@@ -8,7 +8,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/syncular/syncular.git",
-    "directory": "rust/bindings/browser"
+    "directory": "packages/client"
   },
   "bugs": {
     "url": "https://github.com/syncular/syncular/issues"
@@ -55,16 +55,16 @@
     "test:wasm:variants": "bun run build:wasm:core && bun test src/__tests__/variant-core.wasm.test.ts",
     "tsgo": "tsgo --noEmit",
     "build": "bun run build:wasm:variants && tsgo",
-    "build:wasm": "bun scripts/build-syncular-v2-wasm.ts --variant full && bun run generate:wasm-types && bun scripts/size-syncular-v2-wasm.ts --check --report ../../../.context/wasm-size/syncular-v2-wasm-size.txt",
+    "build:wasm": "bun scripts/build-syncular-v2-wasm.ts --variant full && bun run generate:wasm-types && bun scripts/size-syncular-v2-wasm.ts --check --report ../../.context/wasm-size/syncular-v2-wasm-size.txt",
     "build:wasm:perf": "bun scripts/build-syncular-v2-wasm.ts --out-dir dist/wasm-perf --variant full-perf --artifact-name full-perf --release-opt-level 3",
     "build:wasm:core": "bun scripts/build-syncular-v2-wasm.ts --out-dir dist/wasm-core --features web-owned-sqlite-core --variant core",
     "build:wasm:variants": "bun run build:wasm && bun run build:wasm:perf && bun run build:wasm:core && bun run catalog:wasm && bun run size:wasm:core && bun run size:wasm:perf",
     "build:wasm:dev": "bun scripts/build-syncular-v2-wasm.ts --dev && bun run generate:wasm-types",
     "catalog:wasm": "bun scripts/write-syncular-v2-wasm-catalog.ts --artifact dist/wasm-core --artifact dist/wasm --artifact dist/wasm-perf",
     "size:wasm": "bun scripts/size-syncular-v2-wasm.ts",
-    "size:wasm:check": "bun scripts/size-syncular-v2-wasm.ts --check --attribution --report ../../../.context/wasm-size/syncular-v2-wasm-size.txt",
-    "size:wasm:core": "bun scripts/size-syncular-v2-wasm.ts --wasm dist/wasm-core/syncular_v2_bg.wasm --report ../../../.context/wasm-size/syncular-v2-wasm-core-size.txt",
-    "size:wasm:perf": "bun scripts/size-syncular-v2-wasm.ts --wasm dist/wasm-perf/syncular_v2_bg.wasm --report ../../../.context/wasm-size/syncular-v2-wasm-perf-size.txt",
+    "size:wasm:check": "bun scripts/size-syncular-v2-wasm.ts --check --attribution --report ../../.context/wasm-size/syncular-v2-wasm-size.txt",
+    "size:wasm:core": "bun scripts/size-syncular-v2-wasm.ts --wasm dist/wasm-core/syncular_v2_bg.wasm --report ../../.context/wasm-size/syncular-v2-wasm-core-size.txt",
+    "size:wasm:perf": "bun scripts/size-syncular-v2-wasm.ts --wasm dist/wasm-perf/syncular_v2_bg.wasm --report ../../.context/wasm-size/syncular-v2-wasm-perf-size.txt",
     "release": "bunx syncular-publish"
   },
   "dependencies": {

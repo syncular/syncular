@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import type { SyncOperation } from '@syncular/core';
 import { Kysely } from 'kysely';
-import { syncConformance } from '../../../examples/todo-app/conformance/sync-conformance';
+import { syncConformance } from '../../../rust/examples/todo-app/conformance/sync-conformance';
 import {
   deleteTaskOperation,
   newTaskOperation,
@@ -15,7 +15,7 @@ import {
   syncularGeneratedTableConfig,
   taskChangedRows,
   taskSubscription,
-} from '../../../examples/todo-app/generated/typescript/syncular.generated';
+} from '../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import {
   createSyncularV2CommandHistory,
   type SyncularV2CommandHistoryError,
@@ -31,7 +31,7 @@ import type { SyncularV2Client, SyncularV2LiveQueryEvent } from './types';
 const conformance = JSON.parse(
   readFileSync(
     new URL(
-      '../../../examples/todo-app/conformance/generated-client.json',
+      '../../../rust/examples/todo-app/conformance/generated-client.json',
       import.meta.url
     ),
     'utf8'

@@ -3,22 +3,19 @@ import { createDatabase } from '@syncular/core';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import { type Kysely, sql } from 'kysely';
-import { createBunSqliteDialect } from '../../../../../packages/dialect-bun-sqlite/src';
-import {
-  createServerHandler,
-  ensureSyncSchema,
-} from '../../../../../packages/server/src';
-import { createSqliteServerDialect } from '../../../../../packages/server-dialect-sqlite/src';
-import {
-  createSyncRoutes,
-  getSyncWebSocketConnectionManager,
-} from '../../../../../packages/server-hono/src/routes';
 import {
   createSyncularAppDatabase,
   newTaskOperation,
   syncularGeneratedCodecs,
   taskSubscription,
-} from '../../../../examples/todo-app/generated/typescript/syncular.generated';
+} from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
+import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
+import { createServerHandler, ensureSyncSchema } from '../../../server/src';
+import { createSqliteServerDialect } from '../../../server-dialect-sqlite/src';
+import {
+  createSyncRoutes,
+  getSyncWebSocketConnectionManager,
+} from '../../../server-hono/src/routes';
 import type {
   SyncularV2Client,
   SyncularV2DiagnosticEvent,

@@ -25,9 +25,9 @@ import {
 } from './mutations';
 import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
+  SyncularV2AuthLeaseRecord,
   SyncularV2ClientEventSink,
   SyncularV2ClientEventType,
-  SyncularV2AuthLeaseRecord,
   SyncularV2ConflictResolution,
   SyncularV2ConflictStats,
   SyncularV2ConflictSummary,
@@ -168,17 +168,20 @@ export async function createSyncularBridgeClient<DB>(
       await options.bridge.setSubscriptions?.(subscriptions);
     },
     resumeFromBackground: (syncOptions) =>
-      requireBridgeMethod(options.bridge.resumeFromBackground, 'resumeFromBackground')(
-        syncOptions
-      ),
+      requireBridgeMethod(
+        options.bridge.resumeFromBackground,
+        'resumeFromBackground'
+      )(syncOptions),
     issueAuthLease: (request) =>
-      requireBridgeMethod(options.bridge.issueAuthLease, 'issueAuthLease')(
-        request
-      ),
+      requireBridgeMethod(
+        options.bridge.issueAuthLease,
+        'issueAuthLease'
+      )(request),
     upsertAuthLease: (lease) =>
-      requireBridgeMethod(options.bridge.upsertAuthLease, 'upsertAuthLease')(
-        lease
-      ),
+      requireBridgeMethod(
+        options.bridge.upsertAuthLease,
+        'upsertAuthLease'
+      )(lease),
     authLease: (leaseId) =>
       requireBridgeMethod(options.bridge.authLease, 'authLease')(leaseId),
     activeAuthLeases: (actorId, nowMs) =>
@@ -187,7 +190,10 @@ export async function createSyncularBridgeClient<DB>(
         nowMs
       ),
     diagnosticSnapshot: () =>
-      requireBridgeMethod(options.bridge.diagnosticSnapshot, 'diagnosticSnapshot')(),
+      requireBridgeMethod(
+        options.bridge.diagnosticSnapshot,
+        'diagnosticSnapshot'
+      )(),
     presence: createBridgePresence(options.bridge),
     conflicts: createBridgeConflicts(options.bridge),
     start: async () => {
@@ -302,9 +308,7 @@ function createSyncularBridgeCommit<DB>(
           'applyLeasedMutationsCommit'
         )
       : options.bridge.applyMutationsCommit.bind(options.bridge);
-    const receipt = normalizeMutationReceipt(
-      await commitFn({ operations })
-    );
+    const receipt = normalizeMutationReceipt(await commitFn({ operations }));
     await afterCommit();
     return { result, receipt, meta: { operations } };
   };

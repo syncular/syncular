@@ -98,6 +98,20 @@
         "@types/node": "^25.5.2",
       },
     },
+    "packages/client": {
+      "name": "@syncular/client",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncular/core": "workspace:*",
+        "kysely": "^0.28.0",
+        "kysely-generic-sqlite": "^1.2.1",
+      },
+      "devDependencies": {
+        "@happy-dom/global-registrator": "^20.8.9",
+        "@syncular/config": "workspace:*",
+        "hono": "^4.12.15",
+      },
+    },
     "packages/client-crdt-adapters": {
       "name": "@syncular/client-crdt-adapters",
       "version": "0.0.0",
@@ -688,20 +702,6 @@
       },
       "devDependencies": {
         "@syncular/config": "workspace:*",
-      },
-    },
-    "rust/bindings/browser": {
-      "name": "@syncular/client",
-      "version": "0.0.0",
-      "dependencies": {
-        "@syncular/core": "workspace:*",
-        "kysely": "^0.28.0",
-        "kysely-generic-sqlite": "^1.2.1",
-      },
-      "devDependencies": {
-        "@happy-dom/global-registrator": "^20.8.9",
-        "@syncular/config": "workspace:*",
-        "hono": "^4.12.15",
       },
     },
     "rust/examples/todo-app": {
@@ -1945,7 +1945,7 @@
 
     "@swc/helpers": ["@swc/helpers@0.5.15", "", { "dependencies": { "tslib": "^2.8.0" } }, "sha512-JQ5TuMi45Owi4/BIMAJBoSQoOJu12oOk/gADqlcUL9JEdHB8vyjUSsxqeNXnmXHjYKMi2WcYtezGEEhqUI/E2g=="],
 
-    "@syncular/client": ["@syncular/client@workspace:rust/bindings/browser"],
+    "@syncular/client": ["@syncular/client@workspace:packages/client"],
 
     "@syncular/client-crdt-adapters": ["@syncular/client-crdt-adapters@workspace:packages/client-crdt-adapters"],
 

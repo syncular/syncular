@@ -1,7 +1,15 @@
 import type { SyncAuthLeaseCapabilities } from '@syncular/core';
 import { type BlobRef, createDatabase } from '@syncular/core';
 import type { Kysely } from 'kysely';
-import { createBunSqliteDialect } from '../../../../../../packages/dialect-bun-sqlite/src';
+import { createYjsServerPushPlugin } from '../../../../../../plugins/yjs/server/src';
+import {
+  createSyncularAppDatabase,
+  type SyncularAppDatabase,
+  syncularGeneratedCodecs,
+  syncularGeneratedSchemaVersion,
+} from '../../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
+import { syncularGeneratedServerSnapshotBinary } from '../../../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
+import { createBunSqliteDialect } from '../../../../dialect-bun-sqlite/src';
 import {
   createBlobManager,
   createDatabaseBlobStorageAdapter,
@@ -17,23 +25,15 @@ import {
   type SyncAuthResult,
   type SyncBlobDb,
   type SyncCoreDb,
-} from '../../../../../../packages/server/src';
-import { createBunSqliteSnapshotArtifactEncoder } from '../../../../../../packages/server/src/snapshot-artifacts/sqlite-bun';
-import { createSqliteServerDialect } from '../../../../../../packages/server-dialect-sqlite/src';
-import { createBlobRoutes } from '../../../../../../packages/server-hono/src/blobs';
-import { createSyncRoutes } from '../../../../../../packages/server-hono/src/routes';
+} from '../../../../server/src';
+import { createBunSqliteSnapshotArtifactEncoder } from '../../../../server/src/snapshot-artifacts/sqlite-bun';
+import { createSqliteServerDialect } from '../../../../server-dialect-sqlite/src';
+import { createBlobRoutes } from '../../../../server-hono/src/blobs';
+import { createSyncRoutes } from '../../../../server-hono/src/routes';
 import {
   closeNodeServer,
   createNodeHonoServer,
-} from '../../../../../../packages/testkit/src/hono-node-server';
-import { createYjsServerPushPlugin } from '../../../../../../plugins/yjs/server/src';
-import {
-  createSyncularAppDatabase,
-  type SyncularAppDatabase,
-  syncularGeneratedCodecs,
-  syncularGeneratedSchemaVersion,
-} from '../../../../../examples/todo-app/generated/typescript/syncular.generated';
-import { syncularGeneratedServerSnapshotBinary } from '../../../../../examples/todo-app/generated/typescript/syncular.server.generated';
+} from '../../../../testkit/src/hono-node-server';
 import type {
   CreateSyncularV2DatabaseOptions,
   SyncularV2AuthHeaders,

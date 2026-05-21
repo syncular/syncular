@@ -5,7 +5,7 @@ import {
   createDatabase,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
-import { createBunSqliteDialect } from '../../../../../packages/dialect-bun-sqlite/src';
+import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import {
   type BlobTokenSigner,
   createBlobManager,
@@ -13,12 +13,12 @@ import {
   createHmacTokenSigner,
   ensureBlobStorageSchemaSqlite,
   type SyncBlobDb,
-} from '../../../../../packages/server/src';
-import { createBlobRoutes } from '../../../../../packages/server-hono/src/blobs';
+} from '../../../server/src';
+import { createBlobRoutes } from '../../../server-hono/src/blobs';
 import {
   closeNodeServer,
   createNodeHonoServer,
-} from '../../../../../packages/testkit/src/hono-node-server';
+} from '../../../testkit/src/hono-node-server';
 import {
   openSyncularV2RustClient,
   type SyncularV2RustClient,

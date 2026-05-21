@@ -5,9 +5,6 @@ import {
   type SyncOperation,
 } from '@syncular/core';
 import { Kysely, sql } from 'kysely';
-import { createBunSqliteDialect } from '../../../../packages/dialect-bun-sqlite/src';
-import { createServerHandler } from '../../../../packages/server/src/handlers';
-import type { SyncCoreDb } from '../../../../packages/server/src/schema';
 import {
   ensureSyncularAppBaseSchema,
   ensureSyncularAppSchema,
@@ -15,7 +12,10 @@ import {
   syncularGeneratedCodecs,
   syncularGeneratedSchemaVersion,
   syncularGeneratedTableConfig,
-} from '../../../examples/todo-app/generated/typescript/syncular.generated';
+} from '../../../rust/examples/todo-app/generated/typescript/syncular.generated';
+import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
+import { createServerHandler } from '../../server/src/handlers';
+import type { SyncCoreDb } from '../../server/src/schema';
 import {
   createSyncularV2BlobClient,
   createSyncularV2Commit,

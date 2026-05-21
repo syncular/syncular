@@ -6,7 +6,7 @@
     "sourceMap": false,
     "declarationMap": false,
     "paths": {
-      "@syncular/client": ["../../rust/bindings/browser/src/index.ts"]
+      "@syncular/client": ["../client/src/index.ts"]
     }
   },
   "include": ["src/**/*.ts"],

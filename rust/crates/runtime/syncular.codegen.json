@@ -1,7 +1,7 @@
 {
   "typescriptOutputPath": "../../examples/todo-app/generated/typescript/syncular.generated.ts",
   "typescriptServerOutputPath": "../../examples/todo-app/generated/typescript/syncular.server.generated.ts",
-  "typescriptRuntimeImportPath": "../../../../bindings/browser/src",
+  "typescriptRuntimeImportPath": "../../../../../packages/client/src",
   "rustRuntimeCratePath": "syncular_runtime",
   "nativeSwiftOutputPath": "../../examples/todo-app/generated/swift/SyncularApp.swift",
   "nativeKotlinOutputPath": "../../examples/todo-app/generated/kotlin/SyncularApp.kt",

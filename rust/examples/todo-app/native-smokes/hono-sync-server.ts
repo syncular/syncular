@@ -2,6 +2,12 @@ import { writeFile } from 'node:fs/promises';
 import { createDatabase } from '@syncular/core';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
+import {
+  ensureHonoSyncTasksTable,
+  type HonoAuthContext,
+  type HonoSyncClientDb,
+  type HonoSyncServerDb,
+} from '../../../../packages/client/src/__tests__/fixtures/hono-sync-harness';
 import { createBunSqliteDialect } from '../../../../packages/dialect-bun-sqlite/src';
 import {
   createBlobManager,
@@ -17,12 +23,6 @@ import {
   createSyncRoutes,
   getSyncWebSocketConnectionManager,
 } from '../../../../packages/server-hono/src/routes';
-import {
-  ensureHonoSyncTasksTable,
-  type HonoAuthContext,
-  type HonoSyncClientDb,
-  type HonoSyncServerDb,
-} from '../../../bindings/browser/src/__tests__/fixtures/hono-sync-harness';
 import { syncConformance } from '../conformance/sync-conformance';
 import {
   syncularGeneratedCodecs,

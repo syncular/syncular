@@ -9,4 +9,4 @@ export {
   type SyncScenarioTaskInput,
   type SyncScenarioTaskRow,
   syncConformance,
-} from '../../../../../examples/todo-app/conformance/sync-conformance';
+} from '../../../../../rust/examples/todo-app/conformance/sync-conformance';
