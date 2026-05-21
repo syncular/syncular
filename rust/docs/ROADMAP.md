@@ -591,8 +591,11 @@ read-only review:
   - First retained slice adds a browser/Hono regression proving Kysely live
     queries can infer generated app-table dependencies and refresh from
     row-level sync apply metadata without the app passing broad table-only
-    dependencies. Next: add optional row/field dependency hints for simple
-    generated-query shapes so changed-row metadata can skip unnecessary reruns.
+    dependencies. Browser live-query registration now also carries optional
+    row-id dependency hints for simple primary-key equality predicates, and the
+    Rust-owned browser SQLite invalidator uses those hints only when
+    changed-row metadata is complete. Next: add native parity and a focused
+    skip-rerun counter/benchmark for unrelated row churn.
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)

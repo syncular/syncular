@@ -963,6 +963,12 @@ export interface SyncularV2LiveQueryEvent<
   rows: Row[];
 }
 
+export interface SyncularV2LiveQueryDependencyHint {
+  table: string;
+  rowIds?: readonly string[];
+  fields?: readonly string[];
+}
+
 export interface SyncularV2LiveQueries {
   live<Row extends Record<string, unknown>>(
     query: { compile(): CompiledQuery },
@@ -995,7 +1001,8 @@ export interface SyncularV2SqlClient {
   subscribeQuery<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params: readonly unknown[],
-    tables: readonly string[]
+    tables: readonly string[],
+    hints?: readonly SyncularV2LiveQueryDependencyHint[]
   ): Promise<SyncularV2LiveQuerySnapshot<Row>>;
   unsubscribeQuery(id: string): Promise<void>;
   drainLiveQueryEvents<

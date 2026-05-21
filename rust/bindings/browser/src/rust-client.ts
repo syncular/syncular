@@ -56,6 +56,7 @@ import type {
   SyncularV2LocalSyncResetReport,
   SyncularV2LocalSyncResetRequest,
   SyncularV2LiveQueryEvent,
+  SyncularV2LiveQueryDependencyHint,
   SyncularV2LiveQuerySnapshot,
   SyncularV2PullOptions,
   SyncularV2RowsChangedEvent,
@@ -462,13 +463,15 @@ export class SyncularV2RustClient {
   subscribeQuery<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params: readonly unknown[],
-    tables: readonly string[]
+    tables: readonly string[],
+    hints: readonly SyncularV2LiveQueryDependencyHint[] = []
   ): SyncularV2LiveQuerySnapshot<Row> {
     return parseJson(
       this.raw.subscribeQueryJson(
         sql,
         stringifyParams(params),
-        JSON.stringify(tables)
+        JSON.stringify(tables),
+        JSON.stringify(hints)
       )
     );
   }

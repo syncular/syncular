@@ -22,7 +22,10 @@ import {
   createSyncularV2Dialect,
   withSyncularV2SchemaWrites,
 } from './database';
-import type { SyncularV2Client } from './types';
+import type {
+  SyncularV2Client,
+  SyncularV2LiveQueryDependencyHint,
+} from './types';
 
 describe('Syncular v2 mutations', () => {
   it('keeps BlobRef mutation payloads app-shaped while encoding local SQLite rows', async () => {
@@ -319,6 +322,56 @@ describe('Syncular v2 live query dependencies', () => {
     expect(probe.subscriptions).toEqual([['tasks']]);
   });
 
+  it('passes primary-key live query row hints to the Rust subscription', async () => {
+    const probe = createLiveClientProbe();
+    const dialect = createSyncularV2Dialect(probe.client, {
+      appTables: ['tasks'],
+      tableConfig: { tasks: { primaryKeyColumn: 'id' } },
+    });
+    const db = new Kysely<LiveQueryDb>({ dialect });
+
+    try {
+      await dialect.live(
+        db
+          .selectFrom('tasks')
+          .select(['id', 'title'])
+          .where('id', '=', 'task-42')
+          .where('completed', '=', 0),
+        { onChange() {} }
+      );
+    } finally {
+      await db.destroy();
+    }
+
+    expect(probe.subscriptions).toEqual([['tasks']]);
+    expect(probe.hints).toEqual([[{ table: 'tasks', rowIds: ['task-42'] }]]);
+  });
+
+  it('does not infer row hints through disjunctive predicates', async () => {
+    const probe = createLiveClientProbe();
+    const dialect = createSyncularV2Dialect(probe.client, {
+      appTables: ['tasks'],
+      tableConfig: { tasks: { primaryKeyColumn: 'id' } },
+    });
+    const db = new Kysely<LiveQueryDb>({ dialect });
+
+    try {
+      await dialect.live(
+        db
+          .selectFrom('tasks')
+          .select(['id', 'title'])
+          .where((eb) =>
+            eb.or([eb('id', '=', 'task-42'), eb('completed', '=', 0)])
+          ),
+        { onChange() {} }
+      );
+    } finally {
+      await db.destroy();
+    }
+
+    expect(probe.hints).toEqual([[]]);
+  });
+
   it('rejects explicit live query tables outside the generated app schema', async () => {
     const probe = createLiveClientProbe();
     const dialect = createSyncularV2Dialect(probe.client, {
@@ -510,17 +563,21 @@ interface LiveQueryDb {
 function createLiveClientProbe(): {
   client: SyncularV2Client;
   subscriptions: string[][];
+  hints: SyncularV2LiveQueryDependencyHint[][];
   unsubscribed: string[];
 } {
   const subscriptions: string[][] = [];
+  const hints: SyncularV2LiveQueryDependencyHint[][] = [];
   const unsubscribed: string[] = [];
   const client = {
     async subscribeQuery(
       _sql: string,
       _params: readonly unknown[],
-      tables: readonly string[]
+      tables: readonly string[],
+      dependencyHints: readonly SyncularV2LiveQueryDependencyHint[] = []
     ) {
       subscriptions.push([...tables]);
+      hints.push(dependencyHints.map((hint) => ({ ...hint })));
       return { id: `query-${subscriptions.length}`, rows: [] };
     },
     async unsubscribeQuery(id: string) {
@@ -533,7 +590,7 @@ function createLiveClientProbe(): {
     },
     async close() {},
   } as unknown as SyncularV2Client;
-  return { client, subscriptions, unsubscribed };
+  return { client, subscriptions, hints, unsubscribed };
 }
 
 function createSqlBoundaryProbe(): {

@@ -93,7 +93,8 @@ export interface RawSyncularV2RustClient {
   subscribeQueryJson(
     sql: string,
     paramsJson: string,
-    tablesJson: string
+    tablesJson: string,
+    hintsJson: string
   ): string;
   unsubscribeQuery(id: string): void;
   drainLiveQueryEventsJson(): string;

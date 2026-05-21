@@ -401,8 +401,19 @@ struct LiveQuery {
     id: String,
     params: Vec<Value>,
     tables: Vec<String>,
+    dependency_hints: Vec<LiveQueryDependencyHint>,
     last_hash: String,
     stmt: *mut ffi::sqlite3_stmt,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct LiveQueryDependencyHint {
+    table: String,
+    #[serde(default)]
+    row_ids: Vec<String>,
+    #[serde(default)]
+    fields: Vec<String>,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -596,8 +607,9 @@ impl SyncularRustOwnedSqlite {
         sql: &str,
         params_json: &str,
         tables_json: &str,
+        hints_json: &str,
     ) -> std::result::Result<String, JsValue> {
-        self.subscribe_query_json_inner(sql, params_json, tables_json)
+        self.subscribe_query_json_inner(sql, params_json, tables_json, hints_json)
             .map_err(error_to_js)
     }
 
@@ -1537,10 +1549,11 @@ impl SyncularRustOwnedSqliteClient {
         sql: &str,
         params_json: &str,
         tables_json: &str,
+        hints_json: &str,
     ) -> std::result::Result<String, JsValue> {
         self.inner
             .store_mut()
-            .subscribe_query_json_inner(sql, params_json, tables_json)
+            .subscribe_query_json_inner(sql, params_json, tables_json, hints_json)
             .map_err(error_to_js)
     }
 
@@ -3959,11 +3972,16 @@ impl SyncularRustOwnedSqlite {
         sql: &str,
         params_json: &str,
         tables_json: &str,
+        hints_json: &str,
     ) -> Result<String> {
         let params = parse_params(params_json)?;
         let tables: Vec<String> = serde_json::from_str(tables_json)?;
         for table in &tables {
             validate_table_name(table)?;
+        }
+        let dependency_hints: Vec<LiveQueryDependencyHint> = serde_json::from_str(hints_json)?;
+        for hint in &dependency_hints {
+            validate_table_name(&hint.table)?;
         }
         let stmt = prepare_sql_statement(self.db, sql, SqlExecutionMode::Readonly)?;
         let rows = match execute_prepared_sql(self.db, stmt, &params, "live query") {
@@ -3979,6 +3997,7 @@ impl SyncularRustOwnedSqlite {
             id: id.clone(),
             params,
             tables,
+            dependency_hints,
             last_hash,
             stmt,
         });
@@ -4142,7 +4161,7 @@ impl SyncularRustOwnedSqlite {
     }
 
     fn invalidate_live_queries(&mut self, changed_tables: &[String]) -> Result<()> {
-        self.invalidate_live_queries_with_rows(changed_tables, &[])
+        self.invalidate_live_queries_with_rows(changed_tables, &[], false)
     }
 
     fn notify_local_tables_changed_with_rows(
@@ -4150,7 +4169,7 @@ impl SyncularRustOwnedSqlite {
         changed_tables: &[String],
         changed_rows: &[SyncChangedRow],
     ) -> Result<()> {
-        self.invalidate_live_queries_with_rows(changed_tables, changed_rows)?;
+        self.invalidate_live_queries_with_rows(changed_tables, changed_rows, false)?;
         self.push_rows_changed_event("localWrite", changed_tables, changed_rows);
         Ok(())
     }
@@ -4175,6 +4194,7 @@ impl SyncularRustOwnedSqlite {
         &mut self,
         changed_tables: &[String],
         changed_rows: &[SyncChangedRow],
+        changed_rows_truncated: bool,
     ) -> Result<()> {
         let changed = changed_tables
             .iter()
@@ -4182,11 +4202,12 @@ impl SyncularRustOwnedSqlite {
             .collect::<std::collections::HashSet<_>>();
         let mut next_events = Vec::new();
         for index in 0..self.live_queries.len() {
-            let should_rerun = self.live_queries[index]
-                .tables
-                .iter()
-                .any(|table| changed.contains(table.as_str()));
-            if !should_rerun {
+            if !Self::live_query_should_rerun(
+                &self.live_queries[index],
+                &changed,
+                changed_rows,
+                changed_rows_truncated,
+            ) {
                 continue;
             }
 
@@ -4209,6 +4230,66 @@ impl SyncularRustOwnedSqlite {
         }
         self.live_events.extend(next_events);
         Ok(())
+    }
+
+    fn live_query_should_rerun(
+        query: &LiveQuery,
+        changed_tables: &std::collections::HashSet<&str>,
+        changed_rows: &[SyncChangedRow],
+        changed_rows_truncated: bool,
+    ) -> bool {
+        let affected_tables = query
+            .tables
+            .iter()
+            .filter(|table| changed_tables.contains(table.as_str()))
+            .collect::<Vec<_>>();
+        if affected_tables.is_empty() {
+            return false;
+        }
+        if query.dependency_hints.is_empty() || changed_rows.is_empty() || changed_rows_truncated {
+            return true;
+        }
+
+        for table in affected_tables {
+            let table_rows = changed_rows
+                .iter()
+                .filter(|row| row.table == *table)
+                .collect::<Vec<_>>();
+            if table_rows.is_empty() {
+                return true;
+            }
+            let table_hints = query
+                .dependency_hints
+                .iter()
+                .filter(|hint| hint.table == *table)
+                .collect::<Vec<_>>();
+            if table_hints.is_empty() {
+                return true;
+            }
+            if table_rows.iter().any(|row| {
+                table_hints
+                    .iter()
+                    .any(|hint| Self::hint_matches_changed_row(hint, row))
+            }) {
+                return true;
+            }
+        }
+        false
+    }
+
+    fn hint_matches_changed_row(hint: &LiveQueryDependencyHint, row: &SyncChangedRow) -> bool {
+        let Some(row_id) = row.row_id.as_deref() else {
+            return true;
+        };
+        if !hint.row_ids.is_empty() && !hint.row_ids.iter().any(|id| id == row_id) {
+            return false;
+        }
+        if hint.fields.is_empty() || row.changed_fields.is_empty() {
+            return true;
+        }
+        row.changed_fields
+            .iter()
+            .any(|field| hint.fields.iter().any(|hint_field| hint_field == field))
     }
 
     fn count_rows_inner(&self, table: &str) -> Result<i32> {
@@ -5437,7 +5518,18 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         tables: &'a [String],
         changed_rows: &'a [SyncChangedRow],
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-        Box::pin(async move { self.invalidate_live_queries_with_rows(tables, changed_rows) })
+        Box::pin(async move { self.invalidate_live_queries_with_rows(tables, changed_rows, false) })
+    }
+
+    fn notify_tables_changed_with_rows_meta<'a>(
+        &'a mut self,
+        tables: &'a [String],
+        changed_rows: &'a [SyncChangedRow],
+        changed_rows_truncated: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            self.invalidate_live_queries_with_rows(tables, changed_rows, changed_rows_truncated)
+        })
     }
 
     fn notify_local_tables_changed_with_rows<'a>(
