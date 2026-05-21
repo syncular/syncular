@@ -83,11 +83,20 @@ Native diagnostic snapshot coverage now also sets dynamic auth headers before
 capturing diagnostics and proves bearer/API-key values and header names are not
 serialized into the diagnostic snapshot.
 
+Default scoped server pushes now enforce `resolveScopes(ctx)` in the built-in
+table handler write path. Inserts, updates, deletes, and conflict checks for
+scoped tables reject rows outside the actor's allowed scopes with
+`sync.forbidden`; the denial tests prove forbidden writes do not materialize app
+rows, `sync_changes`, `sync_table_commits`, or `sync_scope_commits`, and do not
+echo forbidden row contents in conflict/error payloads. Write scope resolution
+failures also fail closed with the same rejected push shape.
+
 ## Next Action
 
 Use the pull/realtime/artifact, blob-token, and encrypted-CRDT outbox tests as
 templates for the remaining privacy surfaces: encrypted CRDT denial/revocation
-edges, console partition/detail denial, and broader debug-bundle redaction.
+edges, broader debug-bundle redaction, and any console detail/export surfaces
+not already covered by partition-bound route tests.
 
 ## Progress
 
@@ -105,10 +114,18 @@ edges, console partition/detail denial, and broader debug-bundle redaction.
   update/state fields.
 - Extended native diagnostic snapshot redaction coverage to prove host auth
   headers are not included in diagnostics.
+- Changed the default scoped server handler so declared scopes are also enforced
+  on writes, not only pull/realtime filtering. Added push coverage for
+  forbidden inserts, updates, and deletes, including no app row mutation, no
+  emitted sync changes, no routing index entries, and no forbidden row-content
+  leakage in rejected responses. Added fail-closed coverage for write
+  `resolveScopes` failures.
 - Gates run in `packages/server-hono`:
   `bun test src/__tests__/create-server.test.ts`,
   `bun test src/__tests__/blob-routes.test.ts`, `bun test src/__tests__`, and
   `bun run tsgo`.
+- Gates run in `packages/server`: `bun test src/push-operation-codes.test.ts`,
+  `bun test src`, and `bun run tsgo`.
 - Gates run for runtime CRDT coverage:
   `cargo fmt --manifest-path rust/Cargo.toml --all`,
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field rust_client_exposes_encrypted_crdt_field_through_same_identity --features native,crdt-yjs,demo-todo-native-fixture`,
