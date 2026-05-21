@@ -739,8 +739,10 @@ read-only review:
     dialect-level scoped row-history reads, supports commit-range pagination,
     returns redacted field/scope summaries instead of raw payloads, and fails
     unauthorized scope reads as `sync.not_found` without leaking hidden content.
-    SQLite and Postgres dialects implement the new reader. Next: console
-    timeline integration and richer commit-diff categories.
+    SQLite and Postgres dialects implement the new reader. Console now exposes a
+    redacted partition-scoped row-history endpoint that links entries to request
+    event ids, request ids, and trace ids for timeline navigation. Next: richer
+    commit-diff categories.
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 

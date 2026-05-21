@@ -76,10 +76,15 @@ The first server API slice now exists:
   It does not return stored row payloads by default.
 - Unauthorized scope attempts return `sync.not_found` and tests assert the
   hidden title/commit id is not leaked.
+- Console now has `GET /row-history/:table/:rowId`, which returns the same
+  redacted history shape for an operator-selected partition and links each
+  entry to existing request/timeline evidence through request event ids,
+  request ids, and trace ids.
 
 Evidence:
 
 - `bun test packages/server-hono/src/__tests__/audit-routes.test.ts`
+- `bun test packages/server-hono/src/__tests__/console-routes.test.ts`
 - `bun --cwd packages/server tsgo`
 - `bun --cwd packages/server-dialect-sqlite tsgo`
 - `bun --cwd packages/server-dialect-postgres tsgo`
@@ -91,12 +96,12 @@ Add read-only row history and commit diff inspection for server audit APIs:
 
 1. `[x]` Define scoped audit query inputs for `table`, `rowId`, and commit range.
 2. `[x]` Return redacted change summaries rather than raw hidden payloads by default.
-3. `[ ]` Link audit results to existing console timeline/request events.
+3. `[x]` Link audit results to existing console timeline/request events.
 4. `[x]` Prove unauthorized row history requests fail without leaking existence or
    payload details.
 
 ## Next Action
 
-Add console/timeline integration for the scoped row-history endpoint, then add
-commit-diff redaction semantics for app rows, blobs, encrypted envelopes, and
-CRDT evidence.
+Add commit-diff redaction semantics for app rows, blobs, encrypted envelopes,
+and CRDT evidence. After that, add testkit scenarios for scoped row history and
+redacted export.

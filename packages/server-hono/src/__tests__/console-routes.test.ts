@@ -390,6 +390,26 @@ describe('console timeline route filters', () => {
     );
   }
 
+  async function requestRowHistory(
+    table: string,
+    rowId: string,
+    query: Record<string, string | number | undefined> = {}
+  ): Promise<Response> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+    const queryString = params.toString();
+
+    return app.request(
+      `http://localhost/console/row-history/${table}/${rowId}${queryString ? `?${queryString}` : ''}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+  }
+
   async function requestEventDetail(
     eventId: number,
     query: Record<string, string | number | undefined> = {}
@@ -808,7 +828,9 @@ describe('console timeline route filters', () => {
           byte_length: 300,
           manifest_digest: 'artifact-expired-manifest',
           feature_set_json: JSON.stringify([]),
-          manifest_json: JSON.stringify({ digest: 'artifact-expired-manifest' }),
+          manifest_json: JSON.stringify({
+            digest: 'artifact-expired-manifest',
+          }),
           blob_hash: 'blob:artifact-expired',
           expires_at: atIso(-10),
         },
@@ -988,6 +1010,80 @@ describe('console timeline route filters', () => {
     });
 
     expect(response.status).toBe(400);
+  });
+
+  it('returns redacted console row history linked to request events', async () => {
+    const commitRow = await db
+      .selectFrom('sync_commits')
+      .select(['commit_seq'])
+      .where('partition_id', '=', 'default')
+      .where('client_commit_id', '=', 'commit-a')
+      .executeTakeFirst();
+    const commitSeq = Number(commitRow?.commit_seq);
+    expect(Number.isFinite(commitSeq)).toBe(true);
+
+    await db
+      .insertInto('sync_changes')
+      .values({
+        partition_id: 'default',
+        commit_seq: commitSeq,
+        table: 'tasks',
+        row_id: 'row-a',
+        op: 'upsert',
+        row_json: JSON.stringify({
+          id: 'row-a',
+          title: 'Hidden payload title',
+          user_id: 'actor-a',
+        }),
+        row_version: 7,
+        scopes: JSON.stringify({ user_id: 'actor-a' }),
+      })
+      .execute();
+
+    const response = await requestRowHistory('tasks', 'row-a', {
+      partitionId: 'default',
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      table: string;
+      rowId: string;
+      partitionId: string;
+      history: Array<{
+        commitSeq: number;
+        clientCommitId: string;
+        fields: string[];
+        scopeFields: string[];
+        requestEventIds: number[];
+        requestIds: string[];
+        traceIds: string[];
+        rowJson?: unknown;
+      }>;
+      nextCursor: number | null;
+    };
+
+    expect(payload).toMatchObject({
+      table: 'tasks',
+      rowId: 'row-a',
+      partitionId: 'default',
+      nextCursor: null,
+    });
+    expect(payload.history).toHaveLength(1);
+    expect(payload.history[0]).toMatchObject({
+      commitSeq,
+      clientCommitId: 'commit-a',
+      fields: ['id', 'title', 'user_id'],
+      scopeFields: ['user_id'],
+      requestIds: ['req-1'],
+      traceIds: ['trace-1'],
+    });
+    expect(payload.history[0]?.requestEventIds).toHaveLength(1);
+    expect(payload.history[0]).not.toHaveProperty('rowJson');
+    expect(JSON.stringify(payload)).not.toContain('Hidden payload title');
+
+    const wrongPartition = await requestRowHistory('tasks', 'row-a', {
+      partitionId: 'tenant-b',
+    });
+    expect(wrongPartition.status).toBe(404);
   });
 
   it('lists operation audit events and filters by operation type', async () => {
