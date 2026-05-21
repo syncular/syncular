@@ -179,11 +179,11 @@ Add scope-aware blob authorization helpers and diagnostics:
 
 ## Next Action
 
-Continue WP-24 with server diagnostic payload detail for auth rejection and
-shared failure conformance without adding polling loops or hash-only access
-fallbacks. Browser payload size limits, browser/native cache/upload
-diagnostics, and native corrupted-download coverage are now explicit; next
-tighten server-adapter failure scenarios and cross-binding conformance.
+Continue WP-24 with shared auth/scope failure conformance without adding
+polling loops or hash-only access fallbacks. Browser payload size limits,
+browser/native cache/upload diagnostics, native corrupted-download coverage,
+and server max-size route coverage are now explicit; next tighten remaining
+cross-binding blob failure coverage.
 
 Latest evidence:
 
@@ -318,3 +318,19 @@ Latest evidence:
 
 - `cargo fmt` from `rust/`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test blob_transport corrupted --features native,crdt-yjs,demo-todo-native-fixture`
+
+## Eighth Slice
+
+Add server max-size failure conformance:
+
+1. `[x]` Cover `POST /blobs/upload` rejecting oversized metadata before the
+   server mints an upload URL.
+2. `[x]` Cover direct `PUT /blobs/:hash/upload` rejecting a `Content-Length`
+   above the route `maxUploadSize` with stable `blob.too_large` error shape.
+3. `[x]` Keep the existing hash/size mismatch tests as separate integrity
+   checks so max-size failures do not collapse into generic mismatch behavior.
+
+Latest evidence:
+
+- `bun --cwd packages/server-hono tsgo`
+- `bun test packages/server-hono/src/__tests__/blob-routes.test.ts`

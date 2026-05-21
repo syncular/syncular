@@ -209,6 +209,7 @@ function buildApp(args: {
     c: Parameters<typeof createBlobRoutes>[0]['authenticate']
   ) => ReturnType<Parameters<typeof createBlobRoutes>[0]['authenticate']>;
   canAccessBlob?: Parameters<typeof createBlobRoutes>[0]['canAccessBlob'];
+  maxUploadSize?: number;
 }): Hono {
   const blobManager = createBlobManager({
     db: args.db,
@@ -230,6 +231,7 @@ function buildApp(args: {
       tokenSigner: args.tokenSigner,
       db: args.db,
       canAccessBlob: args.canAccessBlob ?? (async () => true),
+      maxUploadSize: args.maxUploadSize,
     })
   );
   return app;
@@ -355,6 +357,80 @@ describe('createBlobRoutes', () => {
       category: 'auth-required',
       retryable: true,
       recommendedAction: 'refreshAuth',
+    });
+  });
+
+  it('rejects oversized upload initiation before minting an upload URL', async () => {
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+      maxUploadSize: 3,
+    });
+
+    const content = new Uint8Array([1, 2, 3, 4]);
+    const response = await app.request('http://localhost/sync/blobs/upload', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [ACTOR_HEADER]: ACTOR_ID,
+      },
+      body: JSON.stringify({
+        hash: await createHash(content),
+        size: content.length,
+        mimeType: 'application/octet-stream',
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: 'blob.too_large',
+      code: 'blob.too_large',
+      category: 'blob',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+    });
+  });
+
+  it('rejects direct upload content-length above the route max size', async () => {
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+      maxUploadSize: 3,
+    });
+
+    const expected = new Uint8Array([1, 2, 3]);
+    const hash = await createHash(expected);
+    await initiateUpload({
+      app,
+      hash,
+      size: expected.length,
+    });
+    const token = await signBlobToken({
+      signer: tokenSigner,
+      hash,
+      action: 'upload',
+      size: expected.length,
+      partitionId: 'default',
+    });
+
+    const response = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/upload?token=${encodeURIComponent(token)}`,
+      {
+        method: 'PUT',
+        headers: { 'content-length': '4' },
+        body: new Uint8Array([1, 2, 3, 4]),
+      }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: 'blob.too_large',
+      code: 'blob.too_large',
+      category: 'blob',
+      retryable: false,
+      recommendedAction: 'fixRequest',
     });
   });
 
