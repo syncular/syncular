@@ -201,8 +201,13 @@ read-only review:
     `995.58ms -> 1107.80ms`. Skipping a duplicate final subscription-state
     write after checkpointed artifact pages recovered part of that regression:
     external bootstrap is now `1062.50ms`, peak memory is `633.50MB`, local
-    apply is `208ms`, and `snapshotChunkCount=0`. The next WP-12 slice must keep
-    recovering wall time while preserving the lower peak-memory profile.
+    apply is `208ms`, and `snapshotChunkCount=0`. A follow-up local app-table
+    `WITHOUT ROWID` probe improved same-session derived-schema wall time but
+    was rejected because peak memory regressed to `655.05MB`. The generated
+    schema JSON contract now also carries `localBaseSchema.tableSetupSql`, so
+    non-TS adapters and benchmarks can consume generated local table DDL instead
+    of hardcoding it. The next WP-12 slice must keep recovering wall time while
+    preserving the lower peak-memory profile.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   - First retained TypeScript generated-client slice narrows
     `database.mutations` to generated inputs and patches. App code can now call

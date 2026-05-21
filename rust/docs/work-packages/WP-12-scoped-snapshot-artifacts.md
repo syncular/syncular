@@ -1037,6 +1037,35 @@ Rejected final artifact checkpoint probe:
   checkpoint/state change needs to prove external wall-time recovery and keep
   the lower-memory profile.
 
+Rejected external local `WITHOUT ROWID` probe:
+
+- Temporarily patched the external app-style Rust adapter to create the
+  benchmark app's local tables as `WITHOUT ROWID`, then restored the adapter.
+  This tested whether the 500k derived-schema bucket was mainly local rowid
+  table/index shape before making it a framework default.
+- Same-session external wall time improved from a noisy fresh baseline:
+  bootstrap `1174.29ms -> 1076.13ms`, derived schema
+  `709.37ms -> 628.17ms`, sync total `451ms -> 421ms`, and local apply
+  `208ms -> 204ms`.
+- Rejected because it still did not beat the retained wall-time guard
+  (`1062.50ms`) and peak memory regressed materially against the retained
+  profile (`633.50MB -> 655.05MB`). Keep `WITHOUT ROWID` as an explicit
+  generated-table option, not the next WP-12 default.
+
+Retained local base schema contract slice:
+
+- `syncular.schema.json` now includes `localBaseSchema.tableSetupSql`, generated
+  from the same table metadata and `sqliteWithoutRowid` table config that the
+  TypeScript schema installer uses.
+- This removes the need for non-TS adapters, external benchmarks, and future
+  native bindings to hardcode local base-table DDL while only consuming
+  generated derived schema. It also keeps `WITHOUT ROWID` opt-in explicit
+  instead of promoting it as a hidden default.
+- Correctness gates passed:
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`,
+  `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`,
+  and `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`.
+
 ## Next Action
 
 Recover the lazy apply transaction wall-time regression without giving back the
@@ -1071,10 +1100,18 @@ external memory improvement.
 - Derived-schema setup is now a first-class performance input for app-style
   bootstrap comparisons. Keep optimizing only generated, app-declared local
   indexes/read models; do not introduce hidden runtime caches.
+- The generated schema contract now carries local base-table setup SQL. Update
+  external app-style adapters and native bindings to consume it before the next
+  schema-layout benchmark so local table shape is measured from generated
+  framework metadata, not benchmark-specific hardcoding.
 - The remaining derived-schema bottleneck is still app-declared index creation,
   but the obvious redundant-prefix case is handled. Avoid additional
   index-order/read-model rebuild changes unless the external app-style gate
   proves a clear win.
+- Local app-table `WITHOUT ROWID` can improve derived-schema wall time in the
+  external harness, but the latest probe gave back too much peak memory. Do not
+  promote it as a default without app-level opt-in and a memory-preserving
+  external win.
 - The next useful artifact-memory step is still a larger bootstrap state design
   if the generated derived-schema work leaves memory as the bottleneck:
   release/detach artifact databases before full commit without copying rows
