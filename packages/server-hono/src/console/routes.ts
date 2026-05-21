@@ -38,6 +38,7 @@ import { cors } from 'hono/cors';
 import { resolver } from 'hono-openapi';
 import { type Generated, type Kysely, type Selectable, sql } from 'kysely';
 import { z } from 'zod';
+import { summarizeAuditChange } from '../audit-redaction';
 import { consoleValidator as zValidator } from '../validation';
 import { isWebSocketOriginAllowed } from '../websocket-origin';
 import {
@@ -206,10 +207,6 @@ function parseJsonRecord(value: unknown): Record<string, unknown> {
     return {};
   }
   return parsed as Record<string, unknown>;
-}
-
-function parseJsonObjectKeys(value: unknown): string[] {
-  return Object.keys(parseJsonRecord(value)).sort();
 }
 
 function parseJsonStringArray(value: unknown): string[] {
@@ -1949,6 +1946,12 @@ export function createConsoleRoutes<
         history: selectedRows.map((row) => {
           const commitSeq = Number(row.commit_seq);
           const links = eventLinksByCommitSeq.get(commitSeq);
+          const summary = summarizeAuditChange({
+            table: row.table,
+            op: row.op,
+            rowJson: row.row_json,
+            scopes: row.scopes,
+          });
           return {
             commitSeq,
             actorId: row.actor_id,
@@ -1961,8 +1964,7 @@ export function createConsoleRoutes<
             op: row.op,
             rowVersion:
               row.row_version === null ? null : Number(row.row_version),
-            fields: parseJsonObjectKeys(row.row_json),
-            scopeFields: parseJsonObjectKeys(row.scopes),
+            ...summary,
             requestEventIds: links ? Array.from(links.eventIds) : [],
             requestIds: links ? Array.from(links.requestIds) : [],
             traceIds: links ? Array.from(links.traceIds) : [],

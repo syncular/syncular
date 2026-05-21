@@ -1053,6 +1053,9 @@ describe('console timeline route filters', () => {
         clientCommitId: string;
         fields: string[];
         scopeFields: string[];
+        changeKind: string;
+        sensitiveFields: string[];
+        redaction: { payload: string; reason: string };
         requestEventIds: number[];
         requestIds: string[];
         traceIds: string[];
@@ -1073,6 +1076,12 @@ describe('console timeline route filters', () => {
       clientCommitId: 'commit-a',
       fields: ['id', 'title', 'user_id'],
       scopeFields: ['user_id'],
+      changeKind: 'app_row',
+      sensitiveFields: [],
+      redaction: {
+        payload: 'omitted',
+        reason: 'audit_redacted_by_default',
+      },
       requestIds: ['req-1'],
       traceIds: ['trace-1'],
     });
@@ -1084,6 +1093,85 @@ describe('console timeline route filters', () => {
       partitionId: 'tenant-b',
     });
     expect(wrongPartition.status).toBe(404);
+  });
+
+  it('classifies blob refs and encrypted CRDT evidence in row history', async () => {
+    const commitRow = await db
+      .selectFrom('sync_commits')
+      .select(['commit_seq'])
+      .where('partition_id', '=', 'default')
+      .where('client_commit_id', '=', 'commit-b')
+      .executeTakeFirst();
+    const commitSeq = Number(commitRow?.commit_seq);
+    expect(Number.isFinite(commitSeq)).toBe(true);
+
+    await db
+      .insertInto('sync_changes')
+      .values([
+        {
+          partition_id: 'default',
+          commit_seq: commitSeq,
+          table: 'tasks',
+          row_id: 'row-blob',
+          op: 'upsert',
+          row_json: JSON.stringify({
+            id: 'row-blob',
+            file: JSON.stringify({
+              hash: 'blob-hash',
+              size: 42,
+              mimeType: 'text/plain',
+            }),
+          }),
+          row_version: 1,
+          scopes: JSON.stringify({ user_id: 'actor-b' }),
+        },
+        {
+          partition_id: 'default',
+          commit_seq: commitSeq,
+          table: 'sync_crdt_updates',
+          row_id: 'update-1',
+          op: 'upsert',
+          row_json: JSON.stringify({
+            stream_id: 'tasks:task-1:body',
+            row_id: 'task-1',
+            field_name: 'body',
+            update_id: 'update-1',
+            key_id: 'kid-1',
+            ciphertext: 'encrypted-bytes',
+          }),
+          row_version: 1,
+          scopes: JSON.stringify({ user_id: 'actor-b' }),
+        },
+      ])
+      .execute();
+
+    const blobResponse = await requestRowHistory('tasks', 'row-blob', {
+      partitionId: 'default',
+    });
+    expect(blobResponse.status).toBe(200);
+    const blobPayload = (await blobResponse.json()) as {
+      history: Array<{ changeKind: string; sensitiveFields: string[] }>;
+    };
+    expect(blobPayload.history[0]).toMatchObject({
+      changeKind: 'blob_reference',
+      sensitiveFields: ['file'],
+    });
+    expect(JSON.stringify(blobPayload)).not.toContain('blob-hash');
+
+    const crdtResponse = await requestRowHistory(
+      'sync_crdt_updates',
+      'update-1',
+      { partitionId: 'default' }
+    );
+    expect(crdtResponse.status).toBe(200);
+    const crdtPayload = (await crdtResponse.json()) as {
+      history: Array<{ changeKind: string; sensitiveFields: string[] }>;
+    };
+    expect(crdtPayload.history[0]).toMatchObject({
+      changeKind: 'encrypted_crdt_update',
+      sensitiveFields: ['ciphertext', 'key_id'],
+    });
+    expect(JSON.stringify(crdtPayload)).not.toContain('encrypted-bytes');
   });
 
   it('lists operation audit events and filters by operation type', async () => {

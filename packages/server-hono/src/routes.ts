@@ -86,6 +86,7 @@ import type { UpgradeWebSocket } from 'hono/ws';
 import { describeRoute, resolver } from 'hono-openapi';
 import { type Kysely, sql } from 'kysely';
 import { z } from 'zod';
+import { summarizeAuditChange } from './audit-redaction';
 import { isBenignConsoleSchemaError } from './console/schema-errors';
 import { syncError, syncErrorResponse, syncLimitExceeded } from './errors';
 import {
@@ -475,6 +476,20 @@ const auditCommitListResponseSchema = z.object({
   nextCursor: z.number().int().nullable(),
 });
 
+const auditChangeKindSchema = z.enum([
+  'app_row',
+  'delete',
+  'blob_reference',
+  'encrypted_field_envelope',
+  'encrypted_crdt_update',
+  'encrypted_crdt_checkpoint',
+]);
+
+const auditChangeRedactionSchema = z.object({
+  payload: z.literal('omitted'),
+  reason: z.literal('audit_redacted_by_default'),
+});
+
 const auditChangeSchema = z.object({
   changeId: z.number().int(),
   table: z.string(),
@@ -504,6 +519,9 @@ const auditRowHistoryEntrySchema = z.object({
   rowVersion: z.number().int().nullable(),
   fields: z.array(z.string()),
   scopeFields: z.array(z.string()),
+  changeKind: auditChangeKindSchema,
+  sensitiveFields: z.array(z.string()),
+  redaction: auditChangeRedactionSchema,
 });
 
 const auditRowHistoryResponseSchema = z.object({
@@ -2838,21 +2856,28 @@ export function createSyncRoutes<
           ok: true,
           table,
           rowId,
-          history: selectedRows.map((row) => ({
-            commitSeq: Number(row.commit_seq),
-            actorId: row.actor_id,
-            clientId: row.client_id,
-            clientCommitId: row.client_commit_id,
-            createdAt: row.created_at,
-            changeId: Number(row.change_id),
-            table: row.table,
-            rowId: row.row_id,
-            op: row.op,
-            rowVersion:
-              row.row_version === null ? null : Number(row.row_version),
-            fields: auditObjectKeys(row.row_json),
-            scopeFields: auditObjectKeys(row.scopes),
-          })),
+          history: selectedRows.map((row) => {
+            const summary = summarizeAuditChange({
+              table: row.table,
+              op: row.op,
+              rowJson: row.row_json,
+              scopes: row.scopes,
+            });
+            return {
+              commitSeq: Number(row.commit_seq),
+              actorId: row.actor_id,
+              clientId: row.client_id,
+              clientCommitId: row.client_commit_id,
+              createdAt: row.created_at,
+              changeId: Number(row.change_id),
+              table: row.table,
+              rowId: row.row_id,
+              op: row.op,
+              rowVersion:
+                row.row_version === null ? null : Number(row.row_version),
+              ...summary,
+            };
+          }),
           nextCursor,
         },
         200
@@ -4419,14 +4444,6 @@ function selectRequiredAuditScopes(
     auditScopes[key] = value;
   }
   return auditScopes;
-}
-
-function auditObjectKeys(value: unknown): string[] {
-  const parsed = parseJsonValue(value);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return [];
-  }
-  return Object.keys(parsed).sort();
 }
 
 function partitionScopeKey(partitionId: string, scopeKey: string): string {

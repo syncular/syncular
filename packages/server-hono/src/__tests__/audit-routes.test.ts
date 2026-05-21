@@ -276,6 +276,9 @@ describe('createSyncRoutes audit endpoints', () => {
         clientCommitId: string;
         fields: string[];
         scopeFields: string[];
+        changeKind: string;
+        sensitiveFields: string[];
+        redaction: { payload: string; reason: string };
       }>;
       nextCursor: number | null;
       rowJson?: unknown;
@@ -295,6 +298,12 @@ describe('createSyncRoutes audit endpoints', () => {
       'user_id',
     ]);
     expect(history.history[0]?.scopeFields).toEqual(['user_id']);
+    expect(history.history[0]?.changeKind).toBe('app_row');
+    expect(history.history[0]?.sensitiveFields).toEqual([]);
+    expect(history.history[0]?.redaction).toEqual({
+      payload: 'omitted',
+      reason: 'audit_redacted_by_default',
+    });
     expect(history).not.toHaveProperty('rowJson');
     expect(history.nextCursor).toBe(secondCommitSeq);
 
