@@ -19,8 +19,8 @@ import {
   createSyncularErrorResponse,
   ErrorResponseSchema,
   logSyncEvent,
-  sha256Hex,
   type SyncularErrorCode,
+  sha256Hex,
 } from '@syncular/core';
 import type { SqlFamily, SyncCoreDb, SyncServerAuth } from '@syncular/server';
 import {
@@ -96,6 +96,8 @@ import {
   ConsoleRequestEventSchema,
   type ConsoleRequestPayload,
   ConsoleRequestPayloadSchema,
+  type ConsoleRowHistoryResponse,
+  ConsoleRowHistoryResponseSchema,
   type ConsoleTimelineItem,
   ConsoleTimelineItemSchema,
   ConsoleTimelineQuerySchema,
@@ -204,6 +206,10 @@ function parseJsonRecord(value: unknown): Record<string, unknown> {
     return {};
   }
   return parsed as Record<string, unknown>;
+}
+
+function parseJsonObjectKeys(value: unknown): string[] {
+  return Object.keys(parseJsonRecord(value)).sort();
 }
 
 function parseJsonStringArray(value: unknown): string[] {
@@ -398,6 +404,10 @@ function blobStorageNotConfigured(c: Context): Response {
 // ============================================================================
 
 const commitSeqParamSchema = z.object({ seq: z.coerce.number().int() });
+const rowHistoryParamSchema = z.object({
+  table: z.string().min(1),
+  rowId: z.string().min(1),
+});
 const clientIdParamSchema = z.object({ id: z.string().min(1) });
 const eventIdParamSchema = z.object({ id: z.coerce.number().int() });
 const apiKeyIdParamSchema = z.object({ id: z.string().min(1) });
@@ -413,6 +423,20 @@ const eventsQuerySchema = ConsolePartitionedPaginationQuerySchema.extend({
 });
 
 const commitDetailQuerySchema = ConsolePartitionQuerySchema;
+const rowHistoryQuerySchema = ConsolePartitionQuerySchema.extend({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  beforeCommitSeq: z.coerce.number().int().min(1).optional(),
+  afterCommitSeq: z.coerce.number().int().min(1).optional(),
+}).refine(
+  (query) =>
+    query.beforeCommitSeq === undefined ||
+    query.afterCommitSeq === undefined ||
+    query.afterCommitSeq < query.beforeCommitSeq,
+  {
+    message: 'afterCommitSeq must be lower than beforeCommitSeq',
+    path: ['afterCommitSeq'],
+  }
+);
 const eventDetailQuerySchema = ConsolePartitionQuerySchema;
 const evictClientQuerySchema = ConsolePartitionQuerySchema;
 const apiKeyStatusSchema = z.enum(['active', 'revoked', 'expiring']);
@@ -1808,6 +1832,146 @@ export function createConsoleRoutes<
       };
 
       return c.json(commit, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /row-history/:table/:rowId
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/row-history/:table/:rowId',
+    describeConsoleRoute({
+      summary: 'Get redacted row history',
+      responses: {
+        200: {
+          description: 'Redacted row history with request-event links',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleRowHistoryResponseSchema),
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        404: {
+          description: 'Not found',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('param', rowHistoryParamSchema),
+    zValidator('query', rowHistoryQuerySchema),
+    async (c) => {
+      const { table, rowId } = c.req.valid('param');
+      const {
+        partitionId: requestedPartitionId,
+        limit,
+        beforeCommitSeq,
+        afterCommitSeq,
+      } = c.req.valid('query');
+      const partitionId = requestedPartitionId ?? 'default';
+
+      const rows = await options.dialect.readAuditRowHistory(
+        options.db as unknown as Kysely<SyncCoreDb>,
+        {
+          partitionId,
+          table,
+          rowId,
+          scopes: {},
+          limit,
+          beforeCommitSeq,
+          afterCommitSeq,
+        }
+      );
+      if (rows.length === 0) {
+        return consoleNotFound(c);
+      }
+
+      const hasMore = rows.length > limit;
+      const selectedRows = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore
+        ? Number(selectedRows[selectedRows.length - 1]?.commit_seq ?? 0)
+        : null;
+      const commitSeqs = Array.from(
+        new Set(selectedRows.map((row) => Number(row.commit_seq)))
+      );
+
+      const eventRows =
+        commitSeqs.length > 0
+          ? await db
+              .selectFrom('sync_request_events')
+              .select(['event_id', 'commit_seq', 'request_id', 'trace_id'])
+              .where('partition_id', '=', partitionId)
+              .where('commit_seq', 'in', commitSeqs)
+              .orderBy('event_id', 'asc')
+              .execute()
+          : [];
+      const eventLinksByCommitSeq = new Map<
+        number,
+        {
+          eventIds: Set<number>;
+          requestIds: Set<string>;
+          traceIds: Set<string>;
+        }
+      >();
+      for (const row of eventRows) {
+        const commitSeq = coerceNumber(row.commit_seq);
+        if (commitSeq === null) continue;
+        const links = eventLinksByCommitSeq.get(commitSeq) ?? {
+          eventIds: new Set<number>(),
+          requestIds: new Set<string>(),
+          traceIds: new Set<string>(),
+        };
+        const eventId = coerceNumber(row.event_id);
+        if (eventId !== null) links.eventIds.add(eventId);
+        if (row.request_id) links.requestIds.add(row.request_id);
+        if (row.trace_id) links.traceIds.add(row.trace_id);
+        eventLinksByCommitSeq.set(commitSeq, links);
+      }
+
+      const response: ConsoleRowHistoryResponse = {
+        table,
+        rowId,
+        partitionId,
+        history: selectedRows.map((row) => {
+          const commitSeq = Number(row.commit_seq);
+          const links = eventLinksByCommitSeq.get(commitSeq);
+          return {
+            commitSeq,
+            actorId: row.actor_id,
+            clientId: row.client_id,
+            clientCommitId: row.client_commit_id,
+            createdAt: row.created_at,
+            changeId: Number(row.change_id),
+            table: row.table,
+            rowId: row.row_id,
+            op: row.op,
+            rowVersion:
+              row.row_version === null ? null : Number(row.row_version),
+            fields: parseJsonObjectKeys(row.row_json),
+            scopeFields: parseJsonObjectKeys(row.scopes),
+            requestEventIds: links ? Array.from(links.eventIds) : [],
+            requestIds: links ? Array.from(links.requestIds) : [],
+            traceIds: links ? Array.from(links.traceIds) : [],
+          };
+        }),
+        nextCursor,
+      };
+
+      return c.json(response, 200);
     }
   );
 

@@ -63,6 +63,40 @@ export const ConsoleCommitDetailSchema = ConsoleCommitListItemSchema.extend({
 
 export type ConsoleCommitDetail = z.infer<typeof ConsoleCommitDetailSchema>;
 
+export const ConsoleRowHistoryEntrySchema = z.object({
+  commitSeq: z.number().int(),
+  actorId: z.string(),
+  clientId: z.string(),
+  clientCommitId: z.string(),
+  createdAt: z.string(),
+  changeId: z.number().int(),
+  table: z.string(),
+  rowId: z.string(),
+  op: z.enum(['upsert', 'delete']),
+  rowVersion: z.number().int().nullable(),
+  fields: z.array(z.string()),
+  scopeFields: z.array(z.string()),
+  requestEventIds: z.array(z.number().int()),
+  requestIds: z.array(z.string()),
+  traceIds: z.array(z.string()),
+});
+
+export type ConsoleRowHistoryEntry = z.infer<
+  typeof ConsoleRowHistoryEntrySchema
+>;
+
+export const ConsoleRowHistoryResponseSchema = z.object({
+  table: z.string(),
+  rowId: z.string(),
+  partitionId: z.string(),
+  history: z.array(ConsoleRowHistoryEntrySchema),
+  nextCursor: z.number().int().nullable(),
+});
+
+export type ConsoleRowHistoryResponse = z.infer<
+  typeof ConsoleRowHistoryResponseSchema
+>;
+
 // ============================================================================
 // Client Schemas
 // ============================================================================
