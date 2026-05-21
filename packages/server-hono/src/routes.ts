@@ -2034,6 +2034,27 @@ export function createSyncRoutes<
     payloadSnapshot?: RequestPayloadSnapshot | null;
   };
 
+  type RealtimeConsoleEvent = {
+    partitionId: string;
+    actorId: string;
+    clientId: string;
+    transportPath: 'direct' | 'relay';
+    eventType:
+      | 'connected'
+      | 'disconnected'
+      | 'error'
+      | 'pull_required'
+      | 'ack'
+      | 'rejected';
+    reason?: string | null;
+    cursor?: number | null;
+    latestCursor?: number | null;
+    commitSeq?: number | null;
+    scopeCount?: number | null;
+    skippedCount?: number | null;
+    syncPackEncoding?: string | null;
+  };
+
   const recordRequestEvent = async (event: RequestEvent) => {
     let payloadRef = event.payloadRef ?? null;
     if (event.payloadSnapshot) {
@@ -2119,6 +2140,44 @@ export function createSyncRoutes<
           userId: resolvedEvent.actorId,
           clientId: resolvedEvent.clientId,
           requestEventType: resolvedEvent.eventType,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      });
+  };
+
+  const recordRealtimeEvent = async (
+    event: RealtimeConsoleEvent
+  ): Promise<void> => {
+    await sql`
+      INSERT INTO sync_realtime_events (
+        partition_id, actor_id, client_id, transport_path, event_type, reason,
+        cursor, latest_cursor, commit_seq, scope_count, skipped_count,
+        sync_pack_encoding
+      ) VALUES (
+        ${event.partitionId}, ${event.actorId}, ${event.clientId},
+        ${event.transportPath}, ${event.eventType}, ${event.reason ?? null},
+        ${event.cursor ?? null}, ${event.latestCursor ?? null},
+        ${event.commitSeq ?? null}, ${event.scopeCount ?? null},
+        ${event.skippedCount ?? null}, ${event.syncPackEncoding ?? null}
+      )
+    `.execute(options.db);
+  };
+
+  const recordRealtimeEventInBackground = (
+    event: RealtimeConsoleEvent | (() => RealtimeConsoleEvent)
+  ): void => {
+    if (!shouldRecordRequestEvents) return;
+
+    const resolvedEvent = typeof event === 'function' ? event() : event;
+
+    void consoleSchemaReady
+      .then(() => recordRealtimeEvent(resolvedEvent))
+      .catch((error) => {
+        logAsyncFailureOnce('sync.realtime_event_record_failed', {
+          event: 'sync.realtime_event_record_failed',
+          userId: resolvedEvent.actorId,
+          clientId: resolvedEvent.clientId,
+          realtimeEventType: resolvedEvent.eventType,
           error: error instanceof Error ? error.message : String(error),
         });
       });
@@ -4341,6 +4400,18 @@ export function createSyncRoutes<
         maxConnectionsTotal > 0 &&
         wsConnectionManager.getTotalConnections() >= maxConnectionsTotal
       ) {
+        recordRealtimeEventInBackground({
+          partitionId,
+          actorId: auth.actorId,
+          clientId,
+          transportPath: realtimeTransportPath,
+          eventType: 'rejected',
+          reason: 'max_total',
+          cursor: lastAckedCursor,
+          latestCursor: latestCommitSeq,
+          scopeCount: initialScopeKeys.length,
+          syncPackEncoding,
+        });
         logSyncEvent({
           event: 'sync.realtime.rejected',
           userId: auth.actorId,
@@ -4354,6 +4425,18 @@ export function createSyncRoutes<
         wsConnectionManager.getScopedConnectionCount(connectionOwnerKey) >=
           maxConnectionsPerClient
       ) {
+        recordRealtimeEventInBackground({
+          partitionId,
+          actorId: auth.actorId,
+          clientId,
+          transportPath: realtimeTransportPath,
+          eventType: 'rejected',
+          reason: 'max_per_client',
+          cursor: lastAckedCursor,
+          latestCursor: latestCommitSeq,
+          scopeCount: initialScopeKeys.length,
+          syncPackEncoding,
+        });
         logSyncEvent({
           event: 'sync.realtime.rejected',
           userId: auth.actorId,
@@ -4397,6 +4480,18 @@ export function createSyncRoutes<
         reason: 'closed' | 'error';
         action: 'realtime_disconnected' | 'realtime_error';
       }) => {
+        recordRealtimeEventInBackground({
+          partitionId,
+          actorId: auth.actorId,
+          clientId,
+          transportPath: realtimeTransportPath,
+          eventType: args.reason === 'closed' ? 'disconnected' : 'error',
+          reason: args.reason,
+          cursor: lastAckedCursor,
+          latestCursor: latestCommitSeq,
+          scopeCount: initialScopeKeys.length,
+          syncPackEncoding,
+        });
         unregister?.();
         unregister = null;
         connRef = null;
@@ -4469,6 +4564,18 @@ export function createSyncRoutes<
             scopeCount: initialScopeKeys.length,
             requiresSync: requiresInitialSync,
           });
+          recordRealtimeEventInBackground({
+            partitionId,
+            actorId: auth.actorId,
+            clientId,
+            transportPath: realtimeTransportPath,
+            eventType: 'connected',
+            reason: requiresInitialSync ? 'requires_sync' : null,
+            cursor: lastAckedCursor,
+            latestCursor: latestCommitSeq,
+            scopeCount: initialScopeKeys.length,
+            syncPackEncoding,
+          });
           conn.sendHeartbeat();
           if (requiresInitialSync) {
             const replayed = wsConnectionManager.replayScopeKeys(
@@ -4481,6 +4588,19 @@ export function createSyncRoutes<
               conn.sendSync(latestCommitSeq, {
                 reason: 'reconnect-catchup',
                 requiresPull: true,
+              });
+              recordRealtimeEventInBackground({
+                partitionId,
+                actorId: auth.actorId,
+                clientId,
+                transportPath: realtimeTransportPath,
+                eventType: 'pull_required',
+                reason: 'reconnect-catchup',
+                cursor: lastAckedCursor,
+                latestCursor: latestCommitSeq,
+                commitSeq: latestCommitSeq,
+                scopeCount: initialScopeKeys.length,
+                syncPackEncoding,
               });
             }
           }
@@ -4510,6 +4630,18 @@ export function createSyncRoutes<
           try {
             const messageBytes = measureWebSocketMessageBytes(evt.data);
             if (messageBytes > maxMessageBytes) {
+              recordRealtimeEventInBackground({
+                partitionId,
+                actorId: auth.actorId,
+                clientId,
+                transportPath: realtimeTransportPath,
+                eventType: 'error',
+                reason: 'message_too_large',
+                cursor: lastAckedCursor,
+                latestCursor: latestCommitSeq,
+                scopeCount: initialScopeKeys.length,
+                syncPackEncoding,
+              });
               connRef.sendError(
                 `WebSocket message exceeds max size (${maxMessageBytes} bytes)`
               );
@@ -4523,6 +4655,18 @@ export function createSyncRoutes<
               }
               messageRateWindowCount += 1;
               if (messageRateWindowCount > maxMessagesPerWindow) {
+                recordRealtimeEventInBackground({
+                  partitionId,
+                  actorId: auth.actorId,
+                  clientId,
+                  transportPath: realtimeTransportPath,
+                  eventType: 'error',
+                  reason: 'message_rate_exceeded',
+                  cursor: lastAckedCursor,
+                  latestCursor: latestCommitSeq,
+                  scopeCount: initialScopeKeys.length,
+                  syncPackEncoding,
+                });
                 connRef.sendError(
                   `WebSocket message rate exceeded (${maxMessagesPerWindow}/${messageRateWindowMs}ms)`
                 );
@@ -4543,6 +4687,18 @@ export function createSyncRoutes<
               if (cursor !== null && cursor > lastAckedCursor) {
                 lastAckedCursor = cursor;
                 wsConnectionManager.recordAck(connRef, cursor);
+                recordRealtimeEventInBackground({
+                  partitionId,
+                  actorId: auth.actorId,
+                  clientId,
+                  transportPath: realtimeTransportPath,
+                  eventType: 'ack',
+                  reason: null,
+                  cursor,
+                  latestCursor: latestCommitSeq,
+                  scopeCount: initialScopeKeys.length,
+                  syncPackEncoding,
+                });
                 void recordRealtimeAck({
                   db: options.db,
                   actorId: auth.actorId,

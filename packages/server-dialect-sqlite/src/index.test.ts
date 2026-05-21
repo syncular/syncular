@@ -116,6 +116,14 @@ describe('SqliteServerSyncDialect.ensureConsoleSchema', () => {
         AND name = 'sync_operation_events'
     `.execute(db);
     expect(operationTables.rows).toHaveLength(1);
+
+    const realtimeTables = await sql<{ name: string }>`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table'
+        AND name = 'sync_realtime_events'
+    `.execute(db);
+    expect(realtimeTables.rows).toHaveLength(1);
   });
 
   it('adds investigation columns when upgrading an existing sync_request_events table', async () => {
@@ -243,5 +251,38 @@ describe('SqliteServerSyncDialect.ensureConsoleSchema', () => {
       WHERE operation_type = ${'prune'}
     `.execute(db);
     expect(operationInserted.rows[0]?.count ?? 0).toBe(1);
+
+    await sql`
+      INSERT INTO sync_realtime_events (
+        partition_id,
+        actor_id,
+        client_id,
+        transport_path,
+        event_type,
+        reason,
+        cursor,
+        latest_cursor,
+        scope_count,
+        created_at
+      ) VALUES (
+        ${'default'},
+        ${'actor-1'},
+        ${'client-1'},
+        ${'direct'},
+        ${'pull_required'},
+        ${'reconnect-catchup'},
+        ${0},
+        ${3},
+        ${1},
+        ${'2026-02-12T00:00:00.000Z'}
+      )
+    `.execute(db);
+
+    const realtimeInserted = await sql<{ count: number }>`
+      SELECT COUNT(*) as count
+      FROM sync_realtime_events
+      WHERE event_type = ${'pull_required'}
+    `.execute(db);
+    expect(realtimeInserted.rows[0]?.count ?? 0).toBe(1);
   });
 });

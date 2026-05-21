@@ -436,6 +436,46 @@ export function RowInvestigation({ table, rowId }: RowInvestigationProps) {
                 </div>
               </div>
             </SectionCard>
+
+            <SectionCard
+              title="Realtime"
+              description="Client-level websocket recovery evidence."
+              contentClassName="space-y-3"
+            >
+              <div className="font-mono text-[11px] space-y-2">
+                <Badge
+                  variant={
+                    data.realtimeEvidence.pullRequiredEventCount > 0 ||
+                    data.realtimeEvidence.errorEventCount > 0 ||
+                    data.realtimeEvidence.rejectedEventCount > 0
+                      ? 'offline'
+                      : data.realtimeEvidence.connectedEventCount > 0
+                        ? 'healthy'
+                        : 'ghost'
+                  }
+                >
+                  {data.realtimeEvidence.latestEventType ?? 'none'}
+                </Badge>
+                <div className="text-neutral-400">
+                  events: {data.realtimeEvidence.matchingEventCount}
+                </div>
+                <div className="text-neutral-400">
+                  connected: {data.realtimeEvidence.connectedEventCount}
+                </div>
+                <div className="text-neutral-400">
+                  pull required: {data.realtimeEvidence.pullRequiredEventCount}
+                </div>
+                <div className="text-neutral-400">
+                  ack: {data.realtimeEvidence.ackEventCount}
+                </div>
+                <div className="text-neutral-400">
+                  errors: {data.realtimeEvidence.errorEventCount}
+                </div>
+                <div className="text-neutral-400">
+                  latest reason: {data.realtimeEvidence.latestReason ?? '--'}
+                </div>
+              </div>
+            </SectionCard>
           </div>
 
           <SectionCard title="Findings" contentClassName="space-y-2">
