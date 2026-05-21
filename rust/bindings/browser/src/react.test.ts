@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 import { act, renderHook, waitFor } from '@testing-library/react';
+import type { CompiledQuery } from 'kysely';
 import { createElement, type ReactNode } from 'react';
 import type {
   SyncularClientLike,
@@ -77,6 +78,68 @@ describe('@syncular/client/react', () => {
     await waitFor(() => {
       expect(result.current.data).toEqual([
         { id: 'task-1', title: 'Ship adapter' },
+      ]);
+    });
+  });
+
+  it('uses live query observation for compilable sync queries', async () => {
+    const fake = new FakeManagedClient();
+    const { SyncProvider, useSyncQuery } = createSyncularReact<TestDb>();
+    const wrapper = createWrapper(SyncProvider, fake.client);
+    let executeCount = 0;
+
+    fake.nextQueryRows = [{ id: 'task-live', title: 'Initial live' }];
+    const query = {
+      execute: async () => {
+        executeCount += 1;
+        return fake.nextQueryRows;
+      },
+      compile: () =>
+        ({
+          sql: 'select * from "tasks"',
+          parameters: [],
+        }) as unknown as CompiledQuery,
+    };
+
+    const { result } = renderHook(
+      () => useSyncQuery(() => query, { tables: ['tasks'] }),
+      { wrapper }
+    );
+
+    await waitFor(() => {
+      expect(result.current.data).toEqual([
+        { id: 'task-live', title: 'Initial live' },
+      ]);
+    });
+    expect(fake.liveCalls).toEqual([{ tables: ['tasks'] }]);
+    const countAfterInitialLoad = executeCount;
+
+    act(() => {
+      fake.emitRowsChanged({
+        source: 'remotePull',
+        changedTables: ['tasks'],
+        changedRows: [
+          {
+            table: 'tasks',
+            rowId: 'task-live',
+            operation: 'update',
+            changedFields: ['title'],
+            crdtFields: [],
+          },
+        ],
+      });
+    });
+    expect(executeCount).toBe(countAfterInitialLoad);
+
+    act(() => {
+      fake.emitLiveQuery('live-1', [
+        { id: 'task-live', title: 'Observed live' },
+      ]);
+    });
+
+    await waitFor(() => {
+      expect(result.current.data).toEqual([
+        { id: 'task-live', title: 'Observed live' },
       ]);
     });
   });
@@ -286,6 +349,9 @@ class FakeManagedClient {
   readonly #presenceListeners = new Set<SyncularV2PresenceSink>();
   readonly #presence = new Map<string, SyncularV2PresenceEntry[]>();
   readonly #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
+  readonly #liveListeners = new Map<string, (rows: TaskRow[]) => void>();
+  readonly liveCalls: Array<{ tables?: readonly string[] }> = [];
+  #liveIndex = 1;
 
   readonly client = {
     db: {
@@ -374,10 +440,24 @@ class FakeManagedClient {
           this.#presenceListeners.delete(listener as SyncularV2PresenceSink);
       },
     },
-    live: async () => ({
-      id: 'live-1',
-      unsubscribe: () => undefined,
-    }),
+    live: async (
+      _query: { compile(): CompiledQuery },
+      options: {
+        tables?: readonly string[];
+        onChange: (rows: TaskRow[]) => void;
+      }
+    ) => {
+      const id = `live-${this.#liveIndex++}`;
+      this.liveCalls.push({ tables: options.tables });
+      this.#liveListeners.set(id, options.onChange);
+      options.onChange(this.nextQueryRows);
+      return {
+        id,
+        unsubscribe: () => {
+          this.#liveListeners.delete(id);
+        },
+      };
+    },
     close: async () => undefined,
     start: async () => undefined,
     stop: async () => undefined,
@@ -421,6 +501,10 @@ class FakeManagedClient {
 
   emitRowsChanged(event: SyncularV2RowsChangedEvent): void {
     this.emit('rowsChanged', event);
+  }
+
+  emitLiveQuery(id: string, rows: TaskRow[]): void {
+    this.#liveListeners.get(id)?.(rows);
   }
 
   private createMutations(

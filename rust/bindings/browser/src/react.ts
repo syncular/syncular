@@ -30,6 +30,8 @@ import type {
   SyncularV2ClientEventType,
   SyncularV2ConflictStats,
   SyncularV2ConnectionState,
+  SyncularV2LiveQueryOptions,
+  SyncularV2LiveQuerySubscription,
   SyncularV2OutboxStats,
   SyncularV2PresenceEntry,
   SyncularV2RowsChangedEvent,
@@ -392,12 +394,8 @@ export function createSyncularReact<DB>() {
     const [error, setError] = useState<Error | null>(null);
     const [lastSyncAt, setLastSyncAt] = useState<number | null>(null);
 
-    const execute = useCallback(async () => {
-      if (!enabled) return;
-      if (optionsRef.current.loadingOnRefresh !== false) setIsLoading(true);
-      setError(null);
-      try {
-        const result = await executeSyncQuery(client.db, queryRef.current);
+    const publishResult = useCallback(
+      (result: TResult) => {
         const publish = () => {
           setData((previous) =>
             shareQueryResult(
@@ -415,11 +413,22 @@ export function createSyncularReact<DB>() {
         } else {
           startTransition(publish);
         }
+      },
+      [optionsRef]
+    );
+
+    const execute = useCallback(async () => {
+      if (!enabled) return;
+      if (optionsRef.current.loadingOnRefresh !== false) setIsLoading(true);
+      setError(null);
+      try {
+        const result = await executeSyncQuery(client.db, queryRef.current);
+        publishResult(result);
       } catch (caught) {
         setError(toError(caught));
         setIsLoading(false);
       }
-    }, [client, enabled, optionsRef, queryRef]);
+    }, [client, enabled, optionsRef, publishResult, queryRef]);
 
     useEffect(() => {
       if (!enabled) {
@@ -438,16 +447,74 @@ export function createSyncularReact<DB>() {
 
     useEffect(() => {
       if (!enabled || options.refreshOnDataChange === false) return undefined;
-      return client.on('rowsChanged', (event) => {
-        if (
-          watchedTables &&
-          !event.changedTables.some((table) => watchedTables.has(table))
-        ) {
+      let disposed = false;
+      let fallbackUnsubscribe: (() => void) | undefined;
+      let liveSubscription: SyncularV2LiveQuerySubscription | undefined;
+
+      const startFallback = () => {
+        if (disposed || fallbackUnsubscribe) return;
+        fallbackUnsubscribe = client.on('rowsChanged', (event) => {
+          if (
+            watchedTables &&
+            !event.changedTables.some((table) => watchedTables.has(table))
+          ) {
+            return;
+          }
+          void execute();
+        });
+      };
+
+      const startLiveQuery = async () => {
+        if (!hasLiveQueries(client)) {
+          startFallback();
           return;
         }
-        void execute();
-      });
-    }, [client, enabled, execute, options.refreshOnDataChange, watchedTables]);
+        try {
+          const queryResult = await Promise.resolve(
+            queryRef.current({
+              db: client.db,
+              selectFrom: client.db.selectFrom.bind(
+                client.db
+              ) as Kysely<DB>['selectFrom'],
+            })
+          );
+          if (!isCompilableExecutableQuery<TResult>(queryResult)) {
+            startFallback();
+            return;
+          }
+          const liveTables = tablesRef.current;
+          liveSubscription = await client.live(queryResult, {
+            ...(liveTables == null ? {} : { tables: liveTables }),
+            onChange: (rows) => {
+              if (!disposed) publishResult(rows as TResult);
+            },
+          });
+        } catch (caught) {
+          if (!disposed) {
+            setError(toError(caught));
+            setIsLoading(false);
+          }
+        }
+      };
+
+      void startLiveQuery();
+
+      return () => {
+        disposed = true;
+        fallbackUnsubscribe?.();
+        liveSubscription?.unsubscribe();
+      };
+    }, [
+      client,
+      enabled,
+      execute,
+      options.refreshOnDataChange,
+      publishResult,
+      queryRef,
+      tablesKey,
+      tablesRef,
+      watchedTables,
+    ]);
 
     return {
       data,
@@ -813,6 +880,25 @@ function isExecutableQuery<TResult>(
   value: unknown
 ): value is ExecutableQuery<TResult> {
   return isRecord(value) && typeof value.execute === 'function';
+}
+
+function isCompilableExecutableQuery<TResult>(
+  value: unknown
+): value is ExecutableQuery<TResult> & { compile: () => CompiledQuery } {
+  return isExecutableQuery<TResult>(value) && typeof value.compile === 'function';
+}
+
+type LiveQueryCapableClient<DB> = SyncularClientLike<DB> & {
+  live<Row extends Record<string, unknown>>(
+    query: { compile(): CompiledQuery },
+    options: SyncularV2LiveQueryOptions<Row>
+  ): Promise<SyncularV2LiveQuerySubscription>;
+};
+
+function hasLiveQueries<DB>(
+  client: SyncularClientLike<DB>
+): client is LiveQueryCapableClient<DB> {
+  return typeof (client as { live?: unknown }).live === 'function';
 }
 
 function wrapMutationsTable<DB>(

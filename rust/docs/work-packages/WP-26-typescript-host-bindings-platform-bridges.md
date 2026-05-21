@@ -142,6 +142,11 @@ or keep old naming assumptions.
   `useLeasedMutation(...)` and `useLeasedMutations(...)` route through
   `client.leasedMutations` while preserving the existing pending/error/sync
   options. They do not add a separate offline-auth plugin surface.
+- React `useSyncQuery(...)` now uses `client.live(...)` when the query is
+  compilable and the host client supports query observation. Non-compilable
+  queries and bridge clients without live-query support keep the conservative
+  `rowsChanged` fallback, but direct Rust browser clients no longer need broad
+  table guessing for Kysely query refreshes.
 
 Latest evidence:
 
@@ -169,8 +174,8 @@ paths.
 | WP-11 Offline Auth Leases | Server/Rust auth lease model | `issueAuthLease`, `leasedMutations`, active lease reads | Hooks/examples should show leased vs normal mutations | Bridges need strict leased mutation methods and errors | Browser/bridge/React host surfaces added; docs still need pass |
 | WP-13 Observability | Runtime/server diagnostics | Diagnostic snapshots/support bundles | Support hooks should expose stable diagnostics, not raw internals | Bridge diagnostics must match native event/error JSON | Needs docs/testkit parity check |
 | WP-15 Error Taxonomy | Core/server/runtime taxonomy | Stable `code/category/retryable/recommendedAction` in thrown errors/events | Hooks must surface stable error objects | Bridges must preserve error shape | Mostly done; keep in generated docs |
-| WP-17 Lifecycle/App State | Runtime lifecycle model | `getStatus`, `on(...)`, `resumeFromBackground`, lifecycle events | Hooks must avoid poll-based status loops | Platform shells need app lifecycle entrypoints | Bridge resume parity added; React polling options still need audit |
-| WP-21 Live Query Precision | Runtime observation | Kysely live query metadata, row/field deltas | Hooks must refresh from row/field events, not broad table guessing | Bridge events need precise changed rows/fields | Needs bridge parity test pass |
+| WP-17 Lifecycle/App State | Runtime lifecycle model | `getStatus`, `on(...)`, `resumeFromBackground`, lifecycle events | Hooks must avoid poll-based status loops | Platform shells need app lifecycle entrypoints | Bridge resume parity added; optional polling remains explicit |
+| WP-21 Live Query Precision | Runtime observation | Kysely live query metadata, row/field deltas | Hooks must refresh from row/field events, not broad table guessing | Bridge events need precise changed rows/fields | React live-query path added; bridge live-query support still open |
 | WP-22 Undo/Redo Command History | Runtime/generated mutation history | `commandHistory.undoLast/redoLast`, generated mutation wrapping | Hooks should expose command-history state/actions when useful | Bridge packages need a decision: expose or explicitly defer | Needs explicit TS bridge milestone |
 | WP-23 Audit/Debug | Server audit/console/testkit | Admin/support APIs and redacted export helpers | Generally docs/support tools, not normal app hooks | Bridge support-bundle export only if needed | Keep scoped to support/debug |
 | WP-24 Blob Hardening | Runtime/server blob model | Blob queue/cache/status, large payload limits | Hooks for queue/cache status and stable blob errors | Bridge modules must preserve validation/limits | Planned; use this WP for TS projection |
@@ -199,10 +204,10 @@ paths.
 
 ## Next Action
 
-Continue the export audit with React and generated-client projection: decide
-how to replace broad React `rowsChanged` refreshes with query-observer-backed
-live queries where the client supports them, and document command-history as
-generated-client owned for platform bridges until native generated mutation
-wrappers are mature enough to expose it cleanly. Do not add new feature
-behavior in this WP until the owning feature WP states the canonical semantics
-and red lines.
+Continue the export audit with generated-client and bridge projection: decide
+whether bridge clients should expose query-observer registration directly or
+only preserve row/field event metadata for app-owned refresh policy, and
+document command-history as generated-client owned for platform bridges until
+native generated mutation wrappers are mature enough to expose it cleanly. Do
+not add new feature behavior in this WP until the owning feature WP states the
+canonical semantics and red lines.

@@ -356,9 +356,10 @@ read-only review:
   TypeScript host access to leased mutations, auth leases, and
   resume-from-background across browser bridge, Tauri, React Native, Expo, and
   testkit. React now also exposes leased mutation hooks over the same generated
-  mutation shape. Next, continue the export audit with query-observer-backed
-  React live queries instead of broad `rowsChanged` refreshes, and explicit
-  command-history ownership by generated clients/platform wrappers.
+  mutation shape, and `useSyncQuery(...)` uses query-observer-backed live
+  queries when the client/query supports them. Next, continue the export audit
+  with bridge live-query support decisions and explicit command-history
+  ownership by generated clients/platform wrappers.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when WP-26 finds concrete generated-client naming, discoverability,
   conflict, blob, or subscription ergonomics gaps.
