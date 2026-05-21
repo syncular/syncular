@@ -118,6 +118,43 @@ describe('@syncular/client/react', () => {
     expect(result.current.$error).toBeNull();
   });
 
+  it('exposes leased mutation hooks through the same ergonomic shape', async () => {
+    const fake = new FakeManagedClient();
+    const { SyncProvider, useLeasedMutation, useLeasedMutations } =
+      createSyncularReact<TestDb>();
+    const wrapper = createWrapper(SyncProvider, fake.client);
+
+    const tableHook = renderHook(
+      () => useLeasedMutation({ table: 'tasks', syncImmediately: false }),
+      { wrapper }
+    );
+    await act(async () => {
+      await tableHook.result.current.mutate.update('task-1', { completed: 1 });
+    });
+
+    const rootHook = renderHook(() => useLeasedMutations({ sync: false }), {
+      wrapper,
+    });
+    await act(async () => {
+      await rootHook.result.current.tasks.upsert('task-2', { completed: 0 });
+    });
+
+    expect(fake.mutationCalls).toEqual([]);
+    expect(fake.leasedMutationCalls).toEqual([
+      {
+        table: 'tasks',
+        method: 'update',
+        args: ['task-1', { completed: 1 }, undefined],
+      },
+      {
+        table: 'tasks',
+        method: 'upsert',
+        args: ['task-2', { completed: 0 }, undefined],
+      },
+    ]);
+    expect(fake.syncCount).toBe(0);
+  });
+
   it('supports the table-scoped useMutation helper', async () => {
     const fake = new FakeManagedClient();
     const { SyncProvider, useMutation } = createSyncularReact<TestDb>();
@@ -235,6 +272,11 @@ class FakeManagedClient {
     method: string;
     args: unknown[];
   }> = [];
+  readonly leasedMutationCalls: Array<{
+    table: string;
+    method: string;
+    args: unknown[];
+  }> = [];
   nextQueryRows: TaskRow[] = [];
   syncCount = 0;
   readonly #eventListeners = new Map<
@@ -254,8 +296,8 @@ class FakeManagedClient {
       }),
     },
     dialect: {},
-    mutations: this.createMutations(),
-    leasedMutations: this.createMutations(),
+    mutations: this.createMutations(this.mutationCalls),
+    leasedMutations: this.createMutations(this.leasedMutationCalls),
     on: <T extends SyncularV2ClientEventType>(
       event: T,
       listener: SyncularV2ClientEventSink<T>
@@ -381,10 +423,16 @@ class FakeManagedClient {
     this.emit('rowsChanged', event);
   }
 
-  private createMutations() {
+  private createMutations(
+    calls: Array<{
+      table: string;
+      method: string;
+      args: unknown[];
+    }>
+  ) {
     const tableFor = (table: string) => ({
       insert: async (values: unknown) => {
-        this.mutationCalls.push({ table, method: 'insert', args: [values] });
+        calls.push({ table, method: 'insert', args: [values] });
         return {
           commitId: 'commit-insert',
           clientCommitId: 'client-insert',
@@ -392,7 +440,7 @@ class FakeManagedClient {
         };
       },
       insertMany: async (rows: unknown[]) => {
-        this.mutationCalls.push({ table, method: 'insertMany', args: [rows] });
+        calls.push({ table, method: 'insertMany', args: [rows] });
         return {
           commitId: 'commit-insert-many',
           clientCommitId: 'client-insert-many',
@@ -400,7 +448,7 @@ class FakeManagedClient {
         };
       },
       update: async (id: string, patch: unknown, options?: unknown) => {
-        this.mutationCalls.push({
+        calls.push({
           table,
           method: 'update',
           args: [id, patch, options],
@@ -408,7 +456,7 @@ class FakeManagedClient {
         return { commitId: 'commit-update', clientCommitId: 'client-update' };
       },
       delete: async (id: string, options?: unknown) => {
-        this.mutationCalls.push({
+        calls.push({
           table,
           method: 'delete',
           args: [id, options],
@@ -416,7 +464,7 @@ class FakeManagedClient {
         return { commitId: 'commit-delete', clientCommitId: 'client-delete' };
       },
       upsert: async (id: string, patch: unknown, options?: unknown) => {
-        this.mutationCalls.push({
+        calls.push({
           table,
           method: 'upsert',
           args: [id, patch, options],

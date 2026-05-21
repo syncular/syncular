@@ -138,11 +138,16 @@ or keep old naming assumptions.
   - Bridge tests now prove regular mutations, leased mutations, precise
     `rowsChanged` payload delivery, auth lease roundtrip, active lease listing,
     and foreground resume across browser bridge, Tauri, React Native, and Expo.
+- React leased mutation hooks now mirror normal mutation hooks:
+  `useLeasedMutation(...)` and `useLeasedMutations(...)` route through
+  `client.leasedMutations` while preserving the existing pending/error/sync
+  options. They do not add a separate offline-auth plugin surface.
 
 Latest evidence:
 
 ```bash
 bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts rust/bindings/browser/src/bridge-client.test.ts
+bun test rust/bindings/browser/src/react.test.ts
 bun --cwd packages/client-tauri tsgo
 bun --cwd packages/client-react-native tsgo
 bun --cwd packages/client-expo tsgo
@@ -161,7 +166,7 @@ paths.
 | --- | --- | --- | --- | --- | --- |
 | WP-05 Adaptive Bootstrap | Runtime/generated subscriptions | `getStatus()`, `bootstrapChanged`, generated phase helpers | Hooks must expose readiness without polling hacks | Bridge status/events must preserve readiness payloads | Mostly done; audit docs/examples |
 | WP-07 CRDT Fields | Runtime CRDT primitives | Generic CRDT field APIs, row metadata, Yjs envelope helpers | Keep editor adapters app-layer; expose field events | Bridge events must preserve CRDT field metadata | Track adapter docs and bridge parity |
-| WP-11 Offline Auth Leases | Server/Rust auth lease model | `issueAuthLease`, `leasedMutations`, active lease reads | Hooks/examples should show leased vs normal mutations | Bridges need strict leased mutation methods and errors | Bridge client parity added; React docs/hooks still need audit |
+| WP-11 Offline Auth Leases | Server/Rust auth lease model | `issueAuthLease`, `leasedMutations`, active lease reads | Hooks/examples should show leased vs normal mutations | Bridges need strict leased mutation methods and errors | Browser/bridge/React host surfaces added; docs still need pass |
 | WP-13 Observability | Runtime/server diagnostics | Diagnostic snapshots/support bundles | Support hooks should expose stable diagnostics, not raw internals | Bridge diagnostics must match native event/error JSON | Needs docs/testkit parity check |
 | WP-15 Error Taxonomy | Core/server/runtime taxonomy | Stable `code/category/retryable/recommendedAction` in thrown errors/events | Hooks must surface stable error objects | Bridges must preserve error shape | Mostly done; keep in generated docs |
 | WP-17 Lifecycle/App State | Runtime lifecycle model | `getStatus`, `on(...)`, `resumeFromBackground`, lifecycle events | Hooks must avoid poll-based status loops | Platform shells need app lifecycle entrypoints | Bridge resume parity added; React polling options still need audit |
@@ -195,9 +200,9 @@ paths.
 ## Next Action
 
 Continue the export audit with React and generated-client projection: decide
-whether `useLeasedMutations` should be a first-class hook, replace broad
-React `rowsChanged` refreshes with query-observer-backed live queries where the
-client supports them, and document command-history as generated-client owned
-for platform bridges until native generated mutation wrappers are mature enough
-to expose it cleanly. Do not add new feature behavior in this WP until the
-owning feature WP states the canonical semantics and red lines.
+how to replace broad React `rowsChanged` refreshes with query-observer-backed
+live queries where the client supports them, and document command-history as
+generated-client owned for platform bridges until native generated mutation
+wrappers are mature enough to expose it cleanly. Do not add new feature
+behavior in this WP until the owning feature WP states the canonical semantics
+and red lines.

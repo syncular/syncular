@@ -482,6 +482,19 @@ export function createSyncularReact<DB>() {
   function useMutation<TTable extends KnownTableKey<DB> & string>(
     options: UseMutationOptions<TTable>
   ): UseMutationResult {
+    return useMutationFor('mutations', options);
+  }
+
+  function useLeasedMutation<TTable extends KnownTableKey<DB> & string>(
+    options: UseMutationOptions<TTable>
+  ): UseMutationResult {
+    return useMutationFor('leasedMutations', options);
+  }
+
+  function useMutationFor<TTable extends KnownTableKey<DB> & string>(
+    apiName: 'mutations' | 'leasedMutations',
+    options: UseMutationOptions<TTable>
+  ): UseMutationResult {
     const client = useClient();
     const optionsRef = useLatest(options);
     const [isPending, setIsPending] = useState(false);
@@ -512,7 +525,7 @@ export function createSyncularReact<DB>() {
     );
 
     const mutate = useMemo<FluentMutation>(() => {
-      const table = client.mutations.$table(options.table);
+      const table = client[apiName].$table(options.table);
       return {
         update: (rowId, payload, mutationOptions) =>
           run(() => table.update(rowId, payload, mutationOptions)),
@@ -521,12 +534,12 @@ export function createSyncularReact<DB>() {
         delete: (rowId, mutationOptions) =>
           run(() => table.delete(rowId, mutationOptions)),
       };
-    }, [client, options.table, run]);
+    }, [apiName, client, options.table, run]);
 
     const mutateMany = useCallback(
       (inputs: readonly MutationInput[]) =>
         run(async () => {
-          const { commit } = await client.mutations.$commit(async (tx) => {
+          const { commit } = await client[apiName].$commit(async (tx) => {
             const table = tx[optionsRef.current.table]!;
             for (const input of inputs) {
               if (input.op === 'delete') {
@@ -542,13 +555,26 @@ export function createSyncularReact<DB>() {
           });
           return commit;
         }),
-      [client, optionsRef, run]
+      [apiName, client, optionsRef, run]
     );
 
     return { mutate, mutateMany, isPending, error, reset };
   }
 
   function useMutations(options: UseMutationsOptions = {}): MutationsHook<DB> {
+    return useMutationsFor('mutations', options);
+  }
+
+  function useLeasedMutations(
+    options: UseMutationsOptions = {}
+  ): MutationsHook<DB> {
+    return useMutationsFor('leasedMutations', options);
+  }
+
+  function useMutationsFor(
+    apiName: 'mutations' | 'leasedMutations',
+    options: UseMutationsOptions = {}
+  ): MutationsHook<DB> {
     const client = useClient();
     const optionsRef = useLatest(options);
     const [isPending, setIsPending] = useState(false);
@@ -598,7 +624,7 @@ export function createSyncularReact<DB>() {
               if (prop === '$reset') return reset;
               if (prop === '$table') {
                 return (table: string) =>
-                  wrapMutationsTable(client, table, run);
+                  wrapMutationsTable(client, apiName, table, run);
               }
               if (prop === '$commit') {
                 return async <TResult>(
@@ -608,7 +634,7 @@ export function createSyncularReact<DB>() {
                   let callbackResult: TResult | undefined;
                   const commit = await run(
                     async () => {
-                      const result = await client.mutations.$commit(fn);
+                      const result = await client[apiName].$commit(fn);
                       callbackResult = result.result as TResult;
                       return result.commit;
                     },
@@ -619,11 +645,11 @@ export function createSyncularReact<DB>() {
                 };
               }
               if (typeof prop !== 'string') return undefined;
-              return wrapMutationsTable(client, prop, run);
+              return wrapMutationsTable(client, apiName, prop, run);
             },
           }
         ) as MutationsHook<DB>,
-      [client, error, isPending, reset, run]
+      [apiName, client, error, isPending, reset, run]
     );
   }
 
@@ -755,6 +781,8 @@ export function createSyncularReact<DB>() {
     useBlob,
     useBlobUploadQueue,
     useConflictStats,
+    useLeasedMutation,
+    useLeasedMutations,
     useMutation,
     useMutations,
     useOutboxStats,
@@ -789,6 +817,7 @@ function isExecutableQuery<TResult>(
 
 function wrapMutationsTable<DB>(
   client: SyncularClientLike<DB>,
+  apiName: 'mutations' | 'leasedMutations',
   table: string,
   run: <TResult extends MutationReceipt>(
     operation: () => Promise<TResult>,
@@ -796,7 +825,7 @@ function wrapMutationsTable<DB>(
     syncOverride?: SyncMode
   ) => Promise<TResult>
 ): AnyTableMutations {
-  const tableApi = client.mutations.$table(table);
+  const tableApi = client[apiName].$table(table);
   return {
     insert: (values) => run(() => tableApi.insert(values), 1),
     insertMany: (rows) => run(() => tableApi.insertMany(rows), rows.length),
