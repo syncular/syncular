@@ -383,13 +383,14 @@ read-only review:
     runtime CRDT field coverage for convergence, encrypted fields, compaction,
     and duplicate/reordered delivery; heavier browser-Hono and native lanes are
     available through the same runner.
-- `[~]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
+- `[!]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
   - Swift/Kotlin/JVM generated clients, BoltFFI host wrappers, native event
     streams, command-line lifecycle smokes, Hono server sync smokes, and real
     iOS/Android lifecycle app-shell fixtures exist. Root scripts now expose the
     app-shell lifecycle lanes directly (`rust:native:lifecycle:*`) and the
     conformance runner has an explicit `--native-app-shell` mode so these do
-    not stay hidden behind reference docs. Windows JVM packaging remains a
+    not stay hidden behind reference docs. No local macOS work remains for the
+    current acceptance criteria; Windows JVM packaging is blocked on a real
     Windows host/runner lane. Latest local gates passed:
     `bun run rust:native:lifecycle:ios`, `bun run rust:conformance:native`,
     and `bun run rust:native:lifecycle:android`.
