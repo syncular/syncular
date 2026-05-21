@@ -778,6 +778,13 @@ impl NativeSyncularClient {
         Ok(command_id)
     }
 
+    pub fn enqueue_process_blob_upload_queue(&self) -> Result<String> {
+        let command_id = self.next_command_id("blob-upload")?;
+        self.worker()?
+            .enqueue_process_blob_upload_queue(command_id.clone())?;
+        Ok(command_id)
+    }
+
     pub fn enqueue_prune_blob_cache(&self, max_bytes: i64) -> Result<String> {
         let command_id = self.next_command_id("blob-prune")?;
         self.worker()?

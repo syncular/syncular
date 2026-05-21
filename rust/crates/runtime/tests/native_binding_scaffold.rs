@@ -59,6 +59,7 @@ fn boltffi_rust_surface_exposes_the_syncular_runtime_boundary() {
     assert!(source.contains("pub fn enqueue_store_blob_file_json"));
     assert!(source.contains("pub fn retrieve_blob_file_json"));
     assert!(source.contains("pub fn enqueue_retrieve_blob_file_json"));
+    assert!(source.contains("pub fn enqueue_process_blob_upload_queue"));
     assert!(source.contains("pub fn compact_storage_json"));
     assert!(source.contains("pub fn enqueue_compact_storage_json"));
     assert!(source.contains("pub fn app_schema_state_json"));
@@ -124,6 +125,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(swift.contains(
         "func enqueueStoreBlobFileJson(path: String, optionsJson: String?) throws -> String"
     ));
+    assert!(swift.contains("func enqueueProcessBlobUploadQueue() throws -> String"));
     assert!(swift.contains("func queryJson(requestJson: String) throws -> String"));
     assert!(swift.contains("func startEventStream(capacity: UInt64) throws -> Bool"));
     assert!(swift.contains("func nextEventJson() throws -> String?"));
@@ -161,6 +163,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(
         kotlin.contains("fun enqueueStoreBlobFileJson(path: String, optionsJson: String?): String")
     );
+    assert!(kotlin.contains("fun enqueueProcessBlobUploadQueue(): String"));
     assert!(kotlin.contains("fun queryJson(requestJson: String): String"));
     assert!(kotlin.contains("fun startEventStream(capacity: ULong): Boolean"));
     assert!(kotlin.contains("fun nextEventJson(): String?"));
@@ -201,6 +204,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java.contains(
         "public String enqueueStoreBlobFileJson(String path, java.util.Optional<String> optionsJson)"
     ));
+    assert!(java.contains("public String enqueueProcessBlobUploadQueue()"));
     assert!(java.contains("public String queryJson(String requestJson)"));
     assert!(java.contains("public boolean startEventStream(long capacity)"));
     assert!(java.contains("public java.util.Optional<String> nextEventJson()"));
@@ -218,6 +222,10 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java_header.contains("boltffi_syncular_bolt_client_next_event_json_timeout"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_diagnostic_snapshot_json"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_diagnostic_snapshot_json"));
+    assert!(
+        android_header.contains("boltffi_syncular_bolt_client_enqueue_process_blob_upload_queue")
+    );
+    assert!(java_header.contains("boltffi_syncular_bolt_client_enqueue_process_blob_upload_queue"));
     for output in [swift, kotlin, java] {
         assert!(!output.contains("tasks"));
         assert!(!output.contains("NewTask"));

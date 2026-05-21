@@ -46,6 +46,21 @@ private func blobRef(fromPayload payload: [String: Any]) throws -> SyncularBlobR
     return try JSONDecoder().decode(SyncularBlobRef.self, from: data)
 }
 
+private struct HostMaintenancePolicy {
+    let isForeground: Bool
+    let allowsExpensiveNetwork: Bool
+    let allowsBackgroundWork: Bool
+    let remainingBackgroundBudgetMs: UInt64
+
+    var canProcessBlobUploads: Bool {
+        allowsExpensiveNetwork && (isForeground || (allowsBackgroundWork && remainingBackgroundBudgetMs >= 2_000))
+    }
+
+    var canRunCompaction: Bool {
+        isForeground || (allowsBackgroundWork && remainingBackgroundBudgetMs >= 1_000)
+    }
+}
+
 @main
 private enum LifecycleAppSmoke {
     static func main() throws {
@@ -92,6 +107,8 @@ private enum LifecycleAppSmoke {
         expect(blobEvent.commandId == blobCommandId, "Swift lifecycle blob event should carry command id")
         let blobPayload = blobObject["payload_json"] as! [String: Any]
         let blobRef = try blobRef(fromPayload: blobPayload)
+        let (blobStateEvent, _) = try waitForEvent(from: native, kind: "BlobUploadsChanged")
+        expect(blobStateEvent.lifecycle?.blobUploads?.pending == 1, "Swift lifecycle should observe pending blob uploads")
 
         let rowId = "task-swift-lifecycle"
         let mutationCommandId = try native.queuedMutations.tasks.insert(NewTask(
@@ -138,6 +155,42 @@ private enum LifecycleAppSmoke {
         let outbox = try native.outboxSummariesJson()
         expect(outbox.contains(mutationEvent.clientCommitId!), "Swift lifecycle outbox should contain queued mutation")
         expect(outbox.contains(crdtWriteEvent.clientCommitId!), "Swift lifecycle outbox should contain queued CRDT write")
+
+        let restrictedBackground = HostMaintenancePolicy(
+            isForeground: false,
+            allowsExpensiveNetwork: false,
+            allowsBackgroundWork: false,
+            remainingBackgroundBudgetMs: 0
+        )
+        expect(!restrictedBackground.canProcessBlobUploads, "Swift restricted background policy should not process blob uploads")
+        expect(!restrictedBackground.canRunCompaction, "Swift restricted background policy should not run compaction")
+
+        let foregroundPolicy = HostMaintenancePolicy(
+            isForeground: true,
+            allowsExpensiveNetwork: true,
+            allowsBackgroundWork: false,
+            remainingBackgroundBudgetMs: 0
+        )
+        if foregroundPolicy.canProcessBlobUploads {
+            let uploadCommandId = try native.enqueueProcessBlobUploadQueue()
+            let (uploadEvent, _) = try waitForEvent(
+                from: native,
+                kind: "WorkerCommandCompleted",
+                commandId: uploadCommandId,
+                timeoutMs: 8_000
+            )
+            expect(uploadEvent.commandId == uploadCommandId, "Swift lifecycle queued blob upload processing should carry command id")
+        }
+        if foregroundPolicy.canRunCompaction {
+            let compactCommandId = try native.enqueueCompactStorageJson(optionsJson: #"{"olderThanMs":0}"#)
+            let (compactEvent, _) = try waitForEvent(
+                from: native,
+                kind: "WorkerCommandCompleted",
+                commandId: compactCommandId
+            )
+            expect(compactEvent.commandId == compactCommandId, "Swift lifecycle queued compaction should carry command id")
+        }
+
         expect(try live.stop(on: native), "Swift lifecycle live query should unregister")
         expect(try native.shutdown(), "Swift lifecycle app should shut down native client")
 

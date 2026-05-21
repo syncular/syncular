@@ -463,6 +463,10 @@ impl SyncularBoltClient {
         self.with_client_mut(|client| client.process_blob_upload_queue_json())
     }
 
+    pub fn enqueue_process_blob_upload_queue(&self) -> Result<String, String> {
+        self.with_client(|client| client.enqueue_process_blob_upload_queue())
+    }
+
     pub fn blob_upload_queue_stats_json(&self) -> Result<String, String> {
         self.with_client_mut(|client| client.blob_upload_queue_stats_json())
     }

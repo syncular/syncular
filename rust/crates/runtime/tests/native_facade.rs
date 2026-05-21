@@ -1788,6 +1788,28 @@ fn native_facade_enqueues_compaction_and_blob_cache_work_on_worker() -> Result<(
         Some(1)
     );
 
+    let upload_command = client.enqueue_process_blob_upload_queue()?;
+    let upload_event = client
+        .next_event_timeout(Duration::from_secs(2))
+        .expect("queued process blob upload event");
+    assert_eq!(upload_event.kind, NativeEventKind::WorkerCommandCompleted);
+    assert_eq!(
+        upload_event.command_id.as_deref(),
+        Some(upload_command.as_str())
+    );
+    assert_eq!(
+        upload_event
+            .payload_json
+            .as_ref()
+            .and_then(|payload| payload.get("uploaded"))
+            .and_then(Value::as_i64),
+        Some(0)
+    );
+    let upload_state_event = client
+        .next_event_timeout(Duration::from_secs(2))
+        .expect("queued process blob upload state event");
+    assert_eq!(upload_state_event.kind, NativeEventKind::BlobUploadsChanged);
+
     let retrieve_command =
         client.enqueue_retrieve_blob_file_json(&blob_ref.to_string(), &output_path, None)?;
     let retrieve_event = client

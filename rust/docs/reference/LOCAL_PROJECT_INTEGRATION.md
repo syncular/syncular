@@ -899,10 +899,10 @@ as a long-lived runtime object, not as a per-screen helper:
 - prefer queued APIs for writes and bursty work:
   `enqueueMutationJson`, `enqueueSyncNow`, `enqueueSyncWebsocket`, queued CRDT
   text/compaction helpers, queued blob file operations, queued snapshot
-  refresh, and queued storage compaction. These return command ids immediately
-  and report durability later. Use `enqueueSyncNow` for the normal HTTP path;
-  use `enqueueSyncWebsocket` when the server route supports Syncular's
-  WebSocket push transport.
+  refresh, queued blob upload processing, and queued storage compaction. These
+  return command ids immediately and report durability later. Use
+  `enqueueSyncNow` for the normal HTTP path; use `enqueueSyncWebsocket` when
+  the server route supports Syncular's WebSocket push transport.
 - start the native event stream once, read `nextEventJson()` from a background
   task, and update UI state by ordered `eventSeq` plus `commandId`. Events
   include rows/query changes, command completion/failure, sync state, conflicts,
@@ -923,7 +923,10 @@ as a long-lived runtime object, not as a per-screen helper:
 - when backgrounding, only enqueue sync/blob/compaction work that fits the host
   platform's background execution budget. Prefer `resumeFromBackground()` for
   foreground sync/realtime recovery, and schedule queued blob upload/cache or
-  compaction work separately based on app policy.
+  compaction work separately based on app policy. The native lifecycle smokes
+  model this as a small host policy object: restricted background state does
+  not enqueue upload/compaction work, while foreground policy may call
+  `enqueueProcessBlobUploadQueue()` and `enqueueCompactStorageJson(...)`.
 - close the event stream and call the explicit native lifecycle method
   (`shutdown()` in BoltFFI wrappers) during app teardown.
 - initialize CRDT-backed text fields empty or with existing Yjs state before
