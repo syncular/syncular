@@ -121,6 +121,19 @@ First retained slice:
 - Benchmark gate: not applicable for this slice; it adds a testkit/reference
   schema and does not change runtime sync/apply/query hot paths.
 
+Second retained slice:
+
+- Added Hono blob-route coverage proving file-version rows can back blob
+  authorization through `file_versions.blob_ref`.
+- The route now has a production-shaped test where an uploaded hash is still
+  forbidden until a visible file-version row references it, then the owning
+  actor can mint a download URL and a different actor remains forbidden.
+- Gates:
+  - `bun --cwd packages/server-hono tsgo`
+  - `bun test packages/server-hono/src/__tests__/blob-routes.test.ts`
+- Benchmark gate: not applicable; this is authorization coverage over existing
+  route/helper behavior.
+
 ## Suggested App Schema
 
 Initial generated/reference schema:
@@ -145,22 +158,22 @@ Add a reference file asset schema and conformance scenario:
 2. `[x]` Add mutation builders for create file, create folder, attach new
    version, rename, move, soft delete, and restore.
 3. `[x]` Use `BlobRef` in `file_versions`, not in file row payload bytes.
-4. `[~]` Add a two-client test where one client uploads a file/version,
+4. `[x]` Add a two-client test where one client uploads a file/version,
    another pulls metadata, downloads the blob, then sees revocation clear the
    file metadata. The retained testkit scenario covers this through
-   `AppTestServer`; the remaining production server slice should prove the same
-   reference schema with row-backed Hono blob authorization.
+   `AppTestServer`, and the Hono route now proves the same row-backed
+   file-version authorization shape for download URL access.
 
 ## Next Action
 
 Add the production server/browser side of the reference path:
 
-1. Add Hono blob authorization coverage using `file_versions.blob_ref` as the
+1. `[x]` Add Hono blob authorization coverage using `file_versions.blob_ref` as the
    visible row-backed blob reference.
-2. Add browser/WASM coverage that generated app rows with a file-version
+2. `[ ]` Add browser/WASM coverage that generated app rows with a file-version
    `BlobRef` sync and clear on revocation.
-3. Expand testkit file scenarios for rename, move, delete-vs-update, version
+3. `[ ]` Expand testkit file scenarios for rename, move, delete-vs-update, version
    conflict, trash/restore, and missing/corrupted blob bodies.
-4. Decide whether the reference schema should also become a codegen optional
+4. `[ ]` Decide whether the reference schema should also become a codegen optional
    template, while keeping it optional app-layer metadata rather than Syncular
    core tables.

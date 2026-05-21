@@ -39,8 +39,19 @@ interface ScopedBlobTasksTable {
   server_version: number;
 }
 
+interface ScopedBlobFileVersionsTable {
+  id: string;
+  file_id: string;
+  owner_id: string;
+  blob_ref: string;
+  content_hash: string;
+  byte_size: number;
+  server_version: number;
+}
+
 interface ScopedBlobRouteDb extends SyncBlobDb, SyncCoreDb {
   tasks: ScopedBlobTasksTable;
+  file_versions: ScopedBlobFileVersionsTable;
 }
 
 interface ScopedBlobClientDb {
@@ -48,6 +59,15 @@ interface ScopedBlobClientDb {
     id: string;
     user_id: string;
     image: BlobRef | null;
+    server_version: number;
+  };
+  file_versions: {
+    id: string;
+    file_id: string;
+    owner_id: string;
+    blob_ref: BlobRef;
+    content_hash: string;
+    byte_size: number;
     server_version: number;
   };
 }
@@ -724,6 +744,116 @@ describe('createBlobRoutes', () => {
           size: content.length,
           mimeType: 'image/png',
         } satisfies BlobRef),
+        server_version: 1,
+      })
+      .execute();
+
+    const authorizedUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(authorizedUrlResponse.status).toBe(200);
+
+    const forbiddenUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: 'user-2' },
+      }
+    );
+    expect(forbiddenUrlResponse.status).toBe(403);
+    expect(await forbiddenUrlResponse.json()).toMatchObject({
+      error: 'blob.forbidden',
+      code: 'blob.forbidden',
+    });
+  });
+
+  it('can authorize file-version blob refs without putting bytes in file rows', async () => {
+    const scopedDb = db as unknown as Kysely<ScopedBlobRouteDb>;
+    await scopedDb.schema
+      .createTable('file_versions')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('file_id', 'text', (col) => col.notNull())
+      .addColumn('owner_id', 'text', (col) => col.notNull())
+      .addColumn('blob_ref', 'text', (col) => col.notNull())
+      .addColumn('content_hash', 'text', (col) => col.notNull())
+      .addColumn('byte_size', 'integer', (col) => col.notNull())
+      .addColumn('server_version', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .execute();
+
+    const fileVersionsHandler = createServerHandler<
+      ScopedBlobRouteDb,
+      ScopedBlobClientDb,
+      'file_versions'
+    >({
+      table: 'file_versions',
+      scopes: ['user:{owner_id}'],
+      resolveScopes: async (ctx) => ({ owner_id: [ctx.actorId] }),
+    });
+    const canAccessBlob = createScopedBlobAccessChecker({
+      db: scopedDb,
+      handlers: [fileVersionsHandler],
+      references: [{ table: 'file_versions', blobColumns: ['blob_ref'] }],
+    });
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+      canAccessBlob,
+    });
+
+    const content = new TextEncoder().encode('file-version-reference-blob');
+    const hash = await createHash(content);
+    const blob = {
+      hash,
+      size: content.length,
+      mimeType: 'text/plain',
+    } satisfies BlobRef;
+    const init = await initiateUpload({
+      app,
+      hash,
+      size: content.length,
+      mimeType: blob.mimeType,
+    });
+    const uploadResponse = await app.request(init.uploadUrl!, {
+      method: init.uploadMethod ?? 'PUT',
+      headers: { 'content-type': blob.mimeType },
+      body: content,
+    });
+    expect(uploadResponse.status).toBe(200);
+    const completeResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/complete`,
+      {
+        method: 'POST',
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(completeResponse.status).toBe(200);
+
+    const unreferencedUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(unreferencedUrlResponse.status).toBe(403);
+    expect(await unreferencedUrlResponse.json()).toMatchObject({
+      error: 'blob.forbidden',
+      code: 'blob.forbidden',
+    });
+
+    await scopedDb
+      .insertInto('file_versions')
+      .values({
+        id: 'version-1',
+        file_id: 'file-1',
+        owner_id: ACTOR_ID,
+        blob_ref: JSON.stringify(blob),
+        content_hash: hash,
+        byte_size: content.length,
         server_version: 1,
       })
       .execute();
