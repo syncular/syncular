@@ -249,6 +249,75 @@ fn local_health_check_reports_orphaned_subscription_state_and_root() -> Result<(
 }
 
 #[test]
+fn local_health_check_reports_schema_outbox_and_conflict_hazards() -> Result<()> {
+    let path = temp_db_path("syncular-health-sync-state");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    store.transaction(|tx| tx.upsert_row("tasks", &task_row("sync-state-health-task"), None))?;
+
+    let now = now_ms();
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    sql_query(
+        "update syncular_app_schema set schema_version = ?1 where schema_id = 'syncular-app'",
+    )
+    .bind::<Integer, _>(current_schema_version() + 1)
+    .execute(&mut conn)?;
+    sql_query(
+        r#"
+        insert into sync_outbox_commits (
+            id, client_commit_id, status, operations_json, created_at, updated_at,
+            attempt_count, schema_version, next_attempt_at
+        ) values
+            ('health-outbox-future', 'health-commit-future', 'pending', '[]', ?1, ?1, 0, ?2, 0),
+            ('health-outbox-failed', 'health-commit-failed', 'failed', '[]', ?1, ?1, 1, ?3, 0)
+        "#,
+    )
+    .bind::<BigInt, _>(now)
+    .bind::<Integer, _>(current_schema_version() + 2)
+    .bind::<Integer, _>(current_schema_version())
+    .execute(&mut conn)?;
+    sql_query(
+        r#"
+        insert into sync_conflicts (
+            id, outbox_commit_id, client_commit_id, op_index, result_status,
+            message, created_at, resolved_at
+        ) values (
+            'health-conflict', 'health-outbox-future', 'health-commit-future', 0,
+            'conflict', 'needs resolution', ?1, null
+        )
+        "#,
+    )
+    .bind::<BigInt, _>(now)
+    .execute(&mut conn)?;
+    drop(conn);
+
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    let report = client.local_health_check()?;
+    assert!(!report.ok);
+    assert_eq!(report.checked_outbox_commits, 2);
+    assert_eq!(report.checked_conflicts, 1);
+    for code in [
+        "local.app_schema_state_future_version",
+        "local.outbox_future_schema_version",
+        "local.outbox_failed_commits",
+        "local.conflicts_unresolved",
+    ] {
+        assert!(
+            report.findings.iter().any(|finding| finding.code == code),
+            "missing health finding {code}"
+        );
+    }
+    assert_eq!(
+        client
+            .current_row_json("tasks", "sync-state-health-task")?
+            .unwrap()["title"],
+        "Parity task"
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn diesel_default_schema_installs_runtime_tables_without_demo_app_tables() -> Result<()> {
     let path = temp_db_path("syncular-diesel-default-schema");
     let mut store = DieselSqliteStore::open(&path)?;

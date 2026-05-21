@@ -1777,14 +1777,6 @@ where
         )?)
     }
 
-    pub fn local_health_check(&mut self) -> Result<crate::health::LocalHealthReport> {
-        crate::health::check_local_health(&mut self.store, DEFAULT_STATE_ID, &self.subscriptions)
-    }
-
-    pub fn local_health_check_json(&mut self) -> Result<String> {
-        Ok(serde_json::to_string(&self.local_health_check()?)?)
-    }
-
     #[cfg(feature = "native")]
     pub fn bootstrap_status(&mut self) -> Result<BootstrapStatus> {
         self.bootstrap_status_for_phases(0, 1)
@@ -3460,6 +3452,29 @@ where
 
     pub fn conflict_summaries(&mut self) -> Result<Vec<crate::store::ConflictSummary>> {
         self.store.conflict_summaries()
+    }
+
+    pub fn local_health_check(&mut self) -> Result<crate::health::LocalHealthReport> {
+        let mut report = crate::health::check_local_health(
+            &mut self.store,
+            DEFAULT_STATE_ID,
+            &self.subscriptions,
+        )?;
+        let app_schema_state = self.app_schema_state()?;
+        let outbox = self.outbox_summaries()?;
+        let conflicts = self.conflict_summaries()?;
+        crate::health::check_local_sync_state_health(
+            &mut report,
+            self.app_schema.current_schema_version(),
+            &app_schema_state,
+            &outbox,
+            &conflicts,
+        );
+        Ok(report)
+    }
+
+    pub fn local_health_check_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(&self.local_health_check()?)?)
     }
 
     pub fn conflicts(&mut self) -> SyncularConflicts<'_, S, T> {

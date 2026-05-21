@@ -548,8 +548,11 @@ read-only review:
     local app row. Native stores now also enumerate persisted subscription
     states and verified roots, so health checks report orphaned subscription
     state/root metadata with explicit `clearOrphanedState` repair actions
-    without clearing data implicitly. Next: add schema/outbox/conflict/blob/CRDT
-    health findings before implementing repair commands.
+    without clearing data implicitly. Health checks now also report app-schema
+    state mismatches, outbox commits written by newer generated clients, failed
+    outbox commits, and unresolved conflicts without attempting unsafe automatic
+    repair. Next: add blob/CRDT health findings before implementing repair
+    commands.
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
