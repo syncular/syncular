@@ -22,6 +22,10 @@ pub const MAX_SCOPE_KEYS_PER_SUBSCRIPTION: usize = 16;
 pub const MAX_SCOPE_VALUES_PER_SUBSCRIPTION: usize = 4096;
 pub const MAX_SCOPE_VALUES_PER_CLIENT: usize = 16_384;
 pub const MAX_SUBSCRIPTION_PARAMS_PER_SUBSCRIPTION: usize = 32;
+pub const MAX_MUTATION_OPERATION_JSON_BYTES: usize = 1024 * 1024;
+pub const MAX_MUTATION_LOCAL_ROW_JSON_BYTES: usize = 1024 * 1024;
+pub const MAX_MUTATION_BATCH_JSON_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_OUTBOX_OPERATIONS_JSON_BYTES: usize = 4 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +48,10 @@ pub struct RuntimeLimits {
     pub max_scope_values_per_subscription: usize,
     pub max_scope_values_per_client: usize,
     pub max_subscription_params_per_subscription: usize,
+    pub max_mutation_operation_json_bytes: usize,
+    pub max_mutation_local_row_json_bytes: usize,
+    pub max_mutation_batch_json_bytes: usize,
+    pub max_outbox_operations_json_bytes: usize,
 }
 
 pub fn runtime_default_limits() -> RuntimeLimits {
@@ -66,5 +74,9 @@ pub fn runtime_default_limits() -> RuntimeLimits {
         max_scope_values_per_subscription: MAX_SCOPE_VALUES_PER_SUBSCRIPTION,
         max_scope_values_per_client: MAX_SCOPE_VALUES_PER_CLIENT,
         max_subscription_params_per_subscription: MAX_SUBSCRIPTION_PARAMS_PER_SUBSCRIPTION,
+        max_mutation_operation_json_bytes: MAX_MUTATION_OPERATION_JSON_BYTES,
+        max_mutation_local_row_json_bytes: MAX_MUTATION_LOCAL_ROW_JSON_BYTES,
+        max_mutation_batch_json_bytes: MAX_MUTATION_BATCH_JSON_BYTES,
+        max_outbox_operations_json_bytes: MAX_OUTBOX_OPERATIONS_JSON_BYTES,
     }
 }

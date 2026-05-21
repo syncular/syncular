@@ -3,8 +3,8 @@ use crate::binary_snapshot::SnapshotChunkRows;
 use crate::client::SyncChangedRow;
 use crate::error::{Result, SyncularError};
 use crate::protocol::{
-    BootstrapState, CrdtStateVectorHint, OperationResult, PushCommitResponse, ScopeValues,
-    SyncChange, SyncOperation,
+    sync_operations_json_for_outbox, BootstrapState, CrdtStateVectorHint, OperationResult,
+    PushCommitResponse, ScopeValues, SyncChange, SyncOperation,
 };
 use crate::runtime_schema::runtime_schema_version;
 use crate::store::{
@@ -788,7 +788,7 @@ impl WebMemoryStore {
             id: uuid::Uuid::new_v4().to_string(),
             client_commit_id: client_commit_id.clone(),
             status: "pending".to_string(),
-            operations_json: serde_json::to_string(&operations)?,
+            operations_json: sync_operations_json_for_outbox(&operations)?,
             last_response_json: None,
             error: None,
             created_at: now,

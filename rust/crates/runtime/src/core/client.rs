@@ -2802,6 +2802,7 @@ where
         mutation_json: &str,
         local_row_json: Option<&str>,
     ) -> Result<String> {
+        validate_mutation_json_input_size(mutation_json, local_row_json)?;
         let operation: SyncOperation = serde_json::from_str(mutation_json)?;
         let local_row = local_row_json.map(serde_json::from_str).transpose()?;
         self.store.apply_local_operation(operation, local_row)
@@ -2889,6 +2890,7 @@ where
         mutation_json: &str,
         local_row_json: Option<&str>,
     ) -> Result<String> {
+        validate_mutation_json_input_size(mutation_json, local_row_json)?;
         let operation: SyncOperation = serde_json::from_str(mutation_json)?;
         let local_row = local_row_json.map(serde_json::from_str).transpose()?;
         self.store.apply_local_operation(operation, local_row)

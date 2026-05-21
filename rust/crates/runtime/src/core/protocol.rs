@@ -1,4 +1,8 @@
 use crate::error::{Result, SyncularError};
+use crate::limits::{
+    MAX_MUTATION_BATCH_JSON_BYTES, MAX_MUTATION_LOCAL_ROW_JSON_BYTES,
+    MAX_MUTATION_OPERATION_JSON_BYTES, MAX_OUTBOX_OPERATIONS_JSON_BYTES,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -160,6 +164,69 @@ impl SyncularMutationBatch {
     pub fn into_mutations(self) -> Vec<PendingSyncularMutation> {
         self.mutations
     }
+}
+
+pub fn validate_mutation_json_input_size(
+    operation_json: &str,
+    local_row_json: Option<&str>,
+) -> Result<()> {
+    validate_payload_bytes(
+        "maxMutationOperationJsonBytes",
+        operation_json.len(),
+        MAX_MUTATION_OPERATION_JSON_BYTES,
+        "Syncular mutation operation JSON exceeds the configured limit",
+    )?;
+    if let Some(local_row_json) = local_row_json {
+        validate_payload_bytes(
+            "maxMutationLocalRowJsonBytes",
+            local_row_json.len(),
+            MAX_MUTATION_LOCAL_ROW_JSON_BYTES,
+            "Syncular mutation local row JSON exceeds the configured limit",
+        )?;
+    }
+    Ok(())
+}
+
+pub fn validate_mutation_batch_json_input_size(operations_json: &str) -> Result<()> {
+    validate_payload_bytes(
+        "maxMutationBatchJsonBytes",
+        operations_json.len(),
+        MAX_MUTATION_BATCH_JSON_BYTES,
+        "Syncular mutation batch JSON exceeds the configured limit",
+    )
+}
+
+pub fn validate_pending_mutation_batch_size(mutations: &[PendingSyncularMutation]) -> Result<()> {
+    let bytes = serde_json::to_vec(mutations)?;
+    validate_payload_bytes(
+        "maxMutationBatchJsonBytes",
+        bytes.len(),
+        MAX_MUTATION_BATCH_JSON_BYTES,
+        "Syncular typed mutation batch exceeds the configured limit",
+    )
+}
+
+pub fn sync_operations_json_for_outbox(operations: &[SyncOperation]) -> Result<String> {
+    let operations_json = serde_json::to_string(operations)?;
+    validate_payload_bytes(
+        "maxOutboxOperationsJsonBytes",
+        operations_json.len(),
+        MAX_OUTBOX_OPERATIONS_JSON_BYTES,
+        "Syncular outbox operations JSON exceeds the configured limit",
+    )?;
+    Ok(operations_json)
+}
+
+fn validate_payload_bytes(
+    limit: &'static str,
+    observed: usize,
+    max: usize,
+    message: &'static str,
+) -> Result<()> {
+    if observed > max {
+        return Err(SyncularError::limit_exceeded(limit, observed, max, message));
+    }
+    Ok(())
 }
 
 pub fn random_syncular_id() -> String {

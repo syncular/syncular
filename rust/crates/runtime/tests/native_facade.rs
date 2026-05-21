@@ -13,7 +13,7 @@ use syncular_runtime::client::{
 use syncular_runtime::crdt_yjs::{build_yjs_text_update, BuildYjsTextUpdateArgs};
 use syncular_runtime::error::{ErrorKind, Result, SyncularError, FULL_SNAPSHOT_RESYNC_REQUIRED};
 use syncular_runtime::fixtures::todo::app_schema as demo_todo_app_schema;
-use syncular_runtime::limits::MAX_SUBSCRIPTIONS_PER_CLIENT;
+use syncular_runtime::limits::{MAX_MUTATION_OPERATION_JSON_BYTES, MAX_SUBSCRIPTIONS_PER_CLIENT};
 use syncular_runtime::native::{
     native_event_json_from_worker_event, native_events_from_worker_event_with_observed_queries,
     NativeClientConfig, NativeClientOptions, NativeEventKind, NativeLifecyclePhase,
@@ -2084,6 +2084,41 @@ fn native_facade_rejects_subscription_limit_with_stable_error() -> Result<()> {
     client.close()?;
     let _ = std::fs::remove_file(path);
     Ok(())
+}
+
+#[test]
+fn native_facade_rejects_mutation_payload_limit_with_stable_error() -> Result<()> {
+    let path = temp_db_path("syncular-native-mutation-payload-limit");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-mutation-payload-limit"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+    let oversized_operation = "x".repeat(MAX_MUTATION_OPERATION_JSON_BYTES + 1);
+
+    let direct_err = client
+        .apply_mutation_json(&oversized_operation, None)
+        .expect_err("oversized direct mutation should fail");
+    assert_limit_error(&direct_err, "maxMutationOperationJsonBytes");
+
+    let queued_err = client
+        .enqueue_mutation_json(&oversized_operation, None)
+        .expect_err("oversized queued mutation should fail");
+    assert_limit_error(&queued_err, "maxMutationOperationJsonBytes");
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+fn assert_limit_error(err: &SyncularError, limit: &str) {
+    let classification = err.classification();
+    assert_eq!(classification.code, "runtime.limit_exceeded");
+    assert_eq!(classification.category, "limit-exceeded");
+    assert_eq!(classification.retryable, false);
+    assert_eq!(classification.recommended_action, "reduceInput");
+    assert!(err.message_text().contains(limit));
 }
 
 #[test]

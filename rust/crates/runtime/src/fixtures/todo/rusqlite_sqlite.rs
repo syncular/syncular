@@ -331,7 +331,7 @@ impl RusqliteTx<'_> {
             params![
                 id,
                 client_commit_id,
-                serde_json::to_string(&operations)?,
+                sync_operations_json_for_outbox(&operations)?,
                 now,
                 now,
                 current_schema_version()
