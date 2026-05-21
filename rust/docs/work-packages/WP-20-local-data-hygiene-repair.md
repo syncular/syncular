@@ -74,6 +74,11 @@ First retained slice:
   subscription states and verified roots. The health check now reports orphaned
   subscription state and orphaned verified roots with
   `repairAction: "clearOrphanedState"` without clearing data implicitly.
+- The third retained slice adds app-schema, outbox, and conflict findings:
+  future/stale local app schema state, outbox commits written by newer
+  generated clients, failed outbox commits, and unresolved conflicts. These
+  remain report-only and use `manualInspection` where automated repair would be
+  unsafe.
 
 Gates:
 
@@ -85,6 +90,5 @@ Gates:
 
 ## Next Action
 
-Add app-schema state, unresolved outbox/conflict, blob reference, and CRDT
-document/log health findings with explicit repair actions but no background
-mutation.
+Add blob reference and CRDT document/log health findings with explicit repair
+actions but no background mutation.

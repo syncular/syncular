@@ -1,7 +1,10 @@
 use crate::client::SubscriptionSpec;
 use crate::error::Result;
 use crate::protocol::{BootstrapState, ScopeValues, COMMIT_INTEGRITY_HEX_LENGTH};
-use crate::store::{now_ms, SubscriptionState, SyncStore, SyncStoreTx, VerifiedRoot};
+use crate::store::{
+    now_ms, AppSchemaState, ConflictSummary, OutboxSummary, SubscriptionState, SyncStore,
+    SyncStoreTx, VerifiedRoot,
+};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -14,6 +17,8 @@ pub struct LocalHealthReport {
     pub checked_subscriptions: usize,
     pub checked_subscription_states: usize,
     pub checked_verified_roots: usize,
+    pub checked_outbox_commits: usize,
+    pub checked_conflicts: usize,
     pub findings: Vec<LocalHealthFinding>,
 }
 
@@ -58,6 +63,8 @@ impl LocalHealthReport {
             checked_subscriptions,
             checked_subscription_states: 0,
             checked_verified_roots: 0,
+            checked_outbox_commits: 0,
+            checked_conflicts: 0,
             findings: Vec::new(),
         }
     }
@@ -123,6 +130,155 @@ pub fn check_local_health<S: SyncStore>(
         Ok(())
     })?;
     Ok(report)
+}
+
+pub fn check_local_sync_state_health(
+    report: &mut LocalHealthReport,
+    current_schema_version: i32,
+    app_schema_state: &AppSchemaState,
+    outbox: &[OutboxSummary],
+    conflicts: &[ConflictSummary],
+) {
+    check_app_schema_state(report, current_schema_version, app_schema_state);
+    check_outbox_summaries(report, current_schema_version, outbox);
+    check_conflict_summaries(report, conflicts);
+}
+
+fn check_app_schema_state(
+    report: &mut LocalHealthReport,
+    current_schema_version: i32,
+    app_schema_state: &AppSchemaState,
+) {
+    let Some(schema_version) = app_schema_state.schema_version else {
+        report.add_finding(finding(
+            LocalHealthSeverity::Error,
+            "local.app_schema_state_missing",
+            "appSchemaState",
+            "local app schema state has not been recorded",
+            None,
+            None,
+            Some(LocalHealthRepairAction::ManualInspection),
+            BTreeMap::new(),
+        ));
+        return;
+    };
+
+    if schema_version > current_schema_version {
+        let mut details = BTreeMap::new();
+        details.insert(
+            "localSchemaVersion".to_string(),
+            Value::from(schema_version),
+        );
+        details.insert(
+            "currentSchemaVersion".to_string(),
+            Value::from(current_schema_version),
+        );
+        report.add_finding(finding(
+            LocalHealthSeverity::Error,
+            "local.app_schema_state_future_version",
+            "appSchemaState",
+            "local app schema state was written by a newer generated client",
+            None,
+            None,
+            Some(LocalHealthRepairAction::ManualInspection),
+            details,
+        ));
+    } else if schema_version < current_schema_version {
+        let mut details = BTreeMap::new();
+        details.insert(
+            "localSchemaVersion".to_string(),
+            Value::from(schema_version),
+        );
+        details.insert(
+            "currentSchemaVersion".to_string(),
+            Value::from(current_schema_version),
+        );
+        report.add_finding(finding(
+            LocalHealthSeverity::Error,
+            "local.app_schema_state_stale_version",
+            "appSchemaState",
+            "local app schema state is older than the generated client",
+            None,
+            None,
+            Some(LocalHealthRepairAction::ManualInspection),
+            details,
+        ));
+    }
+}
+
+fn check_outbox_summaries(
+    report: &mut LocalHealthReport,
+    current_schema_version: i32,
+    outbox: &[OutboxSummary],
+) {
+    report.checked_outbox_commits = outbox.len();
+    let future_schema_count = outbox
+        .iter()
+        .filter(|item| item.schema_version > current_schema_version)
+        .count();
+    if future_schema_count > 0 {
+        let max_schema_version = outbox
+            .iter()
+            .map(|item| item.schema_version)
+            .max()
+            .unwrap_or(current_schema_version);
+        let mut details = BTreeMap::new();
+        details.insert("count".to_string(), Value::from(future_schema_count));
+        details.insert(
+            "currentSchemaVersion".to_string(),
+            Value::from(current_schema_version),
+        );
+        details.insert(
+            "maxSchemaVersion".to_string(),
+            Value::from(max_schema_version),
+        );
+        report.add_finding(finding(
+            LocalHealthSeverity::Error,
+            "local.outbox_future_schema_version",
+            "outbox",
+            "pending local outbox commits require a newer generated client",
+            None,
+            None,
+            Some(LocalHealthRepairAction::ManualInspection),
+            details,
+        ));
+    }
+
+    let failed_count = outbox.iter().filter(|item| item.status == "failed").count();
+    if failed_count > 0 {
+        let mut details = BTreeMap::new();
+        details.insert("count".to_string(), Value::from(failed_count));
+        report.add_finding(finding(
+            LocalHealthSeverity::Warning,
+            "local.outbox_failed_commits",
+            "outbox",
+            "local outbox contains failed commits that need app/user action",
+            None,
+            None,
+            Some(LocalHealthRepairAction::ManualInspection),
+            details,
+        ));
+    }
+}
+
+fn check_conflict_summaries(report: &mut LocalHealthReport, conflicts: &[ConflictSummary]) {
+    report.checked_conflicts = conflicts.len();
+    if conflicts.is_empty() {
+        return;
+    }
+
+    let mut details = BTreeMap::new();
+    details.insert("count".to_string(), Value::from(conflicts.len()));
+    report.add_finding(finding(
+        LocalHealthSeverity::Warning,
+        "local.conflicts_unresolved",
+        "conflicts",
+        "local store has unresolved sync conflicts",
+        None,
+        None,
+        Some(LocalHealthRepairAction::ManualInspection),
+        details,
+    ));
 }
 
 fn check_subscription_state(
