@@ -1,6 +1,6 @@
 # WP-09 Native Bindings And Packaging
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -38,10 +38,43 @@ Kotlin, JVM, iOS, macOS, Android, Linux, and Windows app integration.
 
 ## Current Evidence
 
-Apple, Android, and JVM local smokes exist. Windows and broader app lifecycle
-validation remain external or incomplete.
+Swift, Kotlin/JVM, iOS, and Android app lifecycle smoke fixtures exist. The
+command-line native smoke validates generated Swift/Kotlin clients, the real
+BoltFFI host wrappers, native event streams, queued writes, live queries,
+server sync, auth refresh, conflicts, blobs, E2EE, revocation, and schema
+negotiation. The iOS and Android app-shell smokes model real lifecycle policy
+around foreground recovery, background budgets, queued blob work, compaction,
+live-query refresh, CRDT writes, and shutdown.
+
+Native packaging scripts produce Apple, Android AAR/local Maven, current-host
+JVM, Linux x86_64 JVM, and host-only Windows JVM package shapes. Windows
+validation remains a real Windows runner/host lane and cannot be completed from
+this macOS workspace.
 
 ## Next Action
 
-Pick one real lifecycle gap, preferably macOS app shell or Windows JVM package
-validation, and turn it into a repeatable smoke/gate.
+Run and retain the iOS lifecycle smoke as the first local real app-shell gate,
+then run Android lifecycle when the emulator/toolchain is acceptable. Keep
+Windows JVM package validation on the Windows runner/host lane.
+
+## Progress
+
+- Added root scripts for the real native app-shell lifecycle smokes:
+  `bun run rust:native:lifecycle:ios`,
+  `bun run rust:native:lifecycle:android`, and
+  `bun run rust:native:lifecycle`.
+- Added `run-conformance-gates.sh --native-app-shell` so the real iOS/Android
+  lifecycle smokes can be invoked through the same Rust-first conformance
+  runner without making the default native lane require simulator/emulator
+  infrastructure.
+- Gate: `bun run rust:native:lifecycle:ios` passed on the iOS simulator. It
+  built the `aarch64-apple-ios-sim` Rust runtime, generated the Xcode project,
+  and ran `SyncularLifecycleAppTests` with `1` XCTest passing.
+- Gate: `bun run rust:conformance:native` passed. It covered Swift generated
+  client, Swift BoltFFI host, Swift lifecycle CLI, Kotlin generated client,
+  JVM native packaging, Kotlin BoltFFI host, Kotlin lifecycle CLI, local Hono
+  server sync, Swift native server sync, and Kotlin native server sync.
+- Gate: `bun run rust:native:lifecycle:android` passed on the Android emulator.
+  It built the `aarch64-linux-android` Rust runtime, linked
+  `libsyncular_runtime.so`, and ran `1` connected instrumentation test with a
+  successful Gradle build.

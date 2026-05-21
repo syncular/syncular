@@ -55,6 +55,20 @@ bun run rust:conformance
 bun run rust:conformance:native
 ```
 
+Use the app-shell lifecycle lane when native UI lifecycle behavior changes and
+the local simulator/emulator toolchains are available:
+
+```bash
+bun run rust:native:lifecycle:ios
+bun run rust:native:lifecycle:android
+```
+
+The same lane can be invoked through the conformance runner:
+
+```bash
+bash rust/scripts/run-conformance-gates.sh --native-app-shell
+```
+
 ## Browser / WASM
 
 ```bash

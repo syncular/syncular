@@ -7,7 +7,7 @@ MODE="fast"
 
 usage() {
   cat <<'EOF'
-Usage: run-conformance-gates.sh [--fast|--browser-hono|--native|--all]
+Usage: run-conformance-gates.sh [--fast|--browser-hono|--native|--native-app-shell|--all]
 
 Runs the Rust-first conformance gates around the shared todo app fixtures.
 
@@ -17,6 +17,9 @@ Modes:
   --browser-hono  Fast gates plus browser/Hono WASM sync/auth/realtime/blob
                   conformance tests. Build the browser WASM first when needed.
   --native        Swift/Kotlin/JVM native smoke suite against the generated app.
+  --native-app-shell
+                  Real iOS and Android app-shell lifecycle smokes. These need
+                  simulator/emulator toolchains.
   --all           Browser/Hono plus native.
 EOF
 }
@@ -31,6 +34,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --native)
       MODE="native"
+      ;;
+    --native-app-shell)
+      MODE="native-app-shell"
       ;;
     --all)
       MODE="all"
@@ -73,6 +79,11 @@ run_native() {
   run bash "${REPO_ROOT}/rust/examples/todo-app/native-smokes/run-local.sh"
 }
 
+run_native_app_shell() {
+  run bash "${REPO_ROOT}/rust/examples/todo-app/native-smokes/ios-lifecycle/run-local.sh"
+  run bash "${REPO_ROOT}/rust/examples/todo-app/native-smokes/android-lifecycle/run-local.sh"
+}
+
 case "${MODE}" in
   fast)
     run_fast
@@ -82,6 +93,9 @@ case "${MODE}" in
     ;;
   native)
     run_native
+    ;;
+  native-app-shell)
+    run_native_app_shell
     ;;
   all)
     run_browser_hono
