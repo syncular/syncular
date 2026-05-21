@@ -587,7 +587,12 @@ read-only review:
     or deleting pending local CRDT/blob work. Existing explicit compaction
     remains the policy surface for aged failed blob uploads and acknowledged
     CRDT logs.
-- `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
+- `[~]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
+  - First retained slice adds a browser/Hono regression proving Kysely live
+    queries can infer generated app-table dependencies and refresh from
+    row-level sync apply metadata without the app passing broad table-only
+    dependencies. Next: add optional row/field dependency hints for simple
+    generated-query shapes so changed-row metadata can skip unnecessary reruns.
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
