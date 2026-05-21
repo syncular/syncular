@@ -1,6 +1,6 @@
 # WP-09 Native Bindings And Packaging
 
-Status: `[~]` in progress
+Status: `[!]` blocked on Windows runner evidence
 
 ## Goal
 
@@ -47,15 +47,15 @@ around foreground recovery, background budgets, queued blob work, compaction,
 live-query refresh, CRDT writes, and shutdown.
 
 Native packaging scripts produce Apple, Android AAR/local Maven, current-host
-JVM, Linux x86_64 JVM, and host-only Windows JVM package shapes. Windows
-validation remains a real Windows runner/host lane and cannot be completed from
-this macOS workspace.
+JVM, Linux x86_64 JVM, and host-only Windows JVM package shapes. No local macOS
+work remains for the current acceptance criteria; Windows validation remains a
+real Windows runner/host lane and cannot be completed from this workspace.
 
 ## Next Action
 
-Run and retain the iOS lifecycle smoke as the first local real app-shell gate,
-then run Android lifecycle when the emulator/toolchain is acceptable. Keep
-Windows JVM package validation on the Windows runner/host lane.
+Run `bun run rust:native:package:java:windows` on a Windows host/runner and
+record the DLL output evidence. Until then, treat WP-09 as externally blocked,
+not locally in progress.
 
 ## Progress
 
@@ -78,3 +78,6 @@ Windows JVM package validation on the Windows runner/host lane.
   It built the `aarch64-linux-android` Rust runtime, linked
   `libsyncular_runtime.so`, and ran `1` connected instrumentation test with a
   successful Gradle build.
+- Blocker: Windows JVM packaging still needs a real Windows host/runner to run
+  `bun run rust:native:package:java:windows` and prove
+  `.context/native-packages/java/native/windows-x86_64/syncular_runtime_jni.dll`.
