@@ -1,6 +1,6 @@
 # WP-11 Server Edge And Offline Auth
 
-Status: `[~]` in progress
+Status: `[x]` accepted for Rust-client foundation; future Rust server/proxy work deferred
 
 ## Goal
 
@@ -59,10 +59,12 @@ Local leased mutations now also classify a stored covering-but-expired lease as
 
 ## Next Action
 
-Next narrow slice is server/proxy sequencing and any remaining app-shell UX
-validation around lease revocation. Do not add manual outbox lease marking to
-app-facing APIs; generated leased mutations must keep selecting stored lease
-provenance transactionally.
+No local WP-11 implementation slice remains for the current Rust-client
+foundation. Future Rust server or edge-proxy work should start only from a
+concrete product target and the sequencing in
+[`../reference/SERVER_EDGE_INVESTIGATION.md`](../reference/SERVER_EDGE_INVESTIGATION.md).
+Do not add manual outbox lease marking to app-facing APIs; generated leased
+mutations must keep selecting stored lease provenance transactionally.
 
 ## Progress
 

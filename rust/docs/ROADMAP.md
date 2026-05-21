@@ -427,7 +427,7 @@ read-only review:
     gzip bytes versus the configured `3,460,301` / `1,426,063` budget.
     Local and external artifact guards stayed in band; keep measuring package
     size and performance for every browser/WASM-facing change.
-- `[~]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
+- `[x]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
   - Pure Rust server and CF Worker rewrite remain deferred. The offline auth
     lease model is now explicit in
     `reference/OFFLINE_AUTH_LEASE_MODEL.md`: signed bounded leases are for
@@ -470,9 +470,9 @@ read-only review:
     `issueAuthLease(...)` helpers. Local leased mutations now classify a stored
     covering-but-expired lease as `sync.auth_lease_expired` before materializing
     app rows/outbox writes, and browser `activeAuthLeases(...)` now passes wasm
-    `i64` timestamps correctly. Remaining WP-11 work is server/proxy sequencing
-    and broader app-shell UX validation for revocation, not missing client
-    foundation.
+    `i64` timestamps correctly. No local WP-11 implementation slice remains for
+    the current Rust-client foundation; future Rust server or edge-proxy work is
+    deferred until there is a concrete product target.
 - `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus
