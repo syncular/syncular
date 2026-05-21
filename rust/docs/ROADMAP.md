@@ -601,8 +601,9 @@ read-only review:
     primary-key queries skip actual reruns for unrelated row churn, with the
     browser realtime guardrail still neutral. Scope-revocation coverage now
     proves table-only scoped clearing reruns hinted live queries and emits the
-    empty result. Next: extend precision coverage to conflicts, CRDT
-    materialization, and blob metadata.
+    empty result. CRDT materialization coverage now proves a hinted query reruns
+    for a matching CRDT field write and carries CRDT field metadata. Next:
+    extend precision coverage to conflicts and blob metadata.
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)

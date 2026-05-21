@@ -1995,6 +1995,93 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     }
   });
 
+  it('refreshes hinted live queries after CRDT field materialization', async () => {
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'client-live-query-crdt-materialization',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    const field = {
+      table: 'tasks',
+      rowId: 'live-query-crdt-task',
+      field: 'title',
+    };
+    await insertBlankTask(client, field.rowId);
+
+    const dialect = createSyncularV2Dialect(client, {
+      appTables: syncularGeneratedAppSchema.tables.map((table) => table.name),
+      tableConfig: syncularGeneratedTableConfig,
+    });
+    const db = new Kysely<SyncularAppDb>({ dialect });
+    const events: Array<
+      SyncularV2LiveQueryEvent<{
+        id: string;
+        title: string;
+        title_yjs_state: string | null;
+      }>
+    > = [];
+
+    try {
+      await dialect.live(
+        db
+          .selectFrom('tasks')
+          .select(['id', 'title', 'title_yjs_state'])
+          .where('id', '=', field.rowId),
+        {
+          onChange(rows, event) {
+            events.push({ ...event, rows });
+          },
+        }
+      );
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({
+        initial: true,
+        rows: [{ id: field.rowId, title: '', title_yjs_state: null }],
+      });
+
+      await client.applyCrdtFieldText({
+        ...field,
+        nextText: 'Live CRDT title',
+      });
+
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({
+        initial: false,
+        rows: [
+          {
+            id: field.rowId,
+            title: 'Live CRDT title',
+            title_yjs_state: expect.any(String),
+          },
+        ],
+        changedRows: [
+          expect.objectContaining({
+            table: 'tasks',
+            rowId: field.rowId,
+            crdtFields: ['title_yjs_state'],
+          }),
+        ],
+      });
+      await expect(liveQueryDiagnostics(client)).resolves.toMatchObject({
+        queries: [
+          {
+            dependencyHintCount: 1,
+            rerunCount: 1,
+            emittedEventCount: 1,
+          },
+        ],
+      });
+    } finally {
+      await dialect.destroyLiveQueries();
+      await db.destroy();
+    }
+  });
+
   it('keeps duplicate pushes acked once and does not create conflicts', async () => {
     const scenario = syncConformance.duplicatePush;
     const sync = await createHonoSyncHarness({
