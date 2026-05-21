@@ -1,6 +1,6 @@
 # WP-24 Blob Hardening And Production Polish
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -102,8 +102,11 @@ Existing strengths:
 
 Known gaps:
 
-- Blob authorization is currently app-supplied through `canAccessBlob`; the
-  core server does not yet provide a default scope-aware row-reference helper.
+- Blob authorization can now use `createScopedBlobAccessChecker(...)`, an
+  opt-in server helper that authorizes a blob hash only when the hash is
+  referenced by a configured blob column on a row visible through the table
+  handler's current scope policy. Apps can still supply custom `canAccessBlob`
+  policies for bespoke sharing/storage models.
 - Runtime blob body encryption is not first-class; current Rust-created blob
   refs use `encrypted=false`.
 - Browser blob bodies are still stored and uploaded through SQLite/memory
@@ -157,18 +160,26 @@ Testkit/docs:
 
 Add scope-aware blob authorization helpers and diagnostics:
 
-1. Define a server helper that checks whether a blob hash is referenced by at
+1. `[x]` Define a server helper that checks whether a blob hash is referenced by at
    least one row the actor is authorized to receive for a handler/subscription
    scope.
-2. Wire Hono blob routes to accept that helper without removing custom
+2. `[x]` Wire Hono blob routes to accept that helper without removing custom
    `canAccessBlob`.
-3. Emit stable diagnostics for blob auth allowed, denied, missing reference,
+3. `[x]` Emit stable diagnostics for blob auth allowed, denied, missing reference,
    and missing blob.
-4. Add tests for authorized row reference, unauthorized scope, and hash-known
+4. `[x]` Add tests for authorized row reference, unauthorized scope, and hash-known
    but unreferenced blob access.
 
 ## Next Action
 
-Design the default server-side `canAccessBlob` helper around table handlers and
-scoped row references. Keep it explicit and opt-in so apps with custom storage
-or sharing policies can still provide their own authorization function.
+Continue WP-24 with blob-body encryption contract design and implementation.
+Keep the row-reference authorization helper explicit and opt-in; do not add a
+hash-only access fallback.
+
+Latest evidence:
+
+- `bun test packages/server/src/blobs/access.test.ts`
+- `bun test packages/server-hono/src/__tests__/blob-routes.test.ts`
+- `bun --cwd packages/server tsgo`
+- `bun --cwd packages/server-hono tsgo`
+- `git diff --check`
