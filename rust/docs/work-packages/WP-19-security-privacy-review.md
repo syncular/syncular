@@ -70,10 +70,14 @@ flow:
 `packages/server-hono/src/__tests__/create-server.test.ts` ->
 `keeps unauthorized scopes denied across pull, realtime, and artifacts`.
 
+Blob URL authorization now has a negative minting test for an existing completed
+blob: a forbidden actor receives `blob.forbidden`, and the storage adapter's
+`signDownload` path is not called.
+
 ## Next Action
 
-Use the pull/realtime/artifact test shape as the template for the next privacy
-surfaces: blob route denial, CRDT encrypted-field/update denial, console
+Use the pull/realtime/artifact and blob-token test shapes as templates for the
+remaining privacy surfaces: CRDT encrypted-field/update denial, console
 partition/detail denial, and diagnostic/debug-bundle redaction.
 
 ## Progress
@@ -85,6 +89,9 @@ partition/detail denial, and diagnostic/debug-bundle redaction.
   `u1` data gets a revoked pull subscription, cannot download `u1`'s scoped
   snapshot artifact, and opens realtime with zero scopes so `u1` wakeups are not
   delivered.
+- Added blob route coverage proving forbidden actors cannot mint signed download
+  URLs for an existing completed blob.
 - Gates run in `packages/server-hono`:
-  `bun test src/__tests__/create-server.test.ts`, `bun test src/__tests__`,
-  and `bun run tsgo`.
+  `bun test src/__tests__/create-server.test.ts`,
+  `bun test src/__tests__/blob-routes.test.ts`, `bun test src/__tests__`, and
+  `bun run tsgo`.

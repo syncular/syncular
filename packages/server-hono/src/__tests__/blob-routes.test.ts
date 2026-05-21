@@ -495,6 +495,70 @@ describe('createBlobRoutes', () => {
     });
   });
 
+  it('does not mint download URLs for forbidden blob access', async () => {
+    const baseAdapter = createDefaultAdapter(db, tokenSigner);
+    let signDownloadCalls = 0;
+    const adapter: BlobStorageAdapter = {
+      ...baseAdapter,
+      signDownload: async (options) => {
+        signDownloadCalls += 1;
+        return baseAdapter.signDownload(options);
+      },
+    };
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter,
+      canAccessBlob: async ({ actorId }) => actorId === ACTOR_ID,
+    });
+
+    const content = new TextEncoder().encode('blob-access-boundary');
+    const hash = await createHash(content);
+    const init = await initiateUpload({
+      app,
+      hash,
+      size: content.length,
+      mimeType: 'text/plain',
+      partitionId: 'default',
+    });
+    const uploadResponse = await app.request(init.uploadUrl!, {
+      method: init.uploadMethod ?? 'PUT',
+      headers: { 'content-type': 'text/plain' },
+      body: content,
+    });
+    expect(uploadResponse.status).toBe(200);
+    const completeResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/complete`,
+      {
+        method: 'POST',
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(completeResponse.status).toBe(200);
+
+    const forbiddenUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: 'user-2' },
+      }
+    );
+    expect(forbiddenUrlResponse.status).toBe(403);
+    expect(await forbiddenUrlResponse.json()).toMatchObject({
+      error: 'blob.forbidden',
+      code: 'blob.forbidden',
+    });
+    expect(signDownloadCalls).toBe(0);
+
+    const authorizedUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(authorizedUrlResponse.status).toBe(200);
+    expect(signDownloadCalls).toBe(1);
+  });
+
   it('uploads and downloads blobs through adapter put/get branches', async () => {
     const app = buildApp({
       db,
