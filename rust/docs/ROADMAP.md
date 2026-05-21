@@ -715,8 +715,9 @@ read-only review:
     generated-client proof covers update, insert, hard delete, soft delete, and
     grouped multi-row commits; verifies three ordinary mutation intents for
     `update -> undo -> redo`; and verifies stale-row undo fails with
-    `sync.command_history_conflict`. Native/Rust parity and unsafe field
-    rejection rules remain.
+    `sync.command_history_conflict`. Blob, encrypted, and CRDT-backed field
+    changes now fail replay with `sync.command_history_unsafe_field` until safe
+    inverse semantics are designed. Native/Rust parity remains.
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)

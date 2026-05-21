@@ -245,7 +245,13 @@ export interface SyncularV2TableConfig {
   primaryKeyColumn?: string;
   serverVersionColumn?: string | null;
   softDeleteColumn?: string | null;
+  blobColumns?: readonly string[];
   crdtYjsFields?: readonly SyncularV2CrdtYjsFieldConfig[];
+  encryptedFields?: readonly {
+    field: string;
+    scope?: string;
+    rowIdField?: string;
+  }[];
 }
 
 export interface SyncularV2AppSchema {

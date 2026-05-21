@@ -78,6 +78,9 @@ First browser/generated-client slice is implemented:
   commits, cursors, roots, or audit history.
 - Stale-row undo/redo fails with stable
   `sync.command_history_conflict`.
+- Blob, encrypted, and CRDT-backed field changes are rejected during replay
+  with stable `sync.command_history_unsafe_field` until each field class has
+  explicit safe inverse semantics.
 - Browser generated-client coverage now includes `update -> undo -> redo`,
   insert undo/redo, hard-delete undo/redo, soft-delete undo/redo, and grouped
   multi-row commits. The update proof verifies three normal mutation intents.

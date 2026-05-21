@@ -439,6 +439,51 @@ describe('generated app conformance', () => {
     } satisfies Partial<SyncularV2CommandHistoryError>);
   });
 
+  it('rejects command-history replay for unsafe blob and CRDT field changes', async () => {
+    const state = createCommandHistoryFakeState();
+    state.rows.set('tasks:task-unsafe-history', {
+      id: 'task-unsafe-history',
+      title: 'Unsafe history task',
+      completed: 0,
+      user_id: 'user-rust',
+      project_id: 'project-rust',
+      server_version: 0,
+      image: null,
+      title_yjs_state: null,
+    });
+    const client = commandHistoryFakeClient(state);
+    const baseMutationApi = createSyncularV2Mutations<SyncularAppDb>({
+      client,
+      tableConfig: syncularGeneratedTableConfig,
+    });
+    const commandHistory = createSyncularV2CommandHistory<SyncularAppDb>({
+      client,
+      tableConfig: syncularGeneratedTableConfig,
+      mutations: baseMutationApi,
+      leasedMutations: baseMutationApi,
+      idFactory: () => 'cmd-unsafe-1',
+      nowMs: () => 2500 + state.nowTick++,
+    });
+    const mutations = commandHistory.wrapMutations(
+      baseMutationApi,
+      'mutations'
+    ) as unknown as SyncularAppMutations;
+
+    await mutations.tasks.update('task-unsafe-history', {
+      image: {
+        hash: `sha256:${'a'.repeat(64)}`,
+        size: 12,
+        mimeType: 'image/png',
+      },
+    });
+
+    await expect(commandHistory.history.undoLast()).rejects.toMatchObject({
+      code: 'sync.command_history_unsafe_field',
+      commandId: 'cmd-unsafe-1',
+    } satisfies Partial<SyncularV2CommandHistoryError>);
+    expect(state.appliedOperations).toHaveLength(1);
+  });
+
   it('replays command history for insert, hard delete, soft delete, and grouped commits', async () => {
     const state = createCommandHistoryFakeState();
     state.rows.set('projects:project-history-delete', {
