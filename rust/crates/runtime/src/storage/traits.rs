@@ -68,6 +68,8 @@ pub struct OutboxCommit {
     pub acked_commit_seq: Option<i64>,
     pub schema_version: i32,
     pub next_attempt_at: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_lease: Option<AuthLeaseProvenance>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -113,6 +115,27 @@ pub struct OutboxSummary {
     pub client_commit_id: String,
     pub status: String,
     pub schema_version: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_lease: Option<AuthLeaseProvenance>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthLeaseRecord {
+    pub lease_id: String,
+    pub kid: String,
+    pub actor_id: String,
+    pub issued_at_ms: i64,
+    pub not_before_ms: i64,
+    pub expires_at_ms: i64,
+    pub schema_version: i32,
+    pub payload_json: String,
+    pub token: String,
+    pub status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_validation_error: Option<String>,
+    pub created_at_ms: i64,
+    pub updated_at_ms: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -216,6 +239,38 @@ pub trait SyncStoreTx {
         failed: bool,
     ) -> Result<()>;
     fn insert_conflict(&mut self, outbox: &OutboxCommit, result: &OperationResult) -> Result<()>;
+
+    fn upsert_auth_lease(&mut self, _lease: &AuthLeaseRecord) -> Result<()> {
+        Err(SyncularError::storage(anyhow::anyhow!(
+            "auth lease storage is not supported by this store"
+        )))
+    }
+
+    fn auth_lease(&mut self, _lease_id: &str) -> Result<Option<AuthLeaseRecord>> {
+        Err(SyncularError::storage(anyhow::anyhow!(
+            "auth lease storage is not supported by this store"
+        )))
+    }
+
+    fn active_auth_leases(
+        &mut self,
+        _actor_id: Option<&str>,
+        _now_ms: i64,
+    ) -> Result<Vec<AuthLeaseRecord>> {
+        Err(SyncularError::storage(anyhow::anyhow!(
+            "auth lease storage is not supported by this store"
+        )))
+    }
+
+    fn set_outbox_auth_lease(
+        &mut self,
+        _client_commit_id: &str,
+        _provenance: Option<&AuthLeaseProvenance>,
+    ) -> Result<()> {
+        Err(SyncularError::storage(anyhow::anyhow!(
+            "outbox auth lease provenance is not supported by this store"
+        )))
+    }
 
     fn subscription_state(
         &mut self,

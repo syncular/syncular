@@ -45,14 +45,15 @@ use crate::protocol::{
 };
 use crate::protocol::{
     sync_operations_json_for_outbox, validate_mutation_batch_json_input_size,
-    validate_pending_mutation_batch_size, CrdtStateVectorHint, OperationResult,
-    PendingSyncularMutation, PushCommitResponse, ScopeValues, SyncChange, SyncOperation,
+    validate_pending_mutation_batch_size, AuthLeaseProvenance, CrdtStateVectorHint,
+    OperationResult, PendingSyncularMutation, PushCommitResponse, ScopeValues, SyncChange,
+    SyncOperation,
 };
 use crate::runtime_schema::{runtime_schema_version, RUNTIME_SYSTEM_SCHEMA_SQL};
 use crate::store::{
-    next_retry_at, AppSchemaState, BlobHealthSummary, ConflictSummary, CrdtHealthSummary,
-    OutboxCommit, OutboxSummary, ScopedRowsHealthSummary, ScopedRowsTableHealth, SubscriptionState,
-    VerifiedRoot, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
+    next_retry_at, AppSchemaState, AuthLeaseRecord, BlobHealthSummary, ConflictSummary,
+    CrdtHealthSummary, OutboxCommit, OutboxSummary, ScopedRowsHealthSummary, ScopedRowsTableHealth,
+    SubscriptionState, VerifiedRoot, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
 };
 #[cfg(feature = "web-blobs")]
 use crate::store::{BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES};
@@ -672,6 +673,48 @@ impl SyncularRustOwnedSqlite {
         AsyncWebStore::pending_outbox(self, limit)
             .await
             .and_then(|rows| Ok(serde_json::to_string(&rows)?))
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = upsertAuthLeaseJson)]
+    pub fn upsert_auth_lease_json(&mut self, lease_json: &str) -> std::result::Result<(), JsValue> {
+        let lease: AuthLeaseRecord = serde_json::from_str(lease_json)
+            .map_err(SyncularError::protocol)
+            .map_err(error_to_js)?;
+        self.upsert_auth_lease_sync(&lease).map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = authLeaseJson)]
+    pub fn auth_lease_json(&self, lease_id: &str) -> std::result::Result<String, JsValue> {
+        self.auth_lease_sync(lease_id)
+            .and_then(|lease| Ok(serde_json::to_string(&lease)?))
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = activeAuthLeasesJson)]
+    pub fn active_auth_leases_json(
+        &self,
+        actor_id: Option<String>,
+        now_ms: i64,
+    ) -> std::result::Result<String, JsValue> {
+        self.active_auth_leases_sync(actor_id.as_deref(), now_ms)
+            .and_then(|leases| Ok(serde_json::to_string(&leases)?))
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = setOutboxAuthLeaseJson)]
+    pub fn set_outbox_auth_lease_json(
+        &mut self,
+        client_commit_id: &str,
+        provenance_json: Option<String>,
+    ) -> std::result::Result<(), JsValue> {
+        let provenance: Option<AuthLeaseProvenance> = provenance_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(SyncularError::protocol)
+            .map_err(error_to_js)?;
+        self.set_outbox_auth_lease_sync(client_commit_id, provenance.as_ref())
             .map_err(error_to_js)
     }
 
@@ -1625,6 +1668,36 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = upsertAuthLeaseJson)]
+    pub fn upsert_auth_lease_json(&mut self, lease_json: &str) -> std::result::Result<(), JsValue> {
+        self.inner.store_mut().upsert_auth_lease_json(lease_json)
+    }
+
+    #[wasm_bindgen(js_name = authLeaseJson)]
+    pub fn auth_lease_json(&self, lease_id: &str) -> std::result::Result<String, JsValue> {
+        self.inner.store().auth_lease_json(lease_id)
+    }
+
+    #[wasm_bindgen(js_name = activeAuthLeasesJson)]
+    pub fn active_auth_leases_json(
+        &self,
+        actor_id: Option<String>,
+        now_ms: i64,
+    ) -> std::result::Result<String, JsValue> {
+        self.inner.store().active_auth_leases_json(actor_id, now_ms)
+    }
+
+    #[wasm_bindgen(js_name = setOutboxAuthLeaseJson)]
+    pub fn set_outbox_auth_lease_json(
+        &mut self,
+        client_commit_id: &str,
+        provenance_json: Option<String>,
+    ) -> std::result::Result<(), JsValue> {
+        self.inner
+            .store_mut()
+            .set_outbox_auth_lease_json(client_commit_id, provenance_json)
+    }
+
     #[wasm_bindgen(js_name = conflictSummariesJson)]
     pub async fn conflict_summaries_json(&mut self) -> std::result::Result<String, JsValue> {
         self.inner
@@ -1849,30 +1922,20 @@ impl SyncularRustOwnedSqlite {
         let version = "__syncular_runtime";
         let name = "runtime_system_schema";
         let expected_checksum = checksum(RUNTIME_SYSTEM_SCHEMA_SQL);
-        let applied = self.query_rows(
-            &format!(
-                "SELECT checksum FROM sync_migrations WHERE version = {} LIMIT 1",
-                sql_string(version)
-            ),
-            |row| row.string("checksum"),
-        )?;
-        if let Some(applied_checksum) = applied.first() {
-            if applied_checksum != &expected_checksum {
-                return Err(SyncularError::schema(
-                    "runtime system schema checksum mismatch",
-                ));
-            }
-            return Ok(());
-        }
 
         self.exec("BEGIN IMMEDIATE")?;
         let result = (|| {
             for statement in split_sql_statements(RUNTIME_SYSTEM_SCHEMA_SQL) {
                 self.exec(&statement)?;
             }
+            self.ensure_runtime_system_schema_upgrades()?;
             self.exec(&format!(
                 "INSERT INTO sync_migrations (version, name, checksum, applied_at) \
-                 VALUES ({version}, {name}, {checksum}, {applied_at})",
+                 VALUES ({version}, {name}, {checksum}, {applied_at}) \
+                 ON CONFLICT(version) DO UPDATE SET \
+                   name = excluded.name, \
+                   checksum = excluded.checksum, \
+                   applied_at = excluded.applied_at",
                 version = sql_string(version),
                 name = sql_string(name),
                 checksum = sql_string(&expected_checksum),
@@ -1889,6 +1952,40 @@ impl SyncularRustOwnedSqlite {
         }
 
         Ok(())
+    }
+
+    fn ensure_runtime_system_schema_upgrades(&self) -> Result<()> {
+        self.add_column_if_missing(
+            "sync_outbox_commits",
+            "lease_id",
+            "ALTER TABLE sync_outbox_commits ADD COLUMN lease_id TEXT NULL",
+        )?;
+        self.add_column_if_missing(
+            "sync_outbox_commits",
+            "lease_expires_at_ms",
+            "ALTER TABLE sync_outbox_commits ADD COLUMN lease_expires_at_ms BIGINT NULL",
+        )?;
+        self.add_column_if_missing(
+            "sync_outbox_commits",
+            "lease_status_at_enqueue",
+            "ALTER TABLE sync_outbox_commits ADD COLUMN lease_status_at_enqueue TEXT NULL",
+        )?;
+        self.add_column_if_missing(
+            "sync_outbox_commits",
+            "lease_scope_summary_json",
+            "ALTER TABLE sync_outbox_commits ADD COLUMN lease_scope_summary_json TEXT NULL",
+        )
+    }
+
+    fn add_column_if_missing(&self, table: &str, column: &str, alter_sql: &str) -> Result<()> {
+        let columns = self.query_rows(
+            &format!("SELECT name FROM pragma_table_info({})", sql_string(table)),
+            |row| row.string("name"),
+        )?;
+        if columns.iter().any(|name| name == column) {
+            return Ok(());
+        }
+        self.exec(alter_sql)
     }
 
     fn ensure_generated_schema_state(&self) -> Result<()> {
@@ -3834,6 +3931,120 @@ impl SyncularRustOwnedSqlite {
         ))
     }
 
+    fn upsert_auth_lease_sync(&self, lease: &AuthLeaseRecord) -> Result<()> {
+        self.exec(&format!(
+            "INSERT INTO sync_auth_leases \
+             (lease_id, kid, actor_id, issued_at_ms, not_before_ms, expires_at_ms, \
+              schema_version, payload_json, token, status, last_validation_error, \
+              created_at_ms, updated_at_ms) \
+             VALUES ({lease_id}, {kid}, {actor_id}, {issued_at_ms}, {not_before_ms}, \
+              {expires_at_ms}, {schema_version}, {payload_json}, {token}, {status}, \
+              {last_validation_error}, {created_at_ms}, {updated_at_ms}) \
+             ON CONFLICT(lease_id) DO UPDATE SET \
+               kid = excluded.kid, \
+               actor_id = excluded.actor_id, \
+               issued_at_ms = excluded.issued_at_ms, \
+               not_before_ms = excluded.not_before_ms, \
+               expires_at_ms = excluded.expires_at_ms, \
+               schema_version = excluded.schema_version, \
+               payload_json = excluded.payload_json, \
+               token = excluded.token, \
+               status = excluded.status, \
+               last_validation_error = excluded.last_validation_error, \
+               updated_at_ms = excluded.updated_at_ms",
+            lease_id = sql_string(&lease.lease_id),
+            kid = sql_string(&lease.kid),
+            actor_id = sql_string(&lease.actor_id),
+            issued_at_ms = lease.issued_at_ms,
+            not_before_ms = lease.not_before_ms,
+            expires_at_ms = lease.expires_at_ms,
+            schema_version = lease.schema_version,
+            payload_json = sql_string(&lease.payload_json),
+            token = sql_string(&lease.token),
+            status = sql_string(&lease.status),
+            last_validation_error = optional_sql_string(lease.last_validation_error.as_deref()),
+            created_at_ms = lease.created_at_ms,
+            updated_at_ms = lease.updated_at_ms
+        ))
+    }
+
+    fn auth_lease_sync(&self, lease_id: &str) -> Result<Option<AuthLeaseRecord>> {
+        let rows = self.query_rows(
+            &format!(
+                "SELECT lease_id, kid, actor_id, issued_at_ms, not_before_ms, expires_at_ms, \
+                        schema_version, payload_json, token, status, last_validation_error, \
+                        created_at_ms, updated_at_ms \
+                 FROM sync_auth_leases WHERE lease_id = {} LIMIT 1",
+                sql_string(lease_id)
+            ),
+            auth_lease_record_from_row,
+        )?;
+        Ok(rows.into_iter().next())
+    }
+
+    fn active_auth_leases_sync(
+        &self,
+        actor_id: Option<&str>,
+        now_ms_value: i64,
+    ) -> Result<Vec<AuthLeaseRecord>> {
+        let actor_filter = actor_id.map_or_else(String::new, |actor_id| {
+            format!(" AND actor_id = {}", sql_string(actor_id))
+        });
+        self.query_rows(
+            &format!(
+                "SELECT lease_id, kid, actor_id, issued_at_ms, not_before_ms, expires_at_ms, \
+                        schema_version, payload_json, token, status, last_validation_error, \
+                        created_at_ms, updated_at_ms \
+                 FROM sync_auth_leases \
+                 WHERE status = 'active' \
+                   AND not_before_ms <= {now_ms_value} \
+                   AND expires_at_ms > {now_ms_value}{actor_filter} \
+                 ORDER BY expires_at_ms ASC"
+            ),
+            auth_lease_record_from_row,
+        )
+    }
+
+    fn set_outbox_auth_lease_sync(
+        &self,
+        client_commit_id: &str,
+        provenance: Option<&AuthLeaseProvenance>,
+    ) -> Result<()> {
+        let count = self
+            .query_rows(
+                &format!(
+                    "SELECT COUNT(*) AS count FROM sync_outbox_commits WHERE client_commit_id = {}",
+                    sql_string(client_commit_id)
+                ),
+                |row| row.i64("count"),
+            )?
+            .into_iter()
+            .next()
+            .unwrap_or(0);
+        if count == 0 {
+            return Err(SyncularError::storage(anyhow::anyhow!(
+                "outbox commit {client_commit_id} does not exist"
+            )));
+        }
+        self.exec(&format!(
+            "UPDATE sync_outbox_commits SET \
+               lease_id = {lease_id}, \
+               lease_expires_at_ms = {lease_expires_at_ms}, \
+               lease_status_at_enqueue = {lease_status_at_enqueue}, \
+               lease_scope_summary_json = {lease_scope_summary_json} \
+             WHERE client_commit_id = {client_commit_id}",
+            lease_id = optional_sql_string(provenance.map(|lease| lease.lease_id.as_str())),
+            lease_expires_at_ms =
+                optional_sql_number(provenance.map(|lease| lease.lease_expires_at_ms)),
+            lease_status_at_enqueue =
+                optional_sql_string(provenance.map(|lease| lease.lease_status_at_enqueue.as_str())),
+            lease_scope_summary_json = optional_sql_string(
+                provenance.and_then(|lease| lease.lease_scope_summary_json.as_deref()),
+            ),
+            client_commit_id = sql_string(client_commit_id)
+        ))
+    }
+
     fn select_outbox(&self, sql: &str) -> Result<Vec<OutboxCommit>> {
         self.query_rows(sql, |row| {
             Ok(OutboxCommit {
@@ -3849,6 +4060,12 @@ impl SyncularRustOwnedSqlite {
                 acked_commit_seq: row.optional_i64("acked_commit_seq"),
                 schema_version: row.optional_i32("schema_version").unwrap_or(1),
                 next_attempt_at: row.optional_i64("next_attempt_at").unwrap_or(0),
+                auth_lease: auth_lease_provenance_from_columns(
+                    row.optional_string("lease_id"),
+                    row.optional_i64("lease_expires_at_ms"),
+                    row.optional_string("lease_status_at_enqueue"),
+                    row.optional_string("lease_scope_summary_json"),
+                ),
             })
         })
     }
@@ -4753,6 +4970,38 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         })
     }
 
+    fn upsert_auth_lease<'a>(
+        &'a mut self,
+        lease: AuthLeaseRecord,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move { self.upsert_auth_lease_sync(&lease) })
+    }
+
+    fn auth_lease<'a>(
+        &'a mut self,
+        lease_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<AuthLeaseRecord>>> + 'a>> {
+        Box::pin(async move { self.auth_lease_sync(lease_id) })
+    }
+
+    fn active_auth_leases<'a>(
+        &'a mut self,
+        actor_id: Option<&'a str>,
+        now_ms_value: i64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<AuthLeaseRecord>>> + 'a>> {
+        Box::pin(async move { self.active_auth_leases_sync(actor_id, now_ms_value) })
+    }
+
+    fn set_outbox_auth_lease<'a>(
+        &'a mut self,
+        client_commit_id: &'a str,
+        provenance: Option<AuthLeaseProvenance>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(
+            async move { self.set_outbox_auth_lease_sync(client_commit_id, provenance.as_ref()) },
+        )
+    }
+
     fn conflict_summaries<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ConflictSummary>>> + 'a>> {
@@ -5178,13 +5427,21 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<OutboxSummary>>> + 'a>> {
         Box::pin(async move {
             self.query_rows(
-                "SELECT client_commit_id, status, schema_version \
+                "SELECT client_commit_id, status, schema_version, \
+                        lease_id, lease_expires_at_ms, lease_status_at_enqueue, \
+                        lease_scope_summary_json \
                  FROM sync_outbox_commits ORDER BY created_at ASC",
                 |row| {
                     Ok(OutboxSummary {
                         client_commit_id: row.string("client_commit_id")?,
                         status: row.string("status")?,
                         schema_version: row.i32("schema_version")?,
+                        auth_lease: auth_lease_provenance_from_columns(
+                            row.optional_string("lease_id"),
+                            row.optional_i64("lease_expires_at_ms"),
+                            row.optional_string("lease_status_at_enqueue"),
+                            row.optional_string("lease_scope_summary_json"),
+                        ),
                     })
                 },
             )
@@ -5957,6 +6214,38 @@ fn optional_sql_string(value: Option<&str>) -> String {
 
 fn optional_sql_number(value: Option<i64>) -> String {
     value.map_or_else(|| "NULL".to_string(), |value| value.to_string())
+}
+
+fn auth_lease_provenance_from_columns(
+    lease_id: Option<String>,
+    lease_expires_at_ms: Option<i64>,
+    lease_status_at_enqueue: Option<String>,
+    lease_scope_summary_json: Option<String>,
+) -> Option<AuthLeaseProvenance> {
+    Some(AuthLeaseProvenance {
+        lease_id: lease_id?,
+        lease_expires_at_ms: lease_expires_at_ms?,
+        lease_status_at_enqueue: lease_status_at_enqueue?,
+        lease_scope_summary_json,
+    })
+}
+
+fn auth_lease_record_from_row(row: SqliteRow<'_>) -> Result<AuthLeaseRecord> {
+    Ok(AuthLeaseRecord {
+        lease_id: row.string("lease_id")?,
+        kid: row.string("kid")?,
+        actor_id: row.string("actor_id")?,
+        issued_at_ms: row.i64("issued_at_ms")?,
+        not_before_ms: row.i64("not_before_ms")?,
+        expires_at_ms: row.i64("expires_at_ms")?,
+        schema_version: row.i32("schema_version")?,
+        payload_json: row.string("payload_json")?,
+        token: row.string("token")?,
+        status: row.string("status")?,
+        last_validation_error: row.optional_string("last_validation_error"),
+        created_at_ms: row.i64("created_at_ms")?,
+        updated_at_ms: row.i64("updated_at_ms")?,
+    })
 }
 
 fn bind_text(stmt: *mut ffi::sqlite3_stmt, index: i32, value: &str) -> Result<()> {

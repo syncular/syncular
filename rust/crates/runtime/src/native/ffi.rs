@@ -1162,6 +1162,65 @@ pub extern "C" fn syncular_native_client_outbox_summaries_json(
 }
 
 #[no_mangle]
+pub extern "C" fn syncular_native_client_upsert_auth_lease_json(
+    handle: *mut SyncularNativeHandle,
+    lease_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        let lease_json = read_c_string(lease_json)?;
+        with_client(handle, |client| client.upsert_auth_lease_json(&lease_json))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_auth_lease_json(
+    handle: *mut SyncularNativeHandle,
+    lease_id: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let lease_id = read_c_string(lease_id)?;
+        with_client(handle, |client| client.auth_lease_json(&lease_id))
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_active_auth_leases_json(
+    handle: *mut SyncularNativeHandle,
+    actor_id: *const c_char,
+    now_ms: i64,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let actor_id = read_optional_c_string(actor_id)?;
+        with_client(handle, |client| {
+            client.active_auth_leases_json(actor_id.as_deref(), now_ms)
+        })
+    })
+}
+
+#[no_mangle]
+pub extern "C" fn syncular_native_client_set_outbox_auth_lease_json(
+    handle: *mut SyncularNativeHandle,
+    client_commit_id: *const c_char,
+    provenance_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        let client_commit_id = read_c_string(client_commit_id)?;
+        let provenance_json = read_optional_c_string(provenance_json)?;
+        with_client(handle, |client| {
+            client.set_outbox_auth_lease_json(&client_commit_id, provenance_json.as_deref())
+        })
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn syncular_native_client_conflict_summaries_json(
     handle: *mut SyncularNativeHandle,
     error_out: *mut *mut c_char,

@@ -2,6 +2,24 @@
 // Source: migrations/*.sql
 
 diesel::table! {
+    sync_auth_leases (lease_id) {
+        lease_id -> Text,
+        kid -> Text,
+        actor_id -> Text,
+        issued_at_ms -> BigInt,
+        not_before_ms -> BigInt,
+        expires_at_ms -> BigInt,
+        schema_version -> Integer,
+        payload_json -> Text,
+        token -> Text,
+        status -> Text,
+        last_validation_error -> Nullable<Text>,
+        created_at_ms -> BigInt,
+        updated_at_ms -> BigInt,
+    }
+}
+
+diesel::table! {
     sync_blob_cache (hash) {
         hash -> Text,
         size -> BigInt,
@@ -150,6 +168,10 @@ diesel::table! {
         acked_commit_seq -> Nullable<BigInt>,
         schema_version -> Integer,
         next_attempt_at -> BigInt,
+        lease_id -> Nullable<Text>,
+        lease_expires_at_ms -> Nullable<BigInt>,
+        lease_status_at_enqueue -> Nullable<Text>,
+        lease_scope_summary_json -> Nullable<Text>,
     }
 }
 
@@ -225,6 +247,7 @@ diesel::table! {
 }
 
 diesel::allow_tables_to_appear_in_same_query!(
+    sync_auth_leases,
     sync_blob_cache,
     sync_blob_outbox,
     sync_conflicts,

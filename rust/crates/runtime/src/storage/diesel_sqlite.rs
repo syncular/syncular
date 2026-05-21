@@ -30,7 +30,7 @@ use crate::protocol::{sync_operations_json_for_outbox, validate_pending_mutation
 use crate::runtime_schema::RUNTIME_SYSTEM_SCHEMA_SQL;
 use crate::schema;
 use crate::store::{
-    now_ms, AppSchemaState, AppliedMigration, BlobHealthSummary, ConflictSummary,
+    now_ms, AppSchemaState, AppliedMigration, AuthLeaseRecord, BlobHealthSummary, ConflictSummary,
     CrdtHealthSummary, OutboxCommit, OutboxSummary, ScopedRowsHealthSummary, ScopedRowsTableHealth,
     SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx, VerifiedRoot, APP_SCHEMA_ID,
     BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES, MAX_SYNC_RETRIES,
@@ -65,6 +65,10 @@ struct OutboxCommitRow {
     acked_commit_seq: Option<i64>,
     schema_version: i32,
     next_attempt_at: i64,
+    lease_id: Option<String>,
+    lease_expires_at_ms: Option<i64>,
+    lease_status_at_enqueue: Option<String>,
+    lease_scope_summary_json: Option<String>,
 }
 
 #[derive(Debug, Clone, QueryableByName)]
@@ -140,8 +144,28 @@ impl From<OutboxCommitRow> for OutboxCommit {
             acked_commit_seq: row.acked_commit_seq,
             schema_version: row.schema_version,
             next_attempt_at: row.next_attempt_at,
+            auth_lease: auth_lease_provenance_from_columns(
+                row.lease_id,
+                row.lease_expires_at_ms,
+                row.lease_status_at_enqueue,
+                row.lease_scope_summary_json,
+            ),
         }
     }
+}
+
+fn auth_lease_provenance_from_columns(
+    lease_id: Option<String>,
+    lease_expires_at_ms: Option<i64>,
+    lease_status_at_enqueue: Option<String>,
+    lease_scope_summary_json: Option<String>,
+) -> Option<AuthLeaseProvenance> {
+    Some(AuthLeaseProvenance {
+        lease_id: lease_id?,
+        lease_expires_at_ms: lease_expires_at_ms?,
+        lease_status_at_enqueue: lease_status_at_enqueue?,
+        lease_scope_summary_json,
+    })
 }
 
 impl TryFrom<CrdtDocumentSnapshotRow> for CrdtDocumentSnapshot {
@@ -202,6 +226,68 @@ struct NewOutboxCommit {
     acked_commit_seq: Option<i64>,
     schema_version: i32,
     next_attempt_at: i64,
+    lease_id: Option<String>,
+    lease_expires_at_ms: Option<i64>,
+    lease_status_at_enqueue: Option<String>,
+    lease_scope_summary_json: Option<String>,
+}
+
+#[derive(Debug, Clone, Queryable, Selectable, Insertable, AsChangeset)]
+#[diesel(table_name = schema::sync_auth_leases)]
+struct AuthLeaseRecordRow {
+    lease_id: String,
+    kid: String,
+    actor_id: String,
+    issued_at_ms: i64,
+    not_before_ms: i64,
+    expires_at_ms: i64,
+    schema_version: i32,
+    payload_json: String,
+    token: String,
+    status: String,
+    last_validation_error: Option<String>,
+    created_at_ms: i64,
+    updated_at_ms: i64,
+}
+
+impl From<AuthLeaseRecordRow> for AuthLeaseRecord {
+    fn from(row: AuthLeaseRecordRow) -> Self {
+        Self {
+            lease_id: row.lease_id,
+            kid: row.kid,
+            actor_id: row.actor_id,
+            issued_at_ms: row.issued_at_ms,
+            not_before_ms: row.not_before_ms,
+            expires_at_ms: row.expires_at_ms,
+            schema_version: row.schema_version,
+            payload_json: row.payload_json,
+            token: row.token,
+            status: row.status,
+            last_validation_error: row.last_validation_error,
+            created_at_ms: row.created_at_ms,
+            updated_at_ms: row.updated_at_ms,
+        }
+    }
+}
+
+impl From<&AuthLeaseRecord> for AuthLeaseRecordRow {
+    fn from(record: &AuthLeaseRecord) -> Self {
+        Self {
+            lease_id: record.lease_id.clone(),
+            kid: record.kid.clone(),
+            actor_id: record.actor_id.clone(),
+            issued_at_ms: record.issued_at_ms,
+            not_before_ms: record.not_before_ms,
+            expires_at_ms: record.expires_at_ms,
+            schema_version: record.schema_version,
+            payload_json: record.payload_json.clone(),
+            token: record.token.clone(),
+            status: record.status.clone(),
+            last_validation_error: record.last_validation_error.clone(),
+            created_at_ms: record.created_at_ms,
+            updated_at_ms: record.updated_at_ms,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Queryable, Selectable)]
@@ -308,6 +394,14 @@ struct OutboxSummaryRow {
     status: String,
     #[diesel(sql_type = Integer)]
     schema_version: i32,
+    #[diesel(sql_type = Nullable<Text>)]
+    lease_id: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    lease_expires_at_ms: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    lease_status_at_enqueue: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    lease_scope_summary_json: Option<String>,
 }
 
 impl From<OutboxSummaryRow> for OutboxSummary {
@@ -316,6 +410,12 @@ impl From<OutboxSummaryRow> for OutboxSummary {
             client_commit_id: row.client_commit_id,
             status: row.status,
             schema_version: row.schema_version,
+            auth_lease: auth_lease_provenance_from_columns(
+                row.lease_id,
+                row.lease_expires_at_ms,
+                row.lease_status_at_enqueue,
+                row.lease_scope_summary_json,
+            ),
         }
     }
 }
@@ -458,6 +558,12 @@ struct CountRow {
 struct StringValueRow {
     #[diesel(sql_type = Text)]
     value: String,
+}
+
+#[derive(QueryableByName)]
+struct ColumnNameRow {
+    #[diesel(sql_type = Text)]
+    name: String,
 }
 
 #[derive(QueryableByName)]
@@ -726,7 +832,35 @@ impl DieselSqliteStore {
         for statement in split_sql_statements(RUNTIME_SYSTEM_SCHEMA_SQL) {
             sql_query(statement).execute(&mut self.conn)?;
         }
+        self.ensure_runtime_system_schema_upgrades()?;
         Ok(())
+    }
+
+    fn ensure_runtime_system_schema_upgrades(&mut self) -> Result<()> {
+        add_column_if_missing(
+            &mut self.conn,
+            "sync_outbox_commits",
+            "lease_id",
+            "alter table sync_outbox_commits add column lease_id text null",
+        )?;
+        add_column_if_missing(
+            &mut self.conn,
+            "sync_outbox_commits",
+            "lease_expires_at_ms",
+            "alter table sync_outbox_commits add column lease_expires_at_ms bigint null",
+        )?;
+        add_column_if_missing(
+            &mut self.conn,
+            "sync_outbox_commits",
+            "lease_status_at_enqueue",
+            "alter table sync_outbox_commits add column lease_status_at_enqueue text null",
+        )?;
+        add_column_if_missing(
+            &mut self.conn,
+            "sync_outbox_commits",
+            "lease_scope_summary_json",
+            "alter table sync_outbox_commits add column lease_scope_summary_json text null",
+        )
     }
 
     pub fn list_table_json(&mut self, table: &str) -> Result<Vec<Value>> {
@@ -772,6 +906,30 @@ impl DieselSqliteStore {
         mutations: Vec<PendingSyncularMutation>,
     ) -> Result<MutationReceipt> {
         self.transaction(|tx| tx.apply_syncular_mutations(mutations))
+    }
+
+    pub fn upsert_auth_lease(&mut self, lease: &AuthLeaseRecord) -> Result<()> {
+        self.transaction(|tx| tx.upsert_auth_lease(lease))
+    }
+
+    pub fn auth_lease(&mut self, lease_id: &str) -> Result<Option<AuthLeaseRecord>> {
+        self.transaction(|tx| tx.auth_lease(lease_id))
+    }
+
+    pub fn active_auth_leases(
+        &mut self,
+        actor_id: Option<&str>,
+        now_ms_value: i64,
+    ) -> Result<Vec<AuthLeaseRecord>> {
+        self.transaction(|tx| tx.active_auth_leases(actor_id, now_ms_value))
+    }
+
+    pub fn set_outbox_auth_lease(
+        &mut self,
+        client_commit_id: &str,
+        provenance: Option<&AuthLeaseProvenance>,
+    ) -> Result<()> {
+        self.transaction(|tx| tx.set_outbox_auth_lease(client_commit_id, provenance))
     }
 
     pub fn store_blob_bytes(
@@ -1604,7 +1762,9 @@ impl SyncStateStore for DieselSqliteStore {
     fn outbox_summaries(&mut self) -> Result<Vec<OutboxSummary>> {
         let rows = sql_query(
             r#"
-            select client_commit_id, status, schema_version
+            select client_commit_id, status, schema_version,
+                   lease_id, lease_expires_at_ms, lease_status_at_enqueue,
+                   lease_scope_summary_json
             from sync_outbox_commits
             order by created_at asc
             "#,
@@ -1767,6 +1927,10 @@ impl<'a> DieselSqliteTx<'a> {
             acked_commit_seq: None,
             schema_version: self.app_schema.current_schema_version(),
             next_attempt_at: 0,
+            lease_id: None,
+            lease_expires_at_ms: None,
+            lease_status_at_enqueue: None,
+            lease_scope_summary_json: None,
         };
 
         diesel::insert_into(o::sync_outbox_commits)
@@ -3202,6 +3366,24 @@ fn validate_identifier(identifier: &str) -> Result<()> {
     }
 }
 
+fn add_column_if_missing(
+    conn: &mut SqliteConnection,
+    table: &str,
+    column: &str,
+    alter_sql: &str,
+) -> Result<()> {
+    let columns = sql_query(format!(
+        "select name from pragma_table_info({})",
+        sql_string(table)
+    ))
+    .load::<ColumnNameRow>(conn)?;
+    if columns.iter().any(|row| row.name == column) {
+        return Ok(());
+    }
+    sql_query(alter_sql).execute(conn)?;
+    Ok(())
+}
+
 fn sql_string(value: &str) -> String {
     format!("'{}'", value.replace('\'', "''"))
 }
@@ -3705,6 +3887,77 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
         .bind::<diesel::sql_types::BigInt, _>(now_ms())
         .execute(self.conn)?;
 
+        Ok(())
+    }
+
+    fn upsert_auth_lease(&mut self, lease: &AuthLeaseRecord) -> Result<()> {
+        use schema::sync_auth_leases::dsl as l;
+
+        let row = AuthLeaseRecordRow::from(lease);
+        diesel::insert_into(l::sync_auth_leases)
+            .values(&row)
+            .on_conflict(l::lease_id)
+            .do_update()
+            .set(&row)
+            .execute(self.conn)?;
+        Ok(())
+    }
+
+    fn auth_lease(&mut self, lease_id_value: &str) -> Result<Option<AuthLeaseRecord>> {
+        use schema::sync_auth_leases::dsl as l;
+
+        let row = l::sync_auth_leases
+            .select(AuthLeaseRecordRow::as_select())
+            .filter(l::lease_id.eq(lease_id_value))
+            .first::<AuthLeaseRecordRow>(self.conn)
+            .optional()?;
+        Ok(row.map(AuthLeaseRecord::from))
+    }
+
+    fn active_auth_leases(
+        &mut self,
+        actor_id_value: Option<&str>,
+        now_ms_value: i64,
+    ) -> Result<Vec<AuthLeaseRecord>> {
+        use schema::sync_auth_leases::dsl as l;
+
+        let mut query = l::sync_auth_leases
+            .select(AuthLeaseRecordRow::as_select())
+            .filter(l::status.eq("active"))
+            .filter(l::not_before_ms.le(now_ms_value))
+            .filter(l::expires_at_ms.gt(now_ms_value))
+            .into_boxed();
+        if let Some(actor_id_value) = actor_id_value {
+            query = query.filter(l::actor_id.eq(actor_id_value));
+        }
+        let rows = query.order(l::expires_at_ms.asc()).load(self.conn)?;
+        Ok(rows.into_iter().map(AuthLeaseRecord::from).collect())
+    }
+
+    fn set_outbox_auth_lease(
+        &mut self,
+        client_commit_id_value: &str,
+        provenance: Option<&AuthLeaseProvenance>,
+    ) -> Result<()> {
+        use schema::sync_outbox_commits::dsl as o;
+
+        let affected = diesel::update(
+            o::sync_outbox_commits.filter(o::client_commit_id.eq(client_commit_id_value)),
+        )
+        .set((
+            o::lease_id.eq(provenance.map(|lease| lease.lease_id.clone())),
+            o::lease_expires_at_ms.eq(provenance.map(|lease| lease.lease_expires_at_ms)),
+            o::lease_status_at_enqueue
+                .eq(provenance.map(|lease| lease.lease_status_at_enqueue.clone())),
+            o::lease_scope_summary_json
+                .eq(provenance.and_then(|lease| lease.lease_scope_summary_json.clone())),
+        ))
+        .execute(self.conn)?;
+        if affected == 0 {
+            return Err(SyncularError::storage(anyhow::anyhow!(
+                "outbox commit {client_commit_id_value} does not exist"
+            )));
+        }
         Ok(())
     }
 
