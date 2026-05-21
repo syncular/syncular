@@ -5613,3 +5613,60 @@ Decision:
   the acceptable tradeoff for the shipped-size win. Also accepted shipping the
   `full-perf` artifact in the same package so consumers can opt into the old
   runtime profile without a separate package.
+
+## 2026-05-21 - WP-12 Rejected Indexes Before Artifact Import
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Probed a benchmark-only app-harness sequence that installs generated app
+  indexes after base tables but before artifact import, while leaving read-model
+  setup/rebuild after the bulk load.
+- This isolates the index-order question from the earlier rejected full
+  before-bootstrap derived-schema install.
+
+External setup:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result files:
+
+- Probe 1:
+  `/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T13-30-52-435Z/syncular-rust/bootstrap.json`
+- Probe 2:
+  `/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T13-31-43-060Z/syncular-rust/bootstrap.json`
+- Same-session control:
+  `/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T13-33-06-133Z/syncular-rust/bootstrap.json`
+
+500k comparison:
+
+| Metric | Bulk then indexes/read models | Indexes before import #1 | Indexes before import #2 |
+| --- | ---: | ---: | ---: |
+| Bootstrap | `1077.21ms` | `1046.78ms` | `1052.50ms` |
+| Derived schema | `629.62ms` | `40.75ms` | `41.72ms` |
+| Sync total | `435ms` | `988ms` | `994ms` |
+| Pull apply | `328ms` | `870ms` | `887ms` |
+| Local apply | `210ms` | `755ms` | `770ms` |
+| Response bytes | `3,537,755` | `3,537,696` | `3,537,758` |
+| Peak memory | `616.92MB` | `652.39MB` | `645.83MB` |
+| Snapshot chunks | `0` | `0` | `0` |
+
+Decision:
+
+- Rejected. The sequence buys only about `25-30ms` app-style wall time in this
+  run while moving much more work into the hot artifact apply path and raising
+  peak memory by about `29-35MB`.
+- Keep the default app harness as base tables first, artifact import second,
+  then generated indexes/read-model setup/rebuild. Do not promote index-before
+  import unless a future app-specific workload explicitly accepts the memory and
+  apply-path tradeoff.

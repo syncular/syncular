@@ -1153,6 +1153,13 @@ external memory improvement.
   but the obvious redundant-prefix case is handled. Avoid additional
   index-order/read-model rebuild changes unless the external app-style gate
   proves a clear win.
+- A benchmark-only app-harness probe that installed generated app indexes before
+  artifact import, then installed/rebuilt read models after import, was
+  rejected. Same-session 500k wall time improved only modestly
+  (`1077.21ms -> 1046.78ms` / `1052.50ms`), while local apply regressed
+  sharply (`210ms -> 755ms` / `770ms`) and peak memory rose
+  (`616.92MB -> 652.39MB` / `645.83MB`). Keep app tables only before import;
+  build generated indexes/read models after the bulk artifact load.
 - Local app-table `WITHOUT ROWID` can improve derived-schema wall time in the
   external harness, but the latest probe gave back too much peak memory. Do not
   promote it as a default without app-level opt-in and a memory-preserving

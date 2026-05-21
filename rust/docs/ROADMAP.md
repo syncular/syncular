@@ -153,7 +153,11 @@ read-only review:
     install probe was rejected because it
     regressed 500k bootstrap (`1396.01ms -> 1827.83ms`), local apply
     (`208ms -> 1525ms`), and peak memory (`695.97MB -> 761.14MB`). Keep
-    bulk-load-then-derived-rebuild as the app harness shape. Generated
+    bulk-load-then-derived-rebuild as the app harness shape. A narrower
+    benchmark-only probe that installed only indexes before import was also
+    rejected: 500k wall time improved modestly (`1077.21ms -> 1046.78ms` /
+    `1052.50ms`), but local apply regressed (`210ms -> 755ms` / `770ms`) and
+    peak memory rose (`616.92MB -> 652.39MB` / `645.83MB`). Generated
     `countBy` read-model tables now use `WITHOUT ROWID`, improving the
     external app-style scoped artifact 500k lane from `1430.17ms -> 1382.56ms`
     and derived-schema time from `976.02ms -> 930.41ms` without changing app
