@@ -10,13 +10,13 @@ use syncular_runtime::error::ErrorKind;
 use syncular_runtime::fixtures::todo;
 use syncular_runtime::native::{NativeClientOptions, NativeEventKind};
 use syncular_runtime::protocol::{
-    AuthLeaseCapabilities, AuthLeasePayload, AuthLeaseScope, BlobRef, CombinedRequest,
+    blob_hash, AuthLeaseCapabilities, AuthLeasePayload, AuthLeaseScope, BlobRef, CombinedRequest,
     PushCommitRequest, SyncOperation, AUTH_LEASE_CODE_EXPIRED, AUTH_LEASE_CODE_INVALID,
     AUTH_LEASE_VERSION,
 };
 use syncular_runtime::transport::{
-    HttpSyncTransport, RealtimeEvent, RealtimeTransport, SyncAuthHeaderStore, SyncAuthHeaders,
-    SyncTransport, SyncTransportConfig,
+    BlobTransport, HttpSyncTransport, RealtimeEvent, RealtimeTransport, SyncAuthHeaderStore,
+    SyncAuthHeaders, SyncTransport, SyncTransportConfig,
 };
 use syncular_testkit::{
     actor_project_scopes, apply_crdt_field_text, apply_native_crdt_field_text,
@@ -1133,6 +1133,219 @@ fn file_asset_two_clients_sync_metadata_blob_and_revocation() {
     reader.client.sync_http().expect("reader revocation pull");
     assert_table_row_count(&mut reader.client, FILES_TABLE, 0);
     assert_table_row_count(&mut reader.client, FILE_VERSIONS_TABLE, 0);
+}
+
+#[test]
+fn file_asset_two_clients_converge_rename_move_trash_and_restore() {
+    let server = AppTestServer::new(file_asset_app_schema());
+    let mut writer = open_file_asset_client_with_server(
+        server.clone(),
+        app_server_options("file-assets-lifecycle-writer"),
+    )
+    .expect("writer fixture");
+    let mut reader = open_file_asset_client_with_server(
+        server,
+        app_server_options("file-assets-lifecycle-reader"),
+    )
+    .expect("reader fixture");
+
+    writer
+        .client
+        .commit_mutations(|tx| {
+            tx.push(NewFileAsset::folder(
+                "folder-a",
+                "A",
+                "user-rust",
+                Some("p0"),
+            ));
+            tx.push(NewFileAsset::folder(
+                "folder-b",
+                "B",
+                "user-rust",
+                Some("p0"),
+            ));
+            tx.push(
+                NewFileAsset::file("file-lifecycle", "draft.txt", "user-rust", Some("p0"))
+                    .parent_id(Some("folder-a")),
+            );
+            Ok(())
+        })
+        .expect("seed lifecycle rows");
+    writer.client.sync_http().expect("writer seed sync");
+    reader.client.sync_http().expect("reader seed pull");
+
+    writer
+        .client
+        .apply(
+            FileAssetPatch::new("file-lifecycle")
+                .rename("final.txt")
+                .move_to(Some("folder-b"))
+                .soft_delete(99),
+        )
+        .expect("rename move trash");
+    writer.client.sync_http().expect("writer lifecycle sync");
+    reader.client.sync_http().expect("reader lifecycle pull");
+    let trashed = assert_table_has_row(&mut reader.client, FILES_TABLE, "id", "file-lifecycle");
+    assert_eq!(trashed["name"], "final.txt");
+    assert_eq!(trashed["parent_id"], "folder-b");
+    assert_eq!(trashed["deleted"], 1);
+    assert_eq!(trashed["trashed_at"], 99);
+
+    writer
+        .client
+        .apply(
+            FileAssetPatch::new("file-lifecycle")
+                .base_version(4)
+                .restore(),
+        )
+        .expect("restore");
+    writer.client.sync_http().expect("writer restore sync");
+    reader.client.sync_http().expect("reader restore pull");
+    let restored = assert_table_has_row(&mut reader.client, FILES_TABLE, "id", "file-lifecycle");
+    assert_eq!(restored["deleted"], 0);
+    assert_eq!(restored["trashed_at"], Value::Null);
+}
+
+#[test]
+fn file_asset_version_conflict_is_persisted() {
+    let server = AppTestServer::new(file_asset_app_schema());
+    server
+        .seed_row(
+            FILES_TABLE,
+            json!({
+                "id": "file-conflict",
+                "parent_id": null,
+                "name": "Server v1.txt",
+                "kind": "file",
+                "current_version_id": null,
+                "owner_id": "user-rust",
+                "project_id": "p0",
+                "deleted": 0,
+                "trashed_at": null,
+                "server_version": 1
+            }),
+        )
+        .expect("seed file");
+    let mut client = open_file_asset_client_with_server(
+        server.clone(),
+        app_server_options("file-assets-conflict-client"),
+    )
+    .expect("client fixture");
+
+    client.client.sync_http().expect("bootstrap file");
+    server
+        .commit_row(
+            FILES_TABLE,
+            json!({
+                "id": "file-conflict",
+                "parent_id": null,
+                "name": "Server v2.txt",
+                "kind": "file",
+                "current_version_id": null,
+                "owner_id": "user-rust",
+                "project_id": "p0",
+                "deleted": 0,
+                "trashed_at": null,
+                "server_version": 2
+            }),
+        )
+        .expect("server update");
+    client
+        .client
+        .apply(FileAssetPatch::new("file-conflict").rename("Local.txt"))
+        .expect("local rename");
+
+    let report = client.client.sync_http().expect("conflict sync");
+    assert!(report.conflicts_changed);
+    let conflicts = assert_conflict_count(&mut client.client, 1);
+    assert_eq!(conflicts[0].code.as_deref(), Some("sync.version_conflict"));
+    assert_eq!(conflicts[0].server_version, Some(2));
+    let local = assert_table_has_row(&mut client.client, FILES_TABLE, "id", "file-conflict");
+    assert_eq!(local["name"], "Server v2.txt");
+    let server_row = assert_app_server_has_row(&server, FILES_TABLE, "file-conflict");
+    assert_eq!(server_row["name"], "Server v2.txt");
+}
+
+#[test]
+fn file_asset_blob_body_failures_are_visible() {
+    let server = AppTestServer::new(file_asset_app_schema());
+    let expected = b"expected file bytes".to_vec();
+    let missing = BlobRef {
+        hash: blob_hash(&expected),
+        size: expected.len() as i64,
+        mime_type: "text/plain".to_string(),
+        encrypted: false,
+        key_id: None,
+    };
+    let corrupt_expected = b"uncorrupted bytes".to_vec();
+    let corrupt = BlobRef {
+        hash: blob_hash(&corrupt_expected),
+        size: corrupt_expected.len() as i64,
+        mime_type: "text/plain".to_string(),
+        encrypted: false,
+        key_id: None,
+    };
+    server
+        .upload_blob(&corrupt, b"corrupted bytes")
+        .expect("seed corrupt blob bytes");
+    for (id, blob) in [("missing-version", &missing), ("corrupt-version", &corrupt)] {
+        server
+            .seed_row(
+                FILE_VERSIONS_TABLE,
+                json!({
+                    "id": id,
+                    "file_id": format!("file-{id}"),
+                    "blob_ref": blob,
+                    "content_hash": &blob.hash,
+                    "byte_size": blob.size,
+                    "mime_type": &blob.mime_type,
+                    "actor_id": "user-rust",
+                    "owner_id": "user-rust",
+                    "project_id": "p0",
+                    "previous_version_id": null,
+                    "created_at": 1,
+                    "server_version": 1
+                }),
+            )
+            .expect("seed file version");
+    }
+    let mut client =
+        open_file_asset_client_with_server(server, app_server_options("file-assets-blob-failures"))
+            .expect("client fixture");
+
+    client.client.sync_http().expect("pull file versions");
+    let missing_row = assert_table_has_row(
+        &mut client.client,
+        FILE_VERSIONS_TABLE,
+        "id",
+        "missing-version",
+    );
+    let missing_ref = blob_ref_from_file_version_row(&missing_row);
+    let missing_error = client
+        .client
+        .retrieve_blob_bytes(&missing_ref)
+        .expect_err("missing blob should fail");
+    assert!(
+        missing_error.to_string().contains("blob not found"),
+        "{missing_error}"
+    );
+
+    let corrupt_row = assert_table_has_row(
+        &mut client.client,
+        FILE_VERSIONS_TABLE,
+        "id",
+        "corrupt-version",
+    );
+    let corrupt_ref = blob_ref_from_file_version_row(&corrupt_row);
+    let corrupt_error = client
+        .client
+        .retrieve_blob_bytes(&corrupt_ref)
+        .expect_err("corrupt blob should fail");
+    assert!(
+        corrupt_error.to_string().contains("blob size mismatch")
+            || corrupt_error.to_string().contains("blob hash mismatch"),
+        "{corrupt_error}"
+    );
 }
 
 fn blob_ref_from_file_version_row(row: &serde_json::Value) -> BlobRef {
