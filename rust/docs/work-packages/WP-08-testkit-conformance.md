@@ -51,7 +51,9 @@ commits, serves later pulls, emits realtime wakeups, and covers CRDT/Yjs merge
 behavior in smoke tests. It can also enforce and change required auth headers
 during a test, and it can revoke/restore subscriptions through real pull
 responses so app suites can exercise scope/session changes without scripted
-mock responses.
+mock responses. The shared sync scenario JSON now has a typed Rust fixture
+contract in `syncular-testkit`, matching the TypeScript contract used by
+browser and native smoke setup.
 
 ## Next Action
 
@@ -127,6 +129,13 @@ fixture rows should stay in app tests.
   revoke and restore subscription ids, the revoked response redacts scopes, and
   the real client clears previous scoped rows and bootstraps again after
   restore.
+- Added a typed Rust `SyncScenarioFixture` to `syncular-testkit`, mirroring the
+  shared TypeScript fixture contract for actors, subscriptions, auth, conflicts,
+  realtime, live query, schema versioning, E2EE, CRDT, and blob scenarios.
+- Rewired representative stateful testkit smokes for required auth,
+  subscription revocation/restore, encrypted fields, blobs, and field
+  encryption config to consume `sync_conformance_fixture()` instead of
+  hard-coded values or ad hoc JSON path reads.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
   passed with `33` smoke tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
@@ -159,3 +168,9 @@ fixture rows should stay in app tests.
   subscription-revocation fixture slice, covering `33` testkit smoke tests,
   `3` blob transport tests, `16` CRDT field tests, `41` protocol tests, `9`
   generated Rust app tests, and `6` browser generated-app contract tests.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
+  passed after the typed Rust conformance fixture slice with `33` smoke tests.
+- Gate: `bun run rust:conformance:fast` passed after the typed Rust conformance
+  fixture slice, covering `33` testkit smoke tests, `3` blob transport tests,
+  `16` CRDT field tests, `41` protocol tests, `9` generated Rust app tests, and
+  `6` browser generated-app contract tests.

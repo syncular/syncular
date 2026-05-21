@@ -30,7 +30,9 @@ Initial scope:
   revoked, schema-required/latest, and not-ok server responses.
 - Shared conformance fixture helpers for
   `examples/todo-app/conformance/sync-scenarios.json`, so Rust runtime, SDK,
-  and app tests read the same scenario values.
+  and app tests read the same scenario values. Use
+  `sync_conformance_fixture()` for the typed Rust contract, and keep the path
+  helpers for small one-off assertions.
 - `AppFixture` helpers that accept a generated `AppSchema` from consuming apps,
   including file-backed temp DBs and Rust-only in-memory DBs.
 - `TodoFixture` helpers backed by the generated todo schema and Diesel SQLite.

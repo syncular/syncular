@@ -28,7 +28,7 @@ use syncular_testkit::{
     open_app_client_with_server, open_app_client_with_transport,
     open_native_client_with_schema_json_options, open_native_client_with_schema_options,
     open_todo_client, open_todo_client_with_transport, push_conflict_response,
-    snapshot_combined_response, sync_conformance_str, sync_conformance_value, todo_app_schema_json,
+    snapshot_combined_response, sync_conformance_fixture, todo_app_schema_json,
     todo_snapshot_response, todo_task_row, AppFixtureOptions, AppTestHttpServer, AppTestServer,
     AppTestServerOptions, FaultOperation, FaultPhase, FaultStep, FaultTransport,
     NativeFixtureOptions, TestBlobServer, TestBlobServerOptions, TestSyncServer, TestTransport,
@@ -453,7 +453,8 @@ fn app_test_http_server_records_http_and_realtime_auth_headers() {
 fn app_test_http_server_enforces_configured_authorization() {
     let app_schema = todo::app_schema();
     let schema_version = app_schema.current_schema_version();
-    let required_authorization = sync_conformance_str(&["workerAuth", "authorization"]);
+    let scenario = sync_conformance_fixture();
+    let required_authorization = scenario.worker_auth.authorization.clone();
     let server = AppTestHttpServer::start_with_server(AppTestServer::with_options(
         app_schema,
         AppTestServerOptions::default().require_authorization(required_authorization.clone()),
@@ -657,54 +658,69 @@ fn app_test_http_server_schema_mismatch_fails_closed() {
 
 #[test]
 fn app_test_server_revokes_and_restores_subscriptions_statefully() {
+    let scenario = sync_conformance_fixture();
+    let seed_task = &scenario.revoked_subscription.seed_task;
     let server = AppTestServer::new(todo::app_schema());
     server
         .seed_row(
-            "tasks",
+            &scenario.subscription.table,
             json!({
-                "id": "stateful-revoked-task",
-                "title": "Visible before revocation",
+                "id": &seed_task.id,
+                "title": &seed_task.title,
                 "completed": 0,
-                "user_id": "user-rust",
-                "project_id": "p0",
-                "server_version": 1
+                "user_id": &scenario.actors.rust.actor_id,
+                "project_id": &scenario.actors.rust.project_id,
+                "server_version": seed_task.server_version
             }),
         )
         .expect("seed visible row");
     let mut fixture = open_app_client_with_server(
         todo::app_schema(),
         server.clone(),
-        app_server_options("app-server-stateful-revoke"),
+        app_server_options(&scenario.revoked_subscription.client_id),
     )
     .expect("client fixture");
 
     fixture.client.sync_http().expect("initial bootstrap");
-    assert_table_has_row(&mut fixture.client, "tasks", "id", "stateful-revoked-task");
+    assert_table_has_row(
+        &mut fixture.client,
+        &scenario.subscription.table,
+        "id",
+        &seed_task.id,
+    );
 
-    server.revoke_subscription("sub-tasks");
+    server.revoke_subscription(&scenario.subscription.id);
     assert_eq!(
         server.revoked_subscription_ids(),
-        vec!["sub-tasks".to_string()]
+        vec![scenario.subscription.id.clone()]
     );
     let revoked_report = fixture.client.sync_http().expect("revoked sync");
-    assert!(revoked_report.changed_tables.contains(&"tasks".to_string()));
-    assert_table_row_count(&mut fixture.client, "tasks", 0);
+    assert!(revoked_report
+        .changed_tables
+        .contains(&scenario.subscription.table));
+    assert_table_row_count(&mut fixture.client, &scenario.subscription.table, 0);
 
-    server.restore_subscription("sub-tasks");
+    server.restore_subscription(&scenario.subscription.id);
     assert!(server.revoked_subscription_ids().is_empty());
     fixture.client.sync_http().expect("restored bootstrap");
-    let row = assert_table_has_row(&mut fixture.client, "tasks", "id", "stateful-revoked-task");
-    assert_eq!(row["title"], "Visible before revocation");
+    let row = assert_table_has_row(
+        &mut fixture.client,
+        &scenario.subscription.table,
+        "id",
+        &seed_task.id,
+    );
+    assert_eq!(row["title"], seed_task.title.as_str());
 }
 
 #[test]
 fn app_test_server_can_change_required_authorization_during_a_test() {
+    let scenario = sync_conformance_fixture();
     let server = AppTestServer::new(todo::app_schema());
-    server.require_authorization("Bearer fresh-stateful-token");
+    server.require_authorization(&scenario.auth_refresh.refreshed_authorization);
     let mut fixture = open_app_client_with_server(
         todo::app_schema(),
         server.clone(),
-        app_server_options("app-server-dynamic-auth"),
+        app_server_options(&scenario.auth_refresh.client_id),
     )
     .expect("client fixture");
 
@@ -718,7 +734,7 @@ fn app_test_server_can_change_required_authorization_during_a_test() {
     let mut stale_headers = SyncAuthHeaders::new();
     stale_headers.insert(
         "authorization".to_string(),
-        "Bearer stale-stateful-token".to_string(),
+        scenario.auth_refresh.initial_authorization.clone(),
     );
     fixture.client.set_auth_headers(stale_headers);
     let stale = fixture
@@ -730,11 +746,15 @@ fn app_test_server_can_change_required_authorization_during_a_test() {
     let mut fresh_headers = SyncAuthHeaders::new();
     fresh_headers.insert(
         "authorization".to_string(),
-        "Bearer fresh-stateful-token".to_string(),
+        scenario.auth_refresh.refreshed_authorization.clone(),
     );
     fixture.client.set_auth_headers(fresh_headers);
     fixture.client.sync_http().expect("fresh token sync");
-    assert_app_server_auth_header(&server, "authorization", "Bearer fresh-stateful-token");
+    assert_app_server_auth_header(
+        &server,
+        "authorization",
+        &scenario.auth_refresh.refreshed_authorization,
+    );
 
     server.clear_required_authorization();
     let mut empty_headers = SyncAuthHeaders::new();
@@ -848,18 +868,19 @@ fn app_test_server_merges_concurrent_server_merge_crdt_updates() {
 
 #[test]
 fn app_test_server_syncs_encrypted_fields_without_plaintext_storage() {
+    let scenario = sync_conformance_fixture();
     let app_schema = todo::app_schema();
     let server = AppTestServer::new(app_schema);
     let mut writer = open_app_client_with_server(
         app_schema,
         server.clone(),
-        app_server_options("app-server-e2ee-writer"),
+        app_server_options(&scenario.e2ee.client_id),
     )
     .expect("writer fixture");
     let mut reader = open_app_client_with_server(
         app_schema,
         server.clone(),
-        app_server_options("app-server-e2ee-reader"),
+        app_server_options(&scenario.e2ee.pull_client_id),
     )
     .expect("reader fixture");
     writer
@@ -874,14 +895,14 @@ fn app_test_server_syncs_encrypted_fields_without_plaintext_storage() {
         .apply_mutation_json(
             &json!({
                 "table": "tasks",
-                "row_id": "app-server-e2ee-task",
+                "row_id": &scenario.e2ee.task.id,
                 "op": "upsert",
                 "payload": {
-                    "id": "app-server-e2ee-task",
-                    "title": "Encrypted stateful title",
+                    "id": &scenario.e2ee.task.id,
+                    "title": &scenario.e2ee.task.title,
                     "completed": 0,
-                    "user_id": "user-rust",
-                    "project_id": "p0"
+                    "user_id": &scenario.actors.rust.actor_id,
+                    "project_id": &scenario.actors.rust.project_id
                 },
                 "base_version": 0
             })
@@ -891,44 +912,60 @@ fn app_test_server_syncs_encrypted_fields_without_plaintext_storage() {
         .expect("local encrypted mutation");
     writer.client.sync_http().expect("writer push");
 
-    let encrypted_title = assert_app_server_has_row(&server, "tasks", "app-server-e2ee-task")
+    let encrypted_title = assert_app_server_has_row(&server, "tasks", &scenario.e2ee.task.id)
         ["title"]
         .as_str()
         .expect("encrypted title")
         .to_string();
-    assert!(encrypted_title.starts_with(&sync_conformance_str(&["e2ee", "envelopePrefix"])));
-    assert_ne!(encrypted_title, "Encrypted stateful title");
+    assert!(encrypted_title.starts_with(&scenario.e2ee.envelope_prefix));
+    assert_ne!(encrypted_title, scenario.e2ee.task.title);
 
     reader.client.sync_http().expect("reader pull");
-    let row = assert_table_has_row(&mut reader.client, "tasks", "id", "app-server-e2ee-task");
-    assert_eq!(row["title"], "Encrypted stateful title");
+    let row = assert_table_has_row(&mut reader.client, "tasks", "id", &scenario.e2ee.task.id);
+    assert_eq!(row["title"], scenario.e2ee.task.title.as_str());
 }
 
 #[test]
 fn app_test_server_uploads_and_downloads_blobs() {
+    let scenario = sync_conformance_fixture();
     let app_schema = todo::app_schema();
     let server = AppTestServer::new(app_schema);
     let mut fixture = open_app_client_with_server(
         app_schema,
         server,
-        app_server_options("app-server-blob-client"),
+        app_server_options(&scenario.blob.client_id),
     )
     .expect("blob fixture");
-    let bytes = vec![9u8, 8, 7, 6];
 
     let blob = fixture
         .client
-        .store_blob_bytes(&bytes, "application/testkit", false)
+        .store_blob_bytes(&scenario.blob.bytes, &scenario.blob.mime_type, false)
         .expect("store blob bytes");
-    assert_blob_upload_queue(&mut fixture.client, 1, 0, 0);
+    assert_blob_upload_queue(
+        &mut fixture.client,
+        scenario.blob.expected_upload_queue_before.pending,
+        scenario.blob.expected_upload_queue_before.uploading,
+        scenario.blob.expected_upload_queue_before.failed,
+    );
 
     let upload = fixture
         .client
         .process_blob_upload_queue()
         .expect("process blob upload queue");
-    assert_eq!(upload.uploaded, 1);
-    assert_eq!(upload.failed, 0);
-    assert_blob_upload_queue(&mut fixture.client, 0, 0, 0);
+    assert_eq!(
+        upload.uploaded,
+        scenario.blob.expected_process_uploaded.uploaded
+    );
+    assert_eq!(
+        upload.failed,
+        scenario.blob.expected_process_uploaded.failed
+    );
+    assert_blob_upload_queue(
+        &mut fixture.client,
+        scenario.blob.expected_upload_queue_after.pending,
+        scenario.blob.expected_upload_queue_after.uploading,
+        scenario.blob.expected_upload_queue_after.failed,
+    );
 
     fixture.client.clear_blob_cache().expect("clear blob cache");
     assert!(!fixture
@@ -939,7 +976,7 @@ fn app_test_server_uploads_and_downloads_blobs() {
         .client
         .retrieve_blob_bytes(&blob)
         .expect("download blob bytes");
-    assert_eq!(downloaded, bytes);
+    assert_eq!(downloaded, scenario.blob.bytes);
     assert!(fixture
         .client
         .is_blob_local(&blob.hash)
@@ -1441,29 +1478,22 @@ fn app_server_options(client_id: &str) -> AppFixtureOptions {
 }
 
 fn stateful_test_field_encryption() -> FieldEncryption {
-    let rule = sync_conformance_value(&["e2ee", "rule"]);
-    let keys = [(
-        "default".to_string(),
-        sync_conformance_str(&["e2ee", "keyBase64"]),
-    )]
-    .into_iter()
-    .collect();
+    let scenario = sync_conformance_fixture();
+    let e2ee = scenario.e2ee;
+    let keys = [("default".to_string(), e2ee.key_base64.clone())]
+        .into_iter()
+        .collect();
     FieldEncryption::from_static_config(StaticFieldEncryptionConfig {
         rules: vec![FieldEncryptionRule {
-            scope: rule["scope"].as_str().expect("e2ee scope").to_string(),
-            table: Some(rule["table"].as_str().expect("e2ee table").to_string()),
-            fields: rule["fields"]
-                .as_array()
-                .expect("e2ee fields")
-                .iter()
-                .map(|field| field.as_str().expect("e2ee field").to_string())
-                .collect(),
+            scope: e2ee.rule.scope,
+            table: Some(e2ee.rule.table),
+            fields: e2ee.rule.fields,
             row_id_field: None,
         }],
         keys,
         encryption_kid: None,
         decryption_error_mode: None,
-        envelope_prefix: Some(sync_conformance_str(&["e2ee", "envelopePrefix"])),
+        envelope_prefix: Some(e2ee.envelope_prefix),
     })
     .expect("stateful test field encryption")
 }
