@@ -46,7 +46,8 @@ export type SyncularV2CommandHistoryErrorCode =
   | 'sync.command_history_empty'
   | 'sync.command_history_conflict'
   | 'sync.command_history_storage_unavailable'
-  | 'sync.command_history_table_unsupported';
+  | 'sync.command_history_table_unsupported'
+  | 'sync.command_history_unsafe_field';
 
 export class SyncularV2CommandHistoryError extends Error {
   readonly code: SyncularV2CommandHistoryErrorCode;
@@ -261,6 +262,7 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
       );
     }
     const entries = decodeEntries(command);
+    this.assertSafeReplay(command.id, entries);
     await this.assertCurrentRows(command.id, entries, 'after');
     const commit = await this.applySnapshots(
       command.mutation_scope,
@@ -284,6 +286,7 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
       );
     }
     const entries = decodeEntries(command);
+    this.assertSafeReplay(command.id, entries);
     await this.assertCurrentRows(command.id, entries, 'before');
     const commit = await this.applySnapshots(
       command.mutation_scope,
@@ -308,6 +311,30 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
         throw new SyncularV2CommandHistoryError(
           'sync.command_history_conflict',
           `Cannot ${expected === 'after' ? 'undo' : 'redo'} Syncular command ${commandId}; ${entry.table}.${entry.rowId} changed since the command was recorded`,
+          { commandId }
+        );
+      }
+    }
+  }
+
+  private assertSafeReplay(
+    commandId: string,
+    entries: readonly CommandEntry[]
+  ): void {
+    for (const entry of entries) {
+      const config = this.options.tableConfig[entry.table];
+      if (!config) {
+        throw new SyncularV2CommandHistoryError(
+          'sync.command_history_table_unsupported',
+          `Cannot replay undo history for unsupported table ${entry.table}`,
+          { commandId }
+        );
+      }
+      const unsafeFields = unsafeChangedFields(config, entry);
+      if (unsafeFields.length > 0) {
+        throw new SyncularV2CommandHistoryError(
+          'sync.command_history_unsafe_field',
+          `Cannot replay Syncular command ${commandId}; ${entry.table}.${entry.rowId} changed unsafe fields: ${unsafeFields.join(', ')}`,
           { commandId }
         );
       }
@@ -502,6 +529,27 @@ function normalizeSnapshot(row: Record<string, unknown>): Record<string, unknown
 
 function sameSnapshot(left: RowSnapshot, right: RowSnapshot): boolean {
   return stableJson(left) === stableJson(right);
+}
+
+function unsafeChangedFields(
+  config: SyncularV2TableConfigMap[string],
+  entry: CommandEntry
+): string[] {
+  const unsafeFields = new Set<string>();
+  for (const column of config.blobColumns ?? []) unsafeFields.add(column);
+  for (const field of config.encryptedFields ?? []) unsafeFields.add(field.field);
+  for (const field of config.crdtYjsFields ?? []) {
+    unsafeFields.add(field.field);
+    unsafeFields.add(field.stateColumn);
+  }
+
+  const changed: string[] = [];
+  for (const field of unsafeFields) {
+    const before = entry.before?.[field];
+    const after = entry.after?.[field];
+    if (stableJson(before) !== stableJson(after)) changed.push(field);
+  }
+  return changed;
 }
 
 function stableJson(value: unknown): string {

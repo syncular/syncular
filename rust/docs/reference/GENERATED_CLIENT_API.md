@@ -179,8 +179,10 @@ Undo/redo is not a SQLite rollback and does not rewrite server commits,
 cursors, verified roots, or audit history. If the current row no longer matches
 the recorded command snapshot, the generated client fails with
 `sync.command_history_conflict` and the app should refresh or show conflict UI.
-CRDT/editor-specific undo stacks remain app-layer; Syncular command history is
-for generated mutation intent.
+Blob, encrypted, and CRDT-backed field changes currently fail replay with
+`sync.command_history_unsafe_field` until the app/runtime has explicit safe
+inverse semantics for that field class. CRDT/editor-specific undo stacks remain
+app-layer; Syncular command history is for generated mutation intent.
 
 Strict offline writes use the same generated mutation API through
 `leasedMutations`. Request and store a signed active lease first; if no
