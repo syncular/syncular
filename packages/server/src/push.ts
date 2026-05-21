@@ -65,6 +65,29 @@ export interface PushCommitResult {
   commitCreatedAt: string | null;
 }
 
+export interface PushCommitValidationContext<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+> {
+  trx: DbExecutor<DB>;
+  dialect: ServerSyncDialect;
+  auth: Auth;
+  request: SyncPushRequest;
+  partitionId: string;
+  actorId: string;
+  commitSeq: number;
+}
+
+export type PushCommitValidator<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+> = (
+  ctx: PushCommitValidationContext<DB, Auth>
+) =>
+  | Promise<SyncPushResponse['results'][number] | null>
+  | SyncPushResponse['results'][number]
+  | null;
+
 class RejectCommitError extends Error {
   constructor(public readonly response: SyncPushResponse) {
     super('REJECT_COMMIT');
@@ -635,6 +658,7 @@ async function executePushCommitInExecutor<
   pushPlugins: readonly SyncServerPushPlugin<DB, Auth>[];
   auth: Auth;
   request: SyncPushRequest;
+  validateCommit?: PushCommitValidator<DB, Auth>;
 }): Promise<PushCommitResult> {
   const { trx, dialect, handlers, request, pushPlugins } = args;
   const actorId = args.auth.actorId;
@@ -699,6 +723,37 @@ async function executePushCommitInExecutor<
   }
 
   const commitId = `${request.clientId}:${request.clientCommitId}`;
+  const validationResult = await args.validateCommit?.({
+    trx,
+    dialect,
+    auth: args.auth,
+    request,
+    partitionId,
+    actorId,
+    commitSeq,
+  });
+  if (validationResult) {
+    const response = createRejectedPushResponse(validationResult, commitSeq);
+    await persistCommitOutcome({
+      trx,
+      dialect,
+      partitionId,
+      commitSeq,
+      response,
+      affectedTables: [],
+      emittedChangeCount: 0,
+    });
+
+    return {
+      response,
+      affectedTables: [],
+      scopeKeys: [],
+      emittedChanges: [],
+      commitActorId: actorId,
+      commitCreatedAt,
+    };
+  }
+
   const savepointName = `sync_apply_${commitSeq}`;
   const useSavepoints = shouldUseSavepoints({
     dialect,
@@ -808,6 +863,7 @@ export async function pushCommit<
   plugins?: readonly SyncServerPushPlugin<DB, Auth>[];
   auth: Auth;
   request: SyncPushRequest;
+  validateCommit?: PushCommitValidator<DB, Auth>;
   suppressTelemetry?: boolean;
 }): Promise<PushCommitResult> {
   const { db, dialect, handlers, request } = args;
@@ -866,6 +922,7 @@ export async function pushCommit<
               pushPlugins,
               auth: args.auth,
               request,
+              validateCommit: args.validateCommit,
             })
           )
         );
@@ -904,6 +961,7 @@ export async function pushCommitBatch<
   plugins?: readonly SyncServerPushPlugin<DB, Auth>[];
   auth: Auth;
   requests: SyncPushRequest[];
+  validateCommit?: PushCommitValidator<DB, Auth>;
   suppressTelemetry?: boolean;
 }): Promise<PushCommitResult[]> {
   const { db, dialect, handlers, requests } = args;
@@ -945,6 +1003,7 @@ export async function pushCommitBatch<
                 pushPlugins,
                 auth: args.auth,
                 request,
+                validateCommit: args.validateCommit,
               })
             );
           }

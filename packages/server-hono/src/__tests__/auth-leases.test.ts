@@ -8,6 +8,7 @@ import {
   createWebCryptoEs256AuthLeaseSigner,
   ensureSyncSchema,
   type SyncCoreDb,
+  signAuthLeaseToken,
   verifyAuthLeaseToken,
 } from '@syncular/server';
 import { Hono } from 'hono';
@@ -85,6 +86,7 @@ describe('auth lease routes', () => {
         signer: createWebCryptoEs256AuthLeaseSigner({
           privateKey: keyPair.privateKey,
         }),
+        publicKey: keyPair.publicKey,
         ttlMs: 60_000,
         maxTtlMs: 120_000,
         maxClockSkewMs: 5_000,
@@ -262,5 +264,99 @@ describe('auth lease routes', () => {
       code: 'sync.invalid_request',
       recommendedAction: 'fixRequest',
     });
+  });
+
+  it('rejects pushed leased commits when the signed lease is expired', async () => {
+    const signed = await signAuthLeaseToken({
+      kid: 'lease-key-1',
+      signer: createWebCryptoEs256AuthLeaseSigner({
+        privateKey: keyPair.privateKey,
+      }),
+      payload: {
+        version: 1,
+        leaseId: 'lease-expired',
+        issuer: 'syncular-test-server',
+        audience: 'syncular-test-app',
+        actorId: 'u1',
+        subject: {},
+        schemaVersion: 7,
+        protocolVersion: 1,
+        issuedAtMs: nowMs - 120_000,
+        notBeforeMs: nowMs - 120_000,
+        expiresAtMs: nowMs - 5_001,
+        maxClockSkewMs: 5_000,
+        scopes: [
+          {
+            subscriptionId: 'sub-tasks',
+            table: 'tasks',
+            values: { user_id: 'u1' },
+            operations: ['upsert'],
+          },
+        ],
+        capabilities: {
+          allowBlobs: true,
+          allowCrdt: true,
+          allowEncryptedFields: true,
+        },
+      },
+    });
+
+    const response = await createApp().request('http://localhost/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-user-id': 'u1',
+      },
+      body: JSON.stringify({
+        clientId: 'client-lease-replay',
+        push: {
+          commits: [
+            {
+              clientCommitId: 'commit-expired-lease',
+              schemaVersion: 7,
+              authLease: {
+                leaseId: 'lease-expired',
+                leaseExpiresAtMs: nowMs - 5_001,
+                leaseStatusAtEnqueue: 'active',
+                leaseToken: signed.token,
+              },
+              operations: [
+                {
+                  table: 'tasks',
+                  row_id: 'task-expired-lease',
+                  op: 'upsert',
+                  base_version: null,
+                  payload: {
+                    id: 'task-expired-lease',
+                    user_id: 'u1',
+                    title: 'should not apply',
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    });
+
+    expect(response.status).toBe(200);
+    const body = await response.json();
+    expect(body.push.commits[0]).toMatchObject({
+      clientCommitId: 'commit-expired-lease',
+      status: 'rejected',
+      results: [
+        {
+          status: 'error',
+          code: 'sync.auth_lease_expired',
+          retriable: true,
+        },
+      ],
+    });
+    const task = await db
+      .selectFrom('tasks')
+      .selectAll()
+      .where('id', '=', 'task-expired-lease')
+      .executeTakeFirst();
+    expect(task).toBeUndefined();
   });
 });

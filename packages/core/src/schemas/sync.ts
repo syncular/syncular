@@ -153,6 +153,7 @@ export const SyncAuthLeaseProvenanceSchema = z.object({
   leaseExpiresAtMs: z.number().int(),
   leaseStatusAtEnqueue: z.string().min(1),
   leaseScopeSummaryJson: z.string().optional(),
+  leaseToken: z.string().min(1).optional(),
 });
 
 export type SyncAuthLeaseProvenance = z.infer<

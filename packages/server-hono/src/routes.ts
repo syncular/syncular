@@ -19,6 +19,9 @@ import {
   logSyncEvent,
   prefersBinarySyncPack,
   ScopeValuesSchema,
+  SYNC_AUTH_LEASE_CODE_EXPIRED,
+  SYNC_AUTH_LEASE_CODE_INVALID,
+  SYNC_AUTH_LEASE_CODE_MISSING,
   SYNC_PACK_CONTENT_TYPE,
   SYNC_PACK_ENCODING_BINARY_V1,
   type SyncAuthLeaseCapabilities,
@@ -61,6 +64,7 @@ import {
   maybePruneSync,
   type PruneOptions,
   type PullResult,
+  type PushCommitValidator,
   parseJsonValue,
   pull,
   pushCommit,
@@ -70,6 +74,7 @@ import {
   recordClientCursor,
   resolveEffectiveScopesForSubscriptions,
   scopesToSnapshotChunkScopeKey,
+  verifyAuthLeaseToken,
 } from '@syncular/server';
 import type { Context, MiddlewareHandler } from 'hono';
 import { Hono } from 'hono';
@@ -342,6 +347,7 @@ export interface SyncAuthLeaseRoutesConfig<
   audience: string;
   kid: string;
   signer: AuthLeaseSigner;
+  publicKey: CryptoKey;
   ttlMs?: number;
   maxTtlMs?: number;
   maxClockSkewMs?: number;
@@ -1063,6 +1069,14 @@ function emitConsoleLiveEvent(
   });
 }
 
+function isAuthLeaseRefreshRetriable(code: string): boolean {
+  return (
+    code === SYNC_AUTH_LEASE_CODE_MISSING ||
+    code === SYNC_AUTH_LEASE_CODE_INVALID ||
+    code === SYNC_AUTH_LEASE_CODE_EXPIRED
+  );
+}
+
 export function createSyncRoutes<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncAuthResult = SyncAuthResult,
@@ -1070,6 +1084,7 @@ export function createSyncRoutes<
 >(options: CreateSyncRoutesOptions<DB, Auth, F>): Hono {
   const routes = new Hono();
   const config = options.sync ?? {};
+  const authLeaseRoutesConfig = options.authLeases;
   routes.onError((error, c) => {
     captureSyncException(error, {
       event: 'sync.route.unhandled',
@@ -1205,6 +1220,53 @@ export function createSyncRoutes<
     authCache.set(c, pending);
     return pending;
   };
+  const validateAuthLeaseCommit: PushCommitValidator<DB, Auth> | undefined =
+    authLeaseRoutesConfig && authLeaseRoutesConfig.enabled !== false
+      ? async ({ request, auth }) => {
+          const authLease = request.authLease;
+          if (!authLease) return null;
+          if (!authLease.leaseToken) {
+            return {
+              opIndex: 0,
+              status: 'error',
+              error: 'Auth lease token is missing',
+              code: SYNC_AUTH_LEASE_CODE_MISSING,
+              retriable: true,
+            };
+          }
+
+          const verification = await verifyAuthLeaseToken({
+            token: authLease.leaseToken,
+            publicKey: authLeaseRoutesConfig.publicKey,
+            nowMs: authLeaseRoutesConfig.nowMs?.(),
+            expectedIssuer: authLeaseRoutesConfig.issuer,
+            expectedAudience: authLeaseRoutesConfig.audience,
+            expectedSchemaVersion: request.schemaVersion,
+          });
+          if (!verification.ok) {
+            return {
+              opIndex: 0,
+              status: 'error',
+              error: verification.message,
+              code: verification.code,
+              retriable: isAuthLeaseRefreshRetriable(verification.code),
+            };
+          }
+          if (
+            verification.payload.actorId !== auth.actorId ||
+            verification.payload.leaseId !== authLease.leaseId
+          ) {
+            return {
+              opIndex: 0,
+              status: 'error',
+              error: 'Auth lease does not match the current replay context',
+              code: SYNC_AUTH_LEASE_CODE_INVALID,
+              retriable: true,
+            };
+          }
+          return null;
+        }
+      : undefined;
 
   type SyncJsonReadFailure = {
     statusCode: number;
@@ -2047,6 +2109,7 @@ export function createSyncRoutes<
       handlers: handlerRegistry,
       plugins: options.plugins,
       auth: ctx.auth,
+      validateCommit: validateAuthLeaseCommit,
       suppressTelemetry: true,
       requests: pushBodies.map((pushBody) => ({
         clientId: ctx.clientId,
@@ -2152,6 +2215,7 @@ export function createSyncRoutes<
       handlers: handlerRegistry,
       plugins: options.plugins,
       auth: ctx.auth,
+      validateCommit: validateAuthLeaseCommit,
       request: {
         clientId: ctx.clientId,
         clientCommitId: pushBody.clientCommitId,
@@ -2290,7 +2354,6 @@ export function createSyncRoutes<
   // POST /auth-leases/issue
   // -------------------------------------------------------------------------
 
-  const authLeaseRoutesConfig = options.authLeases;
   if (authLeaseRoutesConfig && authLeaseRoutesConfig.enabled !== false) {
     routes.post(
       '/auth-leases/issue',
