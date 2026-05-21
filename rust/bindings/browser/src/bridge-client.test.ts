@@ -22,6 +22,7 @@ describe('Syncular bridge client', () => {
       expect(harness.queries()[0]?.sql).toContain('select * from "tasks"');
 
       await client.mutations.tasks.update('task-1', { completed: 1 });
+      await client.leasedMutations.tasks.update('task-1', { title: 'Leased' });
       expect(harness.operations()).toEqual([
         {
           table: 'tasks',
@@ -30,11 +31,35 @@ describe('Syncular bridge client', () => {
           payload: { completed: 1 },
           base_version: null,
         },
+        {
+          table: 'tasks',
+          row_id: 'task-1',
+          op: 'upsert',
+          payload: { title: 'Leased' },
+          base_version: null,
+        },
       ]);
-      expect(harness.syncCount()).toBe(1);
+      expect(harness.leasedBatches()).toHaveLength(1);
+      expect(harness.syncCount()).toBe(2);
       expect(harness.rows('tasks')).toEqual([
-        { id: 'task-1', title: 'Bridge query', completed: 1 },
+        { id: 'task-1', title: 'Leased', completed: 1 },
       ]);
+
+      const lease = await client.issueAuthLease({
+        schemaVersion: 1,
+        scopes: [
+          {
+            subscriptionId: 'tasks',
+            table: 'tasks',
+            values: { user_id: 'user-1' },
+            operations: ['upsert'],
+          },
+        ],
+      });
+      expect(await client.authLease(lease.leaseId)).toMatchObject({
+        leaseId: lease.leaseId,
+      });
+      expect(await client.activeAuthLeases('actor-test')).toHaveLength(1);
 
       const changedTables: string[][] = [];
       const unsubscribe = client.on('rowsChanged', (event) => {
@@ -64,6 +89,9 @@ describe('Syncular bridge client', () => {
       });
       expect(client.getStatus().isConnected).toBe(true);
       expect(client.getStatus().hasPendingMutations).toBe(true);
+
+      await client.resumeFromBackground();
+      expect(client.getStatus().isConnected).toBe(true);
 
       await client.destroy();
       expect(harness.listenerCount('rowsChanged')).toBe(0);

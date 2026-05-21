@@ -7,6 +7,7 @@ import {
   type SyncularBridgeQueryResult,
   type SyncularBridgeStatus,
   type SyncularClientLike,
+  type SyncularV2AuthLeaseRecord,
   type SyncularV2ClientEventMap,
   type SyncularV2ClientEventSink,
   type SyncularV2ClientEventType,
@@ -17,6 +18,7 @@ import {
   type SyncularV2SubscriptionSpec,
   type SyncularV2SyncResult,
 } from '@syncular/client';
+import type { SyncAuthLeaseIssueRequest } from '@syncular/core';
 import { createSyncularReact } from '@syncular/client/react';
 
 export type SyncularTauriInvoke = <TResult>(
@@ -32,10 +34,16 @@ export type SyncularTauriListen = <TPayload>(
 export interface SyncularTauriCommands {
   executeSql: string;
   applyMutationsCommit: string;
+  applyLeasedMutationsCommit: string;
   sync: string;
+  resumeFromBackground: string;
   start: string;
   stop: string;
   setSubscriptions: string;
+  issueAuthLease: string;
+  upsertAuthLease: string;
+  authLease: string;
+  activeAuthLeases: string;
   joinPresence: string;
   leavePresence: string;
   updatePresenceMetadata: string;
@@ -55,10 +63,16 @@ export interface CreateSyncularTauriClientOptions
 const DEFAULT_COMMANDS: SyncularTauriCommands = {
   executeSql: 'syncular_execute_sql',
   applyMutationsCommit: 'syncular_apply_mutations_commit',
+  applyLeasedMutationsCommit: 'syncular_apply_leased_mutations_commit',
   sync: 'syncular_sync',
+  resumeFromBackground: 'syncular_resume_from_background',
   start: 'syncular_start',
   stop: 'syncular_stop',
   setSubscriptions: 'syncular_set_subscriptions',
+  issueAuthLease: 'syncular_issue_auth_lease',
+  upsertAuthLease: 'syncular_upsert_auth_lease',
+  authLease: 'syncular_auth_lease',
+  activeAuthLeases: 'syncular_active_auth_leases',
   joinPresence: 'syncular_join_presence',
   leavePresence: 'syncular_leave_presence',
   updatePresenceMetadata: 'syncular_update_presence_metadata',
@@ -100,7 +114,13 @@ export function createSyncularTauriBridge(
       invoke<SyncularBridgeQueryResult<Row>>(commands.executeSql, { request }),
     applyMutationsCommit: (batch: SyncularBridgeMutationBatch) =>
       invoke<string>(commands.applyMutationsCommit, { batch }),
+    applyLeasedMutationsCommit: (batch: SyncularBridgeMutationBatch) =>
+      invoke<string>(commands.applyLeasedMutationsCommit, { batch }),
     sync: () => invoke<SyncularV2SyncResult>(commands.sync),
+    resumeFromBackground: (syncOptions) =>
+      invoke<SyncularV2SyncResult>(commands.resumeFromBackground, {
+        options: syncOptions,
+      }),
     start: () => invoke<void>(commands.start),
     stop: () => invoke<void>(commands.stop),
     setSubscriptions: (subscriptions: readonly SyncularV2SubscriptionSpec[]) =>
@@ -108,6 +128,19 @@ export function createSyncularTauriBridge(
         subscriptions: [...subscriptions],
       }),
     getStatus: () => status,
+    issueAuthLease: (request: SyncAuthLeaseIssueRequest) =>
+      invoke<SyncularV2AuthLeaseRecord>(commands.issueAuthLease, { request }),
+    upsertAuthLease: (lease: SyncularV2AuthLeaseRecord) =>
+      invoke<void>(commands.upsertAuthLease, { lease }),
+    authLease: (leaseId: string) =>
+      invoke<SyncularV2AuthLeaseRecord | null>(commands.authLease, {
+        leaseId,
+      }),
+    activeAuthLeases: (actorId?: string | null, nowMs?: number) =>
+      invoke<SyncularV2AuthLeaseRecord[]>(commands.activeAuthLeases, {
+        actorId,
+        nowMs,
+      }),
     on: (event, listener) =>
       listen(options.listen, `${eventPrefix}:${event}`, (payload) => {
         if (event === 'lifecycleChanged') {

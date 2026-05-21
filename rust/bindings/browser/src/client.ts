@@ -1,8 +1,9 @@
-import type { BlobRef } from '@syncular/core';
+import type { BlobRef, SyncAuthLeaseIssueRequest } from '@syncular/core';
 import { createSyncularV2Database, type SyncularV2Database } from './database';
 import type { MutationsApi } from './mutations';
 import type {
   CreateSyncularV2DatabaseOptions,
+  SyncularV2AuthLeaseRecord,
   SyncularV2BlobUploadQueueStats,
   SyncularV2Client,
   SyncularV2ClientEventMap,
@@ -20,6 +21,7 @@ import type {
   SyncularV2RealtimeConnectionState,
   SyncularV2RealtimeOptions,
   SyncularV2SubscriptionSpec,
+  SyncularV2SyncRequestOptions,
   SyncularV2SyncResult,
 } from './types';
 
@@ -66,6 +68,18 @@ export interface SyncularClient<DB> extends SyncularV2ManagedClient<DB> {
   setSubscriptions(
     subscriptions: readonly SyncularV2SubscriptionSpec[]
   ): Promise<void>;
+  resumeFromBackground(
+    options?: SyncularV2SyncRequestOptions
+  ): Promise<SyncularV2SyncResult>;
+  issueAuthLease(
+    request: SyncAuthLeaseIssueRequest
+  ): Promise<SyncularV2AuthLeaseRecord>;
+  upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void>;
+  authLease(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null>;
+  activeAuthLeases(
+    actorId?: string | null,
+    nowMs?: number
+  ): Promise<SyncularV2AuthLeaseRecord[]>;
   presence: SyncularPresenceClientLike;
   conflicts: SyncularConflictsClientLike;
 }
@@ -98,6 +112,7 @@ export interface SyncularClientLike<DB> {
   db: SyncularV2Database<DB>['db'];
   dialect?: SyncularV2Database<DB>['dialect'] | unknown;
   mutations: MutationsApi<DB, any>;
+  leasedMutations: MutationsApi<DB, any>;
   blobs: SyncularBlobClientLike;
   on<T extends SyncularV2ClientEventType>(
     event: T,
@@ -107,6 +122,18 @@ export interface SyncularClientLike<DB> {
   setSubscriptions(
     subscriptions: readonly SyncularV2SubscriptionSpec[]
   ): Promise<void>;
+  resumeFromBackground(
+    options?: SyncularV2SyncRequestOptions
+  ): Promise<SyncularV2SyncResult>;
+  issueAuthLease(
+    request: SyncAuthLeaseIssueRequest
+  ): Promise<SyncularV2AuthLeaseRecord>;
+  upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void>;
+  authLease(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null>;
+  activeAuthLeases(
+    actorId?: string | null,
+    nowMs?: number
+  ): Promise<SyncularV2AuthLeaseRecord[]>;
   presence: SyncularPresenceClientLike;
   conflicts: SyncularConflictsClientLike;
   start(): Promise<void>;
@@ -162,6 +189,13 @@ export async function createSyncularClient<DB>(
     getStatus: () => getSyncularClientStatus(database.client),
     setSubscriptions: (nextSubscriptions) =>
       database.client.setSubscriptions(nextSubscriptions),
+    resumeFromBackground: (syncOptions) =>
+      database.client.resumeFromBackground(syncOptions),
+    issueAuthLease: (request) => database.client.issueAuthLease(request),
+    upsertAuthLease: (lease) => database.client.upsertAuthLease(lease),
+    authLease: (leaseId) => database.client.authLease(leaseId),
+    activeAuthLeases: (actorId, nowMs) =>
+      database.client.activeAuthLeases(actorId, nowMs),
     presence: {
       get: (scopeKey) => database.client.getPresence(scopeKey),
       join: (scopeKey, metadata) =>

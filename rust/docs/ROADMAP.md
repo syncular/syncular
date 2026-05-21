@@ -352,11 +352,13 @@ read-only review:
 
 - Continue [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md).
   The interface-impact catch-up pass is recorded in WP-11, WP-17, WP-21,
-  WP-22, WP-23, and WP-24. The next work is to audit current TypeScript package
-  exports against those sections, starting with auth lease, lifecycle,
-  live-query, command-history, audit/debug, and blob surfaces, while keeping the
-  TypeScript packages as host bindings over the Rust runtime rather than a
-  revived JavaScript sync client.
+  WP-22, WP-23, and WP-24. The first bridge parity slice added direct
+  TypeScript host access to leased mutations, auth leases, and
+  resume-from-background across browser bridge, Tauri, React Native, Expo, and
+  testkit. Next, continue the export audit with React and generated-client
+  projection: leased mutation hooks, query-observer-backed live queries instead
+  of broad `rowsChanged` refreshes, and explicit command-history ownership by
+  generated clients/platform wrappers.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when WP-26 finds concrete generated-client naming, discoverability,
   conflict, blob, or subscription ergonomics gaps.
