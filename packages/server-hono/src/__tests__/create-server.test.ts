@@ -6,8 +6,11 @@ import {
 } from '@syncular/core';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
+  createScopedSnapshotArtifactScopeCacheKey,
   createServerHandler,
   ensureSyncSchema,
+  insertScopedSnapshotArtifact,
+  type SnapshotArtifactStorage,
   type SyncCoreDb,
 } from '@syncular/server';
 import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
@@ -1040,6 +1043,143 @@ describe('createSyncServer console configuration', () => {
         ],
       },
     });
+  });
+
+  it('keeps unauthorized scopes denied across pull, realtime, and artifacts', async () => {
+    const artifactBody = new Uint8Array([1, 2, 3, 4]);
+    const artifactBodies = new Map<string, Uint8Array>();
+    const scopeKey = await createScopedSnapshotArtifactScopeCacheKey({
+      partitionId: 'default',
+      subscriptionId: 'tasks-sub',
+      scopes: { user_id: 'u1' },
+      schemaVersion: 1,
+      features: [],
+    });
+    const artifact = await insertScopedSnapshotArtifact(db, {
+      artifactId: 'artifact-auth-boundary',
+      partitionId: 'default',
+      scopeKey,
+      subscriptionId: 'tasks-sub',
+      table: 'tasks',
+      schemaVersion: 1,
+      asOfCommitSeq: 0,
+      rowCursor: null,
+      rowLimit: 100,
+      rowCount: 1,
+      nextRowCursor: null,
+      isFirstPage: true,
+      isLastPage: true,
+      sha256: 'a'.repeat(64),
+      byteLength: artifactBody.length,
+      featureSet: [],
+      blobHash: 'sha256:artifact-auth-boundary',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    artifactBodies.set(artifact.id, artifactBody);
+
+    let readArtifactCalls = 0;
+    const artifactStorage: SnapshotArtifactStorage = {
+      name: 'memory-artifacts',
+      async readArtifact(row) {
+        readArtifactCalls += 1;
+        return artifactBodies.get(row.id) ?? null;
+      },
+    };
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      snapshotArtifactStorage: artifactStorage,
+      upgradeWebSocket,
+      sync: {
+        ...options.sync,
+        authenticate: async (request) => {
+          const actorId = request.headers.get('x-user-id');
+          return actorId ? { actorId } : null;
+        },
+      },
+    });
+    const manager = getSyncWebSocketConnectionManager(server.syncRoutes);
+    if (!manager) {
+      throw new Error('Expected websocket manager to be enabled.');
+    }
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const deniedPull = await app.request(
+      createPullRequest({
+        clientId: 'client-auth-boundary',
+        userId: 'u2',
+        subscriptionUserId: 'u1',
+      })
+    );
+    expect(deniedPull.status).toBe(200);
+    const deniedPullBody = await deniedPull.json();
+    expect(deniedPullBody).toMatchObject({
+      ok: true,
+      pull: {
+        subscriptions: [
+          {
+            id: 'tasks-sub',
+            status: 'revoked',
+            scopes: {},
+            commits: [],
+          },
+        ],
+      },
+    });
+    expect(deniedPullBody.pull.subscriptions[0].snapshots).toBeUndefined();
+
+    const deniedArtifact = await app.request(
+      `http://localhost/sync/snapshot-artifacts/${artifact.id}`,
+      {
+        headers: {
+          'x-user-id': 'u2',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+        },
+      }
+    );
+    expect(deniedArtifact.status).toBe(403);
+    expect(await deniedArtifact.json()).toMatchObject({
+      error: 'sync.forbidden',
+    });
+    expect(readArtifactCalls).toBe(0);
+
+    const realtimeResponse = await app.request(
+      'http://localhost/sync/realtime?clientId=client-auth-boundary',
+      {
+        headers: {
+          'x-user-id': 'u2',
+        },
+      }
+    );
+    expect(realtimeResponse.status).toBe(200);
+    const events = capturedEvents;
+    if (!events?.onOpen) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+    expect(upstream.messages).toContainEqual(
+      expect.objectContaining({
+        event: 'hello',
+        data: expect.objectContaining({
+          actorId: 'u2',
+          clientId: 'client-auth-boundary',
+          scopeCount: 0,
+        }),
+      })
+    );
+
+    manager.notifyScopeKeys(['default::user:u1'], 1);
+    expect(
+      upstream.messages.filter((message) => message.event === 'sync')
+    ).toEqual([]);
   });
 
   it('forwards websocket allowedOrigins from factory to console live route', async () => {

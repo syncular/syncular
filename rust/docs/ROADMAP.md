@@ -517,6 +517,11 @@ read-only review:
     snapshot cache pressure as KPIs. Accepted after native, browser-owned
     SQLite, server, console, transport type, and documentation gates.
 - `[~]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
+  - Threat model is drafted. The first cross-surface Hono auth-boundary test now
+    proves one unauthorized actor/scope mismatch is denied across pull, scoped
+    snapshot artifact download, and realtime wakeups. Next security slices
+    should extend that shape to blobs, encrypted CRDT fields/updates, console
+    partition/detail access, and diagnostic/debug-bundle redaction.
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
