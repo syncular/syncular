@@ -54,10 +54,9 @@ normal reconnect authorization.
 
 ## Next Action
 
-Next narrow slice is host-facing auth lease refresh/lifecycle ergonomics:
-surface issue/refresh storage helpers cleanly, document expiry/revocation UX,
-and add app-style tests showing a client can refresh a lease before queued
-offline writes fail closed. Do not add manual outbox lease marking to
+Next narrow slice is native/Rust host-facing lease issue ergonomics and
+expiry/revocation UX guidance. Browser hosts now have `issueAuthLease(...)`
+backed by the normal auth lifecycle. Do not add manual outbox lease marking to
 app-facing APIs.
 
 ## Progress
@@ -177,6 +176,13 @@ app-facing APIs.
 - Added browser core-WASM coverage proving generated leased mutations fail
   closed without a covering lease, do not materialize the row on failure, and
   succeed after storing a covering active lease.
+- Added browser host-facing `client.issueAuthLease(...)`. It posts to the Hono
+  `/auth-leases/issue` route, uses the existing auth refresh lifecycle on
+  `401`/`403`, stores the returned signed lease, and returns the stored
+  `SyncularV2AuthLeaseRecord`.
+- Added browser/Hono app-style coverage proving stale auth refreshes during
+  auth lease issue, the refreshed lease is stored, a generated leased mutation
+  can use it locally, and server replay accepts the signed lease on push.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol -p
   syncular-testkit` passed with `15` protocol tests and `36` testkit smoke
   tests.
@@ -276,6 +282,12 @@ app-facing APIs.
   leased WASM exports.
 - Gate: `bun test rust/bindings/browser/src/__tests__/variant-core.wasm.test.ts`
   passed after core-WASM leased mutation fail-closed coverage.
+- Gate: `bun run --cwd packages/core tsgo` and `bun run --cwd
+  rust/bindings/browser tsgo` passed after adding browser auth lease issue.
+- Gate: `bun test rust/bindings/browser/src/worker-client.test.ts` passed with
+  auth lease issue/storage worker coverage.
+- Gate: `bun test rust/bindings/browser/src/__tests__/auth-hono.wasm.test.ts`
+  passed with the real Hono auth lease issue + leased mutation push flow.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   store_backends` passed with `36` tests after the local lease storage slice.
 - Gate: `bun run rust:conformance:fast` passed after the protocol/testkit

@@ -434,9 +434,12 @@ read-only review:
     Kotlin, and Java now expose the same strict immediate/queued leased mutation
     entry points. Browser generated/Kysely APIs now expose the matching
     `leasedMutations` surface, with worker/WASM auth-lease storage APIs and
-    fail-closed rollback when no covering active lease exists. Remaining WP-11
-    gap: host-facing lease refresh/lifecycle ergonomics and app-style
-    expiry/revocation UX tests.
+    fail-closed rollback when no covering active lease exists. Browser hosts
+    can now call `client.issueAuthLease(...)`, which posts to
+    `/auth-leases/issue`, uses normal auth refresh on `401`/`403`, stores the
+    signed lease, and is covered by a real Hono leased mutation replay test.
+    Remaining WP-11 gap: native/Rust lease issue ergonomics and sharper
+    expiry/revocation UX guidance.
 - `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus

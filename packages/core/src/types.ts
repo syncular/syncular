@@ -82,6 +82,7 @@ export interface SyncIdentityBase {
  */
 export type SyncAuthOperation =
   | 'sync'
+  | 'authLeaseIssue'
   | 'snapshotChunk'
   | 'snapshotChunkStream'
   | 'blobInitiateUpload'

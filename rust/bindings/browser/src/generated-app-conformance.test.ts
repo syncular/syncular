@@ -325,6 +325,9 @@ function fakeClient(): SyncularV2Client {
     },
     async close() {},
     async setAuthHeaders() {},
+    async issueAuthLease() {
+      throw new Error('issueAuthLease not implemented by fake client');
+    },
     async upsertAuthLease() {},
     async authLease() {
       return null;

@@ -1,4 +1,10 @@
-import type { BlobRef, SyncAuthOperation, SyncOperation } from '@syncular/core';
+import type {
+  BlobRef,
+  SyncAuthLeaseIssueRequest,
+  SyncAuthOperation,
+  SyncOperation,
+} from '@syncular/core';
+import { issueSyncularV2AuthLease } from './auth-leases';
 import {
   resolveSyncularV2ClientConfig,
   SYNCULAR_V2_DEFAULT_STORAGE,
@@ -47,6 +53,7 @@ import type {
   SyncularV2EncryptedCrdtConfig,
   SyncularV2EncryptionHelperMethod,
   SyncularV2FieldEncryptionConfig,
+  SyncularV2LifecycleState,
   SyncularV2LiveQueryDependencyHint,
   SyncularV2LiveQueryDiagnostics,
   SyncularV2LiveQueryEvent,
@@ -58,7 +65,6 @@ import type {
   SyncularV2LocalSupportBundleImportReport,
   SyncularV2LocalSyncResetReport,
   SyncularV2LocalSyncResetRequest,
-  SyncularV2LifecycleState,
   SyncularV2OutboxStats,
   SyncularV2PresenceEntry,
   SyncularV2PresenceSink,
@@ -203,6 +209,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   #closed = false;
   #requestTimeoutMs: number;
   #getHeaders: CreateSyncularV2DatabaseOptions['getHeaders'] | undefined;
+  #authHeaders: SyncularV2AuthHeaders = {};
   #authLifecycle: CreateSyncularV2DatabaseOptions['authLifecycle'] | undefined;
   #authRefreshInFlight: Promise<boolean> | undefined;
   #config: SyncularV2ClientConfig | undefined;
@@ -322,6 +329,20 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     await this.#setAuthHeaders(headers, { restartRealtime: true });
   }
 
+  async issueAuthLease(
+    request: SyncAuthLeaseIssueRequest
+  ): Promise<SyncularV2AuthLeaseRecord> {
+    await this.#refreshAuthHeaders();
+    try {
+      return await this.#issueAuthLeaseWithCurrentHeaders(request);
+    } catch (error) {
+      const shouldRetry = await this.#resolveAuthRetry(error, 'authLeaseIssue');
+      if (!shouldRetry) throw error;
+      await this.#refreshAuthHeaders();
+      return this.#issueAuthLeaseWithCurrentHeaders(request);
+    }
+  }
+
   async upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void> {
     await this.#requestAndDrain({
       type: 'upsertAuthLease',
@@ -369,11 +390,41 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     headers: SyncularV2AuthHeaders,
     options: { restartRealtime: boolean }
   ): Promise<void> {
+    this.#authHeaders = cloneAuthHeaders(headers);
     await this.#request({
       type: 'setAuthHeaders',
-      headers: cloneAuthHeaders(headers),
+      headers: cloneAuthHeaders(this.#authHeaders),
     });
     if (options.restartRealtime) await this.#restartRealtime();
+  }
+
+  async #issueAuthLeaseWithCurrentHeaders(
+    request: SyncAuthLeaseIssueRequest
+  ): Promise<SyncularV2AuthLeaseRecord> {
+    const config = this.#config;
+    if (!config) {
+      throw new Error(
+        'Syncular v2 worker client must be opened before auth lease issue'
+      );
+    }
+    const lease = await issueSyncularV2AuthLease({
+      baseUrl: config.baseUrl,
+      headers: this.#authHeaders,
+      request,
+    });
+    await this.upsertAuthLease(lease);
+    this.#emitDiagnostic({
+      level: 'info',
+      source: 'auth',
+      code: 'auth_lease.issued',
+      message: 'Syncular v2 auth lease issued and stored',
+      details: {
+        leaseId: lease.leaseId,
+        expiresAtMs: lease.expiresAtMs,
+        schemaVersion: lease.schemaVersion,
+      },
+    });
+    return lease;
   }
 
   async startRealtime(

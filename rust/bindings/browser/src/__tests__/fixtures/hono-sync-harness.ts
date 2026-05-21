@@ -1,3 +1,4 @@
+import type { SyncAuthLeaseCapabilities } from '@syncular/core';
 import { type BlobRef, createDatabase } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { createBunSqliteDialect } from '../../../../../../packages/dialect-bun-sqlite/src';
@@ -8,6 +9,7 @@ import {
   createHmacTokenSigner,
   createServerHandler,
   createServerHandlerCollection,
+  createWebCryptoEs256AuthLeaseSigner,
   ensureBlobStorageSchemaSqlite,
   ensureSyncSchema,
   precomputeScopedSnapshotArtifacts,
@@ -63,6 +65,15 @@ export interface CreateHonoSyncHarnessOptions {
   recordRequestEvents?: boolean;
   requiredSchemaVersion?: number;
   latestSchemaVersion?: number;
+  authLeases?: boolean | HonoAuthLeaseOptions;
+}
+
+export interface HonoAuthLeaseOptions {
+  ttlMs?: number;
+  maxTtlMs?: number;
+  maxClockSkewMs?: number;
+  nowMs?: () => number;
+  capabilities?: SyncAuthLeaseCapabilities;
 }
 
 export interface HonoSyncHarness {
@@ -138,6 +149,16 @@ export async function createHonoSyncHarness(
       options.actors.map((actor) => [actor.token, actor.actorId])
     );
     const syncRouteAuthHeaders: string[] = [];
+    const authLeaseOptions =
+      options.authLeases === true ? {} : options.authLeases || undefined;
+    const authLeaseKeyPair = authLeaseOptions
+      ? ((await crypto.subtle.generateKey(
+          { name: 'ECDSA', namedCurve: 'P-256' },
+          true,
+          ['sign', 'verify']
+        )) as CryptoKeyPair)
+      : undefined;
+    let authLeaseId = 0;
     const taskHandler = createServerHandler<
       HonoSyncServerDb,
       HonoSyncClientDb,
@@ -231,6 +252,23 @@ export async function createHonoSyncHarness(
         : undefined,
       consoleSchemaReady: options.recordRequestEvents
         ? Promise.resolve()
+        : undefined,
+      authLeases: authLeaseKeyPair
+        ? {
+            issuer: 'syncular-hono-test',
+            audience: 'syncular-browser-test',
+            kid: 'lease-key-hono',
+            signer: createWebCryptoEs256AuthLeaseSigner({
+              privateKey: authLeaseKeyPair.privateKey,
+            }),
+            publicKey: authLeaseKeyPair.publicKey,
+            ttlMs: authLeaseOptions?.ttlMs,
+            maxTtlMs: authLeaseOptions?.maxTtlMs,
+            maxClockSkewMs: authLeaseOptions?.maxClockSkewMs,
+            nowMs: authLeaseOptions?.nowMs,
+            leaseId: () => `lease-hono-${++authLeaseId}`,
+            capabilities: authLeaseOptions?.capabilities,
+          }
         : undefined,
     });
     let blobRoutes: ReturnType<typeof createBlobRoutes> | undefined;

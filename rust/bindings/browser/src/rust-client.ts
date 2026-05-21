@@ -1,4 +1,9 @@
-import type { BlobRef, SyncOperation } from '@syncular/core';
+import type {
+  BlobRef,
+  SyncAuthLeaseIssueRequest,
+  SyncOperation,
+} from '@syncular/core';
+import { issueSyncularV2AuthLease } from './auth-leases';
 import { resolveSyncularV2ClientConfig } from './client-config';
 import {
   appendSyncularV2DiagnosticEvent,
@@ -8,10 +13,7 @@ import {
   syncularV2DiagnosticAttemptFields,
   syncularV2SyncAttemptHeaders,
 } from './diagnostics';
-import {
-  SyncularV2ClientError,
-  toSyncularV2ClientError,
-} from './errors';
+import { SyncularV2ClientError, toSyncularV2ClientError } from './errors';
 import { createSyncularV2RuntimeInfo } from './runtime-contract';
 import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
@@ -49,6 +51,10 @@ import type {
   SyncularV2EncryptionHelperMethod,
   SyncularV2FieldEncryptionConfig,
   SyncularV2LifecycleState,
+  SyncularV2LiveQueryDependencyHint,
+  SyncularV2LiveQueryDiagnostics,
+  SyncularV2LiveQueryEvent,
+  SyncularV2LiveQuerySnapshot,
   SyncularV2LocalHealthRepairReport,
   SyncularV2LocalHealthRepairRequest,
   SyncularV2LocalHealthReport,
@@ -56,10 +62,6 @@ import type {
   SyncularV2LocalSupportBundleImportReport,
   SyncularV2LocalSyncResetReport,
   SyncularV2LocalSyncResetRequest,
-  SyncularV2LiveQueryEvent,
-  SyncularV2LiveQueryDependencyHint,
-  SyncularV2LiveQueryDiagnostics,
-  SyncularV2LiveQuerySnapshot,
   SyncularV2PullOptions,
   SyncularV2RowsChangedEvent,
   SyncularV2RowsChangedSink,
@@ -227,6 +229,7 @@ export async function openSyncularV2RustClient(
       wasmUrl,
       rust: rustRuntimeInfo,
     }),
+    config,
     config.pull
   );
 }
@@ -254,6 +257,7 @@ export class SyncularV2RustClient {
   constructor(
     private readonly raw: RawSyncularV2RustClient,
     private readonly runtime: SyncularV2RuntimeInfo,
+    private readonly config: SyncularV2ClientConfig,
     private readonly pullOptions: SyncularV2PullOptions | undefined
   ) {}
 
@@ -290,6 +294,30 @@ export class SyncularV2RustClient {
   setAuthHeaders(headers: SyncularV2AuthHeaders): void {
     this.#authHeaders = { ...headers };
     this.raw.setAuthHeadersJson(JSON.stringify(this.#authHeaders));
+  }
+
+  async issueAuthLease(
+    request: SyncAuthLeaseIssueRequest
+  ): Promise<SyncularV2AuthLeaseRecord> {
+    const lease = await issueSyncularV2AuthLease({
+      baseUrl: this.config.baseUrl,
+      headers: this.#authHeaders,
+      request,
+    });
+    await this.upsertAuthLease(lease);
+    this.#emitDiagnostic({
+      at: Date.now(),
+      level: 'info',
+      source: 'auth',
+      code: 'auth_lease.issued',
+      message: 'Syncular v2 auth lease issued and stored',
+      details: {
+        leaseId: lease.leaseId,
+        expiresAtMs: lease.expiresAtMs,
+        schemaVersion: lease.schemaVersion,
+      },
+    });
+    return lease;
   }
 
   async upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void> {
@@ -607,7 +635,8 @@ export class SyncularV2RustClient {
   async importLocalSupportBundle(
     bundle: SyncularV2LocalSupportBundle | string
   ): Promise<SyncularV2LocalSupportBundleImportReport> {
-    const bundleJson = typeof bundle === 'string' ? bundle : JSON.stringify(bundle);
+    const bundleJson =
+      typeof bundle === 'string' ? bundle : JSON.stringify(bundle);
     return parseJson(await this.raw.importLocalSupportBundleJson(bundleJson));
   }
 

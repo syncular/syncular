@@ -1,6 +1,9 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { createSyncularErrorResponse } from '@syncular/core';
-import { taskSubscription } from '../../../../examples/todo-app/generated/typescript/syncular.generated';
+import {
+  syncularGeneratedSchemaVersion,
+  taskSubscription,
+} from '../../../../examples/todo-app/generated/typescript/syncular.generated';
 import type { SyncularV2Client, SyncularV2LifecycleState } from '../types';
 import {
   createHonoSyncHarness,
@@ -73,7 +76,8 @@ describe('Syncular v2 worker auth against Hono sync routes', () => {
     });
     const complete = await waitForLifecycle(
       lifecycleEvents,
-      (event) => event.phase === 'complete' && event.bootstrap?.complete === true
+      (event) =>
+        event.phase === 'complete' && event.bootstrap?.complete === true
     );
     expect(complete).toMatchObject({
       phase: 'complete',
@@ -100,6 +104,90 @@ describe('Syncular v2 worker auth against Hono sync routes', () => {
     expect(
       harness.syncRouteAuthHeaders.every((header) => header === FRESH_TOKEN)
     ).toBe(true);
+  });
+
+  it('issues a fresh auth lease before a leased offline write', async () => {
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_ID, token: FRESH_TOKEN }],
+      authLeases: {
+        ttlMs: 60_000,
+        maxTtlMs: 120_000,
+      },
+    });
+    harnesses.push(sync);
+
+    let token = STALE_TOKEN;
+    let refreshCount = 0;
+    const expiredStatuses: number[] = [];
+    const database = await sync.openWorkerDatabase({
+      clientId: 'client-rust-auth-lease-refresh',
+      actorId: ACTOR_ID,
+      getHeaders: () => ({ authorization: token }),
+      authLifecycle: {
+        onAuthExpired: ({ operation, status }) => {
+          expect(operation).toBe('authLeaseIssue');
+          expiredStatuses.push(status);
+        },
+        refreshToken: ({ operation, status }) => {
+          expect(operation).toBe('authLeaseIssue');
+          expect(status).toBe(401);
+          refreshCount += 1;
+          token = FRESH_TOKEN;
+          return true;
+        },
+      },
+      sync: { autoSyncAfterMutation: false },
+    });
+    await database.client.setSubscriptions([
+      taskSubscription({ actorId: ACTOR_ID }),
+    ]);
+
+    const lease = await database.client.issueAuthLease({
+      schemaVersion: syncularGeneratedSchemaVersion,
+      scopes: [
+        {
+          subscriptionId: 'sub-tasks',
+          table: 'tasks',
+          values: { user_id: [ACTOR_ID] },
+          operations: ['upsert', 'delete'],
+        },
+      ],
+    });
+
+    expect(refreshCount).toBe(1);
+    expect(expiredStatuses).toEqual([401]);
+    expect(lease).toMatchObject({
+      actorId: ACTOR_ID,
+      kid: 'lease-key-hono',
+      schemaVersion: syncularGeneratedSchemaVersion,
+      status: 'active',
+    });
+    await expect(
+      database.client.authLease(lease.leaseId)
+    ).resolves.toMatchObject({ leaseId: lease.leaseId });
+
+    await database.leasedMutations.tasks.insert({
+      id: 'task-leased-refresh',
+      title: 'leased refresh task',
+      completed: 0,
+      user_id: ACTOR_ID,
+      project_id: null,
+      image: null,
+    });
+    await expect(database.client.syncPush()).resolves.toMatchObject({
+      pushedCommits: 1,
+    });
+    await expect(
+      sync.db
+        .selectFrom('tasks')
+        .select(['id', 'title', 'user_id'])
+        .where('id', '=', 'task-leased-refresh')
+        .executeTakeFirstOrThrow()
+    ).resolves.toEqual({
+      id: 'task-leased-refresh',
+      title: 'leased refresh task',
+      user_id: ACTOR_ID,
+    });
   });
 
   async function openAuthHarness(
