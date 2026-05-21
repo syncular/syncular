@@ -159,6 +159,74 @@ pub trait SyncularCommandHistoryExecutor: SyncularMutationExecutor {
         mutation_scope: &str,
         batch: SyncularMutationBatch,
     ) -> Result<MutationReceipt>;
+
+    fn apply_command_history_tracked_batch(
+        &mut self,
+        mutation_scope: &str,
+        batch: SyncularMutationBatch,
+    ) -> Result<MutationReceipt> {
+        let pending = command_history_pending_entries(self, batch.mutations())?;
+        let receipt = self.apply_command_history_batch(mutation_scope, batch)?;
+        let entries = command_history_committed_entries(self, pending)?;
+        if !entries.is_empty() {
+            self.command_history_record(mutation_scope, &entries, &receipt)?;
+        }
+        Ok(receipt)
+    }
+}
+
+#[derive(Debug, Clone)]
+struct CommandHistoryPendingEntry {
+    table: String,
+    row_id: String,
+    before: Option<Value>,
+}
+
+fn command_history_pending_entries<C>(
+    client: &mut C,
+    mutations: &[PendingSyncularMutation],
+) -> Result<Vec<CommandHistoryPendingEntry>>
+where
+    C: SyncularCommandHistoryExecutor + ?Sized,
+{
+    let mut entries = Vec::new();
+    for mutation in mutations {
+        if entries.iter().any(|entry: &CommandHistoryPendingEntry| {
+            entry.table == mutation.table && entry.row_id == mutation.row_id
+        }) {
+            continue;
+        }
+        let before = client.command_history_current_row_json(&mutation.table, &mutation.row_id)?;
+        entries.push(CommandHistoryPendingEntry {
+            table: mutation.table.clone(),
+            row_id: mutation.row_id.clone(),
+            before,
+        });
+    }
+    Ok(entries)
+}
+
+fn command_history_committed_entries<C>(
+    client: &mut C,
+    pending: Vec<CommandHistoryPendingEntry>,
+) -> Result<Vec<CommandHistoryEntry>>
+where
+    C: SyncularCommandHistoryExecutor + ?Sized,
+{
+    let mut entries = Vec::new();
+    for entry in pending {
+        let after = client.command_history_current_row_json(&entry.table, &entry.row_id)?;
+        if entry.before == after {
+            continue;
+        }
+        entries.push(CommandHistoryEntry {
+            table: entry.table,
+            row_id: entry.row_id,
+            before: entry.before,
+            after,
+        });
+    }
+    Ok(entries)
 }
 
 pub trait SyncularEncryptedCrdtMutationExecutor {
@@ -3455,6 +3523,20 @@ where
                 "sync.command_history_scope_unsupported: {other}"
             ))),
         }
+    }
+
+    fn apply_command_history_tracked_batch(
+        &mut self,
+        mutation_scope: &str,
+        batch: SyncularMutationBatch,
+    ) -> Result<MutationReceipt> {
+        let actor_id = self.config.actor_id.clone();
+        self.store.apply_syncular_mutations_with_command_history(
+            mutation_scope,
+            Some(&actor_id),
+            now_ms(),
+            batch.into_mutations(),
+        )
     }
 }
 

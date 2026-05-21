@@ -100,6 +100,13 @@ struct CommandHistoryRow {
     updated_at: i64,
 }
 
+#[derive(Debug, Clone)]
+struct PendingCommandHistoryEntry {
+    table: String,
+    row_id: String,
+    before: Option<Value>,
+}
+
 impl TryFrom<CommandHistoryRow> for CommandHistoryRecord {
     type Error = SyncularError;
 
@@ -120,6 +127,51 @@ impl TryFrom<CommandHistoryRow> for CommandHistoryRecord {
             updated_at: row.updated_at,
         })
     }
+}
+
+fn insert_command_history_record(
+    conn: &mut SqliteConnection,
+    mutation_scope: &str,
+    entries: &[CommandHistoryEntry],
+    receipt: &MutationReceipt,
+) -> Result<CommandHistoryRecord> {
+    let id = Uuid::new_v4().to_string();
+    let entries_json = serde_json::to_string(entries)?;
+    let created_at = now_ms();
+    sql_query("delete from sync_command_history where state = 'undone'").execute(conn)?;
+    sql_query(
+        r#"
+        insert into sync_command_history (
+            id,
+            mutation_scope,
+            state,
+            entries_json,
+            client_commit_id,
+            undo_client_commit_id,
+            redo_client_commit_id,
+            created_at,
+            updated_at
+        )
+        values (?1, ?2, 'done', ?3, ?4, null, null, ?5, ?5)
+        "#,
+    )
+    .bind::<Text, _>(&id)
+    .bind::<Text, _>(mutation_scope)
+    .bind::<Text, _>(&entries_json)
+    .bind::<Text, _>(&receipt.client_commit_id)
+    .bind::<BigInt, _>(created_at)
+    .execute(conn)?;
+    Ok(CommandHistoryRecord {
+        id,
+        mutation_scope: mutation_scope.to_string(),
+        state: CommandHistoryState::Done,
+        entries: entries.to_vec(),
+        client_commit_id: receipt.client_commit_id.clone(),
+        undo_client_commit_id: None,
+        redo_client_commit_id: None,
+        created_at,
+        updated_at: created_at,
+    })
 }
 
 #[derive(Debug, Clone, QueryableByName)]
@@ -947,47 +999,27 @@ impl DieselSqliteStore {
         entries: &[CommandHistoryEntry],
         receipt: &MutationReceipt,
     ) -> Result<CommandHistoryRecord> {
-        let id = Uuid::new_v4().to_string();
-        let entries_json = serde_json::to_string(entries)?;
-        let created_at = now_ms();
         self.conn
             .transaction::<CommandHistoryRecord, SyncularError, _>(|conn| {
-                sql_query("delete from sync_command_history where state = 'undone'")
-                    .execute(conn)?;
-                sql_query(
-                    r#"
-                    insert into sync_command_history (
-                        id,
-                        mutation_scope,
-                        state,
-                        entries_json,
-                        client_commit_id,
-                        undo_client_commit_id,
-                        redo_client_commit_id,
-                        created_at,
-                        updated_at
-                    )
-                    values (?1, ?2, 'done', ?3, ?4, null, null, ?5, ?5)
-                    "#,
-                )
-                .bind::<Text, _>(&id)
-                .bind::<Text, _>(mutation_scope)
-                .bind::<Text, _>(&entries_json)
-                .bind::<Text, _>(&receipt.client_commit_id)
-                .bind::<BigInt, _>(created_at)
-                .execute(conn)?;
-                Ok(CommandHistoryRecord {
-                    id,
-                    mutation_scope: mutation_scope.to_string(),
-                    state: CommandHistoryState::Done,
-                    entries: entries.to_vec(),
-                    client_commit_id: receipt.client_commit_id.clone(),
-                    undo_client_commit_id: None,
-                    redo_client_commit_id: None,
-                    created_at,
-                    updated_at: created_at,
-                })
+                insert_command_history_record(conn, mutation_scope, entries, receipt)
             })
+    }
+
+    pub fn apply_syncular_mutations_with_command_history(
+        &mut self,
+        mutation_scope: &str,
+        actor_id: Option<&str>,
+        now_ms_value: i64,
+        mutations: Vec<PendingSyncularMutation>,
+    ) -> Result<MutationReceipt> {
+        self.transaction(|tx| {
+            tx.apply_syncular_mutations_with_command_history(
+                mutation_scope,
+                actor_id,
+                now_ms_value,
+                mutations,
+            )
+        })
     }
 
     pub fn latest_command_history(
@@ -2408,6 +2440,77 @@ impl<'a> DieselSqliteTx<'a> {
                 now_ms: now_ms_value,
             }),
         )
+    }
+
+    fn apply_syncular_mutations_with_command_history(
+        &mut self,
+        mutation_scope: &str,
+        actor_id: Option<&str>,
+        now_ms_value: i64,
+        mutations: Vec<PendingSyncularMutation>,
+    ) -> Result<MutationReceipt> {
+        let pending = self.command_history_pending_entries(&mutations)?;
+        let receipt = match mutation_scope {
+            "mutations" => self.apply_syncular_mutations_inner(mutations, None)?,
+            "leasedMutations" => self.apply_syncular_mutations_inner(
+                mutations,
+                Some(ActiveAuthLeasePolicy {
+                    actor_id,
+                    now_ms: now_ms_value,
+                }),
+            )?,
+            other => {
+                return Err(SyncularError::config(format!(
+                    "sync.command_history_scope_unsupported: {other}"
+                )));
+            }
+        };
+        let entries = self.command_history_committed_entries(pending)?;
+        if !entries.is_empty() {
+            insert_command_history_record(self.conn, mutation_scope, &entries, &receipt)?;
+        }
+        Ok(receipt)
+    }
+
+    fn command_history_pending_entries(
+        &mut self,
+        mutations: &[PendingSyncularMutation],
+    ) -> Result<Vec<PendingCommandHistoryEntry>> {
+        let mut entries = Vec::new();
+        for mutation in mutations {
+            if entries.iter().any(|entry: &PendingCommandHistoryEntry| {
+                entry.table == mutation.table && entry.row_id == mutation.row_id
+            }) {
+                continue;
+            }
+            let before = self.current_row_json(&mutation.table, &mutation.row_id)?;
+            entries.push(PendingCommandHistoryEntry {
+                table: mutation.table.clone(),
+                row_id: mutation.row_id.clone(),
+                before,
+            });
+        }
+        Ok(entries)
+    }
+
+    fn command_history_committed_entries(
+        &mut self,
+        pending: Vec<PendingCommandHistoryEntry>,
+    ) -> Result<Vec<CommandHistoryEntry>> {
+        let mut entries = Vec::new();
+        for entry in pending {
+            let after = self.current_row_json(&entry.table, &entry.row_id)?;
+            if entry.before == after {
+                continue;
+            }
+            entries.push(CommandHistoryEntry {
+                table: entry.table,
+                row_id: entry.row_id,
+                before: entry.before,
+                after,
+            });
+        }
+        Ok(entries)
     }
 
     fn apply_syncular_mutations_inner(
