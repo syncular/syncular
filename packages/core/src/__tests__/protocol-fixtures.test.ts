@@ -1,10 +1,21 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import {
+  BlobRefSchema,
+  BlobUploadCompleteResponseSchema,
+  BlobUploadInitRequestSchema,
+  BlobUploadInitResponseSchema,
+} from '../schemas/blobs';
+import {
+  SyncAuthLeaseIssueRequestSchema,
+  SyncAuthLeaseIssueResponseSchema,
+  SyncAuthLeaseProvenanceSchema,
   type SyncCombinedRequest,
   SyncCombinedRequestSchema,
   type SyncCombinedResponse,
   SyncCombinedResponseSchema,
+  SyncSnapshotArtifactRefSchema,
+  SyncSnapshotChunkRefSchema,
 } from '../schemas/sync';
 import {
   type BinarySnapshotTable,
@@ -49,6 +60,53 @@ interface JsonRowFrameFixture {
   decodedRows: unknown[];
 }
 
+interface RelayProtocolBoundaryFixture {
+  name: string;
+  generatedBy: string;
+  combined: {
+    request: SyncCombinedRequest;
+    response: SyncCombinedResponse;
+  };
+  snapshotChunk: {
+    ref: unknown;
+    encodedHex: string;
+  };
+  scopedSnapshotArtifact: {
+    ref: unknown;
+    encodedHex: string;
+  };
+  blob: {
+    ref: unknown;
+    bytesHex: string;
+    uploadInitRequest: unknown;
+    uploadInitResponse: unknown;
+    uploadCompleteResponse: unknown;
+  };
+  authLease: {
+    provenance: unknown;
+    issueRequest: unknown;
+    issueResponse: unknown;
+  };
+  binarySyncPack: BinarySyncPackFixture;
+  realtime: {
+    pushRequest: unknown;
+    presenceRequest: unknown;
+    serverSyncMessage: unknown;
+    serverPresenceMessage: unknown;
+    serverPushResponseMessage: unknown;
+    binarySyncPackHex: string;
+  };
+}
+
+interface RustRelayProtocolCanonicalFixture {
+  name: string;
+  generatedBy: string;
+  combinedRequest: SyncCombinedRequest;
+  realtimePushRequest: unknown;
+  realtimePresenceRequest: unknown;
+  blobRef: unknown;
+}
+
 describe('cross-language protocol fixtures', () => {
   it('keeps the JSON combined sync fixture aligned with the TypeScript schemas', () => {
     const fixture = readJsonCombinedSyncFixture();
@@ -91,6 +149,69 @@ describe('cross-language protocol fixtures', () => {
     expect(fixture.wireVersion).toBe(1);
     expect(Buffer.from(encoded).toString('hex')).toBe(fixture.encodedHex);
     expect(decodeSnapshotRows(encoded)).toEqual(fixture.decodedRows);
+  });
+
+  it('keeps the relay protocol boundary fixture aligned with TypeScript schemas', () => {
+    const fixture = readRelayProtocolBoundaryFixture();
+
+    expect(fixture.name).toBe('relay-protocol-boundary-v1');
+    expect(SyncCombinedRequestSchema.parse(fixture.combined.request)).toEqual(
+      fixture.combined.request
+    );
+    expect(SyncCombinedResponseSchema.parse(fixture.combined.response)).toEqual(
+      fixture.combined.response
+    );
+    expect(SyncSnapshotChunkRefSchema.parse(fixture.snapshotChunk.ref)).toEqual(
+      fixture.snapshotChunk.ref
+    );
+    expect(
+      SyncSnapshotArtifactRefSchema.parse(fixture.scopedSnapshotArtifact.ref)
+    ).toEqual(fixture.scopedSnapshotArtifact.ref);
+    expect(BlobRefSchema.parse(fixture.blob.ref)).toEqual(fixture.blob.ref);
+    expect(
+      BlobUploadInitRequestSchema.parse(fixture.blob.uploadInitRequest)
+    ).toEqual(fixture.blob.uploadInitRequest);
+    expect(
+      BlobUploadInitResponseSchema.parse(fixture.blob.uploadInitResponse)
+    ).toEqual(fixture.blob.uploadInitResponse);
+    expect(
+      BlobUploadCompleteResponseSchema.parse(
+        fixture.blob.uploadCompleteResponse
+      )
+    ).toEqual(fixture.blob.uploadCompleteResponse);
+    expect(
+      SyncAuthLeaseProvenanceSchema.parse(fixture.authLease.provenance)
+    ).toEqual(fixture.authLease.provenance);
+    expect(
+      SyncAuthLeaseIssueRequestSchema.parse(fixture.authLease.issueRequest)
+    ).toEqual(fixture.authLease.issueRequest);
+    expect(
+      SyncAuthLeaseIssueResponseSchema.parse(fixture.authLease.issueResponse)
+    ).toEqual(fixture.authLease.issueResponse);
+
+    const encoded = encodeBinarySyncPack(
+      fixture.binarySyncPack.decodedResponse
+    );
+    expect(fixture.binarySyncPack.wireVersion).toBe(readU16Le(encoded, 4));
+    expect(Buffer.from(encoded).toString('hex')).toBe(
+      fixture.binarySyncPack.encodedHex
+    );
+    expect(decodeBinarySyncPack(encoded)).toEqual(
+      fixture.binarySyncPack.decodedResponse
+    );
+    expect(fixture.realtime.binarySyncPackHex).toBe(
+      fixture.binarySyncPack.encodedHex
+    );
+  });
+
+  it('keeps the Rust relay canonical fixture aligned with TypeScript schemas', () => {
+    const fixture = readRustRelayProtocolCanonicalFixture();
+
+    expect(fixture.name).toBe('rust-relay-protocol-canonical-v1');
+    expect(SyncCombinedRequestSchema.parse(fixture.combinedRequest)).toEqual(
+      fixture.combinedRequest
+    );
+    expect(BlobRefSchema.parse(fixture.blobRef)).toEqual(fixture.blobRef);
   });
 });
 
@@ -140,6 +261,30 @@ function readJsonRowFrameFixture(): JsonRowFrameFixture {
       'utf8'
     )
   ) as JsonRowFrameFixture;
+}
+
+function readRelayProtocolBoundaryFixture(): RelayProtocolBoundaryFixture {
+  return JSON.parse(
+    readFileSync(
+      new URL(
+        '../../../../rust/crates/runtime/tests/fixtures/relay-protocol-boundary-v1.json',
+        import.meta.url
+      ),
+      'utf8'
+    )
+  ) as RelayProtocolBoundaryFixture;
+}
+
+function readRustRelayProtocolCanonicalFixture(): RustRelayProtocolCanonicalFixture {
+  return JSON.parse(
+    readFileSync(
+      new URL(
+        '../../../../rust/crates/runtime/tests/fixtures/rust-relay-protocol-canonical-v1.json',
+        import.meta.url
+      ),
+      'utf8'
+    )
+  ) as RustRelayProtocolCanonicalFixture;
 }
 
 function readU16Le(bytes: Uint8Array, offset: number): number {

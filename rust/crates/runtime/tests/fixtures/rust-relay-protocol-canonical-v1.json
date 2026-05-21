@@ -1,0 +1,63 @@
+{
+  "name": "rust-relay-protocol-canonical-v1",
+  "generatedBy": "rust/crates/protocol/src/validation.rs canonical serialization test",
+  "combinedRequest": {
+    "clientId": "rust-relay-client-1",
+    "syncPackEncodings": [
+      "binary-sync-pack-v1"
+    ],
+    "push": {
+      "commits": [
+        {
+          "clientCommitId": "rust-relay-commit-1",
+          "operations": [
+            {
+              "table": "tasks",
+              "row_id": "rust-relay-task-1",
+              "op": "upsert",
+              "payload": {
+                "id": "rust-relay-task-1",
+                "title": "Rust relay canonical"
+              },
+              "base_version": null
+            }
+          ],
+          "schemaVersion": 7
+        }
+      ]
+    }
+  },
+  "realtimePushRequest": {
+    "type": "push",
+    "requestId": "rust-relay-request-1",
+    "clientCommitId": "rust-relay-commit-1",
+    "operations": [
+      {
+        "table": "tasks",
+        "row_id": "rust-relay-task-1",
+        "op": "upsert",
+        "payload": {
+          "id": "rust-relay-task-1",
+          "title": "Rust relay canonical"
+        },
+        "base_version": null
+      }
+    ],
+    "schemaVersion": 7
+  },
+  "realtimePresenceRequest": {
+    "type": "presence",
+    "action": "join",
+    "scopeKey": "project:rust-relay",
+    "metadata": {
+      "relayId": "rust-relay-1"
+    }
+  },
+  "blobRef": {
+    "hash": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "size": 17,
+    "mimeType": "text/plain",
+    "encrypted": true,
+    "keyId": "rust-relay-key-1"
+  }
+}

@@ -1,0 +1,661 @@
+{
+  "name": "relay-protocol-boundary-v1",
+  "generatedBy": "packages/core/scripts/generate-protocol-fixtures.ts",
+  "combined": {
+    "request": {
+      "clientId": "relay-client-1",
+      "syncPackEncodings": [
+        "binary-sync-pack-v1",
+        "json-v1"
+      ],
+      "push": {
+        "commits": [
+          {
+            "clientCommitId": "relay-local-commit-1",
+            "schemaVersion": 7,
+            "authLease": {
+              "leaseId": "lease-relay-1",
+              "leaseExpiresAtMs": 1779446400000,
+              "leaseStatusAtEnqueue": "active",
+              "leaseScopeSummaryJson": "{\"subscriptionId\":\"relay-sub-tasks\",\"table\":\"tasks\",\"project_id\":\"relay-project\"}",
+              "leaseToken": "relay.lease.token"
+            },
+            "operations": [
+              {
+                "table": "tasks",
+                "row_id": "relay-task-1",
+                "op": "upsert",
+                "payload": {
+                  "id": "relay-task-1",
+                  "title": "Relay local edit",
+                  "attachment": {
+                    "hash": "sha256:fc8ada75601b7f9dbe9e89b67ca0c49aedab1fee5103ffdbaa2169cd24eeeb48",
+                    "size": 15,
+                    "mimeType": "text/plain",
+                    "encrypted": true,
+                    "keyId": "relay-key-1"
+                  }
+                },
+                "base_version": 50
+              }
+            ]
+          }
+        ]
+      },
+      "pull": {
+        "limitCommits": 100,
+        "limitSnapshotRows": 2000,
+        "maxSnapshotPages": 2,
+        "dedupeRows": true,
+        "snapshotEncodings": [
+          "binary-table-v1",
+          "json-row-frame-v1"
+        ],
+        "snapshotArtifacts": {
+          "schemaVersion": "7",
+          "artifactKinds": [
+            "sqlite-snapshot-v1"
+          ],
+          "compressions": [
+            "none",
+            "gzip"
+          ],
+          "featureSet": [
+            "blobs",
+            "field-e2ee"
+          ]
+        },
+        "syncPackEncodings": [
+          "binary-sync-pack-v1",
+          "json-v1"
+        ],
+        "subscriptions": [
+          {
+            "id": "relay-sub-tasks",
+            "table": "tasks",
+            "scopes": {
+              "project_id": "relay-project",
+              "actor_id": [
+                "relay-actor-1"
+              ]
+            },
+            "params": {
+              "relayId": "relay-1"
+            },
+            "cursor": 50,
+            "verifiedRoot": "0000000000000000000000000000000000000000000000000000000000000000",
+            "crdtStateVectors": []
+          }
+        ]
+      }
+    },
+    "response": {
+      "ok": true,
+      "requiredSchemaVersion": 7,
+      "latestSchemaVersion": 7,
+      "push": {
+        "ok": true,
+        "commits": [
+          {
+            "ok": true,
+            "clientCommitId": "relay-local-commit-1",
+            "status": "applied",
+            "commitSeq": 51,
+            "results": [
+              {
+                "opIndex": 0,
+                "status": "applied"
+              }
+            ]
+          }
+        ]
+      },
+      "pull": {
+        "ok": true,
+        "subscriptions": [
+          {
+            "id": "relay-sub-tasks",
+            "status": "active",
+            "scopes": {
+              "project_id": "relay-project"
+            },
+            "bootstrap": true,
+            "bootstrapState": null,
+            "nextCursor": 52,
+            "integrity": {
+              "partitionId": "relay-partition",
+              "previousChainRoot": "0000000000000000000000000000000000000000000000000000000000000000",
+              "commitChainRoot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "commitSeq": 52
+            },
+            "commits": [
+              {
+                "commitSeq": 52,
+                "createdAt": "2026-05-20T10:00:00.000Z",
+                "actorId": "relay-upstream-actor",
+                "changes": [
+                  {
+                    "table": "tasks",
+                    "row_id": "relay-task-2",
+                    "op": "upsert",
+                    "row_json": {
+                      "id": "relay-task-2",
+                      "title": "Relay upstream edit",
+                      "attachment": {
+                        "hash": "sha256:fc8ada75601b7f9dbe9e89b67ca0c49aedab1fee5103ffdbaa2169cd24eeeb48",
+                        "size": 15,
+                        "mimeType": "text/plain",
+                        "encrypted": true,
+                        "keyId": "relay-key-1"
+                      },
+                      "server_version": 52
+                    },
+                    "row_version": 52,
+                    "scopes": {
+                      "project_id": "relay-project"
+                    }
+                  }
+                ]
+              }
+            ],
+            "snapshots": [
+              {
+                "table": "tasks",
+                "rows": [],
+                "chunks": [
+                  {
+                    "id": "relay-chunk-1",
+                    "byteLength": 214,
+                    "sha256": "3cc600a1cb45fec427507abb8e2145e1a8124242ae836b73f54141a11f655c35",
+                    "encoding": "json-row-frame-v1",
+                    "compression": "gzip"
+                  }
+                ],
+                "manifest": {
+                  "version": 1,
+                  "table": "tasks",
+                  "asOfCommitSeq": 52,
+                  "scopeDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "rowCursor": null,
+                  "rowLimit": 1000,
+                  "nextRowCursor": null,
+                  "isFirstPage": true,
+                  "isLastPage": true,
+                  "chunks": [
+                    {
+                      "id": "relay-chunk-1",
+                      "byteLength": 214,
+                      "sha256": "3cc600a1cb45fec427507abb8e2145e1a8124242ae836b73f54141a11f655c35",
+                      "encoding": "json-row-frame-v1",
+                      "compression": "gzip"
+                    }
+                  ],
+                  "digest": "78120581ebb2a1d8c2165001425ce0a3159ce010e293a2d9e3cd3671f7a0cd43"
+                },
+                "isFirstPage": true,
+                "isLastPage": true,
+                "bootstrapStateAfter": {
+                  "asOfCommitSeq": 52,
+                  "tables": [
+                    "tasks"
+                  ],
+                  "tableIndex": 0,
+                  "rowCursor": null
+                }
+              },
+              {
+                "table": "tasks",
+                "rows": [],
+                "artifacts": [
+                  {
+                    "id": "relay-artifact-1",
+                    "byteLength": 54,
+                    "sha256": "a1ca4516f42c9936f5576d7201680dfcd87ece72d4cbbfee4c8e2040e52843cc",
+                    "manifestDigest": "082765688a6318eacc6aae23a6a975d5032924bdd51aa303966e390f1df6e448",
+                    "artifactKind": "sqlite-snapshot-v1",
+                    "compression": "none",
+                    "rowCount": 1,
+                    "nextRowCursor": null,
+                    "isFirstPage": true,
+                    "isLastPage": true,
+                    "manifest": {
+                      "version": 1,
+                      "artifactKind": "sqlite-snapshot-v1",
+                      "partitionId": "relay-partition",
+                      "subscriptionId": "relay-sub-tasks",
+                      "table": "tasks",
+                      "schemaVersion": "7",
+                      "asOfCommitSeq": 52,
+                      "scopeDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "rowCursor": null,
+                      "rowLimit": 40000,
+                      "rowCount": 1,
+                      "nextRowCursor": null,
+                      "isFirstPage": true,
+                      "isLastPage": true,
+                      "compression": "none",
+                      "byteLength": 54,
+                      "sha256": "a1ca4516f42c9936f5576d7201680dfcd87ece72d4cbbfee4c8e2040e52843cc",
+                      "featureSet": [
+                        "blobs",
+                        "field-e2ee"
+                      ],
+                      "digest": "082765688a6318eacc6aae23a6a975d5032924bdd51aa303966e390f1df6e448"
+                    }
+                  }
+                ],
+                "isFirstPage": true,
+                "isLastPage": true,
+                "bootstrapStateAfter": null
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "snapshotChunk": {
+    "ref": {
+      "id": "relay-chunk-1",
+      "byteLength": 214,
+      "sha256": "3cc600a1cb45fec427507abb8e2145e1a8124242ae836b73f54141a11f655c35",
+      "encoding": "json-row-frame-v1",
+      "compression": "gzip"
+    },
+    "encodedHex": "1f8b080000000000001345cf4b6e83301845619612ddb15131e5e90554ea34edbcfab12fc20a1884dda834caaabb812a83aae36f72cedbf9456759f673837730d839cb91c7205b9cd6946b28249f66c2e0fca0d31f9dd64028484a62a78521c1dc30499c60102729ebc68cb613276ddd147a68c7de0decd9f543d35a296cd50b9d0c7a246b5d3c8fa31b444addf4d69515c9a1eaa010fd376174adb0f885efc7f60849fc4a4fdb2c3e4081c1eec796e860d2fe49850b8fd7ff930b8f5ce3ae10b95fb97f5cb947bf06985adf7f012419dd2afb000000"
+  },
+  "scopedSnapshotArtifact": {
+    "ref": {
+      "id": "relay-artifact-1",
+      "byteLength": 54,
+      "sha256": "a1ca4516f42c9936f5576d7201680dfcd87ece72d4cbbfee4c8e2040e52843cc",
+      "manifestDigest": "082765688a6318eacc6aae23a6a975d5032924bdd51aa303966e390f1df6e448",
+      "artifactKind": "sqlite-snapshot-v1",
+      "compression": "none",
+      "rowCount": 1,
+      "nextRowCursor": null,
+      "isFirstPage": true,
+      "isLastPage": true,
+      "manifest": {
+        "version": 1,
+        "artifactKind": "sqlite-snapshot-v1",
+        "partitionId": "relay-partition",
+        "subscriptionId": "relay-sub-tasks",
+        "table": "tasks",
+        "schemaVersion": "7",
+        "asOfCommitSeq": 52,
+        "scopeDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "rowCursor": null,
+        "rowLimit": 40000,
+        "rowCount": 1,
+        "nextRowCursor": null,
+        "isFirstPage": true,
+        "isLastPage": true,
+        "compression": "none",
+        "byteLength": 54,
+        "sha256": "a1ca4516f42c9936f5576d7201680dfcd87ece72d4cbbfee4c8e2040e52843cc",
+        "featureSet": [
+          "blobs",
+          "field-e2ee"
+        ],
+        "digest": "082765688a6318eacc6aae23a6a975d5032924bdd51aa303966e390f1df6e448"
+      }
+    },
+    "encodedHex": "1f8b08000000000000132b4acd49ac54284ece2f484d51282eccc92c4955482c2ac94c4b4c2e5148aa2c492d0600913e743622000000"
+  },
+  "blob": {
+    "ref": {
+      "hash": "sha256:fc8ada75601b7f9dbe9e89b67ca0c49aedab1fee5103ffdbaa2169cd24eeeb48",
+      "size": 15,
+      "mimeType": "text/plain",
+      "encrypted": true,
+      "keyId": "relay-key-1"
+    },
+    "bytesHex": "72656c617920626c6f6220626f6479",
+    "uploadInitRequest": {
+      "hash": "sha256:fc8ada75601b7f9dbe9e89b67ca0c49aedab1fee5103ffdbaa2169cd24eeeb48",
+      "size": 15,
+      "mimeType": "text/plain"
+    },
+    "uploadInitResponse": {
+      "exists": false,
+      "uploadId": "relay-upload-1",
+      "uploadUrl": "https://relay.example.invalid/blob/relay-upload-1",
+      "uploadMethod": "PUT",
+      "uploadHeaders": {
+        "content-type": "text/plain"
+      }
+    },
+    "uploadCompleteResponse": {
+      "ok": true
+    }
+  },
+  "authLease": {
+    "provenance": {
+      "leaseId": "lease-relay-1",
+      "leaseExpiresAtMs": 1779446400000,
+      "leaseStatusAtEnqueue": "active",
+      "leaseScopeSummaryJson": "{\"subscriptionId\":\"relay-sub-tasks\",\"table\":\"tasks\",\"project_id\":\"relay-project\"}",
+      "leaseToken": "relay.lease.token"
+    },
+    "issueRequest": {
+      "schemaVersion": 7,
+      "ttlMs": 300000,
+      "scopes": [
+        {
+          "subscriptionId": "relay-sub-tasks",
+          "table": "tasks",
+          "values": {
+            "project_id": "relay-project"
+          },
+          "operations": [
+            "upsert",
+            "delete"
+          ]
+        }
+      ]
+    },
+    "issueResponse": {
+      "ok": true,
+      "token": "relay.lease.token",
+      "protectedHeader": {
+        "alg": "ES256",
+        "kid": "relay-key-1",
+        "typ": "syncular-auth-lease+jws"
+      },
+      "payload": {
+        "version": 1,
+        "leaseId": "lease-relay-1",
+        "issuer": "syncular-relay-fixture",
+        "audience": "syncular-main",
+        "actorId": "relay-actor-1",
+        "subject": {
+          "relayId": "relay-1"
+        },
+        "schemaVersion": 7,
+        "protocolVersion": 1,
+        "issuedAtMs": 1779446100000,
+        "notBeforeMs": 1779446100000,
+        "expiresAtMs": 1779446400000,
+        "maxClockSkewMs": 30000,
+        "scopes": [
+          {
+            "subscriptionId": "relay-sub-tasks",
+            "table": "tasks",
+            "values": {
+              "project_id": "relay-project"
+            },
+            "operations": [
+              "upsert",
+              "delete"
+            ]
+          }
+        ],
+        "capabilities": {
+          "allowBlobs": true,
+          "allowCrdt": false,
+          "allowEncryptedFields": true
+        }
+      }
+    }
+  },
+  "binarySyncPack": {
+    "contentType": "application/vnd.syncular.sync-pack.v1",
+    "wireVersion": 14,
+    "encodedHex": "535350310e0000000101070000000107000000010101000000011400000072656c61792d6c6f63616c2d636f6d6d69742d31010133000000000000000100000000000000010101010000000f00000072656c61792d7375622d7461736b7306006163746976651e0000007b2270726f6a6563745f6964223a2272656c61792d70726f6a656374227d01003400000000000000010f00000072656c61792d706172746974696f6e40000000303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030304000000062626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262340000000000000001000000340000000000000018000000323032362d30352d32305431303a30303a30302e3030305a1400000072656c61792d757073747265616d2d6163746f720100000005007461736b7301000000010000000a0070726f6a6563745f69640d00000072656c61792d70726f6a6563740100000000000c00000072656c61792d7461736b2d320101f00000007b226964223a2272656c61792d7461736b2d32222c227469746c65223a2252656c617920757073747265616d2065646974222c226174746163686d656e74223a7b2268617368223a227368613235363a66633861646137353630316237663964626539653839623637636130633439616564616231666565353130336666646261613231363963643234656565623438222c2273697a65223a31352c226d696d6554797065223a22746578742f706c61696e222c22656e63727970746564223a747275652c226b65794964223a2272656c61792d6b65792d31227d2c227365727665725f76657273696f6e223a35327d0134000000000000000000000000000000010200000005007461736b730000000001010000000d00000072656c61792d6368756e6b2d31d60000000000000040003363633630306131636234356665633432373530376162623865323134356531613831323432343261653833366237336635343134316131316636353563333511006a736f6e2d726f772d6672616d652d76310400677a6970010101470000007b2261734f66436f6d6d6974536571223a35322c227461626c6573223a5b227461736b73225d2c227461626c65496e646578223a302c22726f77437572736f72223a6e756c6c7d01db0100007b2276657273696f6e223a312c227461626c65223a227461736b73222c2261734f66436f6d6d6974536571223a35322c2273636f7065446967657374223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22726f77437572736f72223a6e756c6c2c22726f774c696d6974223a313030302c226e657874526f77437572736f72223a6e756c6c2c226973466972737450616765223a747275652c2269734c61737450616765223a747275652c226368756e6b73223a5b7b226964223a2272656c61792d6368756e6b2d31222c22627974654c656e677468223a3231342c22736861323536223a2233636336303061316362343566656334323735303761626238653231343565316138313234323432616538333662373366353431343161313166363535633335222c22656e636f64696e67223a226a736f6e2d726f772d6672616d652d7631222c22636f6d7072657373696f6e223a22677a6970227d5d2c22646967657374223a2237383132303538316562623261316438633231363530303134323563653061333135396365303130653239336132643965336364333637316637613063643433227d0005007461736b73000000000001010000019d0300005b7b226964223a2272656c61792d61727469666163742d31222c22627974654c656e677468223a35342c22736861323536223a2261316361343531366634326339393336663535373664373230313638306466636438376563653732643463626266656534633865323034306535323834336363222c226d616e6966657374446967657374223a2230383237363536383861363331386561636336616165323361366139373564353033323932346264643531616133303339363665333930663164663665343438222c2261727469666163744b696e64223a2273716c6974652d736e617073686f742d7631222c22636f6d7072657373696f6e223a226e6f6e65222c22726f77436f756e74223a312c226e657874526f77437572736f72223a6e756c6c2c226973466972737450616765223a747275652c2269734c61737450616765223a747275652c226d616e6966657374223a7b2276657273696f6e223a312c2261727469666163744b696e64223a2273716c6974652d736e617073686f742d7631222c22706172746974696f6e4964223a2272656c61792d706172746974696f6e222c22737562736372697074696f6e4964223a2272656c61792d7375622d7461736b73222c227461626c65223a227461736b73222c22736368656d6156657273696f6e223a2237222c2261734f66436f6d6d6974536571223a35322c2273636f7065446967657374223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22726f77437572736f72223a6e756c6c2c22726f774c696d6974223a34303030302c22726f77436f756e74223a312c226e657874526f77437572736f72223a6e756c6c2c226973466972737450616765223a747275652c2269734c61737450616765223a747275652c22636f6d7072657373696f6e223a226e6f6e65222c22627974654c656e677468223a35342c22736861323536223a2261316361343531366634326339393336663535373664373230313638306466636438376563653732643463626266656534633865323034306535323834336363222c2266656174757265536574223a5b22626c6f6273222c226669656c642d65326565225d2c22646967657374223a2230383237363536383861363331386561636336616165323361366139373564353033323932346264643531616133303339363665333930663164663665343438227d7d5d",
+    "decodedResponse": {
+      "ok": true,
+      "requiredSchemaVersion": 7,
+      "latestSchemaVersion": 7,
+      "push": {
+        "ok": true,
+        "commits": [
+          {
+            "ok": true,
+            "clientCommitId": "relay-local-commit-1",
+            "status": "applied",
+            "commitSeq": 51,
+            "results": [
+              {
+                "opIndex": 0,
+                "status": "applied"
+              }
+            ]
+          }
+        ]
+      },
+      "pull": {
+        "ok": true,
+        "subscriptions": [
+          {
+            "id": "relay-sub-tasks",
+            "status": "active",
+            "scopes": {
+              "project_id": "relay-project"
+            },
+            "bootstrap": true,
+            "bootstrapState": null,
+            "nextCursor": 52,
+            "integrity": {
+              "partitionId": "relay-partition",
+              "previousChainRoot": "0000000000000000000000000000000000000000000000000000000000000000",
+              "commitChainRoot": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+              "commitSeq": 52
+            },
+            "commits": [
+              {
+                "commitSeq": 52,
+                "createdAt": "2026-05-20T10:00:00.000Z",
+                "actorId": "relay-upstream-actor",
+                "changes": [
+                  {
+                    "table": "tasks",
+                    "row_id": "relay-task-2",
+                    "op": "upsert",
+                    "row_json": {
+                      "id": "relay-task-2",
+                      "title": "Relay upstream edit",
+                      "attachment": {
+                        "hash": "sha256:fc8ada75601b7f9dbe9e89b67ca0c49aedab1fee5103ffdbaa2169cd24eeeb48",
+                        "size": 15,
+                        "mimeType": "text/plain",
+                        "encrypted": true,
+                        "keyId": "relay-key-1"
+                      },
+                      "server_version": 52
+                    },
+                    "row_version": 52,
+                    "scopes": {
+                      "project_id": "relay-project"
+                    }
+                  }
+                ]
+              }
+            ],
+            "snapshots": [
+              {
+                "table": "tasks",
+                "rows": [],
+                "chunks": [
+                  {
+                    "id": "relay-chunk-1",
+                    "byteLength": 214,
+                    "sha256": "3cc600a1cb45fec427507abb8e2145e1a8124242ae836b73f54141a11f655c35",
+                    "encoding": "json-row-frame-v1",
+                    "compression": "gzip"
+                  }
+                ],
+                "manifest": {
+                  "version": 1,
+                  "table": "tasks",
+                  "asOfCommitSeq": 52,
+                  "scopeDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                  "rowCursor": null,
+                  "rowLimit": 1000,
+                  "nextRowCursor": null,
+                  "isFirstPage": true,
+                  "isLastPage": true,
+                  "chunks": [
+                    {
+                      "id": "relay-chunk-1",
+                      "byteLength": 214,
+                      "sha256": "3cc600a1cb45fec427507abb8e2145e1a8124242ae836b73f54141a11f655c35",
+                      "encoding": "json-row-frame-v1",
+                      "compression": "gzip"
+                    }
+                  ],
+                  "digest": "78120581ebb2a1d8c2165001425ce0a3159ce010e293a2d9e3cd3671f7a0cd43"
+                },
+                "isFirstPage": true,
+                "isLastPage": true,
+                "bootstrapStateAfter": {
+                  "asOfCommitSeq": 52,
+                  "tables": [
+                    "tasks"
+                  ],
+                  "tableIndex": 0,
+                  "rowCursor": null
+                }
+              },
+              {
+                "table": "tasks",
+                "rows": [],
+                "artifacts": [
+                  {
+                    "id": "relay-artifact-1",
+                    "byteLength": 54,
+                    "sha256": "a1ca4516f42c9936f5576d7201680dfcd87ece72d4cbbfee4c8e2040e52843cc",
+                    "manifestDigest": "082765688a6318eacc6aae23a6a975d5032924bdd51aa303966e390f1df6e448",
+                    "artifactKind": "sqlite-snapshot-v1",
+                    "compression": "none",
+                    "rowCount": 1,
+                    "nextRowCursor": null,
+                    "isFirstPage": true,
+                    "isLastPage": true,
+                    "manifest": {
+                      "version": 1,
+                      "artifactKind": "sqlite-snapshot-v1",
+                      "partitionId": "relay-partition",
+                      "subscriptionId": "relay-sub-tasks",
+                      "table": "tasks",
+                      "schemaVersion": "7",
+                      "asOfCommitSeq": 52,
+                      "scopeDigest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "rowCursor": null,
+                      "rowLimit": 40000,
+                      "rowCount": 1,
+                      "nextRowCursor": null,
+                      "isFirstPage": true,
+                      "isLastPage": true,
+                      "compression": "none",
+                      "byteLength": 54,
+                      "sha256": "a1ca4516f42c9936f5576d7201680dfcd87ece72d4cbbfee4c8e2040e52843cc",
+                      "featureSet": [
+                        "blobs",
+                        "field-e2ee"
+                      ],
+                      "digest": "082765688a6318eacc6aae23a6a975d5032924bdd51aa303966e390f1df6e448"
+                    }
+                  }
+                ],
+                "isFirstPage": true,
+                "isLastPage": true,
+                "bootstrapStateAfter": null
+              }
+            ]
+          }
+        ]
+      }
+    }
+  },
+  "realtime": {
+    "pushRequest": {
+      "type": "push",
+      "requestId": "relay-ws-request-1",
+      "clientCommitId": "relay-local-commit-1",
+      "operations": [
+        {
+          "table": "tasks",
+          "row_id": "relay-task-1",
+          "op": "upsert",
+          "payload": {
+            "id": "relay-task-1",
+            "title": "Relay local edit",
+            "attachment": {
+              "hash": "sha256:fc8ada75601b7f9dbe9e89b67ca0c49aedab1fee5103ffdbaa2169cd24eeeb48",
+              "size": 15,
+              "mimeType": "text/plain",
+              "encrypted": true,
+              "keyId": "relay-key-1"
+            }
+          },
+          "base_version": 50
+        }
+      ],
+      "schemaVersion": 7,
+      "authLease": {
+        "leaseId": "lease-relay-1",
+        "leaseExpiresAtMs": 1779446400000,
+        "leaseStatusAtEnqueue": "active",
+        "leaseScopeSummaryJson": "{\"subscriptionId\":\"relay-sub-tasks\",\"table\":\"tasks\",\"project_id\":\"relay-project\"}",
+        "leaseToken": "relay.lease.token"
+      }
+    },
+    "presenceRequest": {
+      "type": "presence",
+      "action": "join",
+      "scopeKey": "project:relay-project",
+      "metadata": {
+        "relayId": "relay-1"
+      }
+    },
+    "serverSyncMessage": {
+      "event": "sync",
+      "data": {
+        "cursor": 52,
+        "requiresPull": false,
+        "droppedCount": 0,
+        "reason": "push",
+        "syncPackEncoding": "binary-sync-pack-v1",
+        "transportPath": "relay"
+      }
+    },
+    "serverPresenceMessage": {
+      "event": "presence",
+      "data": {
+        "presence": {
+          "action": "snapshot",
+          "scopeKey": "project:relay-project",
+          "entries": [
+            {
+              "clientId": "relay-client-1",
+              "actorId": "relay-actor-1",
+              "joinedAt": 1779446100000,
+              "metadata": {
+                "relayId": "relay-1"
+              }
+            }
+          ]
+        },
+        "timestamp": 1779446101000
+      }
+    },
+    "serverPushResponseMessage": {
+      "event": "push-response",
+      "data": {
+        "requestId": "relay-ws-request-1",
+        "ok": true,
+        "status": "applied",
+        "commitSeq": 51,
+        "results": [
+          {
+            "opIndex": 0,
+            "status": "applied"
+          }
+        ],
+        "timestamp": 1779446102000
+      }
+    },
+    "binarySyncPackHex": "535350310e0000000101070000000107000000010101000000011400000072656c61792d6c6f63616c2d636f6d6d69742d31010133000000000000000100000000000000010101010000000f00000072656c61792d7375622d7461736b7306006163746976651e0000007b2270726f6a6563745f6964223a2272656c61792d70726f6a656374227d01003400000000000000010f00000072656c61792d706172746974696f6e40000000303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030303030304000000062626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262626262340000000000000001000000340000000000000018000000323032362d30352d32305431303a30303a30302e3030305a1400000072656c61792d757073747265616d2d6163746f720100000005007461736b7301000000010000000a0070726f6a6563745f69640d00000072656c61792d70726f6a6563740100000000000c00000072656c61792d7461736b2d320101f00000007b226964223a2272656c61792d7461736b2d32222c227469746c65223a2252656c617920757073747265616d2065646974222c226174746163686d656e74223a7b2268617368223a227368613235363a66633861646137353630316237663964626539653839623637636130633439616564616231666565353130336666646261613231363963643234656565623438222c2273697a65223a31352c226d696d6554797065223a22746578742f706c61696e222c22656e63727970746564223a747275652c226b65794964223a2272656c61792d6b65792d31227d2c227365727665725f76657273696f6e223a35327d0134000000000000000000000000000000010200000005007461736b730000000001010000000d00000072656c61792d6368756e6b2d31d60000000000000040003363633630306131636234356665633432373530376162623865323134356531613831323432343261653833366237336635343134316131316636353563333511006a736f6e2d726f772d6672616d652d76310400677a6970010101470000007b2261734f66436f6d6d6974536571223a35322c227461626c6573223a5b227461736b73225d2c227461626c65496e646578223a302c22726f77437572736f72223a6e756c6c7d01db0100007b2276657273696f6e223a312c227461626c65223a227461736b73222c2261734f66436f6d6d6974536571223a35322c2273636f7065446967657374223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22726f77437572736f72223a6e756c6c2c22726f774c696d6974223a313030302c226e657874526f77437572736f72223a6e756c6c2c226973466972737450616765223a747275652c2269734c61737450616765223a747275652c226368756e6b73223a5b7b226964223a2272656c61792d6368756e6b2d31222c22627974654c656e677468223a3231342c22736861323536223a2233636336303061316362343566656334323735303761626238653231343565316138313234323432616538333662373366353431343161313166363535633335222c22656e636f64696e67223a226a736f6e2d726f772d6672616d652d7631222c22636f6d7072657373696f6e223a22677a6970227d5d2c22646967657374223a2237383132303538316562623261316438633231363530303134323563653061333135396365303130653239336132643965336364333637316637613063643433227d0005007461736b73000000000001010000019d0300005b7b226964223a2272656c61792d61727469666163742d31222c22627974654c656e677468223a35342c22736861323536223a2261316361343531366634326339393336663535373664373230313638306466636438376563653732643463626266656534633865323034306535323834336363222c226d616e6966657374446967657374223a2230383237363536383861363331386561636336616165323361366139373564353033323932346264643531616133303339363665333930663164663665343438222c2261727469666163744b696e64223a2273716c6974652d736e617073686f742d7631222c22636f6d7072657373696f6e223a226e6f6e65222c22726f77436f756e74223a312c226e657874526f77437572736f72223a6e756c6c2c226973466972737450616765223a747275652c2269734c61737450616765223a747275652c226d616e6966657374223a7b2276657273696f6e223a312c2261727469666163744b696e64223a2273716c6974652d736e617073686f742d7631222c22706172746974696f6e4964223a2272656c61792d706172746974696f6e222c22737562736372697074696f6e4964223a2272656c61792d7375622d7461736b73222c227461626c65223a227461736b73222c22736368656d6156657273696f6e223a2237222c2261734f66436f6d6d6974536571223a35322c2273636f7065446967657374223a2261616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161222c22726f77437572736f72223a6e756c6c2c22726f774c696d6974223a34303030302c22726f77436f756e74223a312c226e657874526f77437572736f72223a6e756c6c2c226973466972737450616765223a747275652c2269734c61737450616765223a747275652c22636f6d7072657373696f6e223a226e6f6e65222c22627974654c656e677468223a35342c22736861323536223a2261316361343531366634326339393336663535373664373230313638306466636438376563653732643463626266656534633865323034306535323834336363222c2266656174757265536574223a5b22626c6f6273222c226669656c642d65326565225d2c22646967657374223a2230383237363536383861363331386561636336616165323361366139373564353033323932346264643531616133303339363665333930663164663665343438227d7d5d"
+  }
+}

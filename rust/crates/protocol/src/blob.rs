@@ -75,15 +75,32 @@ pub fn validate_blob_hash(hash: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn validate_blob_bytes(blob: &BlobRef, data: &[u8]) -> Result<()> {
+pub fn validate_blob_ref(blob: &BlobRef) -> Result<()> {
     validate_blob_hash(&blob.hash)?;
+    if blob.size < 0 {
+        return Err(ProtocolError::message(format!(
+            "blob size must be non-negative: {}",
+            blob.size
+        )));
+    }
+    if blob.mime_type.trim().is_empty() {
+        return Err(ProtocolError::message("blob mimeType must not be empty"));
+    }
+    if blob.key_id.as_deref().is_some_and(str::is_empty) {
+        return Err(ProtocolError::message("blob keyId must not be empty"));
+    }
+    Ok(())
+}
+
+pub fn validate_blob_bytes(blob: &BlobRef, data: &[u8]) -> Result<()> {
+    validate_blob_ref(blob)?;
     let actual_size =
         i64::try_from(data.len()).map_err(|_| ProtocolError::message("blob is too large"))?;
     validate_blob_digest(blob, &blob_hash(data), actual_size)
 }
 
 pub fn validate_blob_digest(blob: &BlobRef, actual_hash: &str, actual_size: i64) -> Result<()> {
-    validate_blob_hash(&blob.hash)?;
+    validate_blob_ref(blob)?;
     if blob.size != actual_size {
         return Err(ProtocolError::message(format!(
             "blob size mismatch: expected {}, got {}",
@@ -115,7 +132,20 @@ mod tests {
         };
 
         validate_blob_bytes(&blob, bytes).expect("valid blob bytes");
+        validate_blob_ref(&blob).expect("valid blob ref");
         let error = validate_blob_digest(&blob, "sha256:bad", blob.size).unwrap_err();
         assert!(error.to_string().contains("blob hash mismatch"));
+    }
+
+    #[test]
+    fn rejects_invalid_blob_ref_shape() {
+        let blob = BlobRef {
+            hash: "sha256:bad".to_string(),
+            size: -1,
+            mime_type: "".to_string(),
+            encrypted: false,
+            key_id: None,
+        };
+        assert!(validate_blob_ref(&blob).is_err());
     }
 }
