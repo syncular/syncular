@@ -1,6 +1,6 @@
 # WP-19 Security And Privacy Review
 
-Status: `[~]` started
+Status: `[x]` accepted for current implemented surfaces
 
 ## Goal
 
@@ -101,12 +101,16 @@ also redact common token/password/secret field names before persistence. The
 route test proves accepted push payload snapshots keep ordinary app values while
 removing sensitive operation payload fields.
 
+Encrypted CRDT revocation now has storage-level coverage for the system tables:
+clearing a revoked scope removes matching encrypted update/checkpoint rows and
+leaves rows from other scopes intact.
+
 ## Next Action
 
-Use the pull/realtime/artifact, blob-token, and encrypted-CRDT outbox tests as
-templates for the remaining privacy surfaces: CRDT revocation/recovery edges
-and any future debug/export surfaces. There is no current debug-bundle export
-implementation beyond diagnostics and console payload snapshots.
+Use the pull/realtime/artifact, blob-token, encrypted-CRDT, and payload-snapshot
+tests as templates for any future debug/export surfaces. There is no current
+debug-bundle export implementation beyond diagnostics and console payload
+snapshots; time-travel/debug export work remains tracked in WP-23.
 
 ## Progress
 
@@ -138,6 +142,9 @@ implementation beyond diagnostics and console payload snapshots.
   payload snapshots, with route coverage proving accepted app payloads keep
   useful non-sensitive values while token/password/private-key fields are
   removed before persistence.
+- Added native Diesel storage coverage proving encrypted CRDT update/checkpoint
+  rows are removed by scope clearing during revocation while unrelated scopes
+  remain.
 - Gates run in `packages/server-hono`:
   `bun test src/__tests__/create-server.test.ts`,
   `bun test src/__tests__/blob-routes.test.ts`, `bun test src/__tests__`, and
@@ -147,6 +154,7 @@ implementation beyond diagnostics and console payload snapshots.
 - Gates run for runtime CRDT coverage:
   `cargo fmt --manifest-path rust/Cargo.toml --all`,
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field rust_client_exposes_encrypted_crdt_field_through_same_identity --features native,crdt-yjs,demo-todo-native-fixture`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`,
   and
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field --features native,crdt-yjs,demo-todo-native-fixture`.
 - Gates run for native diagnostic redaction:
