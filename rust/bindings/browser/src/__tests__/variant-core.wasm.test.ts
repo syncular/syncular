@@ -204,6 +204,36 @@ describe('Syncular v2 core WASM artifact', () => {
 
       await syncular.client.upsertAuthLease(
         authLease({
+          leaseId: 'lease-core-expired',
+          actorId: 'actor-core',
+          table: 'basic_tasks',
+          values: { user_id: 'actor-core' },
+          operations: ['upsert'],
+          schemaVersion: basicAppSchema.schemaVersion,
+          expiresAtMs: Date.now() - 1_000,
+        })
+      );
+      await expect(
+        syncular.client.activeAuthLeases('actor-core', Date.now())
+      ).resolves.toEqual([]);
+      await expect(
+        syncular.leasedMutations.basic_tasks.insert({
+          id: 'task-core-leased-expired',
+          title: 'Expired leased task',
+          user_id: 'actor-core',
+          server_version: 0,
+        })
+      ).rejects.toThrow('sync.auth_lease_expired');
+      await expect(
+        syncular.db
+          .selectFrom('basic_tasks')
+          .select(['id'])
+          .where('id', '=', 'task-core-leased-expired')
+          .execute()
+      ).resolves.toEqual([]);
+
+      await syncular.client.upsertAuthLease(
+        authLease({
           leaseId: 'lease-core-active',
           actorId: 'actor-core',
           table: 'basic_tasks',
@@ -436,9 +466,10 @@ function authLease(args: {
   values: Record<string, string>;
   operations: string[];
   schemaVersion: number;
+  expiresAtMs?: number;
 }): SyncularV2AuthLeaseRecord {
   const now = Date.now();
-  const expiresAtMs = now + 60_000;
+  const expiresAtMs = args.expiresAtMs ?? now + 60_000;
   return {
     leaseId: args.leaseId,
     kid: 'test-kid',

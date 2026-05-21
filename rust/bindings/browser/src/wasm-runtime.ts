@@ -44,7 +44,7 @@ export interface RawSyncularV2RustClient {
   setAuthHeadersJson(headersJson: string): void;
   upsertAuthLeaseJson(leaseJson: string): void;
   authLeaseJson(leaseId: string): string;
-  activeAuthLeasesJson(actorId: string | null, nowMs: number): string;
+  activeAuthLeasesJson(actorId: string | null, nowMs: bigint): string;
   setFieldEncryptionJson(configJson: string): void;
   setEncryptedCrdtJson(configJson: string): void;
   setAbortSignal(signal?: AbortSignal | null): void;

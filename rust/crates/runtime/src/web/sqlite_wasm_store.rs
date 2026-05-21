@@ -2750,10 +2750,11 @@ impl SyncularRustOwnedSqlite {
             }
             let client_commit_id = self.enqueue_outbox_operations(&sync_operations)?;
             if let Some(policy) = auth_lease_policy {
-                let active_leases = self.active_auth_leases_sync(policy.actor_id, policy.now_ms)?;
+                let candidate_leases =
+                    self.auth_lease_candidates_for_selection_sync(policy.actor_id)?;
                 let provenance = select_auth_lease_for_operation_scopes(
                     policy,
-                    active_leases,
+                    candidate_leases,
                     self.app_schema.current_schema_version(),
                     &operation_scopes,
                 )?;
@@ -4125,6 +4126,26 @@ impl SyncularRustOwnedSqlite {
         )
     }
 
+    fn auth_lease_candidates_for_selection_sync(
+        &self,
+        actor_id: Option<&str>,
+    ) -> Result<Vec<AuthLeaseRecord>> {
+        let actor_filter = actor_id.map_or_else(String::new, |actor_id| {
+            format!(" AND actor_id = {}", sql_string(actor_id))
+        });
+        self.query_rows(
+            &format!(
+                "SELECT lease_id, kid, actor_id, issued_at_ms, not_before_ms, expires_at_ms, \
+                        schema_version, payload_json, token, status, last_validation_error, \
+                        created_at_ms, updated_at_ms \
+                 FROM sync_auth_leases \
+                 WHERE status = 'active'{actor_filter} \
+                 ORDER BY expires_at_ms ASC"
+            ),
+            auth_lease_record_from_row,
+        )
+    }
+
     fn set_outbox_auth_lease_sync(
         &self,
         client_commit_id: &str,
@@ -4945,13 +4966,13 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                 };
                 self.apply_local_mutation(&operation, local_row.as_ref())?;
                 let client_commit_id = self.enqueue_outbox_operations(&[operation])?;
-                let active_leases = self.active_auth_leases_sync(actor_id, now_ms_value)?;
+                let candidate_leases = self.auth_lease_candidates_for_selection_sync(actor_id)?;
                 let provenance = select_auth_lease_for_operation_scopes(
                     ActiveAuthLeasePolicy {
                         actor_id,
                         now_ms: now_ms_value,
                     },
-                    active_leases,
+                    candidate_leases,
                     self.app_schema.current_schema_version(),
                     &[operation_scope],
                 )?;

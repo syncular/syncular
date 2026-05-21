@@ -335,7 +335,7 @@ export class SyncularV2RustClient {
     nowMs = Date.now()
   ): Promise<SyncularV2AuthLeaseRecord[]> {
     return parseJson<SyncularV2AuthLeaseRecord[]>(
-      this.raw.activeAuthLeasesJson(actorId ?? null, Math.trunc(nowMs))
+      this.raw.activeAuthLeasesJson(actorId ?? null, BigInt(Math.trunc(nowMs)))
     );
   }
 

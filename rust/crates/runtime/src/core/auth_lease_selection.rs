@@ -1,8 +1,8 @@
 use crate::app_schema::AppTableMetadata;
 use crate::error::{Result, SyncularError};
 use crate::protocol::{
-    AuthLeasePayload, AuthLeaseProvenance, SyncOperation, AUTH_LEASE_CODE_MISSING,
-    AUTH_LEASE_CODE_SCOPE_MISMATCH,
+    AuthLeasePayload, AuthLeaseProvenance, SyncOperation, AUTH_LEASE_CODE_EXPIRED,
+    AUTH_LEASE_CODE_MISSING, AUTH_LEASE_CODE_SCOPE_MISMATCH,
 };
 use crate::store::AuthLeaseRecord;
 use serde_json::{Map, Value};
@@ -79,7 +79,7 @@ pub fn system_table_operation_scope(operation: &SyncOperation) -> MutationOperat
 
 pub fn select_active_auth_lease_for_operations(
     policy: ActiveAuthLeasePolicy<'_>,
-    active_leases: Vec<AuthLeaseRecord>,
+    candidate_leases: Vec<AuthLeaseRecord>,
     current_schema_version: i32,
     operations: &[MutationOperationScope],
 ) -> Result<AuthLeaseProvenance> {
@@ -92,7 +92,11 @@ pub fn select_active_auth_lease_for_operations(
         }
     }
 
-    for lease in active_leases {
+    let mut saw_expired_covering_lease = false;
+    for lease in candidate_leases {
+        if lease.status != "active" {
+            continue;
+        }
         if lease.schema_version != current_schema_version {
             continue;
         }
@@ -108,6 +112,13 @@ pub fn select_active_auth_lease_for_operations(
             }
         }
         if auth_lease_payload_covers_operations(&payload, operations) {
+            if lease.not_before_ms > policy.now_ms || payload.not_before_ms > policy.now_ms {
+                continue;
+            }
+            if lease.expires_at_ms <= policy.now_ms || payload.expires_at_ms <= policy.now_ms {
+                saw_expired_covering_lease = true;
+                continue;
+            }
             return Ok(AuthLeaseProvenance {
                 lease_id: lease.lease_id,
                 lease_expires_at_ms: lease.expires_at_ms,
@@ -116,6 +127,13 @@ pub fn select_active_auth_lease_for_operations(
                 lease_token: Some(lease.token),
             });
         }
+    }
+
+    if saw_expired_covering_lease {
+        return Err(SyncularError::protocol_message(format!(
+            "{}: matching auth lease is expired",
+            AUTH_LEASE_CODE_EXPIRED
+        )));
     }
 
     Err(SyncularError::protocol_message(format!(

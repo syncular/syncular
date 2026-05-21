@@ -871,6 +871,45 @@ fn diesel_generated_leased_mutations_fail_closed_without_covering_lease() -> Res
 }
 
 #[test]
+fn diesel_generated_leased_mutations_fail_closed_with_expired_covering_lease() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-generated-leased-expired");
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let now = now_ms();
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    client.upsert_auth_lease(&expired_task_auth_lease(
+        now,
+        "lease-generated-expired",
+        "lease-expired-token",
+    ))?;
+
+    let error = client
+        .leased_mutations()
+        .tasks()
+        .insert(generated::NewTask::new(
+            "leased-expired",
+            "expired lease task",
+            "user-rust",
+            Some("p0"),
+        ))
+        .expect_err("strict leased mutation should fail with an expired covering lease");
+    assert!(error.message_text().contains("sync.auth_lease_expired"));
+    assert!(client.outbox_summaries()?.is_empty());
+    drop(client);
+
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    assert_eq!(
+        count_rows(
+            &mut conn,
+            "select count(*) as count from tasks where id = 'leased-expired'"
+        )?,
+        0
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn diesel_leased_mutation_json_selects_active_auth_lease() -> Result<()> {
     let path = temp_db_path("syncular-diesel-json-leased-mutation");
     let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
@@ -2490,13 +2529,27 @@ fn test_config(path: &str) -> SyncularClientConfig {
 }
 
 fn active_task_auth_lease(now: i64, lease_id: &str, token: &str) -> AuthLeaseRecord {
+    task_auth_lease_with_times(now, lease_id, token, now - 10, now + 60_000)
+}
+
+fn expired_task_auth_lease(now: i64, lease_id: &str, token: &str) -> AuthLeaseRecord {
+    task_auth_lease_with_times(now, lease_id, token, now - 60_000, now - 1)
+}
+
+fn task_auth_lease_with_times(
+    now: i64,
+    lease_id: &str,
+    token: &str,
+    not_before_ms: i64,
+    expires_at_ms: i64,
+) -> AuthLeaseRecord {
     AuthLeaseRecord {
         lease_id: lease_id.to_string(),
         kid: "test-kid".to_string(),
         actor_id: "user-rust".to_string(),
         issued_at_ms: now - 10,
-        not_before_ms: now - 10,
-        expires_at_ms: now + 60_000,
+        not_before_ms,
+        expires_at_ms,
         schema_version: current_schema_version(),
         payload_json: json!({
             "version": 1,
@@ -2508,8 +2561,8 @@ fn active_task_auth_lease(now: i64, lease_id: &str, token: &str) -> AuthLeaseRec
             "schemaVersion": current_schema_version(),
             "protocolVersion": 1,
             "issuedAtMs": now - 10,
-            "notBeforeMs": now - 10,
-            "expiresAtMs": now + 60_000,
+            "notBeforeMs": not_before_ms,
+            "expiresAtMs": expires_at_ms,
             "maxClockSkewMs": 0,
             "scopes": [{
                 "subscriptionId": "sub-tasks",
