@@ -87,6 +87,10 @@ First retained slice:
   now stays subscribed while the server revokes the subscription scope. The
   test proves table-only scoped clearing still reruns and emits the empty query
   result instead of incorrectly trusting row-id hints.
+- Extended CRDT materialization coverage: a primary-key hinted browser live
+  query now observes a local CRDT text-field write, reruns once for the matching
+  row, emits the materialized `title` and `title_yjs_state`, and carries CRDT
+  field metadata in `changedRows`.
 
 Native gates:
 
@@ -141,7 +145,16 @@ bun test --cwd rust/bindings/browser \
 
 Result: passed. No benchmark was rerun for this test-only coverage slice.
 
+CRDT materialization gate:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+bun test --cwd rust/bindings/browser \
+  src/__tests__/sync-hono.wasm.test.ts -t "refreshes hinted live queries after CRDT"
+```
+
+Result: passed. No benchmark was rerun for this test-only coverage slice.
+
 ## Next Action
 
-Extend precision coverage to conflicts, CRDT materialization, and blob metadata
-updates.
+Extend precision coverage to conflicts and blob metadata updates.
