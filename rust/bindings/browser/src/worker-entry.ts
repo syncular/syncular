@@ -263,6 +263,10 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return requireClient().compactStorage(request.options);
     case 'generatedSchemaState':
       return requireClient().generatedSchemaState();
+    case 'localHealthCheck':
+      return requireClient().localHealthCheck();
+    case 'repairLocalHealth':
+      return requireClient().repairLocalHealth(request.request);
     case 'buildYjsTextUpdate':
       return requireClient().buildYjsTextUpdate(request.args);
     case 'applyYjsTextUpdates':
@@ -483,7 +487,8 @@ function isDiagnosedSuccessRequest(
     type === 'processBlobUploadQueue' ||
     type === 'clearBlobCache' ||
     type === 'pruneBlobCache' ||
-    type === 'compactStorage'
+    type === 'compactStorage' ||
+    type === 'repairLocalHealth'
   );
 }
 
@@ -520,6 +525,8 @@ function requestDiagnosticSource(
     type === 'open' ||
     type === 'close' ||
     type === 'generatedSchemaState' ||
+    type === 'localHealthCheck' ||
+    type === 'repairLocalHealth' ||
     type === 'compactStorage'
   ) {
     return 'storage';
@@ -566,6 +573,16 @@ function requestSuccessDetails(
     case 'pruneBlobCache':
       return { maxBytes: request.maxBytes ?? null, prunedBytes: value };
     case 'compactStorage':
+      return objectRecord(value);
+    case 'localHealthCheck': {
+      const report = objectRecord(value);
+      const findings = Array.isArray(report.findings) ? report.findings : [];
+      return {
+        ok: report.ok === true,
+        findingCount: findings.length,
+      };
+    }
+    case 'repairLocalHealth':
       return objectRecord(value);
     case 'processBlobUploadQueue':
       return objectRecord(value);

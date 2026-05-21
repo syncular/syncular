@@ -626,6 +626,100 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     expect(syncPosts).toBe(0);
   });
 
+  it('reports and safely repairs browser local health findings', async () => {
+    const subscription = taskSubscription({ actorId: ACTOR_A });
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'local-health-browser-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    await client.setSubscriptions([subscription]);
+    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    await unsafe.executeUnsafeSql(
+      'insert into sync_subscription_state (state_id, subscription_id, "table", scopes_json, params_json, cursor, bootstrap_state_json, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, null, ?, ?, ?)',
+      [
+        'default',
+        subscription.id,
+        subscription.table,
+        JSON.stringify({ actorId: ACTOR_A }),
+        '{}',
+        0,
+        'active',
+        1,
+        1,
+      ]
+    );
+    await unsafe.executeUnsafeSql(
+      'insert into sync_verified_roots (state_id, subscription_id, partition_id, commit_seq, root, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)',
+      ['default', subscription.id, 'partition-a', 0, 'not-a-root', 1, 1]
+    );
+    await unsafe.executeUnsafeSql(
+      'insert into sync_subscription_state (state_id, subscription_id, "table", scopes_json, params_json, cursor, bootstrap_state_json, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, null, ?, ?, ?)',
+      [
+        'default',
+        'orphaned-health-subscription',
+        subscription.table,
+        '{}',
+        '{}',
+        0,
+        'active',
+        1,
+        1,
+      ]
+    );
+    await unsafe.executeUnsafeSql(
+      'insert into sync_verified_roots (state_id, subscription_id, partition_id, commit_seq, root, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)',
+      [
+        'default',
+        'orphaned-health-subscription',
+        'partition-old',
+        0,
+        'a'.repeat(64),
+        1,
+        1,
+      ]
+    );
+
+    let health = await client.localHealthCheck();
+    expect(health.ok).toBe(false);
+    expect(health.findings.map((finding) => finding.code)).toEqual(
+      expect.arrayContaining([
+        'local.verified_root_invalid_hex',
+        'local.subscription_state_orphaned',
+        'local.verified_root_orphaned',
+      ])
+    );
+
+    await expect(
+      client.repairLocalHealth({
+        action: 'forceRebootstrap',
+        subscriptionIds: [subscription.id],
+      })
+    ).resolves.toMatchObject({
+      action: 'forceRebootstrap',
+      deletedSubscriptionStates: 1,
+      deletedVerifiedRoots: 1,
+      forcedRebootstrapSubscriptions: 1,
+    });
+    await expect(
+      client.repairLocalHealth({ action: 'clearOrphanedState' })
+    ).resolves.toMatchObject({
+      action: 'clearOrphanedState',
+      deletedSubscriptionStates: 1,
+      deletedVerifiedRoots: 1,
+    });
+
+    health = await client.localHealthCheck();
+    expect(health.ok).toBe(true);
+    expect(health.findings).toEqual([]);
+    await expect(client.listTable('tasks')).resolves.toEqual([]);
+  });
+
   it('does not partially apply chunked snapshots when chunk fetch fails', async () => {
     const scenario = syncConformance.snapshotChunk;
     const sync = await createHonoSyncHarness({

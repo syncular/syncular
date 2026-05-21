@@ -48,6 +48,9 @@ import type {
   SyncularV2EncryptionHelperMethod,
   SyncularV2FieldEncryptionConfig,
   SyncularV2LifecycleState,
+  SyncularV2LocalHealthRepairReport,
+  SyncularV2LocalHealthRepairRequest,
+  SyncularV2LocalHealthReport,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQuerySnapshot,
   SyncularV2PullOptions,
@@ -537,6 +540,22 @@ export class SyncularV2RustClient {
 
   generatedSchemaState(): SyncularV2SchemaState {
     return parseJson(this.raw.generatedSchemaStateJson());
+  }
+
+  async localHealthCheck(): Promise<SyncularV2LocalHealthReport> {
+    return parseJson(await this.raw.localHealthCheckJson());
+  }
+
+  async repairLocalHealth(
+    request: SyncularV2LocalHealthRepairRequest
+  ): Promise<SyncularV2LocalHealthRepairReport> {
+    const normalized = {
+      action: request.action,
+      subscriptionIds: [...(request.subscriptionIds ?? [])],
+    };
+    return parseJson(
+      await this.raw.repairLocalHealthJson(JSON.stringify(normalized))
+    );
   }
 
   buildYjsTextUpdate(

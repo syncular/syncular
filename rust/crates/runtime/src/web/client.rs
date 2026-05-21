@@ -29,7 +29,7 @@ use crate::web_store::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 const CRDT_STATE_VECTOR_HINT_LIMIT: i64 = 256;
 
@@ -254,6 +254,161 @@ where
                 .force_subscriptions_bootstrap(&subscription_ids)
                 .await?,
         )?)
+    }
+
+    pub async fn local_health_check(&mut self) -> Result<crate::health::LocalHealthReport> {
+        let state_id = self.store.local_state_id();
+        let states = self.store.subscription_states().await?;
+        let roots = self.store.verified_roots().await?;
+        let mut report = crate::health::check_local_health_records(
+            &state_id,
+            &self.subscriptions,
+            &states,
+            &roots,
+        );
+        let current_schema_version = self.schema_version();
+        let app_schema_state = self.store.app_schema_state(current_schema_version).await?;
+        let outbox = self.store.outbox_summaries().await?;
+        let conflicts = self.store.conflict_summaries().await?;
+        let blob_health = self.store.blob_health_summary().await?;
+        let crdt_health = self.store.crdt_health_summary().await?;
+        crate::health::check_local_sync_state_health(
+            &mut report,
+            current_schema_version,
+            &app_schema_state,
+            &outbox,
+            &conflicts,
+            blob_health.as_ref(),
+            crdt_health.as_ref(),
+        );
+        Ok(report)
+    }
+
+    pub async fn local_health_check_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(&self.local_health_check().await?)?)
+    }
+
+    pub async fn repair_local_health(
+        &mut self,
+        request: crate::health::LocalHealthRepairRequest,
+    ) -> Result<crate::health::LocalHealthRepairReport> {
+        match request.action {
+            crate::health::LocalHealthRepairAction::ForceRebootstrap => {
+                self.repair_force_rebootstrap(&request.subscription_ids)
+                    .await
+            }
+            crate::health::LocalHealthRepairAction::ClearOrphanedState => {
+                self.repair_clear_orphaned_state(&request.subscription_ids)
+                    .await
+            }
+            crate::health::LocalHealthRepairAction::ManualInspection => Err(SyncularError::config(
+                "manualInspection health findings cannot be repaired automatically",
+            )),
+        }
+    }
+
+    pub async fn repair_local_health_json(&mut self, request_json: &str) -> Result<String> {
+        let request: crate::health::LocalHealthRepairRequest = serde_json::from_str(request_json)?;
+        Ok(serde_json::to_string(
+            &self.repair_local_health(request).await?,
+        )?)
+    }
+
+    async fn repair_force_rebootstrap(
+        &mut self,
+        subscription_ids: &[String],
+    ) -> Result<crate::health::LocalHealthRepairReport> {
+        if subscription_ids.is_empty() {
+            return Err(SyncularError::config(
+                "forceRebootstrap repair requires explicit subscriptionIds",
+            ));
+        }
+        let configured = self
+            .subscriptions
+            .iter()
+            .map(|subscription| subscription.id.clone())
+            .collect::<HashSet<_>>();
+        for subscription_id in subscription_ids {
+            if !configured.contains(subscription_id) {
+                return Err(SyncularError::config(format!(
+                    "cannot force rebootstrap for unconfigured subscription {subscription_id}"
+                )));
+            }
+        }
+        let requested = subscription_ids.iter().cloned().collect::<HashSet<_>>();
+        let deleted_subscription_states = self
+            .store
+            .subscription_states()
+            .await?
+            .iter()
+            .filter(|state| requested.contains(&state.subscription_id))
+            .count();
+        let deleted_verified_roots = self
+            .store
+            .verified_roots()
+            .await?
+            .iter()
+            .filter(|root| requested.contains(&root.subscription_id))
+            .count();
+        for subscription_id in subscription_ids {
+            self.store.delete_verified_root(subscription_id).await?;
+            self.store
+                .delete_subscription_state(subscription_id)
+                .await?;
+        }
+        Ok(crate::health::LocalHealthRepairReport {
+            action: crate::health::LocalHealthRepairAction::ForceRebootstrap,
+            deleted_subscription_states,
+            deleted_verified_roots,
+            forced_rebootstrap_subscriptions: subscription_ids.len(),
+        })
+    }
+
+    async fn repair_clear_orphaned_state(
+        &mut self,
+        subscription_ids: &[String],
+    ) -> Result<crate::health::LocalHealthRepairReport> {
+        let configured = self
+            .subscriptions
+            .iter()
+            .map(|subscription| subscription.id.clone())
+            .collect::<HashSet<_>>();
+        for subscription_id in subscription_ids {
+            if configured.contains(subscription_id) {
+                return Err(SyncularError::config(format!(
+                    "clearOrphanedState refuses configured subscription {subscription_id}"
+                )));
+            }
+        }
+        let requested = subscription_ids.iter().cloned().collect::<HashSet<_>>();
+        let states = self.store.subscription_states().await?;
+        let roots = self.store.verified_roots().await?;
+        let state_ids = states
+            .iter()
+            .map(|state| state.subscription_id.clone())
+            .filter(|id| !configured.contains(id))
+            .filter(|id| requested.is_empty() || requested.contains(id))
+            .collect::<HashSet<_>>();
+        let root_ids = roots
+            .iter()
+            .map(|root| root.subscription_id.clone())
+            .filter(|id| !configured.contains(id))
+            .filter(|id| requested.is_empty() || requested.contains(id))
+            .collect::<HashSet<_>>();
+        let mut all_ids = state_ids.iter().cloned().collect::<HashSet<_>>();
+        all_ids.extend(root_ids.iter().cloned());
+        for subscription_id in &all_ids {
+            self.store
+                .delete_subscription_state(subscription_id)
+                .await?;
+            self.store.delete_verified_root(subscription_id).await?;
+        }
+        Ok(crate::health::LocalHealthRepairReport {
+            action: crate::health::LocalHealthRepairAction::ClearOrphanedState,
+            deleted_subscription_states: state_ids.len(),
+            deleted_verified_roots: root_ids.len(),
+            forced_rebootstrap_subscriptions: 0,
+        })
     }
 
     pub fn set_field_encryption(&mut self, encryption: Option<FieldEncryption>) {

@@ -729,6 +729,50 @@ export interface SyncularV2SchemaState {
   updatedAt: number | null;
 }
 
+export type SyncularV2LocalHealthSeverity = 'info' | 'warning' | 'error';
+
+export type SyncularV2LocalHealthRepairAction =
+  | 'forceRebootstrap'
+  | 'clearOrphanedState'
+  | 'manualInspection';
+
+export interface SyncularV2LocalHealthFinding {
+  severity: SyncularV2LocalHealthSeverity;
+  code: string;
+  component: string;
+  message: string;
+  subscriptionId?: string;
+  table?: string;
+  repairAction?: SyncularV2LocalHealthRepairAction;
+  details?: Record<string, unknown>;
+}
+
+export interface SyncularV2LocalHealthReport {
+  generatedAt: number;
+  ok: boolean;
+  checkedSubscriptions: number;
+  checkedSubscriptionStates: number;
+  checkedVerifiedRoots: number;
+  checkedOutboxCommits: number;
+  checkedConflicts: number;
+  checkedBlobReferences: number;
+  checkedCrdtDocuments: number;
+  checkedCrdtUpdateLogEntries: number;
+  findings: SyncularV2LocalHealthFinding[];
+}
+
+export interface SyncularV2LocalHealthRepairRequest {
+  action: SyncularV2LocalHealthRepairAction;
+  subscriptionIds?: readonly string[];
+}
+
+export interface SyncularV2LocalHealthRepairReport {
+  action: SyncularV2LocalHealthRepairAction;
+  deletedSubscriptionStates: number;
+  deletedVerifiedRoots: number;
+  forcedRebootstrapSubscriptions: number;
+}
+
 export interface SyncularV2RustRuntimeInfo {
   crateName: string;
   crateVersion: string;
@@ -984,6 +1028,10 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
     options?: SyncularV2StorageCompactionOptions
   ): Promise<SyncularV2StorageCompactionReport>;
   generatedSchemaState(): Promise<SyncularV2SchemaState>;
+  localHealthCheck(): Promise<SyncularV2LocalHealthReport>;
+  repairLocalHealth(
+    request: SyncularV2LocalHealthRepairRequest
+  ): Promise<SyncularV2LocalHealthRepairReport>;
   buildYjsTextUpdate(
     args: SyncularBuildYjsTextUpdateArgs
   ): Promise<SyncularBuildYjsTextUpdateResult>;
