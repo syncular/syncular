@@ -304,6 +304,7 @@ impl SyncTransport for HttpSyncTransport {
         chunk: &SnapshotChunkRef,
         scopes: &ScopeValues,
     ) -> Result<SnapshotChunkRows> {
+        validate_snapshot_chunk_ref_size(chunk)?;
         let url = format!(
             "{}/snapshot-chunks/{}",
             self.config.base_url.trim_end_matches('/'),
@@ -338,6 +339,7 @@ impl SyncTransport for HttpSyncTransport {
         artifact: &ScopedSnapshotArtifactRef,
         scopes: &ScopeValues,
     ) -> Result<Vec<u8>> {
+        validate_snapshot_artifact_ref_size(artifact)?;
         let url = format!(
             "{}/snapshot-artifacts/{}",
             self.config.base_url.trim_end_matches('/'),
@@ -734,8 +736,9 @@ impl RealtimeTransport for RealtimeSocket {
         let client_commit_id = commit.client_commit_id.clone();
         let message = RealtimePushRequest::from_commit(request_id.clone(), commit);
 
-        self.socket
-            .send(Message::Text(serde_json::to_string(&message)?.into()))?;
+        let message = serde_json::to_string(&message)?;
+        validate_websocket_text_frame_size(&message)?;
+        self.socket.send(Message::Text(message.into()))?;
 
         let deadline = SystemTime::now()
             .checked_add(self.push_response_timeout)
@@ -744,6 +747,7 @@ impl RealtimeTransport for RealtimeSocket {
         while SystemTime::now() < deadline {
             match self.socket.read() {
                 Ok(Message::Text(text)) => {
+                    validate_websocket_text_frame_size(&text)?;
                     let value: Value = match serde_json::from_str(&text) {
                         Ok(value) => value,
                         Err(_) => continue,
@@ -790,14 +794,16 @@ impl RealtimeTransport for RealtimeSocket {
         metadata: Option<&Value>,
     ) -> Result<()> {
         let message = RealtimePresenceRequest::new(action, scope_key, metadata.cloned());
-        self.socket
-            .send(Message::Text(serde_json::to_string(&message)?.into()))?;
+        let message = serde_json::to_string(&message)?;
+        validate_websocket_text_frame_size(&message)?;
+        self.socket.send(Message::Text(message.into()))?;
         Ok(())
     }
 
     fn read_event(&mut self) -> Result<Option<RealtimeEvent>> {
         match self.socket.read() {
             Ok(Message::Text(text)) => {
+                validate_websocket_text_frame_size(&text)?;
                 let value: Value = match serde_json::from_str(&text) {
                     Ok(value) => value,
                     Err(_) => return Ok(None),
@@ -1031,12 +1037,14 @@ fn decode_compressed_snapshot_chunk_rows(
     compressed: &[u8],
 ) -> Result<SnapshotChunkRows> {
     syncular_protocol::validate_snapshot_chunk_format(chunk)?;
+    validate_snapshot_chunk_compressed_bytes(chunk, compressed)?;
     let actual_hash = hex::encode(Sha256::digest(compressed));
     syncular_protocol::validate_snapshot_chunk_hash_hex(chunk, &actual_hash)?;
 
     let mut decoder = GzDecoder::new(compressed);
     let mut decoded = Vec::new();
     decoder.read_to_end(&mut decoded)?;
+    validate_snapshot_chunk_decompressed_bytes(&decoded)?;
 
     decode_snapshot_chunk_rows(chunk, &decoded)
 }
@@ -1047,13 +1055,7 @@ fn validate_snapshot_artifact_bytes(
     bytes: &[u8],
 ) -> Result<()> {
     syncular_protocol::validate_scoped_snapshot_artifact_ref(artifact)?;
-    if bytes.len() as i64 != artifact.byte_length {
-        return Err(SyncularError::protocol_message(format!(
-            "snapshot artifact byte length mismatch: expected {}, got {}",
-            artifact.byte_length,
-            bytes.len()
-        )));
-    }
+    validate_snapshot_artifact_compressed_bytes(artifact, bytes)?;
     let actual_hash = hex::encode(Sha256::digest(bytes));
     if actual_hash != artifact.sha256 {
         return Err(SyncularError::protocol_message(format!(
@@ -1079,6 +1081,7 @@ fn decode_snapshot_artifact_bytes(
     let mut decoder = GzDecoder::new(compressed);
     let mut decoded = Vec::new();
     decoder.read_to_end(&mut decoded)?;
+    validate_snapshot_artifact_decompressed_bytes(&decoded)?;
     Ok(decoded)
 }
 

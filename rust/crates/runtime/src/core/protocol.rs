@@ -2,6 +2,9 @@ use crate::error::{Result, SyncularError};
 use crate::limits::{
     MAX_BLOB_PAYLOAD_BYTES, MAX_MUTATION_BATCH_JSON_BYTES, MAX_MUTATION_LOCAL_ROW_JSON_BYTES,
     MAX_MUTATION_OPERATION_JSON_BYTES, MAX_OUTBOX_OPERATIONS_JSON_BYTES,
+    MAX_REALTIME_SYNC_PACK_BYTES, MAX_SNAPSHOT_ARTIFACT_COMPRESSED_BYTES,
+    MAX_SNAPSHOT_ARTIFACT_DECOMPRESSED_BYTES, MAX_SNAPSHOT_CHUNK_COMPRESSED_BYTES,
+    MAX_SNAPSHOT_CHUNK_DECOMPRESSED_BYTES, MAX_WEBSOCKET_TEXT_FRAME_BYTES,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -33,6 +36,7 @@ pub fn validate_sqlite_snapshot_artifact_for_apply(
     table: &str,
 ) -> Result<()> {
     validate_scoped_snapshot_artifact_ref(artifact)?;
+    validate_snapshot_artifact_ref_size(artifact)?;
     if artifact.artifact_kind != SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1 {
         return Err(SyncularError::protocol_message(format!(
             "unsupported snapshot artifact kind {}",
@@ -253,7 +257,24 @@ pub fn verify_subscription_commit_integrity(
 }
 
 pub fn validate_pull_snapshot_manifests(response: &PullResponse) -> Result<()> {
-    syncular_protocol::validate_pull_snapshot_manifests(response).map_err(Into::into)
+    syncular_protocol::validate_pull_snapshot_manifests(response).map_err(SyncularError::from)?;
+    for subscription in &response.subscriptions {
+        if let Some(snapshots) = &subscription.snapshots {
+            for snapshot in snapshots {
+                if let Some(chunks) = &snapshot.chunks {
+                    for chunk in chunks {
+                        validate_snapshot_chunk_ref_size(chunk)?;
+                    }
+                }
+                if let Some(artifacts) = &snapshot.artifacts {
+                    for artifact in artifacts {
+                        validate_snapshot_artifact_ref_size(artifact)?;
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 pub fn wire_commit_digest(
@@ -368,6 +389,124 @@ pub fn validate_blob_digest(blob: &BlobRef, actual_hash: &str, actual_size: i64)
     syncular_protocol::validate_blob_digest(blob, actual_hash, actual_size).map_err(Into::into)
 }
 
+pub fn validate_snapshot_chunk_ref_size(chunk: &SnapshotChunkRef) -> Result<()> {
+    validate_i64_payload_bytes(
+        "maxSnapshotChunkCompressedBytes",
+        chunk.byte_length,
+        MAX_SNAPSHOT_CHUNK_COMPRESSED_BYTES,
+        "Syncular snapshot chunk compressed payload exceeds the configured limit",
+    )
+}
+
+pub fn validate_snapshot_chunk_compressed_bytes(
+    chunk: &SnapshotChunkRef,
+    bytes: &[u8],
+) -> Result<()> {
+    validate_snapshot_chunk_ref_size(chunk)?;
+    validate_payload_bytes(
+        "maxSnapshotChunkCompressedBytes",
+        bytes.len(),
+        usize::try_from(MAX_SNAPSHOT_CHUNK_COMPRESSED_BYTES).unwrap_or(usize::MAX),
+        "Syncular snapshot chunk compressed payload exceeds the configured limit",
+    )?;
+    if bytes.len() as i64 != chunk.byte_length {
+        return Err(SyncularError::protocol_message(format!(
+            "snapshot chunk byte length mismatch: expected {}, got {}",
+            chunk.byte_length,
+            bytes.len()
+        )));
+    }
+    Ok(())
+}
+
+pub fn validate_snapshot_chunk_decompressed_bytes(bytes: &[u8]) -> Result<()> {
+    validate_payload_bytes(
+        "maxSnapshotChunkDecompressedBytes",
+        bytes.len(),
+        MAX_SNAPSHOT_CHUNK_DECOMPRESSED_BYTES,
+        "Syncular snapshot chunk decompressed payload exceeds the configured limit",
+    )
+}
+
+pub fn validate_snapshot_artifact_ref_size(artifact: &ScopedSnapshotArtifactRef) -> Result<()> {
+    validate_i64_payload_bytes(
+        "maxSnapshotArtifactCompressedBytes",
+        artifact.byte_length,
+        MAX_SNAPSHOT_ARTIFACT_COMPRESSED_BYTES,
+        "Syncular snapshot artifact compressed payload exceeds the configured limit",
+    )
+}
+
+pub fn validate_snapshot_artifact_compressed_bytes(
+    artifact: &ScopedSnapshotArtifactRef,
+    bytes: &[u8],
+) -> Result<()> {
+    validate_snapshot_artifact_ref_size(artifact)?;
+    validate_payload_bytes(
+        "maxSnapshotArtifactCompressedBytes",
+        bytes.len(),
+        usize::try_from(MAX_SNAPSHOT_ARTIFACT_COMPRESSED_BYTES).unwrap_or(usize::MAX),
+        "Syncular snapshot artifact compressed payload exceeds the configured limit",
+    )?;
+    if bytes.len() as i64 != artifact.byte_length {
+        return Err(SyncularError::protocol_message(format!(
+            "snapshot artifact byte length mismatch: expected {}, got {}",
+            artifact.byte_length,
+            bytes.len()
+        )));
+    }
+    Ok(())
+}
+
+pub fn validate_snapshot_artifact_decompressed_bytes(bytes: &[u8]) -> Result<()> {
+    validate_payload_bytes(
+        "maxSnapshotArtifactDecompressedBytes",
+        bytes.len(),
+        MAX_SNAPSHOT_ARTIFACT_DECOMPRESSED_BYTES,
+        "Syncular snapshot artifact decompressed payload exceeds the configured limit",
+    )
+}
+
+pub fn validate_realtime_sync_pack_bytes(bytes: &[u8]) -> Result<()> {
+    validate_payload_bytes(
+        "maxRealtimeSyncPackBytes",
+        bytes.len(),
+        MAX_REALTIME_SYNC_PACK_BYTES,
+        "Syncular realtime sync-pack payload exceeds the configured limit",
+    )
+}
+
+pub fn validate_websocket_text_frame_size(text: &str) -> Result<()> {
+    validate_payload_bytes(
+        "maxWebsocketTextFrameBytes",
+        text.len(),
+        MAX_WEBSOCKET_TEXT_FRAME_BYTES,
+        "Syncular websocket text frame exceeds the configured limit",
+    )
+}
+
+fn validate_i64_payload_bytes(
+    limit: &'static str,
+    observed: i64,
+    max: i64,
+    message: &'static str,
+) -> Result<()> {
+    if observed < 0 {
+        return Err(SyncularError::protocol_message(format!(
+            "{limit} observed byte length cannot be negative"
+        )));
+    }
+    if observed > max {
+        return Err(SyncularError::limit_exceeded(
+            limit,
+            usize::try_from(observed).unwrap_or(usize::MAX),
+            usize::try_from(max).unwrap_or(usize::MAX),
+            message,
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -388,5 +527,83 @@ mod tests {
         assert_eq!(classification.category, "limit-exceeded");
         assert_eq!(classification.recommended_action, "reduceInput");
         assert!(err.message_text().contains("maxBlobPayloadBytes"));
+    }
+
+    #[test]
+    fn oversized_snapshot_refs_return_stable_limit_errors() {
+        let chunk = SnapshotChunkRef {
+            id: "chunk-1".to_string(),
+            byte_length: MAX_SNAPSHOT_CHUNK_COMPRESSED_BYTES + 1,
+            sha256: "0".repeat(64),
+            encoding: SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string(),
+            compression: SNAPSHOT_CHUNK_COMPRESSION_GZIP.to_string(),
+        };
+        let chunk_err = validate_snapshot_chunk_ref_size(&chunk).unwrap_err();
+        assert_eq!(chunk_err.classification().code, "runtime.limit_exceeded");
+        assert!(chunk_err
+            .message_text()
+            .contains("maxSnapshotChunkCompressedBytes"));
+
+        let mut manifest = ScopedSnapshotArtifactManifest {
+            version: syncular_protocol::SCOPED_SNAPSHOT_ARTIFACT_MANIFEST_VERSION,
+            artifact_kind: SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string(),
+            digest: "artifact-digest".to_string(),
+            partition_id: "partition-1".to_string(),
+            subscription_id: "sub-1".to_string(),
+            table: "tasks".to_string(),
+            schema_version: "1".to_string(),
+            as_of_commit_seq: 1,
+            scope_digest: "scope-digest".to_string(),
+            row_cursor: None,
+            byte_length: MAX_SNAPSHOT_ARTIFACT_COMPRESSED_BYTES + 1,
+            sha256: "0".repeat(64),
+            compression: SNAPSHOT_CHUNK_COMPRESSION_GZIP.to_string(),
+            row_count: 1,
+            row_limit: 1,
+            next_row_cursor: None,
+            is_first_page: true,
+            is_last_page: true,
+            feature_set: Vec::new(),
+        };
+        manifest.digest =
+            syncular_protocol::scoped_snapshot_artifact_manifest_digest(&manifest).expect("digest");
+        let artifact = ScopedSnapshotArtifactRef {
+            id: "artifact-1".to_string(),
+            manifest_digest: manifest.digest.clone(),
+            byte_length: manifest.byte_length,
+            sha256: manifest.sha256.clone(),
+            artifact_kind: manifest.artifact_kind.clone(),
+            compression: manifest.compression.clone(),
+            row_count: manifest.row_count,
+            next_row_cursor: manifest.next_row_cursor.clone(),
+            is_first_page: manifest.is_first_page,
+            is_last_page: manifest.is_last_page,
+            manifest,
+        };
+        let artifact_err = validate_snapshot_artifact_ref_size(&artifact).unwrap_err();
+        assert_eq!(artifact_err.classification().code, "runtime.limit_exceeded");
+        assert!(artifact_err
+            .message_text()
+            .contains("maxSnapshotArtifactCompressedBytes"));
+    }
+
+    #[test]
+    fn oversized_realtime_payloads_return_stable_limit_errors() {
+        let sync_pack = vec![0u8; MAX_REALTIME_SYNC_PACK_BYTES + 1];
+        let sync_pack_err = validate_realtime_sync_pack_bytes(&sync_pack).unwrap_err();
+        assert_eq!(
+            sync_pack_err.classification().code,
+            "runtime.limit_exceeded"
+        );
+        assert!(sync_pack_err
+            .message_text()
+            .contains("maxRealtimeSyncPackBytes"));
+
+        let frame = "x".repeat(MAX_WEBSOCKET_TEXT_FRAME_BYTES + 1);
+        let frame_err = validate_websocket_text_frame_size(&frame).unwrap_err();
+        assert_eq!(frame_err.classification().code, "runtime.limit_exceeded");
+        assert!(frame_err
+            .message_text()
+            .contains("maxWebsocketTextFrameBytes"));
     }
 }

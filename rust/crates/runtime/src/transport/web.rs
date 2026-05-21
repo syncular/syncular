@@ -7,7 +7,10 @@ use crate::protocol::{
     BlobRef, BlobUploadCompleteResponse, BlobUploadInitRequest, BlobUploadInitResponse,
 };
 use crate::protocol::{
-    CombinedRequest, CombinedResponse, ScopeValues, ScopedSnapshotArtifactRef, SnapshotChunkRef,
+    validate_snapshot_artifact_compressed_bytes, validate_snapshot_artifact_decompressed_bytes,
+    validate_snapshot_artifact_ref_size, validate_snapshot_chunk_compressed_bytes,
+    validate_snapshot_chunk_decompressed_bytes, validate_snapshot_chunk_ref_size, CombinedRequest,
+    CombinedResponse, ScopeValues, ScopedSnapshotArtifactRef, SnapshotChunkRef,
     SNAPSHOT_CHUNK_COMPRESSION_GZIP, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
     SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
 };
@@ -202,6 +205,7 @@ impl AsyncSyncTransport for WebSyncTransport {
         scopes: &'a ScopeValues,
     ) -> Pin<Box<dyn Future<Output = Result<SnapshotChunkRows>> + 'a>> {
         Box::pin(async move {
+            validate_snapshot_chunk_ref_size(chunk)?;
             let url = format!(
                 "{}/snapshot-chunks/{}",
                 self.config.base_url.trim_end_matches('/'),
@@ -232,6 +236,7 @@ impl AsyncSyncTransport for WebSyncTransport {
         scopes: &'a ScopeValues,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + 'a>> {
         Box::pin(async move {
+            validate_snapshot_artifact_ref_size(artifact)?;
             let url = format!(
                 "{}/snapshot-artifacts/{}",
                 self.config.base_url.trim_end_matches('/'),
@@ -790,13 +795,7 @@ async fn validate_snapshot_artifact_bytes(
     stats: &Rc<RefCell<WebTransportStats>>,
 ) -> Result<()> {
     syncular_protocol::validate_scoped_snapshot_artifact_ref(artifact)?;
-    if bytes.len() as i64 != artifact.byte_length {
-        return Err(SyncularError::protocol_message(format!(
-            "snapshot artifact byte length mismatch: expected {}, got {}",
-            artifact.byte_length,
-            bytes.len()
-        )));
-    }
+    validate_snapshot_artifact_compressed_bytes(artifact, bytes)?;
     let hash_started_at = timing_now_ms();
     let actual_hash = sha256_digest(bytes).await?;
     record_snapshot_artifact_hash(stats, elapsed_ms_since(hash_started_at));
@@ -825,6 +824,7 @@ async fn decode_snapshot_artifact_bytes(
     let decompress_started_at = timing_now_ms();
     let decoded = decompress_gzip_with_browser(compressed).await?;
     record_snapshot_artifact_decompress(stats, elapsed_ms_since(decompress_started_at));
+    validate_snapshot_artifact_decompressed_bytes(&decoded)?;
     Ok(decoded)
 }
 
@@ -834,6 +834,7 @@ async fn decode_snapshot_chunk_bytes(
     stats: &Rc<RefCell<WebTransportStats>>,
 ) -> Result<Vec<u8>> {
     syncular_protocol::validate_snapshot_chunk_format(chunk)?;
+    validate_snapshot_chunk_compressed_bytes(chunk, compressed)?;
 
     let hash_started_at = timing_now_ms();
     let actual_hash = sha256_digest(compressed).await?;
@@ -843,6 +844,7 @@ async fn decode_snapshot_chunk_bytes(
     let decompress_started_at = timing_now_ms();
     let decoded = decompress_gzip_with_browser(compressed).await?;
     record_snapshot_chunk_decompress(stats, elapsed_ms_since(decompress_started_at));
+    validate_snapshot_chunk_decompressed_bytes(&decoded)?;
 
     Ok(decoded)
 }

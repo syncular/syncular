@@ -12,12 +12,13 @@ use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{
     validate_mutation_json_input_size, validate_pull_commit_integrity_metadata,
-    validate_pull_snapshot_manifests, validate_sqlite_snapshot_artifact_for_apply,
-    verify_subscription_commit_integrity, BootstrapState, CombinedRequest, CombinedResponse,
-    PullRequest, PullResponse, PushBatchRequest, PushCommitRequest, ScopeValues,
-    SnapshotArtifactsRequest, SubscriptionRequest, SyncChange, SyncCommit, SyncOperation,
-    VerifiedCommitRoot, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1, SNAPSHOT_CHUNK_COMPRESSION_GZIP,
-    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SYNC_PACK_ENCODING_BINARY_V1,
+    validate_pull_snapshot_manifests, validate_realtime_sync_pack_bytes,
+    validate_sqlite_snapshot_artifact_for_apply, verify_subscription_commit_integrity,
+    BootstrapState, CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
+    PushCommitRequest, ScopeValues, SnapshotArtifactsRequest, SubscriptionRequest, SyncChange,
+    SyncCommit, SyncOperation, VerifiedCommitRoot, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+    SNAPSHOT_CHUNK_COMPRESSION_GZIP, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+    SYNC_PACK_ENCODING_BINARY_V1,
 };
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
 use crate::transport::web::{AsyncSyncTransport, WebSyncTransport, WebSyncTransportConfig};
@@ -807,6 +808,7 @@ where
     }
 
     pub async fn apply_realtime_sync_pack_bytes(&mut self, bytes: &[u8]) -> Result<WebSyncResult> {
+        validate_realtime_sync_pack_bytes(bytes)?;
         let total_started_at = timing_now_ms();
         let response = decode_binary_sync_pack(bytes)?;
         let sync_pack_decode_ms = elapsed_ms_since(total_started_at);
