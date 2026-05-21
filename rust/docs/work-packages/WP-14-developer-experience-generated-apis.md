@@ -103,9 +103,21 @@ discoverability, conflict, blob, or subscription ergonomics gaps.
   `client.queuedMutations.tasks.insert/update/delete` for worker-queued UI
   writes. The old direct row helpers are removed from generated output; CRDT
   field helpers remain field-specific.
+- Browser React apps now use the Rust-backed ergonomic factory
+  `createSyncularReact()`. The old lower-level React surface
+  (`createSyncularV2React`, `useLiveQuery`, callback-style `useMutation`, and
+  direct client hooks) is removed from public docs and tests. The retained hooks
+  cover typed Kysely reads, generated/table mutations, connection state, outbox
+  and conflict counters, presence, and blobs.
+- Generated TypeScript partial updates now keep sync payloads partial while
+  materializing complete local SQLite rows for NOT NULL columns, so updates such
+  as `{ completed: 1 }` no longer fail local apply when the row has required
+  fields like `title`.
 
 ## Latest Evidence
 
+- `bun test rust/bindings/browser/src/react.test.ts rust/bindings/browser/src/generated-app-conformance.test.ts`
+- `bun run --cwd rust/bindings/browser tsgo`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`

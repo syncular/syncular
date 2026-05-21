@@ -26,12 +26,12 @@ import {
 import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   CreateSyncularV2DatabaseOptions,
-  SyncularV2Blobs,
   SyncularV2BlobStoreOptions,
+  SyncularV2Blobs,
   SyncularV2Client,
   SyncularV2CrdtYjsFieldConfig,
-  SyncularV2LiveQueryDependencyHint,
   SyncularV2LiveQueries,
+  SyncularV2LiveQueryDependencyHint,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQueryOptions,
   SyncularV2LiveQuerySubscription,
@@ -320,7 +320,10 @@ export function createSyncularV2BlobClient(
 ): SyncularV2Blobs {
   return {
     async store(data, storeOptions) {
-      const ref = await client.storeBlob(await toUint8Array(data), storeOptions);
+      const ref = await client.storeBlob(
+        await toUint8Array(data),
+        storeOptions
+      );
       await hooks.afterStore?.({
         ref,
         ...(storeOptions === undefined ? {} : { options: storeOptions }),
@@ -481,7 +484,7 @@ export function createSyncularV2Commit<DB>(
           patch: unknown,
           opts?: { baseVersion?: number | null }
         ) {
-          await tableApi.upsert(id, patch, opts);
+          await applyUpsert(id, patch, opts, { mergeExistingLocalRow: true });
         },
         async delete(id: string, opts?: { baseVersion?: number | null }) {
           const baseVersion = await resolveBaseVersion({
@@ -530,67 +533,85 @@ export function createSyncularV2Commit<DB>(
           patch: unknown,
           opts?: { baseVersion?: number | null }
         ) {
-          const rawPatch = objectRecord(patch);
-          const payload = sanitizeOperationPayload(rawPatch, {
-            omit: [
-              tableIdColumn,
-              ...(tableVersionColumn ? [tableVersionColumn] : []),
-              ...omitColumns,
-            ],
-          });
-          const syncPayload = stripCrdtYjsMaterializedPayloadFields(
-            payload,
-            crdtYjsFields
-          );
-          const localPayload = sanitizeOperationPayload(rawPatch, {
-            omit: [
-              tableIdColumn,
-              ...(tableVersionColumn ? [tableVersionColumn] : []),
-            ],
-          });
-          const existingRow = await readCrdtYjsExistingRow({
-            client: options.client,
-            table,
-            rowId: id,
-            idColumn: tableIdColumn,
-            crdtYjsFields,
-          });
-          const transformedLocalPayload = await transformCrdtYjsMutationPayload(
-            {
+          await applyUpsert(id, patch, opts, { mergeExistingLocalRow: false });
+        },
+      };
+
+      const applyUpsert = async (
+        id: string,
+        patch: unknown,
+        opts: { baseVersion?: number | null } | undefined,
+        behavior: { mergeExistingLocalRow: boolean }
+      ) => {
+        const rawPatch = objectRecord(patch);
+        const payload = sanitizeOperationPayload(rawPatch, {
+          omit: [
+            tableIdColumn,
+            ...(tableVersionColumn ? [tableVersionColumn] : []),
+            ...omitColumns,
+          ],
+        });
+        const syncPayload = stripCrdtYjsMaterializedPayloadFields(
+          payload,
+          crdtYjsFields
+        );
+        const existingLocalRow = behavior.mergeExistingLocalRow
+          ? await readExistingLocalRow({
               client: options.client,
               table,
               rowId: id,
-              payload: localPayload,
-              existingRow,
-              crdtYjsFields,
-            }
-          );
-          const localDbPayload = applyCodecsToDbRow(
-            transformedLocalPayload,
-            resolveTableCodecs(table, transformedLocalPayload),
-            codecDialect
-          );
-          const operation: SyncOperation = {
-            table,
-            row_id: id,
-            op: 'upsert',
-            payload: syncPayload,
-            base_version: await resolveBaseVersion({
-              options,
-              table,
-              rowId: id,
               idColumn: tableIdColumn,
-              versionColumn: tableVersionColumn,
-              explicit: opts?.baseVersion,
-            }),
-          };
-          operations.push(operation);
-          batch.push({
-            operation,
-            localRow: { ...localDbPayload, [tableIdColumn]: id },
-          });
-          localMutations.push({ table, rowId: id, op: 'upsert' });
-        },
+            })
+          : null;
+        const rawLocalPayload = existingLocalRow
+          ? { ...existingLocalRow, ...rawPatch }
+          : rawPatch;
+        const localPayload = sanitizeOperationPayload(rawLocalPayload, {
+          omit: [
+            tableIdColumn,
+            ...(tableVersionColumn ? [tableVersionColumn] : []),
+          ],
+        });
+        const existingRow = await readCrdtYjsExistingRow({
+          client: options.client,
+          table,
+          rowId: id,
+          idColumn: tableIdColumn,
+          crdtYjsFields,
+        });
+        const transformedLocalPayload = await transformCrdtYjsMutationPayload({
+          client: options.client,
+          table,
+          rowId: id,
+          payload: localPayload,
+          existingRow,
+          crdtYjsFields,
+        });
+        const localDbPayload = applyCodecsToDbRow(
+          transformedLocalPayload,
+          resolveTableCodecs(table, transformedLocalPayload),
+          codecDialect
+        );
+        const operation: SyncOperation = {
+          table,
+          row_id: id,
+          op: 'upsert',
+          payload: syncPayload,
+          base_version: await resolveBaseVersion({
+            options,
+            table,
+            rowId: id,
+            idColumn: tableIdColumn,
+            versionColumn: tableVersionColumn,
+            explicit: opts?.baseVersion,
+          }),
+        };
+        operations.push(operation);
+        batch.push({
+          operation,
+          localRow: { ...localDbPayload, [tableIdColumn]: id },
+        });
+        localMutations.push({ table, rowId: id, op: 'upsert' });
       };
 
       txTableCache.set(table, tableApi);
@@ -610,8 +631,7 @@ export function createSyncularV2Commit<DB>(
 
     const result = await fn(tx as MutationsTx<DB>);
     if (operations.length === 0) throw new Error('No mutations were enqueued');
-    const clientCommitId =
-      await options.client.applyMutationsCommit(batch);
+    const clientCommitId = await options.client.applyMutationsCommit(batch);
     const meta = {
       operations,
       localMutations,
@@ -669,11 +689,7 @@ class SyncularV2Driver extends BaseSqliteDriver {
       compiled.sql,
       compiled.parameters,
       tables,
-      inferDependencyHintsFromCompiledQuery(
-        compiled,
-        tables,
-        this.#tableConfig
-      )
+      inferDependencyHintsFromCompiledQuery(compiled, tables, this.#tableConfig)
     );
     const listener = (
       event: SyncularV2LiveQueryEvent<Record<string, unknown>>
@@ -866,6 +882,19 @@ async function readCrdtYjsExistingRow(args: {
   return result.rows[0] ?? null;
 }
 
+async function readExistingLocalRow(args: {
+  client: Pick<SyncularV2Client, 'executeSql'>;
+  table: string;
+  rowId: string;
+  idColumn: string;
+}): Promise<Record<string, unknown> | null> {
+  const result = await args.client.executeSql(
+    `select * from ${quoteSqlIdentifier(args.table)} where ${quoteSqlIdentifier(args.idColumn)} = ? limit 1`,
+    [args.rowId]
+  );
+  return result.rows[0] ?? null;
+}
+
 function quoteSqlIdentifier(identifier: string): string {
   if (!identifier) throw new Error('SQLite identifier cannot be empty');
   return `"${identifier.replace(/"/g, '""')}"`;
@@ -903,8 +932,16 @@ async function resolveBaseVersion(args: {
   explicit?: number | null;
 }): Promise<number | null> {
   if (args.explicit !== undefined) return coerceBaseVersion(args.explicit);
-  if (!args.versionColumn || !args.options.readBaseVersion) return null;
-  return args.options.readBaseVersion({
+  if (!args.versionColumn) return null;
+  const readBaseVersion =
+    args.options.readBaseVersion ??
+    ((readArgs: {
+      table: string;
+      rowId: string;
+      idColumn: string;
+      versionColumn: string;
+    }) => readCurrentBaseVersion(args.options.client, readArgs));
+  return readBaseVersion({
     table: args.table,
     rowId: args.rowId,
     idColumn: args.idColumn,
@@ -979,8 +1016,18 @@ function primaryKeyEqualityValue(
     return undefined;
   }
   return (
-    equalityValueForReference(node.leftOperand, node.rightOperand, table, primaryKey) ??
-    equalityValueForReference(node.rightOperand, node.leftOperand, table, primaryKey)
+    equalityValueForReference(
+      node.leftOperand,
+      node.rightOperand,
+      table,
+      primaryKey
+    ) ??
+    equalityValueForReference(
+      node.rightOperand,
+      node.leftOperand,
+      table,
+      primaryKey
+    )
   );
 }
 
@@ -1007,7 +1054,10 @@ function referenceMatchesColumn(
   if (!isOperationNode(reference) || reference.kind !== 'ReferenceNode') {
     return false;
   }
-  if (reference.table != null && tableNameFromTableNode(reference.table) !== table) {
+  if (
+    reference.table != null &&
+    tableNameFromTableNode(reference.table) !== table
+  ) {
     return false;
   }
   const columnNode = reference.column;

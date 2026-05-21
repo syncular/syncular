@@ -453,18 +453,17 @@ Track these metrics in production:
 
 ### Client-side monitoring
 
-Use `useSyncStatus` and `useOutbox` to surface metrics:
+Use `useSyncConnection` and `useOutboxStats` to surface client metrics:
 
 ```typescript
-const status = useSyncStatus();
-// status.pendingCount -- unsent mutations
-// status.retryCount -- current retry attempts
-// status.lastSyncAt -- last successful sync
+const connection = useSyncConnection();
+// connection.state.realtime -- websocket state
+// connection.state.pendingRequests -- in-flight client requests
 
-const outbox = useOutbox();
-// outbox.stats.pending -- pending commits
-// outbox.stats.failed -- failed commits
-// outbox.stats.total -- total outbox size
+const outbox = useOutboxStats();
+// outbox?.pending -- pending commits
+// outbox?.failed -- failed commits
+// outbox?.total -- total outbox size
 ```
 
 ## Next Steps

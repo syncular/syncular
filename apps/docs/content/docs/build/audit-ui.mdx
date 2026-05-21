@@ -39,7 +39,7 @@ If you are investigating incidents or operating a live deployment, use the Conso
 ## Recommended building blocks
 
 1. Client push outcomes: `push:result` / `onPushResult`
-2. Conflict stream for UX: `useNewConflicts()` + `useConflicts()`
+2. Conflict counters for UX: `useConflictStats()`
 3. Commit attribution in apply handlers: `commitSeq`, `actorId`, `createdAt`
 4. Scoped API history: `/sync/audit/commits` and `/sync/audit/commits/{commitSeq}`
 
@@ -63,17 +63,19 @@ If you are investigating incidents or operating a live deployment, use the Conso
 </SyncProvider>
 ```
 
-### New conflict notifications
+### Conflict notifications
 
 ```tsx
-const { useNewConflicts } = createSyncularV2React<AppDb>();
+import { createSyncularReact } from '@syncular/client/react';
+
+const { useConflictStats } = createSyncularReact<AppDb>();
 
 function ConflictNotifications() {
-  const { latest } = useNewConflicts();
+  const stats = useConflictStats();
   useEffect(() => {
-    if (!latest) return;
-    showToast(`Conflict on ${latest.table}:${latest.rowId}`);
-  }, [latest]);
+    if (!stats?.unresolved) return;
+    showToast(`${stats.unresolved} conflict(s) need review`);
+  }, [stats?.unresolved]);
   return null;
 }
 ```
