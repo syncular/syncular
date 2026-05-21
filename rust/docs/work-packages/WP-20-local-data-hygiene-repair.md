@@ -1,6 +1,6 @@
 # WP-20 Local Data Hygiene And Repair
 
-Status: `[ ]` planned
+Status: `[~] started`
 
 ## Goal
 
@@ -55,7 +55,32 @@ The roadmap already has verified roots, scoped revocation clearing, artifacts,
 outbox/conflict metadata, blobs, and CRDT system tables. Those pieces need a
 supportable local hygiene story once apps run Syncular in production.
 
+First retained slice:
+
+- Added a stable `LocalHealthReport` / `LocalHealthFinding` schema in the Rust
+  runtime.
+- Added `local_health_check()` and `local_health_check_json()` on the Rust
+  client, plus `localHealthCheckJson()` through the native BoltFFI
+  Swift/Kotlin/Java surface.
+- Current checks are read-only and cover configured subscription state JSON,
+  cursor sentinel validity, table mismatches, verified-root shape, negative root
+  commit sequences, roots ahead of cursors, and roots without stored
+  subscription state.
+- The health report does not echo raw scope JSON or invalid root values.
+- Runtime coverage proves a corrupted persisted verified root is reported with
+  `repairAction: "forceRebootstrap"` without mutating an existing local app
+  row.
+
+Gates:
+
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends local_health_check_reports_corrupted_verified_root_without_mutating_rows --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_binding_scaffold --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings`
+
 ## Next Action
 
-Define a local health-check result schema and add one runtime test that detects
-a corrupted verified root without mutating local rows.
+Extend the health check beyond configured subscriptions: detect orphaned
+verified roots/subscription states, app-schema state mismatches, unresolved
+outbox/conflict hazards, blob reference issues, and CRDT document/log hazards
+with explicit repair actions but no background mutation.

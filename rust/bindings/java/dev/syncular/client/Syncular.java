@@ -999,6 +999,7 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_unregister_query(long handle, byte[] id);
     static native byte[] boltffi_syncular_bolt_client_observed_queries_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_diagnostic_snapshot_json(long handle);
+    static native byte[] boltffi_syncular_bolt_client_local_health_check_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_outbox_summaries_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_conflict_summaries_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_resolve_conflict(long handle, byte[] id, byte[] resolution);

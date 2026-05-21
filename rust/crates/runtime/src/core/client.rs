@@ -1777,6 +1777,14 @@ where
         )?)
     }
 
+    pub fn local_health_check(&mut self) -> Result<crate::health::LocalHealthReport> {
+        crate::health::check_local_health(&mut self.store, DEFAULT_STATE_ID, &self.subscriptions)
+    }
+
+    pub fn local_health_check_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(&self.local_health_check()?)?)
+    }
+
     #[cfg(feature = "native")]
     pub fn bootstrap_status(&mut self) -> Result<BootstrapStatus> {
         self.bootstrap_status_for_phases(0, 1)

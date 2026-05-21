@@ -35,7 +35,9 @@ use syncular_runtime::protocol::{
     ScopeValues, SnapshotChunkRef, SubscriptionResponse, SyncChange, SyncCommit, SyncOperation,
     SyncSnapshot,
 };
-use syncular_runtime::store::{now_ms, DemoTaskStore, SyncStateStore, SyncStore, SyncStoreTx};
+use syncular_runtime::store::{
+    now_ms, DemoTaskStore, SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx, VerifiedRoot,
+};
 use syncular_runtime::transport::{RealtimeEvent, RealtimeTransport, SyncTransport};
 use syncular_runtime::worker::{SyncWorker, SyncWorkerEvent};
 use syncular_testkit::{
@@ -125,6 +127,61 @@ fn diesel_store_applies_sqlite_runtime_pragmas() -> Result<()> {
     assert_eq!(pragmas.foreign_keys, 1);
     assert_eq!(pragmas.busy_timeout, 5_000);
     assert_eq!(pragmas.synchronous, 1);
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn local_health_check_reports_corrupted_verified_root_without_mutating_rows() -> Result<()> {
+    let path = temp_db_path("syncular-health-corrupt-root");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    store.transaction(|tx| {
+        tx.upsert_row("tasks", &task_row("health-task"), None)?;
+        tx.upsert_subscription_state(&SubscriptionState {
+            state_id: "default".to_string(),
+            subscription_id: "sub-tasks".to_string(),
+            table: "tasks".to_string(),
+            scopes_json: serde_json::to_string(&scopes())?,
+            params_json: "{}".to_string(),
+            cursor: 4,
+            bootstrap_state_json: None,
+            status: "active".to_string(),
+        })?;
+        tx.upsert_verified_root(&VerifiedRoot {
+            state_id: "default".to_string(),
+            subscription_id: "sub-tasks".to_string(),
+            partition_id: "default".to_string(),
+            commit_seq: 4,
+            root: "bad-root".to_string(),
+        })
+    })?;
+
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    client.set_subscriptions(vec![SubscriptionSpec {
+        id: "sub-tasks".to_string(),
+        table: "tasks".to_string(),
+        scopes: scopes(),
+        params: serde_json::Map::new(),
+        bootstrap_phase: 0,
+    }])?;
+
+    let report = client.local_health_check()?;
+    assert!(!report.ok);
+    assert_eq!(report.checked_subscriptions, 1);
+    assert_eq!(report.checked_verified_roots, 1);
+    assert!(report.findings.iter().any(|finding| {
+        finding.code == "local.verified_root_invalid_hex"
+            && finding.repair_action
+                == Some(syncular_runtime::health::LocalHealthRepairAction::ForceRebootstrap)
+    }));
+
+    let report_json = client.local_health_check_json()?;
+    assert!(!report_json.contains("bad-root"));
+    assert_eq!(
+        client.current_row_json("tasks", "health-task")?.unwrap()["title"],
+        "Parity task"
+    );
 
     let _ = std::fs::remove_file(path);
     Ok(())
