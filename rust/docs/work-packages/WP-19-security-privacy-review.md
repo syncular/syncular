@@ -62,14 +62,29 @@ explicit security/privacy review and test plan.
 The first threat model draft is now recorded in
 [`SECURITY_PRIVACY_THREAT_MODEL.md`](../reference/SECURITY_PRIVACY_THREAT_MODEL.md).
 
+The first cross-surface server test now proves the same unauthorized
+actor/scope mismatch is denied across pull, scoped snapshot artifact download,
+and realtime wakeups. It covers the Hono server factory, scoped artifact route,
+client cursor/effective-scope state, and websocket connection manager in one
+flow:
+`packages/server-hono/src/__tests__/create-server.test.ts` ->
+`keeps unauthorized scopes denied across pull, realtime, and artifacts`.
+
 ## Next Action
 
-Add one cross-surface auth-boundary test that covers pull, realtime, and
-artifact access for the same unauthorized scope, then use it as the template
-for blob/CRDT/console privacy tests.
+Use the pull/realtime/artifact test shape as the template for the next privacy
+surfaces: blob route denial, CRDT encrypted-field/update denial, console
+partition/detail denial, and diagnostic/debug-bundle redaction.
 
 ## Progress
 
 - Drafted the initial Rust-first security/privacy threat model with protected
   assets, trust boundaries, core invariants, surface-specific threats/controls,
   non-goals, and the required cross-surface test shape.
+- Added the first Hono cross-surface auth-boundary test. Actor `u2` requesting
+  `u1` data gets a revoked pull subscription, cannot download `u1`'s scoped
+  snapshot artifact, and opens realtime with zero scopes so `u1` wakeups are not
+  delivered.
+- Gates run in `packages/server-hono`:
+  `bun test src/__tests__/create-server.test.ts`, `bun test src/__tests__`,
+  and `bun run tsgo`.
