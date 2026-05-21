@@ -408,6 +408,139 @@ mod tests {
     }
 
     #[test]
+    fn rust_client_generated_command_history_undo_redo_uses_mutation_path() {
+        use diesel_tables::TaskRow;
+        use syncular::prelude::SyncularGeneratedMutationsExt;
+
+        let config = SyncularClientConfig {
+            db_path: ":memory:".to_string(),
+            base_url: "http://localhost:9811/api/sync".to_string(),
+            client_id: "client-rust-command-history".to_string(),
+            actor_id: "user-rust".to_string(),
+            project_id: Some("project-rust".to_string()),
+        };
+        let mut client =
+            SyncularClient::open_with_schema(config, generated_app_schema()).expect("open client");
+
+        let inserted = client
+            .mutations()
+            .tasks()
+            .insert(syncular::NewTask::new(
+                "history-task",
+                "command history",
+                "user-rust",
+                Some("project-rust"),
+            ))
+            .expect("seed task");
+
+        client
+            .commit_with_history(|tx| {
+                tx.tasks()
+                    .update(syncular::TaskPatch::new(&inserted.id).completed(1))?;
+                Ok(())
+            })
+            .expect("tracked update");
+        assert!(client
+            .command_history()
+            .can_undo()
+            .expect("can undo after tracked update"));
+
+        let rows: Vec<TaskRow> = client
+            .read(
+                schema::tasks::dsl::tasks
+                    .filter(schema::tasks::dsl::id.eq(&inserted.id))
+                    .select(TaskRow::as_select()),
+            )
+            .expect("read after tracked update");
+        assert_eq!(rows[0].completed, 1);
+
+        let undo = client
+            .command_history()
+            .undo_last()
+            .expect("undo tracked update");
+        assert!(!undo.command_id.is_empty());
+        assert!(!undo.commit.client_commit_id.is_empty());
+        let rows: Vec<TaskRow> = client
+            .read(
+                schema::tasks::dsl::tasks
+                    .filter(schema::tasks::dsl::id.eq(&inserted.id))
+                    .select(TaskRow::as_select()),
+            )
+            .expect("read after undo");
+        assert_eq!(rows[0].completed, 0);
+        assert!(client
+            .command_history()
+            .can_redo()
+            .expect("can redo after undo"));
+
+        let redo = client
+            .command_history()
+            .redo_last()
+            .expect("redo tracked update");
+        assert_eq!(redo.command_id, undo.command_id);
+        let rows: Vec<TaskRow> = client
+            .read(
+                schema::tasks::dsl::tasks
+                    .filter(schema::tasks::dsl::id.eq(&inserted.id))
+                    .select(TaskRow::as_select()),
+            )
+            .expect("read after redo");
+        assert_eq!(rows[0].completed, 1);
+
+        let outbox = client.outbox_summaries().expect("outbox");
+        assert_eq!(outbox.len(), 4);
+    }
+
+    #[test]
+    fn rust_client_generated_command_history_rejects_stale_undo() {
+        use syncular::prelude::SyncularGeneratedMutationsExt;
+
+        let config = SyncularClientConfig {
+            db_path: ":memory:".to_string(),
+            base_url: "http://localhost:9811/api/sync".to_string(),
+            client_id: "client-rust-command-history-conflict".to_string(),
+            actor_id: "user-rust".to_string(),
+            project_id: Some("project-rust".to_string()),
+        };
+        let mut client =
+            SyncularClient::open_with_schema(config, generated_app_schema()).expect("open client");
+
+        client
+            .mutations()
+            .tasks()
+            .insert(syncular::NewTask::new(
+                "history-conflict-task",
+                "command history conflict",
+                "user-rust",
+                Some("project-rust"),
+            ))
+            .expect("seed task");
+        client
+            .commit_with_history(|tx| {
+                tx.tasks()
+                    .update(syncular::TaskPatch::new("history-conflict-task").completed(1))?;
+                Ok(())
+            })
+            .expect("tracked update");
+        client
+            .mutations()
+            .tasks()
+            .update(syncular::TaskPatch::new("history-conflict-task").completed(2))
+            .expect("independent local update");
+
+        let error = client
+            .command_history()
+            .undo_last()
+            .expect_err("stale undo should fail");
+        assert!(error
+            .message_text()
+            .contains("sync.command_history_conflict"));
+
+        let outbox = client.outbox_summaries().expect("outbox");
+        assert_eq!(outbox.len(), 3);
+    }
+
+    #[test]
     fn rust_client_conflicts_have_ergonomic_resolution_helpers() {
         use syncular::prelude::SyncularGeneratedMutationsExt;
 

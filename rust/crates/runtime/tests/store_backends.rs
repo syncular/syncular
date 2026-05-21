@@ -12,6 +12,7 @@ use syncular_runtime::app_schema::{
 use syncular_runtime::binary_snapshot::SnapshotChunkRows;
 use syncular_runtime::client::{SubscriptionSpec, SyncularEncryptedCrdtMutationExecutor};
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
+use syncular_runtime::command_history::{CommandHistoryEntry, CommandHistoryState};
 use syncular_runtime::compaction::{StorageCompactionOptions, StorageCompactionReport};
 use syncular_runtime::crdt_yjs::{
     build_yjs_text_update, yjs_state_vector_base64, BuildYjsTextUpdateArgs, YJS_PAYLOAD_KEY,
@@ -32,9 +33,9 @@ use syncular_runtime::fixtures::todo::{
 };
 use syncular_runtime::limits::DEFAULT_MAX_UNRESOLVED_OUTBOX_COMMITS;
 use syncular_runtime::protocol::{
-    AuthLeaseProvenance, CombinedRequest, CombinedResponse, PullResponse, PushCommitRequest,
-    PushCommitResponse, ScopeValues, SnapshotChunkRef, SubscriptionResponse, SyncChange,
-    SyncCommit, SyncOperation, SyncSnapshot,
+    AuthLeaseProvenance, CombinedRequest, CombinedResponse, MutationReceipt, PullResponse,
+    PushCommitRequest, PushCommitResponse, ScopeValues, SnapshotChunkRef, SubscriptionResponse,
+    SyncChange, SyncCommit, SyncOperation, SyncSnapshot,
 };
 use syncular_runtime::store::{
     now_ms, AuthLeaseRecord, DemoTaskStore, SubscriptionState, SyncStateStore, SyncStore,
@@ -114,6 +115,81 @@ fn diesel_store_rejects_future_local_app_schema_state() -> Result<()> {
     assert!(error
         .message_text()
         .contains("Syncular app schema version mismatch"));
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn diesel_store_persists_command_history_records() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-command-history");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let entries = vec![CommandHistoryEntry {
+        table: "tasks".to_string(),
+        row_id: "command-task".to_string(),
+        before: Some(json!({
+            "id": "command-task",
+            "title": "Before",
+            "server_version": 1,
+        })),
+        after: Some(json!({
+            "id": "command-task",
+            "title": "After",
+            "server_version": 1,
+        })),
+    }];
+    let original_receipt = MutationReceipt {
+        commit_id: "commit-original".to_string(),
+        client_commit_id: "client-original".to_string(),
+    };
+
+    let record = store.record_command_history("default", &entries, &original_receipt)?;
+    assert_eq!(record.mutation_scope, "default");
+    assert_eq!(record.state, CommandHistoryState::Done);
+    assert_eq!(record.entries, entries);
+    assert_eq!(record.client_commit_id, "client-original");
+    assert!(record.undo_client_commit_id.is_none());
+    assert!(record.redo_client_commit_id.is_none());
+
+    let latest_done = store
+        .latest_command_history(CommandHistoryState::Done)?
+        .expect("record should be latest done command");
+    assert_eq!(latest_done.id, record.id);
+    assert_eq!(latest_done.entries, entries);
+
+    let undo_receipt = MutationReceipt {
+        commit_id: "commit-undo".to_string(),
+        client_commit_id: "client-undo".to_string(),
+    };
+    store.mark_command_history(&record.id, CommandHistoryState::Undone, &undo_receipt)?;
+    assert!(store
+        .latest_command_history(CommandHistoryState::Done)?
+        .is_none());
+    let latest_undone = store
+        .latest_command_history(CommandHistoryState::Undone)?
+        .expect("record should be latest undone command");
+    assert_eq!(latest_undone.id, record.id);
+    assert_eq!(
+        latest_undone.undo_client_commit_id.as_deref(),
+        Some("client-undo")
+    );
+
+    let replacement_receipt = MutationReceipt {
+        commit_id: "commit-replacement".to_string(),
+        client_commit_id: "client-replacement".to_string(),
+    };
+    let replacement = store.record_command_history("default", &entries, &replacement_receipt)?;
+    assert_ne!(replacement.id, record.id);
+    assert!(store
+        .latest_command_history(CommandHistoryState::Undone)?
+        .is_none());
+    assert_eq!(
+        store
+            .latest_command_history(CommandHistoryState::Done)?
+            .expect("replacement should be latest done command")
+            .client_commit_id,
+        "client-replacement"
+    );
 
     let _ = std::fs::remove_file(path);
     Ok(())

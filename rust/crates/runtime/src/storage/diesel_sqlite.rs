@@ -8,6 +8,7 @@ use crate::auth_lease_selection::{
 };
 use crate::binary_snapshot::{BinarySnapshotCell, DecodedBinarySnapshotRows, SnapshotChunkRows};
 use crate::client::SubscriptionSpec;
+use crate::command_history::{CommandHistoryEntry, CommandHistoryRecord, CommandHistoryState};
 use crate::compaction::{
     required_compaction_cutoff, tombstone_delete_statements, StorageCompactionOptions,
     StorageCompactionReport,
@@ -75,6 +76,50 @@ struct OutboxCommitRow {
     lease_status_at_enqueue: Option<String>,
     lease_scope_summary_json: Option<String>,
     lease_token: Option<String>,
+}
+
+#[derive(Debug, Clone, QueryableByName)]
+struct CommandHistoryRow {
+    #[diesel(sql_type = Text)]
+    id: String,
+    #[diesel(sql_type = Text)]
+    mutation_scope: String,
+    #[diesel(sql_type = Text)]
+    state: String,
+    #[diesel(sql_type = Text)]
+    entries_json: String,
+    #[diesel(sql_type = Text)]
+    client_commit_id: String,
+    #[diesel(sql_type = Nullable<Text>)]
+    undo_client_commit_id: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    redo_client_commit_id: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    created_at: i64,
+    #[diesel(sql_type = BigInt)]
+    updated_at: i64,
+}
+
+impl TryFrom<CommandHistoryRow> for CommandHistoryRecord {
+    type Error = SyncularError;
+
+    fn try_from(row: CommandHistoryRow) -> Result<Self> {
+        let entries =
+            serde_json::from_str::<Vec<CommandHistoryEntry>>(&row.entries_json).map_err(|err| {
+                SyncularError::storage(err).context("deserialize sync_command_history.entries_json")
+            })?;
+        Ok(Self {
+            id: row.id,
+            mutation_scope: row.mutation_scope,
+            state: CommandHistoryState::try_from(row.state.as_str())?,
+            entries,
+            client_commit_id: row.client_commit_id,
+            undo_client_commit_id: row.undo_client_commit_id,
+            redo_client_commit_id: row.redo_client_commit_id,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+        })
+    }
 }
 
 #[derive(Debug, Clone, QueryableByName)]
@@ -894,6 +939,99 @@ impl DieselSqliteStore {
 
     pub fn read_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {
         current_app_row_json(&mut self.conn, self.app_schema, table, row_id)
+    }
+
+    pub fn record_command_history(
+        &mut self,
+        mutation_scope: &str,
+        entries: &[CommandHistoryEntry],
+        receipt: &MutationReceipt,
+    ) -> Result<CommandHistoryRecord> {
+        let id = Uuid::new_v4().to_string();
+        let entries_json = serde_json::to_string(entries)?;
+        let created_at = now_ms();
+        self.conn
+            .transaction::<CommandHistoryRecord, SyncularError, _>(|conn| {
+                sql_query("delete from sync_command_history where state = 'undone'")
+                    .execute(conn)?;
+                sql_query(
+                    r#"
+                    insert into sync_command_history (
+                        id,
+                        mutation_scope,
+                        state,
+                        entries_json,
+                        client_commit_id,
+                        undo_client_commit_id,
+                        redo_client_commit_id,
+                        created_at,
+                        updated_at
+                    )
+                    values (?1, ?2, 'done', ?3, ?4, null, null, ?5, ?5)
+                    "#,
+                )
+                .bind::<Text, _>(&id)
+                .bind::<Text, _>(mutation_scope)
+                .bind::<Text, _>(&entries_json)
+                .bind::<Text, _>(&receipt.client_commit_id)
+                .bind::<BigInt, _>(created_at)
+                .execute(conn)?;
+                Ok(CommandHistoryRecord {
+                    id,
+                    mutation_scope: mutation_scope.to_string(),
+                    state: CommandHistoryState::Done,
+                    entries: entries.to_vec(),
+                    client_commit_id: receipt.client_commit_id.clone(),
+                    undo_client_commit_id: None,
+                    redo_client_commit_id: None,
+                    created_at,
+                    updated_at: created_at,
+                })
+            })
+    }
+
+    pub fn latest_command_history(
+        &mut self,
+        state: CommandHistoryState,
+    ) -> Result<Option<CommandHistoryRecord>> {
+        sql_query(
+            r#"
+            select id, mutation_scope, state, entries_json, client_commit_id,
+                   undo_client_commit_id, redo_client_commit_id, created_at, updated_at
+            from sync_command_history
+            where state = ?1
+            order by updated_at desc, created_at desc, id desc
+            limit 1
+            "#,
+        )
+        .bind::<Text, _>(state.as_str())
+        .load::<CommandHistoryRow>(&mut self.conn)?
+        .into_iter()
+        .next()
+        .map(CommandHistoryRecord::try_from)
+        .transpose()
+    }
+
+    pub fn mark_command_history(
+        &mut self,
+        id: &str,
+        state: CommandHistoryState,
+        receipt: &MutationReceipt,
+    ) -> Result<()> {
+        let replay_column = match state {
+            CommandHistoryState::Done => "redo_client_commit_id",
+            CommandHistoryState::Undone => "undo_client_commit_id",
+        };
+        let statement = format!(
+            "update sync_command_history set state = ?1, updated_at = ?2, {replay_column} = ?3 where id = ?4"
+        );
+        sql_query(statement)
+            .bind::<Text, _>(state.as_str())
+            .bind::<BigInt, _>(now_ms())
+            .bind::<Text, _>(&receipt.client_commit_id)
+            .bind::<Text, _>(id)
+            .execute(&mut self.conn)?;
+        Ok(())
     }
 
     pub fn read<'query, Q, Row>(&mut self, query: Q) -> Result<Vec<Row>>

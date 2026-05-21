@@ -170,6 +170,10 @@ impl SyncularMutationBatch {
         self.mutations.is_empty()
     }
 
+    pub fn mutations(&self) -> &[PendingSyncularMutation] {
+        &self.mutations
+    }
+
     pub fn into_mutations(self) -> Vec<PendingSyncularMutation> {
         self.mutations
     }
