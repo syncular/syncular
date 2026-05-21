@@ -36,6 +36,8 @@ pub mod encryption;
 pub mod error;
 #[cfg(feature = "demo-todo-fixture")]
 pub mod fixtures;
+#[path = "core/health.rs"]
+pub mod health;
 #[path = "core/limits.rs"]
 pub mod limits;
 #[cfg(feature = "native")]

@@ -718,6 +718,12 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
+    public func localHealthCheckJson() throws -> String {
+        let buf = boltffi_syncular_bolt_client_local_health_check_json(handle)
+        defer { boltffi_free_buf(buf) }
+        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
     public func outboxSummariesJson() throws -> String {
         let buf = boltffi_syncular_bolt_client_outbox_summaries_json(handle)
         defer { boltffi_free_buf(buf) }

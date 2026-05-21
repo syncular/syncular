@@ -1436,6 +1436,15 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
 
     @Throws(FfiException::class)
+    fun localHealthCheckJson(): String {
+        val buf = Native.boltffi_syncular_bolt_client_local_health_check_json(handle)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
     fun outboxSummariesJson(): String {
         val buf = Native.boltffi_syncular_bolt_client_outbox_summaries_json(handle)
             ?: throw FfiException(-1, "Null buffer returned")
@@ -1705,6 +1714,7 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_unregister_query(handle: Long, id: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_observed_queries_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_diagnostic_snapshot_json(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_local_health_check_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_outbox_summaries_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_conflict_summaries_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_resolve_conflict(handle: Long, id: ByteArray, resolution: ByteArray): ByteArray?
