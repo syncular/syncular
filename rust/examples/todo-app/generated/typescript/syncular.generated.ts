@@ -805,8 +805,9 @@ export interface SyncularAppMutations {
   tasks: SyncularGeneratedTableMutations<NewTask, TaskPatch>;
 }
 
-export type SyncularAppDatabase = Omit<SyncularRustSqliteDatabase<SyncularAppDb>, 'mutations'> & {
+export type SyncularAppDatabase = Omit<SyncularRustSqliteDatabase<SyncularAppDb>, 'mutations' | 'leasedMutations'> & {
   mutations: SyncularAppMutations;
+  leasedMutations: SyncularAppMutations;
 };
 export type SyncularAppSubscriptionsOption =
   | false

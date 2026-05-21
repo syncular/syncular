@@ -1606,6 +1606,43 @@ where
         Ok(client_commit_id)
     }
 
+    pub async fn apply_leased_mutation_json(
+        &mut self,
+        operation_json: &str,
+        local_row_json: Option<&str>,
+    ) -> Result<String> {
+        validate_mutation_json_input_size(operation_json, local_row_json)?;
+        let operation: SyncOperation = serde_json::from_str(operation_json)?;
+        let changed_tables = vec![operation.table.clone()];
+        let previous_row = self
+            .store
+            .current_row_json(&operation.table, &operation.row_id)
+            .await?;
+        let local_row = local_row_json.map(serde_json::from_str).transpose()?;
+        let client_commit_id = self
+            .store
+            .apply_mutation_with_active_auth_lease(
+                Some(&self.config.actor_id),
+                now_ms(),
+                operation.clone(),
+                local_row.clone(),
+            )
+            .await?;
+        let changed_rows = sync_changed_row_for_local_operation(
+            self.store.app_schema(),
+            &operation,
+            previous_row.as_ref(),
+            local_row.as_ref(),
+            Some(client_commit_id.clone()),
+        )
+        .into_iter()
+        .collect::<Vec<_>>();
+        self.store
+            .notify_local_tables_changed_with_rows(&changed_tables, &changed_rows)
+            .await?;
+        Ok(client_commit_id)
+    }
+
     pub async fn conflict_summaries(&mut self) -> Result<Vec<ConflictSummary>> {
         self.store.conflict_summaries().await
     }
@@ -2158,6 +2195,7 @@ mod tests {
         SyncSnapshot, COMMIT_INTEGRITY_GENESIS_ROOT, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
         SNAPSHOT_CHUNK_COMPRESSION_GZIP,
     };
+    use crate::store::AuthLeaseRecord;
     use serde_json::{json, Map, Value};
     use std::future::Future;
     use std::pin::Pin;
@@ -2203,6 +2241,88 @@ mod tests {
         let rows = rows.as_array().expect("task rows");
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["id"], "existing-task");
+
+        Ok(())
+    }
+
+    #[test]
+    fn leased_mutation_json_tags_web_memory_outbox() -> Result<()> {
+        let mut store = WebMemoryStore::new();
+        let schema_version = store.app_schema().current_schema_version();
+        let now = now_ms();
+        block_on(
+            store.upsert_auth_lease(AuthLeaseRecord {
+                lease_id: "lease-web-active".to_string(),
+                kid: "test-kid".to_string(),
+                actor_id: "user-rust".to_string(),
+                issued_at_ms: now - 1_000,
+                not_before_ms: now - 1_000,
+                expires_at_ms: now + 60_000,
+                schema_version,
+                payload_json: json!({
+                    "version": 1,
+                    "leaseId": "lease-web-active",
+                    "issuer": "syncular-test",
+                    "audience": "syncular-client",
+                    "actorId": "user-rust",
+                    "schemaVersion": schema_version,
+                    "protocolVersion": 1,
+                    "issuedAtMs": now - 1_000,
+                    "notBeforeMs": now - 1_000,
+                    "expiresAtMs": now + 60_000,
+                    "maxClockSkewMs": 0,
+                    "scopes": [{
+                        "subscriptionId": "sub-tasks",
+                        "table": "tasks",
+                        "values": {},
+                        "operations": ["upsert", "delete"]
+                    }],
+                    "capabilities": {
+                        "allowBlobs": true,
+                        "allowCrdt": true,
+                        "allowEncryptedFields": true
+                    }
+                })
+                .to_string(),
+                token: "lease-token".to_string(),
+                status: "active".to_string(),
+                last_validation_error: None,
+                created_at_ms: now,
+                updated_at_ms: now,
+            }),
+        )?;
+        let transport = PhaseCaptureTransport {
+            requested: Arc::new(Mutex::new(Vec::new())),
+        };
+        let mut client =
+            WebSyncularClient::with_parts(test_config("web-client-lease"), transport, store);
+
+        let operation = json!({
+            "table": "tasks",
+            "row_id": "task-web-lease",
+            "op": "upsert",
+            "payload": { "title": "leased web task" },
+            "base_version": null
+        })
+        .to_string();
+        let local_row = json!({
+            "id": "task-web-lease",
+            "title": "leased web task",
+            "server_version": 0
+        })
+        .to_string();
+        let commit_id = block_on(client.apply_leased_mutation_json(&operation, Some(&local_row)))?;
+        let outbox = block_on(client.store_mut().outbox_summaries())?;
+
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].client_commit_id, commit_id);
+        assert_eq!(
+            outbox[0]
+                .auth_lease
+                .as_ref()
+                .map(|lease| lease.lease_id.as_str()),
+            Some("lease-web-active")
+        );
 
         Ok(())
     }

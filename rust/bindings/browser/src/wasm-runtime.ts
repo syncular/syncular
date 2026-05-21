@@ -42,6 +42,9 @@ export interface RawSyncularV2RustClient {
   repairLocalHealthJson(requestJson: string): Promise<string>;
   resetLocalSyncStateJson(requestJson: string): Promise<string>;
   setAuthHeadersJson(headersJson: string): void;
+  upsertAuthLeaseJson(leaseJson: string): void;
+  authLeaseJson(leaseId: string): string;
+  activeAuthLeasesJson(actorId: string | null, nowMs: number): string;
   setFieldEncryptionJson(configJson: string): void;
   setEncryptedCrdtJson(configJson: string): void;
   setAbortSignal(signal?: AbortSignal | null): void;
@@ -49,8 +52,13 @@ export interface RawSyncularV2RustClient {
     operationJson: string,
     localRowJson?: string | null
   ): Promise<string>;
+  applyLeasedMutationJson(
+    operationJson: string,
+    localRowJson?: string | null
+  ): Promise<string>;
   applyMutationsBatchJson(operationsJson: string): Promise<string>;
   applyMutationsCommitJson(operationsJson: string): Promise<string>;
+  applyLeasedMutationsCommitJson(operationsJson: string): Promise<string>;
   syncPullJson(): Promise<string>;
   applyRealtimeSyncPackBytes(bytes: Uint8Array): Promise<string>;
   syncPushJson(): Promise<string>;

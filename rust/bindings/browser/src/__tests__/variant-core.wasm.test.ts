@@ -11,6 +11,7 @@ import {
 } from '../database';
 import type {
   SyncularV2AppSchema,
+  SyncularV2AuthLeaseRecord,
   SyncularV2RuntimeArtifactCandidate,
   SyncularV2SubscriptionSpec,
 } from '../types';
@@ -180,6 +181,53 @@ describe('Syncular v2 core WASM artifact', () => {
         {
           id: 'task-core',
           title: 'Core artifact task',
+          user_id: 'actor-core',
+          server_version: 0,
+        },
+      ]);
+
+      await expect(
+        syncular.leasedMutations.basic_tasks.insert({
+          id: 'task-core-leased-missing',
+          title: 'Missing leased task',
+          user_id: 'actor-core',
+          server_version: 0,
+        })
+      ).rejects.toThrow('sync.auth_lease_missing');
+      await expect(
+        syncular.db
+          .selectFrom('basic_tasks')
+          .select(['id'])
+          .where('id', '=', 'task-core-leased-missing')
+          .execute()
+      ).resolves.toEqual([]);
+
+      await syncular.client.upsertAuthLease(
+        authLease({
+          leaseId: 'lease-core-active',
+          actorId: 'actor-core',
+          table: 'basic_tasks',
+          values: { user_id: 'actor-core' },
+          operations: ['upsert'],
+          schemaVersion: basicAppSchema.schemaVersion,
+        })
+      );
+      await syncular.leasedMutations.basic_tasks.insert({
+        id: 'task-core-leased',
+        title: 'Core artifact leased task',
+        user_id: 'actor-core',
+        server_version: 0,
+      });
+      await expect(
+        syncular.db
+          .selectFrom('basic_tasks')
+          .select(['id', 'title', 'user_id', 'server_version'])
+          .where('id', '=', 'task-core-leased')
+          .execute()
+      ).resolves.toEqual([
+        {
+          id: 'task-core-leased',
+          title: 'Core artifact leased task',
           user_id: 'actor-core',
           server_version: 0,
         },
@@ -378,6 +426,58 @@ function basicTaskSubscription(actorId: string): SyncularV2SubscriptionSpec {
     table: 'basic_tasks',
     scopes: { user_id: actorId },
     params: {},
+  };
+}
+
+function authLease(args: {
+  leaseId: string;
+  actorId: string;
+  table: string;
+  values: Record<string, string>;
+  operations: string[];
+  schemaVersion: number;
+}): SyncularV2AuthLeaseRecord {
+  const now = Date.now();
+  const expiresAtMs = now + 60_000;
+  return {
+    leaseId: args.leaseId,
+    kid: 'test-kid',
+    actorId: args.actorId,
+    issuedAtMs: now - 1_000,
+    notBeforeMs: now - 1_000,
+    expiresAtMs,
+    schemaVersion: args.schemaVersion,
+    payloadJson: JSON.stringify({
+      version: 1,
+      leaseId: args.leaseId,
+      issuer: 'syncular-test',
+      audience: 'syncular-client',
+      actorId: args.actorId,
+      schemaVersion: args.schemaVersion,
+      protocolVersion: 1,
+      issuedAtMs: now - 1_000,
+      notBeforeMs: now - 1_000,
+      expiresAtMs,
+      maxClockSkewMs: 0,
+      scopes: [
+        {
+          subscriptionId: 'sub-basic-tasks',
+          table: args.table,
+          values: args.values,
+          operations: args.operations,
+        },
+      ],
+      capabilities: {
+        allowBlobs: true,
+        allowCrdt: true,
+        allowEncryptedFields: true,
+      },
+    }),
+    token: `token-${args.leaseId}`,
+    status: 'active',
+    lastValidationError: null,
+    createdAtMs: now,
+    updatedAtMs: now,
   };
 }
 

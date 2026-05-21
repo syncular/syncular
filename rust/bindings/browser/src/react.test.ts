@@ -221,6 +221,7 @@ class FakeManagedClient {
     db: {},
     dialect: {},
     mutations: {},
+    leasedMutations: {},
     blobs: {
       getUploadQueueStats: async () => this.blobStats(),
       processUploadQueue: async () => ({ uploaded: 0, failed: 0 }),

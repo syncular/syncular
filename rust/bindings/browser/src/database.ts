@@ -61,6 +61,7 @@ export interface SyncularV2Database<DB> extends SyncularV2LiveQueries {
   client: SyncularV2Client;
   dialect: SyncularV2Dialect;
   mutations: MutationsApi<DB, undefined>;
+  leasedMutations: MutationsApi<DB, undefined>;
   blobs: SyncularV2Blobs;
   close(): Promise<void>;
 }
@@ -98,7 +99,14 @@ export interface SyncularV2MutationsOptions {
     | 'applyMutationsCommit'
     | 'applyYjsEnvelopeToPayload'
     | 'executeSql'
-  >;
+  > &
+    Partial<
+      Pick<
+        SyncularV2Client,
+        'applyLeasedMutation' | 'applyLeasedMutationsCommit'
+      >
+    >;
+  requireAuthLease?: boolean;
   codecs?: ColumnCodecSource;
   codecDialect?: ColumnCodecDialect;
   idColumn?: string;
@@ -156,6 +164,15 @@ export async function createSyncularV2Database<DB>(
     readBaseVersion: (args) => readCurrentBaseVersion(client, args),
     afterCommit: () => mutationSyncScheduler.schedule(),
   });
+  const leasedMutations = createSyncularV2Mutations<DB>({
+    client,
+    requireAuthLease: true,
+    codecs: options.codecs,
+    codecDialect: 'sqlite',
+    tableConfig: options.tableConfig,
+    readBaseVersion: (args) => readCurrentBaseVersion(client, args),
+    afterCommit: () => mutationSyncScheduler.schedule(),
+  });
   const blobs = createSyncularV2BlobClient(client, {
     afterStore: ({ options }) => {
       if (options?.immediate) return;
@@ -168,6 +185,7 @@ export async function createSyncularV2Database<DB>(
     client,
     dialect,
     mutations,
+    leasedMutations,
     blobs,
     live: (query, liveOptions) => dialect.live(query, liveOptions),
     async close() {
@@ -610,8 +628,11 @@ export function createSyncularV2Commit<DB>(
 
     const result = await fn(tx as MutationsTx<DB>);
     if (operations.length === 0) throw new Error('No mutations were enqueued');
-    const clientCommitId =
-      await options.client.applyMutationsCommit(batch);
+    const clientCommitId = options.requireAuthLease
+      ? await requireLeasedMutationClient(options.client).applyLeasedMutationsCommit(
+          batch
+        )
+      : await options.client.applyMutationsCommit(batch);
     const meta = {
       operations,
       localMutations,
@@ -624,6 +645,24 @@ export function createSyncularV2Commit<DB>(
       meta,
     };
   };
+}
+
+function requireLeasedMutationClient(
+  client: SyncularV2MutationsOptions['client']
+): Required<
+  Pick<SyncularV2Client, 'applyLeasedMutation' | 'applyLeasedMutationsCommit'>
+> {
+  if (typeof client.applyLeasedMutationsCommit !== 'function') {
+    throw new Error(
+      'Syncular leased mutations require applyLeasedMutationsCommit support'
+    );
+  }
+  if (typeof client.applyLeasedMutation !== 'function') {
+    throw new Error('Syncular leased mutations require applyLeasedMutation support');
+  }
+  return client as Required<
+    Pick<SyncularV2Client, 'applyLeasedMutation' | 'applyLeasedMutationsCommit'>
+  >;
 }
 
 class SyncularV2Driver extends BaseSqliteDriver {

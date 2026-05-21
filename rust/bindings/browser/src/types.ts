@@ -71,6 +71,22 @@ export type SyncularV2Storage = 'memory' | 'indexedDb' | 'opfsSahPool';
 
 export type SyncularV2AuthHeaders = Record<string, string>;
 
+export interface SyncularV2AuthLeaseRecord {
+  leaseId: string;
+  kid: string;
+  actorId: string;
+  issuedAtMs: number;
+  notBeforeMs: number;
+  expiresAtMs: number;
+  schemaVersion: number;
+  payloadJson: string;
+  token: string;
+  status: string;
+  lastValidationError?: string | null;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
 export interface SyncularV2FieldEncryptionRule {
   scope: string;
   table?: string;
@@ -1092,6 +1108,12 @@ export interface SyncularV2Blobs {
 
 export interface SyncularV2Client extends SyncularV2SqlClient {
   setAuthHeaders(headers: SyncularV2AuthHeaders): Promise<void>;
+  upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void>;
+  authLease(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null>;
+  activeAuthLeases(
+    actorId?: string | null,
+    nowMs?: number
+  ): Promise<SyncularV2AuthLeaseRecord[]>;
   setFieldEncryption(
     config: SyncularV2FieldEncryptionConfig | null
   ): Promise<void>;
@@ -1105,10 +1127,17 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
     subscriptionIds?: readonly string[]
   ): Promise<number>;
   applyMutation(operation: SyncOperation, localRow?: unknown): Promise<string>;
+  applyLeasedMutation(
+    operation: SyncOperation,
+    localRow?: unknown
+  ): Promise<string>;
   applyMutationsBatch(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string[]>;
   applyMutationsCommit(
+    operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
+  ): Promise<string>;
+  applyLeasedMutationsCommit(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string>;
   syncPull(
