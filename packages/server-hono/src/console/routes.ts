@@ -19,6 +19,8 @@ import {
   createSyncularErrorResponse,
   ErrorResponseSchema,
   logSyncEvent,
+  type ScopeValues,
+  type StoredScopes,
   type SyncularErrorCode,
   sha256Hex,
 } from '@syncular/core';
@@ -103,6 +105,11 @@ import {
   ConsoleRequestPayloadSchema,
   type ConsoleRowHistoryResponse,
   ConsoleRowHistoryResponseSchema,
+  type ConsoleRowInvestigationClient,
+  type ConsoleRowInvestigationFinding,
+  type ConsoleRowInvestigationResponse,
+  ConsoleRowInvestigationResponseSchema,
+  type ConsoleRowInvestigationScopeEligibility,
   type ConsoleTimelineItem,
   ConsoleTimelineItemSchema,
   ConsoleTimelineQuerySchema,
@@ -232,6 +239,56 @@ function parseScopesSummary(
   }
 
   return Object.keys(summary).length > 0 ? summary : null;
+}
+
+function scopeValueCovers(
+  allowed: ScopeValues[string] | undefined,
+  rowValue: string | undefined
+): boolean {
+  if (!rowValue || allowed === undefined) return false;
+  const allowedValues = Array.isArray(allowed) ? allowed : [allowed];
+  return allowedValues.includes('*') || allowedValues.includes(rowValue);
+}
+
+function assessScopeEligibility(args: {
+  rowScopes: StoredScopes | null;
+  clientScopes: ScopeValues | null;
+}): ConsoleRowInvestigationScopeEligibility {
+  if (!args.clientScopes) {
+    return {
+      status: 'no_client',
+      requiredScopeKeys: [],
+      matchedScopeKeys: [],
+      missingScopeKeys: [],
+    };
+  }
+  if (!args.rowScopes || Object.keys(args.rowScopes).length === 0) {
+    return {
+      status: 'unknown',
+      requiredScopeKeys: [],
+      matchedScopeKeys: [],
+      missingScopeKeys: [],
+    };
+  }
+
+  const requiredScopeKeys = Object.keys(args.rowScopes).sort();
+  const matchedScopeKeys: string[] = [];
+  const missingScopeKeys: string[] = [];
+
+  for (const key of requiredScopeKeys) {
+    if (scopeValueCovers(args.clientScopes[key], args.rowScopes[key])) {
+      matchedScopeKeys.push(key);
+      continue;
+    }
+    missingScopeKeys.push(key);
+  }
+
+  return {
+    status: missingScopeKeys.length === 0 ? 'eligible' : 'not_eligible',
+    requiredScopeKeys,
+    matchedScopeKeys,
+    missingScopeKeys,
+  };
 }
 
 function normalizeRequestEventType(value: unknown): 'sync' | 'push' | 'pull' {
@@ -416,11 +473,12 @@ const eventsQuerySchema = ConsolePartitionedPaginationQuerySchema.extend({
 });
 
 const commitDetailQuerySchema = ConsolePartitionQuerySchema;
-const rowHistoryQuerySchema = ConsolePartitionQuerySchema.extend({
+const rowHistoryQueryBaseSchema = ConsolePartitionQuerySchema.extend({
   limit: z.coerce.number().int().min(1).max(200).default(50),
   beforeCommitSeq: z.coerce.number().int().min(1).optional(),
   afterCommitSeq: z.coerce.number().int().min(1).optional(),
-}).refine(
+});
+const rowHistoryQuerySchema = rowHistoryQueryBaseSchema.refine(
   (query) =>
     query.beforeCommitSeq === undefined ||
     query.afterCommitSeq === undefined ||
@@ -430,6 +488,20 @@ const rowHistoryQuerySchema = ConsolePartitionQuerySchema.extend({
     path: ['afterCommitSeq'],
   }
 );
+const rowInvestigationQuerySchema = rowHistoryQueryBaseSchema
+  .extend({
+    clientId: z.string().min(1).optional(),
+  })
+  .refine(
+    (query) =>
+      query.beforeCommitSeq === undefined ||
+      query.afterCommitSeq === undefined ||
+      query.afterCommitSeq < query.beforeCommitSeq,
+    {
+      message: 'afterCommitSeq must be lower than beforeCommitSeq',
+      path: ['afterCommitSeq'],
+    }
+  );
 const debugExportQuerySchema = ConsolePartitionQuerySchema.extend({
   limitCommits: z.coerce.number().int().min(1).max(200).default(50),
   limitEvents: z.coerce.number().int().min(1).max(500).default(100),
@@ -2059,6 +2131,289 @@ export function createConsoleRoutes<
             traceIds: links ? Array.from(links.traceIds) : [],
           };
         }),
+        nextCursor,
+      };
+
+      return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /row-investigation/:table/:rowId
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/row-investigation/:table/:rowId',
+    describeConsoleRoute({
+      summary: 'Investigate row visibility',
+      responses: {
+        200: {
+          description: 'Redacted row investigation with client/event hints',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleRowInvestigationResponseSchema),
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('param', rowHistoryParamSchema),
+    zValidator('query', rowInvestigationQuerySchema),
+    async (c) => {
+      const { table, rowId } = c.req.valid('param');
+      const {
+        partitionId: requestedPartitionId,
+        clientId,
+        limit,
+        beforeCommitSeq,
+        afterCommitSeq,
+      } = c.req.valid('query');
+      const partitionId = requestedPartitionId ?? 'default';
+
+      const rows = await options.dialect.readAuditRowHistory(
+        options.db as unknown as Kysely<SyncCoreDb>,
+        {
+          partitionId,
+          table,
+          rowId,
+          scopes: {},
+          limit,
+          beforeCommitSeq,
+          afterCommitSeq,
+        }
+      );
+
+      const hasMore = rows.length > limit;
+      const selectedRows = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore
+        ? Number(selectedRows[selectedRows.length - 1]?.commit_seq ?? 0)
+        : null;
+      const commitSeqs = Array.from(
+        new Set(selectedRows.map((row) => Number(row.commit_seq)))
+      );
+
+      const eventLinkRows =
+        commitSeqs.length > 0
+          ? await db
+              .selectFrom('sync_request_events')
+              .select(['event_id', 'commit_seq', 'request_id', 'trace_id'])
+              .where('partition_id', '=', partitionId)
+              .where('commit_seq', 'in', commitSeqs)
+              .orderBy('event_id', 'asc')
+              .execute()
+          : [];
+      const eventLinksByCommitSeq = new Map<
+        number,
+        {
+          eventIds: Set<number>;
+          requestIds: Set<string>;
+          traceIds: Set<string>;
+        }
+      >();
+      for (const row of eventLinkRows) {
+        const commitSeq = coerceNumber(row.commit_seq);
+        if (commitSeq === null) continue;
+        const links = eventLinksByCommitSeq.get(commitSeq) ?? {
+          eventIds: new Set<number>(),
+          requestIds: new Set<string>(),
+          traceIds: new Set<string>(),
+        };
+        const eventId = coerceNumber(row.event_id);
+        if (eventId !== null) links.eventIds.add(eventId);
+        if (row.request_id) links.requestIds.add(row.request_id);
+        if (row.trace_id) links.traceIds.add(row.trace_id);
+        eventLinksByCommitSeq.set(commitSeq, links);
+      }
+
+      const history = selectedRows.map((row) => {
+        const commitSeq = Number(row.commit_seq);
+        const links = eventLinksByCommitSeq.get(commitSeq);
+        const summary = summarizeAuditChange({
+          table: row.table,
+          op: row.op,
+          rowJson: row.row_json,
+          scopes: row.scopes,
+        });
+        return {
+          commitSeq,
+          actorId: row.actor_id,
+          clientId: row.client_id,
+          clientCommitId: row.client_commit_id,
+          createdAt: row.created_at,
+          changeId: Number(row.change_id),
+          table: row.table,
+          rowId: row.row_id,
+          op: row.op,
+          rowVersion: row.row_version === null ? null : Number(row.row_version),
+          ...summary,
+          requestEventIds: links ? Array.from(links.eventIds) : [],
+          requestIds: links ? Array.from(links.requestIds) : [],
+          traceIds: links ? Array.from(links.traceIds) : [],
+        };
+      });
+
+      const latestRow = selectedRows[0] ?? null;
+      const latestCommitSeq = latestRow
+        ? (coerceNumber(latestRow.commit_seq) ?? 0)
+        : null;
+      const latestOp =
+        latestRow?.op === 'delete' || latestRow?.op === 'upsert'
+          ? latestRow.op
+          : null;
+
+      const clientRow = clientId
+        ? await db
+            .selectFrom('sync_client_cursors')
+            .select([
+              'client_id',
+              'actor_id',
+              'cursor',
+              'effective_scopes',
+              'updated_at',
+            ])
+            .where('partition_id', '=', partitionId)
+            .where('client_id', '=', clientId)
+            .executeTakeFirst()
+        : null;
+
+      const eventRows = await db
+        .selectFrom('sync_request_events')
+        .select(requestEventSelectColumns)
+        .where('partition_id', '=', partitionId)
+        .$if(Boolean(clientId), (query) =>
+          query.where('client_id', '=', clientId ?? '')
+        )
+        .orderBy('created_at', 'desc')
+        .limit(Math.min(Math.max(limit * 5, 25), 200))
+        .execute();
+      const relevantEvents = eventRows
+        .map((row) => mapRequestEvent(row))
+        .filter((event) => (event.tables ?? []).includes(table))
+        .slice(0, limit);
+
+      const latestClientEvent = relevantEvents.find(
+        (event) => !clientId || event.clientId === clientId
+      );
+      const clientScopes = clientRow
+        ? (options.dialect.dbToScopes(
+            clientRow.effective_scopes
+          ) as ScopeValues)
+        : null;
+      const latestRowScopes = latestRow
+        ? options.dialect.dbToScopes(latestRow.scopes)
+        : null;
+      const client: ConsoleRowInvestigationClient | null = clientRow
+        ? {
+            clientId: clientRow.client_id ?? '',
+            actorId: clientRow.actor_id ?? '',
+            cursor: coerceNumber(clientRow.cursor) ?? 0,
+            effectiveScopeKeys: Object.keys(clientScopes ?? {}).sort(),
+            updatedAt: clientRow.updated_at ?? '',
+            lastRequestAt: latestClientEvent?.createdAt ?? null,
+            lastRequestType: latestClientEvent?.eventType ?? null,
+            lastRequestOutcome: latestClientEvent?.outcome ?? null,
+          }
+        : null;
+
+      const scopeEligibility = assessScopeEligibility({
+        rowScopes: latestRowScopes,
+        clientScopes,
+      });
+      const findings: ConsoleRowInvestigationFinding[] = [];
+      if (!latestRow) {
+        findings.push({
+          severity: 'warning',
+          code: 'row.not_found',
+          message:
+            'No audit entry exists for this table and row in the selected partition.',
+        });
+      }
+      if (!clientId) {
+        findings.push({
+          severity: 'info',
+          code: 'client.not_selected',
+          message:
+            'Provide a client id to check cursor position and scope eligibility.',
+        });
+      } else if (!client) {
+        findings.push({
+          severity: 'warning',
+          code: 'client.not_found',
+          message:
+            'No client cursor exists for this client in the selected partition.',
+        });
+      }
+      if (latestOp === 'delete') {
+        findings.push({
+          severity: 'warning',
+          code: 'row.deleted',
+          message: 'The latest recorded operation for this row is a delete.',
+        });
+      }
+      if (
+        client &&
+        latestCommitSeq !== null &&
+        client.cursor < latestCommitSeq
+      ) {
+        findings.push({
+          severity: 'warning',
+          code: 'client.cursor_behind',
+          message:
+            'The client cursor is behind the latest row commit, so the row may not have been pulled yet.',
+        });
+      }
+      if (scopeEligibility.status === 'not_eligible') {
+        findings.push({
+          severity: 'warning',
+          code: 'scope.not_eligible',
+          message:
+            'The client effective scopes do not cover the latest row scopes.',
+        });
+      }
+      if (relevantEvents.length === 0) {
+        findings.push({
+          severity: 'info',
+          code: 'events.none_for_table',
+          message:
+            'No recent request events mention this table for the selected filters.',
+        });
+      } else if (
+        latestClientEvent &&
+        latestClientEvent.responseStatus !== 'success'
+      ) {
+        findings.push({
+          severity: 'warning',
+          code: 'events.latest_not_success',
+          message:
+            'The latest relevant request event did not complete successfully.',
+        });
+      }
+
+      const response: ConsoleRowInvestigationResponse = {
+        table,
+        rowId,
+        partitionId,
+        clientId: clientId ?? null,
+        rowKnown: history.length > 0,
+        latestCommitSeq,
+        latestOp,
+        client,
+        scopeEligibility,
+        history,
+        relevantEvents,
+        findings,
         nextCursor,
       };
 

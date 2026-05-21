@@ -487,13 +487,18 @@ read-only review:
     `i64` timestamps correctly. No local WP-11 implementation slice remains for
     the current Rust-client foundation; future Rust server or edge-proxy work is
     deferred until there is a concrete product target.
-- `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
+- `[~]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus
     schema-mismatch smokes, so app suites can assert stable diagnostic contracts
     without parsing messages. Runtime/browser/native/support-bundle
-    observability is complete enough for the current Rust-client foundation; the
-    remaining large piece is deferred console investigation UI/drilldowns.
+    observability is complete enough for the current Rust-client foundation.
+    The first console row investigation drilldown is now in place with redacted
+    audit history, optional client cursor/scope-key coverage, relevant request
+    events, stable finding codes, generated OpenAPI types/docs, and a console
+    `/investigate/row/:table/:rowId` page. Remaining drilldown work should add
+    stronger subscription/recovery evidence only when the server persists that
+    metadata explicitly.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
 - `[x]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
   - Browser worker error payloads now carry stable public error `code`,

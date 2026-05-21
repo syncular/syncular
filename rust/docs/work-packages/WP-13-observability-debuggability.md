@@ -1,6 +1,6 @@
 # WP-13 Observability And Debuggability
 
-Status: `[!]` deferred console drilldowns
+Status: `[~] console drilldowns in progress`
 
 ## Goal
 
@@ -180,9 +180,17 @@ First-slice correlation work is complete enough for the current runtime/API
 surface. Runtime, browser, native, support-bundle, health-check, and testkit
 diagnostic helpers are in place.
 
-Next: move to the console investigation UI work only when we are ready to add
-dedicated diagnostic drilldowns. Until then, treat WP-13 as deferred rather
-than active local Rust-client work.
+The first dedicated console drilldown is now in place:
+`GET /console/row-investigation/:table/:rowId` plus the console
+`/investigate/row/:table/:rowId` page. It can answer the initial
+`clientId + table + rowId` visibility question from redacted audit history,
+client cursor/scope-key metadata, relevant request events, and stable finding
+codes without storing or exposing row payloads.
+
+Next: extend the row investigation view with stronger subscription/recovery
+evidence as the server persists more structured pull-subscription diagnostics.
+Do not infer missing-row causes from app tables or add payload capture by
+default.
 
 ## Progress
 
@@ -243,8 +251,17 @@ than active local Rust-client work.
   React Native, Expo, and the shared TypeScript bridge testkit so platform
   clients can consume the canonical redacted snapshot shape without rebuilding
   diagnostic state in TypeScript.
-- Deferred: the remaining acceptance gap is dedicated console investigation
-  UI/drilldowns. That is a product/UI work item, not a missing Rust runtime,
-  native binding, or testkit foundation slice.
+- Added the first dedicated row investigation console API and UI. The server
+  returns redacted history, latest row op/commit, optional client cursor and
+  scope-key coverage, relevant request events, stable finding codes, and
+  no row payload or scope values. The console page links from commit change
+  rows and exposes `/investigate/row/:table/:rowId` for direct debugging.
+- Generated OpenAPI types/docs for the row investigation endpoint so the
+  console consumes it through the normal transport contract.
+- Gates:
+  `bun test packages/server-hono/src/__tests__/console-routes.test.ts`,
+  `bun test packages/server-hono/src/__tests__/create-server.test.ts`, and
+  `bun run --cwd packages/console tsgo` passed after the row-investigation
+  slice.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
   passed with `33` smoke tests after the diagnostic assertion slice.
