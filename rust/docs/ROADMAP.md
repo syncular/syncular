@@ -339,10 +339,10 @@ read-only review:
 
 ## Next
 
-- Start [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
-  with a narrow design and first runtime/browser generated-client proof:
-  command-level undo/redo must emit new mutations through the normal outbox
-  path and must not rewrite commits, cursors, verified roots, or audit history.
+- Continue [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
+  beyond the retained browser TypeScript first slice. The next work should add
+  native/Rust storage/API parity, create/delete/batch coverage, and explicit
+  rejection rules for unsafe blob, encrypted-field, and CRDT-field inverses.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when real integration feedback exposes remaining app-flow doc gaps or
   naming friction.
@@ -707,7 +707,15 @@ read-only review:
     automatic field-level inference from query-builder ASTs remains a deferred
     ergonomics/performance follow-up; runtime behavior is conservative without
     it.
-- `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
+- `[~]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
+  - Browser TypeScript generated clients now expose `database.commandHistory`
+    and wrap generated regular/leased mutations with command-history capture.
+    Command groups persist before/after row snapshots in local SQLite and
+    undo/redo replays snapshots through the normal mutation/outbox path. The
+    first generated-client proof covers `update -> undo -> redo`, verifies
+    three ordinary mutation intents, and verifies stale-row undo fails with
+    `sync.command_history_conflict`. Native/Rust parity and broader operation
+    coverage remain.
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)

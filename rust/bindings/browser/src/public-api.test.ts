@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   createSyncularV2Client,
+  createSyncularV2CommandHistory,
   createSyncularRustSqliteDatabase,
   createSyncularV2Database,
   getSyncularV2PackagedRuntimeArtifacts,
@@ -12,6 +13,7 @@ import {
   SYNCULAR_V2_WASM_ARTIFACT_FILE,
   SYNCULAR_V2_WASM_BINARY_FILE,
   SYNCULAR_V2_WASM_GLUE_FILE,
+  SyncularV2CommandHistoryError,
 } from './index';
 
 describe('@syncular/client-rust public API', () => {
@@ -46,6 +48,11 @@ describe('@syncular/client-rust public API', () => {
 
   it('exports the managed browser client constructor', () => {
     expect(typeof createSyncularV2Client).toBe('function');
+  });
+
+  it('exports generated command-history helpers', () => {
+    expect(typeof createSyncularV2CommandHistory).toBe('function');
+    expect(typeof SyncularV2CommandHistoryError).toBe('function');
   });
 
   it('defaults generated app storage to OPFS SAH', () => {

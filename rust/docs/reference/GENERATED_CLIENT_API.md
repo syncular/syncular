@@ -161,6 +161,27 @@ await database.mutations.tasks.insert({
 await database.mutations.tasks.update('task-1', { completed: 1 });
 ```
 
+Generated browser clients also expose command-level undo/redo. Command history
+records generated mutation groups and replays inverses as new normal mutation
+intents through the same outbox path:
+
+```ts
+await database.mutations.tasks.update('task-1', { completed: 1 });
+
+const undo = await database.commandHistory.undoLast();
+console.log(undo.clientCommitId);
+
+const redo = await database.commandHistory.redoLast();
+console.log(redo.clientCommitId);
+```
+
+Undo/redo is not a SQLite rollback and does not rewrite server commits,
+cursors, verified roots, or audit history. If the current row no longer matches
+the recorded command snapshot, the generated client fails with
+`sync.command_history_conflict` and the app should refresh or show conflict UI.
+CRDT/editor-specific undo stacks remain app-layer; Syncular command history is
+for generated mutation intent.
+
 Strict offline writes use the same generated mutation API through
 `leasedMutations`. Request and store a signed active lease first; if no
 covering active lease exists, the runtime rejects the write and rolls back the
