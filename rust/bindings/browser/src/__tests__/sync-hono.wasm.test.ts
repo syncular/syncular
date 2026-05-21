@@ -2728,6 +2728,88 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       syncConformance.blob.browserText
     );
     await expect(reader.blobs.isLocal(image.hash)).resolves.toBe(true);
+
+    const blobEvents: Array<
+      SyncularV2LiveQueryEvent<{ id: string; image: unknown }>
+    > = [];
+    const live = await reader.dialect.live(
+      reader.db
+        .selectFrom('tasks')
+        .select(['id', 'image'])
+        .where('id', '=', scenario.task.id),
+      {
+        onChange(rows, event) {
+          blobEvents.push({ ...event, rows });
+        },
+      }
+    );
+    try {
+      expect(blobEvents).toHaveLength(1);
+      expect(blobEvents[0]).toMatchObject({
+        initial: true,
+        rows: [{ id: scenario.task.id, image: expect.anything() }],
+      });
+
+      const updatedImage = await source.blobs.store(
+        new TextEncoder().encode(`${syncConformance.blob.browserText} updated`),
+        { mimeType: syncConformance.blob.textMimeType }
+      );
+      await expect(source.blobs.processUploadQueue()).resolves.toEqual(
+        syncConformance.blob.expectedProcessUploaded
+      );
+      await source.client.applyMutation(
+        {
+          table: 'tasks',
+          row_id: scenario.task.id,
+          op: 'upsert',
+          payload: {
+            title: scenario.task.title,
+            completed: 0,
+            user_id: ACTOR_A,
+            image: updatedImage,
+          },
+          base_version: 1,
+        },
+        {
+          id: scenario.task.id,
+          title: scenario.task.title,
+          completed: 0,
+          user_id: ACTOR_A,
+          project_id: null,
+          server_version: 1,
+          image: updatedImage,
+          title_yjs_state: null,
+        }
+      );
+      await expect(source.client.syncPush()).resolves.toMatchObject({
+        pushedCommits: 1,
+      });
+      await reader.client.syncPull();
+
+      expect(blobEvents).toHaveLength(2);
+      expect(blobEvents[1]).toMatchObject({
+        initial: false,
+        rows: [{ id: scenario.task.id, image: expect.anything() }],
+        changedRows: [
+          expect.objectContaining({
+            table: 'tasks',
+            rowId: scenario.task.id,
+            changedFields: expect.arrayContaining(['image']),
+          }),
+        ],
+      });
+      await expect(liveQueryDiagnostics(reader.client)).resolves.toMatchObject({
+        queries: [
+          {
+            dependencyHintCount: 1,
+            rerunCount: 1,
+            emittedEventCount: 1,
+          },
+        ],
+      });
+    } finally {
+      await live.unsubscribe();
+    }
   });
 
   it('applies a generated app server-merge CRDT field through the Rust WASM worker', async () => {

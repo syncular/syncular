@@ -91,6 +91,9 @@ First retained slice:
   query now observes a local CRDT text-field write, reruns once for the matching
   row, emits the materialized `title` and `title_yjs_state`, and carries CRDT
   field metadata in `changedRows`.
+- Extended blob metadata coverage: a hinted browser live query now stays open
+  across a synced BlobRef column update and proves the remote pull emits a
+  query refresh with `changedFields` containing `image`.
 
 Native gates:
 
@@ -155,6 +158,16 @@ bun test --cwd rust/bindings/browser \
 
 Result: passed. No benchmark was rerun for this test-only coverage slice.
 
+Blob metadata gate:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+bun test --cwd rust/bindings/browser \
+  src/__tests__/sync-hono.wasm.test.ts -t "syncs generated BlobRef"
+```
+
+Result: passed. No benchmark was rerun for this test-only coverage slice.
+
 ## Next Action
 
-Extend precision coverage to conflicts and blob metadata updates.
+Extend precision coverage to conflict creation and resolution.
