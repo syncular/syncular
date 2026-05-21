@@ -134,36 +134,83 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       expect.objectContaining({ id: scenario.seedTask.id, user_id: ACTOR_A })
     );
 
-    await client.setSubscriptions([
-      taskSubscription({ actorId: scenario.revokedActorId }),
-    ]);
-    const result = await client.syncOnce();
+    const dialect = createSyncularV2Dialect(client, {
+      appTables: syncularGeneratedAppSchema.tables.map((table) => table.name),
+      tableConfig: syncularGeneratedTableConfig,
+    });
+    const db = new Kysely<SyncularAppDb>({ dialect });
+    const liveEvents: Array<
+      SyncularV2LiveQueryEvent<{ id: string; title: string }>
+    > = [];
 
-    expect(result.subscriptions[0]).toMatchObject({
-      id: syncConformance.subscription.id,
-      table: syncConformance.subscription.table,
-      status: scenario.expectedStatus,
-      scopes: scenario.expectedScopes,
-    });
-    expect(diagnostics).toContainEqual(
-      expect.objectContaining({
-        code: 'sync.scope_revoked',
-        details: expect.objectContaining({
-          revokedSubscriptionIds: [syncConformance.subscription.id],
-          revokedSubscriptionCount: 1,
+    try {
+      await dialect.live(
+        db
+          .selectFrom('tasks')
+          .select(['id', 'title'])
+          .where('id', '=', scenario.seedTask.id),
+        {
+          onChange(rows, event) {
+            liveEvents.push({ ...event, rows });
+          },
+        }
+      );
+      expect(liveEvents).toHaveLength(1);
+      expect(liveEvents[0]).toMatchObject({
+        initial: true,
+        rows: [{ id: scenario.seedTask.id, title: scenario.seedTask.title }],
+      });
+
+      await client.setSubscriptions([
+        taskSubscription({ actorId: scenario.revokedActorId }),
+      ]);
+      const result = await client.syncOnce();
+
+      expect(result.subscriptions[0]).toMatchObject({
+        id: syncConformance.subscription.id,
+        table: syncConformance.subscription.table,
+        status: scenario.expectedStatus,
+        scopes: scenario.expectedScopes,
+      });
+      expect(diagnostics).toContainEqual(
+        expect.objectContaining({
+          code: 'sync.scope_revoked',
+          details: expect.objectContaining({
+            revokedSubscriptionIds: [syncConformance.subscription.id],
+            revokedSubscriptionCount: 1,
+          }),
+        })
+      );
+      const revokedLifecycle = await waitForLifecycle(
+        lifecycleEvents,
+        (event) => event.lastDiagnostic?.code === 'sync.scope_revoked'
+      );
+      expect(revokedLifecycle).toMatchObject({
+        lastDiagnostic: expect.objectContaining({
+          code: 'sync.scope_revoked',
         }),
-      })
-    );
-    const revokedLifecycle = await waitForLifecycle(
-      lifecycleEvents,
-      (event) => event.lastDiagnostic?.code === 'sync.scope_revoked'
-    );
-    expect(revokedLifecycle).toMatchObject({
-      lastDiagnostic: expect.objectContaining({
-        code: 'sync.scope_revoked',
-      }),
-    });
-    await expect(client.listTable('tasks')).resolves.toEqual([]);
+      });
+      await expect(client.listTable('tasks')).resolves.toEqual([]);
+      expect(liveEvents).toHaveLength(2);
+      expect(liveEvents[1]).toMatchObject({
+        initial: false,
+        rows: [],
+        changedRows: [],
+      });
+      await expect(liveQueryDiagnostics(client)).resolves.toMatchObject({
+        queries: [
+          {
+            dependencyHintCount: 1,
+            skippedRerunCount: 0,
+            rerunCount: 1,
+            emittedEventCount: 1,
+          },
+        ],
+      });
+    } finally {
+      await dialect.destroyLiveQueries();
+      await db.destroy();
+    }
   });
 
   it('refreshes auth headers after a rejected sync request', async () => {

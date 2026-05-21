@@ -599,8 +599,10 @@ read-only review:
     when complete changed-row metadata proves the query cannot be affected. A
     Hono/WASM regression plus live-query diagnostics counters now prove hinted
     primary-key queries skip actual reruns for unrelated row churn, with the
-    browser realtime guardrail still neutral. Next: extend precision coverage
-    to scope clears, conflicts, CRDT materialization, and blob metadata.
+    browser realtime guardrail still neutral. Scope-revocation coverage now
+    proves table-only scoped clearing reruns hinted live queries and emits the
+    empty result. Next: extend precision coverage to conflicts, CRDT
+    materialization, and blob metadata.
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
