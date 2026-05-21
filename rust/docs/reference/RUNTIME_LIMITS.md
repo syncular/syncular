@@ -19,6 +19,12 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
 | `pullLimitSnapshotRows` | 50000 | Client-requested snapshot rows per page |
 | `pullMaxSnapshotPages` | 10 | Client-requested snapshot pages per pull |
 | `outboxPushBatchLimit` | 20 | Pending outbox commits loaded for one push round |
+| `maxSyncRetries` | 5 | Maximum retry attempts for one outbox commit before it becomes failed |
+| `syncSendingTimeoutMs` | 30000 | Stale `sending` outbox age before it is requeued or failed |
+| `maxBlobUploadRetries` | 3 | Maximum retry attempts for one queued blob upload before it becomes failed |
+| `blobUploadStaleTimeoutMs` | 30000 | Stale `uploading` blob age before it is requeued or failed |
+| `blobUploadBatchLimit` | 10 | Pending blob uploads processed in one queue-drain call |
+| `sqliteBusyTimeoutMs` | 5000 | SQLite busy timeout applied to native Diesel SQLite connections |
 | `crdtStateVectorHintLimit` | 256 | CRDT state-vector hints included in a pull request |
 | `crdtUpdateQueueCapacity` | 1024 | Pending server-merge CRDT updates per document before local writes fail |
 | `crdtUpdateLogDefaultLimit` | 100 | Default CRDT update-log rows returned by host APIs |
@@ -91,8 +97,9 @@ routes: ... })` and return `runtime.limit_exceeded` envelopes when exceeded.
   decompressed payloads before hash/decode/apply work where possible.
 - Realtime websocket text frames and browser realtime sync-pack bytes are
   bounded with stable limit errors.
-- Blob upload retries and sync retries are bounded by the runtime store
-  constants and should become public limit fields in a later WP-18 slice.
+- Blob upload retries, sync retries, stale sending/uploading timeouts, blob
+  upload processing batch size, and SQLite busy timeout are public native
+  runtime limits.
 
 ## Rules
 

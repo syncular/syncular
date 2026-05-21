@@ -61,6 +61,12 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
         64
     );
     assert_eq!(manifest["limits"]["pullLimitSnapshotRows"], 50_000);
+    assert_eq!(manifest["limits"]["maxSyncRetries"], 5);
+    assert_eq!(manifest["limits"]["syncSendingTimeoutMs"], 30_000);
+    assert_eq!(manifest["limits"]["maxBlobUploadRetries"], 3);
+    assert_eq!(manifest["limits"]["blobUploadBatchLimit"], 10);
+    assert_eq!(manifest["limits"]["blobUploadStaleTimeoutMs"], 30_000);
+    assert_eq!(manifest["limits"]["sqliteBusyTimeoutMs"], 5_000);
     assert_eq!(manifest["app_tables"].as_array().map(Vec::len), Some(0));
     assert_eq!(
         manifest["app_table_metadata"].as_array().map(Vec::len),

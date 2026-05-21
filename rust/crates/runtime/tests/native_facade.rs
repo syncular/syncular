@@ -2007,6 +2007,10 @@ fn native_facade_exposes_redacted_diagnostic_snapshot() -> Result<()> {
     assert_eq!(snapshot["limits"]["workerCommandQueueCapacity"], 1024);
     assert_eq!(snapshot["limits"]["nativeRecentEventLimit"], 100);
     assert_eq!(snapshot["limits"]["pullLimitCommits"], 1000);
+    assert_eq!(snapshot["limits"]["maxSyncRetries"], 5);
+    assert_eq!(snapshot["limits"]["maxBlobUploadRetries"], 3);
+    assert_eq!(snapshot["limits"]["blobUploadBatchLimit"], 10);
+    assert_eq!(snapshot["limits"]["sqliteBusyTimeoutMs"], 5_000);
     assert_eq!(snapshot["runtime"]["limits"], snapshot["limits"]);
 
     assert_eq!(snapshot["subscriptions"].as_array().map(Vec::len), Some(1));

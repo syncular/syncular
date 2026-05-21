@@ -1,5 +1,10 @@
 use serde::Serialize;
 
+use crate::store::{
+    BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES, MAX_SYNC_RETRIES,
+    SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
+};
+
 pub const DEFAULT_WORKER_COMMAND_QUEUE_CAPACITY: usize = 1024;
 pub const DEFAULT_WORKER_EVENT_QUEUE_CAPACITY: usize = 1024;
 pub const DEFAULT_NATIVE_EVENT_STREAM_CAPACITY: usize = 256;
@@ -10,6 +15,7 @@ pub const DEFAULT_PULL_LIMIT_COMMITS: i64 = 1000;
 pub const DEFAULT_PULL_LIMIT_SNAPSHOT_ROWS: i64 = 50_000;
 pub const DEFAULT_PULL_MAX_SNAPSHOT_PAGES: i64 = 10;
 pub const DEFAULT_OUTBOX_PUSH_BATCH_LIMIT: i64 = 20;
+pub const DEFAULT_BLOB_UPLOAD_BATCH_LIMIT: i64 = 10;
 
 pub const DEFAULT_CRDT_STATE_VECTOR_HINT_LIMIT: i64 = 256;
 pub const DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY: i64 = 1024;
@@ -52,6 +58,12 @@ pub struct RuntimeLimits {
     pub pull_limit_snapshot_rows: i64,
     pub pull_max_snapshot_pages: i64,
     pub outbox_push_batch_limit: i64,
+    pub max_sync_retries: i32,
+    pub sync_sending_timeout_ms: i64,
+    pub max_blob_upload_retries: i32,
+    pub blob_upload_stale_timeout_ms: i64,
+    pub blob_upload_batch_limit: i64,
+    pub sqlite_busy_timeout_ms: i32,
     pub crdt_state_vector_hint_limit: i64,
     pub crdt_update_queue_capacity: i64,
     pub crdt_update_log_default_limit: i64,
@@ -91,6 +103,12 @@ pub fn runtime_default_limits() -> RuntimeLimits {
         pull_limit_snapshot_rows: DEFAULT_PULL_LIMIT_SNAPSHOT_ROWS,
         pull_max_snapshot_pages: DEFAULT_PULL_MAX_SNAPSHOT_PAGES,
         outbox_push_batch_limit: DEFAULT_OUTBOX_PUSH_BATCH_LIMIT,
+        max_sync_retries: MAX_SYNC_RETRIES,
+        sync_sending_timeout_ms: SYNC_SENDING_TIMEOUT_MS,
+        max_blob_upload_retries: MAX_BLOB_UPLOAD_RETRIES,
+        blob_upload_stale_timeout_ms: BLOB_UPLOAD_STALE_TIMEOUT_MS,
+        blob_upload_batch_limit: DEFAULT_BLOB_UPLOAD_BATCH_LIMIT,
+        sqlite_busy_timeout_ms: SQLITE_BUSY_TIMEOUT_MS,
         crdt_state_vector_hint_limit: DEFAULT_CRDT_STATE_VECTOR_HINT_LIMIT,
         crdt_update_queue_capacity: DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY,
         crdt_update_log_default_limit: DEFAULT_CRDT_UPDATE_LOG_LIMIT,

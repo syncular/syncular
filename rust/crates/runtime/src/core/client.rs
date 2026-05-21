@@ -30,7 +30,7 @@ use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "demo-todo-native-fixture")]
 use crate::fixtures::todo::rusqlite_sqlite::RusqliteStore;
 #[cfg(feature = "native")]
-use crate::limits::DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY;
+use crate::limits::{DEFAULT_BLOB_UPLOAD_BATCH_LIMIT, DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY};
 use crate::limits::{
     DEFAULT_CRDT_STATE_VECTOR_HINT_LIMIT, DEFAULT_OUTBOX_PUSH_BATCH_LIMIT,
     DEFAULT_PULL_LIMIT_COMMITS, DEFAULT_PULL_LIMIT_SNAPSHOT_ROWS, DEFAULT_PULL_MAX_SNAPSHOT_PAGES,
@@ -2059,7 +2059,9 @@ where
         &mut self,
     ) -> Result<crate::diesel_sqlite::BlobUploadQueueResult> {
         self.store.requeue_stale_blob_uploads()?;
-        let pending = self.store.pending_blob_uploads(10)?;
+        let pending = self
+            .store
+            .pending_blob_uploads(DEFAULT_BLOB_UPLOAD_BATCH_LIMIT)?;
         let mut result = crate::diesel_sqlite::BlobUploadQueueResult {
             uploaded: 0,
             failed: 0,
