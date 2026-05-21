@@ -1,6 +1,7 @@
 {
   "extends": "@syncular/config/tsconfig.react-native.json",
   "include": ["src/**/*"],
+  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx", "src/**/__tests__/**"],
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist"

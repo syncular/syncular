@@ -107,6 +107,7 @@
       },
       "devDependencies": {
         "@syncular/config": "workspace:*",
+        "@syncular/testkit": "workspace:*",
         "kysely": "*",
         "react": "*",
       },
@@ -125,6 +126,7 @@
       },
       "devDependencies": {
         "@syncular/config": "workspace:*",
+        "@syncular/testkit": "workspace:*",
         "kysely": "*",
         "react": "*",
       },
@@ -142,6 +144,7 @@
       },
       "devDependencies": {
         "@syncular/config": "workspace:*",
+        "@syncular/testkit": "workspace:*",
         "kysely": "*",
         "react": "*",
       },
@@ -544,6 +547,7 @@
       "name": "@syncular/testkit",
       "version": "0.0.0",
       "dependencies": {
+        "@syncular/client": "workspace:*",
         "@syncular/core": "workspace:*",
         "@syncular/dialect-bun-sqlite": "workspace:*",
         "@syncular/dialect-pglite": "workspace:*",
