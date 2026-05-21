@@ -53,6 +53,48 @@ describe('Syncular v2 worker realtime', () => {
     expect(isSyncularV2RealtimeSyncMessage('sync')).toBe(false);
   });
 
+  it('binds default timer globals before scheduling heartbeats', () => {
+    const originalSetTimeout = globalThis.setTimeout;
+    let timerThis: unknown;
+    globalThis.setTimeout = function (
+      this: unknown,
+      handler: Parameters<typeof setTimeout>[0],
+      timeout?: Parameters<typeof setTimeout>[1],
+      ...args: unknown[]
+    ): ReturnType<typeof setTimeout> {
+      timerThis = this;
+      return originalSetTimeout(handler, timeout, ...(args as []));
+    } as typeof setTimeout;
+
+    try {
+      const client = new FakeRealtimeClient();
+      const sockets: FakeRealtimeSocket[] = [];
+      const controller = new SyncularV2WorkerRealtimeController({
+        getClient: () => client,
+        getConfig: () => ({
+          baseUrl: '/sync',
+          actorId: 'actor',
+          clientId: 'client-1',
+        }),
+        getLocationOrigin: () => 'https://app.example',
+        createWebSocket: (url) => {
+          const socket = new FakeRealtimeSocket(url);
+          sockets.push(socket);
+          return socket;
+        },
+        postEvent: () => {},
+      });
+
+      controller.start({ heartbeatTimeoutMs: 1 });
+      sockets[0]!.open();
+
+      expect(timerThis).toBe(globalThis);
+      controller.stop();
+    } finally {
+      globalThis.setTimeout = originalSetTimeout;
+    }
+  });
+
   it('records websocket hello diagnostics without triggering a pull', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];

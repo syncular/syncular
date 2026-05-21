@@ -14,6 +14,7 @@ import {
   syncularGeneratedTableConfig,
   taskSubscription,
 } from '../../../../examples/todo-app/generated/typescript/syncular.generated';
+import { createSyncularV2Dialect } from '../database';
 import type {
   SyncularV2AppSchema,
   SyncularV2Client,
@@ -24,7 +25,6 @@ import type {
   SyncularV2RowsChangedEvent,
   SyncularV2UnsafeSqlClient,
 } from '../types';
-import { createSyncularV2Dialect } from '../database';
 import { SyncularV2WorkerError } from '../worker-client';
 import {
   createHonoSyncHarness,
@@ -786,42 +786,15 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
     await unsafe.executeUnsafeSql(
       'insert into tasks (id, title, completed, user_id, project_id, server_version, image, title_yjs_state) values (?, ?, ?, ?, ?, ?, ?, ?)',
-      [
-        'health-owned-task',
-        'Owned',
-        0,
-        ACTOR_A,
-        null,
-        42,
-        null,
-        null,
-      ]
+      ['health-owned-task', 'Owned', 0, ACTOR_A, null, 42, null, null]
     );
     await unsafe.executeUnsafeSql(
       'insert into tasks (id, title, completed, user_id, project_id, server_version, image, title_yjs_state) values (?, ?, ?, ?, ?, ?, ?, ?)',
-      [
-        'health-orphaned-task',
-        'Orphaned',
-        0,
-        ACTOR_B,
-        null,
-        42,
-        null,
-        null,
-      ]
+      ['health-orphaned-task', 'Orphaned', 0, ACTOR_B, null, 42, null, null]
     );
     await unsafe.executeUnsafeSql(
       'insert into tasks (id, title, completed, user_id, project_id, server_version, image, title_yjs_state) values (?, ?, ?, ?, ?, ?, ?, ?)',
-      [
-        'health-local-only-task',
-        'Local only',
-        0,
-        ACTOR_B,
-        null,
-        0,
-        null,
-        null,
-      ]
+      ['health-local-only-task', 'Local only', 0, ACTOR_B, null, 0, null, null]
     );
 
     const health = await client.localHealthCheck();
@@ -925,7 +898,9 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     expect(bundleJson).not.toContain('browser-secret-param');
     expect(bundleJson).not.toContain('Browser support secret title');
 
-    await expect(client.importLocalSupportBundle(bundle)).resolves.toMatchObject({
+    await expect(
+      client.importLocalSupportBundle(bundle)
+    ).resolves.toMatchObject({
       redacted: true,
       source: 'browser',
       healthOk: true,
@@ -1875,8 +1850,9 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       tableConfig: syncularGeneratedTableConfig,
     });
     const db = new Kysely<SyncularAppDb>({ dialect });
-    const events: Array<SyncularV2LiveQueryEvent<{ id: string; title: string }>> =
-      [];
+    const events: Array<
+      SyncularV2LiveQueryEvent<{ id: string; title: string }>
+    > = [];
 
     try {
       await dialect.live(
@@ -1943,8 +1919,9 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       tableConfig: syncularGeneratedTableConfig,
     });
     const db = new Kysely<SyncularAppDb>({ dialect });
-    const events: Array<SyncularV2LiveQueryEvent<{ id: string; title: string }>> =
-      [];
+    const events: Array<
+      SyncularV2LiveQueryEvent<{ id: string; title: string }>
+    > = [];
 
     try {
       await dialect.live(

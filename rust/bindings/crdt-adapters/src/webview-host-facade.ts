@@ -9,10 +9,8 @@ import type {
   SyncularV2CrdtFieldYjsUpdateRequest,
   SyncularV2CrdtUpdateLogEntry,
   SyncularV2RowsChangedEvent,
-} from '@syncular/client-rust';
-import type {
-  SyncularCrdtProjectionHost,
-} from './yjs-document-field-adapter';
+} from '@syncular/client';
+import type { SyncularCrdtProjectionHost } from './yjs-document-field-adapter';
 
 export const SYNCULAR_CRDT_WEBVIEW_PROTOCOL = 'syncular.crdt.host.v1';
 export const SYNCULAR_CRDT_WEBVIEW_REQUEST = 'syncular.crdt.host.request';
@@ -22,16 +20,12 @@ export const SYNCULAR_CRDT_WEBVIEW_ROWS_CHANGED =
 
 export interface SyncularCrdtWebViewTransport {
   postMessage(message: SyncularCrdtHostMessage): void;
-  addMessageListener(
-    listener: (message: unknown) => void
-  ): () => void;
+  addMessageListener(listener: (message: unknown) => void): () => void;
 }
 
 export interface SyncularCrdtJsonTransportOptions {
   postJsonMessage(message: string): void;
-  addJsonMessageListener(
-    listener: (message: string) => void
-  ): () => void;
+  addJsonMessageListener(listener: (message: string) => void): () => void;
   onInvalidMessage?: (error: unknown, message: string) => void;
 }
 
@@ -208,9 +202,7 @@ export function createSyncularCrdtWebViewHost(
     }
   });
 
-  const request = <
-    Method extends SyncularCrdtHostMethod,
-  >(
+  const request = <Method extends SyncularCrdtHostMethod>(
     method: Method,
     payload: SyncularCrdtHostMethodMap[Method]['request']
   ): Promise<SyncularCrdtHostMethodMap[Method]['response']> => {
@@ -302,15 +294,17 @@ export function createSyncularCrdtWebViewHostResponder(
   options: SyncularCrdtWebViewHostResponderOptions
 ): SyncularCrdtWebViewHostResponder {
   let closed = false;
-  const unsubscribeRequests = options.transport.addMessageListener((message) => {
-    if (!isSyncularCrdtHostMessage(message)) return;
-    if (message.type !== SYNCULAR_CRDT_WEBVIEW_REQUEST) return;
-    void createSyncularCrdtHostResponseMessage(options.host, message).then(
-      (response) => {
-        options.transport.postMessage(response);
-      }
-    );
-  });
+  const unsubscribeRequests = options.transport.addMessageListener(
+    (message) => {
+      if (!isSyncularCrdtHostMessage(message)) return;
+      if (message.type !== SYNCULAR_CRDT_WEBVIEW_REQUEST) return;
+      void createSyncularCrdtHostResponseMessage(options.host, message).then(
+        (response) => {
+          options.transport.postMessage(response);
+        }
+      );
+    }
+  );
   const unsubscribeRowsChanged =
     options.publishRowsChanged === false
       ? undefined

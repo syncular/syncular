@@ -6,7 +6,6 @@ import type { Context } from 'hono';
 import { validator as openApiValidator } from 'hono-openapi';
 
 type OpenApiValidatorArgs = Parameters<typeof openApiValidator>;
-type OpenApiValidatorHook = OpenApiValidatorArgs[2];
 type ValidationIssue = {
   message?: unknown;
   path?: unknown;

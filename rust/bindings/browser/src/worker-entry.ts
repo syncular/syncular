@@ -653,9 +653,10 @@ function syncResultDetails(value: unknown): Record<string, unknown> {
   };
 }
 
-function syncScopeRevocationDetails(
-  value: unknown
-): { revokedSubscriptionIds: string[]; revokedSubscriptionCount: number } | null {
+function syncScopeRevocationDetails(value: unknown): {
+  revokedSubscriptionIds: string[];
+  revokedSubscriptionCount: number;
+} | null {
   const result = objectRecord(value);
   const subscriptions = Array.isArray(result.subscriptions)
     ? result.subscriptions
@@ -720,11 +721,15 @@ function encodeWorkerError(error: unknown): SyncularV2WorkerErrorPayload {
       details
     );
     if (!classification) {
-      return createSyncularV2WorkerErrorPayload('worker.failed', error.message, {
-        name: error.name,
-        stack: error.stack,
-        details,
-      });
+      return createSyncularV2WorkerErrorPayload(
+        'worker.failed',
+        error.message,
+        {
+          name: error.name,
+          stack: error.stack,
+          details,
+        }
+      );
     }
     return {
       code: classification.code,

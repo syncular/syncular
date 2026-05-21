@@ -8,11 +8,13 @@ import { defineWebSocketHelper } from 'hono/ws';
 import type { Kysely } from 'kysely';
 import { createProxyRoutes } from '../proxy';
 
-function createRoutes(options: {
-  allowedOrigins?: string[] | '*';
-  authenticated?: boolean;
-  maxConnections?: number;
-} = {}) {
+function createRoutes(
+  options: {
+    allowedOrigins?: string[] | '*';
+    authenticated?: boolean;
+    maxConnections?: number;
+  } = {}
+) {
   const upgradeWebSocket = defineWebSocketHelper(async () => {
     return new Response(null, { status: 200 });
   });

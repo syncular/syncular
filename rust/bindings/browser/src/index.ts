@@ -1,5 +1,6 @@
-export * from './client-config';
+export * from './bridge-client';
 export * from './client';
+export * from './client-config';
 export * from './command-history';
 export * from './database';
 export * from './errors';

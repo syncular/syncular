@@ -1,19 +1,4 @@
-import {
-  type ClientHandlerCollection,
-  enqueueOutboxCommit,
-  ensureClientSyncSchema,
-  type SyncClientDb,
-  type SyncOnceOptions,
-  type SyncOnceResult,
-  type SyncPullOnceOptions,
-  type SyncPullResponse,
-  type SyncPushOnceOptions,
-  type SyncPushOnceResult,
-  syncOnce,
-  syncPullOnce,
-  syncPushOnce,
-} from '@syncular/client';
-import { createDatabase, type SyncTransport } from '@syncular/core';
+import { createDatabase } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
@@ -28,13 +13,11 @@ import {
   type CreateSyncRoutesOptions,
   createSyncRoutes,
 } from '@syncular/server-hono';
-import { createHttpTransport } from '@syncular/transport-http';
 import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
 import { createNodeHonoServer } from './hono-node-server';
 
 export type HttpServerDialect = 'sqlite' | 'pglite';
-export type HttpClientDialect = 'bun-sqlite' | 'pglite';
 
 export interface HttpServerFixture<DB extends SyncCoreDb> {
   db: Kysely<DB>;
@@ -59,38 +42,6 @@ export interface CreateHttpServerFixtureOptions<DB extends SyncCoreDb> {
   corsAllowMethods?: string;
   corsAllowHeaders?: string;
   corsMaxAgeSeconds?: number;
-}
-
-export interface HttpClientFixture<DB extends SyncClientDb> {
-  db: Kysely<DB>;
-  transport: SyncTransport;
-  handlers: ClientHandlerCollection<DB>;
-  actorId: string;
-  clientId: string;
-  enqueue: (
-    args: Parameters<typeof enqueueOutboxCommit<DB>>[1]
-  ) => Promise<{ id: string; clientCommitId: string }>;
-  push: (
-    options?: Omit<SyncPushOnceOptions, 'clientId' | 'actorId'>
-  ) => Promise<SyncPushOnceResult>;
-  pull: (
-    options: Omit<SyncPullOnceOptions, 'clientId' | 'actorId'>
-  ) => Promise<SyncPullResponse>;
-  syncOnce: (
-    options: Omit<SyncOnceOptions, 'clientId' | 'actorId'>
-  ) => Promise<SyncOnceResult>;
-  destroy: () => Promise<void>;
-}
-
-export interface CreateHttpClientFixtureOptions<DB extends SyncClientDb> {
-  clientDialect: HttpClientDialect;
-  baseUrl: string;
-  actorId: string;
-  clientId: string;
-  createTables: (db: Kysely<DB>) => Promise<void>;
-  registerHandlers: (handlers: ClientHandlerCollection<DB>) => void;
-  fetch?: typeof globalThis.fetch;
-  getHeaders?: () => Record<string, string>;
 }
 
 const PGLITE_INIT_ATTEMPTS = 3;
@@ -230,78 +181,6 @@ export async function createHttpServerFixture<DB extends SyncCoreDb>(
           resolve();
         });
       });
-      await db.destroy();
-    },
-  };
-}
-
-export async function createHttpClientFixture<DB extends SyncClientDb>(
-  options: CreateHttpClientFixtureOptions<DB>
-): Promise<HttpClientFixture<DB>> {
-  const db = await withPgliteInitRetry(
-    options.clientDialect === 'pglite',
-    async () => {
-      const candidateDb =
-        options.clientDialect === 'pglite'
-          ? createDatabase<DB>({
-              dialect: createPgliteDialect(),
-              family: 'postgres',
-            })
-          : createDatabase<DB>({
-              dialect: createBunSqliteDialect({ path: ':memory:' }),
-              family: 'sqlite',
-            });
-
-      try {
-        await ensureClientSyncSchema(candidateDb);
-        await options.createTables(candidateDb);
-        return candidateDb;
-      } catch (error) {
-        await candidateDb.destroy();
-        throw error;
-      }
-    }
-  );
-
-  const handlers: ClientHandlerCollection<DB> = [];
-  options.registerHandlers(handlers);
-
-  const transport = createHttpTransport({
-    baseUrl: options.baseUrl,
-    getHeaders:
-      options.getHeaders ??
-      (() => ({
-        'x-actor-id': options.actorId,
-      })),
-    ...(options.fetch ? { fetch: options.fetch } : {}),
-  });
-
-  return {
-    db,
-    transport,
-    handlers,
-    actorId: options.actorId,
-    clientId: options.clientId,
-    enqueue: (args) => enqueueOutboxCommit(db, args),
-    push: (pushOptions) =>
-      syncPushOnce(db, transport, {
-        clientId: options.clientId,
-        actorId: options.actorId,
-        plugins: pushOptions?.plugins,
-      }),
-    pull: (pullOptions) =>
-      syncPullOnce(db, transport, handlers, {
-        ...pullOptions,
-        clientId: options.clientId,
-        actorId: options.actorId,
-      }),
-    syncOnce: (syncOptions) =>
-      syncOnce(db, transport, handlers, {
-        ...syncOptions,
-        clientId: options.clientId,
-        actorId: options.actorId,
-      }),
-    destroy: async () => {
       await db.destroy();
     },
   };

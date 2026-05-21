@@ -55,6 +55,48 @@ Rust-first client clearly.
 
 ## Current Evidence
 
+2026-05-21 legacy-client removal retained:
+
+- `@syncular/client` is now the Rust-owned browser package with TypeScript
+  bindings. The previous pure TypeScript `packages/client` product runtime,
+  separate `packages/client-react`, old client plugin packages, old JS client
+  docs, demo app, and JS-client integration/runtime/perf suites were deleted.
+- `@syncular/client/react` is the remaining first-party React entrypoint, and
+  `@syncular/client-crdt-adapters` replaces the old client-side CRDT adapter
+  package name.
+- The Rust todo example is now a Bun workspace package so generated TypeScript
+  conformance imports resolve their declared dependencies directly.
+- Legacy benchmark scripts that depended on the deleted JS/wa-sqlite runtime
+  were removed from active package scripts. The retained browser validation
+  path is `tsgo`, browser tests, WASM build/size, generated-code check, Rust
+  conformance, and docs build.
+- Gates run:
+  - `bun run tsgo`: passed.
+  - `bun run rust:browser:tsgo`: passed.
+  - `bun run rust:browser:test`: passed, `91` tests.
+  - `bun run rust:browser:build:wasm`: passed; release full artifact
+    `2.26 MiB` raw / `1.01 MiB` gzip, with `1.04 MiB` raw and `357.4 KiB`
+    gzip headroom.
+  - `bun run rust:codegen:check`: passed.
+  - `bun run rust:conformance:fast`: passed.
+  - `bun run docs:build`: passed after generating OpenAPI and building
+    `@syncular/ui` dist artifacts locally.
+  - `bun test packages tests/unit tests/dialects tests/typegen`: passed,
+    `703` tests.
+
+2026-05-21 Rust-client demo retained:
+
+- Added `apps/demo`, a Vite/React split-view todo demo using the generated
+  todo TypeScript bindings and canonical `@syncular/client` Rust browser
+  package. The demo starts an in-memory Hono/Bun sync server, enables the
+  canonical `/sync/realtime` websocket route, opens two separate browser
+  clients, and syncs todos between them.
+- Gates run:
+  - `bun --cwd apps/demo tsgo`: passed.
+  - `bun --cwd apps/demo build`: passed.
+  - Headless Chrome smoke: adding a todo in Client A appeared in Client B over
+    websocket with both panes `Ready`.
+
 The full Rust/WASM artifact and a smaller core artifact have been measured.
 Feature variants remain optional and should be driven by package-size evidence;
 the current product decision is to ship the full artifact by default rather than
@@ -96,7 +138,10 @@ default:
 
 ## Next Action
 
-Keep running `bun run --cwd rust/bindings/browser build:wasm` for every
-browser/WASM-facing change. Run `bun run --cwd rust/bindings/browser
-build:wasm:variants` before package changes so `dist/wasm`, `dist/wasm-perf`,
-`dist/wasm-core`, and the artifact catalog stay aligned.
+Keep running `bun run rust:browser:tsgo`, `bun run rust:browser:test`, and
+`bun run rust:browser:build:wasm` for every browser package change. Run
+`bun run rust:browser:build:wasm:variants` before package changes so
+`dist/wasm`, `dist/wasm-perf`, `dist/wasm-core`, and the artifact catalog stay
+aligned. Keep surviving server tests on stable error taxonomy and fail-closed
+snapshot storage behavior rather than reintroducing legacy fallback
+expectations.

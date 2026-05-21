@@ -1,8 +1,0 @@
-{
-  "extends": "./tsconfig.json",
-  "compilerOptions": {
-    "types": ["@cloudflare/workers-types", "node"]
-  },
-  "include": ["src/main.tsx", "src/types/styles.d.ts"],
-  "exclude": ["dist", "node_modules"]
-}

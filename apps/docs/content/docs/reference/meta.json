@@ -5,7 +5,6 @@
   "pages": [
     "index",
     "---SDKs and Server---",
-    "client-sdk",
     "server",
     "---HTTP API---",
     "api"

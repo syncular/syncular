@@ -1,5 +1,4 @@
 import { describe, expect, it } from 'bun:test';
-import * as Y from 'yjs';
 import type {
   SyncularV2ChangedRow,
   SyncularV2CrdtDocumentSnapshot,
@@ -11,7 +10,8 @@ import type {
   SyncularV2CrdtFieldYjsUpdateRequest,
   SyncularV2CrdtUpdateLogEntry,
   SyncularV2RowsChangedEvent,
-} from '@syncular/client-rust';
+} from '@syncular/client';
+import * as Y from 'yjs';
 import {
   base64ToBytes,
   bytesToBase64,
@@ -303,9 +303,9 @@ describe('createYjsProseMirrorBridge', () => {
     expect(restoredFragments).toHaveLength(1);
     expect(secondBridge.fragment().toString()).toContain('Offline draft');
     expect(store.updateLog).toHaveLength(1);
-    expect(
-      projections.some((entry) => entry.event.reason === 'startup')
-    ).toBe(true);
+    expect(projections.some((entry) => entry.event.reason === 'startup')).toBe(
+      true
+    );
 
     appendXmlText(secondBridge.fragment(), ' after restart');
     await secondAdapter.flush();
@@ -489,10 +489,14 @@ class DurableYjsCrdtHost implements SyncularCrdtProjectionHost {
   }
 
   async compactCrdtField(): Promise<SyncularV2CrdtFieldCompactionReceipt> {
-    const before = compactionStatsFromSnapshot(await this.crdtDocumentSnapshot());
+    const before = compactionStatsFromSnapshot(
+      await this.crdtDocumentSnapshot()
+    );
     this.#persistState();
     this.#store.compactedAt = this.#store.updatedAt;
-    const after = compactionStatsFromSnapshot(await this.crdtDocumentSnapshot());
+    const after = compactionStatsFromSnapshot(
+      await this.crdtDocumentSnapshot()
+    );
     this.#emitRowsChanged('localWrite', { operation: 'compact' });
     return {
       checkpointCreated: false,
@@ -543,7 +547,10 @@ class DurableYjsCrdtHost implements SyncularCrdtProjectionHost {
           table: this.#store.field.table,
           rowId: this.#store.field.rowId,
           operation: row.operation,
-          changedFields: [this.#store.field.field, `${this.#store.field.field}_yjs_state`],
+          changedFields: [
+            this.#store.field.field,
+            `${this.#store.field.field}_yjs_state`,
+          ],
           crdtFields: [`${this.#store.field.field}_yjs_state`],
           commitId: row.commitId,
         },

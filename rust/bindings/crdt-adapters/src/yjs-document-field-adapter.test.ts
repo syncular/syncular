@@ -9,16 +9,15 @@ import type {
   SyncularV2CrdtFieldYjsUpdateRequest,
   SyncularV2CrdtUpdateLogEntry,
   SyncularV2RowsChangedEvent,
-} from '@syncular/client-rust';
+} from '@syncular/client';
 import {
   base64ToBytes,
   bytesToBase64,
   createCrdtFieldProjectionMaterializer,
   createRichEditorCrdtAdapter,
-  createYjsEditorBackpressureController,
   createYjsDocumentFieldAdapter,
+  createYjsEditorBackpressureController,
   projectionReasonForRowsChanged,
-  type SyncularCrdtFieldHost,
   type SyncularCrdtProjectionEvent,
   type SyncularCrdtProjectionHost,
   type YjsDocumentBinding,
@@ -338,23 +337,19 @@ describe('createCrdtFieldProjectionMaterializer', () => {
       projection: { title: string; searchText: string };
       event: SyncularCrdtProjectionEvent;
     }> = [];
-    const materializer = createCrdtFieldProjectionMaterializer(
-      host,
-      field,
-      {
-        derive(materialization, event) {
-          return {
-            title: (materialization.value as { text: string }).text,
-            searchText: `${event.field.rowId} ${
-              (materialization.value as { text: string }).text
-            }`,
-          };
-        },
-        apply(projection, event) {
-          applied.push({ projection, event });
-        },
-      }
-    );
+    const materializer = createCrdtFieldProjectionMaterializer(host, field, {
+      derive(materialization, event) {
+        return {
+          title: (materialization.value as { text: string }).text,
+          searchText: `${event.field.rowId} ${
+            (materialization.value as { text: string }).text
+          }`,
+        };
+      },
+      apply(projection, event) {
+        applied.push({ projection, event });
+      },
+    });
 
     const stop = await materializer.start();
     host.emitRowsChanged({
@@ -384,9 +379,7 @@ describe('createCrdtFieldProjectionMaterializer', () => {
     expect(applied[0]?.event.operation).toBe('update');
     expect(applied[0]?.event.commitSeq).toBe(42);
     expect(applied[0]?.event.serverVersion).toBe(9001);
-    expect(applied[0]?.event.stateVectorBase64).toBe(
-      'snapshot-vector-remote'
-    );
+    expect(applied[0]?.event.stateVectorBase64).toBe('snapshot-vector-remote');
     expect(applied[0]?.event.documentSnapshot?.ackedUpdates).toBe(3);
 
     await stop();
@@ -435,18 +428,14 @@ describe('createCrdtFieldProjectionMaterializer', () => {
   it('ignores non-CRDT rows and unrelated CRDT fields', async () => {
     const host = new FakeCrdtFieldHost();
     const applied: unknown[] = [];
-    const materializer = createCrdtFieldProjectionMaterializer(
-      host,
-      field,
-      {
-        derive() {
-          return 'projection';
-        },
-        apply(projection) {
-          applied.push(projection);
-        },
-      }
-    );
+    const materializer = createCrdtFieldProjectionMaterializer(host, field, {
+      derive() {
+        return 'projection';
+      },
+      apply(projection) {
+        applied.push(projection);
+      },
+    });
 
     const stop = await materializer.start();
     host.emitRowsChanged({
@@ -478,18 +467,14 @@ describe('createCrdtFieldProjectionMaterializer', () => {
   it('labels compaction events and carries local commit metadata', async () => {
     const host = new FakeCrdtFieldHost();
     const events: SyncularCrdtProjectionEvent[] = [];
-    const materializer = createCrdtFieldProjectionMaterializer(
-      host,
-      field,
-      {
-        derive() {
-          return null;
-        },
-        apply(_projection, event) {
-          events.push(event);
-        },
-      }
-    );
+    const materializer = createCrdtFieldProjectionMaterializer(host, field, {
+      derive() {
+        return null;
+      },
+      apply(_projection, event) {
+        events.push(event);
+      },
+    });
 
     const stop = await materializer.start();
     host.emitRowsChanged({
@@ -625,7 +610,9 @@ class FakeCrdtFieldHost implements SyncularCrdtProjectionHost {
   readonly #materialization: SyncularV2CrdtFieldMaterialization;
   readonly #snapshot?: SyncularV2CrdtDocumentSnapshot;
   readonly #updateLog: SyncularV2CrdtUpdateLogEntry[];
-  readonly updateLogRequests: Array<SyncularV2CrdtFieldRequest & { limit?: number }> = [];
+  readonly updateLogRequests: Array<
+    SyncularV2CrdtFieldRequest & { limit?: number }
+  > = [];
   readonly #rowsChangedListeners = new Set<
     (event: SyncularV2RowsChangedEvent) => void
   >();
@@ -720,7 +707,9 @@ class FakeCrdtFieldHost implements SyncularCrdtProjectionHost {
   }
 
   async compactCrdtField(): Promise<SyncularV2CrdtFieldCompactionReceipt> {
-    const stats = compactionStatsFromSnapshot(await this.crdtDocumentSnapshot());
+    const stats = compactionStatsFromSnapshot(
+      await this.crdtDocumentSnapshot()
+    );
     return {
       checkpointCreated: true,
       clientCommitId: 'compact-1',

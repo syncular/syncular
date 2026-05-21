@@ -1,9 +1,9 @@
+import { describe, expect, it } from 'bun:test';
 import { GlobalRegistrator } from '@happy-dom/global-registrator';
 import { act, renderHook, waitFor } from '@testing-library/react';
-import { describe, expect, it } from 'bun:test';
 import { createElement, type ReactNode } from 'react';
-import { createSyncularV2React } from './react';
 import type {
+  SyncularClientLike,
   SyncularV2BlobUploadQueueStats,
   SyncularV2BootstrapStatus,
   SyncularV2ClientEventMap,
@@ -11,66 +11,54 @@ import type {
   SyncularV2ClientEventType,
   SyncularV2ConnectionState,
   SyncularV2DiagnosticSink,
-  SyncularV2LiveQueryChange,
-  SyncularV2LiveQueryOptions,
-  SyncularV2LiveQuerySubscription,
-  SyncularV2ManagedClient,
   SyncularV2PresenceChangeEvent,
   SyncularV2PresenceEntry,
   SyncularV2PresenceSink,
   SyncularV2RowsChangedEvent,
 } from './index';
+import { createSyncularReact } from './react';
 
 if (!GlobalRegistrator.isRegistered) {
   GlobalRegistrator.register();
 }
 
-describe('@syncular/client-rust/react', () => {
-  it('joins presence on mount, exposes members, and leaves on unmount', async () => {
+describe('@syncular/client/react', () => {
+  it('runs ergonomic sync queries and refreshes on watched table changes', async () => {
     const fake = new FakeManagedClient();
-    const { SyncularProvider, usePresence } = createSyncularV2React<TestDb>();
-    const wrapper = createWrapper(SyncularProvider, fake.client);
+    const { SyncProvider, useSyncQuery } = createSyncularReact<TestDb>();
+    const wrapper = createWrapper(SyncProvider, fake.client);
 
-    const { result, unmount } = renderHook(
+    fake.nextQueryRows = [{ id: 'task-1', title: 'Write adapter' }];
+    const { result } = renderHook(
       () =>
-        usePresence({
-          scopeKey: 'document:one',
-          metadata: { cursor: 1 },
-        }),
+        useSyncQuery(
+          ({ selectFrom }) =>
+            selectFrom('tasks').select(['id', 'title']).execute(),
+          { watchTables: ['tasks'] }
+        ),
       { wrapper }
     );
 
     await waitFor(() => {
-      expect(result.current.members).toHaveLength(1);
+      expect(result.current.data).toEqual([
+        { id: 'task-1', title: 'Write adapter' },
+      ]);
     });
-    expect(result.current.members[0]?.metadata).toEqual({ cursor: 1 });
+    expect(result.current.isLoading).toBe(false);
 
-    act(() => result.current.updateMetadata({ cursor: 2 }));
-    expect(result.current.members[0]?.metadata).toEqual({ cursor: 2 });
-
-    unmount();
-    expect(fake.leftScopes).toEqual(['document:one']);
-  });
-
-  it('filters row change events by table', () => {
-    const fake = new FakeManagedClient();
-    const { SyncularProvider, useRowsChanged } =
-      createSyncularV2React<TestDb>();
-    const wrapper = createWrapper(SyncularProvider, fake.client);
-    const events: SyncularV2RowsChangedEvent[] = [];
-
-    renderHook(
-      () =>
-        useRowsChanged((event) => events.push(event), { tables: ['tasks'] }),
-      { wrapper }
-    );
-
+    fake.nextQueryRows = [{ id: 'task-1', title: 'Ship adapter' }];
     act(() => {
       fake.emitRowsChanged({
         source: 'remotePull',
         changedTables: ['notes'],
         changedRows: [],
       });
+    });
+    expect(result.current.data).toEqual([
+      { id: 'task-1', title: 'Write adapter' },
+    ]);
+
+    act(() => {
       fake.emitRowsChanged({
         source: 'remotePull',
         changedTables: ['tasks'],
@@ -86,15 +74,109 @@ describe('@syncular/client-rust/react', () => {
       });
     });
 
-    expect(events).toHaveLength(1);
-    expect(events[0]?.changedRows[0]?.rowId).toBe('task-1');
+    await waitFor(() => {
+      expect(result.current.data).toEqual([
+        { id: 'task-1', title: 'Ship adapter' },
+      ]);
+    });
   });
 
-  it('exposes outbox and conflict stats as React state', () => {
+  it('exposes ergonomic table mutations and background sync state', async () => {
     const fake = new FakeManagedClient();
-    const { SyncularProvider, useConflictStats, useOutboxStats } =
-      createSyncularV2React<TestDb>();
-    const wrapper = createWrapper(SyncularProvider, fake.client);
+    const { SyncProvider, useMutations } = createSyncularReact<TestDb>();
+    const wrapper = createWrapper(SyncProvider, fake.client);
+
+    const { result } = renderHook(() => useMutations(), { wrapper });
+
+    await act(async () => {
+      await result.current.tasks.update('task-1', { completed: 1 });
+    });
+    let batchResult: string | undefined;
+    await act(async () => {
+      const batch = await result.current.$commit(async (tx) => {
+        await tx.tasks.update('task-2', { completed: 0 });
+        return 'batch-result';
+      });
+      batchResult = batch.result;
+    });
+
+    expect(fake.mutationCalls).toEqual([
+      {
+        table: 'tasks',
+        method: 'update',
+        args: ['task-1', { completed: 1 }, undefined],
+      },
+      {
+        table: 'tasks',
+        method: 'update',
+        args: ['task-2', { completed: 0 }, undefined],
+      },
+    ]);
+    expect(batchResult).toBe('batch-result');
+    expect(fake.syncCount).toBe(2);
+    expect(result.current.$isPending).toBe(false);
+    expect(result.current.$error).toBeNull();
+  });
+
+  it('supports the table-scoped useMutation helper', async () => {
+    const fake = new FakeManagedClient();
+    const { SyncProvider, useMutation } = createSyncularReact<TestDb>();
+    const wrapper = createWrapper(SyncProvider, fake.client);
+
+    const { result } = renderHook(
+      () => useMutation({ table: 'tasks', syncImmediately: false }),
+      { wrapper }
+    );
+
+    await act(async () => {
+      await result.current.mutate.update('task-2', {
+        completed: 1,
+      });
+      await result.current.mutate.delete('task-2');
+    });
+
+    expect(fake.mutationCalls).toEqual([
+      {
+        table: 'tasks',
+        method: 'update',
+        args: ['task-2', { completed: 1 }, undefined],
+      },
+      { table: 'tasks', method: 'delete', args: ['task-2', undefined] },
+    ]);
+    expect(fake.syncCount).toBe(0);
+  });
+
+  it('joins presence with the old ergonomic presence syntax', async () => {
+    const fake = new FakeManagedClient();
+    const { SyncProvider, usePresenceWithJoin } = createSyncularReact<TestDb>();
+    const wrapper = createWrapper(SyncProvider, fake.client);
+
+    const { result, unmount } = renderHook(
+      () =>
+        usePresenceWithJoin('document:one', {
+          metadata: { cursor: 1 },
+        }),
+      { wrapper }
+    );
+
+    await waitFor(() => {
+      expect(result.current.presence).toHaveLength(1);
+    });
+    expect(result.current.presence[0]?.metadata).toEqual({ cursor: 1 });
+    expect(result.current.isJoined).toBe(true);
+
+    act(() => result.current.updateMetadata({ cursor: 2 }));
+    expect(result.current.presence[0]?.metadata).toEqual({ cursor: 2 });
+
+    unmount();
+    expect(fake.leftScopes).toEqual(['document:one']);
+  });
+
+  it('keeps operational stats hooks for status UI', () => {
+    const fake = new FakeManagedClient();
+    const { SyncProvider, useConflictStats, useOutboxStats } =
+      createSyncularReact<TestDb>();
+    const wrapper = createWrapper(SyncProvider, fake.client);
 
     const { result } = renderHook(
       () => ({
@@ -103,9 +185,6 @@ describe('@syncular/client-rust/react', () => {
       }),
       { wrapper }
     );
-
-    expect(result.current.outbox).toBeNull();
-    expect(result.current.conflicts).toBeNull();
 
     act(() => {
       fake.emit('outboxChanged', {
@@ -125,51 +204,6 @@ describe('@syncular/client-rust/react', () => {
     expect(result.current.outbox?.pending).toBe(2);
     expect(result.current.conflicts?.unresolved).toBe(1);
   });
-
-  it('subscribes to Rust live queries and unsubscribes on cleanup', async () => {
-    const fake = new FakeManagedClient();
-    fake.nextLiveRows = [{ id: 'task-1', title: 'Write adapter' }];
-    const { SyncularProvider, useLiveQuery } = createSyncularV2React<TestDb>();
-    const wrapper = createWrapper(SyncularProvider, fake.client);
-
-    const { result, unmount } = renderHook(
-      () => useLiveQuery<TaskRow>(compiledQuery(), { tables: ['tasks'] }),
-      { wrapper }
-    );
-
-    await waitFor(() => {
-      expect(result.current.rows).toEqual([
-        { id: 'task-1', title: 'Write adapter' },
-      ]);
-    });
-    expect(result.current.isLoading).toBe(false);
-
-    unmount();
-    expect(fake.liveUnsubscribed).toBe(true);
-  });
-
-  it('wraps async mutations with pending and error state', async () => {
-    const fake = new FakeManagedClient();
-    const { SyncularProvider, useMutation } = createSyncularV2React<TestDb>();
-    const wrapper = createWrapper(SyncularProvider, fake.client);
-
-    const { result } = renderHook(
-      () =>
-        useMutation(async (_client, title: string) => {
-          await Promise.resolve();
-          return { id: 'task-1', title };
-        }),
-      { wrapper }
-    );
-
-    let mutationResult: { id: string; title: string } | undefined;
-    await act(async () => {
-      mutationResult = await result.current.mutate('Ship it');
-    });
-    expect(mutationResult).toEqual({ id: 'task-1', title: 'Ship it' });
-    expect(result.current.isPending).toBe(false);
-    expect(result.current.error).toBeNull();
-  });
 });
 
 interface TestDb {
@@ -179,36 +213,30 @@ interface TestDb {
 interface TaskRow extends Record<string, unknown> {
   id: string;
   title: string;
+  completed?: number;
 }
 
 function createWrapper<DB>(
   Provider: (props: {
-    client: SyncularV2ManagedClient<DB>;
+    client: SyncularClientLike<DB>;
     children?: ReactNode;
   }) => ReturnType<typeof createElement>,
-  client: SyncularV2ManagedClient<DB>
+  client: SyncularClientLike<DB>
 ) {
   return function Wrapper({ children }: { children: ReactNode }) {
     return createElement(Provider, { client, children });
   };
 }
 
-function compiledQuery() {
-  return {
-    compile() {
-      return {
-        sql: 'select id, title from tasks',
-        parameters: [],
-        query: { kind: 'SelectQueryNode' },
-      };
-    },
-  };
-}
-
 class FakeManagedClient {
   readonly leftScopes: string[] = [];
-  nextLiveRows: TaskRow[] = [];
-  liveUnsubscribed = false;
+  readonly mutationCalls: Array<{
+    table: string;
+    method: string;
+    args: unknown[];
+  }> = [];
+  nextQueryRows: TaskRow[] = [];
+  syncCount = 0;
   readonly #eventListeners = new Map<
     SyncularV2ClientEventType,
     Set<SyncularV2ClientEventSink<SyncularV2ClientEventType>>
@@ -218,10 +246,59 @@ class FakeManagedClient {
   readonly #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
 
   readonly client = {
-    db: {},
+    db: {
+      selectFrom: (_table: string) => ({
+        select: (_columns: readonly string[]) => ({
+          execute: async () => this.nextQueryRows,
+        }),
+      }),
+    },
     dialect: {},
-    mutations: {},
-    leasedMutations: {},
+    mutations: this.createMutations(),
+    leasedMutations: this.createMutations(),
+    on: <T extends SyncularV2ClientEventType>(
+      event: T,
+      listener: SyncularV2ClientEventSink<T>
+    ) => this.addEventListener(event, listener),
+    getStatus: () => ({
+      lifecycle: {
+        phase: 'idle',
+        sinceMs: 0,
+        lastSyncAt: null,
+        lastError: null,
+        requiresAction: false,
+      },
+      connection: this.connectionState(),
+      outbox: null,
+      conflicts: null,
+      isConnected: true,
+      isSyncing: false,
+      hasPendingMutations: false,
+      hasConflicts: false,
+      requiresAction: false,
+    }),
+    setSubscriptions: async () => undefined,
+    presence: {
+      get: <TMetadata extends Record<string, unknown>>(scopeKey: string) =>
+        this.getPresence<TMetadata>(scopeKey),
+      join: (scopeKey: string, metadata?: Record<string, unknown>) =>
+        this.joinPresence(scopeKey, metadata),
+      leave: (scopeKey: string) => this.leavePresence(scopeKey),
+      updateMetadata: (scopeKey: string, metadata: Record<string, unknown>) =>
+        this.updatePresenceMetadata(scopeKey, metadata),
+      onChange: <TMetadata extends Record<string, unknown>>(
+        listener: SyncularV2PresenceSink<TMetadata>
+      ) => {
+        this.#presenceListeners.add(listener as SyncularV2PresenceSink);
+        return () =>
+          this.#presenceListeners.delete(listener as SyncularV2PresenceSink);
+      },
+    },
+    conflicts: {
+      list: async () => [],
+      retryKeepLocal: async () => 'retry-commit',
+      resolve: async () => undefined,
+    },
     blobs: {
       getUploadQueueStats: async () => this.blobStats(),
       processUploadQueue: async () => ({ uploaded: 0, failed: 0 }),
@@ -255,61 +332,130 @@ class FakeManagedClient {
           this.#presenceListeners.delete(listener as SyncularV2PresenceSink);
       },
     },
-    live: <Row extends Record<string, unknown>>(
-      _query: unknown,
-      options: SyncularV2LiveQueryOptions<Row>
-    ): Promise<SyncularV2LiveQuerySubscription> => {
-      options.onChange(this.nextLiveRows as unknown as Row[], {
-        queryId: 'live-1',
-        version: 1,
-        changedRows: [],
-        rows: this.nextLiveRows as unknown as Row[],
-        initial: true,
-      } satisfies SyncularV2LiveQueryChange<Row>);
-      return Promise.resolve({
-        id: 'live-1',
-        unsubscribe: () => {
-          this.liveUnsubscribed = true;
-        },
-      });
-    },
+    live: async () => ({
+      id: 'live-1',
+      unsubscribe: () => undefined,
+    }),
     close: async () => undefined,
     start: async () => undefined,
     stop: async () => undefined,
     destroy: async () => undefined,
-    sync: async () => ({
-      changedTables: [],
-      changedRows: [],
-      changedRowsTruncated: false,
-      subscriptions: [],
-      bootstrap: zeroBootstrapStatus(),
-      pushedCommits: 0,
-      timings: {
-        totalMs: 0,
-        pushMs: 0,
-        pullMs: 0,
-        pullRequestMs: 0,
-        syncPackDecodeMs: 0,
-        pullTransformMs: 0,
-        integrityVerifyMs: 0,
-        snapshotFetchMs: 0,
-        pullApplyMs: 0,
-        scopeClearMs: 0,
-        snapshotRowApplyMs: 0,
-        snapshotArtifactApplyMs: 0,
-        snapshotArtifactCheckpointMs: 0,
-        snapshotArtifactCheckpointCount: 0,
-        snapshotChunkApplyMs: 0,
-        snapshotChunkMaterializeMs: 0,
-        commitApplyMs: 0,
-        subscriptionStateMs: 0,
-        notifyMs: 0,
-      },
-    }),
-  } as unknown as SyncularV2ManagedClient<TestDb>;
+    sync: async () => {
+      this.syncCount += 1;
+      return {
+        changedTables: [],
+        changedRows: [],
+        changedRowsTruncated: false,
+        subscriptions: [],
+        bootstrap: zeroBootstrapStatus(),
+        pushedCommits: 0,
+        timings: {
+          totalMs: 0,
+          pushMs: 0,
+          pullMs: 0,
+          pullRequestMs: 0,
+          syncPackDecodeMs: 0,
+          pullTransformMs: 0,
+          integrityVerifyMs: 0,
+          snapshotFetchMs: 0,
+          pullApplyMs: 0,
+          scopeClearMs: 0,
+          snapshotRowApplyMs: 0,
+          snapshotArtifactApplyMs: 0,
+          snapshotArtifactCheckpointMs: 0,
+          snapshotArtifactCheckpointCount: 0,
+          snapshotChunkApplyMs: 0,
+          snapshotChunkMaterializeMs: 0,
+          snapshotChunkResetMs: 0,
+          snapshotChunkBindMs: 0,
+          snapshotChunkStepMs: 0,
+          commitApplyMs: 0,
+          subscriptionStateMs: 0,
+          notifyMs: 0,
+        },
+      };
+    },
+  } as unknown as SyncularClientLike<TestDb>;
 
   emitRowsChanged(event: SyncularV2RowsChangedEvent): void {
     this.emit('rowsChanged', event);
+  }
+
+  private createMutations() {
+    const tableFor = (table: string) => ({
+      insert: async (values: unknown) => {
+        this.mutationCalls.push({ table, method: 'insert', args: [values] });
+        return {
+          commitId: 'commit-insert',
+          clientCommitId: 'client-insert',
+          id: 'generated-id',
+        };
+      },
+      insertMany: async (rows: unknown[]) => {
+        this.mutationCalls.push({ table, method: 'insertMany', args: [rows] });
+        return {
+          commitId: 'commit-insert-many',
+          clientCommitId: 'client-insert-many',
+          ids: rows.map((_row, index) => `generated-${index}`),
+        };
+      },
+      update: async (id: string, patch: unknown, options?: unknown) => {
+        this.mutationCalls.push({
+          table,
+          method: 'update',
+          args: [id, patch, options],
+        });
+        return { commitId: 'commit-update', clientCommitId: 'client-update' };
+      },
+      delete: async (id: string, options?: unknown) => {
+        this.mutationCalls.push({
+          table,
+          method: 'delete',
+          args: [id, options],
+        });
+        return { commitId: 'commit-delete', clientCommitId: 'client-delete' };
+      },
+      upsert: async (id: string, patch: unknown, options?: unknown) => {
+        this.mutationCalls.push({
+          table,
+          method: 'upsert',
+          args: [id, patch, options],
+        });
+        return { commitId: 'commit-upsert', clientCommitId: 'client-upsert' };
+      },
+    });
+    return new Proxy(
+      {
+        $table: tableFor,
+        $commit: async (fn: (tx: Record<string, unknown>) => unknown) => {
+          const result = await fn(
+            new Proxy(
+              {},
+              {
+                get: (_target, prop) =>
+                  typeof prop === 'string' ? tableFor(prop) : undefined,
+              }
+            )
+          );
+          return {
+            result,
+            commit: {
+              commitId: 'commit-batch',
+              clientCommitId: 'client-batch',
+            },
+          };
+        },
+      },
+      {
+        get(target, prop) {
+          if (prop === 'then') return undefined;
+          if (typeof prop === 'string' && prop in target) {
+            return target[prop as keyof typeof target];
+          }
+          return typeof prop === 'string' ? tableFor(prop) : undefined;
+        },
+      }
+    );
   }
 
   private addEventListener<T extends SyncularV2ClientEventType>(

@@ -38,9 +38,9 @@ Apps that want startup and shutdown handled in one place can use the managed
 browser preset:
 
 ```ts
-import { createSyncularV2Client } from '@syncular/client-rust';
+import { createSyncularClient } from '@syncular/client';
 
-const syncular = await createSyncularV2Client<AppDb>({
+const syncular = await createSyncularClient<AppDb>({
   config: {
     baseUrl: '/sync',
     actorId: 'user-1',
@@ -61,6 +61,48 @@ The preset sets subscriptions, runs the initial sync, starts realtime when
 requested, and shuts everything down through `destroy()`/`close()`. Realtime is
 treated as a wakeup path: websocket reconnects trigger HTTP catchup sync, and
 interval polling stays opt-in through `lifecycle.pollIntervalMs`.
+
+## Tauri, React Native, and Expo
+
+Desktop and mobile JS shells use separate bridge packages. They return the same
+ergonomic client shape as the browser preset, but execute SQL, mutations,
+sync, presence, and events through a platform host:
+
+```ts
+import { createSyncularTauriClient } from '@syncular/client-tauri';
+import { createSyncularNativeClient } from '@syncular/client-react-native';
+import { createSyncularExpoClient } from '@syncular/client-expo';
+```
+
+React usage stays the same. Create a platform client, then pass it to the
+platform React factory's `SyncProvider`:
+
+```tsx
+import {
+  createSyncularNativeClient,
+  createSyncularNativeReact,
+} from '@syncular/client-react-native';
+
+const syncular = await createSyncularNativeClient<AppDb>({
+  module: SyncularNativeModule,
+});
+
+const { SyncProvider, useSyncQuery, useMutations } =
+  createSyncularNativeReact<AppDb>();
+
+function App() {
+  return (
+    <SyncProvider client={syncular}>
+      <Tasks />
+    </SyncProvider>
+  );
+}
+```
+
+The platform packages depend on `@syncular/client` for shared TypeScript types,
+Kysely query execution, generated/table mutation ergonomics, events, presence,
+conflicts, and the React hook surface. They do not use the browser Worker/WASM
+runtime.
 
 ## Query with Kysely
 
@@ -126,7 +168,7 @@ typed app-table deltas:
 ```ts
 import { syncularChangedRows } from './generated/syncular.browser';
 
-const unsubscribe = syncular.client.addRowsChangedListener((event) => {
+const unsubscribe = syncular.on('rowsChanged', (event) => {
   for (const task of syncularChangedRows.tasks(event)) {
     if (task.isDelete) removeTask(task.rowId);
     if (task.changed.title || task.changed.completed) refreshTask(task.rowId);
@@ -138,15 +180,15 @@ const unsubscribe = syncular.client.addRowsChangedListener((event) => {
 The same client surface exposes operational events for app chrome:
 
 ```ts
-syncular.client.addEventListener('outboxChanged', (stats) => {
+syncular.on('outboxChanged', (stats) => {
   setPendingSyncCount(stats.pending + stats.sending);
 });
 
-syncular.client.addEventListener('conflictsChanged', (stats) => {
+syncular.on('conflictsChanged', (stats) => {
   setConflictCount(stats.unresolved);
 });
 
-syncular.client.addEventListener('blobUploadCompleted', ({ ref }) => {
+syncular.on('blobUploadCompleted', ({ ref }) => {
   markBlobUploaded(ref.hash);
 });
 ```
@@ -163,29 +205,27 @@ scope only after the client has subscribed and completed an initial sync, since
 the server authorizes presence by the websocket connection's active scope keys.
 
 ```ts
-await syncular.client.setSubscriptions([
+await syncular.setSubscriptions([
   taskSubscription({ actorId: 'user-1' }),
 ]);
-await syncular.client.syncOnce();
-await syncular.client.startRealtime({
-  wsUrl: 'wss://api.example.com/sync/realtime',
-});
+await syncular.sync();
+await syncular.start();
 
-const unsubscribePresence = syncular.client.addPresenceListener((event) => {
+const unsubscribePresence = syncular.presence.onChange((event) => {
   renderPresence(event.scopeKey, event.presence);
 });
 
-syncular.client.joinPresence('user:user-1', {
+syncular.presence.join('user:user-1', {
   editingTaskId: taskId,
 });
 
-syncular.client.updatePresenceMetadata('user:user-1', {
+syncular.presence.updateMetadata('user:user-1', {
   editingTaskId: nextTaskId,
 });
 
-const current = syncular.client.getPresence('user:user-1');
+const current = syncular.presence.get('user:user-1');
 
-syncular.client.leavePresence('user:user-1');
+syncular.presence.leave('user:user-1');
 unsubscribePresence();
 ```
 
