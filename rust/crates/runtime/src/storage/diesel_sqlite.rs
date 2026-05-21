@@ -2437,6 +2437,18 @@ fn clear_app_table_for_scopes_preserving_local_crdt(
     Ok(())
 }
 
+fn clear_synced_app_rows_for_scopes(
+    conn: &mut SqliteConnection,
+    app_schema: AppSchema,
+    table: &str,
+    scopes: &ScopeValues,
+) -> Result<i64> {
+    let metadata = app_schema
+        .table_metadata(table)
+        .ok_or_else(|| SyncularError::config(format!("unknown generated app table: {table}")))?;
+    clear_synced_rows_for_scopes_generic(conn, metadata, scopes)
+}
+
 fn preserve_encrypted_crdt_materialized_columns(
     conn: &mut SqliteConnection,
     app_schema: AppSchema,
@@ -2560,6 +2572,23 @@ fn clear_table_for_scopes_generic(
     let sql = format!("delete from {table}{where_clause}", table = metadata.name);
     sql_query(sql).execute(conn)?;
     Ok(())
+}
+
+fn clear_synced_rows_for_scopes_generic(
+    conn: &mut SqliteConnection,
+    metadata: &AppTableMetadata,
+    scopes: &ScopeValues,
+) -> Result<i64> {
+    validate_app_table_metadata(metadata)?;
+    validate_identifier(metadata.server_version_column)?;
+    let mut filters = scope_filters(metadata, scopes)?;
+    filters.push(format!("{} > 0", metadata.server_version_column));
+    let sql = format!(
+        "delete from {table} where {where_clause}",
+        table = metadata.name,
+        where_clause = filters.join(" and ")
+    );
+    Ok(sql_query(sql).execute(conn)? as i64)
 }
 
 fn upsert_row_generic(
@@ -3649,6 +3678,10 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
             return clear_encrypted_crdt_system_table_for_scopes(self.conn, table, scopes);
         }
         clear_app_table_for_scopes(self.conn, self.app_schema, table, scopes)
+    }
+
+    fn clear_synced_rows_for_scopes(&mut self, table: &str, scopes: &ScopeValues) -> Result<i64> {
+        clear_synced_app_rows_for_scopes(self.conn, self.app_schema, table, scopes)
     }
 
     fn clear_table_for_scopes_preserving_local_crdt(

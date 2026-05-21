@@ -51,6 +51,8 @@ import type {
   SyncularV2LocalHealthRepairReport,
   SyncularV2LocalHealthRepairRequest,
   SyncularV2LocalHealthReport,
+  SyncularV2LocalSyncResetReport,
+  SyncularV2LocalSyncResetRequest,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQuerySnapshot,
   SyncularV2PullOptions,
@@ -556,6 +558,24 @@ export class SyncularV2RustClient {
     return parseJson(
       await this.raw.repairLocalHealthJson(JSON.stringify(normalized))
     );
+  }
+
+  async resetLocalSyncState(
+    request: SyncularV2LocalSyncResetRequest = {}
+  ): Promise<SyncularV2LocalSyncResetReport> {
+    const normalized = {
+      subscriptionIds: [...(request.subscriptionIds ?? [])],
+      clearSyncedRows: request.clearSyncedRows === true,
+    };
+    const result = parseJson<SyncularV2LocalSyncResetReport>(
+      await this.raw.resetLocalSyncStateJson(JSON.stringify(normalized))
+    );
+    for (const id of normalized.subscriptionIds.length > 0
+      ? normalized.subscriptionIds
+      : this.#subscriptions.map((subscription) => subscription.id)) {
+      this.#bootstrapById.delete(id);
+    }
+    return result;
   }
 
   buildYjsTextUpdate(

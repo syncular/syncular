@@ -272,6 +272,18 @@ pub trait AsyncWebStore {
         scopes: &'a ScopeValues,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
 
+    fn clear_synced_rows_for_scopes<'a>(
+        &'a mut self,
+        _table: &'a str,
+        _scopes: &'a ScopeValues,
+    ) -> Pin<Box<dyn Future<Output = Result<i64>> + 'a>> {
+        Box::pin(async {
+            Err(SyncularError::storage(anyhow::anyhow!(
+                "clearing synced rows is not supported by this store"
+            )))
+        })
+    }
+
     fn clear_table_for_scopes_preserving_local_crdt<'a>(
         &'a mut self,
         table: &'a str,
@@ -815,6 +827,27 @@ impl AsyncWebStore for WebMemoryStore {
             };
             rows.retain(|_, row| !row_matches_scopes(row, scopes));
             Ok(())
+        })
+    }
+
+    fn clear_synced_rows_for_scopes<'a>(
+        &'a mut self,
+        table: &'a str,
+        scopes: &'a ScopeValues,
+    ) -> Pin<Box<dyn Future<Output = Result<i64>> + 'a>> {
+        Box::pin(async move {
+            let Some(rows) = self.rows.get_mut(table) else {
+                return Ok(0);
+            };
+            let before = rows.len();
+            rows.retain(|_, row| {
+                let server_synced = row
+                    .get("server_version")
+                    .and_then(Value::as_i64)
+                    .is_some_and(|version| version > 0);
+                !(server_synced && row_matches_scopes(row, scopes))
+            });
+            Ok(before.saturating_sub(rows.len()) as i64)
         })
     }
 

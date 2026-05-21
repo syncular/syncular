@@ -23,6 +23,7 @@ import type {
   SyncularV2ErrorRecommendedAction,
   SyncularV2FieldEncryptionConfig,
   SyncularV2LocalHealthRepairRequest,
+  SyncularV2LocalSyncResetRequest,
   SyncularV2LiveQueryEvent,
   SyncularV2RealtimeConnectionState,
   SyncularV2RealtimeOptions,
@@ -293,6 +294,12 @@ export type SyncularV2WorkerRequest =
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'repairLocalHealth';
       request: SyncularV2LocalHealthRepairRequest;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'resetLocalSyncState';
+      request?: SyncularV2LocalSyncResetRequest;
     }
   | {
       id: number;

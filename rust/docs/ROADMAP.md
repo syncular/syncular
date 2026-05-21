@@ -562,8 +562,15 @@ read-only review:
     enumeration, app-schema/outbox/conflict/blob/CRDT summaries, and a WASM
     regression test for corrupt configured roots plus orphaned local state. The
     shared clock helper is platform-aware so browser health reports do not hit
-    unsupported native time APIs. Next: add an explicit larger
-    reset/rebootstrap flow for synced state versus app-owned local-only data.
+    unsupported native time APIs. Explicit reset/rebootstrap APIs now clear
+    selected configured subscription sync metadata/verified roots and can
+    optionally clear only synced generated app rows with positive
+    server-version values. Reset rejects unknown subscriptions, preserves
+    local-only rows, fails closed while unresolved outbox commits exist, updates
+    browser live-query/lifecycle state after row clearing, and is exposed across
+    Rust, browser worker, and native Swift/Kotlin/Java BoltFFI surfaces. Next:
+    detect orphaned synced app rows caused by scoped ownership drift and design
+    the explicit repair command.
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)

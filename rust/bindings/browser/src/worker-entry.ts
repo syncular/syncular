@@ -267,6 +267,8 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return requireClient().localHealthCheck();
     case 'repairLocalHealth':
       return requireClient().repairLocalHealth(request.request);
+    case 'resetLocalSyncState':
+      return requireClient().resetLocalSyncState(request.request);
     case 'buildYjsTextUpdate':
       return requireClient().buildYjsTextUpdate(request.args);
     case 'applyYjsTextUpdates':
@@ -488,7 +490,8 @@ function isDiagnosedSuccessRequest(
     type === 'clearBlobCache' ||
     type === 'pruneBlobCache' ||
     type === 'compactStorage' ||
-    type === 'repairLocalHealth'
+    type === 'repairLocalHealth' ||
+    type === 'resetLocalSyncState'
   );
 }
 
@@ -527,6 +530,7 @@ function requestDiagnosticSource(
     type === 'generatedSchemaState' ||
     type === 'localHealthCheck' ||
     type === 'repairLocalHealth' ||
+    type === 'resetLocalSyncState' ||
     type === 'compactStorage'
   ) {
     return 'storage';
@@ -583,6 +587,8 @@ function requestSuccessDetails(
       };
     }
     case 'repairLocalHealth':
+      return objectRecord(value);
+    case 'resetLocalSyncState':
       return objectRecord(value);
     case 'processBlobUploadQueue':
       return objectRecord(value);

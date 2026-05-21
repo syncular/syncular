@@ -773,6 +773,19 @@ export interface SyncularV2LocalHealthRepairReport {
   forcedRebootstrapSubscriptions: number;
 }
 
+export interface SyncularV2LocalSyncResetRequest {
+  subscriptionIds?: readonly string[];
+  clearSyncedRows?: boolean;
+}
+
+export interface SyncularV2LocalSyncResetReport {
+  resetSubscriptions: number;
+  deletedSubscriptionStates: number;
+  deletedVerifiedRoots: number;
+  clearedSyncedRows: number;
+  clearedTables: string[];
+}
+
 export interface SyncularV2RustRuntimeInfo {
   crateName: string;
   crateVersion: string;
@@ -1032,6 +1045,9 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   repairLocalHealth(
     request: SyncularV2LocalHealthRepairRequest
   ): Promise<SyncularV2LocalHealthRepairReport>;
+  resetLocalSyncState(
+    request?: SyncularV2LocalSyncResetRequest
+  ): Promise<SyncularV2LocalSyncResetReport>;
   buildYjsTextUpdate(
     args: SyncularBuildYjsTextUpdateArgs
   ): Promise<SyncularBuildYjsTextUpdateResult>;

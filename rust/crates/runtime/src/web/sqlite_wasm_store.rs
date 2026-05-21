@@ -901,6 +901,17 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = resetLocalSyncStateJson)]
+    pub async fn reset_local_sync_state_json(
+        &mut self,
+        request_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        self.inner
+            .reset_local_sync_state_json(request_json)
+            .await
+            .map_err(error_to_js)
+    }
+
     #[wasm_bindgen(js_name = setAuthHeadersJson)]
     pub fn set_auth_headers_json(
         &mut self,
@@ -5034,6 +5045,52 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                 }
             }
             self.exec(&format!(
+                "DELETE FROM {table} WHERE {}",
+                filters.join(" AND ")
+            ))
+        })
+    }
+
+    fn clear_synced_rows_for_scopes<'a>(
+        &'a mut self,
+        table: &'a str,
+        scopes: &'a ScopeValues,
+    ) -> Pin<Box<dyn Future<Output = Result<i64>> + 'a>> {
+        Box::pin(async move {
+            if is_encrypted_crdt_system_table(table) {
+                return Err(SyncularError::config(
+                    "resetLocalSyncState only clears generated app table rows",
+                ));
+            }
+            let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
+                SyncularError::config(format!("unknown generated app table: {table}"))
+            })?;
+            validate_table_name(table)?;
+            validate_table_name(metadata.server_version_column)?;
+            let mut filters = Vec::new();
+            for (scope_name, value) in scopes {
+                let column = metadata
+                    .scopes
+                    .iter()
+                    .find(|scope| scope.name == scope_name)
+                    .map(|scope| scope.column)
+                    .unwrap_or(scope_name.as_str());
+                validate_table_name(column)?;
+                if let Value::Array(values) = value {
+                    if values.is_empty() {
+                        filters.push("0 = 1".to_string());
+                    } else {
+                        filters.push(format!(
+                            "{column} IN ({})",
+                            values.iter().map(sql_value).collect::<Vec<_>>().join(", ")
+                        ));
+                    }
+                } else {
+                    filters.push(format!("{column} = {}", sql_value(value)));
+                }
+            }
+            filters.push(format!("{} > 0", metadata.server_version_column));
+            self.exec_with_changes(&format!(
                 "DELETE FROM {table} WHERE {}",
                 filters.join(" AND ")
             ))

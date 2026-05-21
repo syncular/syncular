@@ -102,6 +102,19 @@ First retained slice:
   metadata can be repaired without mutating app rows. The shared clock helper is
   now platform-aware so health reports do not call unsupported native time APIs
   in WASM.
+- The seventh retained slice adds an explicit reset/rebootstrap API:
+  `reset_local_sync_state_json()` for Rust/native hosts and
+  `resetLocalSyncState()` for browser worker clients. The reset clears
+  subscription sync metadata and verified roots for selected configured
+  subscriptions. Optional `clearSyncedRows` deletes only generated app rows with
+  a positive server-version column in the selected scopes, preserves local-only
+  rows with `server_version = 0`, rejects unknown subscription ids, and fails
+  closed when any local outbox commit is not `acked`. Browser worker reset calls
+  drain live-query refreshes and update lifecycle state after rows are cleared.
+  BoltFFI Swift/Kotlin/Java bindings now expose the same low-level JSON reset
+  method. Runtime and WASM coverage prove pending outbox commits block row
+  clearing, acked outbox state permits reset, synced rows are removed, local-only
+  rows survive, and the follow-up health report is clean.
 
 Gates:
 
@@ -113,11 +126,14 @@ Gates:
 - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`
 - `bun run build:wasm:dev`
 - `bun test src/__tests__/sync-hono.wasm.test.ts -t "reports and safely repairs browser local health findings"`
+- `bun test src/__tests__/sync-hono.wasm.test.ts -t "resets browser sync state while preserving local-only app rows"`
+- `bun test src/__tests__/sync-hono.wasm.test.ts`
 - `bun run test`
 - `bun run tsgo`
 
 ## Next Action
 
-Add a larger reset/rebootstrap flow that is explicit about synced state versus
-app-owned local-only data, including browser/native parity tests for what is
-deleted, what is preserved, and which events/diagnostics are emitted.
+Add orphaned synced-row detection for scoped ownership drift, then decide the
+safe explicit repair shape. Keep the default fail-closed: report first, only
+delete rows through an explicit app/host command that proves the scope is no
+longer configured and does not touch local-only data.

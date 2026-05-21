@@ -136,6 +136,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(swift.contains("func diagnosticSnapshotJson() throws -> String"));
     assert!(swift.contains("func localHealthCheckJson() throws -> String"));
     assert!(swift.contains("func repairLocalHealthJson(requestJson: String) throws -> String"));
+    assert!(swift.contains("func resetLocalSyncStateJson(requestJson: String) throws -> String"));
     assert!(swift.contains("func appSchemaStateJson() throws -> String"));
     assert!(swift.contains("func shutdown() throws -> Bool"));
     assert!(kotlin.contains("class SyncularBoltClient"));
@@ -176,6 +177,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(kotlin.contains("fun diagnosticSnapshotJson(): String"));
     assert!(kotlin.contains("fun localHealthCheckJson(): String"));
     assert!(kotlin.contains("fun repairLocalHealthJson(requestJson: String): String"));
+    assert!(kotlin.contains("fun resetLocalSyncStateJson(requestJson: String): String"));
     assert!(kotlin.contains("fun appSchemaStateJson(): String"));
     assert!(kotlin.contains("fun shutdown(): Boolean"));
     assert!(!kotlin.contains("fun close(): Boolean"));
@@ -219,6 +221,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java.contains("public String diagnosticSnapshotJson()"));
     assert!(java.contains("public String localHealthCheckJson()"));
     assert!(java.contains("public String repairLocalHealthJson(String requestJson)"));
+    assert!(java.contains("public String resetLocalSyncStateJson(String requestJson)"));
     assert!(java.contains("public String appSchemaStateJson()"));
     assert!(java.contains("public boolean shutdown()"));
     assert!(!java.contains("public boolean close()"));
@@ -234,6 +237,8 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java_header.contains("boltffi_syncular_bolt_client_local_health_check_json"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_repair_local_health_json"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_repair_local_health_json"));
+    assert!(android_header.contains("boltffi_syncular_bolt_client_reset_local_sync_state_json"));
+    assert!(java_header.contains("boltffi_syncular_bolt_client_reset_local_sync_state_json"));
     assert!(
         android_header.contains("boltffi_syncular_bolt_client_enqueue_process_blob_upload_queue")
     );

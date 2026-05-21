@@ -314,6 +314,135 @@ where
         )?)
     }
 
+    pub async fn reset_local_sync_state(
+        &mut self,
+        request: crate::health::LocalSyncResetRequest,
+    ) -> Result<crate::health::LocalSyncResetReport> {
+        let selected = self.selected_reset_subscriptions(&request.subscription_ids)?;
+        if request.clear_synced_rows {
+            let unresolved_outbox = self
+                .store
+                .outbox_summaries()
+                .await?
+                .iter()
+                .filter(|commit| commit.status != "acked")
+                .count();
+            if unresolved_outbox > 0 {
+                return Err(SyncularError::config(format!(
+                    "resetLocalSyncState clearSyncedRows requires an empty local outbox; found {unresolved_outbox} unresolved commits"
+                )));
+            }
+        }
+
+        let selected_ids = selected
+            .iter()
+            .map(|subscription| subscription.id.clone())
+            .collect::<HashSet<_>>();
+        let deleted_subscription_states = self
+            .store
+            .subscription_states()
+            .await?
+            .iter()
+            .filter(|state| selected_ids.contains(&state.subscription_id))
+            .count();
+        let deleted_verified_roots = self
+            .store
+            .verified_roots()
+            .await?
+            .iter()
+            .filter(|root| selected_ids.contains(&root.subscription_id))
+            .count();
+
+        self.store.begin_apply_batch().await?;
+        let reset_result = async {
+            let mut cleared_synced_rows = 0i64;
+            let mut cleared_tables = Vec::new();
+            if request.clear_synced_rows {
+                for subscription in &selected {
+                    let deleted = self
+                        .store
+                        .clear_synced_rows_for_scopes(&subscription.table, &subscription.scopes)
+                        .await?;
+                    if deleted > 0 {
+                        cleared_synced_rows += deleted;
+                        if !cleared_tables
+                            .iter()
+                            .any(|table| table == &subscription.table)
+                        {
+                            cleared_tables.push(subscription.table.clone());
+                        }
+                    }
+                }
+            }
+            for subscription in &selected {
+                self.store.delete_verified_root(&subscription.id).await?;
+                self.store
+                    .delete_subscription_state(&subscription.id)
+                    .await?;
+            }
+            Ok(crate::health::LocalSyncResetReport {
+                reset_subscriptions: selected.len(),
+                deleted_subscription_states,
+                deleted_verified_roots,
+                cleared_synced_rows,
+                cleared_tables,
+            })
+        }
+        .await;
+        match reset_result {
+            Ok(report) => {
+                self.store.commit_apply_batch().await?;
+                Ok(report)
+            }
+            Err(error) => {
+                let _ = self.store.rollback_apply_batch().await;
+                Err(error)
+            }
+        }
+    }
+
+    pub async fn reset_local_sync_state_json(&mut self, request_json: &str) -> Result<String> {
+        let request: crate::health::LocalSyncResetRequest = serde_json::from_str(request_json)?;
+        Ok(serde_json::to_string(
+            &self.reset_local_sync_state(request).await?,
+        )?)
+    }
+
+    fn selected_reset_subscriptions(
+        &self,
+        subscription_ids: &[String],
+    ) -> Result<Vec<SubscriptionSpec>> {
+        if subscription_ids.is_empty() {
+            return Ok(self.subscriptions.clone());
+        }
+        let requested = subscription_ids
+            .iter()
+            .map(String::as_str)
+            .collect::<HashSet<_>>();
+        let selected = self
+            .subscriptions
+            .iter()
+            .filter(|subscription| requested.contains(subscription.id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+        if selected.len() != requested.len() {
+            let configured = self
+                .subscriptions
+                .iter()
+                .map(|subscription| subscription.id.as_str())
+                .collect::<HashSet<_>>();
+            let missing = subscription_ids
+                .iter()
+                .find(|id| !configured.contains(id.as_str()))
+                .map(String::as_str)
+                .unwrap_or("unknown");
+            return Err(SyncularError::config(format!(
+                "cannot reset unconfigured subscription {missing}"
+            )));
+        }
+        Ok(selected)
+    }
+
     async fn repair_force_rebootstrap(
         &mut self,
         subscription_ids: &[String],
