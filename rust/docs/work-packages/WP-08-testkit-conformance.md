@@ -1,6 +1,6 @@
 # WP-08 Testkit And Conformance
 
-Status: `[~]` in progress
+Status: `[x]` accepted
 
 ## Goal
 
@@ -57,10 +57,9 @@ browser and native smoke setup.
 
 ## Next Action
 
-Move the next app conformance slice onto this fixture: shared scenarios for
-auth, conflicts, blobs, E2EE, CRDT, and scope revocation across
-Rust/native/browser bindings. Keep the stateful server generic; app-specific
-fixture rows should stay in app tests.
+Monitor downstream app adoption and add narrow helpers only when an app still
+has to mock Syncular internals. The next roadmap item is WP-09 native binding
+and packaging validation.
 
 ## Progress
 
@@ -174,3 +173,8 @@ fixture rows should stay in app tests.
   fixture slice, covering `33` testkit smoke tests, `3` blob transport tests,
   `16` CRDT field tests, `41` protocol tests, `9` generated Rust app tests, and
   `6` browser generated-app contract tests.
+- Accepted: WP-08 now has the public Rust-first app testing foundation:
+  disposable SQLite fixtures, scripted and stateful transports, production
+  HTTP/WebSocket fixture shape, typed shared conformance data, native event
+  helpers, CRDT helpers, blob helpers, fault injection, and repeatable
+  conformance gate scripts.

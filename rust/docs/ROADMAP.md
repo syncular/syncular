@@ -343,7 +343,7 @@ read-only review:
     `resyncRequired`, and encrypted update-log CRDTs now carry required-base
     vectors inside ciphertext and recover through app/update/checkpoint
     subscription bootstrap.
-- `[~]` [`WP-08 Testkit And Conformance`](work-packages/WP-08-testkit-conformance.md)
+- `[x]` [`WP-08 Testkit And Conformance`](work-packages/WP-08-testkit-conformance.md)
   - Rust testkit now exposes `AppTestHttpServer`, a disposable HTTP/WebSocket
     wrapper around the stateful `AppTestServer`. Smoke coverage proves HTTP
     pushes write server state, WebSocket listeners receive sync wakeups, and a
