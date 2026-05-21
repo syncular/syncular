@@ -730,6 +730,21 @@ fn generate_migrations_module(
         ));
     }
     out.push_str("];\n\n");
+    out.push_str("pub const LOCAL_BASE_TABLE_SETUP_SQL: &[&str] = &[\n");
+    for table in tables
+        .iter()
+        .filter(|table| !table.name.starts_with("sync_"))
+    {
+        let table_config = config.table(&table.name);
+        out.push_str(&format!(
+            "    {},\n",
+            rust_string_literal(&ts_raw_sql_create_table(
+                table,
+                table_config.sqlite_without_rowid.unwrap_or(false),
+            ))
+        ));
+    }
+    out.push_str("];\n\n");
     let read_models = local_read_model_sqls(tables, config)?;
     out.push_str(
         "#[derive(Debug, Clone, Copy, PartialEq, Eq)]\n\
@@ -1145,11 +1160,17 @@ fn generate_runtime_app_schema_json(
     schema_version: i32,
 ) -> Result<String> {
     let mut app_tables = Vec::new();
-    for table in tables
+    let user_tables = tables
         .iter()
         .filter(|table| !table.name.starts_with("sync_"))
-    {
+        .collect::<Vec<_>>();
+    let mut local_base_table_setup_sql = Vec::new();
+    for table in &user_tables {
         let table_config = config.table(&table.name);
+        local_base_table_setup_sql.push(ts_raw_sql_create_table(
+            table,
+            table_config.sqlite_without_rowid.unwrap_or(false),
+        ));
         let primary_key = primary_key_column(table);
         let server_version_column = table_config
             .server_version_column
@@ -1219,6 +1240,9 @@ fn generate_runtime_app_schema_json(
         "schemaVersion": schema_version,
         "tables": app_tables,
         "migrations": migrations,
+        "localBaseSchema": {
+            "tableSetupSql": local_base_table_setup_sql,
+        },
     }))?)
 }
 
@@ -1949,24 +1973,6 @@ fn schema_app_type(column: &ColumnRow, config: &TableCodegenConfig) -> &'static 
         "real" => "number",
         "blob" => "bytes",
         _ => "string",
-    }
-}
-
-fn ts_schema_column_callback(column: &ColumnRow) -> Option<String> {
-    let mut calls = Vec::new();
-    if column.pk > 0 {
-        calls.push("primaryKey()".to_string());
-    }
-    if !is_nullable(column) && column.pk == 0 {
-        calls.push("notNull()".to_string());
-    }
-    if has_sql_default(column) {
-        calls.push(format!("defaultTo({})", ts_default_value(column)));
-    }
-    if calls.is_empty() {
-        None
-    } else {
-        Some(format!("(col) => col.{}", calls.join(".")))
     }
 }
 
@@ -5248,6 +5254,20 @@ fn generate_typescript_module(
     out.push_str("}\n\n");
     out.push_str("export const syncularGeneratedAppSchema = {\n");
     out.push_str("  schemaVersion: syncularGeneratedSchemaVersion,\n");
+    out.push_str("  localBaseSchema: {\n");
+    out.push_str("    tableSetupSql: [\n");
+    for table in &user_tables {
+        let table_config = config.table(&table.name);
+        out.push_str(&format!(
+            "      {},\n",
+            ts_string(&ts_raw_sql_create_table(
+                table,
+                table_config.sqlite_without_rowid.unwrap_or(false),
+            ))
+        ));
+    }
+    out.push_str("    ],\n");
+    out.push_str("  },\n");
     out.push_str("  tables: [\n");
     for table in &user_tables {
         let table_config = config.table(&table.name);
@@ -5409,40 +5429,11 @@ fn generate_typescript_module(
         "export async function ensureSyncularAppBaseSchema(db: Kysely<any>): Promise<void> {\n",
     );
     out.push_str("  await ensureSyncularAppSchemaMetadata(db);\n");
-    for table in &user_tables {
-        let table_config = config.table(&table.name);
-        if table_config.sqlite_without_rowid.unwrap_or(false) {
-            let sql = ts_template_literal_content(&ts_raw_sql_create_table(table, true));
-            out.push_str("  await sql`\n");
-            for line in sql.lines() {
-                out.push_str("    ");
-                out.push_str(line);
-                out.push('\n');
-            }
-            out.push_str("  `.execute(db);\n\n");
-        } else {
-            out.push_str("  await db.schema\n");
-            out.push_str(&format!("    .createTable({})\n", ts_string(&table.name)));
-            out.push_str("    .ifNotExists()\n");
-            for column in &table.columns {
-                if let Some(callback) = ts_schema_column_callback(column) {
-                    out.push_str(&format!(
-                        "    .addColumn({}, {}, {})\n",
-                        ts_string(&column.name),
-                        ts_string(ts_sqlite_column_type(column)),
-                        callback
-                    ));
-                } else {
-                    out.push_str(&format!(
-                        "    .addColumn({}, {})\n",
-                        ts_string(&column.name),
-                        ts_string(ts_sqlite_column_type(column))
-                    ));
-                }
-            }
-            out.push_str("    .execute();\n\n");
-        }
-    }
+    out.push_str(
+        "  for (const statement of syncularGeneratedAppSchema.localBaseSchema.tableSetupSql) {\n",
+    );
+    out.push_str("    await sql.raw(statement).execute(db);\n");
+    out.push_str("  }\n");
     out.push_str("}\n\n");
     out.push_str("function syncularGeneratedNowMs(): number {\n");
     out.push_str("  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();\n");
@@ -10485,6 +10476,36 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
     }
 
     #[test]
+    fn runtime_app_schema_json_carries_local_base_schema() -> Result<()> {
+        let tables = vec![table(
+            "tasks",
+            vec![
+                column("id", "TEXT", false, true, None),
+                column("title", "TEXT", true, false, None),
+                column("server_version", "BIGINT", true, false, Some("0")),
+            ],
+        )];
+        let config = CodegenConfig {
+            tables: BTreeMap::from([(
+                "tasks".to_string(),
+                table_config("sub-tasks", "server_version", Vec::new()),
+            )]),
+            ..CodegenConfig::default()
+        };
+
+        let output = test_app_schema_json(&tables, &config, 2)?;
+        let json: JsonValue = serde_json::from_str(&output)?;
+
+        assert_eq!(json["schemaVersion"], 2);
+        assert_eq!(
+            json["localBaseSchema"]["tableSetupSql"][0],
+            "CREATE TABLE IF NOT EXISTS \"tasks\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"title\" TEXT NOT NULL,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0\n)"
+        );
+
+        Ok(())
+    }
+
+    #[test]
     fn schema_json_drives_language_generation() -> Result<()> {
         let migrations_dir = temp_test_dir("schema-backed-generation")?;
         fs::create_dir_all(migrations_dir.join("0001_initial"))?;
@@ -10744,12 +10765,12 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(output.contains("Regenerate the client before opening this database"));
         assert!(!output.contains("Browser app schema migration replay is not available"));
         assert!(output.contains("async function validateSyncularAppSchema(db: Kysely<any>)"));
-        assert!(output.contains("    .createTable('projects')"));
-        assert!(output.contains("    .addColumn('owner_id', 'text', (col) => col.notNull())"));
+        assert!(output.contains("  localBaseSchema: {"));
+        assert!(output.contains("    tableSetupSql: ["));
+        assert!(output.contains("CREATE TABLE IF NOT EXISTS \"projects\""));
         assert!(output.contains(
-            "    .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))"
+            "  for (const statement of syncularGeneratedAppSchema.localBaseSchema.tableSetupSql)"
         ));
-        assert!(output.contains("    .addColumn('project_id', 'text')"));
         assert!(output.contains("  tasks: TaskRow;"));
         assert!(output.contains("  projects: ProjectRow;"));
         assert!(output.contains("export interface SyncularGeneratedTableConfig"));

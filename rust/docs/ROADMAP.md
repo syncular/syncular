@@ -142,7 +142,10 @@ read-only review:
     Latest external evidence shows derived-schema setup is now a larger
     app-harness cost than artifact apply. The external Rust adapter now
     consumes the generated `localDerivedSchema` contract directly, and the
-    before-bootstrap derived-schema install probe was rejected because it
+    generated runtime/native/browser contract now carries and consumes
+    `localBaseSchema.tableSetupSql` so app-table DDL has the same generated
+    source of truth. The before-bootstrap derived-schema install probe was
+    rejected because it
     regressed 500k bootstrap (`1396.01ms -> 1827.83ms`), local apply
     (`208ms -> 1525ms`), and peak memory (`695.97MB -> 761.14MB`). Keep
     bulk-load-then-derived-rebuild as the app harness shape. Generated

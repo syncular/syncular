@@ -581,6 +581,9 @@ mod tests {
             app_tables: syncular::APP_TABLES,
             app_table_metadata: syncular::APP_TABLE_METADATA,
             migrations: migrations::MIGRATIONS,
+            local_base_schema: syncular_client::app_schema::LocalBaseSchema {
+                table_setup_sql: migrations::LOCAL_BASE_TABLE_SETUP_SQL,
+            },
             schema_version: None,
             default_subscriptions: syncular::default_subscriptions,
             adapter_for: diesel_tables::adapter_for,

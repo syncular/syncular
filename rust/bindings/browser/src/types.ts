@@ -250,8 +250,13 @@ export interface SyncularV2TableConfig {
 
 export interface SyncularV2AppSchema {
   schemaVersion: number;
+  localBaseSchema?: SyncularV2LocalBaseSchema;
   tables: readonly SyncularV2AppTableMetadata[];
   migrations?: readonly SyncularV2EmbeddedMigration[];
+}
+
+export interface SyncularV2LocalBaseSchema {
+  tableSetupSql: readonly string[];
 }
 
 export interface SyncularV2EmbeddedMigration {

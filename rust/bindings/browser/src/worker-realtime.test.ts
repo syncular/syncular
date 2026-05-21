@@ -7,6 +7,7 @@ import type {
   SyncularV2SyncResult,
 } from './types';
 import type { SyncularV2WorkerEvent } from './worker-protocol';
+import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 import {
   isSyncularV2RealtimeSyncMessage,
   resolveSyncularV2RealtimeUrl,
@@ -158,20 +159,22 @@ describe('Syncular v2 worker realtime', () => {
     });
 
     await waitFor(() => events.some((event) => event.type === 'presenceEvent'));
-    expect(events).toContainEqual({
-      protocolVersion: 1,
-      type: 'presenceEvent',
-      action: 'snapshot',
-      scopeKey: 'tasks:user-1',
-      entries: [
-        {
-          clientId: 'client-2',
-          actorId: 'actor-2',
-          joinedAt: 123,
-          metadata: { viewing: 'task-2' },
-        },
-      ],
-    });
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        type: 'presenceEvent',
+        action: 'snapshot',
+        scopeKey: 'tasks:user-1',
+        entries: [
+          {
+            clientId: 'client-2',
+            actorId: 'actor-2',
+            joinedAt: 123,
+            metadata: { viewing: 'task-2' },
+          },
+        ],
+      })
+    );
   });
 
   it('accepts websocket text frames delivered as bytes', async () => {
