@@ -1,3 +1,4 @@
+export * from './blob-limits';
 export * from './bridge-client';
 export * from './client';
 export * from './client-config';

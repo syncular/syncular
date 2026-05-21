@@ -854,6 +854,83 @@ describe('Syncular v2 worker client', () => {
     });
   });
 
+  it('rejects oversized blob stores before posting to the worker', async () => {
+    const worker = new FakeWorker();
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+      blobLimits: { maxPayloadBytes: 2 },
+      diagnostics: (event) => diagnostics.push(event),
+    });
+
+    await expect(
+      client.storeBlob(new Uint8Array([1, 2, 3]), {
+        mimeType: 'text/plain',
+      })
+    ).rejects.toMatchObject({
+      code: 'blob.too_large',
+      details: {
+        operation: 'store',
+        size: 3,
+        maxPayloadBytes: 2,
+        mimeType: 'text/plain',
+      },
+    });
+    expect(worker.messages).toHaveLength(0);
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        level: 'warn',
+        source: 'blob',
+        code: 'blob.too_large',
+        details: expect.objectContaining({
+          operation: 'store',
+          size: 3,
+          maxPayloadBytes: 2,
+        }),
+      })
+    );
+  });
+
+  it('rejects oversized blob retrieves before posting to the worker', async () => {
+    const worker = new FakeWorker();
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+      blobLimits: { maxPayloadBytes: 2 },
+      diagnostics: (event) => diagnostics.push(event),
+    });
+
+    await expect(
+      client.retrieveBlob({
+        hash: `sha256:${'1'.repeat(64)}`,
+        size: 3,
+        mimeType: 'text/plain',
+      })
+    ).rejects.toMatchObject({
+      code: 'blob.too_large',
+      details: {
+        operation: 'retrieve',
+        size: 3,
+        maxPayloadBytes: 2,
+        hash: `sha256:${'1'.repeat(64)}`,
+      },
+    });
+    expect(worker.messages).toHaveLength(0);
+    expect(diagnostics.at(-1)).toMatchObject({
+      level: 'warn',
+      source: 'blob',
+      code: 'blob.too_large',
+      details: {
+        operation: 'retrieve',
+        size: 3,
+        maxPayloadBytes: 2,
+        hash: `sha256:${'1'.repeat(64)}`,
+      },
+    });
+  });
+
   it('preserves encrypted blob metadata in upload completion events', async () => {
     const worker = new FakeWorker();
     const client = new SyncularV2WorkerClient(worker.asWorker(), {

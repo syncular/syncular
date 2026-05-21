@@ -4,6 +4,7 @@ import type {
   SyncOperation,
 } from '@syncular/core';
 import { issueSyncularV2AuthLease } from './auth-leases';
+import { assertSyncularV2BlobPayloadLimit } from './blob-limits';
 import { resolveSyncularV2ClientConfig } from './client-config';
 import {
   appendSyncularV2DiagnosticEvent,
@@ -26,6 +27,7 @@ import type {
   SyncularV2AuthLeaseRecord,
   SyncularV2BlobCacheStats,
   SyncularV2BlobEncryptionConfig,
+  SyncularV2BlobLimits,
   SyncularV2BlobStoreOptions,
   SyncularV2BlobUploadQueueStats,
   SyncularV2BootstrapState,
@@ -94,6 +96,7 @@ export interface CreateSyncularV2RustClientOptions {
   wasmUrl?: string | URL | Request;
   runtime?: SyncularV2RuntimeArtifact;
   config: SyncularV2ClientConfig;
+  blobLimits?: SyncularV2BlobLimits;
 }
 
 type RawSyncResult = {
@@ -231,7 +234,8 @@ export async function openSyncularV2RustClient(
       rust: rustRuntimeInfo,
     }),
     config,
-    config.pull
+    config.pull,
+    options.blobLimits
   );
 }
 
@@ -259,7 +263,8 @@ export class SyncularV2RustClient {
     private readonly raw: RawSyncularV2RustClient,
     private readonly runtime: SyncularV2RuntimeInfo,
     private readonly config: SyncularV2ClientConfig,
-    private readonly pullOptions: SyncularV2PullOptions | undefined
+    private readonly pullOptions: SyncularV2PullOptions | undefined,
+    private readonly blobLimits: SyncularV2BlobLimits | undefined
   ) {}
 
   setSubscriptions(subscriptions: readonly SyncularV2SubscriptionSpec[]): void {
@@ -587,12 +592,30 @@ export class SyncularV2RustClient {
     data: Uint8Array,
     options: SyncularV2BlobStoreOptions = {}
   ): Promise<BlobRef> {
+    assertSyncularV2BlobPayloadLimit({
+      operation: 'store',
+      size: data.byteLength,
+      limits: this.blobLimits,
+      options,
+      diagnostics: (event) => this.#emitDiagnostic(event),
+    });
     return parseJson(
       await this.raw.storeBlobJson(data, JSON.stringify(options))
     );
   }
 
   retrieveBlob(ref: BlobRef): Promise<Uint8Array> {
+    try {
+      assertSyncularV2BlobPayloadLimit({
+        operation: 'retrieve',
+        size: ref.size,
+        limits: this.blobLimits,
+        refHash: ref.hash,
+        diagnostics: (event) => this.#emitDiagnostic(event),
+      });
+    } catch (error) {
+      return Promise.reject(error);
+    }
     return this.raw.retrieveBlob(JSON.stringify(ref));
   }
 

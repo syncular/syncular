@@ -112,8 +112,9 @@ Known gaps:
   `encrypted=true`, and `keyId`; cache/outbox/server bodies carry ciphertext,
   and retrieval validates ciphertext before decrypting to plaintext.
 - Browser blob bodies are still stored and uploaded through SQLite/memory
-  buffers, so very large browser blobs need better limits and platform-aware
-  transfer strategy.
+  buffers. The browser package now enforces an explicit payload limit before
+  high-level `Blob`/`File` conversion, worker posting, or direct WASM calls;
+  very large browser blobs still need a platform-aware transfer strategy.
 - Queue/cache limits, diagnostics, and console visibility are thinner than
   production support needs.
 - Shared conformance is good but not complete for every auth, scope,
@@ -174,9 +175,11 @@ Add scope-aware blob authorization helpers and diagnostics:
 
 ## Next Action
 
-Continue WP-24 with explicit blob limits and native/browser diagnostic payload
-detail for cache hit/miss, upload retry/failure, auth rejection, corruption,
-and pruning without adding polling loops or hash-only access fallbacks.
+Continue WP-24 with native/browser diagnostic payload detail for cache
+hit/miss, upload retry/failure, auth rejection, corruption, and pruning
+without adding polling loops or hash-only access fallbacks. Browser payload
+size limits are now explicit; next tighten remaining queue/cache status and
+shared failure conformance.
 
 Latest evidence:
 
@@ -229,3 +232,25 @@ Latest evidence:
 
 - `bun --cwd rust/bindings/browser tsgo`
 - `bun test src/worker-client.test.ts` from `rust/bindings/browser`
+
+## Fourth Slice
+
+Add explicit browser blob payload limits:
+
+1. `[x]` Add `blobLimits.maxPayloadBytes` to browser database/worker client
+   options, with the same 64 MiB default as the Rust runtime
+   `maxBlobPayloadBytes` limit.
+2. `[x]` Reject oversized high-level `Blob`/`File` inputs before calling
+   `arrayBuffer()` so apps do not pay the browser memory copy cost for payloads
+   already known to be too large.
+3. `[x]` Reject oversized worker/direct Rust `storeBlob` and `retrieveBlob`
+   requests before posting to the worker or crossing into WASM.
+4. `[x]` Emit stable `blob.too_large` diagnostics with operation, size,
+   configured limit, hash, MIME type, and immediate-upload metadata where
+   available.
+
+Latest evidence:
+
+- `bun --cwd rust/bindings/browser tsgo`
+- `bun test src/worker-client.test.ts src/database.test.ts src/public-api.test.ts`
+  from `rust/bindings/browser`
