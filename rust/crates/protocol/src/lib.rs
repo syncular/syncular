@@ -23,9 +23,9 @@ pub use auth_lease::{
     AUTH_LEASE_TYP, AUTH_LEASE_VERSION,
 };
 pub use blob::{
-    blob_hash, validate_blob_bytes, validate_blob_digest, validate_blob_hash,
-    BlobDownloadUrlResponse, BlobRef, BlobUploadCompleteResponse, BlobUploadInitRequest,
-    BlobUploadInitResponse,
+    blob_hash, normalize_blob_mime_type, validate_blob_bytes, validate_blob_digest,
+    validate_blob_hash, BlobDownloadUrlResponse, BlobRef, BlobUploadCompleteResponse,
+    BlobUploadInitRequest, BlobUploadInitResponse,
 };
 pub use error::{ProtocolError, Result};
 pub use integrity::{

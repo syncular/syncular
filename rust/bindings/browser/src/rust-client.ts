@@ -25,6 +25,7 @@ import type {
   SyncularV2AuthHeaders,
   SyncularV2AuthLeaseRecord,
   SyncularV2BlobCacheStats,
+  SyncularV2BlobEncryptionConfig,
   SyncularV2BlobStoreOptions,
   SyncularV2BlobUploadQueueStats,
   SyncularV2BootstrapState,
@@ -352,6 +353,14 @@ export class SyncularV2RustClient {
       config == null
         ? 'null'
         : JSON.stringify(normalizeEncryptedCrdtConfig(config))
+    );
+  }
+
+  setBlobEncryption(config: SyncularV2BlobEncryptionConfig | null): void {
+    this.raw.setBlobEncryptionJson(
+      config == null
+        ? 'null'
+        : JSON.stringify(normalizeBlobEncryptionConfig(config))
     );
   }
 
@@ -1317,6 +1326,18 @@ function normalizeFieldEncryptionConfig(
 function normalizeEncryptedCrdtConfig(
   config: SyncularV2EncryptedCrdtConfig
 ): Omit<SyncularV2EncryptedCrdtConfig, 'keys'> & {
+  keys: Record<string, string>;
+} {
+  const keys: Record<string, string> = {};
+  for (const [kid, value] of Object.entries(config.keys)) {
+    keys[kid] = value instanceof Uint8Array ? bytesToBase64Url(value) : value;
+  }
+  return { ...config, keys };
+}
+
+function normalizeBlobEncryptionConfig(
+  config: SyncularV2BlobEncryptionConfig
+): Omit<SyncularV2BlobEncryptionConfig, 'keys'> & {
   keys: Record<string, string>;
 } {
   const keys: Record<string, string> = {};

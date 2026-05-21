@@ -26,6 +26,7 @@ import type {
   SyncularV2AuthHeaders,
   SyncularV2AuthLeaseRecord,
   SyncularV2BlobCacheStats,
+  SyncularV2BlobEncryptionConfig,
   SyncularV2BlobStoreOptions,
   SyncularV2BlobUploadQueueStats,
   SyncularV2BootstrapStatus,
@@ -383,6 +384,15 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     await this.#request({
       type: 'setEncryptedCrdt',
       config: config == null ? null : normalizeEncryptedCrdtConfig(config),
+    });
+  }
+
+  async setBlobEncryption(
+    config: SyncularV2BlobEncryptionConfig | null
+  ): Promise<void> {
+    await this.#request({
+      type: 'setBlobEncryption',
+      config: config == null ? null : normalizeBlobEncryptionConfig(config),
     });
   }
 
@@ -1895,6 +1905,18 @@ function normalizeFieldEncryptionConfig(
 function normalizeEncryptedCrdtConfig(
   config: SyncularV2EncryptedCrdtConfig
 ): Omit<SyncularV2EncryptedCrdtConfig, 'keys'> & {
+  keys: Record<string, string>;
+} {
+  const keys: Record<string, string> = {};
+  for (const [kid, value] of Object.entries(config.keys)) {
+    keys[kid] = value instanceof Uint8Array ? bytesToBase64Url(value) : value;
+  }
+  return { ...config, keys };
+}
+
+function normalizeBlobEncryptionConfig(
+  config: SyncularV2BlobEncryptionConfig
+): Omit<SyncularV2BlobEncryptionConfig, 'keys'> & {
   keys: Record<string, string>;
 } {
   const keys: Record<string, string> = {};

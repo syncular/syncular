@@ -19,7 +19,7 @@ use crate::diesel_sqlite::DieselSqliteStore;
 use crate::encrypted_crdt::EncryptedCrdt;
 #[cfg(feature = "native")]
 use crate::encrypted_crdt::{CRDT_CHECKPOINTS_TABLE, CRDT_UPDATES_TABLE};
-use crate::encryption::FieldEncryption;
+use crate::encryption::{BlobEncryption, FieldEncryption};
 use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "demo-todo-native-fixture")]
 use crate::fixtures::todo::rusqlite_sqlite::RusqliteStore;
@@ -140,6 +140,7 @@ enum WorkerCommand {
     SetAuthHeaders(SyncAuthHeaders),
     SetFieldEncryption(Option<FieldEncryption>),
     SetEncryptedCrdt(Option<EncryptedCrdt>),
+    SetBlobEncryption(Option<BlobEncryption>),
     Stop,
 }
 
@@ -1694,6 +1695,10 @@ impl SyncWorker {
         self.try_send(WorkerCommand::SetEncryptedCrdt(encryption))
     }
 
+    pub fn set_blob_encryption(&self, encryption: Option<BlobEncryption>) -> Result<()> {
+        self.try_send(WorkerCommand::SetBlobEncryption(encryption))
+    }
+
     pub fn recv_event_timeout(&self, timeout: Duration) -> Option<SyncWorkerEvent> {
         self.default_events.next_event_timeout(timeout)
     }
@@ -2145,6 +2150,10 @@ where
             client.set_encrypted_crdt(encryption);
             true
         }
+        WorkerCommand::SetBlobEncryption(encryption) => {
+            client.set_blob_encryption(encryption);
+            true
+        }
         WorkerCommand::Stop => {
             let _ = flush_pending_yjs(client, pending_yjs, event_tx);
             false
@@ -2261,6 +2270,9 @@ where
                 }
                 Ok(WorkerCommand::SetEncryptedCrdt(encryption)) => {
                     client.set_encrypted_crdt(encryption);
+                }
+                Ok(WorkerCommand::SetBlobEncryption(encryption)) => {
+                    client.set_blob_encryption(encryption);
                 }
                 Ok(WorkerCommand::ApplyMutationJson {
                     command_id,

@@ -197,6 +197,8 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return requireClient().setFieldEncryption(request.config);
     case 'setEncryptedCrdt':
       return requireClient().setEncryptedCrdt(request.config);
+    case 'setBlobEncryption':
+      return requireClient().setBlobEncryption(request.config);
     case 'startRealtime':
       realtime.start(request.options);
       return true;
@@ -498,6 +500,7 @@ function isDiagnosedSuccessRequest(
     type === 'setAuthHeaders' ||
     type === 'setFieldEncryption' ||
     type === 'setEncryptedCrdt' ||
+    type === 'setBlobEncryption' ||
     type === 'startRealtime' ||
     type === 'stopRealtime' ||
     type === 'forceSubscriptionsBootstrap' ||
@@ -523,6 +526,7 @@ function requestDiagnosticSource(
   if (type === 'setAuthHeaders') return 'auth';
   if (type === 'setFieldEncryption') return 'client';
   if (type === 'setEncryptedCrdt') return 'client';
+  if (type === 'setBlobEncryption') return 'client';
   if (type === 'encryptionHelper') return 'client';
   if (type === 'startRealtime' || type === 'stopRealtime') return 'realtime';
   if (
@@ -588,6 +592,11 @@ function requestSuccessDetails(
         ruleCount: request.config?.rules.length ?? 0,
       };
     case 'setEncryptedCrdt':
+      return {
+        enabled: request.config != null,
+        keyCount: request.config ? Object.keys(request.config.keys).length : 0,
+      };
+    case 'setBlobEncryption':
       return {
         enabled: request.config != null,
         keyCount: request.config ? Object.keys(request.config.keys).length : 0,

@@ -350,11 +350,10 @@ read-only review:
 
 ## Next
 
-- Start [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md).
-  WP-23 is accepted for the current Rust-first audit/time-travel foundation.
-  The next feature work should tighten blob authorization, integrity,
-  diagnostics, encryption, queue/cache behavior, and cross-binding conformance
-  before WP-25 file asset sync builds on top of it.
+- Continue [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md).
+  Authorization hardening and Rust-first blob body encryption are in place.
+  Next tighten blob queue/cache diagnostics, limits, lifecycle events, and
+  cross-binding conformance before WP-25 file asset sync builds on top of it.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when WP-26 finds concrete generated-client naming, discoverability,
   conflict, blob, or subscription ergonomics gaps.
@@ -774,7 +773,13 @@ read-only review:
     current scope policy. The helper emits stable allow/deny/missing-reference
     decisions for diagnostics, and Hono blob route tests prove the helper
     authorizes visible row references while denying the same hash across actor
-    scopes.
+    scopes. Rust native and Rust-owned browser SQLite now support encrypted
+    blob bodies: blob refs are content-addressed by ciphertext, cache/outbox
+    and server bodies carry ciphertext, upload queues preserve `encrypted` and
+    `keyId`, and host retrieval decrypts only after ciphertext hash/size
+    validation. The browser and native APIs expose `setBlobEncryption` /
+    `set_blob_encryption_json`, with native and Hono/WASM tests proving
+    encrypted upload/download roundtrips.
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry

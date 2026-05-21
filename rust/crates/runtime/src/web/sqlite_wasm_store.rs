@@ -45,8 +45,8 @@ use crate::limits::DEFAULT_BLOB_UPLOAD_BATCH_LIMIT;
 use crate::limits::{validate_unresolved_outbox_capacity, DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY};
 #[cfg(feature = "web-blobs")]
 use crate::protocol::{
-    blob_hash, validate_blob_bytes, validate_blob_hash, validate_blob_ref_size,
-    validate_blob_size_bytes, BlobRef,
+    blob_hash, normalize_blob_mime_type, validate_blob_bytes, validate_blob_hash,
+    validate_blob_ref_size, validate_blob_size_bytes, BlobRef,
 };
 use crate::protocol::{
     sync_operations_json_for_outbox, validate_mutation_batch_json_input_size,
@@ -256,6 +256,8 @@ struct PendingBlobUpload {
     size: i64,
     mime_type: String,
     body: Vec<u8>,
+    encrypted: i32,
+    key_id: Option<String>,
     attempt_count: i32,
 }
 
@@ -1071,6 +1073,16 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = setBlobEncryptionJson)]
+    pub fn set_blob_encryption_json(
+        &mut self,
+        config_json: &str,
+    ) -> std::result::Result<(), JsValue> {
+        self.inner
+            .set_blob_encryption_json(config_json)
+            .map_err(error_to_js)
+    }
+
     #[wasm_bindgen(js_name = encryptionHelperJson)]
     pub fn encryption_helper_json(
         &mut self,
@@ -1789,12 +1801,28 @@ impl SyncularRustOwnedSqliteClient {
             let options = parse_blob_store_options(options_json)?;
             let immediate = options.immediate.unwrap_or(false);
             let transport = self.inner.transport().clone();
-            let blob = self
-                .inner
-                .store_mut()
-                .store_blob_inner(&data, &options, !immediate)?;
+            let mime_type = options
+                .mime_type
+                .as_deref()
+                .map(normalize_blob_mime_type)
+                .unwrap_or_else(|| "application/octet-stream".to_string());
+            let (blob, body) = if let Some(encryption) = self.inner.blob_encryption() {
+                let encrypted = encryption.encrypt_blob(&data, &mime_type)?;
+                self.inner.store_mut().store_blob_body(
+                    &encrypted.blob,
+                    &encrypted.body,
+                    !immediate,
+                )?;
+                (encrypted.blob, encrypted.body)
+            } else {
+                let blob = self
+                    .inner
+                    .store_mut()
+                    .store_blob_inner(&data, &options, !immediate)?;
+                (blob, data)
+            };
             if immediate {
-                transport.upload_blob(&blob, &data).await?;
+                transport.upload_blob(&blob, &body).await?;
             }
             Ok(serde_json::to_string(&blob)?)
         }
@@ -1812,14 +1840,15 @@ impl SyncularRustOwnedSqliteClient {
         #[cfg(feature = "web-blobs")]
         async {
             let blob: BlobRef = serde_json::from_str(ref_json).map_err(SyncularError::protocol)?;
+            ensure_blob_decryption_available(self.inner.blob_encryption(), &blob)?;
             if let Some(bytes) = self.inner.store_mut().read_cached_blob(&blob.hash)? {
-                return Ok(bytes);
+                return decode_blob_body(self.inner.blob_encryption(), &blob, bytes);
             }
             let transport = self.inner.transport().clone();
             let bytes = transport.download_blob(&blob).await?;
-            validate_blob_bytes(&blob, &bytes)?;
+            let plaintext = decode_blob_body(self.inner.blob_encryption(), &blob, bytes.clone())?;
             self.inner.store_mut().cache_blob(&blob, &bytes)?;
-            Ok(bytes)
+            Ok(plaintext)
         }
         .await
         .map_err(error_to_js)
@@ -2151,22 +2180,28 @@ impl SyncularRustOwnedSqlite {
         let blob = BlobRef {
             hash: blob_hash(data),
             size,
-            mime_type,
+            mime_type: normalize_blob_mime_type(&mime_type),
             encrypted: false,
             key_id: None,
         };
+        self.store_blob_body(&blob, data, enqueue_upload)?;
+        Ok(blob)
+    }
+
+    #[cfg(feature = "web-blobs")]
+    fn store_blob_body(&self, blob: &BlobRef, data: &[u8], enqueue_upload: bool) -> Result<()> {
         self.exec("BEGIN IMMEDIATE")?;
         let result = (|| {
-            self.cache_blob(&blob, data)?;
+            self.cache_blob(blob, data)?;
             if enqueue_upload {
-                self.enqueue_blob_upload(&blob, data)?;
+                self.enqueue_blob_upload(blob, data)?;
             }
             Ok(())
         })();
         match result {
             Ok(()) => {
                 self.exec("COMMIT")?;
-                Ok(blob)
+                Ok(())
             }
             Err(err) => {
                 let _ = self.exec("ROLLBACK");
@@ -2274,8 +2309,8 @@ impl SyncularRustOwnedSqlite {
                 hash: item.hash.clone(),
                 size: item.size,
                 mime_type: item.mime_type.clone(),
-                encrypted: false,
-                key_id: None,
+                encrypted: item.encrypted != 0,
+                key_id: item.key_id.clone(),
             };
 
             match transport.upload_blob(&blob, &item.body).await {
@@ -2328,7 +2363,7 @@ impl SyncularRustOwnedSqlite {
         let now = now_ms();
         self.query_rows(
             &format!(
-                "SELECT hash, size, mime_type, body, attempt_count \
+                "SELECT hash, size, mime_type, body, encrypted, key_id, attempt_count \
                  FROM sync_blob_outbox \
                  WHERE status = 'pending' AND attempt_count < {max_retries} AND next_attempt_at <= {now} \
                  ORDER BY created_at ASC LIMIT {limit}",
@@ -2340,6 +2375,8 @@ impl SyncularRustOwnedSqlite {
                     size: row.i64("size")?,
                     mime_type: row.string("mime_type")?,
                     body: row.bytes("body")?,
+                    encrypted: row.i32("encrypted")?,
+                    key_id: row.optional_string("key_id"),
                     attempt_count: row.i32("attempt_count")?,
                 })
             },
@@ -6727,6 +6764,38 @@ fn parse_blob_store_options(options_json: &str) -> Result<RustOwnedBlobStoreOpti
         return Ok(RustOwnedBlobStoreOptions::default());
     }
     serde_json::from_str(options_json).map_err(SyncularError::protocol)
+}
+
+#[cfg(feature = "web-blobs")]
+fn decode_blob_body(
+    encryption: Option<&crate::encryption::BlobEncryption>,
+    blob: &BlobRef,
+    body: Vec<u8>,
+) -> Result<Vec<u8>> {
+    ensure_blob_decryption_available(encryption, blob)?;
+    if blob.encrypted {
+        return encryption
+            .expect("checked encrypted blob decryption")
+            .decrypt_blob(blob, &body);
+    }
+    validate_blob_bytes(blob, &body)?;
+    Ok(body)
+}
+
+#[cfg(feature = "web-blobs")]
+fn ensure_blob_decryption_available(
+    encryption: Option<&crate::encryption::BlobEncryption>,
+    blob: &BlobRef,
+) -> Result<()> {
+    if !blob.encrypted {
+        return Ok(());
+    }
+    let Some(encryption) = encryption else {
+        return Err(SyncularError::config(
+            "encrypted blob retrieval requires setBlobEncryption(...)",
+        ));
+    };
+    encryption.ensure_can_decrypt(blob)
 }
 
 #[cfg(not(feature = "web-blobs"))]

@@ -218,6 +218,12 @@ bool syncular_native_client_set_encrypted_crdt_json(
     char **error_out
 );
 
+bool syncular_native_client_set_blob_encryption_json(
+    SyncularNativeHandle *handle,
+    const char *config_json,
+    char **error_out
+);
+
 char *syncular_native_encryption_helper_json(
     const char *method,
     const char *args_json,

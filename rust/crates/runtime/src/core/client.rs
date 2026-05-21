@@ -26,7 +26,7 @@ use crate::encrypted_crdt::{
     BuildEncryptedCrdtTextUpdateArgs, BuildEncryptedCrdtYjsUpdateArgs, EncryptedCrdtStreamStats,
 };
 use crate::encrypted_crdt::{is_encrypted_crdt_system_table, EncryptedCrdt};
-use crate::encryption::{FieldEncryption, FieldEncryptionContext};
+use crate::encryption::{BlobEncryption, FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "demo-todo-native-fixture")]
 use crate::fixtures::todo::rusqlite_sqlite::RusqliteStore;
@@ -1709,6 +1709,7 @@ pub struct SyncularClient<
     sync_lock_key: String,
     field_encryption: Option<FieldEncryption>,
     encrypted_crdt: Option<EncryptedCrdt>,
+    blob_encryption: Option<BlobEncryption>,
 }
 
 #[cfg(feature = "native")]
@@ -1892,6 +1893,7 @@ where
             schema_version,
             field_encryption: None,
             encrypted_crdt: None,
+            blob_encryption: None,
         }
     }
 
@@ -1910,6 +1912,15 @@ where
 
     pub fn set_encrypted_crdt_json(&mut self, config_json: &str) -> Result<()> {
         self.encrypted_crdt = EncryptedCrdt::from_static_config_json(config_json)?;
+        Ok(())
+    }
+
+    pub fn set_blob_encryption(&mut self, encryption: Option<BlobEncryption>) {
+        self.blob_encryption = encryption;
+    }
+
+    pub fn set_blob_encryption_json(&mut self, config_json: &str) -> Result<()> {
+        self.blob_encryption = BlobEncryption::from_static_config_json(config_json)?;
         Ok(())
     }
 
@@ -2159,9 +2170,17 @@ where
         mime_type: &str,
         immediate: bool,
     ) -> Result<BlobRef> {
-        let blob = self.store.store_blob_bytes(data, mime_type, !immediate)?;
+        let (blob, body) = if let Some(encryption) = &self.blob_encryption {
+            let encrypted = encryption.encrypt_blob(data, mime_type)?;
+            self.store
+                .store_blob_body(&encrypted.blob, &encrypted.body, !immediate)?;
+            (encrypted.blob, encrypted.body)
+        } else {
+            let blob = self.store.store_blob_bytes(data, mime_type, !immediate)?;
+            (blob, data.to_vec())
+        };
         if immediate {
-            self.transport.upload_blob(&blob, data)?;
+            self.transport.upload_blob(&blob, &body)?;
         }
         Ok(blob)
     }
@@ -2181,11 +2200,25 @@ where
             let data = fs::read(path).map_err(|err| {
                 SyncularError::storage(err).context(format!("read blob file {path:?}"))
             })?;
-            let blob = self.store.store_blob_bytes(&data, mime_type, !immediate)?;
+            let (blob, body) = if let Some(encryption) = &self.blob_encryption {
+                let encrypted = encryption.encrypt_blob(&data, mime_type)?;
+                self.store
+                    .store_blob_body(&encrypted.blob, &encrypted.body, !immediate)?;
+                (encrypted.blob, encrypted.body)
+            } else {
+                let blob = self.store.store_blob_bytes(&data, mime_type, !immediate)?;
+                (blob, data)
+            };
             if immediate {
-                self.transport.upload_blob_file(&blob, path)?;
+                self.transport.upload_blob(&blob, &body)?;
             }
             return Ok(blob);
+        }
+
+        if self.blob_encryption.is_some() {
+            return Err(SyncularError::config(
+                "encrypted native blob file storage requires cacheLocal=true until streaming encryption is implemented",
+            ));
         }
 
         if !immediate {
@@ -2201,11 +2234,7 @@ where
         let blob = BlobRef {
             hash,
             size,
-            mime_type: if mime_type.trim().is_empty() {
-                "application/octet-stream".to_string()
-            } else {
-                mime_type.to_string()
-            },
+            mime_type: normalize_blob_mime_type(mime_type),
             encrypted: false,
             key_id: None,
         };
@@ -2215,12 +2244,14 @@ where
     }
 
     pub fn retrieve_blob_bytes(&mut self, blob: &BlobRef) -> Result<Vec<u8>> {
+        self.ensure_blob_decryption_available(blob)?;
         if let Some(bytes) = self.store.read_cached_blob(&blob.hash)? {
-            return Ok(bytes);
+            return self.decode_blob_body(blob, bytes);
         }
         let bytes = self.transport.download_blob(blob)?;
+        let plaintext = self.decode_blob_body(blob, bytes.clone())?;
         self.store.cache_blob_bytes(blob, &bytes)?;
-        Ok(bytes)
+        Ok(plaintext)
     }
 
     pub fn retrieve_blob_file(
@@ -2229,8 +2260,10 @@ where
         path: &Path,
         cache_local: bool,
     ) -> Result<()> {
+        self.ensure_blob_decryption_available(blob)?;
         if let Some(bytes) = self.store.read_cached_blob(&blob.hash)? {
-            fs::write(path, bytes).map_err(|err| {
+            let plaintext = self.decode_blob_body(blob, bytes)?;
+            fs::write(path, plaintext).map_err(|err| {
                 SyncularError::storage(err).context(format!("write blob file {path:?}"))
             })?;
             return Ok(());
@@ -2238,8 +2271,15 @@ where
 
         if cache_local {
             let bytes = self.transport.download_blob(blob)?;
+            let plaintext = self.decode_blob_body(blob, bytes.clone())?;
             self.store.cache_blob_bytes(blob, &bytes)?;
-            fs::write(path, bytes).map_err(|err| {
+            fs::write(path, plaintext).map_err(|err| {
+                SyncularError::storage(err).context(format!("write blob file {path:?}"))
+            })?;
+        } else if blob.encrypted {
+            let bytes = self.transport.download_blob(blob)?;
+            let plaintext = self.decode_blob_body(blob, bytes)?;
+            fs::write(path, plaintext).map_err(|err| {
                 SyncularError::storage(err).context(format!("write blob file {path:?}"))
             })?;
         } else {
@@ -2267,8 +2307,8 @@ where
                 hash: item.hash.clone(),
                 size: item.size,
                 mime_type: item.mime_type.clone(),
-                encrypted: false,
-                key_id: None,
+                encrypted: item.encrypted != 0,
+                key_id: item.key_id.clone(),
             };
             match self.transport.upload_blob(&blob, &item.body) {
                 Ok(()) => {
@@ -2299,6 +2339,34 @@ where
 }
 
 #[cfg(feature = "native")]
+impl<T> SyncularClient<DieselSqliteStore, T> {
+    fn ensure_blob_decryption_available(&self, blob: &BlobRef) -> Result<()> {
+        if !blob.encrypted {
+            return Ok(());
+        }
+        let Some(encryption) = &self.blob_encryption else {
+            return Err(SyncularError::config(
+                "encrypted blob retrieval requires set_blob_encryption(...)",
+            ));
+        };
+        encryption.ensure_can_decrypt(blob)
+    }
+
+    fn decode_blob_body(&self, blob: &BlobRef, body: Vec<u8>) -> Result<Vec<u8>> {
+        self.ensure_blob_decryption_available(blob)?;
+        if blob.encrypted {
+            return self
+                .blob_encryption
+                .as_ref()
+                .expect("checked encrypted blob decryption")
+                .decrypt_blob(blob, &body);
+        }
+        validate_blob_bytes(blob, &body)?;
+        Ok(body)
+    }
+}
+
+#[cfg(feature = "native")]
 impl<T> SyncularClient<DieselSqliteStore, T>
 where
     T: SyncTransport,
@@ -2316,9 +2384,15 @@ where
         let data = fs::read(path).map_err(|err| {
             SyncularError::storage(err).context(format!("read blob file {path:?}"))
         })?;
-        let blob = self
-            .store
-            .store_blob_bytes(&data, mime_type, enqueue_upload)?;
+        let blob = if let Some(encryption) = &self.blob_encryption {
+            let encrypted = encryption.encrypt_blob(&data, mime_type)?;
+            self.store
+                .store_blob_body(&encrypted.blob, &encrypted.body, enqueue_upload)?;
+            encrypted.blob
+        } else {
+            self.store
+                .store_blob_bytes(&data, mime_type, enqueue_upload)?
+        };
         Ok(serde_json::to_string(&blob)?)
     }
 
@@ -2332,7 +2406,8 @@ where
                 "blob is not present in the local cache",
             ));
         };
-        fs::write(path, bytes).map_err(|err| {
+        let plaintext = self.decode_blob_body(blob, bytes)?;
+        fs::write(path, plaintext).map_err(|err| {
             SyncularError::storage(err).context(format!("write blob file {path:?}"))
         })?;
         Ok(serde_json::to_string(&json!({ "ok": true }))?)

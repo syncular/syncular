@@ -3,6 +3,7 @@ use std::thread;
 use std::time::Duration;
 
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
+use syncular_runtime::diesel_sqlite::DieselSqliteStore;
 use syncular_runtime::error::Result;
 use syncular_runtime::protocol::blob_hash;
 use syncular_runtime::transport::SyncAuthHeaders;
@@ -95,6 +96,52 @@ fn native_http_blob_transport_uploads_and_downloads() -> Result<()> {
         requests[3].headers.get("authorization").map(String::as_str),
         Some(expected_authorization.as_str())
     );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_blob_encryption_stores_uploads_and_downloads_ciphertext() -> Result<()> {
+    let plaintext = blob_conformance_bytes(&["bytes"]);
+    let plaintext_hash = blob_hash(&plaintext);
+    let path = temp_db_path("syncular-native-encrypted-blob");
+    let encryption_json = encrypted_blob_config_json();
+    let mut client = SyncularClient::open(SyncularClientConfig {
+        db_path: path.clone(),
+        base_url: "http://127.0.0.1:9/sync".to_string(),
+        client_id: blob_conformance_str(&["clientId"]),
+        actor_id: blob_conformance_str(&["actorId"]),
+        project_id: Some("p0".to_string()),
+    })?;
+    client.set_blob_encryption_json(&encryption_json)?;
+
+    let blob = client.store_blob_bytes(&plaintext, "text/plain", false)?;
+    assert!(blob.encrypted);
+    assert_eq!(blob.key_id.as_deref(), Some("default"));
+    assert_ne!(blob.hash, plaintext_hash);
+    let cached_ciphertext = DieselSqliteStore::open(&path)?
+        .read_cached_blob(&blob.hash)?
+        .expect("cached encrypted blob");
+    assert_ne!(cached_ciphertext, plaintext);
+    assert_eq!(blob.hash, blob_hash(&cached_ciphertext));
+    assert_eq!(client.retrieve_blob_bytes(&blob)?, plaintext);
+
+    let server = blob_server(cached_ciphertext.clone(), blob.hash.clone())?;
+    let mut upload_client = SyncularClient::open(SyncularClientConfig {
+        db_path: path.clone(),
+        base_url: server.sync_base_url(),
+        client_id: blob_conformance_str(&["clientId"]),
+        actor_id: blob_conformance_str(&["actorId"]),
+        project_id: Some("p0".to_string()),
+    })?;
+    upload_client.set_blob_encryption_json(&encryption_json)?;
+    assert_eq!(upload_client.process_blob_upload_queue()?.uploaded, 1);
+    upload_client.clear_blob_cache()?;
+    assert_eq!(upload_client.retrieve_blob_bytes(&blob)?, plaintext);
+
+    let requests = server.wait_for_requests(5, Duration::from_secs(1));
+    assert_eq!(requests[1].body, cached_ciphertext);
 
     let _ = std::fs::remove_file(path);
     Ok(())
@@ -235,6 +282,15 @@ fn blob_conformance_usize(path: &[&str]) -> usize {
 
 fn blob_conformance_bytes(path: &[&str]) -> Vec<u8> {
     sync_conformance_bytes(&blob_conformance_path(path))
+}
+
+fn encrypted_blob_config_json() -> String {
+    serde_json::json!({
+        "keys": {
+            "default": "0909090909090909090909090909090909090909090909090909090909090909"
+        }
+    })
+    .to_string()
 }
 
 fn blob_conformance_path<'a>(path: &'a [&'a str]) -> Vec<&'a str> {

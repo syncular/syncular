@@ -107,8 +107,10 @@ Known gaps:
   referenced by a configured blob column on a row visible through the table
   handler's current scope policy. Apps can still supply custom `canAccessBlob`
   policies for bespoke sharing/storage models.
-- Runtime blob body encryption is not first-class; current Rust-created blob
-  refs use `encrypted=false`.
+- Runtime blob body encryption is now first-class for Rust native and
+  Rust-owned browser SQLite. Encrypted blob refs use ciphertext hash/size,
+  `encrypted=true`, and `keyId`; cache/outbox/server bodies carry ciphertext,
+  and retrieval validates ciphertext before decrypting to plaintext.
 - Browser blob bodies are still stored and uploaded through SQLite/memory
   buffers, so very large browser blobs need better limits and platform-aware
   transfer strategy.
@@ -172,9 +174,10 @@ Add scope-aware blob authorization helpers and diagnostics:
 
 ## Next Action
 
-Continue WP-24 with blob-body encryption contract design and implementation.
-Keep the row-reference authorization helper explicit and opt-in; do not add a
-hash-only access fallback.
+Continue WP-24 with queue/cache diagnostics and explicit blob limits. The next
+slice should expose stable blob lifecycle events/error codes for cache hit/miss,
+upload retry/failure, auth rejection, corruption, and pruning without adding
+polling loops or hash-only access fallbacks.
 
 Latest evidence:
 
@@ -183,3 +186,29 @@ Latest evidence:
 - `bun --cwd packages/server tsgo`
 - `bun --cwd packages/server-hono tsgo`
 - `git diff --check`
+
+## Second Slice
+
+Add encrypted blob bodies to the Rust-first runtime:
+
+1. `[x]` Define the runtime contract: encrypted blob refs are
+   content-addressed by ciphertext, not plaintext.
+2. `[x]` Add XChaCha20-Poly1305 blob body encryption with `keyId` metadata,
+   ciphertext hash/size validation, and authenticated MIME/key metadata.
+3. `[x]` Store encrypted bytes in native/browser cache and outbox, upload
+   encrypted bytes, and decrypt only at host retrieval boundaries.
+4. `[x]` Preserve pending upload `encrypted` and `key_id` metadata when
+   processing native/browser upload queues.
+5. `[x]` Expose `set_blob_encryption_json` / `setBlobEncryption(...)` through
+   native facade, C FFI, BoltFFI facade, browser Rust client, and worker client.
+6. `[x]` Cover native and browser encrypted blob roundtrips with tests proving
+   server-visible bodies are ciphertext and downloads return plaintext.
+
+Latest evidence:
+
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime blob --features native,crdt-yjs,e2ee,demo-todo-native-fixture`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_binding_scaffold --features native,boltffi-bindings,crdt-yjs,e2ee,demo-todo-native-fixture`
+- `bun --cwd rust/bindings/browser tsgo`
+- `bun run build:wasm:dev` from `rust/bindings/browser`
+- `bun test src/__tests__/blob-hono.wasm.test.ts` from `rust/bindings/browser`

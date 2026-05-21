@@ -84,6 +84,39 @@ describe('Syncular v2 Rust-owned SQLite blobs against Hono routes', () => {
     );
   });
 
+  it('encrypts browser blob bodies before cache, upload, and download', async () => {
+    const { client, db } = await openBlobHarness({
+      clientId: `${BLOB_SCENARIO.browserClientId}-encrypted`,
+    });
+    await client.setBlobEncryption({
+      keys: { default: new Uint8Array(32).fill(9) },
+    });
+
+    const bytes = new TextEncoder().encode(BLOB_SCENARIO.browserText);
+    const blob = await client.storeBlob(bytes, {
+      mimeType: BLOB_SCENARIO.textMimeType,
+    });
+    expect(blob.encrypted).toBe(true);
+    expect(blob.keyId).toBe('default');
+    expect(blob.size).toBeGreaterThan(bytes.length);
+
+    expect(await client.processBlobUploadQueue()).toEqual(
+      BLOB_SCENARIO.expectedProcessUploaded
+    );
+    const stored = await db
+      .selectFrom('sync_blobs')
+      .select(['body'])
+      .where('hash', '=', blob.hash)
+      .executeTakeFirstOrThrow();
+    expect(Buffer.from(stored.body)).not.toEqual(Buffer.from(bytes));
+
+    await client.clearBlobCache();
+    const downloaded = await client.retrieveBlob(blob);
+    expect(new TextDecoder().decode(downloaded)).toBe(
+      BLOB_SCENARIO.browserText
+    );
+  });
+
   it('dedupes identical local blob stores before upload', async () => {
     const { client } = await openBlobHarness({
       clientId: BLOB_SCENARIO.dedupeClientId,
@@ -287,7 +320,7 @@ describe('Syncular v2 Rust-owned SQLite blobs against Hono routes', () => {
       authorization: options.authorization ?? AUTHORIZATION,
     });
 
-    return { authHeaders, client };
+    return { authHeaders, client, db };
   }
 });
 
@@ -300,6 +333,7 @@ interface BlobHarnessOptions {
 interface BlobHarness {
   authHeaders: string[];
   client: SyncularV2RustClient;
+  db: Kysely<SyncBlobDb>;
 }
 
 function createBlobAdapter(

@@ -56,6 +56,15 @@ pub fn blob_hash(data: &[u8]) -> String {
     format!("sha256:{}", hex::encode(Sha256::digest(data)))
 }
 
+pub fn normalize_blob_mime_type(mime_type: &str) -> String {
+    let trimmed = mime_type.trim();
+    if trimmed.is_empty() {
+        "application/octet-stream".to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
+
 pub fn validate_blob_hash(hash: &str) -> Result<()> {
     let Some(hex) = hash.strip_prefix("sha256:") else {
         return Err(ProtocolError::message(format!("invalid blob hash: {hash}")));

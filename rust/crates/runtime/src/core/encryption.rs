@@ -1,5 +1,6 @@
 use crate::error::{Result, SyncularError};
 use crate::protocol::{
+    blob_hash, normalize_blob_mime_type, validate_blob_bytes, validate_blob_size_bytes, BlobRef,
     OperationResult, PullResponse, PushBatchRequest, PushCommitRequest, PushCommitResponse,
     SyncChange, SyncOperation,
 };
@@ -21,6 +22,9 @@ use zeroize::Zeroize;
 
 pub const DEFAULT_FIELD_ENCRYPTION_PREFIX: &str = "dgsync:e2ee:1:";
 const KEY_WRAP_HKDF_INFO: &[u8] = b"syncular-key-wrap-v1";
+const BLOB_CIPHERTEXT_VERSION: u8 = 1;
+const BLOB_NONCE_LEN: usize = 24;
+const BLOB_CIPHERTEXT_HEADER_LEN: usize = 1 + BLOB_NONCE_LEN;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -140,6 +144,135 @@ pub struct StaticFieldEncryptionConfig {
     pub decryption_error_mode: Option<FieldDecryptionErrorMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub envelope_prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StaticBlobEncryptionConfig {
+    pub keys: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_kid: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EncryptedBlobBody {
+    pub blob: BlobRef,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlobEncryption {
+    keys: BTreeMap<String, Vec<u8>>,
+    encryption_kid: String,
+}
+
+impl BlobEncryption {
+    pub fn from_static_config(config: StaticBlobEncryptionConfig) -> Result<Self> {
+        let mut keys = BTreeMap::new();
+        for (kid, material) in config.keys {
+            validate_kid(&kid)?;
+            keys.insert(kid, decode_key_material(&material)?);
+        }
+
+        let encryption_kid = config
+            .encryption_kid
+            .unwrap_or_else(|| "default".to_string());
+        validate_kid(&encryption_kid)?;
+        if keys.is_empty() {
+            return Err(SyncularError::config(
+                "blob encryption requires at least one key",
+            ));
+        }
+        if !keys.contains_key(&encryption_kid) {
+            return Err(SyncularError::config(format!(
+                "blob encryption key \"{encryption_kid}\" is missing"
+            )));
+        }
+
+        Ok(Self {
+            keys,
+            encryption_kid,
+        })
+    }
+
+    pub fn from_static_config_json(config_json: &str) -> Result<Option<Self>> {
+        let trimmed = config_json.trim();
+        if trimmed.is_empty() || trimmed == "null" {
+            return Ok(None);
+        }
+        let config: StaticBlobEncryptionConfig = serde_json::from_str(trimmed)?;
+        Ok(Some(Self::from_static_config(config)?))
+    }
+
+    pub fn encrypt_blob(&self, plaintext: &[u8], mime_type: &str) -> Result<EncryptedBlobBody> {
+        let mime_type = normalize_blob_mime_type(mime_type);
+        let kid = self.encryption_kid.clone();
+        let key = self.key(&kid)?;
+        let nonce = random_bytes(BLOB_NONCE_LEN)?;
+        let aad = make_blob_aad(&kid, &mime_type);
+        let encrypted = xchacha_encrypt(key, &nonce, &aad, plaintext)?;
+        let mut body = Vec::with_capacity(BLOB_CIPHERTEXT_HEADER_LEN + encrypted.len());
+        body.push(BLOB_CIPHERTEXT_VERSION);
+        body.extend_from_slice(&nonce);
+        body.extend_from_slice(&encrypted);
+
+        let size = i64::try_from(body.len()).map_err(|_| {
+            SyncularError::protocol_message("encrypted blob is too large for SQLite size metadata")
+        })?;
+        validate_blob_size_bytes(size)?;
+        let blob = BlobRef {
+            hash: blob_hash(&body),
+            size,
+            mime_type,
+            encrypted: true,
+            key_id: Some(kid),
+        };
+        Ok(EncryptedBlobBody { blob, body })
+    }
+
+    pub fn decrypt_blob(&self, blob: &BlobRef, body: &[u8]) -> Result<Vec<u8>> {
+        validate_blob_bytes(blob, body)?;
+        if !blob.encrypted {
+            return Ok(body.to_vec());
+        }
+        let kid = blob.key_id.as_deref().ok_or_else(|| {
+            SyncularError::protocol_message("encrypted blob ref is missing keyId")
+        })?;
+        validate_kid(kid)?;
+        let key = self.key(kid)?;
+        if body.len() < BLOB_CIPHERTEXT_HEADER_LEN {
+            return Err(SyncularError::protocol_message(
+                "encrypted blob body is too short",
+            ));
+        }
+        if body[0] != BLOB_CIPHERTEXT_VERSION {
+            return Err(SyncularError::protocol_message(format!(
+                "unsupported encrypted blob version {}",
+                body[0]
+            )));
+        }
+        let nonce = &body[1..BLOB_CIPHERTEXT_HEADER_LEN];
+        let ciphertext = &body[BLOB_CIPHERTEXT_HEADER_LEN..];
+        xchacha_decrypt(key, nonce, &make_blob_aad(kid, &blob.mime_type), ciphertext)
+    }
+
+    pub fn ensure_can_decrypt(&self, blob: &BlobRef) -> Result<()> {
+        if !blob.encrypted {
+            return Ok(());
+        }
+        let kid = blob.key_id.as_deref().ok_or_else(|| {
+            SyncularError::protocol_message("encrypted blob ref is missing keyId")
+        })?;
+        validate_kid(kid)?;
+        let _ = self.key(kid)?;
+        Ok(())
+    }
+
+    fn key(&self, kid: &str) -> Result<&[u8]> {
+        self.keys.get(kid).map(Vec::as_slice).ok_or_else(|| {
+            SyncularError::config(format!("Missing blob encryption key for kid \"{kid}\""))
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -1152,6 +1285,14 @@ fn make_aad(scope: &str, table: &str, row_id: &str, field: &str) -> Vec<u8> {
     format!("{scope}\u{1f}{table}\u{1f}{row_id}\u{1f}{field}").into_bytes()
 }
 
+fn make_blob_aad(kid: &str, mime_type: &str) -> Vec<u8> {
+    format!(
+        "syncular:blob:v1\u{1f}{kid}\u{1f}{}",
+        normalize_blob_mime_type(mime_type)
+    )
+    .into_bytes()
+}
+
 fn snapshot_row_id(
     row: &Map<String, Value>,
     row_id_field: &str,
@@ -1386,6 +1527,16 @@ mod tests {
         }
     }
 
+    fn blob_encryption() -> BlobEncryption {
+        let mut keys = BTreeMap::new();
+        keys.insert("default".to_string(), URL_SAFE_NO_PAD.encode([9u8; 32]));
+        BlobEncryption::from_static_config(StaticBlobEncryptionConfig {
+            keys,
+            encryption_kid: None,
+        })
+        .expect("blob encryption")
+    }
+
     #[test]
     fn encrypts_push_and_decrypts_pull_rows() -> Result<()> {
         let encryption = encryption();
@@ -1428,6 +1579,43 @@ mod tests {
         let decrypted = encryption.transform_pull_response(&ctx(), pull)?;
         let row = &decrypted.subscriptions[0].snapshots.as_ref().unwrap()[0].rows[0];
         assert_eq!(row["title"], "Secret");
+        Ok(())
+    }
+
+    #[test]
+    fn encrypted_blob_body_roundtrips_with_ciphertext_ref() -> Result<()> {
+        let encryption = blob_encryption();
+        let plaintext = b"top secret blob payload";
+        let encrypted = encryption.encrypt_blob(plaintext, "text/plain")?;
+        assert!(encrypted.blob.encrypted);
+        assert_eq!(encrypted.blob.key_id.as_deref(), Some("default"));
+        assert_eq!(encrypted.blob.hash, blob_hash(&encrypted.body));
+        assert_ne!(encrypted.blob.hash, blob_hash(plaintext));
+        assert_ne!(encrypted.body, plaintext);
+
+        let decrypted = encryption.decrypt_blob(&encrypted.blob, &encrypted.body)?;
+        assert_eq!(decrypted, plaintext);
+        Ok(())
+    }
+
+    #[test]
+    fn encrypted_blob_decryption_authenticates_metadata() -> Result<()> {
+        let encryption = blob_encryption();
+        let encrypted = encryption.encrypt_blob(b"payload", "text/plain")?;
+
+        let mut tampered_mime = encrypted.blob.clone();
+        tampered_mime.mime_type = "application/json".to_string();
+        let error = encryption
+            .decrypt_blob(&tampered_mime, &encrypted.body)
+            .unwrap_err();
+        assert!(error.to_string().contains("decryption failed"));
+
+        let mut tampered_key = encrypted.blob.clone();
+        tampered_key.key_id = Some("missing".to_string());
+        let error = encryption
+            .decrypt_blob(&tampered_key, &encrypted.body)
+            .unwrap_err();
+        assert!(error.to_string().contains("Missing blob encryption key"));
         Ok(())
     }
 

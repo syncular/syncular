@@ -217,6 +217,15 @@ public final class SyncularBoltClient {
         }
     }
 
+    public func setBlobEncryptionJson(configJson: String) throws -> Bool {
+        var configJson = configJson
+        return try configJson.withUTF8 { configJsonBuf in
+            let buf = boltffi_syncular_bolt_client_set_blob_encryption_json(handle, configJsonBuf.baseAddress!, UInt(configJsonBuf.count))
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
     public func triggerSync() throws -> Bool {
         let buf = boltffi_syncular_bolt_client_trigger_sync(handle)
         defer { boltffi_free_buf(buf) }

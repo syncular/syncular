@@ -336,6 +336,10 @@ pub fn blob_hash(data: &[u8]) -> String {
     syncular_protocol::blob_hash(data)
 }
 
+pub fn normalize_blob_mime_type(mime_type: &str) -> String {
+    syncular_protocol::normalize_blob_mime_type(mime_type)
+}
+
 pub fn blob_hash_reader(mut reader: impl Read) -> Result<(String, i64)> {
     let mut hasher = Sha256::new();
     let mut size = 0i64;
