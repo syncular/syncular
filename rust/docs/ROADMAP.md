@@ -350,14 +350,13 @@ read-only review:
 
 ## Next
 
-- Start [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md).
-  The recent Rust-first browser work removed the old JavaScript client product
-  path and introduced TypeScript host bindings, React hooks, and Tauri/React
-  Native/Expo bridge packages over the canonical Rust runtime. The next work is
-  an interface-impact catch-up pass across feature WPs such as offline auth
-  leases, lifecycle, live-query precision, undo/redo, audit/debug, and blobs so
-  TypeScript-facing packages expose current semantics consistently without
-  rebuilding a JS sync engine.
+- Continue [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md).
+  The interface-impact catch-up pass is recorded in WP-11, WP-17, WP-21,
+  WP-22, WP-23, and WP-24. The next work is to audit current TypeScript package
+  exports against those sections, starting with auth lease, lifecycle,
+  live-query, command-history, audit/debug, and blob surfaces, while keeping the
+  TypeScript packages as host bindings over the Rust runtime rather than a
+  revived JavaScript sync client.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when WP-26 finds concrete generated-client naming, discoverability,
   conflict, blob, or subscription ergonomics gaps.

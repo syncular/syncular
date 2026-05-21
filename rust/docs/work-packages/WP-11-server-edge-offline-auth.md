@@ -57,6 +57,42 @@ Local leased mutations now also classify a stored covering-but-expired lease as
 `sync.auth_lease_expired` before materializing the row or outbox write, while
 `activeAuthLeases(...)` continues to expose only time-valid leases.
 
+## Interface Impact
+
+Canonical semantics:
+
+- Offline auth leases are signed local intent/audit provenance only; they do
+  not bypass current server authorization.
+- App-facing APIs must use generated leased mutation paths that select active
+  covering leases transactionally before local writes and outbox writes.
+- Normal mutations remain the default; leased mutations are explicit.
+
+TypeScript/browser:
+
+- `issueAuthLease(...)`, `activeAuthLeases(...)`, `authLease(...)`,
+  `upsertAuthLease(...)`, `database.leasedMutations`, and
+  `database.leasedMutations.$commit(...)` are canonical host-binding surfaces.
+- Browser wrappers must preserve `sync.auth_lease_*` stable errors and rollback
+  behavior.
+
+React:
+
+- React docs/hooks should expose leased mutation examples through the same
+  generated/table mutation shape, not a separate offline-auth plugin API.
+
+Tauri/React Native/Expo:
+
+- Bridge packages must either expose strict leased mutation and issue-lease
+  methods through the shared bridge contract, or explicitly document the
+  feature as deferred.
+- Bridges must not fake lease success in JavaScript.
+
+Testkit/docs:
+
+- Bridge harnesses should assert issued leases, active lease selection,
+  missing/expired lease errors, and no local write/outbox side effects on
+  failure.
+
 ## Next Action
 
 No local WP-11 implementation slice remains for the current Rust-client

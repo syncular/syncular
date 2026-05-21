@@ -56,6 +56,43 @@ The Rust-first roadmap already prioritizes runtime-owned realtime reconnect,
 explicit recovery, and adaptive bootstrap readiness. This WP turns those
 mechanics into app-state APIs that developers can render and test.
 
+## Interface Impact
+
+Canonical semantics:
+
+- The runtime owns lifecycle state. Host apps render state and request
+  lifecycle transitions; they do not babysit sync loops, realtime reconnects,
+  or internal retry timers.
+- Foreground resume triggers runtime-owned realtime and sync recovery.
+- Blob upload/cache/compaction maintenance remains explicit queued work so
+  app shells can respect platform background budgets.
+
+TypeScript/browser:
+
+- `getStatus()`, `lifecycleState()`, `resumeFromBackground()`,
+  `bootstrapChanged`, `blobUploadsChanged`, and lifecycle events are the
+  canonical host-binding surfaces.
+- Browser wrappers should expose lifecycle state through events, not
+  user-authored polling loops.
+
+React:
+
+- Hooks/providers should derive status from the same event stream and avoid a
+  separate polling status model.
+
+Tauri/React Native/Expo:
+
+- Bridge packages should map app-shell foreground/background callbacks to
+  runtime lifecycle methods and preserve the native event/error JSON shape.
+- Platform-specific background restrictions should be documented as capability
+  constraints, not compatibility branches.
+
+Testkit/docs:
+
+- Bridge harnesses should assert lifecycle transitions, event ordering,
+  backpressure/overflow recovery, resume behavior, and blob maintenance command
+  visibility.
+
 ## Next Action
 
 Closed. Next Rust-first work package is

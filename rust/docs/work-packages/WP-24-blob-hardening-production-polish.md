@@ -114,6 +114,45 @@ Known gaps:
 - Shared conformance is good but not complete for every auth, scope,
   encryption, corruption, browser/native, and server-adapter edge case.
 
+## Interface Impact
+
+Canonical semantics:
+
+- Blob bodies transfer through the content-addressed blob path. Generated app
+  rows carry only `BlobRef` metadata.
+- Hash and size validation are mandatory before upload completion or cache
+  mutation.
+- Blob authorization remains scoped/server-authoritative; knowing a hash does
+  not grant access.
+
+TypeScript/browser:
+
+- `blobs.store(...)`, `blobs.retrieve(...)`, upload queue processing,
+  cache stats, preload, prune, clear, and stable blob error codes are the
+  canonical host surfaces.
+- Browser wrappers must preserve queue/cache status, integrity failures, auth
+  failures, and large-payload limits instead of silently retrying or copying
+  without bounds.
+
+React:
+
+- Blob queue/cache hooks should be event-driven from runtime lifecycle/blob
+  events, not independent polling loops.
+
+Tauri/React Native/Expo:
+
+- Bridge packages must preserve validation, max-size errors, queue/cache
+  status, retry state, and auth diagnostics.
+- Large blob transfer over JavaScript bridges needs explicit limits or a
+  platform-native file/stream path; no unbounded base64 bridge path should be
+  introduced as default behavior.
+
+Testkit/docs:
+
+- Conformance should cover scoped auth allow/deny, missing blobs, corrupted
+  bytes, interrupted upload retry, encrypted blob roundtrip, cache pruning, and
+  browser/native parity.
+
 ## First Slice
 
 Add scope-aware blob authorization helpers and diagnostics:

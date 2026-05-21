@@ -121,6 +121,44 @@ Native/Rust parity foundation is implemented:
   generated mutation APIs are mature enough to avoid baking a second app-facing
   shape.
 
+## Interface Impact
+
+Canonical semantics:
+
+- Undo/redo emits new compensating mutations through the normal generated
+  mutation/outbox path. It never rewrites commits, cursors, roots, or audit
+  history.
+- Unsafe field classes fail closed with stable error codes until explicit
+  inverse semantics are accepted for those classes.
+- Command-history writes should be transactional with the mutation/outbox write
+  on canonical native/browser paths.
+
+TypeScript/browser:
+
+- `database.commandHistory`, wrapped `database.mutations`,
+  wrapped `database.leasedMutations`, `undoLast(...)`, and `redoLast(...)` are
+  the canonical TypeScript host surfaces.
+- Browser bindings must preserve `sync.command_history_conflict` and
+  `sync.command_history_unsafe_field` without hiding them behind local UI
+  reducers.
+
+React:
+
+- Any React command-history helpers should wrap the same generated
+  command-history controller. They must not implement local-only undo state.
+
+Tauri/React Native/Expo:
+
+- Bridge packages need an explicit decision per platform: expose the canonical
+  command-history surface or document command history as deferred.
+- Bridges must not offer a JavaScript-only undo/redo path that bypasses the
+  runtime outbox.
+
+Testkit/docs:
+
+- Bridge harnesses should prove normal mutation undo/redo, leased undo failure,
+  stale-row conflicts, grouped operations, and unsafe-field rejection.
+
 Gates:
 
 - `bun test rust/bindings/browser/src/generated-app-conformance.test.ts`
