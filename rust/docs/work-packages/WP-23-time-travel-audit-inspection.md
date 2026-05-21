@@ -85,6 +85,12 @@ The first server API slice now exists:
   distinguishes app rows, deletes, blob references, encrypted field envelopes,
   encrypted CRDT updates, and encrypted CRDT checkpoints without returning
   payload values.
+- `GET /audit/commits/:commitSeq` now returns only visible scoped changes for
+  the authenticated actor and uses the same redacted summary shape. If the
+  commit has no visible changes for that actor, the route fails as
+  `sync.not_found` rather than leaking commit payloads from another scope.
+- Console commit details also use redacted change summaries instead of raw
+  `rowJson` payloads.
 
 Evidence:
 
@@ -107,5 +113,6 @@ Add read-only row history and commit diff inspection for server audit APIs:
 
 ## Next Action
 
-Apply the same redaction classifier to commit-detail/diff endpoints, then add
-testkit scenarios for scoped row history and redacted export.
+Add testkit scenarios for scoped row history and redacted export, then decide
+whether the console UI should render the new field/sensitivity summary directly
+or wait for the generated OpenAPI/type pass.

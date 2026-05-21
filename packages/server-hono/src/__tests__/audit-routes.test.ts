@@ -212,7 +212,13 @@ describe('createSyncRoutes audit endpoints', () => {
     const detail = (await detailResponse.json()) as {
       ok: boolean;
       commit: { commitSeq: number; actorId: string };
-      changes: Array<{ table: string; rowId: string; op: string }>;
+      changes: Array<{
+        table: string;
+        rowId: string;
+        op: string;
+        fields: string[];
+        rowJson?: unknown;
+      }>;
     };
     expect(detail.ok).toBe(true);
     expect(detail.commit.commitSeq).toBe(commitSeq);
@@ -223,6 +229,13 @@ describe('createSyncRoutes audit endpoints', () => {
       rowId: 't-detail',
       op: 'upsert',
     });
+    expect(detail.changes[0]?.fields).toEqual([
+      'id',
+      'server_version',
+      'title',
+      'user_id',
+    ]);
+    expect(detail.changes[0]).not.toHaveProperty('rowJson');
 
     const wrongPartition = await app.request(
       `http://localhost/sync/audit/commits/${commitSeq}`,
@@ -234,6 +247,34 @@ describe('createSyncRoutes audit endpoints', () => {
       }
     );
     expect(wrongPartition.status).toBe(404);
+  });
+
+  it('does not leak commit detail changes outside actor scopes', async () => {
+    const app = createApp();
+
+    const commitSeq = await pushCommit({
+      app,
+      actorId: 'u2',
+      clientId: 'client-secret',
+      clientCommitId: 'commit-secret',
+      rowId: 't-secret-commit',
+      title: 'Secret Commit Task',
+    });
+
+    const response = await app.request(
+      `http://localhost/sync/audit/commits/${commitSeq}`,
+      {
+        headers: {
+          'x-user-id': 'u1',
+          'x-partition-id': 'p1',
+        },
+      }
+    );
+
+    expect(response.status).toBe(404);
+    const bodyText = await response.text();
+    expect(bodyText).not.toContain('Secret Commit Task');
+    expect(bodyText).not.toContain('commit-secret');
   });
 
   it('returns redacted row history scoped to actor scopes', async () => {

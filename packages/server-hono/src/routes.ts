@@ -21,6 +21,7 @@ import {
   prefersBinarySyncPack,
   type ScopeValues,
   ScopeValuesSchema,
+  type StoredScopes,
   SYNC_AUTH_LEASE_CODE_EXPIRED,
   SYNC_AUTH_LEASE_CODE_INVALID,
   SYNC_AUTH_LEASE_CODE_MISSING,
@@ -75,6 +76,7 @@ import {
   readSnapshotChunk,
   recordClientCursor,
   resolveEffectiveScopesForSubscriptions,
+  rowScopesAllowed,
   scopesToSnapshotChunkScopeKey,
   validateAuthLeaseOperation,
   verifyAuthLeaseToken,
@@ -496,8 +498,11 @@ const auditChangeSchema = z.object({
   rowId: z.string(),
   op: z.enum(['upsert', 'delete']),
   rowVersion: z.number().int().nullable(),
-  rowJson: z.unknown().nullable(),
-  scopes: z.unknown(),
+  fields: z.array(z.string()),
+  scopeFields: z.array(z.string()),
+  changeKind: auditChangeKindSchema,
+  sensitiveFields: z.array(z.string()),
+  redaction: auditChangeRedactionSchema,
 });
 
 const auditCommitDetailResponseSchema = z.object({
@@ -2713,6 +2718,54 @@ export function createSyncRoutes<
         return syncError(c, 404, 'sync.not_found');
       }
 
+      const auditScopesByTable = new Map<
+        string,
+        | { scopes: ScopeValues; requiredScopeKeys: string[] }
+        | null
+        | Promise<{ scopes: ScopeValues; requiredScopeKeys: string[] } | null>
+      >();
+      const resolveAuditScopesForTable = async (
+        table: string
+      ): Promise<{
+        scopes: ScopeValues;
+        requiredScopeKeys: string[];
+      } | null> => {
+        const cached = auditScopesByTable.get(table);
+        if (cached) return cached;
+        const handler = handlerRegistry.byTable.get(table);
+        if (!handler) {
+          auditScopesByTable.set(table, null);
+          return null;
+        }
+        const loaded = (async () => {
+          let allowedScopes: ScopeValues;
+          try {
+            allowedScopes = await handler.resolveScopes({
+              db: options.db,
+              actorId: auth.actorId,
+              auth,
+            });
+          } catch {
+            return null;
+          }
+          const scopes = selectRequiredAuditScopes(
+            handler.scopePatterns,
+            allowedScopes
+          );
+          if (!scopes) return null;
+          return {
+            scopes,
+            requiredScopeKeys: Array.from(
+              collectScopeVars(handler.scopePatterns)
+            ),
+          };
+        })();
+        auditScopesByTable.set(table, loaded);
+        const resolved = await loaded;
+        auditScopesByTable.set(table, resolved);
+        return resolved;
+      };
+
       const changesResult = await sql<{
         change_id: number;
         table: string;
@@ -2736,6 +2789,41 @@ export function createSyncRoutes<
         order by ${sql.ref('change_id')} asc
       `.execute(options.db);
 
+      const changes = [];
+      for (const change of changesResult.rows) {
+        const scopeConfig = await resolveAuditScopesForTable(change.table);
+        if (!scopeConfig) continue;
+        const rowScopes = parseStoredAuditScopes(change.scopes);
+        if (
+          !rowScopesAllowed({
+            rowScopes,
+            allowedScopes: scopeConfig.scopes,
+            requiredScopeKeys: scopeConfig.requiredScopeKeys,
+          })
+        ) {
+          continue;
+        }
+
+        const summary = summarizeAuditChange({
+          table: change.table,
+          op: change.op,
+          rowJson: change.row_json,
+          scopes: change.scopes,
+        });
+        changes.push({
+          changeId: Number(change.change_id),
+          table: change.table,
+          rowId: change.row_id,
+          op: change.op,
+          rowVersion:
+            change.row_version === null ? null : Number(change.row_version),
+          ...summary,
+        });
+      }
+      if (changes.length === 0) {
+        return syncError(c, 404, 'sync.not_found');
+      }
+
       return c.json(
         {
           ok: true,
@@ -2748,16 +2836,7 @@ export function createSyncRoutes<
             changeCount: Number(commit.change_count),
             affectedTables: options.dialect.dbToArray(commit.affected_tables),
           },
-          changes: changesResult.rows.map((change) => ({
-            changeId: Number(change.change_id),
-            table: change.table,
-            rowId: change.row_id,
-            op: change.op,
-            rowVersion:
-              change.row_version === null ? null : Number(change.row_version),
-            rowJson: parseJsonValue(change.row_json),
-            scopes: parseJsonValue(change.scopes),
-          })),
+          changes,
         },
         200
       );
@@ -4444,6 +4523,21 @@ function selectRequiredAuditScopes(
     auditScopes[key] = value;
   }
   return auditScopes;
+}
+
+function parseStoredAuditScopes(value: unknown): StoredScopes {
+  const parsed = parseJsonValue(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {};
+  }
+
+  const scopes: StoredScopes = {};
+  for (const [key, scopeValue] of Object.entries(parsed)) {
+    if (typeof scopeValue === 'string') {
+      scopes[key] = scopeValue;
+    }
+  }
+  return scopes;
 }
 
 function partitionScopeKey(partitionId: string, scopeKey: string): string {

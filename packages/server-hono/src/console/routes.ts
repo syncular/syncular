@@ -201,14 +201,6 @@ function includesSearchTerm(
   return value.toLowerCase().includes(searchTerm);
 }
 
-function parseJsonRecord(value: unknown): Record<string, unknown> {
-  const parsed = parseJsonValue(value);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return {};
-  }
-  return parsed as Record<string, unknown>;
-}
-
 function parseJsonStringArray(value: unknown): string[] {
   const parsed = parseJsonValue(value);
   if (!Array.isArray(parsed)) return [];
@@ -1808,13 +1800,17 @@ export function createConsoleRoutes<
         .execute();
 
       const changes: ConsoleChange[] = changeRows.map((row) => ({
+        ...summarizeAuditChange({
+          table: row.table ?? '',
+          op: row.op === 'delete' ? 'delete' : 'upsert',
+          rowJson: row.row_json,
+          scopes: row.scopes,
+        }),
         changeId: coerceNumber(row.change_id) ?? 0,
         table: row.table ?? '',
         rowId: row.row_id ?? '',
         op: row.op === 'delete' ? 'delete' : 'upsert',
-        rowJson: parseJsonValue(row.row_json),
         rowVersion: coerceNumber(row.row_version),
-        scopes: parseJsonRecord(row.scopes),
       }));
 
       const commit: ConsoleCommitDetail = {

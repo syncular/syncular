@@ -1547,6 +1547,18 @@ describe('console timeline route filters', () => {
       partitionId: 'tenant-b',
     });
     expect(commitDetailOk.status).toBe(200);
+    const commitDetailPayload = (await commitDetailOk.json()) as {
+      changes: Array<{
+        fields: string[];
+        changeKind: string;
+        rowJson?: unknown;
+      }>;
+    };
+    expect(commitDetailPayload.changes[0]).toMatchObject({
+      fields: ['id'],
+      changeKind: 'app_row',
+    });
+    expect(commitDetailPayload.changes[0]).not.toHaveProperty('rowJson');
 
     const commitDetailWrongPartition = await requestCommitDetail(
       tenantCommitSeq,

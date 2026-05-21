@@ -744,7 +744,10 @@ read-only review:
     event ids, request ids, and trace ids for timeline navigation. Next: richer
     commit-diff categories. Row-history responses now carry shared redaction
     metadata for app rows, deletes, blob refs, encrypted field envelopes, and
-    encrypted CRDT update/checkpoint evidence.
+    encrypted CRDT update/checkpoint evidence. Sync audit commit detail is now
+    scoped to the authenticated actor's visible row scopes and returns redacted
+    summaries rather than raw row payloads; console commit detail uses the same
+    redaction classifier.
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 
