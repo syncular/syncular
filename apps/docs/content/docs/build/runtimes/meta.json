@@ -1,5 +1,8 @@
 {
   "title": "Runtimes",
-  "pages": ["index", "web", "electron", "expo", "bun-node", "cloudflare"]
+  "pages": [
+    "index",
+    "electron",
+    "cloudflare"
+  ]
 }
-

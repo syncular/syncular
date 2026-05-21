@@ -384,7 +384,7 @@ Goal: keep future work visible without blocking the Rust client foundation.
   Decision captured in `rust/docs/reference/SERVER_EDGE_INVESTIGATION.md`: do not start a
   Cloudflare Worker WASM server rewrite without a concrete product bottleneck.
 - `[x]` Optional adapter packages for editor integrations.
-  Current deliverable is `@syncular/client-rust-crdt-adapters`; keep
+  Current deliverable is `@syncular/client-crdt-adapters`; keep
   TipTap/ProseMirror, Excalidraw, and markdown-specific behavior outside core.
 - `[x]` Optional storage/package variants for deployments that do not need
   blobs, E2EE, CRDT, or realtime.
@@ -626,7 +626,7 @@ Current notes:
 - Generated Swift/Kotlin app clients include schema-derived queued CRDT text
   and queued CRDT compaction helpers, and the BoltFFI Swift/Kotlin headers and
   wrappers include the matching low-level methods.
-- Added `@syncular/client-rust-crdt-adapters` with generic Yjs document-field
+- Added `@syncular/client-crdt-adapters` with generic Yjs document-field
   adapters. It shows how TipTap/ProseMirror or Excalidraw/Yjs app code can
   connect editor update hooks to Syncular CRDT fields without adding editor
   schemas or UI bridge behavior to Syncular core.
@@ -748,12 +748,10 @@ Current notes:
   shipping artifact strips custom sections, function names are intentionally
   not preserved in the released WASM; deeper crate-level attribution should use
   a separate non-shipping profiling artifact if needed.
-- Added `benchmark:browser:features` / `rust:browser:benchmark:features`.
-  The benchmark now records Rust-owned browser feature workloads for Kysely
-  read-heavy queries, live-query refreshes, CRDT text updates, encrypted field
-  pushes, encrypted CRDT text updates, blob metadata stores, large local
-  snapshot reads, and multi-table commits into
-  `.context/benchmarks/browser-feature-workloads.json`.
+- The old browser feature benchmark scripts were removed with the legacy
+  TypeScript client/perf tree. Use the Rust browser `tsgo`, test, WASM build,
+  size, generated-code, and conformance gates as the current browser package
+  validation path.
 - The old local mutation benchmark was updated to install the generated app
   schema explicitly for low-level Rust-owned SQLite opens, matching the
   schema-agnostic runtime decision instead of relying on bundled app tables.

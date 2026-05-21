@@ -209,6 +209,13 @@ read-only review:
     generated-client surface and red lines in one concise guide. Swift and
     Kotlin generated native row mutations now align with Rust/TypeScript table
     namespaces through `mutations` and `queuedMutations`.
+- `[x]` [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
+  - The legacy pure TypeScript client, React package, client plugin packages,
+    demo app, and JS-client integration/runtime/perf suites have been removed.
+    The Rust-owned browser binding is now the canonical `@syncular/client`
+    package, with the React entrypoint at `@syncular/client/react` and CRDT
+    adapters at `@syncular/client-crdt-adapters`. Docs and package metadata now
+    point at the Rust-first client path.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in
     the Rust-first path. Generated subscriptions across Rust/TS/Swift/Kotlin

@@ -10,7 +10,7 @@ import type {
   SyncularV2CrdtUpdateLogEntry,
   SyncularV2RowsChangedEvent,
   SyncularYjsUpdateEnvelope,
-} from '@syncular/client-rust';
+} from '@syncular/client';
 
 export interface SyncularCrdtFieldHost {
   openCrdtField(

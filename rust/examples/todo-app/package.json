@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@syncular/client-rust": "workspace:*",
+    "@syncular/client": "workspace:*",
     "@syncular/core": "workspace:*",
     "hono": "^4.12.15",
     "kysely": "^0.28.0"

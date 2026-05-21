@@ -224,7 +224,7 @@ data for that subscription. The default client handler uses the handler's
 `scopes` mapping to build scoped deletes:
 
 ```typescript
-createClientHandler({
+create generated client subscriptions({
   table: 'tasks',
   scopes: [{ pattern: 'user:{user_id}', column: 'owner_user_id' }],
 });
@@ -239,7 +239,7 @@ instead of falling back to a whole-table delete. Add a scope mapping or provide
 custom clearing:
 
 ```typescript
-const tasksClientHandler = createClientHandler({
+const tasksClientHandler = create generated client subscriptions({
   table: 'tasks',
   scopes: ['user:{user_id}'],
 

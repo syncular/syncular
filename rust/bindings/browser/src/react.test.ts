@@ -25,7 +25,7 @@ if (!GlobalRegistrator.isRegistered) {
   GlobalRegistrator.register();
 }
 
-describe('@syncular/client-rust/react', () => {
+describe('@syncular/client/react', () => {
   it('joins presence on mount, exposes members, and leaves on unmount', async () => {
     const fake = new FakeManagedClient();
     const { SyncularProvider, usePresence } = createSyncularV2React<TestDb>();

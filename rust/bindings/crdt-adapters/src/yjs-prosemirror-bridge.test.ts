@@ -11,7 +11,7 @@ import type {
   SyncularV2CrdtFieldYjsUpdateRequest,
   SyncularV2CrdtUpdateLogEntry,
   SyncularV2RowsChangedEvent,
-} from '@syncular/client-rust';
+} from '@syncular/client';
 import {
   base64ToBytes,
   bytesToBase64,

@@ -9,7 +9,7 @@ import type {
   SyncularV2CrdtFieldYjsUpdateRequest,
   SyncularV2CrdtUpdateLogEntry,
   SyncularV2RowsChangedEvent,
-} from '@syncular/client-rust';
+} from '@syncular/client';
 import type { SyncularCrdtProjectionHost } from './yjs-document-field-adapter';
 import {
   createSyncularCrdtJsonTransport,

@@ -14,9 +14,9 @@ import {
   SYNCULAR_V2_WASM_GLUE_FILE,
 } from './index';
 
-describe('@syncular/client-rust public API', () => {
+describe('@syncular/client public API', () => {
   it('exports the stable v2 runtime contract', () => {
-    expect(SYNCULAR_V2_PACKAGE_NAME).toBe('@syncular/client-rust');
+    expect(SYNCULAR_V2_PACKAGE_NAME).toBe('@syncular/client');
     expect(SYNCULAR_V2_PACKAGE_VERSION).toBe('0.0.0');
     expect(SYNCULAR_V2_WASM_GLUE_FILE).toBe('syncular_v2.js');
     expect(SYNCULAR_V2_WASM_BINARY_FILE).toBe('syncular_v2_bg.wasm');

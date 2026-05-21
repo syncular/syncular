@@ -224,13 +224,13 @@ async function mergeAndResolve(db, conflict, userChoices, mutations) {
 Here is a complete, copy-pasteable conflict resolver component:
 
 ```tsx
-import { createSyncularReact } from '@syncular/client-react';
+import { createSyncularV2React } from '@syncular/client/react';
 import { performFieldLevelMerge } from '@syncular/core';
 import { Button } from '@syncular/ui/primitives';
 import type { AppDb } from './db-types';
 
 const { useConflicts, useResolveConflict, useMutations } =
-  createSyncularReact<AppDb>();
+  createSyncularV2React<AppDb>();
 
 function ConflictBanner() {
   const { conflicts, isLoading } = useConflicts();
@@ -325,7 +325,7 @@ High-level stateful clients already include the incrementing version plugin by d
 - `SyncProvider`
 - `Client`
 - `createClient`
-- `SyncEngine`
+- `SyncularV2ManagedClient`
 
 You only need to wire it manually when you are composing low-level mutation/push helpers yourself.
 
@@ -334,7 +334,7 @@ import { createIncrementingVersionPlugin } from '@syncular/client';
 
 const plugin = createIncrementingVersionPlugin();
 
-await syncPushOnce(db, transport, handlers, {
+await client.sync(db, transport, handlers, {
   ...options,
   plugins: [plugin],
 });
