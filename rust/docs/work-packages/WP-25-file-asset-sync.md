@@ -1,6 +1,6 @@
 # WP-25 File Asset Sync
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -102,6 +102,25 @@ Current gap: Syncular has blob byte handling, but not a first-class file asset
 model for folders, versions, sharing, lifecycle state, selective sync, or
 Dropbox-like conflict behavior.
 
+First retained slice:
+
+- Added `syncular-testkit::file_assets`, a reference app-schema fixture with
+  scoped `files` and `file_versions` tables.
+- `file_versions.blob_ref` is the only blob column; file rows carry metadata
+  and current-version identity, not bytes.
+- Added mutation builders for create file, create folder, attach file version,
+  rename, move, soft delete, restore, and current-version updates.
+- Added a two-client stateful testkit scenario where one client stages/uploads
+  blob bytes, commits file/version metadata, another client pulls the metadata,
+  downloads the blob via the referenced `BlobRef`, and subscription revocation
+  clears both file metadata tables.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit
+  file_asset`
+- Broader gate: `cargo test --manifest-path rust/Cargo.toml -p
+  syncular-testkit`
+- Benchmark gate: not applicable for this slice; it adds a testkit/reference
+  schema and does not change runtime sync/apply/query hot paths.
+
 ## Suggested App Schema
 
 Initial generated/reference schema:
@@ -122,16 +141,26 @@ schema.
 
 Add a reference file asset schema and conformance scenario:
 
-1. Define generated/example tables for `files` and `file_versions`.
-2. Add generated mutations for create file, create folder, attach new version,
-   rename, move, soft delete, and restore.
-3. Use `BlobRef` in `file_versions`, not in file row payload bytes.
-4. Add a two-client test where one client uploads a file/version, another pulls
-   metadata, downloads the blob through row-backed authorization, then sees
-   revocation clear the file metadata.
+1. `[x]` Define reference/testkit tables for `files` and `file_versions`.
+2. `[x]` Add mutation builders for create file, create folder, attach new
+   version, rename, move, soft delete, and restore.
+3. `[x]` Use `BlobRef` in `file_versions`, not in file row payload bytes.
+4. `[~]` Add a two-client test where one client uploads a file/version,
+   another pulls metadata, downloads the blob, then sees revocation clear the
+   file metadata. The retained testkit scenario covers this through
+   `AppTestServer`; the remaining production server slice should prove the same
+   reference schema with row-backed Hono blob authorization.
 
 ## Next Action
 
-Design the reference file asset schema and decide whether it belongs as a
-generated optional template, a testkit fixture, or both. Keep WP-24 as the blob
-byte-transfer foundation and WP-25 as the file/photo metadata product layer.
+Add the production server/browser side of the reference path:
+
+1. Add Hono blob authorization coverage using `file_versions.blob_ref` as the
+   visible row-backed blob reference.
+2. Add browser/WASM coverage that generated app rows with a file-version
+   `BlobRef` sync and clear on revocation.
+3. Expand testkit file scenarios for rename, move, delete-vs-update, version
+   conflict, trash/restore, and missing/corrupted blob bodies.
+4. Decide whether the reference schema should also become a codegen optional
+   template, while keeping it optional app-layer metadata rather than Syncular
+   core tables.

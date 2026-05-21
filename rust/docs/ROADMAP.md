@@ -794,7 +794,15 @@ read-only review:
     and not cached. Hono blob routes now have explicit `blob.too_large`
     coverage for upload initiation and direct upload `Content-Length`
     enforcement.
-- `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
+- `[~]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
+  - First retained slice adds `syncular-testkit::file_assets`, a reference
+    scoped file metadata schema with `files` and `file_versions` tables,
+    `file_versions.blob_ref` as the only blob column, mutation builders for
+    file/folder/version lifecycle basics, and a two-client stateful scenario
+    proving metadata sync, blob retrieval through the referenced `BlobRef`, and
+    revocation clearing. Next: production Hono/browser coverage for the same
+    row-backed file-version authorization shape, then broader file conflict and
+    trash/restore conformance.
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry
     explicit TypeScript/platform `Interface Impact` sections. Browser, React,
