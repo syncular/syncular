@@ -11,8 +11,8 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use syncular_runtime::error::Result;
 use syncular_runtime::protocol::{
-    CombinedRequest, CombinedResponse, PushBatchRequest, PushCommitRequest, SyncOperation,
-    SYNC_PACK_ENCODING_BINARY_V1,
+    AuthLeaseProvenance, CombinedRequest, CombinedResponse, PushBatchRequest, PushCommitRequest,
+    SyncOperation, SYNC_PACK_ENCODING_BINARY_V1,
 };
 use syncular_runtime::transport::{SyncAuthHeaders, SyncTransport};
 use tungstenite::{http::StatusCode, Message};
@@ -99,6 +99,8 @@ struct TestWsPushMessage {
     client_commit_id: String,
     operations: Vec<SyncOperation>,
     schema_version: i32,
+    #[serde(default)]
+    auth_lease: Option<AuthLeaseProvenance>,
 }
 
 pub struct AppTestHttpServer {
@@ -728,6 +730,7 @@ fn handle_ws_push_message(server: &AppTestServer, client_id: &str, message: &str
                 client_commit_id: message.client_commit_id,
                 operations: message.operations,
                 schema_version: message.schema_version,
+                auth_lease: message.auth_lease,
             }],
         }),
         pull: None,

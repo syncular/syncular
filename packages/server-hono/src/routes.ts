@@ -2023,6 +2023,7 @@ export function createSyncRoutes<
         clientCommitId: pushBody.clientCommitId,
         operations: pushBody.operations,
         schemaVersion: pushBody.schemaVersion,
+        authLease: pushBody.authLease,
       })),
     });
     const affectedTables = new Set<string>();
@@ -2077,6 +2078,7 @@ export function createSyncRoutes<
               commits: pushBodies.map((pushBody) => ({
                 clientCommitId: pushBody.clientCommitId,
                 schemaVersion: pushBody.schemaVersion,
+                authLease: pushBody.authLease,
                 operations: pushBody.operations,
               })),
             },
@@ -2125,6 +2127,7 @@ export function createSyncRoutes<
         clientCommitId: pushBody.clientCommitId,
         operations: pushBody.operations,
         schemaVersion: pushBody.schemaVersion,
+        authLease: pushBody.authLease,
       },
     });
 
@@ -2152,6 +2155,7 @@ export function createSyncRoutes<
               clientId: ctx.clientId,
               clientCommitId: pushBody.clientCommitId,
               schemaVersion: pushBody.schemaVersion,
+              authLease: pushBody.authLease,
               operations: pushBody.operations,
             },
             response: pushed.response,
@@ -3848,6 +3852,7 @@ export function createSyncRoutes<
                   clientId,
                   clientCommitId: parsed.data.clientCommitId,
                   schemaVersion: parsed.data.schemaVersion,
+                  authLease: parsed.data.authLease,
                   operations: parsed.data.operations,
                 },
                 response: {
@@ -3875,6 +3880,7 @@ export function createSyncRoutes<
           clientCommitId: parsed.data.clientCommitId,
           operations: parsed.data.operations,
           schemaVersion: parsed.data.schemaVersion,
+          authLease: parsed.data.authLease,
         },
         { countConflictsMetric: true }
       );

@@ -411,8 +411,13 @@ read-only review:
     expired, and tampered-token smoke coverage. Runtime schema v8 now persists
     `sync_auth_leases` plus outbox auth-lease provenance, exposed through the
     native Diesel store, browser owned SQLite store, native facade, C FFI, and
-    BoltFFI wrapper. Next narrow slice is current-auth replay/diagnostics, not a
-    server rewrite or lease-based authorization bypass.
+    BoltFFI wrapper. HTTP/websocket push replay now carries optional
+    `authLease` provenance through Rust/browser/server/Hono without bypassing
+    current request auth, and server-side lease rejections use stable
+    `sync.auth_lease_*` diagnostics that the Rust client preserves as local
+    conflict/recovery state. Next narrow slice is server-issued lease
+    issue/refresh/verification semantics and testkit stateful rejection
+    coverage, not a server rewrite.
 - `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus

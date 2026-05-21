@@ -1760,6 +1760,7 @@ where
                         client_commit_id: commit.client_commit_id.clone(),
                         operations,
                         schema_version: commit.schema_version,
+                        auth_lease: commit.auth_lease.clone(),
                     })
                 })
                 .collect::<Result<Vec<_>>>()?,

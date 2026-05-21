@@ -518,6 +518,7 @@ async function applyCommitOperations<
       clientId: args.request.clientId,
       commitId: args.commitId,
       schemaVersion: args.request.schemaVersion,
+      authLease: args.request.authLease,
     };
 
     let transformedOp = op;
@@ -658,7 +659,11 @@ async function executePushCommitInExecutor<
     client_id: request.clientId,
     client_commit_id: request.clientCommitId,
     created_at: commitCreatedAt,
-    meta: null,
+    meta: request.authLease
+      ? toDialectJsonValue(dialect, {
+          authLease: request.authLease,
+        })
+      : null,
     result_json: null,
   };
   let commitSeq =

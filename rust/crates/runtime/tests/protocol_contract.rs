@@ -26,11 +26,12 @@ use syncular_runtime::fixtures::todo::{
 };
 use syncular_runtime::protocol::{
     snapshot_manifest_digest, validate_pull_commit_integrity_metadata,
-    validate_pull_snapshot_manifests, wire_commit_chain_root, wire_commit_digest, BootstrapState,
-    CombinedRequest, CombinedResponse, OperationResult, PullResponse, PushBatchResponse,
-    PushCommitResponse, ScopedSnapshotArtifactManifest, ScopedSnapshotArtifactRef,
-    SnapshotChunkRef, SnapshotManifest, SnapshotManifestChunkRef, SubscriptionIntegrity,
-    SubscriptionResponse, SyncChange, SyncCommit, SyncSnapshot, COMMIT_INTEGRITY_GENESIS_ROOT,
+    validate_pull_snapshot_manifests, wire_commit_chain_root, wire_commit_digest,
+    AuthLeaseProvenance, BootstrapState, CombinedRequest, CombinedResponse, OperationResult,
+    PullResponse, PushBatchResponse, PushCommitResponse, ScopedSnapshotArtifactManifest,
+    ScopedSnapshotArtifactRef, SnapshotChunkRef, SnapshotManifest, SnapshotManifestChunkRef,
+    SubscriptionIntegrity, SubscriptionResponse, SyncChange, SyncCommit, SyncSnapshot,
+    AUTH_LEASE_CODE_EXPIRED, COMMIT_INTEGRITY_GENESIS_ROOT,
     SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1, SNAPSHOT_CHUNK_COMPRESSION_GZIP,
 };
 use syncular_runtime::store::{SyncStore, SyncStoreTx};
@@ -487,6 +488,87 @@ fn rejected_push_marks_outbox_failed() -> Result<()> {
             .as_u64()
             .expect("expected after resolve conflict count") as usize
     );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn http_sync_sends_auth_lease_provenance_and_preserves_rejection_diagnostic() -> Result<()> {
+    let path = temp_db_path("syncular-protocol-auth-lease-rejected");
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let transport = TestTransport::new();
+    let handle = transport.handle();
+    let provenance = AuthLeaseProvenance {
+        lease_id: "lease-expired".to_string(),
+        lease_expires_at_ms: 1_779_360_000_000,
+        lease_status_at_enqueue: "expired".to_string(),
+        lease_scope_summary_json: Some(r#"{"user_id":["user-rust"]}"#.to_string()),
+    };
+    let expected_provenance = provenance.clone();
+    transport.push_http_response_fn(move |request| {
+        let push = request.push.as_ref().expect("push request");
+        assert_eq!(push.commits.len(), 1);
+        assert_eq!(
+            push.commits[0].auth_lease.as_ref(),
+            Some(&expected_provenance)
+        );
+
+        let mut response = default_combined_response(request);
+        response.push = Some(PushBatchResponse {
+            ok: true,
+            commits: vec![PushCommitResponse {
+                client_commit_id: push.commits[0].client_commit_id.clone(),
+                status: "rejected".to_string(),
+                commit_seq: Some(17),
+                results: vec![OperationResult {
+                    op_index: 0,
+                    status: "error".to_string(),
+                    message: Some("Auth lease expired".to_string()),
+                    error: Some("Auth lease expired".to_string()),
+                    code: Some(AUTH_LEASE_CODE_EXPIRED.to_string()),
+                    retriable: Some(true),
+                    server_version: None,
+                    server_row: None,
+                }],
+            }],
+        });
+        Ok(response)
+    });
+    let config = test_config(&path, "client-auth-lease-rejected");
+    let mut client = demo_client(config, store, transport);
+
+    client.add_task(
+        "Auth lease task".to_string(),
+        Some("task-auth-lease".to_string()),
+    )?;
+    let commit_id = client
+        .outbox_summaries()?
+        .first()
+        .expect("queued commit")
+        .client_commit_id
+        .clone();
+    client.set_outbox_auth_lease(&commit_id, Some(&provenance))?;
+
+    let report = client.sync_http()?;
+    assert!(report.conflicts_changed);
+
+    let request = handle
+        .last_request()
+        .expect("auth lease sync should send a request");
+    let push = request.push.as_ref().expect("push request");
+    assert_eq!(push.commits[0].auth_lease.as_ref(), Some(&provenance));
+
+    let outbox = client.outbox_summaries()?;
+    assert_eq!(outbox.len(), 1);
+    assert_eq!(outbox[0].status, "failed");
+    assert_eq!(outbox[0].auth_lease.as_ref(), Some(&provenance));
+
+    let conflicts = client.conflict_summaries()?;
+    assert_eq!(conflicts.len(), 1);
+    assert_eq!(conflicts[0].result_status, "error");
+    assert_eq!(conflicts[0].code.as_deref(), Some(AUTH_LEASE_CODE_EXPIRED));
+    assert_eq!(conflicts[0].message, "Auth lease expired");
 
     let _ = std::fs::remove_file(path);
     Ok(())

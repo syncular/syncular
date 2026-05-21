@@ -42,6 +42,8 @@ pub struct RealtimePushRequest {
     pub client_commit_id: String,
     pub operations: Vec<crate::SyncOperation>,
     pub schema_version: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub auth_lease: Option<crate::AuthLeaseProvenance>,
 }
 
 impl RealtimePushRequest {
@@ -52,6 +54,7 @@ impl RealtimePushRequest {
             client_commit_id: commit.client_commit_id,
             operations: commit.operations,
             schema_version: commit.schema_version,
+            auth_lease: commit.auth_lease,
         }
     }
 }
@@ -155,6 +158,12 @@ mod tests {
                     base_version: None,
                 }],
                 schema_version: 7,
+                auth_lease: Some(crate::AuthLeaseProvenance {
+                    lease_id: "lease-1".to_string(),
+                    lease_expires_at_ms: 1_779_446_400_000,
+                    lease_status_at_enqueue: "active".to_string(),
+                    lease_scope_summary_json: None,
+                }),
             },
         );
         assert_eq!(
@@ -170,7 +179,12 @@ mod tests {
                     "payload": null,
                     "base_version": null
                 }],
-                "schemaVersion": 7
+                "schemaVersion": 7,
+                "authLease": {
+                    "leaseId": "lease-1",
+                    "leaseExpiresAtMs": 1_779_446_400_000_i64,
+                    "leaseStatusAtEnqueue": "active"
+                }
             })
         );
 

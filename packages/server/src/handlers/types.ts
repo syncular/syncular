@@ -5,6 +5,7 @@ import type {
   ScopeValues,
   ScopeValuesForKeys,
   StoredScopes,
+  SyncAuthLeaseProvenance,
   SyncOp,
   SyncOperation,
   SyncOperationResult,
@@ -101,6 +102,11 @@ export interface ServerApplyOperationContext<
    * Use this to transform payloads from older client versions.
    */
   schemaVersion: number;
+  /**
+   * Auth lease provenance captured when the client queued the commit.
+   * This is audit/replay context only; handlers must still use current auth.
+   */
+  authLease?: SyncAuthLeaseProvenance;
 }
 
 /**
