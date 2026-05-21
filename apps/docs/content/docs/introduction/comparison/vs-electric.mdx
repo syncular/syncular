@@ -111,11 +111,11 @@ Electric streams reads. Writes are separate (via your API).
 ### Syncular
 
 ```typescript
-	import { createSyncularV2React } from '@syncular/client/react';
+	import { createSyncularReact } from '@syncular/client/react';
 	import { Button } from '@syncular/ui/primitives';
 	import type { AppDb } from './db-types';
 
-	const { useSyncQuery, useMutations } = createSyncularV2React<AppDb>();
+	const { useSyncQuery, useMutations } = createSyncularReact<AppDb>();
 
 	function TaskList() {
 	  const { data: tasks } = useSyncQuery(

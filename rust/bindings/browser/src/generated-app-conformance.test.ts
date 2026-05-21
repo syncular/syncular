@@ -266,6 +266,64 @@ describe('generated app conformance', () => {
       project_id: null,
     });
   });
+
+  it('keeps generated partial updates as partial sync payloads with complete local rows', async () => {
+    let capturedBatch: Array<{
+      operation: SyncOperation;
+      localRow?: unknown | null;
+    }> | null = null;
+    const client = {
+      ...fakeClient(),
+      async executeSql(sql, params) {
+        if (sql.includes('select * from "tasks"')) {
+          expect(params).toEqual(['task-partial-update']);
+          return {
+            rows: [
+              {
+                id: 'task-partial-update',
+                title: 'Existing title',
+                completed: 0,
+                user_id: 'user-rust',
+                project_id: null,
+                server_version: 7,
+              },
+            ],
+          };
+        }
+        if (sql.includes('"server_version"')) {
+          return { rows: [{ version: 7 }] };
+        }
+        return { rows: [] };
+      },
+      async applyMutationsCommit(batch) {
+        capturedBatch = batch;
+        return 'commit-generated-update';
+      },
+    } satisfies SyncularV2Client;
+
+    const mutations = createSyncularV2Mutations<SyncularAppDb>({
+      client,
+      tableConfig: syncularGeneratedTableConfig,
+    }) as unknown as SyncularAppMutations;
+
+    await mutations.tasks.update('task-partial-update', { completed: 1 });
+
+    expect(capturedBatch).toHaveLength(1);
+    expect(capturedBatch?.[0]?.operation).toEqual({
+      table: 'tasks',
+      row_id: 'task-partial-update',
+      op: 'upsert',
+      payload: { completed: 1 },
+      base_version: 7,
+    });
+    expect(capturedBatch?.[0]?.localRow).toEqual({
+      id: 'task-partial-update',
+      title: 'Existing title',
+      completed: 1,
+      user_id: 'user-rust',
+      project_id: null,
+    });
+  });
 });
 
 function fakeClient(): SyncularV2Client {
