@@ -10,6 +10,14 @@ export interface RedactedAuditChange {
   [key: string]: unknown;
 }
 
+export interface RedactedAuditDebugExport {
+  commits?: Array<{
+    changes?: RedactedAuditChange[];
+    [key: string]: unknown;
+  }>;
+  [key: string]: unknown;
+}
+
 export function assertAuditChangeRedacted(
   change: RedactedAuditChange,
   message = 'Expected audit change to be redacted'
@@ -42,6 +50,19 @@ export function assertAuditJsonExcludes(
       throw new Error(`${message}: ${needle}`);
     }
   }
+}
+
+export function assertAuditDebugExportRedacted(
+  value: RedactedAuditDebugExport,
+  forbiddenNeedles: readonly string[] = [],
+  message = 'Expected audit debug export to be redacted'
+): void {
+  for (const commit of value.commits ?? []) {
+    for (const change of commit.changes ?? []) {
+      assertAuditChangeRedacted(change, message);
+    }
+  }
+  assertAuditJsonExcludes(value, forbiddenNeedles, message);
 }
 
 export async function readJsonResponse<T>(response: Response): Promise<T> {

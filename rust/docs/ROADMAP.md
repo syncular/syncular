@@ -350,12 +350,11 @@ read-only review:
 
 ## Next
 
-- Resume [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md).
-  WP-26 is accepted for the current Rust-first TypeScript host-binding
-  foundation. The next feature work should return to the oldest in-progress
-  package: add the redacted debug export route and decide which audit/debug
-  scenarios belong in shared testkit/conformance versus server-specific route
-  tests.
+- Start [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md).
+  WP-23 is accepted for the current Rust-first audit/time-travel foundation.
+  The next feature work should tighten blob authorization, integrity,
+  diagnostics, encryption, queue/cache behavior, and cross-binding conformance
+  before WP-25 file asset sync builds on top of it.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when WP-26 finds concrete generated-client naming, discoverability,
   conflict, blob, or subscription ergonomics gaps.
@@ -747,7 +746,7 @@ read-only review:
     while keeping the command undoable. Swift/Kotlin command-history wrappers
     are deferred until those generated mutation APIs are mature enough to avoid
     baking a second app-facing shape.
-- `[~]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
+- `[x]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
   - First server API slice is in place. `GET /audit/rows/:table/:rowId` uses
     dialect-level scoped row-history reads, supports commit-range pagination,
     returns redacted field/scope summaries instead of raw payloads, and fails
@@ -761,8 +760,12 @@ read-only review:
     scoped to the authenticated actor's visible row scopes and returns redacted
     summaries rather than raw row payloads; console commit detail uses the same
     redaction classifier. Testkit now exports audit redaction/leak assertions
-    for app-side tests. OpenAPI/transport types and the console Stream view now
-    use the redacted change summary shape.
+    and redacted-debug-export assertions for app-side tests.
+    `GET /audit/debug/export` now exposes a size-bounded authenticated-actor
+    support bundle containing only visible redacted commit changes and the
+    actor's own request-event diagnostics when available. OpenAPI/transport
+    types and the console Stream view now use the redacted change summary
+    shape.
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)

@@ -6,7 +6,7 @@ import {
   type SyncCoreDb,
 } from '@syncular/server';
 import { Hono } from 'hono';
-import type { Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../../server-dialect-sqlite/src';
 import { createSyncRoutes } from '../routes';
@@ -398,6 +398,112 @@ describe('createSyncRoutes audit endpoints', () => {
     expect(bodyText).not.toContain('row-history-secret');
   });
 
+  it('exports a redacted actor-scoped debug bundle', async () => {
+    const app = createApp();
+
+    const visibleCommitSeq = await pushCommit({
+      app,
+      actorId: 'u1',
+      clientId: 'client-visible',
+      clientCommitId: 'debug-visible',
+      rowId: 'debug-visible-row',
+      title: 'Visible Debug Payload',
+    });
+    await pushCommit({
+      app,
+      actorId: 'u2',
+      clientId: 'client-hidden',
+      clientCommitId: 'debug-hidden',
+      rowId: 'debug-hidden-row',
+      title: 'Hidden Debug Payload',
+    });
+
+    await dialect.ensureConsoleSchema(db);
+    await sql`
+      INSERT INTO sync_request_events (
+        partition_id, request_id, trace_id, span_id,
+        event_type, sync_path, actor_id, client_id, transport_path,
+        status_code, outcome, response_status, error_code,
+        duration_ms, commit_seq, operation_count, row_count,
+        subscription_count, scopes_summary, tables, created_at
+      ) VALUES
+        (
+          'p1', 'request-visible', 'trace-visible', null,
+          'sync', 'http-combined', 'u1', 'client-visible', 'direct',
+          200, 'visible-ok', 'applied', null,
+          12, ${visibleCommitSeq}, 1, 1,
+          0, ${JSON.stringify({ user_id: 'u1' })}, ${JSON.stringify(['tasks'])},
+          '2026-05-21T10:00:00.000Z'
+        ),
+        (
+          'p1', 'request-hidden', 'trace-hidden', null,
+          'sync', 'http-combined', 'u2', 'client-hidden', 'direct',
+          200, 'hidden-secret-outcome', 'applied', null,
+          13, ${visibleCommitSeq + 1}, 1, 1,
+          0, ${JSON.stringify({ user_id: 'u2' })}, ${JSON.stringify(['tasks'])},
+          '2026-05-21T10:00:01.000Z'
+        )
+    `.execute(db);
+
+    const response = await app.request(
+      'http://localhost/sync/audit/debug/export?limitCommits=10&limitEvents=10',
+      {
+        headers: {
+          'x-user-id': 'u1',
+          'x-partition-id': 'p1',
+        },
+      }
+    );
+
+    expect(response.status).toBe(200);
+    const debugExport = (await response.json()) as {
+      ok: boolean;
+      partitionId: string;
+      commits: Array<{
+        commitSeq: number;
+        clientCommitId: string;
+        changes: Array<{
+          rowId: string;
+          redaction: { payload: string; reason: string };
+          rowJson?: unknown;
+          scopes?: unknown;
+        }>;
+      }>;
+      requestEvents: Array<{
+        actorId: string;
+        requestId: string;
+        scopesSummary: Record<string, string | string[]> | null;
+      }>;
+    };
+    expect(debugExport.ok).toBe(true);
+    expect(debugExport.partitionId).toBe('p1');
+    expect(debugExport.commits).toHaveLength(1);
+    expect(debugExport.commits[0]).toMatchObject({
+      commitSeq: visibleCommitSeq,
+      clientCommitId: 'debug-visible',
+    });
+    expect(debugExport.commits[0]?.changes).toHaveLength(1);
+    expect(debugExport.commits[0]?.changes[0]).not.toHaveProperty('rowJson');
+    expect(debugExport.commits[0]?.changes[0]).not.toHaveProperty('scopes');
+    expect(debugExport.commits[0]?.changes[0]?.redaction).toEqual({
+      payload: 'omitted',
+      reason: 'audit_redacted_by_default',
+    });
+    expect(debugExport.requestEvents).toHaveLength(1);
+    expect(debugExport.requestEvents[0]).toMatchObject({
+      actorId: 'u1',
+      requestId: 'request-visible',
+      scopesSummary: { user_id: 'u1' },
+    });
+
+    const serialized = JSON.stringify(debugExport);
+    expect(serialized).not.toContain('Visible Debug Payload');
+    expect(serialized).not.toContain('Hidden Debug Payload');
+    expect(serialized).not.toContain('debug-hidden');
+    expect(serialized).not.toContain('request-hidden');
+    expect(serialized).not.toContain('hidden-secret-outcome');
+  });
+
   it('requires authentication for audit endpoints', async () => {
     const app = createApp();
 
@@ -408,5 +514,16 @@ describe('createSyncRoutes audit endpoints', () => {
     });
 
     expect(response.status).toBe(401);
+
+    const debugExportResponse = await app.request(
+      'http://localhost/sync/audit/debug/export',
+      {
+        headers: {
+          'x-user-id': 'anon',
+        },
+      }
+    );
+
+    expect(debugExportResponse.status).toBe(401);
   });
 });

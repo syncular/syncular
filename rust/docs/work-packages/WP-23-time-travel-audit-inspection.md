@@ -1,6 +1,6 @@
 # WP-23 Time Travel And Audit Inspection
 
-Status: `[~]` in progress
+Status: `[x]` accepted
 
 ## Goal
 
@@ -89,14 +89,20 @@ The first server API slice now exists:
   the authenticated actor and uses the same redacted summary shape. If the
   commit has no visible changes for that actor, the route fails as
   `sync.not_found` rather than leaking commit payloads from another scope.
+- `GET /audit/debug/export` now returns a size-bounded support bundle for the
+  authenticated actor. It includes only commits with at least one visible
+  redacted change for the actor, omits raw row payloads and stored scopes, and
+  includes only that actor's request-event diagnostics when the request-event
+  table is available.
 - Console commit details also use redacted change summaries instead of raw
   `rowJson` payloads.
 - `@syncular/testkit` now exports audit assertions for canonical redaction
-  markers and forbidden-payload leak checks so app tests can verify Syncular
-  audit responses without mocking the runtime.
-- OpenAPI/transport types now include the row-history endpoints and redacted
-  commit-change shape. The console Stream view renders change kind, field
-  names, sensitive field names, and redaction state instead of raw row JSON.
+  markers, redacted debug exports, and forbidden-payload leak checks so app
+  tests can verify Syncular audit responses without mocking the runtime.
+- OpenAPI/transport types now include the row-history endpoints, commit detail,
+  redacted debug export, and redacted commit-change shape. The console Stream
+  view renders change kind, field names, sensitive field names, and redaction
+  state instead of raw row JSON.
 
 Evidence:
 
@@ -158,5 +164,7 @@ Add read-only row history and commit diff inspection for server audit APIs:
 
 ## Next Action
 
-Add a redacted debug export route and decide how much of WP-23 should move into
-shared conformance/testkit scenarios versus server-specific route tests.
+WP-23 is accepted for the current Rust-first foundation. The next roadmap item
+is WP-24 blob hardening; future audit work should be driven by concrete support
+UI or compliance requirements rather than adding rollback/history mutation
+semantics.
