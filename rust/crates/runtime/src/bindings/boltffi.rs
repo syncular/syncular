@@ -167,6 +167,10 @@ impl SyncularBoltClient {
         })
     }
 
+    pub fn reset_local_sync_state_json(&self, request_json: &str) -> Result<String, String> {
+        self.with_client_mut(|client| client.reset_local_sync_state_json(request_json))
+    }
+
     pub fn set_field_encryption_json(&self, config_json: &str) -> Result<bool, String> {
         self.with_client_mut(|client| client.set_field_encryption_json(config_json).map(|_| true))
     }

@@ -236,6 +236,11 @@ pub trait SyncStoreTx {
     }
 
     fn clear_table_for_scopes(&mut self, table: &str, scopes: &ScopeValues) -> Result<()>;
+    fn clear_synced_rows_for_scopes(&mut self, _table: &str, _scopes: &ScopeValues) -> Result<i64> {
+        Err(SyncularError::storage(anyhow::anyhow!(
+            "clearing synced rows is not supported by this store"
+        )))
+    }
     fn clear_table_for_scopes_preserving_local_crdt(
         &mut self,
         table: &str,

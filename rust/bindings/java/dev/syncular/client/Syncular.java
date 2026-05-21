@@ -934,6 +934,7 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_set_auth_headers_json(long handle, byte[] headersJson);
     static native byte[] boltffi_syncular_bolt_client_set_subscriptions_json(long handle, byte[] subscriptionsJson);
     static native byte[] boltffi_syncular_bolt_client_force_subscriptions_bootstrap_json(long handle, byte[] subscriptionIdsJson);
+    static native byte[] boltffi_syncular_bolt_client_reset_local_sync_state_json(long handle, byte[] requestJson);
     static native byte[] boltffi_syncular_bolt_client_set_field_encryption_json(long handle, byte[] configJson);
     static native byte[] boltffi_syncular_bolt_client_set_encrypted_crdt_json(long handle, byte[] configJson);
     static native byte[] boltffi_syncular_bolt_client_trigger_sync(long handle);

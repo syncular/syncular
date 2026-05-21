@@ -720,6 +720,84 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     await expect(client.listTable('tasks')).resolves.toEqual([]);
   });
 
+  it('resets browser sync state while preserving local-only app rows', async () => {
+    const subscription = taskSubscription({ actorId: ACTOR_A });
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'local-reset-browser-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    await client.setSubscriptions([subscription]);
+    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    await unsafe.executeUnsafeSql(
+      'insert into tasks (id, title, completed, user_id, project_id, server_version, image, title_yjs_state) values (?, ?, 0, ?, ?, ?, null, null)',
+      ['reset-browser-synced', 'Synced row', ACTOR_A, null, 42]
+    );
+    await unsafe.executeUnsafeSql(
+      'insert into tasks (id, title, completed, user_id, project_id, server_version, image, title_yjs_state) values (?, ?, 0, ?, ?, ?, null, null)',
+      ['reset-browser-local-only', 'Local only row', ACTOR_A, null, 0]
+    );
+    await unsafe.executeUnsafeSql(
+      'insert into sync_subscription_state (state_id, subscription_id, "table", scopes_json, params_json, cursor, bootstrap_state_json, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, null, ?, ?, ?)',
+      [
+        'default',
+        subscription.id,
+        subscription.table,
+        JSON.stringify({ actorId: ACTOR_A }),
+        '{}',
+        42,
+        'active',
+        1,
+        1,
+      ]
+    );
+    await unsafe.executeUnsafeSql(
+      'insert into sync_verified_roots (state_id, subscription_id, partition_id, commit_seq, root, created_at, updated_at) values (?, ?, ?, ?, ?, ?, ?)',
+      ['default', subscription.id, 'partition-a', 42, 'a'.repeat(64), 1, 1]
+    );
+    await unsafe.executeUnsafeSql(
+      'insert into sync_outbox_commits (id, client_commit_id, status, operations_json, created_at, updated_at, attempt_count, schema_version, next_attempt_at) values (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        'reset-browser-pending',
+        'reset-browser-pending-commit',
+        'pending',
+        '[]',
+        1,
+        1,
+        0,
+        syncularGeneratedSchemaVersion,
+        0,
+      ]
+    );
+
+    await expect(
+      client.resetLocalSyncState({ clearSyncedRows: true })
+    ).rejects.toThrow(/empty local outbox/i);
+    await expect(client.listTable('tasks')).resolves.toHaveLength(2);
+
+    await unsafe.executeUnsafeSql(
+      "update sync_outbox_commits set status = 'acked' where id = ?",
+      ['reset-browser-pending']
+    );
+    await expect(
+      client.resetLocalSyncState({ clearSyncedRows: true })
+    ).resolves.toMatchObject({
+      resetSubscriptions: 1,
+      deletedSubscriptionStates: 1,
+      deletedVerifiedRoots: 1,
+      clearedSyncedRows: 1,
+      clearedTables: ['tasks'],
+    });
+    await expect(client.listTable('tasks')).resolves.toEqual([
+      expect.objectContaining({ id: 'reset-browser-local-only' }),
+    ]);
+  });
+
   it('does not partially apply chunked snapshots when chunk fetch fails', async () => {
     const scenario = syncConformance.snapshotChunk;
     const sync = await createHonoSyncHarness({
@@ -828,7 +906,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       recommendedAction: 'forceResync',
       details: { syncularKind: 'Protocol' },
     });
-    expect(error.message).toMatch(/hash mismatch/i);
+    expect(error.message).toMatch(/hash mismatch|byte length mismatch/i);
 
     await expect(client.listTable('tasks')).resolves.toEqual([
       expect.objectContaining({

@@ -51,6 +51,8 @@ import type {
   SyncularV2LocalHealthRepairReport,
   SyncularV2LocalHealthRepairRequest,
   SyncularV2LocalHealthReport,
+  SyncularV2LocalSyncResetReport,
+  SyncularV2LocalSyncResetRequest,
   SyncularV2LifecycleState,
   SyncularV2OutboxStats,
   SyncularV2PresenceEntry,
@@ -647,6 +649,22 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         subscriptionIds: [...(request.subscriptionIds ?? [])],
       },
     });
+  }
+
+  async resetLocalSyncState(
+    request: SyncularV2LocalSyncResetRequest = {}
+  ): Promise<SyncularV2LocalSyncResetReport> {
+    const normalized = {
+      subscriptionIds: [...(request.subscriptionIds ?? [])],
+      clearSyncedRows: request.clearSyncedRows === true,
+    };
+    const result = await this.#requestAndDrain<SyncularV2LocalSyncResetReport>({
+      type: 'resetLocalSyncState',
+      request: normalized,
+    });
+    this.#lastBootstrap = undefined;
+    this.#emitLifecycleChanged();
+    return result;
   }
 
   buildYjsTextUpdate(
@@ -1676,7 +1694,8 @@ function shouldEmitOperationalState(
     type === 'retryConflictKeepLocal' ||
     type === 'resolveConflict' ||
     type === 'compactStorage' ||
-    type === 'repairLocalHealth'
+    type === 'repairLocalHealth' ||
+    type === 'resetLocalSyncState'
   );
 }
 

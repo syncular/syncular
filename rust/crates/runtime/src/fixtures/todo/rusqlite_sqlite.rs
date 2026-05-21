@@ -792,6 +792,31 @@ impl SyncStoreTx for RusqliteTx<'_> {
         Ok(())
     }
 
+    fn clear_synced_rows_for_scopes(&mut self, table: &str, scopes: &ScopeValues) -> Result<i64> {
+        if table != "tasks" {
+            return Err(SyncularError::codegen(format!(
+                "no rusqlite table adapter registered for {table}"
+            )));
+        }
+
+        let user_id = scopes.get("user_id").and_then(Value::as_str);
+        let project_id = scopes.get("project_id").and_then(Value::as_str);
+        let deleted = match (user_id, project_id) {
+            (Some(user_id), Some(project_id)) => self.tx.execute(
+                "delete from tasks where user_id = ?1 and project_id = ?2 and server_version > 0",
+                params![user_id, project_id],
+            )?,
+            (Some(user_id), None) => self.tx.execute(
+                "delete from tasks where user_id = ?1 and server_version > 0",
+                params![user_id],
+            )?,
+            _ => self
+                .tx
+                .execute("delete from tasks where server_version > 0", [])?,
+        };
+        Ok(deleted as i64)
+    }
+
     fn current_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {
         if table != "tasks" {
             return Err(SyncularError::codegen(format!(

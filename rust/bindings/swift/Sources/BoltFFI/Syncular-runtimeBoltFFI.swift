@@ -190,6 +190,15 @@ public final class SyncularBoltClient {
         }
     }
 
+    public func resetLocalSyncStateJson(requestJson: String) throws -> String {
+        var requestJson = requestJson
+        return try requestJson.withUTF8 { requestJsonBuf in
+            let buf = boltffi_syncular_bolt_client_reset_local_sync_state_json(handle, requestJsonBuf.baseAddress!, UInt(requestJsonBuf.count))
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
     public func setFieldEncryptionJson(configJson: String) throws -> Bool {
         var configJson = configJson
         return try configJson.withUTF8 { configJsonBuf in

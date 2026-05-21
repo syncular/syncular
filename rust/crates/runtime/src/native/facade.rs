@@ -1391,6 +1391,10 @@ impl NativeSyncularClient {
         self.writer.repair_local_health_json(request_json)
     }
 
+    pub fn reset_local_sync_state_json(&mut self, request_json: &str) -> Result<String> {
+        self.writer.reset_local_sync_state_json(request_json)
+    }
+
     pub fn register_query_json(&self, query_json: &str) -> Result<String> {
         let registration: NativeObservedQueryRegistration = serde_json::from_str(query_json)?;
         let observed_query = registration.into_observed_query(self.writer.app_schema())?;

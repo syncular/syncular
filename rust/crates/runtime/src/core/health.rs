@@ -59,6 +59,32 @@ pub struct LocalHealthRepairReport {
     pub forced_rebootstrap_subscriptions: usize,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default, rename_all = "camelCase")]
+pub struct LocalSyncResetRequest {
+    pub subscription_ids: Vec<String>,
+    pub clear_synced_rows: bool,
+}
+
+impl Default for LocalSyncResetRequest {
+    fn default() -> Self {
+        Self {
+            subscription_ids: Vec::new(),
+            clear_synced_rows: false,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSyncResetReport {
+    pub reset_subscriptions: usize,
+    pub deleted_subscription_states: usize,
+    pub deleted_verified_roots: usize,
+    pub cleared_synced_rows: i64,
+    pub cleared_tables: Vec<String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LocalHealthSeverity {

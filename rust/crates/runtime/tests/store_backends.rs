@@ -461,6 +461,95 @@ fn local_health_repair_clears_safe_metadata_without_mutating_rows() -> Result<()
 }
 
 #[test]
+fn local_sync_reset_clears_synced_rows_without_local_only_rows() -> Result<()> {
+    let path = temp_db_path("syncular-local-sync-reset");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    store.transaction(|tx| {
+        tx.upsert_row("tasks", &task_row("reset-synced-task"), None)?;
+        let mut local_only = task_row("reset-local-only-task");
+        local_only["server_version"] = json!(0);
+        tx.upsert_row("tasks", &local_only, None)?;
+        tx.upsert_subscription_state(&SubscriptionState {
+            state_id: "default".to_string(),
+            subscription_id: "sub-tasks".to_string(),
+            table: "tasks".to_string(),
+            scopes_json: serde_json::to_string(&scopes())?,
+            params_json: "{}".to_string(),
+            cursor: 9,
+            bootstrap_state_json: None,
+            status: "active".to_string(),
+        })?;
+        tx.upsert_verified_root(&VerifiedRoot {
+            state_id: "default".to_string(),
+            subscription_id: "sub-tasks".to_string(),
+            partition_id: "default".to_string(),
+            commit_seq: 9,
+            root: "a".repeat(64),
+        })
+    })?;
+
+    let now = now_ms();
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    sql_query(
+        r#"
+        insert into sync_outbox_commits (
+            id, client_commit_id, status, operations_json, created_at, updated_at,
+            attempt_count, schema_version, next_attempt_at
+        ) values (
+            'reset-pending-outbox', 'reset-pending-commit', 'pending', '[]',
+            ?1, ?1, 0, ?2, 0
+        )
+        "#,
+    )
+    .bind::<BigInt, _>(now)
+    .bind::<Integer, _>(current_schema_version())
+    .execute(&mut conn)?;
+    drop(conn);
+
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    client.set_subscriptions(vec![SubscriptionSpec {
+        id: "sub-tasks".to_string(),
+        table: "tasks".to_string(),
+        scopes: scopes(),
+        params: serde_json::Map::new(),
+        bootstrap_phase: 0,
+    }])?;
+
+    let error = client
+        .reset_local_sync_state_json(&json!({ "clearSyncedRows": true }).to_string())
+        .expect_err("pending outbox must block synced-row clearing");
+    assert_eq!(error.kind(), ErrorKind::Config);
+    assert!(error.message_text().contains("empty local outbox"));
+    assert!(client
+        .current_row_json("tasks", "reset-synced-task")?
+        .is_some());
+
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    sql_query("update sync_outbox_commits set status = 'acked' where id = 'reset-pending-outbox'")
+        .execute(&mut conn)?;
+    drop(conn);
+
+    let report: Value = serde_json::from_str(
+        &client.reset_local_sync_state_json(&json!({ "clearSyncedRows": true }).to_string())?,
+    )?;
+    assert_eq!(report["resetSubscriptions"], 1);
+    assert_eq!(report["deletedSubscriptionStates"], 1);
+    assert_eq!(report["deletedVerifiedRoots"], 1);
+    assert_eq!(report["clearedSyncedRows"], 1);
+    assert_eq!(report["clearedTables"], json!(["tasks"]));
+    assert!(client
+        .current_row_json("tasks", "reset-synced-task")?
+        .is_none());
+    assert!(client
+        .current_row_json("tasks", "reset-local-only-task")?
+        .is_some());
+    assert!(client.local_health_check()?.ok);
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn diesel_default_schema_installs_runtime_tables_without_demo_app_tables() -> Result<()> {
     let path = temp_db_path("syncular-diesel-default-schema");
     let mut store = DieselSqliteStore::open(&path)?;
