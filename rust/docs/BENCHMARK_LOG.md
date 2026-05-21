@@ -18,6 +18,122 @@ Decision:
 Notes:
 ```
 
+## 2026-05-21 - Retained Lazy Browser Apply Transactions For Artifacts
+
+Commit: retained slice
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power; unrelated background
+TypeScript checks were visible during the first local 100k run, so the 100k
+lane was rerun.
+
+Change:
+
+- Browser Rust-owned SQLite apply batches now start as pending and open
+  `BEGIN IMMEDIATE` only at the first local mutation.
+- Direct SQLite snapshot artifact bodies are fetched and verified before the
+  snapshot page clears or mutates local rows.
+- This keeps snapshot chunk/artifact network/decompression work outside the
+  browser SQLite write transaction and preserves fail-before-mutation artifact
+  recovery semantics.
+
+Correctness gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features native,crdt-yjs
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|committed SQLite snapshot artifact|artifact rows when a subscription is revoked"
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+```
+
+Local release artifact gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/wp12-lazy-apply-artifacts-100k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/wp12-lazy-apply-artifacts-100k-rerun.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-lazy-apply-artifacts-500k.json
+```
+
+| Metric | Previous accepted context | Current |
+| --- | ---: | ---: |
+| 100k bootstrap | `147.16ms` | `148.33ms`, rerun `151.58ms` |
+| 100k artifact apply | `121ms` | `125ms`, rerun `127ms` |
+| 100k snapshot chunks | `0` | `0` |
+| 500k bootstrap | `623.02ms` | `575.99ms` |
+| 500k artifact apply | `527ms` | `496ms` |
+| 500k JS heap delta | n/a | `3.12MB` |
+| 500k response bytes | n/a | `4,215,535` |
+| 500k snapshot chunks | `0` | `0` |
+
+External app-style scoped artifact benchmark:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
+bun run --cwd rust/bindings/browser build:wasm
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result files:
+
+- `/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T12-21-22-780Z/syncular-rust/bootstrap.json`
+- `/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T12-22-14-547Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous accepted artifact guard | Current | Rerun |
+| --- | ---: | ---: | ---: |
+| 500k bootstrap | `995.58ms` | `1068.73ms` | `1107.80ms` |
+| 500k derived schema | `584.27ms` | `622.60ms` | `649.25ms` |
+| 500k sync total | `399ms` | `432ms` | `442ms` |
+| 500k pull apply | `302ms` | `320ms` | `327ms` |
+| 500k local apply | `203ms` | `204ms` | `207ms` |
+| 500k response bytes | `3,537,607` | `3,537,735` | `3,537,901` |
+| 500k peak memory | `671.13MB` | `639.41MB` | `637.55MB` |
+| 500k snapshot chunks | `0` | `0` | `0` |
+
+Decision:
+
+- Retained as a resource-state slice, not a throughput win. The external
+  app-style peak-memory drop is material at about `31-34MB`, direct artifact
+  selection remains intact, and artifact fetch failures still recover before
+  mutation.
+- The wall-time regression is explicit and must be recovered next. Do not stack
+  another WP-12 memory-only change unless it keeps the external 500k lane near
+  this peak-memory profile and improves or restores bootstrap wall time.
+
 ## 2026-05-21 - Rejected Browser Deferred Apply Transactions
 
 Commit: rejected probe, code reverted

@@ -193,7 +193,13 @@ read-only review:
     checkpoint with neutral wall time. A deferred apply-transaction probe was
     rejected because same-session local 100k artifact wall time stayed flat
     (`136.18ms -> 135.81ms`) while JS heap delta worsened
-    (`2.19MB -> 7.62MB`).
+    (`2.19MB -> 7.62MB`). Browser apply batches now start in a pending state
+    and direct artifact bytes are fetched before the first local mutation. This
+    is retained as a resource-state improvement: external 500k peak memory
+    improved `671.13MB -> 637.55MB`, local apply stayed flat, response bytes
+    stayed flat, and `snapshotChunkCount=0`, but external bootstrap regressed
+    `995.58ms -> 1107.80ms`. The next WP-12 slice must recover that wall time
+    while preserving the lower peak-memory profile.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   - First retained TypeScript generated-client slice narrows
     `database.mutations` to generated inputs and patches. App code can now call

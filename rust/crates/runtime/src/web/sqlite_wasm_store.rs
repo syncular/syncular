@@ -375,6 +375,14 @@ pub struct SyncularRustOwnedSqlite {
     live_events: Vec<LiveQueryEvent>,
     row_events: Vec<RowsChangedEvent>,
     attached_snapshot_artifacts: Vec<AttachedSnapshotArtifact>,
+    apply_transaction_state: ApplyTransactionState,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ApplyTransactionState {
+    None,
+    Pending,
+    Active,
 }
 
 #[derive(Debug)]
@@ -551,6 +559,7 @@ impl SyncularRustOwnedSqlite {
             live_events: Vec::new(),
             row_events: Vec::new(),
             attached_snapshot_artifacts: Vec::new(),
+            apply_transaction_state: ApplyTransactionState::None,
         };
         store.configure_sqlite_pragmas(storage)?;
         store.ensure_internal_migrations()?;
@@ -4724,6 +4733,17 @@ impl SyncularRustOwnedSqlite {
         self.exec("BEGIN IMMEDIATE")
     }
 
+    fn begin_apply_write_transaction_if_needed(&mut self) -> Result<()> {
+        match self.apply_transaction_state {
+            ApplyTransactionState::None | ApplyTransactionState::Active => Ok(()),
+            ApplyTransactionState::Pending => {
+                self.begin_write_transaction()?;
+                self.apply_transaction_state = ApplyTransactionState::Active;
+                Ok(())
+            }
+        }
+    }
+
     fn exec(&self, sql: &str) -> Result<()> {
         let sql_text = sql;
         let sql = CString::new(sql_text).map_err(cstring_error("sqlite exec sql"))?;
@@ -4794,29 +4814,46 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
     fn begin_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
             self.detach_snapshot_artifacts()?;
+            if self.apply_transaction_state != ApplyTransactionState::None {
+                return Err(SyncularError::storage(anyhow::anyhow!(
+                    "cannot begin apply batch while another apply batch is active"
+                )));
+            }
             self.apply_timings = WebStoreApplyTimings::default();
-            self.begin_write_transaction()
+            self.apply_transaction_state = ApplyTransactionState::Pending;
+            Ok(())
         })
     }
 
     fn commit_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            self.exec("COMMIT")?;
+            if self.apply_transaction_state == ApplyTransactionState::Active {
+                self.exec("COMMIT")?;
+            }
+            self.apply_transaction_state = ApplyTransactionState::None;
             self.detach_snapshot_artifacts()
         })
     }
 
     fn checkpoint_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            self.exec("COMMIT")?;
+            if self.apply_transaction_state == ApplyTransactionState::Active {
+                self.exec("COMMIT")?;
+            }
+            self.apply_transaction_state = ApplyTransactionState::Pending;
             self.detach_snapshot_artifacts()?;
-            self.begin_write_transaction()
+            Ok(())
         })
     }
 
     fn rollback_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
-            let rollback = self.exec("ROLLBACK");
+            let rollback = if self.apply_transaction_state == ApplyTransactionState::Active {
+                self.exec("ROLLBACK")
+            } else {
+                Ok(())
+            };
+            self.apply_transaction_state = ApplyTransactionState::None;
             let detach = self.detach_snapshot_artifacts();
             match (rollback, detach) {
                 (Ok(()), Ok(())) => Ok(()),
@@ -4840,9 +4877,10 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         artifact_bytes: Vec<u8>,
         mode: WebSnapshotArtifactApplyMode,
     ) -> Pin<Box<dyn Future<Output = Result<usize>> + 'a>> {
-        Box::pin(
-            async move { self.write_sqlite_snapshot_artifact_rows(table, artifact_bytes, mode) },
-        )
+        Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
+            self.write_sqlite_snapshot_artifact_rows(table, artifact_bytes, mode)
+        })
     }
 
     fn apply_mutation<'a>(
@@ -4978,6 +5016,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
 
     fn requeue_stale_outbox<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             let now = now_ms();
             let stale_before = now - SYNC_SENDING_TIMEOUT_MS;
             self.exec(&format!(
@@ -5007,6 +5046,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         row_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             let now = now_ms();
             self.exec(&format!(
                 "UPDATE sync_outbox_commits SET status = 'sending', attempt_count = attempt_count + 1, \
@@ -5031,6 +5071,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         response: PushCommitResponse,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             let operations: Vec<SyncOperation> = serde_json::from_str(&outbox.operations_json)?;
             if response.results.is_empty() {
                 if let Some(server_seq) = response.commit_seq {
@@ -5078,6 +5119,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         response: PushCommitResponse,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             let now = now_ms();
             self.exec(&format!(
                 "UPDATE sync_outbox_commits SET status = 'acked', last_response_json = {response}, \
@@ -5105,6 +5147,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         response: PushCommitResponse,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             self.exec(&format!(
                 "UPDATE sync_outbox_commits SET status = 'failed', last_response_json = {response}, \
                  error = {error}, next_attempt_at = 0, updated_at = {now} WHERE id = {id}",
@@ -5123,7 +5166,10 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         next_attempt_at: i64,
         failed: bool,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-        Box::pin(async move { self.mark_outbox_retry_sync(row_id, error, next_attempt_at, failed) })
+        Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
+            self.mark_outbox_retry_sync(row_id, error, next_attempt_at, failed)
+        })
     }
 
     fn insert_conflict<'a>(
@@ -5132,6 +5178,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         result: OperationResult,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             let message = result
                 .message
                 .clone()
@@ -5159,7 +5206,10 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         &'a mut self,
         lease: AuthLeaseRecord,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-        Box::pin(async move { self.upsert_auth_lease_sync(&lease) })
+        Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
+            self.upsert_auth_lease_sync(&lease)
+        })
     }
 
     fn auth_lease<'a>(
@@ -5182,9 +5232,10 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         client_commit_id: &'a str,
         provenance: Option<AuthLeaseProvenance>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
-        Box::pin(
-            async move { self.set_outbox_auth_lease_sync(client_commit_id, provenance.as_ref()) },
-        )
+        Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
+            self.set_outbox_auth_lease_sync(client_commit_id, provenance.as_ref())
+        })
     }
 
     fn conflict_summaries<'a>(
@@ -5217,6 +5268,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         resolution: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             self.exec(&format!(
                 "UPDATE sync_conflicts SET resolved_at = {now}, resolution = {resolution} WHERE id = {id} AND resolved_at IS NULL",
                 now = now_ms(),
@@ -5328,6 +5380,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         state: WebSubscriptionState,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             let now = now_ms();
             let bootstrap = state
                 .bootstrap_state
@@ -5357,6 +5410,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         subscription_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             self.exec(&format!(
                 "DELETE FROM sync_subscription_state WHERE state_id = {} AND subscription_id = {}",
                 sql_string(&self.state_id),
@@ -5421,6 +5475,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         root: WebVerifiedRoot,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             let now = now_ms();
             self.exec(&format!(
                 "INSERT INTO sync_verified_roots \
@@ -5443,6 +5498,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         subscription_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             self.exec(&format!(
                 "DELETE FROM sync_verified_roots WHERE state_id = {} AND subscription_id = {}",
                 sql_string(&self.state_id),
@@ -5526,6 +5582,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         tables: &'a [String],
     ) -> Pin<Box<dyn Future<Output = Result<ScopedRowsHealthSummary>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             validate_requested_app_tables(self.app_schema, tables)?;
             let mut summary = ScopedRowsHealthSummary::default();
             for metadata in self
@@ -5729,6 +5786,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         scopes: &'a ScopeValues,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             if is_encrypted_crdt_system_table(table) {
                 return self.clear_encrypted_crdt_system_table_for_scopes(table, scopes);
             }
@@ -5753,6 +5811,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         scopes: &'a ScopeValues,
     ) -> Pin<Box<dyn Future<Output = Result<i64>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             if is_encrypted_crdt_system_table(table) {
                 return Err(SyncularError::config(
                     "resetLocalSyncState only clears generated app table rows",
@@ -5778,6 +5837,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         scopes: &'a ScopeValues,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             if is_encrypted_crdt_system_table(table) {
                 return self.clear_encrypted_crdt_system_table_for_scopes(table, scopes);
             }
@@ -5838,6 +5898,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         row: Value,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             if is_encrypted_crdt_system_table(table) {
                 let identity = encrypted_crdt_identity_column(table)?;
                 let row_id = row.get(identity).and_then(Value::as_str).ok_or_else(|| {
@@ -5866,6 +5927,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         rows: Vec<Value>,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             if is_encrypted_crdt_system_table(table) {
                 for row in rows {
                     self.upsert_row(table, row).await?;
@@ -5883,6 +5945,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         rows: SnapshotChunkRows,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             match rows {
                 SnapshotChunkRows::Json(rows) => self.upsert_rows(table, rows).await,
                 SnapshotChunkRows::Binary(rows) => {
@@ -5901,6 +5964,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         rows: SnapshotChunkRows,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             match rows {
                 SnapshotChunkRows::Json(rows) => self.upsert_rows(table, rows).await,
                 SnapshotChunkRows::Binary(rows) => {
@@ -5918,6 +5982,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         change: SyncChange,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
             if is_encrypted_crdt_system_table(&change.table) {
                 if change.op == "delete" {
                     return self.delete_encrypted_crdt_system_row(&change.table, &change.row_id);

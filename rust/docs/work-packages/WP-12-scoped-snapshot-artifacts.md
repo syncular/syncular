@@ -968,16 +968,50 @@ Rejected browser deferred-apply-transaction probe:
   larger lazy-write-transaction state model with explicit UI read/write
   contention coverage and no memory regression.
 
+Retained twenty-third slice:
+
+- Browser Rust-owned SQLite apply batches now start as pending and open the
+  SQLite write transaction only at the first local mutation.
+- Direct SQLite snapshot artifact bodies are fetched and verified before a
+  snapshot page clears or mutates local rows. Snapshot chunk/artifact byte work
+  therefore happens outside the write transaction, while verified artifact page
+  checkpointing and rollback behavior stay intact.
+- Correctness gates passed:
+  `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`,
+  `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`,
+  `bun run --cwd rust/bindings/browser build:wasm:dev`,
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|committed SQLite snapshot artifact|artifact rows when a subscription is revoked"`,
+  and `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`.
+- Local release artifact gates were mixed: 100k moved from the recent accepted
+  `147.16ms` context to `148.33ms` and `151.58ms` on rerun, while 500k improved
+  `623.02ms -> 575.99ms` with `snapshotChunkCount=0`.
+- External app-style scoped artifact bootstrap regressed on wall time
+  (`995.58ms -> 1068.73ms`, rerun `1107.80ms`), but peak memory improved
+  materially (`671.13MB -> 639.41MB`, rerun `637.55MB`) with local apply
+  essentially flat (`203ms -> 204/207ms`), response bytes flat, and
+  `snapshotChunkCount=0`.
+- Decision: retained as a resource-state improvement, not a throughput win. The
+  next WP-12 slice must recover the external wall-time regression while keeping
+  the lower peak-memory profile.
+
 ## Next Action
 
-Continue artifact resource-state work, but keep it benchmark-gated.
+Recover the lazy apply transaction wall-time regression without giving back the
+external memory improvement.
 
-- The accepted scoped artifact guard is now external Rust 500k bootstrap
-  `995.58ms`, local apply `203ms`, response bytes `3537607`, peak memory
-  `671.13MB`, and `snapshotChunkCount=0`, with external artifact precompute row
-  limit `40000`. Smaller artifact pages are now valid only when the best-fit
-  lookup keeps `snapshotChunkCount=0`; use this as a robustness guard, not a
-  reason to lower the accepted page size without a benchmark win.
+- The retained resource-state guard is now external Rust 500k bootstrap
+  `1107.80ms`, local apply `207ms`, response bytes `3537901`, peak memory
+  `637.55MB`, and `snapshotChunkCount=0`, with external artifact precompute row
+  limit `40000`.
+- The previous wall-time guard was better at `995.58ms`, so the next retained
+  slice should target lower transaction-start/checkpoint overhead or schema
+  install timing and must compare against both numbers: preserve peak memory at
+  roughly `640MB` or lower, and move bootstrap back toward or below
+  `995.58ms`.
+- Smaller artifact pages are now valid only when the best-fit lookup keeps
+  `snapshotChunkCount=0`; use this as a robustness guard, not a reason to lower
+  the accepted page size without a benchmark win.
 - The nullable-column, attached-PRAGMA, larger-bundle, SQLite-owned-buffer, and
   temp-table staging probes were all rejected. Separate-SQLite row streaming and
   segmented artifact apply were also rejected. Raising browser artifact pull
