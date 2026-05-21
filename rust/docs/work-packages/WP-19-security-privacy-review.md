@@ -79,11 +79,15 @@ the encrypted system-table payload (`ciphertext`) and do not persist plaintext
 text or raw `update_base64` / `state_base64` fields in the server-bound
 operation JSON.
 
+Native diagnostic snapshot coverage now also sets dynamic auth headers before
+capturing diagnostics and proves bearer/API-key values and header names are not
+serialized into the diagnostic snapshot.
+
 ## Next Action
 
 Use the pull/realtime/artifact, blob-token, and encrypted-CRDT outbox tests as
 templates for the remaining privacy surfaces: encrypted CRDT denial/revocation
-edges, console partition/detail denial, and diagnostic/debug-bundle redaction.
+edges, console partition/detail denial, and broader debug-bundle redaction.
 
 ## Progress
 
@@ -99,6 +103,8 @@ edges, console partition/detail denial, and diagnostic/debug-bundle redaction.
 - Added encrypted CRDT outbox privacy coverage proving server-bound pending
   operation JSON contains ciphertext, not plaintext text or raw Yjs
   update/state fields.
+- Extended native diagnostic snapshot redaction coverage to prove host auth
+  headers are not included in diagnostics.
 - Gates run in `packages/server-hono`:
   `bun test src/__tests__/create-server.test.ts`,
   `bun test src/__tests__/blob-routes.test.ts`, `bun test src/__tests__`, and
@@ -108,3 +114,7 @@ edges, console partition/detail denial, and diagnostic/debug-bundle redaction.
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field rust_client_exposes_encrypted_crdt_field_through_same_identity --features native,crdt-yjs,demo-todo-native-fixture`,
   and
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field --features native,crdt-yjs,demo-todo-native-fixture`.
+- Gates run for native diagnostic redaction:
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade native_facade_exposes_redacted_diagnostic_snapshot --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings`
+  and
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings`.
