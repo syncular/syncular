@@ -350,13 +350,17 @@ read-only review:
 
 ## Next
 
-- Continue [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
-  beyond the retained browser TypeScript first slice. The next work should add
-  native/Rust storage/API parity, create/delete/batch coverage, and explicit
-  rejection rules for unsafe blob, encrypted-field, and CRDT-field inverses.
+- Start [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md).
+  The recent Rust-first browser work removed the old JavaScript client product
+  path and introduced TypeScript host bindings, React hooks, and Tauri/React
+  Native/Expo bridge packages over the canonical Rust runtime. The next work is
+  an interface-impact catch-up pass across feature WPs such as offline auth
+  leases, lifecycle, live-query precision, undo/redo, audit/debug, and blobs so
+  TypeScript-facing packages expose current semantics consistently without
+  rebuilding a JS sync engine.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
-  only when real integration feedback exposes remaining app-flow doc gaps or
-  naming friction.
+  only when WP-26 finds concrete generated-client naming, discoverability,
+  conflict, blob, or subscription ergonomics gaps.
 
 ## Later
 

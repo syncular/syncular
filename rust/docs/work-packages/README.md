@@ -46,3 +46,4 @@ to this shape.
 23. [`WP-23 Time Travel And Audit Inspection`](WP-23-time-travel-audit-inspection.md)
 24. [`WP-24 Blob Hardening And Production Polish`](WP-24-blob-hardening-production-polish.md)
 25. [`WP-25 File Asset Sync`](WP-25-file-asset-sync.md)
+26. [`WP-26 TypeScript Host Bindings And Platform Bridges`](WP-26-typescript-host-bindings-platform-bridges.md)
