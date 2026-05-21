@@ -17,6 +17,12 @@ pub const DEFAULT_CRDT_UPDATE_LOG_LIMIT: i64 = 100;
 
 pub const DEFAULT_YJS_FLUSH_WINDOW_MS: u64 = 12;
 
+pub const MAX_SUBSCRIPTIONS_PER_CLIENT: usize = 256;
+pub const MAX_SCOPE_KEYS_PER_SUBSCRIPTION: usize = 16;
+pub const MAX_SCOPE_VALUES_PER_SUBSCRIPTION: usize = 4096;
+pub const MAX_SCOPE_VALUES_PER_CLIENT: usize = 16_384;
+pub const MAX_SUBSCRIPTION_PARAMS_PER_SUBSCRIPTION: usize = 32;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RuntimeLimits {
@@ -33,6 +39,11 @@ pub struct RuntimeLimits {
     pub crdt_update_queue_capacity: i64,
     pub crdt_update_log_default_limit: i64,
     pub yjs_flush_window_ms: u64,
+    pub max_subscriptions_per_client: usize,
+    pub max_scope_keys_per_subscription: usize,
+    pub max_scope_values_per_subscription: usize,
+    pub max_scope_values_per_client: usize,
+    pub max_subscription_params_per_subscription: usize,
 }
 
 pub fn runtime_default_limits() -> RuntimeLimits {
@@ -50,5 +61,10 @@ pub fn runtime_default_limits() -> RuntimeLimits {
         crdt_update_queue_capacity: DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY,
         crdt_update_log_default_limit: DEFAULT_CRDT_UPDATE_LOG_LIMIT,
         yjs_flush_window_ms: DEFAULT_YJS_FLUSH_WINDOW_MS,
+        max_subscriptions_per_client: MAX_SUBSCRIPTIONS_PER_CLIENT,
+        max_scope_keys_per_subscription: MAX_SCOPE_KEYS_PER_SUBSCRIPTION,
+        max_scope_values_per_subscription: MAX_SCOPE_VALUES_PER_SUBSCRIPTION,
+        max_scope_values_per_client: MAX_SCOPE_VALUES_PER_CLIENT,
+        max_subscription_params_per_subscription: MAX_SUBSCRIPTION_PARAMS_PER_SUBSCRIPTION,
     }
 }

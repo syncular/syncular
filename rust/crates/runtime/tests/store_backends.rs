@@ -614,7 +614,7 @@ fn diesel_client_recovers_encrypted_crdt_update_after_required_base_resync() -> 
         encrypted_app_schema(),
     );
     client.set_encrypted_crdt(Some(encryption));
-    client.set_subscriptions(encrypted_crdt_test_subscriptions());
+    client.set_subscriptions(encrypted_crdt_test_subscriptions())?;
 
     let err = client
         .sync_http()

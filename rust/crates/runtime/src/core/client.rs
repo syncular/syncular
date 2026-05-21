@@ -32,6 +32,9 @@ use crate::limits::DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY;
 use crate::limits::{
     DEFAULT_CRDT_STATE_VECTOR_HINT_LIMIT, DEFAULT_OUTBOX_PUSH_BATCH_LIMIT,
     DEFAULT_PULL_LIMIT_COMMITS, DEFAULT_PULL_LIMIT_SNAPSHOT_ROWS, DEFAULT_PULL_MAX_SNAPSHOT_PAGES,
+    MAX_SCOPE_KEYS_PER_SUBSCRIPTION, MAX_SCOPE_VALUES_PER_CLIENT,
+    MAX_SCOPE_VALUES_PER_SUBSCRIPTION, MAX_SUBSCRIPTIONS_PER_CLIENT,
+    MAX_SUBSCRIPTION_PARAMS_PER_SUBSCRIPTION,
 };
 use crate::protocol::*;
 #[cfg(feature = "native")]
@@ -190,6 +193,83 @@ pub struct SubscriptionSpec {
     pub params: Map<String, Value>,
     #[serde(default, rename = "bootstrapPhase")]
     pub bootstrap_phase: i64,
+}
+
+pub fn validate_subscription_limits(subscriptions: &[SubscriptionSpec]) -> Result<()> {
+    if subscriptions.len() > MAX_SUBSCRIPTIONS_PER_CLIENT {
+        return Err(subscription_limit_error(
+            "maxSubscriptionsPerClient",
+            subscriptions.len(),
+            MAX_SUBSCRIPTIONS_PER_CLIENT,
+            "too many Syncular subscriptions configured",
+        ));
+    }
+
+    let mut total_scope_values = 0usize;
+    for subscription in subscriptions {
+        if subscription.scopes.len() > MAX_SCOPE_KEYS_PER_SUBSCRIPTION {
+            return Err(subscription_limit_error(
+                "maxScopeKeysPerSubscription",
+                subscription.scopes.len(),
+                MAX_SCOPE_KEYS_PER_SUBSCRIPTION,
+                format!(
+                    "too many scope keys configured for subscription {}",
+                    subscription.id
+                ),
+            ));
+        }
+        if subscription.params.len() > MAX_SUBSCRIPTION_PARAMS_PER_SUBSCRIPTION {
+            return Err(subscription_limit_error(
+                "maxSubscriptionParamsPerSubscription",
+                subscription.params.len(),
+                MAX_SUBSCRIPTION_PARAMS_PER_SUBSCRIPTION,
+                format!(
+                    "too many params configured for subscription {}",
+                    subscription.id
+                ),
+            ));
+        }
+
+        let subscription_scope_values = count_scope_values(&subscription.scopes);
+        if subscription_scope_values > MAX_SCOPE_VALUES_PER_SUBSCRIPTION {
+            return Err(subscription_limit_error(
+                "maxScopeValuesPerSubscription",
+                subscription_scope_values,
+                MAX_SCOPE_VALUES_PER_SUBSCRIPTION,
+                format!(
+                    "too many scope values configured for subscription {}",
+                    subscription.id
+                ),
+            ));
+        }
+        total_scope_values = total_scope_values.saturating_add(subscription_scope_values);
+        if total_scope_values > MAX_SCOPE_VALUES_PER_CLIENT {
+            return Err(subscription_limit_error(
+                "maxScopeValuesPerClient",
+                total_scope_values,
+                MAX_SCOPE_VALUES_PER_CLIENT,
+                "too many total scope values configured for Syncular client",
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn count_scope_values(scopes: &ScopeValues) -> usize {
+    scopes
+        .values()
+        .map(|value| value.as_array().map_or(1, Vec::len))
+        .sum()
+}
+
+fn subscription_limit_error(
+    limit: &'static str,
+    observed: usize,
+    max: usize,
+    message: impl fmt::Display,
+) -> SyncularError {
+    SyncularError::limit_exceeded(limit, observed, max, message)
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -1656,14 +1736,15 @@ where
         &self.subscriptions
     }
 
-    pub fn set_subscriptions(&mut self, subscriptions: Vec<SubscriptionSpec>) {
+    pub fn set_subscriptions(&mut self, subscriptions: Vec<SubscriptionSpec>) -> Result<()> {
+        validate_subscription_limits(&subscriptions)?;
         self.subscriptions = subscriptions;
+        Ok(())
     }
 
     pub fn set_subscriptions_json(&mut self, subscriptions_json: &str) -> Result<()> {
         let subscriptions: Vec<SubscriptionSpec> = serde_json::from_str(subscriptions_json)?;
-        self.set_subscriptions(subscriptions);
-        Ok(())
+        self.set_subscriptions(subscriptions)
     }
 
     pub fn force_subscriptions_bootstrap(&mut self, subscription_ids: &[String]) -> Result<usize> {

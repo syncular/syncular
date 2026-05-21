@@ -5,8 +5,8 @@ use crate::client::BootstrapStatus;
 #[cfg(feature = "native")]
 use crate::client::CrdtFieldCompactionReceipt;
 use crate::client::{
-    sync_changed_row_for_local_operation, SubscriptionSpec, SyncChangedRow, SyncReport,
-    SyncularClient,
+    sync_changed_row_for_local_operation, validate_subscription_limits, SubscriptionSpec,
+    SyncChangedRow, SyncReport, SyncularClient,
 };
 #[cfg(feature = "native")]
 use crate::crdt_field::{CrdtField, CrdtFieldId, CrdtFieldSyncMode};
@@ -1636,6 +1636,7 @@ impl SyncWorker {
     }
 
     pub fn set_subscriptions(&self, subscriptions: Vec<SubscriptionSpec>) -> Result<()> {
+        validate_subscription_limits(&subscriptions)?;
         self.try_send(WorkerCommand::SetSubscriptions(subscriptions))
     }
 
@@ -2085,7 +2086,7 @@ where
             true
         }
         WorkerCommand::SetSubscriptions(subscriptions) => {
-            client.set_subscriptions(subscriptions);
+            let _ = client.set_subscriptions(subscriptions);
             true
         }
         WorkerCommand::SetFieldEncryption(encryption) => {
@@ -2205,7 +2206,7 @@ where
                     client.set_auth_headers(headers);
                 }
                 Ok(WorkerCommand::SetSubscriptions(subscriptions)) => {
-                    client.set_subscriptions(subscriptions);
+                    let _ = client.set_subscriptions(subscriptions);
                 }
                 Ok(WorkerCommand::SetFieldEncryption(encryption)) => {
                     client.set_field_encryption(encryption);

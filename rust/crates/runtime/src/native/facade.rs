@@ -828,7 +828,7 @@ impl NativeSyncularClient {
     }
 
     pub fn set_subscriptions(&mut self, subscriptions: Vec<SubscriptionSpec>) -> Result<()> {
-        self.writer.set_subscriptions(subscriptions.clone());
+        self.writer.set_subscriptions(subscriptions.clone())?;
         if let Some(worker) = &self.worker {
             worker.set_subscriptions(subscriptions)?;
         }
@@ -902,7 +902,7 @@ impl NativeSyncularClient {
         }
         let mut worker_client =
             SyncularClient::open_with_schema(self.config.clone(), self.writer.app_schema())?;
-        worker_client.set_subscriptions(self.writer.subscriptions().to_vec());
+        worker_client.set_subscriptions(self.writer.subscriptions().to_vec())?;
         worker_client.set_auth_headers(self.auth_headers.clone());
         worker_client.set_field_encryption(self.field_encryption.clone());
         worker_client.set_encrypted_crdt(self.encrypted_crdt.clone());

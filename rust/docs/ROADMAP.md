@@ -489,6 +489,9 @@ read-only review:
     read statement cache capacity, pull request sizing, outbox push batch
     sizing, CRDT queue/log defaults, and Yjs coalescing are now centralized and
     exposed in native runtime manifests plus diagnostic snapshots.
+    Rust/native/browser subscription setters now enforce bounded subscription
+    counts, scope keys, scope values, and params with stable
+    `runtime.limit_exceeded` errors.
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)

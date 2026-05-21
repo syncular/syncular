@@ -59,7 +59,7 @@ product-level limits.
 ## Next Action
 
 Add stable limit failures and diagnostics for the next highest-risk unbounded
-surface: subscriptions/scope values or queued mutation/outbox payload size.
+surface: queued mutation/outbox payload size.
 
 ## Progress
 
@@ -73,11 +73,17 @@ surface: subscriptions/scope values or queued mutation/outbox payload size.
 - Native runtime manifests and native diagnostic snapshots now expose the same
   `limits` object, so app hosts and support tools can see current runtime
   pressure boundaries before failures happen.
+- Rust/native/browser subscription setters now enforce max subscriptions, scope
+  keys, scope values per subscription, total scope values, and params keys with
+  a stable `runtime.limit_exceeded` classification instead of accepting
+  unbounded subscription state.
 
 ## Latest Evidence
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_ffi native_ffi_exposes_runtime_manifest_without_handle`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_exposes_redacted_diagnostic_snapshot`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_rejects_subscription_limit_with_stable_error`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
 - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`
 - `git diff --check`
