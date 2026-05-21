@@ -33,6 +33,7 @@ fn boltffi_rust_surface_exposes_the_syncular_runtime_boundary() {
     assert!(source.contains("pub fn set_encrypted_crdt_json"));
     assert!(source.contains("pub fn trigger_sync(&self) -> Result<bool, String>"));
     assert!(source.contains("pub fn enqueue_sync_now"));
+    assert!(source.contains("pub fn resume_from_background"));
     assert!(source.contains("pub fn apply_mutation_json"));
     assert!(source.contains("pub fn enqueue_mutation_json"));
     assert!(!source.contains("pub fn apply_local_operation_json"));

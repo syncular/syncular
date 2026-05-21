@@ -58,9 +58,9 @@ mechanics into app-state APIs that developers can render and test.
 
 ## Next Action
 
-Add explicit browser/native background-resume hooks that perform runtime-owned
-recovery checks and emit lifecycle state instead of relying on app code to
-guess when to sync.
+Add app-shell guidance and generated host examples for when to call
+`resumeFromBackground` / `resume_from_background`, then extend lifecycle tests
+around offline scope revocation and auth refresh during foreground recovery.
 
 ## Progress
 
@@ -82,17 +82,33 @@ guess when to sync.
   conflict changes, and event overflow. Generated Swift and Kotlin native event
   models decode the same lifecycle shape, including phase, bootstrap readiness,
   outbox count, conflict count, and recovery/action state.
+- Browser worker clients now expose `resumeFromBackground()`. It marks the
+  lifecycle as recovering, restarts the remembered realtime worker options,
+  refreshes auth headers once, runs `syncOnce`, and clears recovery through the
+  normal bootstrap/lifecycle path.
+- Native `NativeSyncularClient`, C FFI, and generated Swift/Kotlin/Java
+  BoltFFI wrappers now expose `resume_from_background` /
+  `resumeFromBackground()`. The runtime resumes the worker if needed, restarts
+  realtime, and enqueues a command-correlated sync instead of making host apps
+  poke worker/realtime/sync primitives separately.
 
 ## Latest Evidence
 
 - `bun test rust/bindings/browser/src/worker-client.test.ts -t "lifecycle"`
+- `bun test rust/bindings/browser/src/worker-client.test.ts -t "resumes from background"`
 - `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/client.test.ts`
+- `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/generated-app-conformance.test.ts`
 - `bun run --cwd rust/bindings/browser tsgo`
 - `bun test rust/bindings/browser/src/public-api.test.ts rust/bindings/browser/src/react.test.ts`
 - `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts -t "lifecycle state"`
 - `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture --test native_facade`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_ffi`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_binding_scaffold`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,boltffi-bindings`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `bun run rust:conformance:native`
+- `git diff --check`

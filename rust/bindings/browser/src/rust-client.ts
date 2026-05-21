@@ -401,6 +401,12 @@ export class SyncularV2RustClient {
     }
   }
 
+  resumeFromBackground(
+    options: SyncularV2SyncRequestOptions = {}
+  ): Promise<SyncularV2SyncResult> {
+    return this.syncOnce(options);
+  }
+
   transportStats(): SyncularV2TransportStats {
     return parseJson(this.raw.transportStatsJson());
   }

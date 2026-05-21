@@ -464,9 +464,14 @@ read-only review:
     integration now covers offline generated mutations, pending outbox
     lifecycle state, retry backoff, reconnect push recovery, and final
     complete state. Native runtime events now carry typed lifecycle snapshots
-    through Rust and generated Swift/Kotlin event models. Next step is explicit
-    browser/native background-resume hooks that trigger recovery and lifecycle
-    emission without app-side guessing.
+    through Rust and generated Swift/Kotlin event models. Browser and native
+    runtimes now expose explicit background-resume hooks: browser
+    `resumeFromBackground()` restarts remembered realtime and syncs through the
+    lifecycle stream, while native `resume_from_background` resumes the worker,
+    restarts realtime, and enqueues a command-correlated sync through C FFI and
+    generated Swift/Kotlin/Java BoltFFI wrappers. Next step is app-shell
+    guidance/examples plus lifecycle coverage for foreground auth refresh and
+    offline scope revocation.
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)

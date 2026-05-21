@@ -497,6 +497,27 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     });
   }
 
+  async resumeFromBackground(
+    options: SyncularV2SyncRequestOptions = {}
+  ): Promise<SyncularV2SyncResult> {
+    this.#recoveryRequired = true;
+    this.#emitDiagnostic({
+      level: 'info',
+      source: 'client',
+      code: 'lifecycle.resume_from_background',
+      message: 'Syncular v2 resumed from background',
+    });
+    await this.#refreshAuthHeaders({ restartRealtime: false });
+    await this.#restartRealtime();
+    return this.#syncWithAuthRetry(
+      {
+        type: 'syncOnce',
+        syncAttempt: options.syncAttempt ?? createSyncularV2SyncAttempt(),
+      },
+      { refreshAuthHeaders: false }
+    );
+  }
+
   transportStats(): Promise<SyncularV2TransportStats> {
     return this.#request({ type: 'transportStats' });
   }
@@ -968,9 +989,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     request: Extract<
       SyncularV2WorkerRequestInput,
       { type: 'syncPull' | 'syncPush' | 'syncOnce' }
-    >
+    >,
+    options: { refreshAuthHeaders: boolean } = { refreshAuthHeaders: true }
   ): Promise<SyncularV2SyncResult> {
-    await this.#refreshAuthHeaders();
+    if (options.refreshAuthHeaders) await this.#refreshAuthHeaders();
     try {
       const result = await this.#requestAndDrain<SyncularV2SyncResult>(request);
       this.#emitBootstrapChanged(result);

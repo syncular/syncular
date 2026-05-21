@@ -518,6 +518,7 @@ pub fn native_runtime_manifest() -> NativeRuntimeManifest {
             "presence-changed-events",
             "blob-file-api",
             "background-worker-lifecycle",
+            "background-resume-recovery",
             "structured-diagnostics",
             "diagnostic-snapshot",
             "storage-compaction",
@@ -883,6 +884,12 @@ impl NativeSyncularClient {
         ));
         self.worker = Some(worker);
         Ok(())
+    }
+
+    pub fn resume_from_background(&mut self) -> Result<String> {
+        self.resume_sync_worker()?;
+        self.start_realtime_worker()?;
+        self.enqueue_sync_now()
     }
 
     pub fn start(&mut self) -> Result<()> {
