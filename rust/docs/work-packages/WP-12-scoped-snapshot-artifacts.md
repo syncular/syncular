@@ -1020,6 +1020,23 @@ Retained twenty-fourth slice:
   regression and improves the lower-memory profile, but WP-12 remains open
   because the old external wall-time guard was still better at `995.58ms`.
 
+Rejected final artifact checkpoint probe:
+
+- Tried skipping the per-page checkpoint for the final artifact snapshot page
+  in a pull response, while still checkpointing before later artifact pages.
+  The normal apply-batch commit would persist the final page and subscription
+  state.
+- Correctness gates passed, and local 500k artifact bootstrap moved slightly
+  better (`588.73ms -> 582.40ms`) with checkpoint count reduced `9 -> 5`.
+- Rejected and reverted because the external app-style 500k guard regressed
+  materially: bootstrap `1062.50ms -> 1176.08ms`, derived schema
+  `619.26ms -> 690.02ms`, sync total `432ms -> 471ms`, and pull apply
+  `320ms -> 339ms`. Peak memory improved only `633.50MB -> 631.13MB`, which
+  does not justify the wall-time regression.
+- Do not keep chasing isolated checkpoint-count reductions. Any future
+  checkpoint/state change needs to prove external wall-time recovery and keep
+  the lower-memory profile.
+
 ## Next Action
 
 Recover the lazy apply transaction wall-time regression without giving back the
@@ -1030,10 +1047,9 @@ external memory improvement.
   `633.50MB`, and `snapshotChunkCount=0`, with external artifact precompute row
   limit `40000`.
 - The previous wall-time guard was better at `995.58ms`, so the next retained
-  slice should target lower transaction-start/checkpoint overhead or schema
-  install timing and must compare against both numbers: preserve peak memory at
-  roughly `640MB` or lower, and move bootstrap back toward or below
-  `995.58ms`.
+  slice should target schema install/index timing or a larger artifact state
+  model, and must compare against both numbers: preserve peak memory at roughly
+  `640MB` or lower, and move bootstrap back toward or below `995.58ms`.
 - Smaller artifact pages are now valid only when the best-fit lookup keeps
   `snapshotChunkCount=0`; use this as a robustness guard, not a reason to lower
   the accepted page size without a benchmark win.

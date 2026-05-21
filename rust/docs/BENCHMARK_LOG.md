@@ -18,6 +18,92 @@ Decision:
 Notes:
 ```
 
+## 2026-05-21 - Rejected Skip Final Artifact Page Checkpoint
+
+Commit: rejected probe, code reverted
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change tried:
+
+- Kept checkpointing before later artifact pages, but skipped the per-page
+  checkpoint for the final snapshot page in a pull response.
+- Goal was to reduce checkpoint/commit/detach cycles after the lazy apply
+  transaction change while still allowing the normal apply-batch commit to
+  persist the final page.
+
+Correctness gates before benchmark:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|committed SQLite snapshot artifact|artifact rows when a subscription is revoked"
+```
+
+Local release artifact gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/wp12-skip-final-checkpoint-100k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-skip-final-checkpoint-500k.json
+```
+
+| Metric | Previous retained | Skip final checkpoint |
+| --- | ---: | ---: |
+| 100k bootstrap | `143.66ms` | `143.48ms` |
+| 500k bootstrap | `588.73ms` | `582.40ms` |
+| 500k checkpoint count | `9` | `5` |
+| 500k JS heap delta | `1.69MB` | `3.18MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+External app-style scoped artifact benchmark:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T12-37-47-270Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous retained | Skip final checkpoint |
+| --- | ---: | ---: |
+| 500k bootstrap | `1062.50ms` | `1176.08ms` |
+| 500k derived schema | `619.26ms` | `690.02ms` |
+| 500k sync total | `432ms` | `471ms` |
+| 500k pull apply | `320ms` | `339ms` |
+| 500k local apply | `208ms` | `198ms` |
+| 500k response bytes | `3,537,767` | `3,537,774` |
+| 500k peak memory | `633.50MB` | `631.13MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Decision:
+
+- Rejected and reverted. The tiny external memory win does not justify a
+  `+113.58ms` bootstrap regression from the retained guard, and the local heap
+  guard also moved in the wrong direction.
+- Keep checkpointing every verified artifact page until a different state model
+  proves lower wall time and preserves the lower memory profile.
+
 ## 2026-05-21 - Retained Skip Duplicate Artifact Subscription State
 
 Commit: retained slice
