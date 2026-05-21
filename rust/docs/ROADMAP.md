@@ -805,8 +805,10 @@ read-only review:
     visible `file_versions.blob_ref` row exists, and cross-actor access remains
     denied. Browser/WASM coverage now proves a reference `file_versions`
     app-schema row syncs a typed `BlobRef` through Hono and clears locally on
-    subscription revocation. Next: broader file conflict, trash/restore, and
-    missing/corrupted blob body conformance.
+    subscription revocation. Testkit file asset conformance now also covers
+    rename, move, trash, restore, version conflict persistence, missing blob
+    bodies, and corrupted blob integrity failures. Next: delete-vs-update,
+    concurrent version edits, and the optional codegen-template decision.
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry
     explicit TypeScript/platform `Interface Impact` sections. Browser, React,

@@ -150,6 +150,21 @@ Third retained slice:
 - Benchmark gate: not applicable; this adds conformance coverage and does not
   change runtime sync/apply/query code.
 
+Fourth retained slice:
+
+- Expanded `syncular-testkit` file asset conformance with reusable scenarios
+  for rename, move, trash, restore, server version conflicts, missing blob
+  bodies, and corrupted blob body integrity failures.
+- The conflict scenario proves file metadata conflicts become normal Syncular
+  conflicts instead of silent server overwrites.
+- The blob-body failure scenario keeps bytes outside app rows while proving
+  missing and corrupted content-addressed bodies fail visibly at retrieval.
+- Gates:
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit
+    file_asset`
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
+- Benchmark gate: not applicable; this adds conformance coverage only.
+
 ## Suggested App Schema
 
 Initial generated/reference schema:
@@ -188,8 +203,10 @@ Add the production server/browser side of the reference path:
    visible row-backed blob reference.
 2. `[x]` Add browser/WASM coverage that generated app rows with a file-version
    `BlobRef` sync and clear on revocation.
-3. `[ ]` Expand testkit file scenarios for rename, move, delete-vs-update, version
-   conflict, trash/restore, and missing/corrupted blob bodies.
+3. `[~]` Expand testkit file scenarios for rename, move, delete-vs-update, version
+   conflict, trash/restore, and missing/corrupted blob bodies. Rename, move,
+   version conflict, trash/restore, missing body, and corrupted body are
+   covered; delete-vs-update and concurrent version edits remain.
 4. `[ ]` Decide whether the reference schema should also become a codegen optional
    template, while keeping it optional app-layer metadata rather than Syncular
    core tables.
