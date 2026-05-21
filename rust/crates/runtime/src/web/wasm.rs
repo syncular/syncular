@@ -212,6 +212,16 @@ impl SyncularWasmClient {
             .map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = setBlobEncryptionJson)]
+    pub fn set_blob_encryption_json(
+        &mut self,
+        config_json: &str,
+    ) -> std::result::Result<(), JsValue> {
+        self.inner
+            .set_blob_encryption_json(config_json)
+            .map_err(error_to_js)
+    }
+
     #[wasm_bindgen(js_name = encryptionHelperJson)]
     pub fn encryption_helper_json(
         &mut self,

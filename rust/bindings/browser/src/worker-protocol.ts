@@ -5,6 +5,7 @@ import type {
   SyncularBuildYjsTextUpdateArgs,
   SyncularV2AuthHeaders,
   SyncularV2AuthLeaseRecord,
+  SyncularV2BlobEncryptionConfig,
   SyncularV2BlobStoreOptions,
   SyncularV2BootstrapStatus,
   SyncularV2ClientConfig,
@@ -117,6 +118,12 @@ export type SyncularV2WorkerRequest =
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'setEncryptedCrdt';
       config: SyncularV2EncryptedCrdtConfig | null;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'setBlobEncryption';
+      config: SyncularV2BlobEncryptionConfig | null;
     }
   | {
       id: number;

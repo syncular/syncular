@@ -1,6 +1,6 @@
 use crate::error::{Result, SyncularError};
 use crate::protocol::{
-    PullResponse, PushBatchRequest, PushCommitRequest, PushCommitResponse, SyncChange,
+    BlobRef, PullResponse, PushBatchRequest, PushCommitRequest, PushCommitResponse, SyncChange,
     SyncOperation,
 };
 use serde::{Deserialize, Serialize};
@@ -93,6 +93,49 @@ pub struct StaticFieldEncryptionConfig {
     pub decryption_error_mode: Option<FieldDecryptionErrorMode>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub envelope_prefix: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StaticBlobEncryptionConfig {
+    pub keys: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub encryption_kid: Option<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct EncryptedBlobBody {
+    pub blob: BlobRef,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct BlobEncryption;
+
+impl BlobEncryption {
+    pub fn from_static_config(_config: StaticBlobEncryptionConfig) -> Result<Self> {
+        Err(e2ee_feature_disabled())
+    }
+
+    pub fn from_static_config_json(config_json: &str) -> Result<Option<Self>> {
+        let trimmed = config_json.trim();
+        if trimmed.is_empty() || trimmed == "null" {
+            return Ok(None);
+        }
+        Err(e2ee_feature_disabled())
+    }
+
+    pub fn encrypt_blob(&self, _plaintext: &[u8], _mime_type: &str) -> Result<EncryptedBlobBody> {
+        Err(e2ee_feature_disabled())
+    }
+
+    pub fn decrypt_blob(&self, _blob: &BlobRef, _body: &[u8]) -> Result<Vec<u8>> {
+        Err(e2ee_feature_disabled())
+    }
+
+    pub fn ensure_can_decrypt(&self, _blob: &BlobRef) -> Result<()> {
+        Err(e2ee_feature_disabled())
+    }
 }
 
 #[derive(Clone)]

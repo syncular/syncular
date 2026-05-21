@@ -501,6 +501,21 @@ pub extern "C" fn syncular_native_client_set_encrypted_crdt_json(
 }
 
 #[no_mangle]
+pub extern "C" fn syncular_native_client_set_blob_encryption_json(
+    handle: *mut SyncularNativeHandle,
+    config_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> bool {
+    clear_error(error_out);
+    ffi_catch_bool(error_out, || {
+        let config_json = read_c_string(config_json)?;
+        with_client(handle, |client| {
+            client.set_blob_encryption_json(&config_json)
+        })
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn syncular_native_encryption_helper_json(
     method: *const c_char,
     args_json: *const c_char,

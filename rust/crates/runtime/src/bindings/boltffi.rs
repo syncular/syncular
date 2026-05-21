@@ -179,6 +179,10 @@ impl SyncularBoltClient {
         self.with_client_mut(|client| client.set_encrypted_crdt_json(config_json).map(|_| true))
     }
 
+    pub fn set_blob_encryption_json(&self, config_json: &str) -> Result<bool, String> {
+        self.with_client_mut(|client| client.set_blob_encryption_json(config_json).map(|_| true))
+    }
+
     pub fn trigger_sync(&self) -> Result<bool, String> {
         self.with_client(|client| client.trigger_sync().map(|_| true))
     }

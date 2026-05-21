@@ -31,6 +31,7 @@ fn boltffi_rust_surface_exposes_the_syncular_runtime_boundary() {
     assert!(source.contains("pub fn syncular_encryption_helper_json"));
     assert!(source.contains("pub fn set_field_encryption_json"));
     assert!(source.contains("pub fn set_encrypted_crdt_json"));
+    assert!(source.contains("pub fn set_blob_encryption_json"));
     assert!(source.contains("pub fn trigger_sync(&self) -> Result<bool, String>"));
     assert!(source.contains("pub fn enqueue_sync_now"));
     assert!(source.contains("pub fn resume_from_background"));
@@ -270,6 +271,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java_header.contains("boltffi_syncular_bolt_client_start_event_stream"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_next_event_json_timeout"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_next_event_json_timeout"));
+    assert!(swift.contains("setBlobEncryptionJson"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_diagnostic_snapshot_json"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_diagnostic_snapshot_json"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_local_health_check_json"));

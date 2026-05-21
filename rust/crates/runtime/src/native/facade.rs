@@ -11,7 +11,7 @@ use crate::crdt_yjs::{
 };
 use crate::diesel_sqlite::DieselSqliteStore;
 use crate::encrypted_crdt::{EncryptedCrdt, CRDT_CHECKPOINTS_TABLE, CRDT_UPDATES_TABLE};
-use crate::encryption::{encryption_helpers_json, FieldEncryption};
+use crate::encryption::{encryption_helpers_json, BlobEncryption, FieldEncryption};
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::limits::{
     runtime_default_limits, RuntimeLimits, DEFAULT_CRDT_UPDATE_LOG_LIMIT,
@@ -76,6 +76,7 @@ pub struct NativeSyncularClient {
     auth_headers: SyncAuthHeaders,
     field_encryption: Option<FieldEncryption>,
     encrypted_crdt: Option<EncryptedCrdt>,
+    blob_encryption: Option<BlobEncryption>,
     auto_sync_local_writes: bool,
     shutdown_on_drop: bool,
     command_seq: Mutex<u64>,
@@ -652,6 +653,7 @@ impl NativeSyncularClient {
             auth_headers: SyncAuthHeaders::new(),
             field_encryption: None,
             encrypted_crdt: None,
+            blob_encryption: None,
             auto_sync_local_writes: options.auto_sync_local_writes,
             shutdown_on_drop: false,
             command_seq: Mutex::new(0),
@@ -933,6 +935,19 @@ impl NativeSyncularClient {
         self.set_encrypted_crdt(EncryptedCrdt::from_static_config_json(config_json)?)
     }
 
+    pub fn set_blob_encryption(&mut self, encryption: Option<BlobEncryption>) -> Result<()> {
+        self.blob_encryption = encryption.clone();
+        self.writer.set_blob_encryption(encryption.clone());
+        if let Some(worker) = &self.worker {
+            worker.set_blob_encryption(encryption)?;
+        }
+        Ok(())
+    }
+
+    pub fn set_blob_encryption_json(&mut self, config_json: &str) -> Result<()> {
+        self.set_blob_encryption(BlobEncryption::from_static_config_json(config_json)?)
+    }
+
     pub fn encryption_helper_json(&self, method: &str, args_json: &str) -> Result<String> {
         encryption_helpers_json(method, args_json)
     }
@@ -956,6 +971,7 @@ impl NativeSyncularClient {
         worker_client.set_auth_headers(self.auth_headers.clone());
         worker_client.set_field_encryption(self.field_encryption.clone());
         worker_client.set_encrypted_crdt(self.encrypted_crdt.clone());
+        worker_client.set_blob_encryption(self.blob_encryption.clone());
         let worker = SyncWorker::start(worker_client);
         self.worker_event_pump = Some(start_worker_event_pump(
             self.events.clone(),

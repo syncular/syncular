@@ -8,7 +8,7 @@ use crate::client::{
 };
 use crate::crdt_yjs::YJS_PAYLOAD_KEY;
 use crate::encrypted_crdt::{is_encrypted_crdt_system_table, EncryptedCrdt};
-use crate::encryption::{FieldEncryption, FieldEncryptionContext};
+use crate::encryption::{BlobEncryption, FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{
     validate_mutation_json_input_size, validate_pull_commit_integrity_metadata,
@@ -124,6 +124,7 @@ pub struct WebSyncularClient<T = WebSyncTransport, S = WebMemoryStore> {
     subscriptions: Vec<SubscriptionSpec>,
     field_encryption: Option<FieldEncryption>,
     encrypted_crdt: Option<EncryptedCrdt>,
+    blob_encryption: Option<BlobEncryption>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -210,6 +211,7 @@ where
             subscriptions: Vec::new(),
             field_encryption: None,
             encrypted_crdt: None,
+            blob_encryption: None,
         }
     }
 
@@ -692,6 +694,19 @@ where
     pub fn set_encrypted_crdt_json(&mut self, config_json: &str) -> Result<()> {
         self.encrypted_crdt = EncryptedCrdt::from_static_config_json(config_json)?;
         Ok(())
+    }
+
+    pub fn set_blob_encryption(&mut self, encryption: Option<BlobEncryption>) {
+        self.blob_encryption = encryption;
+    }
+
+    pub fn set_blob_encryption_json(&mut self, config_json: &str) -> Result<()> {
+        self.blob_encryption = BlobEncryption::from_static_config_json(config_json)?;
+        Ok(())
+    }
+
+    pub fn blob_encryption(&self) -> Option<&BlobEncryption> {
+        self.blob_encryption.as_ref()
     }
 
     pub fn transport(&self) -> &T {

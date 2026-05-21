@@ -631,6 +631,10 @@ pub struct PendingBlobUploadRow {
     #[diesel(sql_type = Binary)]
     pub body: Vec<u8>,
     #[diesel(sql_type = Integer)]
+    pub encrypted: i32,
+    #[diesel(sql_type = Nullable<Text>)]
+    pub key_id: Option<String>,
+    #[diesel(sql_type = Integer)]
     pub attempt_count: i32,
 }
 
@@ -1162,23 +1166,28 @@ impl DieselSqliteStore {
         let blob = BlobRef {
             hash: blob_hash(data),
             size,
-            mime_type: if mime_type.trim().is_empty() {
-                "application/octet-stream".to_string()
-            } else {
-                mime_type.to_string()
-            },
+            mime_type: normalize_blob_mime_type(mime_type),
             encrypted: false,
             key_id: None,
         };
 
+        self.store_blob_body(&blob, data, enqueue_upload)?;
+        Ok(blob)
+    }
+
+    pub fn store_blob_body(
+        &mut self,
+        blob: &BlobRef,
+        data: &[u8],
+        enqueue_upload: bool,
+    ) -> Result<()> {
         self.conn.transaction::<(), SyncularError, _>(|conn| {
-            cache_blob(conn, &blob, data)?;
+            cache_blob(conn, blob, data)?;
             if enqueue_upload {
-                enqueue_blob_upload(conn, &blob, data)?;
+                enqueue_blob_upload(conn, blob, data)?;
             }
             Ok(())
-        })?;
-        Ok(blob)
+        })
     }
 
     pub fn cache_blob_bytes(&mut self, blob: &BlobRef, data: &[u8]) -> Result<()> {
@@ -1245,7 +1254,7 @@ impl DieselSqliteStore {
         let now = now_ms();
         Ok(sql_query(
             r#"
-            select hash, size, mime_type, body, attempt_count
+            select hash, size, mime_type, body, encrypted, key_id, attempt_count
             from sync_blob_outbox
             where status = 'pending' and attempt_count < ?1 and next_attempt_at <= ?2
             order by created_at asc
