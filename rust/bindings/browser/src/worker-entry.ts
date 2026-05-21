@@ -265,6 +265,10 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return requireClient().generatedSchemaState();
     case 'localHealthCheck':
       return requireClient().localHealthCheck();
+    case 'exportLocalSupportBundle':
+      return requireClient().exportLocalSupportBundle();
+    case 'importLocalSupportBundle':
+      return requireClient().importLocalSupportBundle(request.bundleJson);
     case 'repairLocalHealth':
       return requireClient().repairLocalHealth(request.request);
     case 'resetLocalSyncState':
@@ -490,6 +494,8 @@ function isDiagnosedSuccessRequest(
     type === 'clearBlobCache' ||
     type === 'pruneBlobCache' ||
     type === 'compactStorage' ||
+    type === 'exportLocalSupportBundle' ||
+    type === 'importLocalSupportBundle' ||
     type === 'repairLocalHealth' ||
     type === 'resetLocalSyncState'
   );
@@ -529,6 +535,8 @@ function requestDiagnosticSource(
     type === 'close' ||
     type === 'generatedSchemaState' ||
     type === 'localHealthCheck' ||
+    type === 'exportLocalSupportBundle' ||
+    type === 'importLocalSupportBundle' ||
     type === 'repairLocalHealth' ||
     type === 'resetLocalSyncState' ||
     type === 'compactStorage'
@@ -586,6 +594,18 @@ function requestSuccessDetails(
         findingCount: findings.length,
       };
     }
+    case 'exportLocalSupportBundle': {
+      const bundle = objectRecord(value);
+      const health = objectRecord(bundle.health);
+      const findings = Array.isArray(health.findings) ? health.findings : [];
+      return {
+        redacted: bundle.redacted === true,
+        source: bundle.source,
+        findingCount: findings.length,
+      };
+    }
+    case 'importLocalSupportBundle':
+      return objectRecord(value);
     case 'repairLocalHealth':
       return objectRecord(value);
     case 'resetLocalSyncState':

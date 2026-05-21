@@ -733,6 +733,21 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
+    public func exportLocalSupportBundleJson() throws -> String {
+        let buf = boltffi_syncular_bolt_client_export_local_support_bundle_json(handle)
+        defer { boltffi_free_buf(buf) }
+        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
+    public func importLocalSupportBundleJson(bundleJson: String) throws -> String {
+        var bundleJson = bundleJson
+        return try bundleJson.withUTF8 { bundleJsonBuf in
+            let buf = boltffi_syncular_bolt_client_import_local_support_bundle_json(handle, bundleJsonBuf.baseAddress!, UInt(bundleJsonBuf.count))
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
     public func repairLocalHealthJson(requestJson: String) throws -> String {
         var requestJson = requestJson
         return try requestJson.withUTF8 { requestJsonBuf in

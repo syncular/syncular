@@ -66,6 +66,8 @@ fn boltffi_rust_surface_exposes_the_syncular_runtime_boundary() {
     assert!(source.contains("pub fn register_query_json"));
     assert!(source.contains("pub fn diagnostic_snapshot_json"));
     assert!(source.contains("pub fn local_health_check_json"));
+    assert!(source.contains("pub fn export_local_support_bundle_json"));
+    assert!(source.contains("pub fn import_local_support_bundle_json"));
     assert!(source.contains("pub fn repair_local_health_json"));
     assert!(source.contains("pub fn enqueue_resolve_conflict"));
     assert!(source.contains("pub fn start_event_stream"));
@@ -135,6 +137,10 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(swift.contains("func closeEventStream() throws -> Bool"));
     assert!(swift.contains("func diagnosticSnapshotJson() throws -> String"));
     assert!(swift.contains("func localHealthCheckJson() throws -> String"));
+    assert!(swift.contains("func exportLocalSupportBundleJson() throws -> String"));
+    assert!(
+        swift.contains("func importLocalSupportBundleJson(bundleJson: String) throws -> String")
+    );
     assert!(swift.contains("func repairLocalHealthJson(requestJson: String) throws -> String"));
     assert!(swift.contains("func resetLocalSyncStateJson(requestJson: String) throws -> String"));
     assert!(swift.contains("func appSchemaStateJson() throws -> String"));
@@ -176,6 +182,8 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(kotlin.contains("fun closeEventStream(): Boolean"));
     assert!(kotlin.contains("fun diagnosticSnapshotJson(): String"));
     assert!(kotlin.contains("fun localHealthCheckJson(): String"));
+    assert!(kotlin.contains("fun exportLocalSupportBundleJson(): String"));
+    assert!(kotlin.contains("fun importLocalSupportBundleJson(bundleJson: String): String"));
     assert!(kotlin.contains("fun repairLocalHealthJson(requestJson: String): String"));
     assert!(kotlin.contains("fun resetLocalSyncStateJson(requestJson: String): String"));
     assert!(kotlin.contains("fun appSchemaStateJson(): String"));
@@ -220,6 +228,8 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java.contains("public boolean closeEventStream()"));
     assert!(java.contains("public String diagnosticSnapshotJson()"));
     assert!(java.contains("public String localHealthCheckJson()"));
+    assert!(java.contains("public String exportLocalSupportBundleJson()"));
+    assert!(java.contains("public String importLocalSupportBundleJson(String bundleJson)"));
     assert!(java.contains("public String repairLocalHealthJson(String requestJson)"));
     assert!(java.contains("public String resetLocalSyncStateJson(String requestJson)"));
     assert!(java.contains("public String appSchemaStateJson()"));
@@ -235,6 +245,14 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java_header.contains("boltffi_syncular_bolt_client_diagnostic_snapshot_json"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_local_health_check_json"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_local_health_check_json"));
+    assert!(
+        android_header.contains("boltffi_syncular_bolt_client_export_local_support_bundle_json")
+    );
+    assert!(java_header.contains("boltffi_syncular_bolt_client_export_local_support_bundle_json"));
+    assert!(
+        android_header.contains("boltffi_syncular_bolt_client_import_local_support_bundle_json")
+    );
+    assert!(java_header.contains("boltffi_syncular_bolt_client_import_local_support_bundle_json"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_repair_local_health_json"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_repair_local_health_json"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_reset_local_sync_state_json"));

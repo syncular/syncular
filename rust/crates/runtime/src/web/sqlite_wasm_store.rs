@@ -890,6 +890,27 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = exportLocalSupportBundleJson)]
+    pub async fn export_local_support_bundle_json(
+        &mut self,
+    ) -> std::result::Result<String, JsValue> {
+        self.inner
+            .export_local_support_bundle_json()
+            .await
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = importLocalSupportBundleJson)]
+    pub async fn import_local_support_bundle_json(
+        &mut self,
+        bundle_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        self.inner
+            .import_local_support_bundle_json(bundle_json)
+            .await
+            .map_err(error_to_js)
+    }
+
     #[wasm_bindgen(js_name = repairLocalHealthJson)]
     pub async fn repair_local_health_json(
         &mut self,

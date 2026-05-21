@@ -293,6 +293,64 @@ where
         Ok(serde_json::to_string(&self.local_health_check().await?)?)
     }
 
+    pub async fn export_local_support_bundle(
+        &mut self,
+    ) -> Result<crate::health::LocalSupportBundle> {
+        let states = self.store.subscription_states().await?;
+        let roots = self.store.verified_roots().await?;
+        let state_id = self.store.local_state_id();
+        let current_schema_version = self.schema_version();
+        let mut health = crate::health::check_local_health_records(
+            &state_id,
+            &self.subscriptions,
+            &states,
+            &roots,
+        );
+        let app_schema_state = self.store.app_schema_state(current_schema_version).await?;
+        let outbox = self.store.outbox_summaries().await?;
+        let conflicts = self.store.conflict_summaries().await?;
+        let scoped_rows = self
+            .store
+            .scoped_rows_health_summary(&self.subscriptions)
+            .await?;
+        let blob_health = self.store.blob_health_summary().await?;
+        let crdt_health = self.store.crdt_health_summary().await?;
+        crate::health::check_local_sync_state_health(
+            &mut health,
+            current_schema_version,
+            &app_schema_state,
+            &outbox,
+            &conflicts,
+            scoped_rows.as_ref(),
+            blob_health.as_ref(),
+            crdt_health.as_ref(),
+        );
+        Ok(crate::health::local_support_bundle_from_records(
+            "browser",
+            health,
+            &self.subscriptions,
+            &states,
+            &roots,
+            app_schema_state,
+            &outbox,
+            &conflicts,
+            blob_health,
+            crdt_health,
+        ))
+    }
+
+    pub async fn export_local_support_bundle_json(&mut self) -> Result<String> {
+        Ok(serde_json::to_string(
+            &self.export_local_support_bundle().await?,
+        )?)
+    }
+
+    pub async fn import_local_support_bundle_json(&mut self, bundle_json: &str) -> Result<String> {
+        Ok(serde_json::to_string(
+            &crate::health::import_local_support_bundle_json(bundle_json)?,
+        )?)
+    }
+
     pub async fn repair_local_health(
         &mut self,
         request: crate::health::LocalHealthRepairRequest,

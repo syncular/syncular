@@ -815,6 +815,78 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     });
   });
 
+  it('exports and imports redacted browser local support bundles', async () => {
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'local-support-browser-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    await client.setSubscriptions([
+      {
+        id: 'browser-support-sub',
+        table: 'tasks',
+        scopes: {
+          user_id: 'browser-secret-user',
+          project_id: ['browser-secret-project'],
+        },
+        params: { preview: 'browser-secret-param' },
+        bootstrapPhase: 1,
+      },
+    ]);
+    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    await unsafe.executeUnsafeSql(
+      'insert into tasks (id, title, completed, user_id, project_id, server_version, image, title_yjs_state) values (?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        'browser-support-secret-task',
+        'Browser support secret title',
+        0,
+        'browser-secret-user',
+        'browser-secret-project',
+        7,
+        null,
+        null,
+      ]
+    );
+
+    const bundle = await client.exportLocalSupportBundle();
+    const bundleJson = JSON.stringify(bundle);
+    expect(bundle).toMatchObject({
+      redacted: true,
+      source: 'browser',
+      subscriptions: [
+        {
+          id: 'browser-support-sub',
+          table: 'tasks',
+          scopeKeys: ['project_id', 'user_id'],
+          scopeValueCount: 2,
+          paramsKeys: ['preview'],
+          paramsValueCount: 1,
+        },
+      ],
+    });
+    expect(bundleJson).not.toContain('browser-secret-user');
+    expect(bundleJson).not.toContain('browser-secret-project');
+    expect(bundleJson).not.toContain('browser-secret-param');
+    expect(bundleJson).not.toContain('Browser support secret title');
+
+    await expect(client.importLocalSupportBundle(bundle)).resolves.toMatchObject({
+      redacted: true,
+      source: 'browser',
+      healthOk: true,
+      subscriptionCount: 1,
+    });
+    await expect(
+      client.importLocalSupportBundle(
+        JSON.stringify({ ...bundle, redacted: false })
+      )
+    ).rejects.toThrow(/requires a redacted bundle/);
+  });
+
   it('resets browser sync state while preserving local-only app rows', async () => {
     const subscription = taskSubscription({ actorId: ACTOR_A });
     const sync = await createHonoSyncHarness({

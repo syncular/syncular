@@ -51,6 +51,8 @@ import type {
   SyncularV2LocalHealthRepairReport,
   SyncularV2LocalHealthRepairRequest,
   SyncularV2LocalHealthReport,
+  SyncularV2LocalSupportBundle,
+  SyncularV2LocalSupportBundleImportReport,
   SyncularV2LocalSyncResetReport,
   SyncularV2LocalSyncResetRequest,
   SyncularV2LiveQueryEvent,
@@ -546,6 +548,17 @@ export class SyncularV2RustClient {
 
   async localHealthCheck(): Promise<SyncularV2LocalHealthReport> {
     return parseJson(await this.raw.localHealthCheckJson());
+  }
+
+  async exportLocalSupportBundle(): Promise<SyncularV2LocalSupportBundle> {
+    return parseJson(await this.raw.exportLocalSupportBundleJson());
+  }
+
+  async importLocalSupportBundle(
+    bundle: SyncularV2LocalSupportBundle | string
+  ): Promise<SyncularV2LocalSupportBundleImportReport> {
+    const bundleJson = typeof bundle === 'string' ? bundle : JSON.stringify(bundle);
+    return parseJson(await this.raw.importLocalSupportBundleJson(bundleJson));
   }
 
   async repairLocalHealth(

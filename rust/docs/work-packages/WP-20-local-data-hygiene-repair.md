@@ -132,6 +132,19 @@ First retained slice:
   notify live-query/lifecycle listeners when rows are cleared. Native and
   browser tests prove pending outbox commits block the repair and acked outbox
   state permits deterministic deletion.
+- The tenth retained slice adds a redacted local support bundle surface:
+  `export_local_support_bundle_json()` / `import_local_support_bundle_json()`
+  for Rust/native hosts and `exportLocalSupportBundle()` /
+  `importLocalSupportBundle()` for browser clients. Export includes health
+  findings plus subscription, persisted state, verified-root, outbox, conflict,
+  blob, and CRDT shape/count metadata, but not raw scope values, params, root
+  hashes, partition ids, row data, operation payloads, conflict messages, auth
+  headers, encryption keys, or CRDT updates. Import is deliberately
+  validation/inspection only: it rejects unredacted bundles and returns a
+  summary instead of mutating a live store. BoltFFI Swift/Kotlin/Java wrappers
+  expose the same low-level JSON methods. Runtime and WASM coverage prove
+  support bundles are importable and do not leak representative secret scope,
+  param, root, cursor, partition, or row values.
 
 Gates:
 
@@ -144,6 +157,7 @@ Gates:
 - `bun run build:wasm:dev`
 - `bun test src/__tests__/sync-hono.wasm.test.ts -t "reports and safely repairs browser local health findings"`
 - `bun test src/__tests__/sync-hono.wasm.test.ts -t "reports browser synced app rows outside configured subscription scopes"`
+- `bun test src/__tests__/sync-hono.wasm.test.ts -t "exports and imports redacted browser local support bundles"`
 - `bun test src/__tests__/sync-hono.wasm.test.ts -t "resets browser sync state while preserving local-only app rows"`
 - `bun test src/__tests__/sync-hono.wasm.test.ts`
 - `bun run test`
@@ -151,6 +165,5 @@ Gates:
 
 ## Next Action
 
-Add debug-only local support export/import with redaction, then revisit whether
-blob/CRDT orphan metadata should get similarly explicit repair commands or stay
-manual-inspection only.
+Revisit whether blob/CRDT orphan metadata should get similarly explicit repair
+commands or stay manual-inspection only.

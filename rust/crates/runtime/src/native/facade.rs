@@ -1387,6 +1387,14 @@ impl NativeSyncularClient {
         self.writer.local_health_check_json()
     }
 
+    pub fn export_local_support_bundle_json(&mut self) -> Result<String> {
+        self.writer.export_local_support_bundle_json()
+    }
+
+    pub fn import_local_support_bundle_json(&mut self, bundle_json: &str) -> Result<String> {
+        self.writer.import_local_support_bundle_json(bundle_json)
+    }
+
     pub fn repair_local_health_json(&mut self, request_json: &str) -> Result<String> {
         self.writer.repair_local_health_json(request_json)
     }
