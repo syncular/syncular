@@ -1,6 +1,6 @@
 # WP-13 Observability And Debuggability
 
-Status: `[~] console drilldowns in progress`
+Status: `[x] accepted for the current Rust-first foundation`
 
 ## Goal
 
@@ -210,9 +210,12 @@ persistence when console event recording is enabled. Row investigation surfaces
 client-level `realtimeEvidence` for connected, pull-required, ACK, rejected, and
 error counts plus latest cursor/reason metadata.
 
-Next: broaden realtime evidence only if apps need per-row or per-scope matching
-and the server can persist that without storing raw scope values. Do not infer
-missing-row causes from app tables or add payload capture by default.
+WP-13 is accepted for the current Rust-first foundation. Future observability
+slices should be driven by concrete app/debugging feedback and must keep the
+same redaction and server-authoritative investigation rules. Candidate
+follow-ups are per-row/per-scope realtime evidence, sync performance drilldowns,
+or richer client-detail pages, but only if they can be persisted without raw
+scope values, app row payloads, or app-side correctness inference.
 
 ## Progress
 
