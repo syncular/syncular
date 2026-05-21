@@ -931,6 +931,122 @@ describe('Syncular v2 worker client', () => {
     });
   });
 
+  it('emits blob cache and pruning diagnostics when diagnostics are subscribed', async () => {
+    const worker = new FakeWorker();
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+      diagnostics: (event) => diagnostics.push(event),
+    });
+
+    const local = client.isBlobLocal(`sha256:${'3'.repeat(64)}`);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await expect(local).resolves.toBe(true);
+
+    const prune = client.pruneBlobCache(64);
+    await waitForMessages(worker, 2);
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: 12,
+    });
+    await expect(prune).resolves.toBe(12);
+
+    const clear = client.clearBlobCache();
+    await waitForMessages(worker, 3);
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: undefined,
+    });
+    await expect(clear).resolves.toBeUndefined();
+
+    expect(diagnostics.map((event) => event.code)).toEqual([
+      'blob.cache_hit',
+      'blob.cache_pruned',
+      'blob.cache_cleared',
+    ]);
+    expect(diagnostics[1]).toMatchObject({
+      details: { prunedBytes: 12, maxBytes: 64 },
+    });
+  });
+
+  it('emits per-row blob upload diagnostics without requiring upload event listeners', async () => {
+    const worker = new FakeWorker();
+    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+      diagnostics: (event) => diagnostics.push(event),
+    });
+
+    const process = client.processBlobUploadQueue();
+    await waitForMessages(worker, 1);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        rows: [
+          {
+            hash: `sha256:${'4'.repeat(64)}`,
+            size: 7,
+            mime_type: 'application/octet-stream',
+            encrypted: 0,
+            key_id: null,
+            status: 'pending',
+            error: null,
+          },
+        ],
+      },
+    });
+
+    await waitForMessages(worker, 2);
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { uploaded: 0, failed: 1 },
+    });
+
+    await waitForMessages(worker, 3);
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        rows: [
+          {
+            hash: `sha256:${'4'.repeat(64)}`,
+            size: 7,
+            mime_type: 'application/octet-stream',
+            encrypted: 0,
+            key_id: null,
+            status: 'failed',
+            error: 'Upload failed',
+          },
+        ],
+      },
+    });
+
+    await expect(process).resolves.toEqual({ uploaded: 0, failed: 1 });
+    expect(diagnostics.map((event) => event.code)).toContain(
+      'blob.upload_failed'
+    );
+    expect(diagnostics.at(-1)).toMatchObject({
+      code: 'blob.upload_queue_processed',
+      details: { uploaded: 0, failed: 1 },
+    });
+  });
+
   it('preserves encrypted blob metadata in upload completion events', async () => {
     const worker = new FakeWorker();
     const client = new SyncularV2WorkerClient(worker.asWorker(), {
