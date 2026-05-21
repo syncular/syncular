@@ -9,8 +9,14 @@ private class BoltNativeClient(
     override fun applyMutationJson(mutationJson: String, localRowJson: String?): String =
         client.applyMutationJson(mutationJson, localRowJson)
 
+    override fun applyLeasedMutationJson(mutationJson: String, localRowJson: String?): String =
+        client.applyLeasedMutationJson(mutationJson, localRowJson)
+
     override fun enqueueMutationJson(mutationJson: String, localRowJson: String?): String =
         client.enqueueMutationJson(mutationJson, localRowJson)
+
+    override fun enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?): String =
+        client.enqueueLeasedMutationJson(mutationJson, localRowJson)
 
     override fun diagnosticSnapshotJson(): String =
         client.diagnosticSnapshotJson()

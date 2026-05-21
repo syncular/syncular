@@ -367,12 +367,36 @@ public final class SyncularBoltClient {
         }
     }
 
+    public func applyLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String {
+        var mutationJson = mutationJson
+        let localRowJsonBytes = boltffiEncode { writer in writer.writeOptional(localRowJson) { writer, v in writer.writeString(v) } }
+        return try mutationJson.withUTF8 { mutationJsonBuf in
+            return try localRowJsonBytes.withUnsafeBufferPointer { localRowJsonBuf in
+                let buf = boltffi_syncular_bolt_client_apply_leased_mutation_json(handle, mutationJsonBuf.baseAddress!, UInt(mutationJsonBuf.count), localRowJsonBuf.baseAddress, UInt(localRowJsonBuf.count))
+                defer { boltffi_free_buf(buf) }
+                return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+            }
+        }
+    }
+
     public func enqueueMutationJson(mutationJson: String, localRowJson: String?) throws -> String {
         var mutationJson = mutationJson
         let localRowJsonBytes = boltffiEncode { writer in writer.writeOptional(localRowJson) { writer, v in writer.writeString(v) } }
         return try mutationJson.withUTF8 { mutationJsonBuf in
             return try localRowJsonBytes.withUnsafeBufferPointer { localRowJsonBuf in
                 let buf = boltffi_syncular_bolt_client_enqueue_mutation_json(handle, mutationJsonBuf.baseAddress!, UInt(mutationJsonBuf.count), localRowJsonBuf.baseAddress, UInt(localRowJsonBuf.count))
+                defer { boltffi_free_buf(buf) }
+                return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+            }
+        }
+    }
+
+    public func enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String {
+        var mutationJson = mutationJson
+        let localRowJsonBytes = boltffiEncode { writer in writer.writeOptional(localRowJson) { writer, v in writer.writeString(v) } }
+        return try mutationJson.withUTF8 { mutationJsonBuf in
+            return try localRowJsonBytes.withUnsafeBufferPointer { localRowJsonBuf in
+                let buf = boltffi_syncular_bolt_client_enqueue_leased_mutation_json(handle, mutationJsonBuf.baseAddress!, UInt(mutationJsonBuf.count), localRowJsonBuf.baseAddress, UInt(localRowJsonBuf.count))
                 defer { boltffi_free_buf(buf) }
                 return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
             }
@@ -761,6 +785,45 @@ public final class SyncularBoltClient {
         let buf = boltffi_syncular_bolt_client_outbox_summaries_json(handle)
         defer { boltffi_free_buf(buf) }
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
+    public func upsertAuthLeaseJson(leaseJson: String) throws -> Bool {
+        var leaseJson = leaseJson
+        return try leaseJson.withUTF8 { leaseJsonBuf in
+            let buf = boltffi_syncular_bolt_client_upsert_auth_lease_json(handle, leaseJsonBuf.baseAddress!, UInt(leaseJsonBuf.count))
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
+    public func authLeaseJson(leaseId: String) throws -> String {
+        var leaseId = leaseId
+        return try leaseId.withUTF8 { leaseIdBuf in
+            let buf = boltffi_syncular_bolt_client_auth_lease_json(handle, leaseIdBuf.baseAddress!, UInt(leaseIdBuf.count))
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
+    public func activeAuthLeasesJson(actorId: String?, nowMs: Int64) throws -> String {
+        let actorIdBytes = boltffiEncode { writer in writer.writeOptional(actorId) { writer, v in writer.writeString(v) } }
+        return try actorIdBytes.withUnsafeBufferPointer { actorIdBuf in
+            let buf = boltffi_syncular_bolt_client_active_auth_leases_json(handle, actorIdBuf.baseAddress, UInt(actorIdBuf.count), nowMs)
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
+    public func setOutboxAuthLeaseJson(clientCommitId: String, provenanceJson: String?) throws -> Bool {
+        var clientCommitId = clientCommitId
+        let provenanceJsonBytes = boltffiEncode { writer in writer.writeOptional(provenanceJson) { writer, v in writer.writeString(v) } }
+        return try clientCommitId.withUTF8 { clientCommitIdBuf in
+            return try provenanceJsonBytes.withUnsafeBufferPointer { provenanceJsonBuf in
+                let buf = boltffi_syncular_bolt_client_set_outbox_auth_lease_json(handle, clientCommitIdBuf.baseAddress!, UInt(clientCommitIdBuf.count), provenanceJsonBuf.baseAddress, UInt(provenanceJsonBuf.count))
+                defer { boltffi_free_buf(buf) }
+                return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
+            }
+        }
     }
 
     public func conflictSummariesJson() throws -> String {

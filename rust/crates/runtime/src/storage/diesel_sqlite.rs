@@ -930,6 +930,23 @@ impl DieselSqliteStore {
         self.transaction(|tx| tx.apply_local_operation(operation, local_row))
     }
 
+    pub fn apply_local_operation_with_active_auth_lease(
+        &mut self,
+        actor_id: Option<&str>,
+        now_ms_value: i64,
+        operation: SyncOperation,
+        local_row: Option<Value>,
+    ) -> Result<String> {
+        self.transaction(|tx| {
+            tx.apply_local_operation_with_active_auth_lease(
+                actor_id,
+                now_ms_value,
+                operation,
+                local_row,
+            )
+        })
+    }
+
     pub fn apply_syncular_mutations(
         &mut self,
         mutations: Vec<PendingSyncularMutation>,
@@ -2157,6 +2174,55 @@ impl<'a> DieselSqliteTx<'a> {
             )?;
         }
         Ok(client_commit_id)
+    }
+
+    fn apply_local_operation_with_active_auth_lease(
+        &mut self,
+        actor_id: Option<&str>,
+        now_ms_value: i64,
+        operation: SyncOperation,
+        local_row: Option<Value>,
+    ) -> Result<String> {
+        let pre_delete_scope = if operation.op == "delete" {
+            Some(self.operation_scope_for_current_row(&operation)?)
+        } else {
+            None
+        };
+        let client_commit_id = self.apply_local_operation(operation.clone(), local_row)?;
+        let operation_scope = pre_delete_scope
+            .map(Ok)
+            .unwrap_or_else(|| self.operation_scope_for_current_row(&operation))?;
+        let provenance = self.select_active_auth_lease_for_operations(
+            ActiveAuthLeasePolicy {
+                actor_id,
+                now_ms: now_ms_value,
+            },
+            &[operation_scope],
+        )?;
+        self.set_outbox_auth_lease(&client_commit_id, Some(&provenance))?;
+        Ok(client_commit_id)
+    }
+
+    fn operation_scope_for_current_row(
+        &mut self,
+        operation: &SyncOperation,
+    ) -> Result<MutationOperationScope> {
+        if is_encrypted_crdt_system_table(&operation.table) {
+            return Ok(system_table_operation_scope(operation));
+        }
+        let metadata = self
+            .app_schema
+            .table_metadata(&operation.table)
+            .ok_or_else(|| {
+                SyncularError::config(format!("unknown generated app table: {}", operation.table))
+            })?;
+        let row = self.current_row_json(&operation.table, &operation.row_id)?;
+        Ok(app_table_operation_scope(
+            metadata,
+            operation,
+            row.as_ref(),
+            row.is_some() || operation.op == "upsert",
+        ))
     }
 
     fn apply_crdt_field_yjs_update(

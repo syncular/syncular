@@ -74,6 +74,7 @@ enum WorkerCommand {
         mutation_json: String,
         local_row_json: Option<String>,
         auto_sync: bool,
+        require_auth_lease: bool,
     },
     SaveYjsUpdateJson {
         command_id: String,
@@ -428,6 +429,16 @@ pub trait SyncWorkerClientExt {
         local_row_json: Option<&str>,
     ) -> Result<String>;
 
+    fn apply_worker_leased_mutation_json(
+        &mut self,
+        _mutation_json: &str,
+        _local_row_json: Option<&str>,
+    ) -> Result<String> {
+        Err(SyncularError::config(
+            "worker-owned leased mutations are not available for this client",
+        ))
+    }
+
     fn apply_worker_mutation(
         &mut self,
         mutation: SyncOperation,
@@ -574,6 +585,14 @@ where
         local_row_json: Option<&str>,
     ) -> Result<String> {
         self.apply_mutation_json(mutation_json, local_row_json)
+    }
+
+    fn apply_worker_leased_mutation_json(
+        &mut self,
+        mutation_json: &str,
+        local_row_json: Option<&str>,
+    ) -> Result<String> {
+        self.apply_leased_mutation_json(mutation_json, local_row_json)
     }
 
     fn apply_worker_mutation(
@@ -1487,6 +1506,24 @@ impl SyncWorker {
             mutation_json,
             local_row_json,
             auto_sync,
+            require_auth_lease: false,
+        })
+    }
+
+    pub fn enqueue_leased_mutation_json(
+        &self,
+        command_id: String,
+        mutation_json: String,
+        local_row_json: Option<String>,
+        auto_sync: bool,
+    ) -> Result<()> {
+        validate_mutation_json_input_size(&mutation_json, local_row_json.as_deref())?;
+        self.try_send(WorkerCommand::ApplyMutationJson {
+            command_id,
+            mutation_json,
+            local_row_json,
+            auto_sync,
+            require_auth_lease: true,
         })
     }
 
@@ -1759,6 +1796,7 @@ where
             mutation_json,
             local_row_json,
             auto_sync,
+            require_auth_lease,
         } => {
             if flush_pending_yjs(client, pending_yjs, event_tx) {
                 if !run_until_settled(
@@ -1780,6 +1818,7 @@ where
                 &mutation_json,
                 local_row_json.as_deref(),
                 auto_sync,
+                require_auth_lease,
             );
             if should_sync {
                 run_until_settled(
@@ -2228,6 +2267,7 @@ where
                     mutation_json,
                     local_row_json,
                     auto_sync,
+                    require_auth_lease,
                 }) => {
                     if flush_pending_yjs(client, pending_yjs, event_tx) {
                         next_sync = Some((None, false, WorkerSyncTransport::Http));
@@ -2239,6 +2279,7 @@ where
                         &mutation_json,
                         local_row_json.as_deref(),
                         auto_sync,
+                        require_auth_lease,
                     ) {
                         next_sync = Some((None, false, WorkerSyncTransport::Http));
                     }
@@ -2533,6 +2574,7 @@ fn apply_mutation_json<S, T>(
     mutation_json: &str,
     local_row_json: Option<&str>,
     auto_sync: bool,
+    require_auth_lease: bool,
 ) -> bool
 where
     S: SyncStore + SyncStateStore,
@@ -2556,7 +2598,12 @@ where
         .transpose()
         .ok()
         .flatten();
-    match client.apply_worker_mutation_json(mutation_json, local_row_json) {
+    let applied = if require_auth_lease {
+        client.apply_worker_leased_mutation_json(mutation_json, local_row_json)
+    } else {
+        client.apply_worker_mutation_json(mutation_json, local_row_json)
+    };
+    match applied {
         Ok(client_commit_id) => {
             let changed_rows = mutation
                 .as_ref()

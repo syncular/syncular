@@ -871,6 +871,116 @@ fn diesel_generated_leased_mutations_fail_closed_without_covering_lease() -> Res
 }
 
 #[test]
+fn diesel_leased_mutation_json_selects_active_auth_lease() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-json-leased-mutation");
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let now = now_ms();
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    client.upsert_auth_lease(&active_task_auth_lease(
+        now,
+        "lease-json-active",
+        "lease-json-token",
+    ))?;
+
+    let task = generated::NewTask::new("leased-json", "json lease task", "user-rust", Some("p0"));
+    let mutation_json = serde_json::to_string(&task.sync_operation())?;
+    let local_row_json = serde_json::to_string(&task.row_json())?;
+    let client_commit_id =
+        client.apply_leased_mutation_json(&mutation_json, Some(&local_row_json))?;
+
+    let rows: Vec<Value> = serde_json::from_str(&client.list_table_json("tasks")?)?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], "leased-json");
+    let provenance = client
+        .outbox_summaries()?
+        .into_iter()
+        .find(|summary| summary.client_commit_id == client_commit_id)
+        .and_then(|summary| summary.auth_lease)
+        .expect("leased JSON mutation should tag outbox provenance");
+    assert_eq!(provenance.lease_id, "lease-json-active");
+    assert_eq!(provenance.lease_token.as_deref(), Some("lease-json-token"));
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn sync_worker_enqueues_leased_mutation_json() -> Result<()> {
+    let path = temp_db_path("syncular-worker-json-leased-mutation");
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let now = now_ms();
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    client.upsert_auth_lease(&active_task_auth_lease(
+        now,
+        "lease-worker-active",
+        "lease-worker-token",
+    ))?;
+
+    let task = generated::NewTask::new(
+        "leased-worker-json",
+        "worker json lease task",
+        "user-rust",
+        Some("p0"),
+    );
+    let mutation_json = serde_json::to_string(&task.sync_operation())?;
+    let local_row_json = serde_json::to_string(&task.row_json())?;
+    let worker = SyncWorker::start(client);
+    worker.enqueue_leased_mutation_json(
+        "worker-leased-json-1".to_string(),
+        mutation_json,
+        Some(local_row_json),
+        false,
+    )?;
+
+    let event = worker
+        .recv_event_timeout(Duration::from_secs(2))
+        .expect("leased JSON worker event");
+    match event {
+        SyncWorkerEvent::LocalWriteCommitted {
+            command_id,
+            client_commit_id,
+            changed_tables,
+            changed_rows,
+            ..
+        } => {
+            assert_eq!(command_id, "worker-leased-json-1");
+            assert!(!client_commit_id.is_empty());
+            assert_eq!(changed_tables, vec!["tasks".to_string()]);
+            assert_eq!(changed_rows.len(), 1);
+            assert_eq!(changed_rows[0].operation, "insert");
+            assert_eq!(
+                changed_rows[0].row_id.as_deref(),
+                Some("leased-worker-json")
+            );
+        }
+        SyncWorkerEvent::LocalWriteFailed { error, .. } => {
+            panic!("leased JSON worker mutation failed: {}", error.debug_text());
+        }
+        other => panic!("unexpected leased JSON worker event: {other:?}"),
+    }
+    worker.stop()?;
+
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let rows = store.list_table_json("tasks")?;
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0]["id"], "leased-worker-json");
+    let provenance = store
+        .outbox_summaries()?
+        .into_iter()
+        .find(|summary| summary.auth_lease.is_some())
+        .and_then(|summary| summary.auth_lease)
+        .expect("worker leased JSON mutation should tag outbox provenance");
+    assert_eq!(provenance.lease_id, "lease-worker-active");
+    assert_eq!(
+        provenance.lease_token.as_deref(),
+        Some("lease-worker-token")
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn rusqlite_store_applies_migrations_and_stamps_outbox_schema_version() -> Result<()> {
     let path = temp_db_path("syncular-rusqlite-store");
     let mut store = RusqliteStore::open(&path)?;
@@ -2376,6 +2486,49 @@ fn test_config(path: &str) -> SyncularClientConfig {
         client_id: "store-parity".to_string(),
         actor_id: "user-rust".to_string(),
         project_id: Some("p0".to_string()),
+    }
+}
+
+fn active_task_auth_lease(now: i64, lease_id: &str, token: &str) -> AuthLeaseRecord {
+    AuthLeaseRecord {
+        lease_id: lease_id.to_string(),
+        kid: "test-kid".to_string(),
+        actor_id: "user-rust".to_string(),
+        issued_at_ms: now - 10,
+        not_before_ms: now - 10,
+        expires_at_ms: now + 60_000,
+        schema_version: current_schema_version(),
+        payload_json: json!({
+            "version": 1,
+            "leaseId": lease_id,
+            "issuer": "syncular-test",
+            "audience": "syncular-test-app",
+            "actorId": "user-rust",
+            "subject": {},
+            "schemaVersion": current_schema_version(),
+            "protocolVersion": 1,
+            "issuedAtMs": now - 10,
+            "notBeforeMs": now - 10,
+            "expiresAtMs": now + 60_000,
+            "maxClockSkewMs": 0,
+            "scopes": [{
+                "subscriptionId": "sub-tasks",
+                "table": "tasks",
+                "values": { "user_id": "user-rust", "project_id": "p0" },
+                "operations": ["upsert", "delete"]
+            }],
+            "capabilities": {
+                "allowBlobs": false,
+                "allowCrdt": false,
+                "allowEncryptedFields": false
+            }
+        })
+        .to_string(),
+        token: token.to_string(),
+        status: "active".to_string(),
+        last_validation_error: None,
+        created_at_ms: now,
+        updated_at_ms: now,
     }
 }
 

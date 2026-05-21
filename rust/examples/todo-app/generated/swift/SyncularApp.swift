@@ -55,6 +55,12 @@ public func assertSyncularNativeRuntimeManifest(_ manifest: SyncularNativeRuntim
     guard manifest.capabilities.contains("generated-json-mutations") else {
         throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust native runtime is missing generated-json-mutations")
     }
+    guard manifest.capabilities.contains("generated-json-leased-mutations") else {
+        throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust native runtime is missing generated-json-leased-mutations")
+    }
+    guard manifest.capabilities.contains("queued-json-leased-mutations") else {
+        throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust native runtime is missing queued-json-leased-mutations")
+    }
     guard manifest.capabilities.contains("read-only-query-json") else {
         throw SyncularNativeGeneratedError.runtimeManifestMismatch("Rust native runtime is missing read-only-query-json")
     }
@@ -959,7 +965,9 @@ public struct SyncularCrdtFieldCompactionReceipt: Codable, Equatable {
 
 public protocol SyncularNativeJsonClient {
     func applyMutationJson(mutationJson: String, localRowJson: String?) throws -> String
+    func applyLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String
     func enqueueMutationJson(mutationJson: String, localRowJson: String?) throws -> String
+    func enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String
     func openCrdtFieldJson(requestJson: String) throws -> String
     func applyCrdtFieldTextJson(requestJson: String) throws -> String
     func applyCrdtFieldYjsUpdateJson(requestJson: String) throws -> String
@@ -980,8 +988,16 @@ public extension SyncularNativeJsonClient {
         try applyMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)
     }
 
+    func applyLeased(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {
+        try applyLeasedMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)
+    }
+
     func enqueue(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {
         try enqueueMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)
+    }
+
+    func enqueueLeased(_ operation: SyncularGeneratedOperation, localRowJson: String? = nil) throws -> String {
+        try enqueueLeasedMutationJson(mutationJson: operation.jsonString(), localRowJson: localRowJson)
     }
 
     func diagnosticSnapshot() throws -> SyncularJsonValue {
@@ -1648,53 +1664,59 @@ public enum SyncularAppOperations {
 public struct SyncularAppMutations {
     private let client: SyncularNativeJsonClient
     private let queued: Bool
+    private let leased: Bool
 
-    init(client: SyncularNativeJsonClient, queued: Bool = false) {
+    init(client: SyncularNativeJsonClient, queued: Bool = false, leased: Bool = false) {
         self.client = client
         self.queued = queued
+        self.leased = leased
     }
 
-    public var comments: CommentMutations { CommentMutations(client: client, queued: queued) }
-    public var projects: ProjectMutations { ProjectMutations(client: client, queued: queued) }
-    public var tasks: TaskMutations { TaskMutations(client: client, queued: queued) }
+    public var comments: CommentMutations { CommentMutations(client: client, queued: queued, leased: leased) }
+    public var projects: ProjectMutations { ProjectMutations(client: client, queued: queued, leased: leased) }
+    public var tasks: TaskMutations { TaskMutations(client: client, queued: queued, leased: leased) }
 }
 
 public extension SyncularNativeJsonClient {
     var mutations: SyncularAppMutations { SyncularAppMutations(client: self) }
     var queuedMutations: SyncularAppMutations { SyncularAppMutations(client: self, queued: true) }
+    var leasedMutations: SyncularAppMutations { SyncularAppMutations(client: self, leased: true) }
+    var queuedLeasedMutations: SyncularAppMutations { SyncularAppMutations(client: self, queued: true, leased: true) }
 }
 
 public struct CommentMutations {
     private let client: SyncularNativeJsonClient
     private let queued: Bool
+    private let leased: Bool
 
-    init(client: SyncularNativeJsonClient, queued: Bool) {
+    init(client: SyncularNativeJsonClient, queued: Bool, leased: Bool) {
         self.client = client
         self.queued = queued
+        self.leased = leased
     }
 
     public func insert(_ input: NewComment, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
         let operation = SyncularAppOperations.newComment(input, baseVersion: baseVersion)
         if queued {
-            return try client.enqueue(operation, localRowJson: localRowJson)
+            return leased ? try client.enqueueLeased(operation, localRowJson: localRowJson) : try client.enqueue(operation, localRowJson: localRowJson)
         }
-        return try client.apply(operation, localRowJson: localRowJson)
+        return leased ? try client.applyLeased(operation, localRowJson: localRowJson) : try client.apply(operation, localRowJson: localRowJson)
     }
 
     public func update(rowId: String, patch: CommentPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
         let operation = SyncularAppOperations.patchComment(rowId: rowId, patch: patch, baseVersion: baseVersion)
         if queued {
-            return try client.enqueue(operation, localRowJson: localRowJson)
+            return leased ? try client.enqueueLeased(operation, localRowJson: localRowJson) : try client.enqueue(operation, localRowJson: localRowJson)
         }
-        return try client.apply(operation, localRowJson: localRowJson)
+        return leased ? try client.applyLeased(operation, localRowJson: localRowJson) : try client.apply(operation, localRowJson: localRowJson)
     }
 
     public func delete(rowId: String, baseVersion: Int64? = nil) throws -> String {
         let operation = SyncularAppOperations.deleteComment(rowId: rowId, baseVersion: baseVersion)
         if queued {
-            return try client.enqueue(operation)
+            return leased ? try client.enqueueLeased(operation) : try client.enqueue(operation)
         }
-        return try client.apply(operation)
+        return leased ? try client.applyLeased(operation) : try client.apply(operation)
     }
 
 }
@@ -1702,34 +1724,36 @@ public struct CommentMutations {
 public struct ProjectMutations {
     private let client: SyncularNativeJsonClient
     private let queued: Bool
+    private let leased: Bool
 
-    init(client: SyncularNativeJsonClient, queued: Bool) {
+    init(client: SyncularNativeJsonClient, queued: Bool, leased: Bool) {
         self.client = client
         self.queued = queued
+        self.leased = leased
     }
 
     public func insert(_ input: NewProject, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
         let operation = SyncularAppOperations.newProject(input, baseVersion: baseVersion)
         if queued {
-            return try client.enqueue(operation, localRowJson: localRowJson)
+            return leased ? try client.enqueueLeased(operation, localRowJson: localRowJson) : try client.enqueue(operation, localRowJson: localRowJson)
         }
-        return try client.apply(operation, localRowJson: localRowJson)
+        return leased ? try client.applyLeased(operation, localRowJson: localRowJson) : try client.apply(operation, localRowJson: localRowJson)
     }
 
     public func update(rowId: String, patch: ProjectPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
         let operation = SyncularAppOperations.patchProject(rowId: rowId, patch: patch, baseVersion: baseVersion)
         if queued {
-            return try client.enqueue(operation, localRowJson: localRowJson)
+            return leased ? try client.enqueueLeased(operation, localRowJson: localRowJson) : try client.enqueue(operation, localRowJson: localRowJson)
         }
-        return try client.apply(operation, localRowJson: localRowJson)
+        return leased ? try client.applyLeased(operation, localRowJson: localRowJson) : try client.apply(operation, localRowJson: localRowJson)
     }
 
     public func delete(rowId: String, baseVersion: Int64? = nil) throws -> String {
         let operation = SyncularAppOperations.deleteProject(rowId: rowId, baseVersion: baseVersion)
         if queued {
-            return try client.enqueue(operation)
+            return leased ? try client.enqueueLeased(operation) : try client.enqueue(operation)
         }
-        return try client.apply(operation)
+        return leased ? try client.applyLeased(operation) : try client.apply(operation)
     }
 
 }
@@ -1737,34 +1761,36 @@ public struct ProjectMutations {
 public struct TaskMutations {
     private let client: SyncularNativeJsonClient
     private let queued: Bool
+    private let leased: Bool
 
-    init(client: SyncularNativeJsonClient, queued: Bool) {
+    init(client: SyncularNativeJsonClient, queued: Bool, leased: Bool) {
         self.client = client
         self.queued = queued
+        self.leased = leased
     }
 
     public func insert(_ input: NewTask, baseVersion: Int64? = 0, localRowJson: String? = nil) throws -> String {
         let operation = SyncularAppOperations.newTask(input, baseVersion: baseVersion)
         if queued {
-            return try client.enqueue(operation, localRowJson: localRowJson)
+            return leased ? try client.enqueueLeased(operation, localRowJson: localRowJson) : try client.enqueue(operation, localRowJson: localRowJson)
         }
-        return try client.apply(operation, localRowJson: localRowJson)
+        return leased ? try client.applyLeased(operation, localRowJson: localRowJson) : try client.apply(operation, localRowJson: localRowJson)
     }
 
     public func update(rowId: String, patch: TaskPatch, baseVersion: Int64? = nil, localRowJson: String? = nil) throws -> String {
         let operation = SyncularAppOperations.patchTask(rowId: rowId, patch: patch, baseVersion: baseVersion)
         if queued {
-            return try client.enqueue(operation, localRowJson: localRowJson)
+            return leased ? try client.enqueueLeased(operation, localRowJson: localRowJson) : try client.enqueue(operation, localRowJson: localRowJson)
         }
-        return try client.apply(operation, localRowJson: localRowJson)
+        return leased ? try client.applyLeased(operation, localRowJson: localRowJson) : try client.apply(operation, localRowJson: localRowJson)
     }
 
     public func delete(rowId: String, baseVersion: Int64? = nil) throws -> String {
         let operation = SyncularAppOperations.deleteTask(rowId: rowId, baseVersion: baseVersion)
         if queued {
-            return try client.enqueue(operation)
+            return leased ? try client.enqueueLeased(operation) : try client.enqueue(operation)
         }
-        return try client.apply(operation)
+        return leased ? try client.applyLeased(operation) : try client.apply(operation)
     }
 
 }

@@ -322,6 +322,16 @@ impl SyncularBoltClient {
         })
     }
 
+    pub fn apply_leased_mutation_json(
+        &self,
+        mutation_json: &str,
+        local_row_json: Option<String>,
+    ) -> Result<String, String> {
+        self.with_client_mut(|client| {
+            client.apply_leased_mutation_json(mutation_json, local_row_json.as_deref())
+        })
+    }
+
     pub fn enqueue_mutation_json(
         &self,
         mutation_json: &str,
@@ -329,6 +339,16 @@ impl SyncularBoltClient {
     ) -> Result<String, String> {
         self.with_client(|client| {
             client.enqueue_mutation_json(mutation_json, local_row_json.as_deref())
+        })
+    }
+
+    pub fn enqueue_leased_mutation_json(
+        &self,
+        mutation_json: &str,
+        local_row_json: Option<String>,
+    ) -> Result<String, String> {
+        self.with_client(|client| {
+            client.enqueue_leased_mutation_json(mutation_json, local_row_json.as_deref())
         })
     }
 

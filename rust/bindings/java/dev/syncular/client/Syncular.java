@@ -958,7 +958,9 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_next_event_json_timeout(long handle, long timeoutMs);
     static native byte[] boltffi_syncular_bolt_client_close_event_stream(long handle);
     static native byte[] boltffi_syncular_bolt_client_apply_mutation_json(long handle, byte[] mutationJson, ByteBuffer localRowJson);
+    static native byte[] boltffi_syncular_bolt_client_apply_leased_mutation_json(long handle, byte[] mutationJson, ByteBuffer localRowJson);
     static native byte[] boltffi_syncular_bolt_client_enqueue_mutation_json(long handle, byte[] mutationJson, ByteBuffer localRowJson);
+    static native byte[] boltffi_syncular_bolt_client_enqueue_leased_mutation_json(long handle, byte[] mutationJson, ByteBuffer localRowJson);
     static native byte[] boltffi_syncular_bolt_client_enqueue_yjs_update_json(long handle, byte[] updateJson);
     static native byte[] boltffi_syncular_bolt_client_open_crdt_field_json(long handle, byte[] requestJson);
     static native byte[] boltffi_syncular_bolt_client_apply_crdt_field_text_json(long handle, byte[] requestJson);
@@ -1005,6 +1007,10 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_import_local_support_bundle_json(long handle, byte[] bundleJson);
     static native byte[] boltffi_syncular_bolt_client_repair_local_health_json(long handle, byte[] requestJson);
     static native byte[] boltffi_syncular_bolt_client_outbox_summaries_json(long handle);
+    static native byte[] boltffi_syncular_bolt_client_upsert_auth_lease_json(long handle, byte[] leaseJson);
+    static native byte[] boltffi_syncular_bolt_client_auth_lease_json(long handle, byte[] leaseId);
+    static native byte[] boltffi_syncular_bolt_client_active_auth_leases_json(long handle, ByteBuffer actorId, long nowMs);
+    static native byte[] boltffi_syncular_bolt_client_set_outbox_auth_lease_json(long handle, byte[] clientCommitId, ByteBuffer provenanceJson);
     static native byte[] boltffi_syncular_bolt_client_conflict_summaries_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_resolve_conflict(long handle, byte[] id, byte[] resolution);
     static native byte[] boltffi_syncular_bolt_client_enqueue_resolve_conflict(long handle, byte[] id, byte[] resolution);
