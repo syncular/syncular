@@ -85,8 +85,8 @@ import {
   getSyncularV2WasmGlueUrl,
   getSyncularV2WasmUrl,
   loadSyncularV2WasmGlue,
-  type RawSyncularV2RustClient,
   readSyncularV2RustRuntimeInfo,
+  type SyncularRustOwnedSqliteClient,
   type SyncularV2WasmGlue,
 } from './wasm-runtime';
 
@@ -260,7 +260,7 @@ export class SyncularV2RustClient {
   #closed = false;
 
   constructor(
-    private readonly raw: RawSyncularV2RustClient,
+    private readonly raw: SyncularRustOwnedSqliteClient,
     private readonly runtime: SyncularV2RuntimeInfo,
     private readonly config: SyncularV2ClientConfig,
     private readonly pullOptions: SyncularV2PullOptions | undefined,

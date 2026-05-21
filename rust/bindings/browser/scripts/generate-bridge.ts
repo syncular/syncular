@@ -11,10 +11,6 @@ interface WorkerCommand {
   operationalState?: boolean;
 }
 
-interface RawMethod {
-  signature: string;
-}
-
 const workerCommands: readonly WorkerCommand[] = [
   {
     type: 'open',
@@ -429,123 +425,6 @@ const workerCommands: readonly WorkerCommand[] = [
   },
 ];
 
-const rawMethods: readonly RawMethod[] = [
-  { signature: 'setSubscriptionsJson(subscriptionsJson: string): void;' },
-  {
-    signature:
-      'forceSubscriptionsBootstrapJson(subscriptionIdsJson: string): Promise<string>;',
-  },
-  { signature: 'localHealthCheckJson(): Promise<string>;' },
-  { signature: 'exportLocalSupportBundleJson(): Promise<string>;' },
-  {
-    signature:
-      'importLocalSupportBundleJson(bundleJson: string): Promise<string>;',
-  },
-  {
-    signature: 'repairLocalHealthJson(requestJson: string): Promise<string>;',
-  },
-  {
-    signature: 'resetLocalSyncStateJson(requestJson: string): Promise<string>;',
-  },
-  { signature: 'setAuthHeadersJson(headersJson: string): void;' },
-  { signature: 'upsertAuthLeaseJson(leaseJson: string): void;' },
-  { signature: 'authLeaseJson(leaseId: string): string;' },
-  {
-    signature:
-      'activeAuthLeasesJson(actorId: string | null, nowMs: bigint): string;',
-  },
-  { signature: 'setFieldEncryptionJson(configJson: string): void;' },
-  { signature: 'setEncryptedCrdtJson(configJson: string): void;' },
-  { signature: 'setBlobEncryptionJson(configJson: string): void;' },
-  { signature: 'setAbortSignal(signal?: AbortSignal | null): void;' },
-  {
-    signature:
-      'applyMutationJson(operationJson: string, localRowJson?: string | null): Promise<string>;',
-  },
-  {
-    signature:
-      'applyLeasedMutationJson(operationJson: string, localRowJson?: string | null): Promise<string>;',
-  },
-  {
-    signature:
-      'applyMutationsBatchJson(operationsJson: string): Promise<string>;',
-  },
-  {
-    signature:
-      'applyMutationsCommitJson(operationsJson: string): Promise<string>;',
-  },
-  {
-    signature:
-      'applyLeasedMutationsCommitJson(operationsJson: string): Promise<string>;',
-  },
-  { signature: 'syncPullJson(): Promise<string>;' },
-  {
-    signature:
-      'applyRealtimeSyncPackBytes(bytes: Uint8Array): Promise<string>;',
-  },
-  { signature: 'syncPushJson(): Promise<string>;' },
-  { signature: 'recoverSyncPushErrorJson(errorMessage: string): void;' },
-  { signature: 'syncOnceJson(): Promise<string>;' },
-  { signature: 'transportStatsJson(): string;' },
-  { signature: 'resetTransportStats(): void;' },
-  { signature: 'conflictSummariesJson(): Promise<string>;' },
-  { signature: 'retryConflictKeepLocal(id: string): Promise<string>;' },
-  {
-    signature:
-      'resolveConflict(id: string, resolution: string): Promise<void>;',
-  },
-  { signature: 'listTableJson(table: string): Promise<string>;' },
-  {
-    signature:
-      'storeBlobJson(data: Uint8Array, optionsJson: string): Promise<string>;',
-  },
-  { signature: 'retrieveBlob(refJson: string): Promise<Uint8Array>;' },
-  { signature: 'isBlobLocal(hash: string): boolean;' },
-  { signature: 'processBlobUploadQueueJson(): Promise<string>;' },
-  { signature: 'blobUploadQueueStatsJson(): string;' },
-  { signature: 'blobCacheStatsJson(): string;' },
-  { signature: 'pruneBlobCache(maxBytes: bigint): bigint;' },
-  { signature: 'clearBlobCache(): void;' },
-  { signature: 'compactStorageJson(optionsJson: string): string;' },
-  {
-    signature:
-      'executeSqlValue(sql: string, params: readonly unknown[]): unknown;',
-  },
-  {
-    signature:
-      'executeUnsafeSqlValue(sql: string, params: readonly unknown[]): unknown;',
-  },
-  { signature: 'buildYjsTextUpdateJson(argsJson: string): string;' },
-  { signature: 'applyYjsTextUpdatesJson(argsJson: string): string;' },
-  {
-    signature: 'applyYjsEnvelopeToPayloadJson(argsJson: string): string;',
-  },
-  { signature: 'openCrdtFieldJson(requestJson: string): string;' },
-  { signature: 'applyCrdtFieldTextJson(requestJson: string): string;' },
-  { signature: 'applyCrdtFieldYjsUpdateJson(requestJson: string): string;' },
-  { signature: 'materializeCrdtFieldJson(requestJson: string): string;' },
-  { signature: 'crdtDocumentSnapshotJson(requestJson: string): string;' },
-  { signature: 'crdtUpdateLogJson(requestJson: string): string;' },
-  {
-    signature: 'snapshotCrdtFieldStateVectorJson(requestJson: string): string;',
-  },
-  { signature: 'compactCrdtFieldJson(requestJson: string): string;' },
-  {
-    signature:
-      'encryptionHelperJson(method: string, argsJson: string): string;',
-  },
-  { signature: 'generatedSchemaStateJson(): string;' },
-  {
-    signature:
-      'subscribeQueryJson(sql: string, paramsJson: string, tablesJson: string, hintsJson: string): string;',
-  },
-  { signature: 'unsubscribeQuery(id: string): void;' },
-  { signature: 'drainLiveQueryEventsJson(): string;' },
-  { signature: 'liveQueryDiagnosticsJson(): string;' },
-  { signature: 'drainRowsChangedEventsJson(): string;' },
-  { signature: 'close(): void;' },
-];
-
 function requestVariant(command: WorkerCommand): string {
   const fields = command.fields ?? [];
   return [
@@ -616,10 +495,6 @@ import type {
   SyncularV2SyncAttempt,
 } from './types';
 import type { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
-
-export interface RawSyncularV2RustClient {
-${rawMethods.map((method) => `  ${method.signature}`).join('\n')}
-}
 
 export interface SyncularV2WorkerRuntimeArtifact {
   name?: string;
