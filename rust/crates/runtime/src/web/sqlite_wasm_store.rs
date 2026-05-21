@@ -37,7 +37,7 @@ use crate::encryption::FieldEncryptionContext;
 use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "web-blobs")]
 use crate::limits::DEFAULT_BLOB_UPLOAD_BATCH_LIMIT;
-use crate::limits::DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY;
+use crate::limits::{validate_unresolved_outbox_capacity, DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY};
 #[cfg(feature = "web-blobs")]
 use crate::protocol::{
     blob_hash, validate_blob_bytes, validate_blob_hash, validate_blob_size_bytes, BlobRef,
@@ -3021,6 +3021,7 @@ impl SyncularRustOwnedSqlite {
         client_commit_id: &str,
         operation: &SyncOperation,
     ) -> Result<()> {
+        self.assert_outbox_capacity()?;
         let now = now_ms();
         let operations_json = sync_operations_json_for_outbox(std::slice::from_ref(operation))?;
         self.exec(&format!(
@@ -3037,6 +3038,7 @@ impl SyncularRustOwnedSqlite {
     }
 
     fn enqueue_outbox_operations(&self, operations: &[SyncOperation]) -> Result<String> {
+        self.assert_outbox_capacity()?;
         let client_commit_id = Uuid::new_v4().to_string();
         let now = now_ms();
         let operations_json = sync_operations_json_for_outbox(operations)?;
@@ -3052,6 +3054,18 @@ impl SyncularRustOwnedSqlite {
             schema_version = self.schema_version
         ))?;
         Ok(client_commit_id)
+    }
+
+    fn assert_outbox_capacity(&self) -> Result<()> {
+        let unresolved = self
+            .query_rows(
+                "SELECT COUNT(*) AS count FROM sync_outbox_commits WHERE status <> 'acked'",
+                |row| row.i64("count"),
+            )?
+            .into_iter()
+            .next()
+            .unwrap_or(0);
+        validate_unresolved_outbox_capacity(usize::try_from(unresolved).unwrap_or(usize::MAX))
     }
 
     fn upsert_row_object(

@@ -1,6 +1,7 @@
 use super::generated::{table_metadata, NewTask, TaskPatch};
 use super::migrations::{checksum, current_schema_version, split_sql_statements, MIGRATIONS};
 use crate::error::{Result, SyncularError};
+use crate::limits::validate_unresolved_outbox_capacity;
 use crate::protocol::*;
 use crate::runtime_schema::RUNTIME_SYSTEM_SCHEMA_SQL;
 use crate::store::{
@@ -317,6 +318,7 @@ impl RusqliteTx<'_> {
     }
 
     fn enqueue_outbox(&mut self, operations: Vec<SyncOperation>) -> Result<String> {
+        self.assert_outbox_capacity()?;
         let id = Uuid::new_v4().to_string();
         let client_commit_id = Uuid::new_v4().to_string();
         let now = now_ms();
@@ -338,6 +340,15 @@ impl RusqliteTx<'_> {
             ],
         )?;
         Ok(client_commit_id)
+    }
+
+    fn assert_outbox_capacity(&mut self) -> Result<()> {
+        let unresolved: i64 = self.tx.query_row(
+            "select count(*) from sync_outbox_commits where status <> 'acked'",
+            [],
+            |row| row.get(0),
+        )?;
+        validate_unresolved_outbox_capacity(usize::try_from(unresolved).unwrap_or(usize::MAX))
     }
 
     fn retry_conflict_keep_local(&mut self, conflict_id: &str) -> Result<String> {

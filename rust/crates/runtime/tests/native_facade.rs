@@ -2007,6 +2007,7 @@ fn native_facade_exposes_redacted_diagnostic_snapshot() -> Result<()> {
     assert_eq!(snapshot["limits"]["workerCommandQueueCapacity"], 1024);
     assert_eq!(snapshot["limits"]["nativeRecentEventLimit"], 100);
     assert_eq!(snapshot["limits"]["pullLimitCommits"], 1000);
+    assert_eq!(snapshot["limits"]["maxUnresolvedOutboxCommits"], 10_000);
     assert_eq!(snapshot["limits"]["maxSyncRetries"], 5);
     assert_eq!(snapshot["limits"]["maxBlobUploadRetries"], 3);
     assert_eq!(snapshot["limits"]["blobUploadBatchLimit"], 10);

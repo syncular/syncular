@@ -58,8 +58,9 @@ product-level limits.
 
 ## Next Action
 
-Add the remaining stress coverage for runtime queues/buffers and review whether
-blob/artifact pressure should get first-class console summary counters.
+Review whether blob/artifact pressure should get first-class console summary
+counters, then decide if WP-18 has enough limit coverage to close or should
+add larger server/browser stress fixtures.
 
 ## Progress
 
@@ -106,9 +107,23 @@ blob/artifact pressure should get first-class console summary counters.
 - Sync retry count, sending stale timeout, blob upload retry count, blob upload
   stale timeout, blob upload batch size, and SQLite busy timeout are now visible
   runtime limits in native manifests and diagnostics.
+- Rust/native/browser local writes now cap unresolved outbox commits with
+  `maxUnresolvedOutboxCommits`. Pending, sending, and failed commits count
+  toward the cap; acked commits do not. Full outbox pressure fails the local
+  write transaction with `runtime.limit_exceeded` before a new commit is
+  retained.
 
 ## Latest Evidence
 
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends diesel_store_rejects_local_writes_when_unresolved_outbox_is_full --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_ffi native_ffi_exposes_runtime_manifest_without_handle`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_exposes_redacted_diagnostic_snapshot`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+- `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`
+- `git diff --check`
+- Benchmark gate not run: this slice adds a hard local-write capacity check and
+  limit manifest fields, not snapshot/apply/query hot-path behavior.
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_ffi native_ffi_exposes_runtime_manifest_without_handle`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_exposes_redacted_diagnostic_snapshot`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_rejects_subscription_limit_with_stable_error`

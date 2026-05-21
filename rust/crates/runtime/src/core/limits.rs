@@ -1,5 +1,6 @@
 use serde::Serialize;
 
+use crate::error::{Result, SyncularError};
 use crate::store::{
     BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES, MAX_SYNC_RETRIES,
     SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
@@ -15,6 +16,7 @@ pub const DEFAULT_PULL_LIMIT_COMMITS: i64 = 1000;
 pub const DEFAULT_PULL_LIMIT_SNAPSHOT_ROWS: i64 = 50_000;
 pub const DEFAULT_PULL_MAX_SNAPSHOT_PAGES: i64 = 10;
 pub const DEFAULT_OUTBOX_PUSH_BATCH_LIMIT: i64 = 20;
+pub const DEFAULT_MAX_UNRESOLVED_OUTBOX_COMMITS: usize = 10_000;
 pub const DEFAULT_BLOB_UPLOAD_BATCH_LIMIT: i64 = 10;
 
 pub const DEFAULT_CRDT_STATE_VECTOR_HINT_LIMIT: i64 = 256;
@@ -58,6 +60,7 @@ pub struct RuntimeLimits {
     pub pull_limit_snapshot_rows: i64,
     pub pull_max_snapshot_pages: i64,
     pub outbox_push_batch_limit: i64,
+    pub max_unresolved_outbox_commits: usize,
     pub max_sync_retries: i32,
     pub sync_sending_timeout_ms: i64,
     pub max_blob_upload_retries: i32,
@@ -103,6 +106,7 @@ pub fn runtime_default_limits() -> RuntimeLimits {
         pull_limit_snapshot_rows: DEFAULT_PULL_LIMIT_SNAPSHOT_ROWS,
         pull_max_snapshot_pages: DEFAULT_PULL_MAX_SNAPSHOT_PAGES,
         outbox_push_batch_limit: DEFAULT_OUTBOX_PUSH_BATCH_LIMIT,
+        max_unresolved_outbox_commits: DEFAULT_MAX_UNRESOLVED_OUTBOX_COMMITS,
         max_sync_retries: MAX_SYNC_RETRIES,
         sync_sending_timeout_ms: SYNC_SENDING_TIMEOUT_MS,
         max_blob_upload_retries: MAX_BLOB_UPLOAD_RETRIES,
@@ -137,4 +141,16 @@ pub fn runtime_default_limits() -> RuntimeLimits {
         max_realtime_sync_pack_bytes: MAX_REALTIME_SYNC_PACK_BYTES,
         max_websocket_text_frame_bytes: MAX_WEBSOCKET_TEXT_FRAME_BYTES,
     }
+}
+
+pub fn validate_unresolved_outbox_capacity(unresolved_count: usize) -> Result<()> {
+    if unresolved_count >= DEFAULT_MAX_UNRESOLVED_OUTBOX_COMMITS {
+        return Err(SyncularError::limit_exceeded(
+            "maxUnresolvedOutboxCommits",
+            unresolved_count,
+            DEFAULT_MAX_UNRESOLVED_OUTBOX_COMMITS,
+            "unresolved outbox queue is full",
+        ));
+    }
+    Ok(())
 }

@@ -508,7 +508,10 @@ read-only review:
     are also visible in native manifests and diagnostics. Console request
     events now expose request/response limit pressure, including a dedicated
     `sync` event type for pre-parse combined failures; oversized pull responses
-    no longer record cursor/subscription/success side effects.
+    no longer record cursor/subscription/success side effects. Native
+    Diesel, browser-owned SQLite, and web-memory local writes now reject new
+    commits once pending/sending/failed outbox pressure reaches
+    `maxUnresolvedOutboxCommits`; acked commits do not count against the cap.
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)

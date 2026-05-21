@@ -23,6 +23,7 @@ use crate::encrypted_crdt::{
 use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "demo-todo-native-fixture")]
 use crate::fixtures::todo::tasks::{insert_local_task, list_tasks, patch_local_task_title};
+use crate::limits::validate_unresolved_outbox_capacity;
 use crate::protocol::*;
 use crate::protocol::{sync_operations_json_for_outbox, validate_pending_mutation_batch_size};
 use crate::runtime_schema::RUNTIME_SYSTEM_SCHEMA_SQL;
@@ -1567,6 +1568,7 @@ impl<'a> DieselSqliteTx<'a> {
     ) -> Result<MutationReceipt> {
         use schema::sync_outbox_commits::dsl as o;
 
+        self.assert_outbox_capacity()?;
         let id = Uuid::new_v4().to_string();
         let client_commit_id = Uuid::new_v4().to_string();
         let now = now_ms();
@@ -1597,6 +1599,22 @@ impl<'a> DieselSqliteTx<'a> {
 
     fn enqueue_outbox(&mut self, operations: Vec<SyncOperation>) -> Result<String> {
         Ok(self.enqueue_outbox_receipt(operations)?.client_commit_id)
+    }
+
+    fn assert_outbox_capacity(&mut self) -> Result<()> {
+        let unresolved = sql_query(
+            r#"
+            select count(*) as count
+            from sync_outbox_commits
+            where status <> 'acked'
+            "#,
+        )
+        .load::<CountRow>(self.conn)?
+        .into_iter()
+        .next()
+        .map(|row| row.count)
+        .unwrap_or(0);
+        validate_unresolved_outbox_capacity(usize::try_from(unresolved).unwrap_or(usize::MAX))
     }
 
     fn retry_conflict_keep_local(&mut self, conflict_id: &str) -> Result<String> {

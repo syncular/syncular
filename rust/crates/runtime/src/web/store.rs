@@ -2,6 +2,7 @@ use crate::app_schema::{default_app_schema, AppSchema};
 use crate::binary_snapshot::SnapshotChunkRows;
 use crate::client::SyncChangedRow;
 use crate::error::{Result, SyncularError};
+use crate::limits::validate_unresolved_outbox_capacity;
 use crate::protocol::{
     sync_operations_json_for_outbox, BootstrapState, CrdtStateVectorHint, OperationResult,
     PushCommitResponse, ScopeValues, SyncChange, SyncOperation,
@@ -782,6 +783,13 @@ impl AsyncWebStore for WebMemoryStore {
 
 impl WebMemoryStore {
     fn enqueue_outbox(&mut self, operations: Vec<SyncOperation>) -> Result<String> {
+        let unresolved = self
+            .outbox
+            .iter()
+            .filter(|commit| commit.status != "acked")
+            .count();
+        validate_unresolved_outbox_capacity(unresolved)?;
+
         let client_commit_id = uuid::Uuid::new_v4().to_string();
         let now = now_ms();
         self.outbox.push(OutboxCommit {
