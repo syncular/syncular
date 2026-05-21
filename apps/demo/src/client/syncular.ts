@@ -29,6 +29,7 @@ const actorId = 'demo-user';
 const demoToken = 'demo-user';
 const syncBaseUrl =
   import.meta.env.VITE_SYNCULAR_SYNC_URL ?? 'http://127.0.0.1:4101/sync';
+const demoDatabaseFilePrefix = 'syncular-demo-rust-v2';
 
 export async function openDemoClient(
   name: DemoClientName
@@ -38,7 +39,7 @@ export async function openDemoClient(
       baseUrl: syncBaseUrl,
       actorId,
       clientId: `demo-${name}`,
-      fileName: `syncular-demo-${name}.sqlite`,
+      fileName: `${demoDatabaseFilePrefix}-${name}.sqlite`,
       projectId: null,
       storage: 'indexedDb',
     },

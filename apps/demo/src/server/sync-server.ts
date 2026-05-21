@@ -6,7 +6,7 @@ import {
   type SyncCoreDb,
 } from '@syncular/server';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
-import { createSyncRoutes } from '@syncular/server-hono';
+import { createSyncServer } from '@syncular/server-hono';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import type { Kysely } from 'kysely';
@@ -36,6 +36,8 @@ interface DemoSyncServer {
   close(): Promise<void>;
 }
 
+const DEMO_CONSOLE_TOKEN = 'demo-console';
+
 export async function startDemoSyncServer(
   options: { port?: number } = {}
 ): Promise<DemoSyncServer> {
@@ -49,45 +51,54 @@ export async function startDemoSyncServer(
   await ensureDemoTables(db);
   await seedDemoRows(db);
 
-  const syncRoutes = createSyncRoutes<DemoServerDb, { actorId: string }>({
+  const { syncRoutes, consoleRoutes } = createSyncServer<
+    DemoServerDb,
+    { actorId: string }
+  >({
     db,
     dialect,
-    handlers: [
-      createServerHandler<
-        DemoServerDb,
-        DemoClientDb,
-        'tasks',
-        { actorId: string }
-      >({
-        table: 'tasks',
-        scopes: ['user:{user_id}'],
-        codecs: syncularGeneratedCodecs,
-        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
-      }),
-    ],
-    authenticate: async (c) => {
-      const authorization = c.req.header('authorization');
-      const token = c.req.query('token');
-      if (authorization !== 'Bearer demo-user' && token !== 'demo-user') {
-        return null;
-      }
-      return { actorId: 'demo-user' };
-    },
     sync: {
+      handlers: [
+        createServerHandler<
+          DemoServerDb,
+          DemoClientDb,
+          'tasks',
+          { actorId: string }
+        >({
+          table: 'tasks',
+          scopes: ['user:{user_id}'],
+          codecs: syncularGeneratedCodecs,
+          resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+        }),
+      ],
+      authenticate: (request) => {
+        const authorization = request.headers.get('authorization');
+        const token = new URL(request.url).searchParams.get('token');
+        if (authorization !== 'Bearer demo-user' && token !== 'demo-user') {
+          return null;
+        }
+        return { actorId: 'demo-user' };
+      },
+    },
+    routes: {
       cors: ['http://127.0.0.1:*', 'http://localhost:*'],
       rateLimit: false,
       websocket: {
-        enabled: true,
-        upgradeWebSocket,
         allowedOrigins: ['http://127.0.0.1:*', 'http://localhost:*'],
         heartbeatIntervalMs: 15_000,
       },
+    },
+    upgradeWebSocket,
+    console: {
+      token: DEMO_CONSOLE_TOKEN,
+      corsOrigins: ['http://localhost:3000', 'http://127.0.0.1:3000'],
     },
   });
 
   const app = new Hono()
     .get('/health', (c) => c.json({ ok: true }))
-    .route('/sync', syncRoutes);
+    .route('/sync', syncRoutes)
+    .route('/console', consoleRoutes!);
 
   const server = Bun.serve({
     hostname: '127.0.0.1',
