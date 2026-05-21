@@ -101,6 +101,9 @@ Native/Rust parity foundation is implemented:
 - Example-app coverage proves tracked Rust update -> undo -> redo produces
   four normal outbox commits including the seed insert, and stale-row undo
   fails with `sync.command_history_conflict` before a replay commit is written.
+- Rust coverage also proves grouped insert undo/redo, hard-delete undo/redo,
+  and soft-delete undo/redo on the generated `comments.deleted` soft-delete
+  column.
 
 Gates:
 
@@ -128,8 +131,7 @@ in one TypeScript generated example:
 
 Extend the command-history proof beyond browser TypeScript:
 
-1. Add Rust create/delete/batch coverage, including soft-delete tables.
-2. Decide which blob, encrypted-field, and CRDT-field mutations are safe to
+1. Decide which blob, encrypted-field, and CRDT-field mutations are safe to
    invert automatically and reject unsafe cases with stable diagnostics.
-3. Add sync/conflict tests proving undo-generated commits interact with server
+2. Add sync/conflict tests proving undo-generated commits interact with server
    validation and conflict persistence through the normal outbox path.

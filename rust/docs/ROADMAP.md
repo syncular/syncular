@@ -722,7 +722,9 @@ read-only review:
     `SyncularCommandHistoryExecutor` trait, generated `commit_with_history` /
     `commit_leased_with_history`, and generated `command_history().undo_last()`
     / `redo_last()` helpers. Example-app tests prove Rust undo/redo emits
-    normal outbox commits and stale undo fails before writing a replay commit.
+    normal outbox commits, stale undo fails before writing a replay commit,
+    grouped insert undo/redo works, hard-delete replay works, and soft-delete
+    replay restores/toggles the generated soft-delete column.
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)

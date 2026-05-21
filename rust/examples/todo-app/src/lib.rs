@@ -541,6 +541,168 @@ mod tests {
     }
 
     #[test]
+    fn rust_client_generated_command_history_covers_grouped_insert_and_hard_delete() {
+        use diesel_tables::ProjectRow;
+        use syncular::prelude::SyncularGeneratedMutationsExt;
+
+        let config = SyncularClientConfig {
+            db_path: ":memory:".to_string(),
+            base_url: "http://localhost:9811/api/sync".to_string(),
+            client_id: "client-rust-command-history-hard-delete".to_string(),
+            actor_id: "user-rust".to_string(),
+            project_id: Some("project-rust".to_string()),
+        };
+        let mut client =
+            SyncularClient::open_with_schema(config, generated_app_schema()).expect("open client");
+
+        client
+            .commit_with_history(|tx| {
+                tx.projects().insert(syncular::NewProject::new(
+                    "history-project-a",
+                    "A",
+                    "user-rust",
+                ))?;
+                tx.projects().insert(syncular::NewProject::new(
+                    "history-project-b",
+                    "B",
+                    "user-rust",
+                ))?;
+                Ok(())
+            })
+            .expect("tracked grouped insert");
+        let rows: Vec<ProjectRow> = client
+            .read(
+                schema::projects::dsl::projects
+                    .order(schema::projects::dsl::id.asc())
+                    .select(ProjectRow::as_select()),
+            )
+            .expect("read grouped inserts");
+        assert_eq!(rows.len(), 2);
+
+        client
+            .command_history()
+            .undo_last()
+            .expect("undo grouped insert");
+        let rows: Vec<ProjectRow> = client
+            .read(schema::projects::dsl::projects.select(ProjectRow::as_select()))
+            .expect("read after grouped insert undo");
+        assert!(rows.is_empty());
+
+        client
+            .command_history()
+            .redo_last()
+            .expect("redo grouped insert");
+        client
+            .commit_with_history(|tx| {
+                tx.projects().delete("history-project-a")?;
+                Ok(())
+            })
+            .expect("tracked hard delete");
+        let rows: Vec<ProjectRow> = client
+            .read(
+                schema::projects::dsl::projects
+                    .filter(schema::projects::dsl::id.eq("history-project-a"))
+                    .select(ProjectRow::as_select()),
+            )
+            .expect("read after hard delete");
+        assert!(rows.is_empty());
+
+        client
+            .command_history()
+            .undo_last()
+            .expect("undo hard delete");
+        let rows: Vec<ProjectRow> = client
+            .read(
+                schema::projects::dsl::projects
+                    .filter(schema::projects::dsl::id.eq("history-project-a"))
+                    .select(ProjectRow::as_select()),
+            )
+            .expect("read after hard delete undo");
+        assert_eq!(rows.len(), 1);
+
+        client
+            .command_history()
+            .redo_last()
+            .expect("redo hard delete");
+        let rows: Vec<ProjectRow> = client
+            .read(
+                schema::projects::dsl::projects
+                    .filter(schema::projects::dsl::id.eq("history-project-a"))
+                    .select(ProjectRow::as_select()),
+            )
+            .expect("read after hard delete redo");
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn rust_client_generated_command_history_covers_soft_delete() {
+        use diesel_tables::CommentRow;
+        use syncular::prelude::SyncularGeneratedMutationsExt;
+
+        let config = SyncularClientConfig {
+            db_path: ":memory:".to_string(),
+            base_url: "http://localhost:9811/api/sync".to_string(),
+            client_id: "client-rust-command-history-soft-delete".to_string(),
+            actor_id: "user-rust".to_string(),
+            project_id: Some("project-rust".to_string()),
+        };
+        let mut client =
+            SyncularClient::open_with_schema(config, generated_app_schema()).expect("open client");
+
+        client
+            .mutations()
+            .comments()
+            .insert(syncular::NewComment::new(
+                "history-comment",
+                "task-id",
+                Some("project-rust"),
+                "soft delete",
+                "user-rust",
+            ))
+            .expect("seed comment");
+        client
+            .commit_with_history(|tx| {
+                tx.comments().delete("history-comment")?;
+                Ok(())
+            })
+            .expect("tracked soft delete");
+        let rows: Vec<CommentRow> = client
+            .read(
+                schema::comments::dsl::comments
+                    .filter(schema::comments::dsl::id.eq("history-comment"))
+                    .select(CommentRow::as_select()),
+            )
+            .expect("read soft-deleted row");
+        assert_eq!(rows[0].deleted, 1);
+
+        client
+            .command_history()
+            .undo_last()
+            .expect("undo soft delete");
+        let rows: Vec<CommentRow> = client
+            .read(
+                schema::comments::dsl::comments
+                    .filter(schema::comments::dsl::id.eq("history-comment"))
+                    .select(CommentRow::as_select()),
+            )
+            .expect("read after soft delete undo");
+        assert_eq!(rows[0].deleted, 0);
+
+        client
+            .command_history()
+            .redo_last()
+            .expect("redo soft delete");
+        let rows: Vec<CommentRow> = client
+            .read(
+                schema::comments::dsl::comments
+                    .filter(schema::comments::dsl::id.eq("history-comment"))
+                    .select(CommentRow::as_select()),
+            )
+            .expect("read after soft delete redo");
+        assert_eq!(rows[0].deleted, 1);
+    }
+
+    #[test]
     fn rust_client_conflicts_have_ergonomic_resolution_helpers() {
         use syncular::prelude::SyncularGeneratedMutationsExt;
 
