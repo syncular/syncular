@@ -1,44 +1,32 @@
 ---
 title: Quick Start
-description: See Syncular running in 30 seconds
+description: Run the Rust-first client checks
 ---
 
 # Quick Start
 
 > **Alpha.** APIs, wire formats, and storage layouts will change between releases. Pin versions and expect manual migrations between versions.
 
-## See it running (30 seconds)
+## Run the canonical client
 
-The fastest way to understand Syncular is to **clone the monorepo** and run the demo.
-
-> Prefer scaffolding a new project? See the [CLI docs](/docs/build/cli) and run `syncular create --template syncular-demo --dir ./my-syncular-demo` (or `npx @syncular/cli create --template syncular-demo --dir ./my-syncular-demo`). The published CLI lives in `@syncular/cli` and is currently developed in the separate [`syncular-spaces`](https://github.com/syncular/syncular-spaces) repo.
+The current client product path is the Rust-owned package published as
+`@syncular/client`. Clone the repo and run the browser binding gates:
 
 ```bash
 git clone https://github.com/syncular/syncular.git
 cd syncular
 bun install
-bun --cwd apps/demo dev
+bun run rust:browser:test
+bun run rust:browser:tsgo
 ```
-
-Open `http://localhost:9811`. You'll see two sync clients side-by-side. Add a task in the left panel — it appears on the right within a second. That's two independent SQLite databases syncing through a commit log.
-
-## What you just saw
-
-In the demo you’re seeing Syncular’s core model:
-- **Local SQLite is the primary read + write path** (instant UI, works offline).
-- **Outbox writes**: changes queue durably and sync when online.
-- **Push/Pull over HTTP** through an **append-only commit log**.
-- **Scopes** drive auth and partial sync (requested ∩ allowed).
-
-If you want the canonical deep dive, read [How Sync Works](/docs/concepts/architecture).
 
 ## Build your own app (canonical path)
 
 Syncular packages are published on npm under the `@syncular` scope. The recommended implementation path is:
 
 1. [Server Setup](/docs/build/server-setup)
-2. [Client Setup](/docs/build/client-setup)
-3. [Table Handlers](/docs/build/table-handlers)
+2. [Rust Client](/docs/rust-client)
+3. [Browser Client](/docs/rust-client/browser)
 4. Learn the concepts: [Scopes](/docs/concepts/scopes) and [Subscriptions](/docs/concepts/subscriptions)
 5. Then add features as needed: blobs, encryption, migrations, observability, console, relay
 

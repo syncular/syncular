@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  createSyncularClient,
   createSyncularV2Client,
   createSyncularV2CommandHistory,
   createSyncularRustSqliteDatabase,
@@ -16,9 +17,9 @@ import {
   SyncularV2CommandHistoryError,
 } from './index';
 
-describe('@syncular/client-rust public API', () => {
+describe('@syncular/client public API', () => {
   it('exports the stable v2 runtime contract', () => {
-    expect(SYNCULAR_V2_PACKAGE_NAME).toBe('@syncular/client-rust');
+    expect(SYNCULAR_V2_PACKAGE_NAME).toBe('@syncular/client');
     expect(SYNCULAR_V2_PACKAGE_VERSION).toBe('0.0.0');
     expect(SYNCULAR_V2_WASM_GLUE_FILE).toBe('syncular_v2.js');
     expect(SYNCULAR_V2_WASM_BINARY_FILE).toBe('syncular_v2_bg.wasm');
@@ -46,8 +47,13 @@ describe('@syncular/client-rust public API', () => {
     expect(createSyncularRustSqliteDatabase).toBe(createSyncularV2Database);
   });
 
-  it('exports the managed browser client constructor', () => {
+  it('exports the ergonomic managed browser client constructor', () => {
+    expect(typeof createSyncularClient).toBe('function');
+  });
+
+  it('keeps the v2 managed constructor as an internal alias', () => {
     expect(typeof createSyncularV2Client).toBe('function');
+    expect(createSyncularV2Client).toBe(createSyncularClient);
   });
 
   it('exports generated command-history helpers', () => {

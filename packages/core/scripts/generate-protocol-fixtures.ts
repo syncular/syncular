@@ -1,14 +1,14 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { SYNCULAR_ERROR_DEFINITIONS } from '../src/error-responses';
 import {
+  type BinarySnapshotTable,
+  createSnapshotManifest,
   decodeBinarySnapshotTable,
   decodeSnapshotRows,
-  createSnapshotManifest,
   encodeBinarySnapshotTable,
   encodeSnapshotRows,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-  type BinarySnapshotTable,
 } from '../src/snapshot-chunks';
 import {
   encodeBinarySyncPack,
@@ -33,7 +33,10 @@ writeFixture('error-taxonomy-v1.json', errorTaxonomyFixture());
 writeFixture('json-row-frame-v1-tasks.json', jsonRowFrameFixture());
 
 function writeFixture(name: string, value: unknown): void {
-  writeFileSync(new URL(name, fixturesDir), `${JSON.stringify(value, null, 2)}\n`);
+  writeFileSync(
+    new URL(name, fixturesDir),
+    `${JSON.stringify(value, null, 2)}\n`
+  );
 }
 
 function errorTaxonomyFixture() {
@@ -294,25 +297,25 @@ async function binarySyncPackFixture() {
               ],
             },
           ],
-            snapshots: [
-              {
+          snapshots: [
+            {
+              table: 'tasks',
+              rows: [],
+              chunks: [chunk],
+              manifest: await createSnapshotManifest({
+                version: 1,
                 table: 'tasks',
-                rows: [],
-                chunks: [chunk],
-                manifest: await createSnapshotManifest({
-                  version: 1,
-                  table: 'tasks',
-                  asOfCommitSeq: 42,
-                  scopeDigest: 'c'.repeat(64),
-                  rowCursor: null,
-                  rowLimit: 1000,
-                  nextRowCursor: null,
-                  isFirstPage: true,
-                  isLastPage: true,
-                  chunks: [chunk],
-                }),
+                asOfCommitSeq: 42,
+                scopeDigest: 'c'.repeat(64),
+                rowCursor: null,
+                rowLimit: 1000,
+                nextRowCursor: null,
                 isFirstPage: true,
                 isLastPage: true,
+                chunks: [chunk],
+              }),
+              isFirstPage: true,
+              isLastPage: true,
               bootstrapStateAfter: null,
             },
           ],
@@ -364,7 +367,8 @@ function binarySnapshotFixture() {
   const encoded = encodeBinarySnapshotTable(table);
   return {
     name: 'binary-snapshot-table-v1-tasks',
-    generatedBy: 'packages/core/src/snapshot-chunks.ts encodeBinarySnapshotTable',
+    generatedBy:
+      'packages/core/src/snapshot-chunks.ts encodeBinarySnapshotTable',
     encoding: SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
     wireVersion: 1,
     encodedHex: Buffer.from(encoded).toString('hex'),

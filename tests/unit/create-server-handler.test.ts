@@ -516,7 +516,7 @@ describe('createServerHandler', () => {
             table: 'tasks',
             row_id: 'missing-row',
             op: 'upsert',
-            payload: { completed: 1 },
+            payload: { completed: 1, user_id: 'u1' },
             base_version: 2,
           },
         ],
@@ -528,8 +528,8 @@ describe('createServerHandler', () => {
       {
         opIndex: 0,
         status: 'error',
-        error: 'ROW_NOT_FOUND_FOR_BASE_VERSION',
-        code: 'ROW_MISSING',
+        error: 'Row not found for base version',
+        code: 'sync.row_missing',
         retriable: false,
       },
     ]);
@@ -608,7 +608,7 @@ describe('createServerHandler', () => {
             table: 'tasks',
             row_id: 'new-row',
             op: 'upsert',
-            payload: { title: null },
+            payload: { title: null, user_id: 'u1' },
             base_version: null,
           },
         ],
@@ -621,7 +621,7 @@ describe('createServerHandler', () => {
       pushed.response.results[0] && 'code' in pushed.response.results[0]
         ? pushed.response.results[0].code
         : undefined
-    ).toBe('NOT_NULL_CONSTRAINT');
+    ).toBe('sync.constraint_violation');
   });
 
   it('advances nextCursor when scanned commits do not match requested scopes', async () => {

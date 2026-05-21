@@ -93,81 +93,19 @@ bun run --cwd packages/server-dialect-postgres tsgo
 
 ## Browser E2E Performance Guardrails
 
-Use release WASM for retained decisions.
+The legacy TypeScript-vs-Rust browser scoreboard was removed with the pure
+TypeScript client. Use Rust browser conformance and WASM size gates for package
+changes until the next Rust-only external benchmark harness is checked in.
 
 ```bash
-bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
-  --baseline=.context/benchmarks/browser-e2e-100k-baseline.json \
-  --fail-on-regression
+bun run rust:browser:test
+bun run rust:browser:build:wasm
+bun run rust:browser:size
 ```
 
-For scoped snapshot artifact work, run the artifact lane beside the row-chunk
-lane and compare the generated reports:
-
-```bash
-bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
-  --rows=100000 --query-iterations=0 --wasm-profile=release \
-  --output=.context/benchmarks/browser-e2e-100k-rowchunks.json
-```
-
-```bash
-bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
-  --rows=100000 --query-iterations=0 --wasm-profile=release \
-  --sync-snapshot-artifacts \
-  --output=.context/benchmarks/browser-e2e-100k-sqlite-artifacts.json
-```
-
-For artifact page-size experiments, pass the row-limit explicitly and require
-the report to show both the intended and observed request shape:
-
-```bash
-bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
-  --rows=500000 --query-iterations=0 --wasm-profile=release \
-  --sync-snapshot-artifacts \
-  --sync-snapshot-artifact-row-limit=50000 \
-  --output=.context/benchmarks/browser-e2e-500k-sqlite-artifacts-50k.json
-```
-
-Keep a page-size change only if `benchmark_rust_observed_limit_snapshot_rows`
-matches the requested limit, `benchmark_rust_observed_snapshot_artifacts=1`,
-`rust_snapshot_chunk_binary_count=0`, and the retained run beats the previous
-compact artifact baseline. The 100k probe on May 19, 2026 failed this gate by
-falling back to `10` binary chunks.
-For direct SQLite artifact changes, also report
-`rust_snapshot_artifact_count`, `rust_snapshot_artifact_bytes`,
-`rust_snapshot_artifact_fetch_ms`, `rust_snapshot_artifact_decompress_ms`,
-`rust_snapshot_artifact_hash_ms`, `rust_snapshot_artifact_apply_ms`,
-`rust_snapshot_artifact_checkpoint_ms`, and
-`rust_snapshot_artifact_checkpoint_count` so the artifact path is not hidden
-inside broad snapshot totals.
-
-```bash
-bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
-  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
-  --query-iterations=0 \
-  --baseline=.context/benchmarks/browser-e2e-incremental-realtime-baseline.json \
-  --fail-on-regression
-```
-
-```bash
-SYNCULAR_BROWSER_PERF_ROWS=500000 \
-  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
-  --query-iterations=0 \
-  --baseline=.context/benchmarks/browser-e2e-500k-baseline.json \
-  --fail-on-regression
-```
-
-Run these from the repo root.
-
-## Targeted Server Perf
-
-```bash
-PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
-PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
-PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
-bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
-  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
-```
+Performance-sensitive runtime changes still need before/after evidence in
+[`BENCHMARK_LOG.md`](BENCHMARK_LOG.md), using either targeted Rust benches or
+the external app-style benchmark below.
 
 ## External App-Style Benchmark
 

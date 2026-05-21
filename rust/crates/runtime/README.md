@@ -406,14 +406,14 @@ table methods or predefined read queries.
 
 ## Run
 
-Start a Syncular server first. For a small Bun-native local server using
-`@syncular/dialect-bun-sqlite`:
+Start a Syncular server first. The Rust-first local smoke uses the todo app
+fixture:
 
 ```bash
-bun --cwd tests/runtime apps/bun-sqlite/server.ts
+bash rust/examples/todo-app/native-smokes/run-local.sh
 ```
 
-It prints a JSON line such as `{"port":65024}`. Then, from the repo root:
+Then, from the repo root:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
@@ -648,7 +648,7 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir 
 ```json
 {
   "typescriptOutputPath": "generated/syncular.browser.ts",
-  "typescriptRuntimeImportPath": "@syncular/client-rust",
+  "typescriptRuntimeImportPath": "@syncular/client",
   "tables": {
     "tasks": {
       "subscriptionId": "sub-tasks",
@@ -687,7 +687,7 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir 
    type, a typed `createSyncularAppDatabase()` helper, row/input/patch types,
    Kysely payload helpers, SyncOperation builders, and subscription helpers.
    The generated database helper imports the Rust SQLite runtime from
-   `typescriptRuntimeImportPath`, defaulting to `@syncular/client-rust`,
+   `typescriptRuntimeImportPath`, defaulting to `@syncular/client`,
    validates the v2 package/protocol/Rust schema runtime contract, validates and
    stamps the generated browser schema, and registers generated subscriptions
    on the client from the configured `actorId`/`projectId` by default. Apps can

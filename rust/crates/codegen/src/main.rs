@@ -235,7 +235,7 @@ impl CodegenConfig {
         let path = self
             .typescript_runtime_import_path
             .as_deref()
-            .unwrap_or("@syncular/client-rust");
+            .unwrap_or("@syncular/client");
         if path.is_empty() {
             bail!("syncular.codegen.json typescriptRuntimeImportPath cannot be empty");
         }
@@ -10591,7 +10591,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         let config = CodegenConfig::default();
         assert_eq!(
             config.typescript_runtime_import_path()?,
-            "@syncular/client-rust"
+            "@syncular/client"
         );
         Ok(())
     }

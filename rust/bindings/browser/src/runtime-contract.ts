@@ -7,7 +7,7 @@ import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
 export { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
-export const SYNCULAR_V2_PACKAGE_NAME = '@syncular/client-rust';
+export const SYNCULAR_V2_PACKAGE_NAME = '@syncular/client';
 export const SYNCULAR_V2_PACKAGE_VERSION = '0.0.0';
 export const SYNCULAR_V2_WASM_OUT_NAME = 'syncular_v2';
 export const SYNCULAR_V2_WASM_GLUE_FILE = `${SYNCULAR_V2_WASM_OUT_NAME}.js`;

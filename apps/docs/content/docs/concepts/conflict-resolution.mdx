@@ -219,78 +219,29 @@ async function mergeAndResolve(db, conflict, userChoices, mutations) {
 }
 ```
 
-## Conflict Resolution UI (React)
+## Conflict Status UI (React)
 
-Here is a complete, copy-pasteable conflict resolver component:
+The Rust-backed React entrypoint exposes the current conflict counters for
+badges, banners, and navigation. Product-specific resolution screens should read
+their conflict rows through your app API and write retries through generated
+mutations.
 
 ```tsx
-import { createSyncularReact } from '@syncular/client-react';
-import { performFieldLevelMerge } from '@syncular/core';
+import { createSyncularReact } from '@syncular/client/react';
 import { Button } from '@syncular/ui/primitives';
 import type { AppDb } from './db-types';
 
-const { useConflicts, useResolveConflict, useMutations } =
-  createSyncularReact<AppDb>();
+const { useConflictStats } = createSyncularReact<AppDb>();
 
 function ConflictBanner() {
-  const { conflicts, isLoading } = useConflicts();
+  const stats = useConflictStats();
 
-  if (isLoading || conflicts.length === 0) return null;
+  if (!stats?.unresolved) return null;
 
   return (
     <div style={{ padding: 16, background: '#fef3cd', borderRadius: 8 }}>
-      <strong>{conflicts.length} conflict(s) need resolution</strong>
-      {conflicts.map((conflict) => (
-        <ConflictCard key={conflict.id} conflict={conflict} />
-      ))}
-    </div>
-  );
-}
-
-function ConflictCard({ conflict }: { conflict: ConflictInfo }) {
-  const { resolve, isPending } = useResolveConflict({
-    syncAfterResolve: true,
-    onSuccess: () => console.log('Conflict resolved'),
-    onError: (err) => console.error('Resolution failed:', err),
-  });
-  const m = useMutations();
-
-  const serverRow = conflict.serverRowJson
-    ? JSON.parse(conflict.serverRowJson)
-    : null;
-
-  return (
-    <div style={{ marginTop: 12, padding: 12, background: 'white', borderRadius: 4 }}>
-      <p>
-        <strong>Table:</strong> {conflict.table} | <strong>Row:</strong>{' '}
-        {conflict.rowId}
-      </p>
-      <p style={{ color: '#856404' }}>{conflict.message}</p>
-
-      {serverRow && (
-        <details>
-          <summary>Server version (v{conflict.serverVersion})</summary>
-          <pre style={{ fontSize: 12 }}>{JSON.stringify(serverRow, null, 2)}</pre>
-        </details>
-      )}
-
-      <div style={{ display: 'flex', gap: 8, marginTop: 8 }}>
-        <Button
-          disabled={isPending}
-          onClick={() => resolve(conflict.id, 'accept')}
-        >
-          Accept Server
-        </Button>
-        <Button
-          disabled={isPending}
-          onClick={async () => {
-            await resolve(conflict.id, 'reject');
-            // Optionally retry the mutation here
-          }}
-        >
-          Keep Mine
-        </Button>
-      </div>
+      <strong>{stats.unresolved} conflict(s) need resolution</strong>
+      <Button onClick={() => openConflictCenter()}>Review</Button>
     </div>
   );
 }
@@ -300,22 +251,11 @@ export { ConflictBanner };
 
 ### React Hooks Reference
 
-**`useConflicts()`** -- Returns pending conflicts:
+**`useConflictStats()`** -- Returns aggregate conflict counters:
 
 ```tsx
-const { conflicts, isLoading, refresh } = useConflicts();
-```
-
-**`useResolveConflict(options?)`** -- Resolves a conflict:
-
-```tsx
-const { resolve, isPending } = useResolveConflict({
-  syncAfterResolve: true,  // Trigger a sync after resolving (default: true)
-  onSuccess: (id) => {},   // Called after successful resolution
-  onError: (err) => {},    // Called on error
-});
-
-await resolve(conflictId, 'accept'); // or 'reject'
+const stats = useConflictStats();
+const unresolved = stats?.unresolved ?? 0;
 ```
 
 ## Auto-Version Plugin
@@ -325,7 +265,7 @@ High-level stateful clients already include the incrementing version plugin by d
 - `SyncProvider`
 - `Client`
 - `createClient`
-- `SyncEngine`
+- `SyncularClient`
 
 You only need to wire it manually when you are composing low-level mutation/push helpers yourself.
 
@@ -334,7 +274,7 @@ import { createIncrementingVersionPlugin } from '@syncular/client';
 
 const plugin = createIncrementingVersionPlugin();
 
-await syncPushOnce(db, transport, handlers, {
+await client.sync(db, transport, handlers, {
   ...options,
   plugins: [plugin],
 });

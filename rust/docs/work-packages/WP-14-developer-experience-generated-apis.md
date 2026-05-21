@@ -103,9 +103,43 @@ discoverability, conflict, blob, or subscription ergonomics gaps.
   `client.queuedMutations.tasks.insert/update/delete` for worker-queued UI
   writes. The old direct row helpers are removed from generated output; CRDT
   field helpers remain field-specific.
+- Browser React apps now use the Rust-backed ergonomic factory
+  `createSyncularReact()`. The old lower-level React surface
+  (`createSyncularV2React`, `useLiveQuery`, callback-style `useMutation`, and
+  direct client hooks) is removed from public docs and tests. The retained hooks
+  cover typed Kysely reads, generated/table mutations, connection state, outbox
+  and conflict counters, presence, and blobs.
+- Non-React browser apps now use the Rust-backed ergonomic factory
+  `createSyncularClient()`. It keeps typed Kysely reads and generated/table
+  mutations while adding `on(...)`, `getStatus()`, `setSubscriptions(...)`,
+  `presence`, and `conflicts` namespaces over the current Rust client events and
+  operations.
+- Tauri, React Native, and Expo have separate bridge packages that depend on
+  `@syncular/client` for shared TypeScript ergonomics. They expose platform
+  client factories plus React factories that reuse the same `SyncProvider` and
+  hooks with a bridge-backed client instead of the browser Worker/WASM runtime.
+- `@syncular/testkit` now includes an in-process client bridge harness with
+  SQLite-backed reads/writes plus Tauri and React Native adapter surfaces, so
+  platform client packages test against a Syncular-owned host contract instead
+  of package-local mocks.
+- Generated TypeScript partial updates now keep sync payloads partial while
+  materializing complete local SQLite rows for NOT NULL columns, so updates such
+  as `{ completed: 1 }` no longer fail local apply when the row has required
+  fields like `title`.
 
 ## Latest Evidence
 
+- `bun test rust/bindings/browser/src/react.test.ts rust/bindings/browser/src/generated-app-conformance.test.ts`
+- `bun test rust/bindings/browser/src/bridge-client.test.ts`
+- `bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts rust/bindings/browser/src/bridge-client.test.ts`
+- `bun run rust:browser:test`
+- `bun run --cwd packages/testkit tsgo`
+- `bun run --cwd packages/client-tauri tsgo`
+- `bun run --cwd packages/client-react-native tsgo`
+- `bun run --cwd packages/client-expo tsgo`
+- `bun run --cwd rust/bindings/browser tsgo`
+- `bun run tsgo`
+- `bun run docs:build`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`

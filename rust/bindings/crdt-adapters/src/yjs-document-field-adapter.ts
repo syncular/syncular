@@ -10,7 +10,7 @@ import type {
   SyncularV2CrdtUpdateLogEntry,
   SyncularV2RowsChangedEvent,
   SyncularYjsUpdateEnvelope,
-} from '@syncular/client-rust';
+} from '@syncular/client';
 
 export interface SyncularCrdtFieldHost {
   openCrdtField(
@@ -153,7 +153,7 @@ export interface SyncularCrdtProjectionMaterializerOptions<TProjection> {
   onError?: (error: unknown, event?: SyncularCrdtProjectionEvent) => void;
 }
 
-export interface SyncularCrdtProjectionMaterializer<TProjection> {
+export interface SyncularCrdtProjectionMaterializer<_TProjection> {
   start(): Promise<() => Promise<void>>;
   stop(): Promise<void>;
   flush(): Promise<void>;
@@ -167,9 +167,9 @@ export interface RichEditorCrdtAdapterOptions<TProjection> {
   projections?: SyncularCrdtProjectionMaterializerOptions<TProjection>;
 }
 
-export interface RichEditorCrdtAdapter<TProjection> {
+export interface RichEditorCrdtAdapter<_TProjection> {
   document: YjsDocumentFieldAdapter;
-  projections: SyncularCrdtProjectionMaterializer<TProjection>;
+  projections: SyncularCrdtProjectionMaterializer<_TProjection>;
   start(): Promise<() => Promise<void>>;
   stop(): Promise<void>;
   flush(): Promise<void>;
@@ -209,7 +209,9 @@ export interface YjsEditorBackpressureController {
     YjsDocumentFieldAdapterOptions,
     'onBackpressure' | 'onFlushError' | 'onFlushStart' | 'onFlushSuccess'
   >;
-  attach(adapter: Pick<YjsDocumentFieldAdapter, 'flush' | 'pendingUpdateCount'>): void;
+  attach(
+    adapter: Pick<YjsDocumentFieldAdapter, 'flush' | 'pendingUpdateCount'>
+  ): void;
   detach(): void;
   state(): YjsEditorBackpressureState;
   retryNow(): Promise<void>;
@@ -319,8 +321,7 @@ export function createYjsDocumentFieldAdapter(
         documentSnapshot,
         stateBase64,
         stateVectorBase64:
-          documentSnapshot?.stateVectorBase64 ??
-          materialized.stateVectorBase64,
+          documentSnapshot?.stateVectorBase64 ?? materialized.stateVectorBase64,
         restoredState: stateBase64 != null && stateBase64 !== '',
       };
       if (stateBase64 != null && stateBase64 !== '') {
@@ -359,7 +360,9 @@ export function createYjsEditorBackpressureController(
   const retryDelayMs = options.retryDelayMs ?? 750;
   const maxRetryDelayMs = options.maxRetryDelayMs ?? 8_000;
   const autoRetry = options.autoRetry ?? true;
-  let adapter: Pick<YjsDocumentFieldAdapter, 'flush' | 'pendingUpdateCount'> | undefined;
+  let adapter:
+    | Pick<YjsDocumentFieldAdapter, 'flush' | 'pendingUpdateCount'>
+    | undefined;
   let currentState: YjsEditorBackpressureState = 'open';
   let retryAttempt = 0;
   let retryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -386,7 +389,8 @@ export function createYjsEditorBackpressureController(
       ...event,
       state,
       retryAttempt,
-      pendingUpdates: event.pendingUpdates ?? adapter?.pendingUpdateCount() ?? 0,
+      pendingUpdates:
+        event.pendingUpdates ?? adapter?.pendingUpdateCount() ?? 0,
     };
     options.onStateChange?.(lastEvent);
     return lastEvent;
@@ -444,9 +448,12 @@ export function createYjsEditorBackpressureController(
 
       onFlushError(error) {
         retryAttempt += 1;
-        const event = publish(currentState === 'open' ? 'blocked' : currentState, {
-          error,
-        });
+        const event = publish(
+          currentState === 'open' ? 'blocked' : currentState,
+          {
+            error,
+          }
+        );
         options.onRetryError?.(error, event);
         scheduleRetry(event);
       },

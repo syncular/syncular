@@ -5670,3 +5670,53 @@ Decision:
   then generated indexes/read-model setup/rebuild. Do not promote index-before
   import unless a future app-specific workload explicitly accepts the memory and
   apply-path tradeoff.
+## 2026-05-21 - WP-10 Legacy TS Client Removal And Package Rename
+
+Change:
+
+- Removed the legacy pure TypeScript client product path and made the
+  Rust-owned browser binding the canonical `@syncular/client` package.
+- Removed old JS-client benchmarks and runtime/perf suites instead of carrying
+  them as compatibility baselines.
+- Kept the active size evidence on the Rust/WASM browser artifact because this
+  cleanup changes package shape rather than runtime hot-path code.
+
+Package-size gate:
+
+```bash
+bun run rust:browser:build:wasm
+```
+
+Result:
+
+| Metric | Current |
+| --- | ---: |
+| Raw WASM size | `2.26 MiB` |
+| Raw budget headroom | `1.04 MiB` |
+| Gzip WASM size | `1.01 MiB` |
+| Gzip budget headroom | `357.4 KiB` |
+
+Correctness gates:
+
+```bash
+bun run tsgo
+bun run rust:browser:tsgo
+bun run rust:browser:test
+bun run rust:codegen:check
+bun run rust:conformance:fast
+bun run docs:build
+```
+
+Result: all listed gates passed. `rust:browser:test` ran `91` tests. The
+conformance fast gate ran the Rust testkit, runtime protocol/blob/CRDT tests,
+todo example tests, and generated browser conformance tests successfully.
+
+Extra sweep:
+
+```bash
+bun test packages tests/unit tests/dialects tests/typegen
+```
+
+Result: passed, `703` tests. Surviving server tests now assert stable
+namespaced error codes and fail-closed external snapshot chunk reads instead of
+legacy uppercase/fallback expectations.

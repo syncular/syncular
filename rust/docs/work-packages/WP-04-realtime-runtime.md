@@ -526,6 +526,23 @@ Rejected probe:
   end-to-end realtime latency and p95 overhead regressed across both candidate
   runs, and the added dependencies grew the WASM bundle by about `32KiB`.
 
+Retained browser timer binding fix:
+
+- Browser worker realtime now binds default `setTimeout`/`clearTimeout`
+  globals before storing them on the controller. Chrome requires the browser
+  timer functions to be called with the global receiver, and unbound heartbeat
+  scheduling raised `Illegal invocation` after websocket connect.
+- The split-view demo exercises canonical Hono websocket realtime with two
+  generated Rust browser clients. Adding a todo in Client A updated Client B
+  over websocket with both panes remaining `Ready` and no app errors.
+- Correctness gates passed:
+  `bun test --cwd rust/bindings/browser src/worker-realtime.test.ts`,
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun run --cwd apps/demo tsgo`,
+  `bun --cwd apps/demo build`, and `bun run tsgo`.
+- Decision: retained as a browser correctness fix. It does not add fallback
+  behavior or move reconnect ownership out of the runtime.
+
 Release measurement checkpoint:
 
 - Current accepted WP-04 state was measured with release WASM:

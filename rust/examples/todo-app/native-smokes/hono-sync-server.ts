@@ -1,8 +1,8 @@
-import { writeFile } from "node:fs/promises";
-import { createDatabase } from "@syncular/core";
-import { Hono } from "hono";
-import { upgradeWebSocket, websocket } from "hono/bun";
-import { createBunSqliteDialect } from "../../../../packages/dialect-bun-sqlite/src";
+import { writeFile } from 'node:fs/promises';
+import { createDatabase } from '@syncular/core';
+import { Hono } from 'hono';
+import { upgradeWebSocket, websocket } from 'hono/bun';
+import { createBunSqliteDialect } from '../../../../packages/dialect-bun-sqlite/src';
 import {
   createBlobManager,
   createDatabaseBlobStorageAdapter,
@@ -10,28 +10,28 @@ import {
   createServerHandler,
   ensureBlobStorageSchemaSqlite,
   ensureSyncSchema,
-} from "../../../../packages/server/src";
-import { createSqliteServerDialect } from "../../../../packages/server-dialect-sqlite/src";
-import { createBlobRoutes } from "../../../../packages/server-hono/src/blobs";
+} from '../../../../packages/server/src';
+import { createSqliteServerDialect } from '../../../../packages/server-dialect-sqlite/src';
+import { createBlobRoutes } from '../../../../packages/server-hono/src/blobs';
 import {
   createSyncRoutes,
   getSyncWebSocketConnectionManager,
-} from "../../../../packages/server-hono/src/routes";
-import {
-  syncularGeneratedCodecs,
-  syncularGeneratedSchemaVersion,
-} from "../generated/typescript/syncular.generated";
+} from '../../../../packages/server-hono/src/routes';
 import {
   ensureHonoSyncTasksTable,
   type HonoAuthContext,
   type HonoSyncClientDb,
   type HonoSyncServerDb,
-} from "../../../bindings/browser/src/__tests__/fixtures/hono-sync-harness";
-import { syncConformance } from "../conformance/sync-conformance";
+} from '../../../bindings/browser/src/__tests__/fixtures/hono-sync-harness';
+import { syncConformance } from '../conformance/sync-conformance';
+import {
+  syncularGeneratedCodecs,
+  syncularGeneratedSchemaVersion,
+} from '../generated/typescript/syncular.generated';
 
 const infoPath = process.env.SYNCULAR_NATIVE_HONO_INFO_PATH;
 if (!infoPath) {
-  throw new Error("SYNCULAR_NATIVE_HONO_INFO_PATH is required");
+  throw new Error('SYNCULAR_NATIVE_HONO_INFO_PATH is required');
 }
 
 const conflict = syncConformance.conflictKeepLocal;
@@ -47,7 +47,7 @@ const nativeConflict = (rowId: string) => ({
   staleBaseVersion: conflict.staleBaseVersion,
   serverVersion: conflict.serverVersion,
   conflictCode: conflict.conflictCode,
-  keepLocalResolution: "keep-local",
+  keepLocalResolution: 'keep-local',
   keepServerResolution: conflict.keepServerResolution,
   dismissResolution: conflict.dismissResolution,
   expectedInitialConflictCount: conflict.expectedInitialConflictCount,
@@ -56,21 +56,21 @@ const nativeConflict = (rowId: string) => ({
 });
 const swiftConflict = nativeConflict(`${conflict.rowId}-swift`);
 const swiftKeepServerConflict = nativeConflict(
-  `${conflict.rowId}-swift-keep-server`,
+  `${conflict.rowId}-swift-keep-server`
 );
 const swiftDismissConflict = nativeConflict(`${conflict.rowId}-swift-dismiss`);
 const kotlinConflict = nativeConflict(`${conflict.rowId}-kotlin`);
 const kotlinKeepServerConflict = nativeConflict(
-  `${conflict.rowId}-kotlin-keep-server`,
+  `${conflict.rowId}-kotlin-keep-server`
 );
 const kotlinDismissConflict = nativeConflict(
-  `${conflict.rowId}-kotlin-dismiss`,
+  `${conflict.rowId}-kotlin-dismiss`
 );
 
 const dialect = createSqliteServerDialect();
 const db = createDatabase<HonoSyncServerDb>({
-  dialect: createBunSqliteDialect({ path: ":memory:" }),
-  family: "sqlite",
+  dialect: createBunSqliteDialect({ path: ':memory:' }),
+  family: 'sqlite',
 });
 
 await ensureSyncSchema(db, dialect);
@@ -78,57 +78,57 @@ await ensureBlobStorageSchemaSqlite(db);
 await ensureHonoSyncTasksTable(db);
 for (const task of [
   {
-    id: "native-server-task",
-    title: "Native server task",
-    actorId: "user-rust",
+    id: 'native-server-task',
+    title: 'Native server task',
+    actorId: 'user-rust',
     projectId: null,
     serverVersion: 101,
   },
   {
     id: swiftConflict.rowId,
     title: swiftConflict.serverTitle,
-    actorId: "user-rust",
+    actorId: 'user-rust',
     projectId: null,
     serverVersion: swiftConflict.serverVersion,
   },
   {
     id: swiftKeepServerConflict.rowId,
     title: swiftKeepServerConflict.serverTitle,
-    actorId: "user-rust",
+    actorId: 'user-rust',
     projectId: null,
     serverVersion: swiftKeepServerConflict.serverVersion,
   },
   {
     id: swiftDismissConflict.rowId,
     title: swiftDismissConflict.serverTitle,
-    actorId: "user-rust",
+    actorId: 'user-rust',
     projectId: null,
     serverVersion: swiftDismissConflict.serverVersion,
   },
   {
     id: kotlinConflict.rowId,
     title: kotlinConflict.serverTitle,
-    actorId: "user-rust",
+    actorId: 'user-rust',
     projectId: null,
     serverVersion: kotlinConflict.serverVersion,
   },
   {
     id: kotlinKeepServerConflict.rowId,
     title: kotlinKeepServerConflict.serverTitle,
-    actorId: "user-rust",
+    actorId: 'user-rust',
     projectId: null,
     serverVersion: kotlinKeepServerConflict.serverVersion,
   },
   {
     id: kotlinDismissConflict.rowId,
     title: kotlinDismissConflict.serverTitle,
-    actorId: "user-rust",
+    actorId: 'user-rust',
     projectId: null,
     serverVersion: kotlinDismissConflict.serverVersion,
   },
 ] as const) {
   await db
-    .insertInto("tasks")
+    .insertInto('tasks')
     .values({
       id: task.id,
       title: task.title,
@@ -142,11 +142,9 @@ for (const task of [
     .execute();
 }
 
-const actorByToken = new Map([["Bearer user-rust", "user-rust"]]);
-actorByToken.set("Bearer other-native", "user-other-native");
-const createTaskRoutes = (
-  syncOverrides: Record<string, unknown> = {},
-) =>
+const actorByToken = new Map([['Bearer user-rust', 'user-rust']]);
+actorByToken.set('Bearer other-native', 'user-other-native');
+const createTaskRoutes = (syncOverrides: Record<string, unknown> = {}) =>
   createSyncRoutes<HonoSyncServerDb, HonoAuthContext>({
     db,
     dialect,
@@ -154,17 +152,17 @@ const createTaskRoutes = (
       createServerHandler<
         HonoSyncServerDb,
         HonoSyncClientDb,
-        "tasks",
+        'tasks',
         HonoAuthContext
       >({
-        table: "tasks",
-        scopes: ["user:{user_id}"],
+        table: 'tasks',
+        scopes: ['user:{user_id}'],
         codecs: syncularGeneratedCodecs,
         resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
       }),
     ],
     authenticate: async (c) => {
-      const authorization = c.req.header("authorization");
+      const authorization = c.req.header('authorization');
       const actorId = authorization ? actorByToken.get(authorization) : null;
       return actorId ? { actorId } : null;
     },
@@ -179,7 +177,7 @@ const routes = createTaskRoutes({
     enabled: true,
     upgradeWebSocket,
     heartbeatIntervalMs: 0,
-    allowedOrigins: "*",
+    allowedOrigins: '*',
   },
 });
 const requiredSchemaRoutes = createTaskRoutes({
@@ -191,15 +189,15 @@ const latestSchemaRoutes = createTaskRoutes({
 
 const connectionManager = getSyncWebSocketConnectionManager(routes);
 if (!connectionManager) {
-  throw new Error("Expected Hono sync websocket manager");
+  throw new Error('Expected Hono sync websocket manager');
 }
 
 const app = new Hono()
-  .route("/sync", routes)
-  .route("/sync-required-schema", requiredSchemaRoutes)
-  .route("/sync-latest-schema", latestSchemaRoutes);
+  .route('/sync', routes)
+  .route('/sync-required-schema', requiredSchemaRoutes)
+  .route('/sync-latest-schema', latestSchemaRoutes);
 const server = Bun.serve({
-  hostname: "127.0.0.1",
+  hostname: '127.0.0.1',
   port: 0,
   fetch: app.fetch,
   websocket,
@@ -208,9 +206,9 @@ const server = Bun.serve({
 const baseUrl = `http://127.0.0.1:${server.port}/sync`;
 const requiredSchemaBaseUrl = `http://127.0.0.1:${server.port}/sync-required-schema`;
 const latestSchemaBaseUrl = `http://127.0.0.1:${server.port}/sync-latest-schema`;
-const tokenSigner = createHmacTokenSigner("syncular-native-hono-blob-secret");
+const tokenSigner = createHmacTokenSigner('syncular-native-hono-blob-secret');
 app.route(
-  "/sync",
+  '/sync',
   createBlobRoutes({
     blobManager: createBlobManager({
       db,
@@ -221,14 +219,14 @@ app.route(
       }),
     }),
     authenticate: async (c) => {
-      const authorization = c.req.header("authorization");
+      const authorization = c.req.header('authorization');
       const actorId = authorization ? actorByToken.get(authorization) : null;
       return actorId ? { actorId } : null;
     },
     tokenSigner,
     db,
-    canAccessBlob: async ({ actorId }) => actorId === "user-rust",
-  }),
+    canAccessBlob: async ({ actorId }) => actorId === 'user-rust',
+  })
 );
 
 await writeFile(
@@ -236,15 +234,15 @@ await writeFile(
   JSON.stringify(
     {
       baseUrl,
-      authorization: "Bearer user-rust",
-      staleAuthorization: "Bearer stale-native",
-      actorId: "user-rust",
+      authorization: 'Bearer user-rust',
+      staleAuthorization: 'Bearer stale-native',
+      actorId: 'user-rust',
       revokedActorId: syncConformance.revokedSubscription.revokedActorId,
       projectId: null,
       websocketEnabled: true,
       task: {
-        id: "native-server-task",
-        title: "Native server task",
+        id: 'native-server-task',
+        title: 'Native server task',
         serverVersion: 101,
       },
       schemaVersion: {
@@ -254,9 +252,10 @@ await writeFile(
           schemaVersion.expectedRequiredErrorPattern,
       },
       ownerConflict: {
-        secondActorId: "user-other-native",
-        secondAuthorization: "Bearer other-native",
-        expectedErrorPattern: syncConformance.ownerConflict.expectedErrorPattern,
+        secondActorId: 'user-other-native',
+        secondAuthorization: 'Bearer other-native',
+        expectedErrorPattern:
+          syncConformance.ownerConflict.expectedErrorPattern,
       },
       conflicts: {
         swift: swiftConflict,
@@ -287,15 +286,15 @@ await writeFile(
         expectedUploadQueueBefore: blob.expectedUploadQueueBefore,
         expectedFailedQueue: blob.expectedFailedQueue,
         missingRef: {
-          hash: "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+          hash: 'sha256:0000000000000000000000000000000000000000000000000000000000000000',
           size: 4,
-          mimeType: "application/octet-stream",
+          mimeType: 'application/octet-stream',
         },
       },
     },
     null,
-    2,
-  ),
+    2
+  )
 );
 
 let closed = false;
@@ -306,10 +305,10 @@ const close = async () => {
   await db.destroy();
 };
 
-process.on("SIGINT", () => {
+process.on('SIGINT', () => {
   void close().finally(() => process.exit(0));
 });
-process.on("SIGTERM", () => {
+process.on('SIGTERM', () => {
   void close().finally(() => process.exit(0));
 });
 

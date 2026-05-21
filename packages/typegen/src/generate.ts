@@ -68,7 +68,6 @@ function applyTypeMappings(
  * await generateTypes({
  *   migrations,
  *   output: './src/db.generated.ts',
- *   extendsSyncClientDb: true,
  * });
  * ```
  */
@@ -78,8 +77,6 @@ export async function generateTypes<DB>(
   const {
     migrations,
     output,
-    extendsSyncClientDb,
-    syncularImportType,
     includeVersionHistory,
     tables,
     dialect = 'sqlite',
@@ -105,8 +102,6 @@ export async function generateTypes<DB>(
   // Render TypeScript code
   const code = renderTypes({
     schemas,
-    extendsSyncClientDb,
-    syncularImportType,
     includeVersionHistory,
     customImports,
   });

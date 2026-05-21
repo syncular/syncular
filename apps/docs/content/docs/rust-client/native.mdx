@@ -299,7 +299,7 @@ prune old acked CRDT update-log entries with `pruneCrdtUpdateLog`.
 
 For WebView-hosted editors, keep Rust/Syncular in the native shell as the only
 persistence path. The WebView can use
-`@syncular/client-rust-crdt-adapters` with
+`@syncular/client-crdt-adapters` with
 `createSyncularCrdtWebViewHost()` and `createSyncularCrdtJsonTransport()` to
 present the editor adapter with an async host, while native/Flutter handles the
 `syncular.crdt.host.v1` JSON messages by calling the real native APIs:

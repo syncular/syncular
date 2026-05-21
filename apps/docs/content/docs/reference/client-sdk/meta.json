@@ -1,5 +1,7 @@
 {
   "title": "Client SDK",
   "icon": "Smartphone",
-  "pages": ["index", "javascript", "react"]
+  "pages": [
+    "index"
+  ]
 }

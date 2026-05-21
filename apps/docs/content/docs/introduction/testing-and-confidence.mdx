@@ -29,8 +29,8 @@ The repo exercises the system in layers:
 | Layer | Purpose | Typical entry point |
 |---|---|---|
 | In-process tests | Fast protocol, handler, scope, conflict, and client-engine verification | `bun test` |
-| Real integration tests | End-to-end HTTP, auth, subscriptions, maintenance, and convergence checks | `tests/integration` |
-| Runtime tests | Runtime-specific behavior across Node, Deno, Cloudflare, browser, relay, and Electron | `bun test:runtime` |
+| Rust conformance tests | End-to-end HTTP, auth, subscriptions, maintenance, and convergence checks | `rust/scripts/run-conformance-gates.sh` |
+| Rust browser tests | Browser binding and worker behavior | `bun run rust:browser:test` |
 | Performance and load tests | Large dataset, reconnect storm, bootstrap, maintenance churn, and trend tracking | `bun test:perf`, `tests/load` |
 
 ## Testkit is part of the product story
@@ -74,7 +74,7 @@ Syncular makes that visible through:
 
 ```bash
 bun test
-bun test:runtime
+bun run rust:browser:test
 bun test:perf
 ```
 

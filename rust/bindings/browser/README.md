@@ -1,4 +1,4 @@
-# @syncular/client-rust
+# @syncular/client
 
 Rust-owned SQLite browser client for Syncular v2.
 
@@ -15,7 +15,7 @@ Configure Rust codegen to emit your browser helper into your app package:
 ```json
 {
   "typescriptOutputPath": "src/generated/syncular.browser.ts",
-  "typescriptRuntimeImportPath": "@syncular/client-rust",
+  "typescriptRuntimeImportPath": "@syncular/client",
   "tables": {
     "profiles": {
       "serverVersionColumn": "server_version",
@@ -127,14 +127,13 @@ Use `bootstrap.pendingSubscriptionIds`, `bootstrap.phases`, or generated
 subscription ids to decide which views can render complete results.
 
 For apps that want a lifecycle-managed surface instead of wiring startup by
-hand, `createSyncularV2Client` wraps `createSyncularV2Database` with
-subscription setup, initial sync, realtime, reconnect catchup, and
-coordinated shutdown:
+hand, `createSyncularClient` wraps the Rust-owned database with subscription
+setup, initial sync, realtime, reconnect catchup, and coordinated shutdown:
 
 ```ts
-import { createSyncularV2Client } from '@syncular/client-rust';
+import { createSyncularClient } from '@syncular/client';
 
-const syncular = await createSyncularV2Client<AppDb>({
+const syncular = await createSyncularClient<AppDb>({
   config: {
     baseUrl: '/sync',
     actorId: 'user-1',
@@ -149,6 +148,13 @@ const syncular = await createSyncularV2Client<AppDb>({
   ],
 });
 
+const unsubscribe = syncular.on('rowsChanged', (event) => {
+  console.log(event.changedTables);
+});
+
+const status = syncular.getStatus();
+if (status.hasPendingMutations) showSavingIndicator();
+
 await syncular.destroy();
 ```
 
@@ -160,26 +166,26 @@ inline/binary websocket applies already fall back to pull. Use
 
 ## React
 
-React apps can import the optional `@syncular/client-rust/react` entrypoint.
+React apps can import the optional `@syncular/client/react` entrypoint.
 The adapter owns the Rust browser client lifecycle when passed `options`, or
 can wrap an already-created managed client:
 
 ```ts
-import { createSyncularV2React } from '@syncular/client-rust/react';
+import { createSyncularReact } from '@syncular/client/react';
 
 const {
-  SyncularProvider,
-  useLiveQuery,
+  SyncProvider,
+  useSyncQuery,
+  useMutations,
   useMutation,
   useOutboxStats,
-  usePresence,
-  useSyncularClient,
-  useSyncularConnection,
-} = createSyncularV2React<AppDb>();
+  usePresenceWithJoin,
+  useSyncConnection,
+} = createSyncularReact<AppDb>();
 
 function AppShell({ children }: { children: React.ReactNode }) {
   return (
-    <SyncularProvider
+    <SyncProvider
       options={{
         config: {
           baseUrl: '/sync',
@@ -197,50 +203,51 @@ function AppShell({ children }: { children: React.ReactNode }) {
       }}
     >
       {children}
-    </SyncularProvider>
+    </SyncProvider>
   );
 }
 
 function TaskList() {
-  const syncular = useSyncularClient();
-  const tasks = useLiveQuery(
-    () =>
-      syncular.db
-        .selectFrom('tasks')
+  const { data: tasks } = useSyncQuery(
+    ({ selectFrom }) =>
+      selectFrom('tasks')
         .select(['id', 'title'])
-        .where('user_id', '=', 'user-1'),
+        .where('user_id', '=', 'user-1')
+        .execute(),
     {
-      tables: ['tasks'],
+      watchTables: ['tasks'],
       deps: ['user-1'],
     }
   );
 
-  const presence = usePresence({
-    scopeKey: 'user:user-1',
+  const presence = usePresenceWithJoin('user:user-1', {
     metadata: { view: 'tasks' },
   });
 
-  const createTask = useMutation((client, title: string) =>
-    client.mutations.tasks.insert({
+  const m = useMutations();
+  const createTask = (title: string) =>
+    m.tasks.insert({
       title,
       completed: 0,
       user_id: 'user-1',
-    })
-  );
+    });
 
-  const connection = useSyncularConnection();
+  const completeTask = useMutation({ table: 'tasks' });
+  const markDone = (id: string) =>
+    completeTask.mutate.update(id, { completed: 1 });
+
+  const connection = useSyncConnection();
   const outbox = useOutboxStats();
 }
 ```
 
-The React entrypoint intentionally stays thin: reads still use Kysely live
-queries, writes still use generated mutations, presence stays scoped to server
-scope keys, and blob helpers wrap the Rust blob queue. `useLiveQuery` accepts
-`deps` so apps can keep query resubscription explicit even when Kysely builders
-are created during render. `SyncularProvider` does not recreate an owned client
-just because an inline `options` object changed identity; pass `optionsKey` when
-the app intentionally needs to tear down and reopen the Rust client for a new
-identity or database.
+The React entrypoint is intentionally ergonomic and Rust-backed: reads use typed
+Kysely selectors through `useSyncQuery`, writes use generated mutations through
+`useMutations` or table-scoped `useMutation`, and presence stays scoped to
+server scope keys. `SyncProvider` does not recreate an owned client just because
+an inline `options` object changed identity; pass `optionsKey` when the app
+intentionally needs to tear down and reopen the Rust client for a new identity
+or database.
 
 Generated apps also get typed row-delta helpers for realtime/UI routing. The
 runtime event stays generic, while app code can branch on real table columns:
@@ -248,7 +255,7 @@ runtime event stays generic, while app code can branch on real table columns:
 ```ts
 import { syncularChangedRows } from './generated/syncular.browser';
 
-const unsubscribe = syncular.client.addRowsChangedListener((event) => {
+const unsubscribe = syncular.on('rowsChanged', (event) => {
   for (const task of syncularChangedRows.tasks(event)) {
     if (task.isDelete) {
       removeTaskFromList(task.rowId);
@@ -423,35 +430,35 @@ const unsubscribePresence = syncular.client.addPresenceListener((event) => {
   renderCollaborators(event.scopeKey, event.presence);
 });
 
-syncular.client.joinPresence('user:user-1', {
+syncular.presence.join('user:user-1', {
   editingTaskId: 'task-1',
 });
 
-syncular.client.updatePresenceMetadata('user:user-1', {
+syncular.presence.updateMetadata('user:user-1', {
   editingTaskId: 'task-2',
 });
 
-syncular.client.leavePresence('user:user-1');
+syncular.presence.leave('user:user-1');
 unsubscribePresence();
 ```
 
 `getPresence(scopeKey)` returns the latest in-memory snapshot for that scope.
 The server authorizes presence against the websocket connection's current
-subscriptions, so call `setSubscriptions()` and complete an initial sync before
-joining presence.
+subscriptions, so call `syncular.setSubscriptions()` and complete an initial
+sync before joining presence.
 
 Operational events are available on the same client surface:
 
 ```ts
-syncular.client.addEventListener('outboxChanged', (stats) => {
+syncular.on('outboxChanged', (stats) => {
   updateSyncBadge(stats.pending + stats.sending);
 });
 
-syncular.client.addEventListener('conflictsChanged', (stats) => {
+syncular.on('conflictsChanged', (stats) => {
   showConflictCount(stats.unresolved);
 });
 
-syncular.client.addEventListener('blobUploadFailed', ({ hash, error }) => {
+syncular.on('blobUploadFailed', ({ hash, error }) => {
   reportBlobUploadFailure(hash, error);
 });
 ```
@@ -465,7 +472,7 @@ native event payloads: `rowsChanged`, `outboxChanged`, `conflictsChanged`,
 The default API always uses a Worker. `createSyncularAppDatabase()` validates
 the runtime before returning:
 
-- package name/version must match `@syncular/client-rust`
+- package name/version must match `@syncular/client`
 - Worker protocol version must match the generated helper
 - generated app schema version must match the local SQLite schema state
 - Rust runtime must include the generated schema's required feature list
@@ -527,7 +534,7 @@ methods. Keep editor-specific code above this package: TipTap schemas,
 ProseMirror transforms, Excalidraw save policy, selection, undo, and WebView
 messages belong in app code or optional app adapters.
 
-Use `@syncular/client-rust-crdt-adapters` for app-layer editor glue above this
+Use `@syncular/client-crdt-adapters` for app-layer editor glue above this
 package. It connects Yjs binary update streams to Syncular's durable CRDT field
 API, preserves pending updates across failed writes, exposes backpressure,
 prefers queued native host writes when available, and refreshes app view models
@@ -559,7 +566,7 @@ Generated app code can select from that catalog without changing the public
 query/mutation API:
 
 ```ts
-import { resolveSyncularV2RuntimeArtifactCatalog } from '@syncular/client-rust';
+import { resolveSyncularV2RuntimeArtifactCatalog } from '@syncular/client';
 
 const catalogUrl = '/syncular/syncular-v2-runtime-artifacts.json';
 const catalog = await fetch(catalogUrl).then((response) => response.json());
@@ -625,8 +632,6 @@ bun run test
 bun run test:wasm:auth
 bun run test:wasm:hono
 bun run test:wasm:variants
-bun run benchmark:browser -- --operations=100 --rounds=5 --warmup=10
-bun run benchmark:browser:features
 bun run size:wasm
 bun run size:wasm:check
 bun run size:wasm:core
@@ -637,16 +642,6 @@ bun run catalog:wasm
 smokes for auth retry, sync protocol edge cases, realtime wakeups, and blob
 transport behavior.
 
-`benchmark:browser` builds/serves the browser runtime and compares Rust-owned
-SQLite local mutation batches against the legacy JS/wa-sqlite host-store fixture.
-That JS path is a benchmark baseline only, not a supported v2 client runtime.
-From this package directory, pass
-`--output=../../.context/benchmarks/rust-sqlite.json` to keep a JSON report.
-
-`benchmark:browser:features` uses the Rust-owned v2 package only and records
-read-heavy Kysely queries, live-query refreshes, CRDT text writes, encrypted
-field pushes, encrypted CRDT text writes, blob metadata stores, large local
-snapshot reads, and multi-table commits into
-`.context/benchmarks/browser-feature-workloads.json`.
-Browser benchmarks rebuild dev WASM for speed; run `bun run build:wasm` before
-checking release size or preparing a package.
+`build:wasm`, `size:wasm:check`, and the conformance gates are the current
+browser package validation path. The old JS/wa-sqlite comparison benchmark was
+removed with the legacy TypeScript client runtime.

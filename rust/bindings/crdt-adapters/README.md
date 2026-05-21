@@ -1,6 +1,6 @@
-# @syncular/client-rust-crdt-adapters
+# @syncular/client-crdt-adapters
 
-Rich-editor CRDT adapters for `@syncular/client-rust`.
+Rich-editor CRDT adapters for `@syncular/client`.
 
 This package owns app-layer glue for Yjs-backed editors:
 
@@ -29,7 +29,7 @@ import {
   createSyncularCrdtJsonTransport,
   createSyncularCrdtWebViewHost,
   createYjsProseMirrorBridge,
-} from "@syncular/client-rust-crdt-adapters";
+} from "@syncular/client-crdt-adapters";
 
 const bridge = createSyncularCrdtWebViewHost({
   transport: createSyncularCrdtJsonTransport({

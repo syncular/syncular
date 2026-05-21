@@ -8,7 +8,6 @@
     "test": "bun test ."
   },
   "devDependencies": {
-    "@syncular/client": "workspace:*",
     "@syncular/core": "workspace:*",
     "@syncular/migrations": "workspace:*",
     "@syncular/dialect-bun-sqlite": "workspace:*",

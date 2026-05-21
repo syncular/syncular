@@ -52,13 +52,6 @@
         "default": "./dist/core.js"
       }
     },
-    "./client-react": {
-      "bun": "./src/client-react.ts",
-      "import": {
-        "types": "./dist/client-react.d.ts",
-        "default": "./dist/client-react.js"
-      }
-    },
     "./console": {
       "bun": "./src/console.ts",
       "import": {
@@ -90,27 +83,6 @@
       }
     },
     "./ui/styles.css": "./src/ui-styles.css",
-    "./client-plugin-encryption": {
-      "bun": "./src/client-plugin-encryption.ts",
-      "import": {
-        "types": "./dist/client-plugin-encryption.d.ts",
-        "default": "./dist/client-plugin-encryption.js"
-      }
-    },
-    "./client-plugin-blob": {
-      "bun": "./src/client-plugin-blob.ts",
-      "import": {
-        "types": "./dist/client-plugin-blob.d.ts",
-        "default": "./dist/client-plugin-blob.js"
-      }
-    },
-    "./client-plugin-yjs": {
-      "bun": "./src/client-plugin-yjs.ts",
-      "import": {
-        "types": "./dist/client-plugin-yjs.d.ts",
-        "default": "./dist/client-plugin-yjs.js"
-      }
-    },
     "./server": {
       "bun": "./src/server.ts",
       "import": {
@@ -223,27 +195,6 @@
         "default": "./dist/observability-sentry.js"
       }
     },
-    "./client-plugin-offline-auth": {
-      "bun": "./src/client-plugin-offline-auth.ts",
-      "import": {
-        "types": "./dist/client-plugin-offline-auth.d.ts",
-        "default": "./dist/client-plugin-offline-auth.js"
-      }
-    },
-    "./client-plugin-offline-auth-react": {
-      "bun": "./src/client-plugin-offline-auth-react.ts",
-      "import": {
-        "types": "./dist/client-plugin-offline-auth-react.d.ts",
-        "default": "./dist/client-plugin-offline-auth-react.js"
-      }
-    },
-    "./testkit": {
-      "bun": "./src/testkit.ts",
-      "import": {
-        "types": "./dist/testkit.d.ts",
-        "default": "./dist/testkit.js"
-      }
-    },
     "./dialect-bun-sqlite": {
       "bun": "./src/dialect-bun-sqlite.ts",
       "import": {
@@ -328,12 +279,6 @@
   ],
   "dependencies": {
     "@syncular/client": "workspace:*",
-    "@syncular/client-plugin-blob": "workspace:*",
-    "@syncular/client-plugin-offline-auth": "workspace:*",
-    "@syncular/client-plugin-offline-auth-react": "workspace:*",
-    "@syncular/client-plugin-encryption": "workspace:*",
-    "@syncular/client-plugin-yjs": "workspace:*",
-    "@syncular/client-react": "workspace:*",
     "@syncular/console": "workspace:*",
     "@syncular/core": "workspace:*",
     "@syncular/dialect-better-sqlite3": "workspace:*",
@@ -359,7 +304,6 @@
     "@syncular/server-service-worker": "workspace:*",
     "@syncular/server-storage-filesystem": "workspace:*",
     "@syncular/server-storage-s3": "workspace:*",
-    "@syncular/testkit": "workspace:*",
     "@syncular/transport-http": "workspace:*",
     "@syncular/transport-ws": "workspace:*",
     "@syncular/typegen": "workspace:*",

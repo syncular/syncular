@@ -9,22 +9,22 @@ import type {
   SyncularV2CrdtFieldYjsUpdateRequest,
   SyncularV2CrdtUpdateLogEntry,
   SyncularV2RowsChangedEvent,
-} from '@syncular/client-rust';
-import type { SyncularCrdtProjectionHost } from './yjs-document-field-adapter';
+} from '@syncular/client';
 import {
-  createSyncularCrdtJsonTransport,
   createSyncularCrdtHostResponseMessage,
+  createSyncularCrdtJsonTransport,
   createSyncularCrdtRowsChangedMessage,
   createSyncularCrdtWebViewHost,
   createSyncularCrdtWebViewHostResponder,
   dispatchSyncularCrdtHostRequest,
-  syncularCrdtRowsChangedMessageFromNativeEvent,
-  syncularCrdtRowsChangedMessageFromNativeEventJson,
   SYNCULAR_CRDT_WEBVIEW_REQUEST,
   type SyncularCrdtHostMessage,
   type SyncularCrdtHostRequestMessage,
   type SyncularCrdtWebViewTransport,
+  syncularCrdtRowsChangedMessageFromNativeEvent,
+  syncularCrdtRowsChangedMessageFromNativeEventJson,
 } from './webview-host-facade';
+import type { SyncularCrdtProjectionHost } from './yjs-document-field-adapter';
 
 const field = {
   table: 'notes',
@@ -79,7 +79,9 @@ describe('createSyncularCrdtWebViewHost', () => {
     await expect(
       facade.host.crdtUpdateLog?.({ ...field, limit: 1 })
     ).resolves.toEqual([host.updateLog[0]]);
-    await expect(facade.host.snapshotCrdtFieldStateVector(field)).resolves.toEqual({
+    await expect(
+      facade.host.snapshotCrdtFieldStateVector(field)
+    ).resolves.toEqual({
       stateVectorBase64: 'vector-1',
     });
 
@@ -408,8 +410,9 @@ class FakeProjectionHost implements SyncularCrdtProjectionHost {
   readonly openRequests: SyncularV2CrdtFieldRequest[] = [];
   readonly appliedUpdates: SyncularV2CrdtFieldYjsUpdateRequest[] = [];
   readonly queuedUpdates: SyncularV2CrdtFieldYjsUpdateRequest[] = [];
-  readonly updateLogRequests: Array<SyncularV2CrdtFieldRequest & { limit?: number }> =
-    [];
+  readonly updateLogRequests: Array<
+    SyncularV2CrdtFieldRequest & { limit?: number }
+  > = [];
   readonly #listeners = new Set<(event: SyncularV2RowsChangedEvent) => void>();
   failNextOpen = false;
   readonly snapshot: SyncularV2CrdtDocumentSnapshot = {

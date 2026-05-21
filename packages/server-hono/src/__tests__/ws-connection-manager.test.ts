@@ -9,10 +9,7 @@ import {
 function createConn(args: {
   actorId: string;
   clientId: string;
-  onSync: (
-    cursor: number,
-    metadata?: WebSocketSyncMetadata
-  ) => void;
+  onSync: (cursor: number, metadata?: WebSocketSyncMetadata) => void;
   onSyncPack?: (bytes: Uint8Array) => void;
   syncPackEncoding?: WebSocketConnection['syncPackEncoding'];
 }): WebSocketConnection {

@@ -1,18 +1,18 @@
 import { describe, expect, it } from 'bun:test';
 import { readFileSync } from 'node:fs';
 import {
-  SyncCombinedRequestSchema,
-  SyncCombinedResponseSchema,
   type SyncCombinedRequest,
+  SyncCombinedRequestSchema,
   type SyncCombinedResponse,
+  SyncCombinedResponseSchema,
 } from '../schemas/sync';
 import {
+  type BinarySnapshotTable,
+  type DecodedBinarySnapshotTable,
   decodeBinarySnapshotTable,
   decodeSnapshotRows,
   encodeBinarySnapshotTable,
   encodeSnapshotRows,
-  type BinarySnapshotTable,
-  type DecodedBinarySnapshotTable,
 } from '../snapshot-chunks';
 import { decodeBinarySyncPack, encodeBinarySyncPack } from '../sync-packs';
 

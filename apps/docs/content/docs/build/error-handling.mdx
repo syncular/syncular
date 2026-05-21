@@ -74,22 +74,19 @@ The retry sequence is: 1s, 2s, 4s, 8s, 16s (capped at 60s).
 
 After each successful sync, the retry counter resets to 0. Non-retryable errors (for example auth failures) stop automatic retry and require explicit remediation.
 
-### Configuring retries
+### Configuring error reporting
 
 ```tsx
 <SyncProvider
-  db={db}
-  transport={transport}
-  sync={sync}
-  identity={{ actorId: userId }}
-  clientId={clientId}
-  maxRetries={10} // Default is 5
+  options={syncularOptions}
+  onError={(error) => reportSyncError(error)}
 >
   {children}
 </SyncProvider>
 ```
 
-Setting `maxRetries` to `0` disables automatic retries. You can still trigger manual syncs via `useSyncEngine().sync()`.
+The Rust client owns retry behavior. App code should report provider errors and
+offer reconnect actions through `useSyncConnection()`.
 
 ## The onError Callback
 
@@ -157,60 +154,30 @@ When migration fails, the sync engine does not start syncing. Both `onMigrationE
 
 ## Monitoring with useSyncStatus
 
-The `useSyncStatus` hook provides a reactive view of the sync engine's state:
+Use `useSyncConnection`, `useOutboxStats`, and `useConflictStats` for reactive
+client health UI:
 
 ```typescript
-interface SyncStatus {
-  /** Whether sync is enabled (actorId and clientId are set) */
-  enabled: boolean;
-  /** Whether the transport is connected */
-  isOnline: boolean;
-  /** Whether a sync cycle is in progress */
-  isSyncing: boolean;
-  /** Timestamp of the last successful sync */
-  lastSyncAt: number | null;
-  /** Number of pending outbox commits */
-  pendingCount: number;
-  /** Current error (cleared on next successful sync) */
-  error: SyncError | null;
-  /** Whether the engine is waiting to retry */
-  isRetrying: boolean;
-  /** Current retry attempt count (resets on success) */
-  retryCount: number;
-}
+const connection = useSyncConnection();
+const outbox = useOutboxStats();
+const conflicts = useConflictStats();
 ```
 
 ### Basic usage
 
 ```tsx
 function SyncStatusBar() {
-  const status = useSyncStatus();
+  const connection = useSyncConnection();
+  const outbox = useOutboxStats();
 
-  if (!status.enabled) {
-    return <span>Sync disabled</span>;
-  }
-
-  if (status.error) {
-    return (
-      <span className="text-red-500">
-        Sync error: {status.error.message}
-        {status.isRetrying && ` (retry ${status.retryCount}...)`}
-      </span>
-    );
-  }
-
-  if (status.isSyncing) {
-    return <span>Syncing...</span>;
-  }
-
-  if (!status.isOnline) {
+  if (!connection.isConnected) {
     return <span className="text-yellow-500">Offline</span>;
   }
 
   return (
     <span className="text-green-500">
       Synced
-      {status.pendingCount > 0 && ` (${status.pendingCount} pending)`}
+      {(outbox?.pending ?? 0) > 0 && ` (${outbox?.pending} pending)`}
     </span>
   );
 }
@@ -228,8 +195,8 @@ function ConnectionIndicator() {
 
   return (
     <div>
-      <span>Mode: {connection.mode}</span> {/* 'polling' or 'realtime' */}
-      <span>State: {connection.state}</span> {/* 'disconnected' | 'connecting' | 'connected' | 'reconnecting' */}
+      <span>Realtime: {connection.state.realtime}</span>
+      <span>Pending requests: {connection.state.pendingRequests}</span>
 
       {connection.isReconnecting && (
         <Button onClick={connection.reconnect}>
@@ -245,38 +212,21 @@ function ConnectionIndicator() {
 
 | State | Meaning |
 |-------|---------|
-| `disconnected` | Not connected, sync disabled or stopped |
-| `connecting` | Establishing connection (realtime mode) |
-| `connected` | Active connection, sync is operational |
-| `reconnecting` | Connection lost, attempting to reconnect (realtime mode uses fallback polling during this phase) |
+| `disconnected` | Realtime is stopped or unavailable |
+| `connecting` | Establishing the canonical websocket connection |
+| `connected` | Realtime wake-ups are connected |
 
 ## Event-Based Error Handling
 
-For more granular control, subscribe to sync engine events directly:
-
-```tsx
-function useErrorLogger() {
-  const { state, sync } = useSyncEngine();
-
-  useEffect(() => {
-    // Access the engine directly for event subscriptions
-    // Events: 'sync:start', 'sync:complete', 'sync:error', 'connection:change'
-  }, []);
-
-  return state;
-}
-```
-
-The engine emits these events:
+For more granular control, log the provider-level lifecycle callbacks and expose
+the aggregate React hooks in UI:
 
 | Event | Payload | When |
 |-------|---------|------|
-| `sync:start` | `{ timestamp }` | A sync cycle begins |
-| `sync:complete` | `{ timestamp, pushedCommits, pullRounds, pullResponse }` | A sync cycle succeeds |
-| `sync:error` | `SyncError` | A sync cycle fails |
-| `connection:change` | `{ previous, current }` | Connection state transitions |
-| `outbox:change` | `{ pendingCount, sendingCount, failedCount, ackedCount }` | Outbox statistics update |
-| `data:change` | `{ scopes, timestamp }` | Data tables changed (from pull or local mutation) |
+| `onError` | `unknown` | Client creation or sync lifecycle error |
+| `useSyncConnection` | `SyncularV2ConnectionState` | Realtime connection changes |
+| `useOutboxStats` | aggregate counters | Outbox statistics update |
+| `useConflictStats` | aggregate counters | Conflicts changed |
 
 ## Network Error Recovery
 
@@ -295,21 +245,16 @@ Syncular is designed for offline-first use. When the network is unavailable:
 import { Button } from '@syncular/ui/primitives';
 
 function OfflineBanner() {
-  const status = useSyncStatus();
-  const { reconnect, sync } = useSyncEngine();
+  const connection = useSyncConnection();
 
-  if (status.isOnline) return null;
+  if (connection.isConnected) return null;
 
   return (
     <div className="bg-yellow-100 p-2 flex items-center justify-between">
       <span>You are offline. Changes are saved locally.</span>
       <Button
         onClick={() => {
-          reconnect();
-          // Optionally trigger an immediate sync attempt
-          sync().catch(() => {
-            // Handled by onError callback
-          });
+          connection.reconnect();
         }}
       >
         Try Reconnecting
@@ -327,16 +272,14 @@ If mutations keep failing (e.g., due to permanent server-side validation errors)
 import { Button } from '@syncular/ui/primitives';
 
 function FailedCommitsManager() {
-  const outbox = useOutbox();
+  const outbox = useOutboxStats();
 
-  if (!outbox.hasUnsent) return null;
+  if (!outbox?.failed) return null;
 
   return (
     <div>
-      <p>{outbox.stats.failed} failed commits</p>
-      <Button onClick={outbox.clearFailed}>
-        Discard Failed Commits
-      </Button>
+      <p>{outbox.failed} failed commits</p>
+      <Button onClick={() => openOutboxReview()}>Review Outbox</Button>
     </div>
   );
 }
@@ -344,47 +287,32 @@ function FailedCommitsManager() {
 
 ## Conflict Handling
 
-When a push operation encounters a version conflict, the server returns conflict details. Use `useConflicts` and `useResolveConflict` to manage them:
+When a push operation encounters a version conflict, the server reports conflict
+counters to the Rust client. Use `useConflictStats()` for app chrome and route
+users to a product-specific conflict center for detailed review.
 
 ```tsx
 import { Button } from '@syncular/ui/primitives';
+import { createSyncularReact } from '@syncular/client/react';
 
-function ConflictResolver() {
-  const { conflicts, hasConflicts } = useConflicts();
-  const { resolve } = useResolveConflict({
-    onSuccess: (conflictId) => {
-      toast.success('Conflict resolved');
-    },
-  });
+const { useConflictStats } = createSyncularReact<AppDb>();
 
-  if (!hasConflicts) return null;
+function ConflictBanner() {
+  const stats = useConflictStats();
+
+  if (!stats?.unresolved) return null;
 
   return (
     <div>
-      <h3>Conflicts ({conflicts.length})</h3>
-      {conflicts.map((conflict) => (
-        <div key={conflict.id}>
-          <p>
-            Table: {conflict.table}, Row: {conflict.rowId}
-          </p>
-          <p>{conflict.message}</p>
-          <Button onClick={() => resolve(conflict.id, 'accept')}>
-            Accept Server Version
-          </Button>
-          <Button onClick={() => resolve(conflict.id, 'reject')}>
-            Keep Local Version
-          </Button>
-        </div>
-      ))}
+      <h3>Conflicts ({stats.unresolved})</h3>
+      <Button onClick={() => openConflictCenter()}>Review</Button>
     </div>
   );
 }
 ```
 
-Resolution options:
-- `'accept'` -- accept the server's version, discard local changes
-- `'reject'` -- reject the server's version, keep the local change
-- `'merge'` -- provide merged data combining both versions
+Resolution options are application policy: keep the server version, retry the
+local intent, or write a merged update through generated mutations.
 
 ## Best Practices
 

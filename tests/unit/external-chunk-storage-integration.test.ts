@@ -130,7 +130,7 @@ describe('External chunk storage integration', () => {
       ).toBe('external chunk data');
     });
 
-    it('falls back to inline body when external storage returns null', async () => {
+    it('fails closed when external storage returns null for an external chunk read', async () => {
       // Create a chunk storage that always returns null for reads
       const failingChunkStorage: {
         readChunk: (chunkId: string) => Promise<Uint8Array | null>;
@@ -155,15 +155,11 @@ describe('External chunk storage integration', () => {
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       });
 
-      // Read with failing external storage - should fall back to inline
-      const chunk = await readSnapshotChunk(db, 'test-fallback', {
-        chunkStorage: failingChunkStorage,
-      });
-
-      expect(chunk).not.toBeNull();
-      expect(
-        new TextDecoder().decode(await chunkBodyToUint8Array(chunk!.body))
-      ).toBe('inline fallback data');
+      await expect(
+        readSnapshotChunk(db, 'test-fallback', {
+          chunkStorage: failingChunkStorage,
+        })
+      ).rejects.toThrow('Snapshot chunk body missing for chunk test-fallback');
     });
 
     it('returns null when chunk not found', async () => {
