@@ -89,7 +89,7 @@ Examples:
   - `bun run tsgo`
 - Browser/WASM build and size gate when browser runtime or package exports
   change:
-  - `bun run client:build:wasm`
+  - `bun run javascript-bindings:build:wasm`
 
 ## Accept / Reject Rule
 

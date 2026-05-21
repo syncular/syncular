@@ -628,7 +628,8 @@ prune old acked log entries without touching the canonical compact state.
 
 ## Assets
 
-The package build writes the full Rust WASM artifact to `dist/wasm`:
+The generated JavaScript/WASM binding package under `rust/bindings/javascript`
+writes the full Rust WASM artifact to `dist/wasm`:
 
 - `syncular_v2.js`
 - `syncular_v2_bg.wasm`
@@ -667,30 +668,31 @@ section stripping. The current checked budgets are `3.25 MiB` raw and
 ```bash
 SYNCULAR_WASM_RAW_BUDGET_BYTES=3407872 \
 SYNCULAR_WASM_GZIP_BUDGET_BYTES=1415578 \
-  bun run size:wasm:check
+  bun --cwd rust/bindings/javascript run size:wasm:check
 ```
 
 The check writes an attribution report to
-`.context/wasm-size/syncular-v2-wasm-size.txt` when run through `build:wasm` or
-`size:wasm:check`. Release builds also write a non-shipping optimized profile
-WASM to `.context/wasm-size/syncular_v2_bg.profile.wasm` before final custom
-section stripping so attribution can keep symbol names when available.
+`.context/wasm-size/syncular-v2-wasm-size.txt` when run through
+`rust/bindings/javascript` `build:wasm` or `size:wasm:check`. Release builds
+also write a non-shipping optimized profile WASM to
+`.context/wasm-size/syncular_v2_bg.profile.wasm` before final custom section
+stripping so attribution can keep symbol names when available.
 
-The current browser package is the canonical Rust-owned SQLite runtime and
-exposes one stable low-level contract to generated clients. The no-CRDT/no-E2EE
-core build has measured byte savings; the current core artifact also omits blob
-upload/cache helpers. The package `build` runs `build:wasm:variants`, which
-writes both artifacts plus the catalog, and generated loading can select the
-smallest matching artifact when an app serves the catalog. Publishing separate
-wrapper packages around the same WASM would not remove bytes.
+The current browser client is the canonical Rust-owned SQLite runtime wrapper
+for generated clients. The no-CRDT/no-E2EE core binding artifact has measured
+byte savings; the current core artifact also omits blob upload/cache helpers.
+The JavaScript binding package `build` runs `build:wasm:variants`, which writes
+both artifacts plus the catalog, and generated loading can select the smallest
+matching artifact when an app serves the catalog. Publishing separate wrapper
+packages around the same WASM would not remove bytes.
 
 For local measurement or app experiments:
 
 ```bash
-bun run build:wasm:core
-bun run build:wasm:variants
-bun run catalog:wasm
-bun run size:wasm:core
+bun --cwd rust/bindings/javascript run build:wasm:core
+bun --cwd rust/bindings/javascript run build:wasm:variants
+bun --cwd rust/bindings/javascript run catalog:wasm
+bun --cwd rust/bindings/javascript run size:wasm:core
 ```
 
 `build:wasm:core` writes `dist/wasm-core/syncular_v2.js` and
@@ -708,16 +710,12 @@ bun run test
 bun run test:wasm:auth
 bun run test:wasm:hono
 bun run test:wasm:variants
-bun run size:wasm
-bun run size:wasm:check
-bun run size:wasm:core
-bun run catalog:wasm
 ```
 
 `test:wasm:hono` builds the dev WASM artifact and runs the Hono-backed browser
 smokes for auth retry, sync protocol edge cases, realtime wakeups, and blob
 transport behavior.
 
-`build:wasm`, `size:wasm:check`, and the conformance gates are the current
-browser package validation path. The old JS/wa-sqlite comparison benchmark was
-removed with the legacy TypeScript client runtime.
+`rust/bindings/javascript` `build:wasm`, `size:wasm:check`, and the conformance
+gates are the current browser runtime validation path. The old JS/wa-sqlite
+comparison benchmark was removed with the legacy TypeScript client runtime.

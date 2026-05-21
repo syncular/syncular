@@ -1,8 +1,8 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
-  SYNCULAR_V2_PACKAGE_NAME,
-  SYNCULAR_V2_PACKAGE_VERSION,
+  SYNCULAR_V2_CLIENT_PACKAGE_NAME,
+  SYNCULAR_V2_CLIENT_PACKAGE_VERSION,
   SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE,
   SYNCULAR_V2_WASM_ARTIFACT_FILE,
 } from '../src/runtime-contract';
@@ -38,8 +38,8 @@ if (artifactDirs.length === 0) {
 
 const catalog = {
   catalogVersion: 1,
-  packageName: SYNCULAR_V2_PACKAGE_NAME,
-  packageVersion: SYNCULAR_V2_PACKAGE_VERSION,
+  packageName: SYNCULAR_V2_CLIENT_PACKAGE_NAME,
+  packageVersion: SYNCULAR_V2_CLIENT_PACKAGE_VERSION,
   generatedAt: new Date().toISOString(),
   artifacts: artifactDirs.map(readArtifact),
 };

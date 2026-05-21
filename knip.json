@@ -43,28 +43,28 @@
     "packages/server-hono/src/validation.ts": [
       "exports"
     ],
-    "rust/bindings/browser/src/client.ts": [
+    "packages/client/src/client.ts": [
       "duplicates"
     ],
-    "rust/bindings/browser/src/database.ts": [
+    "packages/client/src/database.ts": [
       "duplicates"
     ],
-    "rust/bindings/browser/src/diagnostics.ts": [
+    "packages/client/src/diagnostics.ts": [
       "exports"
     ],
-    "rust/bindings/browser/src/sql-safety.ts": [
+    "packages/client/src/sql-safety.ts": [
       "exports"
     ],
-    "rust/bindings/browser/src/worker-protocol.ts": [
+    "packages/client/src/worker-protocol.ts": [
       "types"
     ],
-    "rust/bindings/browser/src/worker-realtime.ts": [
+    "packages/client/src/worker-realtime.ts": [
       "types"
     ],
-    "rust/bindings/crdt-adapters/src/webview-host-facade.ts": [
+    "packages/client-crdt-adapters/src/webview-host-facade.ts": [
       "exports"
     ],
-    "rust/bindings/crdt-adapters/src/yjs-document-field-adapter.ts": [
+    "packages/client-crdt-adapters/src/yjs-document-field-adapter.ts": [
       "exports"
     ]
   },
@@ -153,6 +153,20 @@
     "packages/client-tauri": {
       "includeEntryExports": false
     },
+    "packages/client": {
+      "includeEntryExports": false,
+      "entry": [
+        "src/**/*.test.ts",
+        "src/**/__tests__/**/*.ts",
+        "scripts/*.ts"
+      ]
+    },
+    "packages/client-crdt-adapters": {
+      "includeEntryExports": false,
+      "entry": [
+        "src/**/*.test.ts"
+      ]
+    },
     "packages/syncular": {
       "includeEntryExports": false
     },
@@ -192,18 +206,10 @@
     "packages/dialect-electron-sqlite": {
       "includeEntryExports": false
     },
-    "rust/bindings/browser": {
+    "rust/bindings/javascript": {
       "includeEntryExports": false,
       "entry": [
-        "src/**/*.test.ts",
-        "src/**/__tests__/**/*.ts",
         "scripts/*.ts"
-      ]
-    },
-    "rust/bindings/crdt-adapters": {
-      "includeEntryExports": false,
-      "entry": [
-        "src/**/*.test.ts"
       ]
     },
     "rust/examples/todo-app": {

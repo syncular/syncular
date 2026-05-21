@@ -13,6 +13,7 @@ import type {
   SyncularV2RuntimeArtifactCandidate,
   SyncularV2SubscriptionSpec,
 } from '../types';
+import { getSyncularV2RuntimeArtifact } from '../wasm-runtime';
 
 interface BasicTaskRow {
   id: string;
@@ -799,16 +800,5 @@ function authLease(args: {
 }
 
 function coreRuntimeArtifact(): SyncularV2RuntimeArtifactCandidate {
-  return {
-    name: 'core',
-    features: ['web-owned-sqlite-core'],
-    wasmGlueUrl: new URL(
-      '../../dist/wasm-core/syncular_v2.js',
-      import.meta.url
-    ),
-    wasmUrl: new URL(
-      '../../dist/wasm-core/syncular_v2_bg.wasm',
-      import.meta.url
-    ),
-  };
+  return getSyncularV2RuntimeArtifact('core');
 }
