@@ -114,6 +114,10 @@ discoverability, conflict, blob, or subscription ergonomics gaps.
   mutations while adding `on(...)`, `getStatus()`, `setSubscriptions(...)`,
   `presence`, and `conflicts` namespaces over the current Rust client events and
   operations.
+- Tauri, React Native, and Expo have separate bridge packages that depend on
+  `@syncular/client` for shared TypeScript ergonomics. They expose platform
+  client factories plus React factories that reuse the same `SyncProvider` and
+  hooks with a bridge-backed client instead of the browser Worker/WASM runtime.
 - Generated TypeScript partial updates now keep sync payloads partial while
   materializing complete local SQLite rows for NOT NULL columns, so updates such
   as `{ completed: 1 }` no longer fail local apply when the row has required
@@ -122,7 +126,14 @@ discoverability, conflict, blob, or subscription ergonomics gaps.
 ## Latest Evidence
 
 - `bun test rust/bindings/browser/src/react.test.ts rust/bindings/browser/src/generated-app-conformance.test.ts`
+- `bun test rust/bindings/browser/src/bridge-client.test.ts`
+- `bun run rust:browser:test`
+- `bun run --cwd packages/client-tauri tsgo`
+- `bun run --cwd packages/client-react-native tsgo`
+- `bun run --cwd packages/client-expo tsgo`
 - `bun run --cwd rust/bindings/browser tsgo`
+- `bun run tsgo`
+- `bun run docs:build`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`

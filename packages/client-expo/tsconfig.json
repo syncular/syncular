@@ -1,0 +1,8 @@
+{
+  "extends": "@syncular/config/tsconfig.react-native.json",
+  "include": ["src/**/*"],
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist"
+  }
+}

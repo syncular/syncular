@@ -16,7 +16,7 @@ import {
 import {
   type CreateSyncularV2ClientOptions,
   createSyncularClient,
-  type SyncularClient,
+  type SyncularClientLike,
 } from './client';
 import type {
   MutationReceipt,
@@ -39,11 +39,11 @@ export type SyncularReactStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 export interface SyncProviderProps<DB> {
   children?: ReactNode;
-  client?: SyncularClient<DB>;
+  client?: SyncularClientLike<DB>;
   options?: CreateSyncularV2ClientOptions;
   optionsKey?: unknown;
   destroyOnUnmount?: boolean;
-  onClient?: (client: SyncularClient<DB>) => void;
+  onClient?: (client: SyncularClientLike<DB>) => void;
   onError?: (error: unknown) => void;
 }
 
@@ -199,7 +199,7 @@ export interface UseBlobUploadQueueResult {
 }
 
 type ReactContextInternal<DB> = {
-  client: SyncularClient<DB> | null;
+  client: SyncularClientLike<DB> | null;
   status: SyncularReactStatus;
   error: unknown;
 };
@@ -250,7 +250,7 @@ export function createSyncularReact<DB>() {
     useEffect(() => {
       void lifecycleKey;
       let cancelled = false;
-      let ownedClient: SyncularClient<DB> | null = null;
+      let ownedClient: SyncularClientLike<DB> | null = null;
 
       if (providedClient) {
         setValue({ client: providedClient, status: 'ready', error: null });
@@ -311,7 +311,7 @@ export function createSyncularReact<DB>() {
     return { status: value.status, error: value.error };
   }
 
-  function useClient(): SyncularClient<DB> {
+  function useClient(): SyncularClientLike<DB> {
     const value = useContext(Context);
     if (!value) throw new Error('SyncProvider is required for Syncular hooks.');
     if (!value.client) {
@@ -325,11 +325,11 @@ export function createSyncularReact<DB>() {
     const client = useClient();
     const state = useSyncExternalStore(
       useCallback(
-        (notify) => client.client.addDiagnosticListener(() => notify()),
+        (notify) => client.on('lifecycleChanged', () => notify()),
         [client]
       ),
-      useCallback(() => client.client.connectionState(), [client]),
-      useCallback(() => client.client.connectionState(), [client])
+      useCallback(() => client.getStatus().connection, [client]),
+      useCallback(() => client.getStatus().connection, [client])
     );
     return {
       state,
@@ -349,9 +349,7 @@ export function createSyncularReact<DB>() {
     const listenerRef = useLatest(listener);
     useEffect(() => {
       if (!enabled) return undefined;
-      return client.client.addEventListener(event, (payload) =>
-        listenerRef.current(payload)
-      );
+      return client.on(event, (payload) => listenerRef.current(payload));
     }, [client, enabled, event, listenerRef]);
   }
 
@@ -440,7 +438,7 @@ export function createSyncularReact<DB>() {
 
     useEffect(() => {
       if (!enabled || options.refreshOnDataChange === false) return undefined;
-      return client.client.addEventListener('rowsChanged', (event) => {
+      return client.on('rowsChanged', (event) => {
         if (
           watchedTables &&
           !event.changedTables.some((table) => watchedTables.has(table))
@@ -660,9 +658,9 @@ export function createSyncularReact<DB>() {
         setIsLoading(false);
         return undefined;
       }
-      setPresence(client.client.getPresence<TMetadata>(scopeKey));
+      setPresence(client.presence.get<TMetadata>(scopeKey));
       setIsLoading(false);
-      return client.client.addPresenceListener<TMetadata>((event) => {
+      return client.presence.onChange<TMetadata>((event) => {
         if (event.scopeKey === scopeKey) setPresence(event.presence);
       });
     }, [client, enabled, scopeKey]);
@@ -684,18 +682,18 @@ export function createSyncularReact<DB>() {
 
     const join = useCallback(
       (metadata?: TMetadata) => {
-        client.client.joinPresence(scopeKey, metadata);
+        client.presence.join(scopeKey, metadata);
         setIsJoined(true);
       },
       [client, scopeKey]
     );
     const leave = useCallback(() => {
-      client.client.leavePresence(scopeKey);
+      client.presence.leave(scopeKey);
       setIsJoined(false);
     }, [client, scopeKey]);
     const updateMetadata = useCallback(
       (metadata: TMetadata) => {
-        client.client.updatePresenceMetadata(scopeKey, metadata);
+        client.presence.updateMetadata(scopeKey, metadata);
       },
       [client, scopeKey]
     );
@@ -725,7 +723,7 @@ export function createSyncularReact<DB>() {
 
     useEffect(() => {
       void refresh().catch(() => undefined);
-      return client.client.addEventListener('blobUploadCompleted', () => {
+      return client.on('blobUploadCompleted', () => {
         void refresh().catch(() => undefined);
       });
     }, [client, refresh]);
@@ -790,7 +788,7 @@ function isExecutableQuery<TResult>(
 }
 
 function wrapMutationsTable<DB>(
-  client: SyncularClient<DB>,
+  client: SyncularClientLike<DB>,
   table: string,
   run: <TResult extends MutationReceipt>(
     operation: () => Promise<TResult>,

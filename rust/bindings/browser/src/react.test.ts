@@ -3,7 +3,7 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import type {
-  SyncularClient,
+  SyncularClientLike,
   SyncularV2BlobUploadQueueStats,
   SyncularV2BootstrapStatus,
   SyncularV2ClientEventMap,
@@ -218,10 +218,10 @@ interface TaskRow extends Record<string, unknown> {
 
 function createWrapper<DB>(
   Provider: (props: {
-    client: SyncularClient<DB>;
+    client: SyncularClientLike<DB>;
     children?: ReactNode;
   }) => ReturnType<typeof createElement>,
-  client: SyncularClient<DB>
+  client: SyncularClientLike<DB>
 ) {
   return function Wrapper({ children }: { children: ReactNode }) {
     return createElement(Provider, { client, children });
@@ -255,6 +255,49 @@ class FakeManagedClient {
     },
     dialect: {},
     mutations: this.createMutations(),
+    on: <T extends SyncularV2ClientEventType>(
+      event: T,
+      listener: SyncularV2ClientEventSink<T>
+    ) => this.addEventListener(event, listener),
+    getStatus: () => ({
+      lifecycle: {
+        phase: 'idle',
+        sinceMs: 0,
+        lastSyncAt: null,
+        lastError: null,
+        requiresAction: false,
+      },
+      connection: this.connectionState(),
+      outbox: null,
+      conflicts: null,
+      isConnected: true,
+      isSyncing: false,
+      hasPendingMutations: false,
+      hasConflicts: false,
+      requiresAction: false,
+    }),
+    setSubscriptions: async () => undefined,
+    presence: {
+      get: <TMetadata extends Record<string, unknown>>(scopeKey: string) =>
+        this.getPresence<TMetadata>(scopeKey),
+      join: (scopeKey: string, metadata?: Record<string, unknown>) =>
+        this.joinPresence(scopeKey, metadata),
+      leave: (scopeKey: string) => this.leavePresence(scopeKey),
+      updateMetadata: (scopeKey: string, metadata: Record<string, unknown>) =>
+        this.updatePresenceMetadata(scopeKey, metadata),
+      onChange: <TMetadata extends Record<string, unknown>>(
+        listener: SyncularV2PresenceSink<TMetadata>
+      ) => {
+        this.#presenceListeners.add(listener as SyncularV2PresenceSink);
+        return () =>
+          this.#presenceListeners.delete(listener as SyncularV2PresenceSink);
+      },
+    },
+    conflicts: {
+      list: async () => [],
+      retryKeepLocal: async () => 'retry-commit',
+      resolve: async () => undefined,
+    },
     blobs: {
       getUploadQueueStats: async () => this.blobStats(),
       processUploadQueue: async () => ({ uploaded: 0, failed: 0 }),
@@ -331,7 +374,7 @@ class FakeManagedClient {
         },
       };
     },
-  } as unknown as SyncularClient<TestDb>;
+  } as unknown as SyncularClientLike<TestDb>;
 
   emitRowsChanged(event: SyncularV2RowsChangedEvent): void {
     this.emit('rowsChanged', event);

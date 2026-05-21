@@ -155,6 +155,9 @@ Most packages are published under the `@syncular` scope on npm. The umbrella pac
 | `@syncular/server-hono` | Hono adapter with HTTP routes, OpenAPI, WebSocket, and console routes |
 | `@syncular/server-cloudflare` | Cloudflare adapter for Workers and Durable Objects |
 | `@syncular/client` | Rust-owned browser client package with TypeScript and React entrypoints |
+| `@syncular/client-tauri` | Tauri JS/React bridge facade over a Rust Syncular host |
+| `@syncular/client-react-native` | React Native/Nitro bridge facade over a native Syncular host |
+| `@syncular/client-expo` | Expo-friendly aliases for the React Native bridge facade |
 | `@syncular/transport-http` | HTTP push/pull transport |
 | `@syncular/transport-ws` | WebSocket wake-up and presence transport |
 | `@syncular/console` | Embeddable console UI for commits, clients, events, and operations |
