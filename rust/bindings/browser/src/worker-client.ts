@@ -713,7 +713,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     });
   }
 
-  retrieveBlob(ref: BlobRef): Promise<Uint8Array> {
+  async retrieveBlob(ref: BlobRef): Promise<Uint8Array> {
     try {
       assertSyncularV2BlobPayloadLimit({
         operation: 'retrieve',
@@ -723,16 +723,71 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         diagnostics: (event) => this.#emitDiagnostic(event),
       });
     } catch (error) {
-      return Promise.reject(error);
+      throw error;
     }
-    return this.#requestWithAuthRetry(
-      { type: 'retrieveBlob', ref },
-      'blobGetDownloadUrl'
-    );
+    const wasLocal = this.#hasDiagnosticListeners()
+      ? await this.#request<boolean>({
+          type: 'isBlobLocal',
+          hash: ref.hash,
+        }).catch(() => undefined)
+      : undefined;
+    try {
+      const bytes = await this.#requestWithAuthRetry<Uint8Array>(
+        { type: 'retrieveBlob', ref },
+        'blobGetDownloadUrl'
+      );
+      if (wasLocal !== undefined) {
+        this.#emitDiagnostic({
+          level: 'info',
+          source: 'blob',
+          code: wasLocal ? 'blob.cache_hit' : 'blob.cache_miss',
+          message: wasLocal
+            ? 'Syncular blob served from local cache'
+            : 'Syncular blob fetched after local cache miss',
+          details: {
+            hash: ref.hash,
+            size: ref.size,
+            mimeType: ref.mimeType,
+            encrypted: ref.encrypted === true,
+            ...(ref.keyId ? { keyId: ref.keyId } : {}),
+          },
+        });
+      }
+      return bytes;
+    } catch (error) {
+      if (this.#hasDiagnosticListeners()) {
+        this.#emitDiagnostic({
+          level: 'warn',
+          source: 'blob',
+          code: 'blob.download_failed',
+          message: `Syncular blob download failed: ${errorMessage(error)}`,
+          details: {
+            hash: ref.hash,
+            size: ref.size,
+            mimeType: ref.mimeType,
+            encrypted: ref.encrypted === true,
+            ...(ref.keyId ? { keyId: ref.keyId } : {}),
+          },
+        });
+      }
+      throw error;
+    }
   }
 
-  isBlobLocal(hash: string): Promise<boolean> {
-    return this.#request({ type: 'isBlobLocal', hash });
+  async isBlobLocal(hash: string): Promise<boolean> {
+    const local = await this.#request<boolean>({ type: 'isBlobLocal', hash });
+    if (this.#hasDiagnosticListeners()) {
+      this.#emitDiagnostic({
+        level: 'debug',
+        source: 'blob',
+        code: local ? 'blob.cache_hit' : 'blob.cache_miss',
+        message: local
+          ? 'Syncular blob is available in local cache'
+          : 'Syncular blob is not available in local cache',
+        details: { hash },
+      });
+    }
+    return local;
   }
 
   async processBlobUploadQueue(): Promise<{
@@ -741,7 +796,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }> {
     const observeBlobEvents =
       this.#hasClientEventListeners('blobUploadCompleted') ||
-      this.#hasClientEventListeners('blobUploadFailed');
+      this.#hasClientEventListeners('blobUploadFailed') ||
+      this.#hasDiagnosticListeners();
     const before = observeBlobEvents
       ? await this.#readBlobOutboxRows().catch(() => [])
       : [];
@@ -752,6 +808,15 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     if (observeBlobEvents) {
       const after = await this.#readBlobOutboxRows().catch(() => []);
       this.#emitBlobUploadEvents(before, after);
+    }
+    if (this.#hasDiagnosticListeners()) {
+      this.#emitDiagnostic({
+        level: result.failed > 0 ? 'warn' : 'info',
+        source: 'blob',
+        code: 'blob.upload_queue_processed',
+        message: 'Syncular blob upload queue processed',
+        details: result,
+      });
     }
     void this.#emitOperationalState();
     return result;
@@ -767,12 +832,36 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     return this.#request({ type: 'blobCacheStats' });
   }
 
-  pruneBlobCache(maxBytes?: number): Promise<number> {
-    return this.#request({ type: 'pruneBlobCache', maxBytes });
+  async pruneBlobCache(maxBytes?: number): Promise<number> {
+    const prunedBytes = await this.#request<number>({
+      type: 'pruneBlobCache',
+      maxBytes,
+    });
+    if (this.#hasDiagnosticListeners()) {
+      this.#emitDiagnostic({
+        level: 'info',
+        source: 'blob',
+        code: 'blob.cache_pruned',
+        message: 'Syncular blob cache pruned',
+        details: {
+          prunedBytes,
+          ...(maxBytes !== undefined ? { maxBytes } : {}),
+        },
+      });
+    }
+    return prunedBytes;
   }
 
   async clearBlobCache(): Promise<void> {
     await this.#request({ type: 'clearBlobCache' });
+    if (this.#hasDiagnosticListeners()) {
+      this.#emitDiagnostic({
+        level: 'info',
+        source: 'blob',
+        code: 'blob.cache_cleared',
+        message: 'Syncular blob cache cleared',
+      });
+    }
   }
 
   compactStorage(
@@ -1501,6 +1590,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     return (this.#eventListeners.get(event)?.size ?? 0) > 0;
   }
 
+  #hasDiagnosticListeners(): boolean {
+    return this.#diagnosticListeners.size > 0;
+  }
+
   #emitRowsChanged(event: SyncularV2ClientEventMap['rowsChanged']): void {
     if (
       this.#rowsChangedDebounceMs === false ||
@@ -1681,29 +1774,52 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     for (const before of beforeRows) {
       const next = after.get(before.hash);
       if (!next) {
+        const ref = {
+          hash: before.hash,
+          size: coerceCount(before.size),
+          mimeType: before.mime_type,
+          encrypted: before.encrypted === true || before.encrypted === 1,
+          ...(before.key_id ? { keyId: before.key_id } : {}),
+        };
         this.#emitClientEvent('blobUploadCompleted', {
-          ref: {
-            hash: before.hash,
-            size: coerceCount(before.size),
-            mimeType: before.mime_type,
-            encrypted: before.encrypted === true || before.encrypted === 1,
-            ...(before.key_id ? { keyId: before.key_id } : {}),
-          },
+          ref,
         });
+        if (this.#hasDiagnosticListeners()) {
+          this.#emitDiagnostic({
+            level: 'info',
+            source: 'blob',
+            code: 'blob.upload_completed',
+            message: 'Syncular blob upload completed',
+            details: ref,
+          });
+        }
         continue;
       }
       if (before.status !== 'failed' && next.status === 'failed') {
+        const ref = {
+          hash: next.hash,
+          size: coerceCount(next.size),
+          mimeType: next.mime_type,
+          encrypted: next.encrypted === true || next.encrypted === 1,
+          ...(next.key_id ? { keyId: next.key_id } : {}),
+        };
         this.#emitClientEvent('blobUploadFailed', {
           hash: next.hash,
           error: next.error ?? 'Blob upload failed',
-          ref: {
-            hash: next.hash,
-            size: coerceCount(next.size),
-            mimeType: next.mime_type,
-            encrypted: next.encrypted === true || next.encrypted === 1,
-            ...(next.key_id ? { keyId: next.key_id } : {}),
-          },
+          ref,
         });
+        if (this.#hasDiagnosticListeners()) {
+          this.#emitDiagnostic({
+            level: 'warn',
+            source: 'blob',
+            code: 'blob.upload_failed',
+            message: next.error ?? 'Syncular blob upload failed',
+            details: {
+              ...ref,
+              error: next.error ?? 'Blob upload failed',
+            },
+          });
+        }
       }
     }
   }

@@ -115,8 +115,10 @@ Known gaps:
   buffers. The browser package now enforces an explicit payload limit before
   high-level `Blob`/`File` conversion, worker posting, or direct WASM calls;
   very large browser blobs still need a platform-aware transfer strategy.
-- Queue/cache limits, diagnostics, and console visibility are thinner than
-  production support needs.
+- Browser queue/cache limits and subscribed diagnostics now cover payload
+  limits, hit/miss, prune/clear, upload completion/failure, queue processing,
+  and download failures. Native parity, server-adapter diagnostics, and console
+  visibility still need production tightening.
 - Shared conformance is good but not complete for every auth, scope,
   encryption, corruption, browser/native, and server-adapter edge case.
 
@@ -175,11 +177,11 @@ Add scope-aware blob authorization helpers and diagnostics:
 
 ## Next Action
 
-Continue WP-24 with native/browser diagnostic payload detail for cache
-hit/miss, upload retry/failure, auth rejection, corruption, and pruning
-without adding polling loops or hash-only access fallbacks. Browser payload
-size limits are now explicit; next tighten remaining queue/cache status and
-shared failure conformance.
+Continue WP-24 with native/server diagnostic payload detail for auth rejection,
+corruption, and shared failure conformance without adding polling loops or
+hash-only access fallbacks. Browser payload size limits and subscribed browser
+cache/upload diagnostics are now explicit; next tighten native parity and
+server-adapter failure scenarios.
 
 Latest evidence:
 
@@ -248,6 +250,27 @@ Add explicit browser blob payload limits:
 4. `[x]` Emit stable `blob.too_large` diagnostics with operation, size,
    configured limit, hash, MIME type, and immediate-upload metadata where
    available.
+
+Latest evidence:
+
+- `bun --cwd rust/bindings/browser tsgo`
+- `bun test src/worker-client.test.ts src/database.test.ts src/public-api.test.ts`
+  from `rust/bindings/browser`
+
+## Fifth Slice
+
+Add subscribed browser blob diagnostics:
+
+1. `[x]` Emit `blob.cache_hit` / `blob.cache_miss` diagnostics for explicit
+   cache checks and retrieve-time cache status when diagnostics are subscribed.
+2. `[x]` Emit `blob.cache_pruned` and `blob.cache_cleared` diagnostics with
+   pruned byte counts and configured prune targets.
+3. `[x]` Emit `blob.upload_queue_processed` diagnostics and per-row
+   `blob.upload_completed` / `blob.upload_failed` diagnostics from worker
+   queue processing even when the host did not subscribe to upload lifecycle
+   events.
+4. `[x]` Emit `blob.download_failed` diagnostics with safe `BlobRef` metadata
+   for failed browser worker/direct-WASM downloads.
 
 Latest evidence:
 

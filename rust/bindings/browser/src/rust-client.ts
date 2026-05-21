@@ -604,7 +604,7 @@ export class SyncularV2RustClient {
     );
   }
 
-  retrieveBlob(ref: BlobRef): Promise<Uint8Array> {
+  async retrieveBlob(ref: BlobRef): Promise<Uint8Array> {
     try {
       assertSyncularV2BlobPayloadLimit({
         operation: 'retrieve',
@@ -614,20 +614,88 @@ export class SyncularV2RustClient {
         diagnostics: (event) => this.#emitDiagnostic(event),
       });
     } catch (error) {
-      return Promise.reject(error);
+      throw error;
     }
-    return this.raw.retrieveBlob(JSON.stringify(ref));
+    const wasLocal = this.#hasDiagnosticListeners()
+      ? this.raw.isBlobLocal(ref.hash)
+      : undefined;
+    try {
+      const bytes = await this.raw.retrieveBlob(JSON.stringify(ref));
+      if (wasLocal !== undefined) {
+        this.#emitDiagnostic({
+          at: Date.now(),
+          level: 'info',
+          source: 'blob',
+          code: wasLocal ? 'blob.cache_hit' : 'blob.cache_miss',
+          message: wasLocal
+            ? 'Syncular blob served from local cache'
+            : 'Syncular blob fetched after local cache miss',
+          details: {
+            hash: ref.hash,
+            size: ref.size,
+            mimeType: ref.mimeType,
+            encrypted: ref.encrypted === true,
+            ...(ref.keyId ? { keyId: ref.keyId } : {}),
+          },
+        });
+      }
+      return bytes;
+    } catch (error) {
+      if (this.#hasDiagnosticListeners()) {
+        this.#emitDiagnostic({
+          at: Date.now(),
+          level: 'warn',
+          source: 'blob',
+          code: 'blob.download_failed',
+          message: `Syncular blob download failed: ${String(error)}`,
+          details: {
+            hash: ref.hash,
+            size: ref.size,
+            mimeType: ref.mimeType,
+            encrypted: ref.encrypted === true,
+            ...(ref.keyId ? { keyId: ref.keyId } : {}),
+          },
+        });
+      }
+      throw error;
+    }
   }
 
   isBlobLocal(hash: string): boolean {
-    return this.raw.isBlobLocal(hash);
+    const local = this.raw.isBlobLocal(hash);
+    if (this.#hasDiagnosticListeners()) {
+      this.#emitDiagnostic({
+        at: Date.now(),
+        level: 'debug',
+        source: 'blob',
+        code: local ? 'blob.cache_hit' : 'blob.cache_miss',
+        message: local
+          ? 'Syncular blob is available in local cache'
+          : 'Syncular blob is not available in local cache',
+        details: { hash },
+      });
+    }
+    return local;
   }
 
   async processBlobUploadQueue(): Promise<{
     uploaded: number;
     failed: number;
   }> {
-    return parseJson(await this.raw.processBlobUploadQueueJson());
+    const result = parseJson<{ uploaded: number; failed: number }>(
+      await this.raw.processBlobUploadQueueJson()
+    );
+    if (this.#hasDiagnosticListeners()) {
+      this.#emitDiagnostic({
+        at: Date.now(),
+        level: result.failed > 0 ? 'warn' : 'info',
+        source: 'blob',
+        code: 'blob.upload_queue_processed',
+        message: 'Syncular blob upload queue processed',
+        details: result,
+      });
+    }
+    return result;
   }
 
   blobUploadQueueStats(): SyncularV2BlobUploadQueueStats {
@@ -639,11 +707,31 @@ export class SyncularV2RustClient {
   }
 
   pruneBlobCache(maxBytes = 0): number {
-    return Number(this.raw.pruneBlobCache(BigInt(maxBytes)));
+    const prunedBytes = Number(this.raw.pruneBlobCache(BigInt(maxBytes)));
+    if (this.#hasDiagnosticListeners()) {
+      this.#emitDiagnostic({
+        at: Date.now(),
+        level: 'info',
+        source: 'blob',
+        code: 'blob.cache_pruned',
+        message: 'Syncular blob cache pruned',
+        details: { prunedBytes, maxBytes },
+      });
+    }
+    return prunedBytes;
   }
 
   clearBlobCache(): void {
     this.raw.clearBlobCache();
+    if (this.#hasDiagnosticListeners()) {
+      this.#emitDiagnostic({
+        at: Date.now(),
+        level: 'info',
+        source: 'blob',
+        code: 'blob.cache_cleared',
+        message: 'Syncular blob cache cleared',
+      });
+    }
   }
 
   compactStorage(
@@ -1005,6 +1093,10 @@ export class SyncularV2RustClient {
         // Diagnostics must never break client control flow.
       }
     }
+  }
+
+  #hasDiagnosticListeners(): boolean {
+    return this.#diagnosticListeners.size > 0;
   }
 
   #drainAndEmitRowsChanged(): void {
