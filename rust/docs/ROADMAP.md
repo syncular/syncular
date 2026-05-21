@@ -350,10 +350,10 @@ read-only review:
 
 ## Next
 
-- Continue [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md).
-  Authorization hardening and Rust-first blob body encryption are in place.
-  Next tighten blob queue/cache diagnostics, limits, lifecycle events, and
-  cross-binding conformance before WP-25 file asset sync builds on top of it.
+- Start [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md).
+  WP-24 blob hardening is accepted for the Rust-first foundation; file-asset UX,
+  platform-native large-file bridges, and console file/blob surfaces should stay
+  scoped to WP-25 rather than reopening blob protocol behavior.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when WP-26 finds concrete generated-client naming, discoverability,
   conflict, blob, or subscription ergonomics gaps.
@@ -765,8 +765,8 @@ read-only review:
     actor's own request-event diagnostics when available. OpenAPI/transport
     types and the console Stream view now use the redacted change summary
     shape.
-- `[~]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
-  - First authorization-hardening slice is in place. `@syncular/server` now
+- `[x]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
+  - Accepted for the Rust-first foundation. `@syncular/server` now
     exports `createScopedBlobAccessChecker(...)`, an opt-in `canAccessBlob`
     helper that grants blob download access only when the hash is referenced by
     a configured blob column on a row visible through the table handler's
