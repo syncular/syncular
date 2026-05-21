@@ -48,14 +48,17 @@ testing story. The Rust testkit now has both an in-process `AppTestServer` and
 an `AppTestHttpServer` wrapper for production-shaped HTTP/WebSocket app tests.
 The stateful server accepts generated app schemas, stores rows, applies pushed
 commits, serves later pulls, emits realtime wakeups, and covers CRDT/Yjs merge
-behavior in smoke tests.
+behavior in smoke tests. It can also enforce and change required auth headers
+during a test, and it can revoke/restore subscriptions through real pull
+responses so app suites can exercise scope/session changes without scripted
+mock responses.
 
 ## Next Action
 
 Move the next app conformance slice onto this fixture: shared scenarios for
-auth, conflicts, blobs, E2EE, and CRDT across Rust/native/browser bindings.
-Keep the stateful server generic; app-specific fixture rows should stay in app
-tests.
+auth, conflicts, blobs, E2EE, CRDT, and scope revocation across
+Rust/native/browser bindings. Keep the stateful server generic; app-specific
+fixture rows should stay in app tests.
 
 ## Progress
 
@@ -117,8 +120,15 @@ tests.
   pull the server-winning row.
 - Replaced the Rust perf binary's private stateful HTTP/WebSocket server copy
   with the shared testkit fixture to keep performance and app tests aligned.
+- Added stateful auth-refresh support to `AppTestServer`: tests can now change
+  or clear the required authorization token after startup and assert client
+  retry behavior through the real transport/client path.
+- Added stateful subscription revocation support to `AppTestServer`: tests can
+  revoke and restore subscription ids, the revoked response redacts scopes, and
+  the real client clears previous scoped rows and bootstraps again after
+  restore.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
-  passed with `29` smoke tests.
+  passed with `33` smoke tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   protocol_contract` passed with `40` protocol tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
@@ -145,3 +155,7 @@ tests.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-client
   --no-default-features --features cli --bin syncular-rust-perf --no-run`
   passed.
+- Gate: `bun run rust:conformance:fast` passed after the stateful auth and
+  subscription-revocation fixture slice, covering `33` testkit smoke tests,
+  `3` blob transport tests, `16` CRDT field tests, `41` protocol tests, `9`
+  generated Rust app tests, and `6` browser generated-app contract tests.

@@ -364,6 +364,10 @@ read-only review:
     the server stores ciphertext while a second client pulls decrypted
     plaintext. Stateful blob coverage now exercises queued upload, queue drain,
     local cache clear, remote download, and recache through real client APIs.
+    Stateful auth and subscription revocation are now reusable fixture controls:
+    tests can change/clear the required auth token during a run, revoke a
+    subscription with redacted scopes, verify local scoped-row clearing, restore
+    the subscription, and bootstrap again through the real client path.
     The Rust conformance fixture loader now lives in `syncular-testkit`, and
     runtime protocol and blob transport tests consume it instead of private
     copies. The TypeScript conformance loader now lives next to the shared JSON

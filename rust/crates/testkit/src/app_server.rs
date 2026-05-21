@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -86,6 +86,8 @@ struct AppTestServerState {
     auth_headers: Vec<SyncAuthHeaders>,
     realtime_events: VecDeque<RealtimeEvent>,
     blobs: BTreeMap<String, Vec<u8>>,
+    required_authorization: Option<String>,
+    revoked_subscription_ids: BTreeSet<String>,
     required_schema_version: Option<i32>,
     latest_schema_version: Option<i32>,
     next_server_version: i64,
@@ -113,12 +115,14 @@ impl AppTestServer {
     }
 
     pub fn with_options(app_schema: AppSchema, options: AppTestServerOptions) -> Self {
+        let required_authorization = options.required_authorization.clone();
         let required_schema_version = options.required_schema_version;
         let latest_schema_version = options.latest_schema_version;
         Self {
             app_schema,
             options,
             state: Arc::new(Mutex::new(AppTestServerState {
+                required_authorization,
                 required_schema_version,
                 latest_schema_version,
                 next_server_version: 1,
@@ -161,6 +165,46 @@ impl AppTestServer {
                 .latest_schema_version
                 .map_or(schema_version, |latest| latest.max(schema_version)),
         );
+    }
+
+    pub fn require_authorization(&self, authorization: impl Into<String>) {
+        self.state
+            .lock()
+            .expect("app test server state")
+            .required_authorization = Some(authorization.into());
+    }
+
+    pub fn clear_required_authorization(&self) {
+        self.state
+            .lock()
+            .expect("app test server state")
+            .required_authorization = None;
+    }
+
+    pub fn revoke_subscription(&self, subscription_id: impl Into<String>) {
+        self.state
+            .lock()
+            .expect("app test server state")
+            .revoked_subscription_ids
+            .insert(subscription_id.into());
+    }
+
+    pub fn restore_subscription(&self, subscription_id: &str) {
+        self.state
+            .lock()
+            .expect("app test server state")
+            .revoked_subscription_ids
+            .remove(subscription_id);
+    }
+
+    pub fn revoked_subscription_ids(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .expect("app test server state")
+            .revoked_subscription_ids
+            .iter()
+            .cloned()
+            .collect()
     }
 
     pub fn commit_row(&self, table: &str, row: Value) -> Result<i64> {
@@ -277,7 +321,8 @@ impl AppTestServer {
     }
 
     pub fn is_authorized_headers(&self, headers: &SyncAuthHeaders) -> bool {
-        match self.options.required_authorization.as_ref() {
+        let state = self.state.lock().expect("app test server state");
+        match state.required_authorization.as_ref() {
             Some(required) => headers.get("authorization") == Some(required),
             None => true,
         }
@@ -563,6 +608,19 @@ impl AppTestServer {
     ) -> SubscriptionResponse {
         let metadata = self.app_schema.table_metadata(&subscription.table);
         let next_cursor = state.next_commit_seq.saturating_sub(1).max(0);
+        if state.revoked_subscription_ids.contains(&subscription.id) {
+            return SubscriptionResponse {
+                id: subscription.id.clone(),
+                status: "revoked".to_string(),
+                scopes: ScopeValues::new(),
+                bootstrap: false,
+                bootstrap_state: None,
+                next_cursor,
+                integrity: None,
+                commits: Vec::new(),
+                snapshots: None,
+            };
+        }
         if subscription.cursor < 0 {
             let rows = metadata
                 .map(|metadata| {
@@ -677,7 +735,7 @@ impl AppTestServer {
     }
 
     fn is_authorized_locked(&self, state: &AppTestServerState) -> bool {
-        match self.options.required_authorization.as_ref() {
+        match state.required_authorization.as_ref() {
             Some(required) => {
                 state
                     .auth_headers
