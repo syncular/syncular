@@ -108,6 +108,7 @@ import {
   ConsoleRowHistoryResponseSchema,
   type ConsoleRowInvestigationClient,
   type ConsoleRowInvestigationFinding,
+  type ConsoleRowInvestigationRealtimeEvidence,
   type ConsoleRowInvestigationRequestEvidence,
   type ConsoleRowInvestigationResponse,
   ConsoleRowInvestigationResponseSchema,
@@ -405,6 +406,42 @@ function summarizeSnapshotEvidence(
       artifactBytes: 0,
     }
   );
+}
+
+interface RealtimeEvidenceRow {
+  event_id: unknown;
+  event_type: string;
+  reason: string | null;
+  cursor: unknown;
+  latest_cursor: unknown;
+}
+
+function summarizeRealtimeEvidence(
+  rows: readonly RealtimeEvidenceRow[]
+): ConsoleRowInvestigationRealtimeEvidence {
+  const latest = rows[0] ?? null;
+  const latestPullRequired = rows.find(
+    (row) => row.event_type === 'pull_required'
+  );
+
+  return {
+    matchingEventCount: rows.length,
+    connectedEventCount: rows.filter((row) => row.event_type === 'connected')
+      .length,
+    pullRequiredEventCount: rows.filter(
+      (row) => row.event_type === 'pull_required'
+    ).length,
+    ackEventCount: rows.filter((row) => row.event_type === 'ack').length,
+    rejectedEventCount: rows.filter((row) => row.event_type === 'rejected')
+      .length,
+    errorEventCount: rows.filter((row) => row.event_type === 'error').length,
+    latestEventId: coerceNumber(latest?.event_id) ?? null,
+    latestEventType: latest?.event_type ?? null,
+    latestReason: latest?.reason ?? null,
+    latestCursor: coerceNumber(latest?.cursor) ?? null,
+    latestServerCursor: coerceNumber(latest?.latest_cursor) ?? null,
+    latestPullRequiredReason: latestPullRequired?.reason ?? null,
+  };
 }
 
 function normalizeRequestEventType(value: unknown): 'sync' | 'push' | 'pull' {
@@ -740,12 +777,30 @@ export function createConsoleRoutes<
     created_at: Generated<string>;
   }
 
+  interface SyncRealtimeEventsTable {
+    event_id: Generated<number>;
+    partition_id: string;
+    actor_id: string;
+    client_id: string;
+    transport_path: string;
+    event_type: string;
+    reason: string | null;
+    cursor: number | null;
+    latest_cursor: number | null;
+    commit_seq: number | null;
+    scope_count: number | null;
+    skipped_count: number | null;
+    sync_pack_encoding: string | null;
+    created_at: Generated<string>;
+  }
+
   type SyncOperationEventRow = Selectable<SyncOperationEventsTable>;
 
   interface ConsoleDb extends SyncCoreDb {
     sync_request_events: SyncRequestEventsTable;
     sync_request_payloads: SyncRequestPayloadsTable;
     sync_operation_events: SyncOperationEventsTable;
+    sync_realtime_events: SyncRealtimeEventsTable;
     sync_api_keys: SyncApiKeysTable;
   }
 
@@ -1038,6 +1093,7 @@ export function createConsoleRoutes<
   type PruneEventsRunResult = {
     requestEventsDeleted: number;
     operationEventsDeleted: number;
+    realtimeEventsDeleted: number;
     payloadSnapshotsDeleted: number;
     totalDeleted: number;
   };
@@ -1153,6 +1209,53 @@ export function createConsoleRoutes<
     return Number(result?.numDeletedRows ?? 0);
   };
 
+  const pruneRealtimeEventsByAge = async (): Promise<number> => {
+    if (requestEventsMaxAgeMs <= 0) {
+      return 0;
+    }
+
+    const cutoffDate = new Date(Date.now() - requestEventsMaxAgeMs);
+    const result = await db
+      .deleteFrom('sync_realtime_events')
+      .where('created_at', '<', cutoffDate.toISOString())
+      .executeTakeFirst();
+    return Number(result?.numDeletedRows ?? 0);
+  };
+
+  const pruneRealtimeEventsByCount = async (): Promise<number> => {
+    if (requestEventsMaxRows <= 0) {
+      return 0;
+    }
+
+    const countRow = await db
+      .selectFrom('sync_realtime_events')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+    const total = coerceNumber(countRow?.total) ?? 0;
+    if (total <= requestEventsMaxRows) {
+      return 0;
+    }
+
+    const cutoffRow = await db
+      .selectFrom('sync_realtime_events')
+      .select(['event_id'])
+      .orderBy('event_id', 'desc')
+      .offset(requestEventsMaxRows)
+      .limit(1)
+      .executeTakeFirst();
+
+    const cutoffEventId = coerceNumber(cutoffRow?.event_id);
+    if (cutoffEventId === null) {
+      return 0;
+    }
+
+    const result = await db
+      .deleteFrom('sync_realtime_events')
+      .where('event_id', '<=', cutoffEventId)
+      .executeTakeFirst();
+    return Number(result?.numDeletedRows ?? 0);
+  };
+
   const pruneConsoleEvents = async (): Promise<PruneEventsRunResult> => {
     const requestEventsDeletedByAge = await pruneRequestEventsByAge();
     const requestEventsDeletedByCount = await pruneRequestEventsByCount();
@@ -1164,12 +1267,19 @@ export function createConsoleRoutes<
     const operationEventsDeleted =
       operationEventsDeletedByAge + operationEventsDeletedByCount;
 
+    const realtimeEventsDeletedByAge = await pruneRealtimeEventsByAge();
+    const realtimeEventsDeletedByCount = await pruneRealtimeEventsByCount();
+    const realtimeEventsDeleted =
+      realtimeEventsDeletedByAge + realtimeEventsDeletedByCount;
+
     const payloadSnapshotsDeleted = await deleteUnreferencedPayloadSnapshots();
-    const totalDeleted = requestEventsDeleted + operationEventsDeleted;
+    const totalDeleted =
+      requestEventsDeleted + operationEventsDeleted + realtimeEventsDeleted;
 
     return {
       requestEventsDeleted,
       operationEventsDeleted,
+      realtimeEventsDeleted,
       payloadSnapshotsDeleted,
       totalDeleted,
     };
@@ -1220,6 +1330,7 @@ export function createConsoleRoutes<
           deletedCount: result.totalDeleted,
           requestEventsDeleted: result.requestEventsDeleted,
           operationEventsDeleted: result.operationEventsDeleted,
+          realtimeEventsDeleted: result.realtimeEventsDeleted,
           payloadDeletedCount: result.payloadSnapshotsDeleted,
         });
       })
@@ -2426,6 +2537,23 @@ export function createConsoleRoutes<
         summarizeSubscriptionEvidence(relevantEvents);
       const requestEvidence = summarizeRequestEvidence(relevantEvents);
       const snapshotEvidence = summarizeSnapshotEvidence(relevantEvents);
+      const realtimeRows = clientId
+        ? await db
+            .selectFrom('sync_realtime_events')
+            .select([
+              'event_id',
+              'event_type',
+              'reason',
+              'cursor',
+              'latest_cursor',
+            ])
+            .where('partition_id', '=', partitionId)
+            .where('client_id', '=', clientId)
+            .orderBy('created_at', 'desc')
+            .limit(Math.min(Math.max(limit * 5, 25), 200))
+            .execute()
+        : [];
+      const realtimeEvidence = summarizeRealtimeEvidence(realtimeRows);
 
       const latestClientEvent = relevantEvents.find(
         (event) => !clientId || event.clientId === clientId
@@ -2557,6 +2685,7 @@ export function createConsoleRoutes<
         subscriptionEvidence,
         requestEvidence,
         snapshotEvidence,
+        realtimeEvidence,
         history,
         relevantEvents,
         findings,
@@ -3865,10 +3994,17 @@ export function createConsoleRoutes<
         deletedCount,
         requestEventsDeleted: pruneResult.requestEventsDeleted,
         operationEventsDeleted: pruneResult.operationEventsDeleted,
+        realtimeEventsDeleted: pruneResult.realtimeEventsDeleted,
         payloadDeletedCount: pruneResult.payloadSnapshotsDeleted,
       });
 
-      const result: ConsolePruneEventsResult = { deletedCount };
+      const result: ConsolePruneEventsResult = {
+        deletedCount,
+        requestEventsDeleted: pruneResult.requestEventsDeleted,
+        operationEventsDeleted: pruneResult.operationEventsDeleted,
+        realtimeEventsDeleted: pruneResult.realtimeEventsDeleted,
+        payloadDeletedCount: pruneResult.payloadSnapshotsDeleted,
+      };
       return c.json(result, 200);
     }
   );

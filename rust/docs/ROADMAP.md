@@ -509,7 +509,7 @@ read-only review:
     storing row payloads. Console-enabled servers now persist redacted realtime
     websocket lifecycle/recovery events, and row investigation surfaces
     connected, ACK, pull-required, rejected, and error counts for the selected
-    client.
+    client. Console event pruning covers the realtime event table as well.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
 - `[x]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
   - Browser worker error payloads now carry stable public error `code`,

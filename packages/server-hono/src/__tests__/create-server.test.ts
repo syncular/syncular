@@ -358,6 +358,44 @@ describe('createSyncServer console configuration', () => {
     throw new Error(`Timed out waiting for payload snapshot: ${payloadRef}`);
   }
 
+  async function waitForRealtimeEventRows(clientId: string): Promise<
+    Array<{
+      event_type: string;
+      reason: string | null;
+      cursor: number | string | null;
+      latest_cursor: number | string | null;
+    }>
+  > {
+    for (let attempt = 0; attempt < 40; attempt++) {
+      try {
+        const result = await sql<{
+          event_type: string;
+          reason: string | null;
+          cursor: number | string | null;
+          latest_cursor: number | string | null;
+        }>`
+          SELECT event_type, reason, cursor, latest_cursor
+          FROM sync_realtime_events
+          WHERE client_id = ${clientId}
+          ORDER BY event_id ASC
+        `.execute(db);
+
+        if (result.rows.length > 0) {
+          return result.rows;
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (!message.includes('sync_realtime_events')) {
+          throw error;
+        }
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+
+    throw new Error(`Timed out waiting for realtime events: ${clientId}`);
+  }
+
   it('rejects oversized sync JSON request bodies with a stable limit envelope', async () => {
     const options = createOptions();
     const server = createSyncServer({
@@ -1375,6 +1413,7 @@ describe('createSyncServer console configuration', () => {
   });
 
   it('sends a catch-up wakeup when a realtime reconnect lags the server cursor', async () => {
+    process.env.SYNC_CONSOLE_TOKEN = 'env-token';
     const options = createOptions();
     const server = createSyncServer(options);
     const app = new Hono();
@@ -1402,6 +1441,7 @@ describe('createSyncServer console configuration', () => {
     });
     const realtimeServer = createSyncServer({
       ...options,
+      console: {},
       upgradeWebSocket,
     });
     const realtimeApp = new Hono();
@@ -1431,6 +1471,30 @@ describe('createSyncServer console configuration', () => {
         requiresPull: true,
       }),
     });
+    const realtimeRows = (await waitForRealtimeEventRows('client-catchup')).map(
+      (row) => ({
+        ...row,
+        cursor: row.cursor === null ? null : Number(row.cursor),
+        latest_cursor:
+          row.latest_cursor === null ? null : Number(row.latest_cursor),
+      })
+    );
+    expect(realtimeRows).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          event_type: 'connected',
+          reason: 'requires_sync',
+          cursor: 0,
+          latest_cursor: 1,
+        }),
+        expect.objectContaining({
+          event_type: 'pull_required',
+          reason: 'reconnect-catchup',
+          cursor: 0,
+          latest_cursor: 1,
+        }),
+      ])
+    );
   });
 
   it('requires pull on reconnect when no verified websocket delta pack exists', async () => {

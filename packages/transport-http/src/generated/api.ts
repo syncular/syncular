@@ -2175,6 +2175,20 @@ export interface operations {
                             artifactCount: number;
                             artifactBytes: number;
                         };
+                        realtimeEvidence: {
+                            matchingEventCount: number;
+                            connectedEventCount: number;
+                            pullRequiredEventCount: number;
+                            ackEventCount: number;
+                            rejectedEventCount: number;
+                            errorEventCount: number;
+                            latestEventId: number | null;
+                            latestEventType: string | null;
+                            latestReason: string | null;
+                            latestCursor: number | null;
+                            latestServerCursor: number | null;
+                            latestPullRequiredReason: string | null;
+                        };
                         history: {
                             commitSeq: number;
                             actorId: string;
@@ -3293,6 +3307,10 @@ export interface operations {
                 content: {
                     "application/json": {
                         deletedCount: number;
+                        requestEventsDeleted: number;
+                        operationEventsDeleted: number;
+                        realtimeEventsDeleted: number;
+                        payloadDeletedCount: number;
                     };
                 };
             };

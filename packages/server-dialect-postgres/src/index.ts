@@ -1144,6 +1144,35 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       'CREATE INDEX idx_sync_operation_events_type ON sync_operation_events(operation_type)'
     );
 
+    await sql`
+      CREATE TABLE IF NOT EXISTS sync_realtime_events (
+        event_id BIGSERIAL PRIMARY KEY,
+        partition_id TEXT NOT NULL DEFAULT 'default',
+        actor_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        transport_path TEXT NOT NULL DEFAULT 'direct',
+        event_type TEXT NOT NULL,
+        reason TEXT,
+        cursor BIGINT,
+        latest_cursor BIGINT,
+        commit_seq BIGINT,
+        scope_count INTEGER,
+        skipped_count INTEGER,
+        sync_pack_encoding TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `.execute(db);
+    await this.ensureIndex(
+      db,
+      'idx_sync_realtime_events_created_at',
+      'CREATE INDEX idx_sync_realtime_events_created_at ON sync_realtime_events(created_at DESC)'
+    );
+    await this.ensureIndex(
+      db,
+      'idx_sync_realtime_events_partition_client_created_at',
+      'CREATE INDEX idx_sync_realtime_events_partition_client_created_at ON sync_realtime_events(partition_id, client_id, created_at DESC)'
+    );
+
     // API Keys table
     await sql`
       CREATE TABLE IF NOT EXISTS sync_api_keys (

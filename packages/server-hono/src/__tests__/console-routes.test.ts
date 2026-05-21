@@ -57,6 +57,23 @@ interface SyncOperationEventsTable {
   created_at: Generated<string>;
 }
 
+interface SyncRealtimeEventsTable {
+  event_id: Generated<number>;
+  partition_id: string;
+  actor_id: string;
+  client_id: string;
+  transport_path: 'direct' | 'relay';
+  event_type: string;
+  reason: string | null;
+  cursor: number | null;
+  latest_cursor: number | null;
+  commit_seq: number | null;
+  scope_count: number | null;
+  skipped_count: number | null;
+  sync_pack_encoding: string | null;
+  created_at: Generated<string>;
+}
+
 interface SyncApiKeysTable {
   key_id: string;
   key_hash: string;
@@ -75,6 +92,7 @@ interface TestDb extends SyncCoreDb {
   sync_request_events: SyncRequestEventsTable;
   sync_request_payloads: SyncRequestPayloadsTable;
   sync_operation_events: SyncOperationEventsTable;
+  sync_realtime_events: SyncRealtimeEventsTable;
   sync_api_keys: SyncApiKeysTable;
 }
 
@@ -1245,6 +1263,56 @@ describe('console timeline route filters', () => {
         created_at: atIso(59),
       })
       .execute();
+    await db
+      .insertInto('sync_realtime_events')
+      .values([
+        {
+          partition_id: 'default',
+          actor_id: 'actor-investigate',
+          client_id: 'client-investigate',
+          transport_path: 'direct',
+          event_type: 'connected',
+          reason: 'requires_sync',
+          cursor: commitSeq - 2,
+          latest_cursor: commitSeq,
+          commit_seq: null,
+          scope_count: 1,
+          skipped_count: null,
+          sync_pack_encoding: 'binary-sync-pack-v1',
+          created_at: atIso(60),
+        },
+        {
+          partition_id: 'default',
+          actor_id: 'actor-investigate',
+          client_id: 'client-investigate',
+          transport_path: 'direct',
+          event_type: 'pull_required',
+          reason: 'reconnect-catchup',
+          cursor: commitSeq - 2,
+          latest_cursor: commitSeq,
+          commit_seq: commitSeq,
+          scope_count: 1,
+          skipped_count: null,
+          sync_pack_encoding: 'binary-sync-pack-v1',
+          created_at: atIso(61),
+        },
+        {
+          partition_id: 'default',
+          actor_id: 'actor-investigate',
+          client_id: 'client-investigate',
+          transport_path: 'direct',
+          event_type: 'ack',
+          reason: null,
+          cursor: commitSeq,
+          latest_cursor: commitSeq,
+          commit_seq: null,
+          scope_count: 1,
+          skipped_count: null,
+          sync_pack_encoding: 'binary-sync-pack-v1',
+          created_at: atIso(62),
+        },
+      ])
+      .execute();
 
     const response = await requestRowInvestigation('tasks', 'row-investigate', {
       partitionId: 'default',
@@ -1283,6 +1351,16 @@ describe('console timeline route filters', () => {
         chunkBytes: number;
         artifactCount: number;
         artifactBytes: number;
+      };
+      realtimeEvidence: {
+        matchingEventCount: number;
+        connectedEventCount: number;
+        pullRequiredEventCount: number;
+        ackEventCount: number;
+        latestEventType: string | null;
+        latestCursor: number | null;
+        latestServerCursor: number | null;
+        latestPullRequiredReason: string | null;
       };
       findings: Array<{ code: string }>;
       history: Array<{ fields: string[]; rowJson?: unknown }>;
@@ -1323,6 +1401,16 @@ describe('console timeline route filters', () => {
       chunkBytes: 256,
       artifactCount: 1,
       artifactBytes: 1024,
+    });
+    expect(payload.realtimeEvidence).toMatchObject({
+      matchingEventCount: 3,
+      connectedEventCount: 1,
+      pullRequiredEventCount: 1,
+      ackEventCount: 1,
+      latestEventType: 'ack',
+      latestCursor: commitSeq,
+      latestServerCursor: commitSeq,
+      latestPullRequiredReason: 'reconnect-catchup',
     });
     expect(payload.findings.map((finding) => finding.code)).toEqual(
       expect.arrayContaining([
@@ -2405,6 +2493,40 @@ describe('console timeline route filters', () => {
       .select(({ fn }) => fn.countAll().as('total'))
       .executeTakeFirst();
     expect(Number(operationCountRow?.total ?? 0)).toBe(2);
+  });
+
+  it('prunes realtime events during /events/prune retention', async () => {
+    await db
+      .insertInto('sync_realtime_events')
+      .values({
+        partition_id: 'default',
+        actor_id: 'actor-old',
+        client_id: 'client-old',
+        transport_path: 'direct',
+        event_type: 'pull_required',
+        reason: 'reconnect-catchup',
+        cursor: 1,
+        latest_cursor: 2,
+        commit_seq: 2,
+        scope_count: 1,
+        skipped_count: null,
+        sync_pack_encoding: 'binary-sync-pack-v1',
+        created_at: '2000-01-01T00:00:00.000Z',
+      })
+      .execute();
+
+    const response = await requestPruneEvents();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      realtimeEventsDeleted: 1,
+    });
+
+    const oldRealtime = await db
+      .selectFrom('sync_realtime_events')
+      .select(['event_id'])
+      .where('client_id', '=', 'client-old')
+      .executeTakeFirst();
+    expect(oldRealtime).toBeUndefined();
   });
 
   it('runs automatic event pruning cadence using maintenance config', async () => {

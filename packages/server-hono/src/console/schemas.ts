@@ -201,6 +201,25 @@ export type ConsoleRowInvestigationSnapshotEvidence = z.infer<
   typeof ConsoleRowInvestigationSnapshotEvidenceSchema
 >;
 
+export const ConsoleRowInvestigationRealtimeEvidenceSchema = z.object({
+  matchingEventCount: z.number().int().nonnegative(),
+  connectedEventCount: z.number().int().nonnegative(),
+  pullRequiredEventCount: z.number().int().nonnegative(),
+  ackEventCount: z.number().int().nonnegative(),
+  rejectedEventCount: z.number().int().nonnegative(),
+  errorEventCount: z.number().int().nonnegative(),
+  latestEventId: z.number().int().nullable(),
+  latestEventType: z.string().nullable(),
+  latestReason: z.string().nullable(),
+  latestCursor: z.number().int().nullable(),
+  latestServerCursor: z.number().int().nullable(),
+  latestPullRequiredReason: z.string().nullable(),
+});
+
+export type ConsoleRowInvestigationRealtimeEvidence = z.infer<
+  typeof ConsoleRowInvestigationRealtimeEvidenceSchema
+>;
+
 export const ConsoleRequestEventResponseSummarySchema = z
   .object({
     subscriptionCount: z.number().int().nonnegative().optional(),
@@ -399,6 +418,7 @@ export const ConsoleRowInvestigationResponseSchema = z.object({
   subscriptionEvidence: ConsoleRowInvestigationSubscriptionEvidenceSchema,
   requestEvidence: ConsoleRowInvestigationRequestEvidenceSchema,
   snapshotEvidence: ConsoleRowInvestigationSnapshotEvidenceSchema,
+  realtimeEvidence: ConsoleRowInvestigationRealtimeEvidenceSchema,
   history: z.array(ConsoleRowHistoryEntrySchema),
   relevantEvents: z.array(ConsoleRequestEventSchema),
   findings: z.array(ConsoleRowInvestigationFindingSchema),
@@ -438,6 +458,10 @@ export type ConsoleClearEventsResult = z.infer<
 
 export const ConsolePruneEventsResultSchema = z.object({
   deletedCount: z.number().int(),
+  requestEventsDeleted: z.number().int().nonnegative(),
+  operationEventsDeleted: z.number().int().nonnegative(),
+  realtimeEventsDeleted: z.number().int().nonnegative(),
+  payloadDeletedCount: z.number().int().nonnegative(),
 });
 
 export type ConsolePruneEventsResult = z.infer<

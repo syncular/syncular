@@ -964,6 +964,37 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
     await sql`CREATE INDEX IF NOT EXISTS idx_sync_operation_events_type
       ON sync_operation_events(operation_type)`.execute(db);
 
+    await db.schema
+      .createTable('sync_realtime_events')
+      .ifNotExists()
+      .addColumn('event_id', 'integer', (col) =>
+        col.primaryKey().autoIncrement()
+      )
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('actor_id', 'text', (col) => col.notNull())
+      .addColumn('client_id', 'text', (col) => col.notNull())
+      .addColumn('transport_path', 'text', (col) =>
+        col.notNull().defaultTo('direct')
+      )
+      .addColumn('event_type', 'text', (col) => col.notNull())
+      .addColumn('reason', 'text')
+      .addColumn('cursor', 'integer')
+      .addColumn('latest_cursor', 'integer')
+      .addColumn('commit_seq', 'integer')
+      .addColumn('scope_count', 'integer')
+      .addColumn('skipped_count', 'integer')
+      .addColumn('sync_pack_encoding', 'text')
+      .addColumn('created_at', 'text', (col) => col.notNull().defaultTo(nowIso))
+      .execute();
+    await sql`CREATE INDEX IF NOT EXISTS idx_sync_realtime_events_created_at
+      ON sync_realtime_events(created_at DESC)`.execute(db);
+    await sql`CREATE INDEX IF NOT EXISTS idx_sync_realtime_events_partition_client_created_at
+      ON sync_realtime_events(partition_id, client_id, created_at DESC)`.execute(
+      db
+    );
+
     // API Keys table
     await db.schema
       .createTable('sync_api_keys')

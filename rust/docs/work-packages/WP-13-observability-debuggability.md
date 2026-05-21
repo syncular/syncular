@@ -205,9 +205,14 @@ inline rows, chunk refs, chunk bytes, artifact refs, and artifact bytes. Row
 investigation aggregates that into `snapshotEvidence`, giving a redacted
 bootstrap transport hint for artifact/chunk troubleshooting.
 
-Next: add realtime recovery drilldowns only when the server persists that
-evidence explicitly. Do not infer missing-row causes from app tables or add
-payload capture by default.
+Realtime websocket lifecycle/recovery evidence now has durable, redacted server
+persistence when console event recording is enabled. Row investigation surfaces
+client-level `realtimeEvidence` for connected, pull-required, ACK, rejected, and
+error counts plus latest cursor/reason metadata.
+
+Next: broaden realtime evidence only if apps need per-row or per-scope matching
+and the server can persist that without storing raw scope values. Do not infer
+missing-row causes from app tables or add payload capture by default.
 
 ## Progress
 
@@ -289,6 +294,12 @@ payload capture by default.
   investigation: inline row count, chunk count/bytes, artifact count/bytes, and
   page count. The console page now shows a redacted bootstrap evidence card
   without storing row payloads.
+- Added durable `sync_realtime_events` persistence for console-enabled servers.
+  The sync route records redacted websocket connected, disconnected, error,
+  rejected, pull-required, and ACK events. Row investigation now includes
+  `realtimeEvidence`, and the console page shows a realtime recovery card. The
+  console event-pruning path now prunes realtime events with the same retention
+  limits and reports realtime deletion counts.
 - Generated OpenAPI types/docs for the row investigation endpoint so the
   console consumes it through the normal transport contract.
 - Gates:
@@ -309,6 +320,15 @@ payload capture by default.
   `bun test packages/server-hono/src/__tests__/console-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts`,
   `bun run --cwd packages/server-hono tsgo`, and
   `bun run --cwd packages/console tsgo` passed after the snapshot-evidence
+  slice.
+- Gates:
+  `bunx biome check packages/server-hono/src/routes.ts packages/server-hono/src/console/routes.ts packages/server-hono/src/console/schemas.ts packages/server-hono/src/__tests__/console-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts packages/server-dialect-postgres/src/index.ts packages/server-dialect-sqlite/src/index.ts packages/server-dialect-sqlite/src/index.test.ts packages/console/src/pages/RowInvestigation.tsx`,
+  `bun test packages/server-hono/src/__tests__/console-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts`,
+  `bun test packages/server-dialect-sqlite/src/index.test.ts`,
+  `bun run --cwd packages/server-hono tsgo`,
+  `bun run --cwd packages/server-dialect-sqlite tsgo`,
+  `bun run --cwd packages/server-dialect-postgres tsgo`, and
+  `bun run --cwd packages/console tsgo` passed after the realtime-evidence
   slice.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
   passed with `33` smoke tests after the diagnostic assertion slice.
