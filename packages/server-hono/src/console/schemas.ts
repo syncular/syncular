@@ -45,24 +45,6 @@ export const ConsoleCommitListItemSchema = z.object({
 
 export type ConsoleCommitListItem = z.infer<typeof ConsoleCommitListItemSchema>;
 
-export const ConsoleChangeSchema = z.object({
-  changeId: z.number().int(),
-  table: z.string(),
-  rowId: z.string(),
-  op: z.enum(['upsert', 'delete']),
-  rowJson: z.unknown().nullable(),
-  rowVersion: z.number().int().nullable(),
-  scopes: z.record(z.string(), z.unknown()),
-});
-
-export type ConsoleChange = z.infer<typeof ConsoleChangeSchema>;
-
-export const ConsoleCommitDetailSchema = ConsoleCommitListItemSchema.extend({
-  changes: z.array(ConsoleChangeSchema),
-});
-
-export type ConsoleCommitDetail = z.infer<typeof ConsoleCommitDetailSchema>;
-
 export const ConsoleAuditChangeKindSchema = z.enum([
   'app_row',
   'delete',
@@ -76,6 +58,27 @@ export const ConsoleAuditChangeRedactionSchema = z.object({
   payload: z.literal('omitted'),
   reason: z.literal('audit_redacted_by_default'),
 });
+
+export const ConsoleChangeSchema = z.object({
+  changeId: z.number().int(),
+  table: z.string(),
+  rowId: z.string(),
+  op: z.enum(['upsert', 'delete']),
+  rowVersion: z.number().int().nullable(),
+  fields: z.array(z.string()),
+  scopeFields: z.array(z.string()),
+  changeKind: ConsoleAuditChangeKindSchema,
+  sensitiveFields: z.array(z.string()),
+  redaction: ConsoleAuditChangeRedactionSchema,
+});
+
+export type ConsoleChange = z.infer<typeof ConsoleChangeSchema>;
+
+export const ConsoleCommitDetailSchema = ConsoleCommitListItemSchema.extend({
+  changes: z.array(ConsoleChangeSchema),
+});
+
+export type ConsoleCommitDetail = z.infer<typeof ConsoleCommitDetailSchema>;
 
 export const ConsoleRowHistoryEntrySchema = z.object({
   commitSeq: z.number().int(),
