@@ -410,12 +410,13 @@ read-only review:
     deterministic ES256 testkit issue/verify helpers now exist, with valid,
     expired, and tampered-token smoke coverage. Next narrow slice is local lease
     storage plus outbox provenance behind a migration, not a server rewrite.
-- `[~]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
+- `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus
     schema-mismatch smokes, so app suites can assert stable diagnostic contracts
-    without parsing messages. The remaining large piece is dedicated console
-    investigation UI/drilldowns.
+    without parsing messages. Runtime/browser/native/support-bundle
+    observability is complete enough for the current Rust-client foundation; the
+    remaining large piece is deferred console investigation UI/drilldowns.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
 - `[x]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
   - Browser worker error payloads now carry stable public error `code`,

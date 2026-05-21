@@ -1,6 +1,6 @@
 # WP-13 Observability And Debuggability
 
-Status: `[~]` in progress
+Status: `[!]` deferred console drilldowns
 
 ## Goal
 
@@ -177,11 +177,12 @@ snapshot first:
 ## Next Action
 
 First-slice correlation work is complete enough for the current runtime/API
-surface.
+surface. Runtime, browser, native, support-bundle, health-check, and testkit
+diagnostic helpers are in place.
 
 Next: move to the console investigation UI work only when we are ready to add
-dedicated diagnostic drilldowns. Until then, continue with the next work
-package from the Rust-first roadmap.
+dedicated diagnostic drilldowns. Until then, treat WP-13 as deferred rather
+than active local Rust-client work.
 
 ## Progress
 
@@ -238,5 +239,8 @@ package from the Rust-first roadmap.
   `event.error.code`, then used them in the native auth-expired and
   schema-mismatch smokes. App suites can now assert observability contracts
   without parsing human-readable messages.
+- Deferred: the remaining acceptance gap is dedicated console investigation
+  UI/drilldowns. That is a product/UI work item, not a missing Rust runtime,
+  native binding, or testkit foundation slice.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
   passed with `33` smoke tests after the diagnostic assertion slice.
