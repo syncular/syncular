@@ -1,5 +1,6 @@
 export * from './client-config';
 export * from './client';
+export * from './command-history';
 export * from './database';
 export * from './errors';
 export * from './mutations';

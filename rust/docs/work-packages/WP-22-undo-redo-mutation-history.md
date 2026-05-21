@@ -1,6 +1,6 @@
 # WP-22 Undo/Redo Mutation History
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -65,6 +65,30 @@ and local SQLite reads already exist. Those are enough for a first undo/redo
 slice over normal row create/update/delete operations, but collaborative undo
 requires explicit conflict-aware semantics.
 
+First browser/generated-client slice is implemented:
+
+- `@syncular/client-rust` exports a generic command-history controller for the
+  browser TypeScript client.
+- Generated TypeScript app clients wire `database.commandHistory` and wrap
+  `database.mutations` / `database.leasedMutations`.
+- Command history records before/after row snapshots and persists command
+  groups in local SQLite table `sync_command_history`.
+- Undo/redo replays snapshots through the normal generated mutation API, so
+  each undo/redo produces a normal local outbox commit instead of rewriting
+  commits, cursors, roots, or audit history.
+- Stale-row undo/redo fails with stable
+  `sync.command_history_conflict`.
+- The first proof covers `update -> undo -> redo` in the generated todo
+  TypeScript client and verifies three normal mutation intents.
+
+Gates:
+
+- `bun test rust/bindings/browser/src/generated-app-conformance.test.ts`
+- `bun run --cwd rust/bindings/browser test`
+- `bun run --cwd rust/bindings/browser tsgo`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+
 ## First Slice
 
 Implement generated inverse command records for basic row create/update/delete
@@ -79,6 +103,11 @@ in one TypeScript generated example:
 
 ## Next Action
 
-Design the command-history schema and one generated-client test proving
-`update -> undo -> redo` creates three normal mutation intents instead of
-rewriting history.
+Extend the command-history proof beyond browser TypeScript:
+
+1. Add native/Rust command-history storage and generated API alignment.
+2. Add create/delete/batch coverage, including soft-delete tables.
+3. Decide which blob, encrypted-field, and CRDT-field mutations are safe to
+   invert automatically and reject unsafe cases with stable diagnostics.
+4. Add sync/conflict tests proving undo-generated commits interact with server
+   validation and conflict persistence through the normal outbox path.

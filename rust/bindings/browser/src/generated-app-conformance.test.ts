@@ -21,6 +21,10 @@ import {
   createSyncularV2Dialect,
   createSyncularV2Mutations,
 } from './database';
+import {
+  SyncularV2CommandHistoryError,
+  createSyncularV2CommandHistory,
+} from './command-history';
 import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './runtime-contract';
 import type { SyncularV2Client, SyncularV2LiveQueryEvent } from './types';
 
@@ -305,6 +309,135 @@ describe('generated app conformance', () => {
     expect(leasedBatch).toHaveLength(1);
     expect(leasedBatch?.[0]?.operation.row_id).toBe('task-leased-browser');
   });
+
+  it('records generated command history and replays undo and redo as normal mutations', async () => {
+    const state = createCommandHistoryFakeState();
+    state.rows.set('tasks:task-history', {
+      id: 'task-history',
+      title: 'History task',
+      completed: 0,
+      user_id: 'user-rust',
+      project_id: 'project-rust',
+      server_version: 0,
+      image: null,
+      title_yjs_state: null,
+    });
+    const client = commandHistoryFakeClient(state);
+    const baseMutationApi = createSyncularV2Mutations<SyncularAppDb>({
+      client,
+      tableConfig: syncularGeneratedTableConfig,
+    });
+    const commandHistory = createSyncularV2CommandHistory<SyncularAppDb>({
+      client,
+      tableConfig: syncularGeneratedTableConfig,
+      mutations: baseMutationApi,
+      leasedMutations: baseMutationApi,
+      idFactory: () => 'cmd-history-1',
+      nowMs: () => 1000 + state.nowTick++,
+    });
+    const mutations = commandHistory.wrapMutations(
+      baseMutationApi,
+      'mutations'
+    ) as unknown as SyncularAppMutations;
+
+    const update = await mutations.tasks.update('task-history', {
+      completed: 1,
+    });
+    expect(update.clientCommitId).toBe('commit-history-1');
+    expect(await commandHistory.history.canUndo()).toBe(true);
+
+    const undo = await commandHistory.history.undoLast();
+    expect(undo).toEqual({
+      commandId: 'cmd-history-1',
+      commitId: 'commit-history-2',
+      clientCommitId: 'commit-history-2',
+    });
+    expect(state.rows.get('tasks:task-history')?.completed).toBe(0);
+
+    const redo = await commandHistory.history.redoLast();
+    expect(redo).toEqual({
+      commandId: 'cmd-history-1',
+      commitId: 'commit-history-3',
+      clientCommitId: 'commit-history-3',
+    });
+    expect(state.rows.get('tasks:task-history')?.completed).toBe(1);
+    expect(state.appliedOperations).toEqual([
+      expect.objectContaining({
+        table: 'tasks',
+        row_id: 'task-history',
+        op: 'upsert',
+        payload: { completed: 1 },
+      }),
+      expect.objectContaining({
+        table: 'tasks',
+        row_id: 'task-history',
+        op: 'upsert',
+        payload: {
+          title: 'History task',
+          completed: 0,
+          user_id: 'user-rust',
+          project_id: 'project-rust',
+          image: null,
+        },
+      }),
+      expect.objectContaining({
+        table: 'tasks',
+        row_id: 'task-history',
+        op: 'upsert',
+        payload: {
+          title: 'History task',
+          completed: 1,
+          user_id: 'user-rust',
+          project_id: 'project-rust',
+          image: null,
+        },
+      }),
+    ]);
+  });
+
+  it('fails command-history undo when the current row no longer matches the recorded command', async () => {
+    const state = createCommandHistoryFakeState();
+    state.rows.set('tasks:task-conflict', {
+      id: 'task-conflict',
+      title: 'History conflict task',
+      completed: 0,
+      user_id: 'user-rust',
+      project_id: 'project-rust',
+      server_version: 0,
+      image: null,
+      title_yjs_state: null,
+    });
+    const client = commandHistoryFakeClient(state);
+    const baseMutationApi = createSyncularV2Mutations<SyncularAppDb>({
+      client,
+      tableConfig: syncularGeneratedTableConfig,
+    });
+    const commandHistory = createSyncularV2CommandHistory<SyncularAppDb>({
+      client,
+      tableConfig: syncularGeneratedTableConfig,
+      mutations: baseMutationApi,
+      leasedMutations: baseMutationApi,
+      idFactory: () => 'cmd-conflict-1',
+      nowMs: () => 2000 + state.nowTick++,
+    });
+    const mutations = commandHistory.wrapMutations(
+      baseMutationApi,
+      'mutations'
+    ) as unknown as SyncularAppMutations;
+
+    await mutations.tasks.update('task-conflict', { completed: 1 });
+    const conflictingRow = state.rows.get('tasks:task-conflict')!;
+    expect(conflictingRow).toBeTruthy();
+    state.rows.set('tasks:task-conflict', {
+      ...conflictingRow,
+      completed: 2,
+    });
+
+    await expect(commandHistory.history.undoLast()).rejects.toMatchObject({
+      code: 'sync.command_history_conflict',
+      commandId: 'cmd-conflict-1',
+    } satisfies Partial<SyncularV2CommandHistoryError>);
+  });
 });
 
 function fakeClient(): SyncularV2Client {
@@ -474,4 +607,138 @@ function fakeClient(): SyncularV2Client {
       listeners.delete(queryId);
     },
   } satisfies SyncularV2Client;
+}
+
+function createCommandHistoryFakeState() {
+  return {
+    rows: new Map<string, Record<string, unknown>>(),
+    historyRows: [] as Array<{
+      id: string;
+      mutation_scope: string;
+      state: 'done' | 'undone';
+      entries_json: string;
+      client_commit_id: string;
+      undo_client_commit_id: string | null;
+      redo_client_commit_id: string | null;
+      created_at: number;
+      updated_at: number;
+    }>,
+    appliedOperations: [] as SyncOperation[],
+    commitSeq: 0,
+    nowTick: 0,
+  };
+}
+
+function commandHistoryFakeClient(
+  state: ReturnType<typeof createCommandHistoryFakeState>
+): SyncularV2Client & {
+  executeUnsafeSql<Row extends Record<string, unknown> = Record<string, unknown>>(
+    sql: string,
+    params?: readonly unknown[]
+  ): Promise<{ rows: Row[]; numAffectedRows?: number }>;
+} {
+  return {
+    ...fakeClient(),
+    async executeSql<Row extends Record<string, unknown> = Record<string, unknown>>(
+      sql: string,
+      params: readonly unknown[] = []
+    ) {
+      const normalized = sql.toLowerCase();
+      if (normalized.includes('from sync_command_history')) {
+        const wantedState = params[0];
+        const rows = state.historyRows
+          .filter((row) => row.state === wantedState)
+          .sort(
+            (a, b) =>
+              b.updated_at - a.updated_at ||
+              b.created_at - a.created_at ||
+              b.id.localeCompare(a.id)
+          );
+        return { rows: rows.slice(0, 1) as Row[] };
+      }
+      const table = normalized.includes('from "tasks"') ? 'tasks' : null;
+      if (table) {
+        const row = state.rows.get(`${table}:${String(params[0])}`);
+        return { rows: (row ? [{ ...row }] : []) as Row[] };
+      }
+      return { rows: [] as Row[] };
+    },
+    async executeUnsafeSql<
+      Row extends Record<string, unknown> = Record<string, unknown>,
+    >(sql: string, params: readonly unknown[] = []) {
+      const normalized = sql.trim().toLowerCase();
+      if (
+        normalized.startsWith('create table') ||
+        normalized.startsWith('create index')
+      ) {
+        return { rows: [] as Row[] };
+      }
+      if (normalized.startsWith('delete from sync_command_history')) {
+        const before = state.historyRows.length;
+        state.historyRows = state.historyRows.filter(
+          (row) => row.state !== 'undone'
+        );
+        return {
+          rows: [] as Row[],
+          numAffectedRows: before - state.historyRows.length,
+        };
+      }
+      if (normalized.startsWith('insert into sync_command_history')) {
+        state.historyRows.push({
+          id: String(params[0]),
+          mutation_scope: String(params[1]),
+          state: 'done',
+          entries_json: String(params[2]),
+          client_commit_id: String(params[3]),
+          undo_client_commit_id: null,
+          redo_client_commit_id: null,
+          created_at: Number(params[4]),
+          updated_at: Number(params[5]),
+        });
+        return { rows: [] as Row[], numAffectedRows: 1 };
+      }
+      if (normalized.startsWith('update sync_command_history')) {
+        const nextState = params[0] as 'done' | 'undone';
+        const updatedAt = Number(params[1]);
+        const replayCommitId = String(params[2]);
+        const id = String(params[3]);
+        const row = state.historyRows.find((entry) => entry.id === id);
+        if (row) {
+          row.state = nextState;
+          row.updated_at = updatedAt;
+          if (nextState === 'undone') {
+            row.undo_client_commit_id = replayCommitId;
+          } else {
+            row.redo_client_commit_id = replayCommitId;
+          }
+        }
+        return { rows: [] as Row[], numAffectedRows: row ? 1 : 0 };
+      }
+      throw new Error(`unexpected unsafe SQL in command-history fake: ${sql}`);
+    },
+    async applyMutationsCommit(batch) {
+      state.commitSeq += 1;
+      for (const { operation, localRow } of batch) {
+        state.appliedOperations.push(operation);
+        const key = `${operation.table}:${operation.row_id}`;
+        if (operation.op === 'delete') {
+          state.rows.delete(key);
+          continue;
+        }
+        const existing = state.rows.get(key) ?? {};
+        const patch = objectRecordForTest(localRow ?? operation.payload);
+        state.rows.set(key, {
+          ...existing,
+          ...patch,
+          id: operation.row_id,
+        });
+      }
+      return `commit-history-${state.commitSeq}`;
+    },
+  };
+}
+
+function objectRecordForTest(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+  return { ...(value as Record<string, unknown>) };
 }
