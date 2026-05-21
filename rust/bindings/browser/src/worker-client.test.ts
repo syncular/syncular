@@ -530,6 +530,116 @@ describe('Syncular v2 worker client', () => {
     });
   });
 
+  it('emits blob upload queue stats through lifecycle events', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+    const lifecycleEvents: SyncularV2LifecycleState[] = [];
+    const blobUploadEvents: Array<{
+      pending: number;
+      uploading: number;
+      failed: number;
+    }> = [];
+    client.addEventListener('lifecycleChanged', (event) =>
+      lifecycleEvents.push(event)
+    );
+    client.addEventListener('blobUploadsChanged', (event) =>
+      blobUploadEvents.push(event)
+    );
+
+    const store = client.storeBlob(new Uint8Array([1, 2, 3]), {
+      mimeType: 'application/test',
+    });
+    expect(worker.messages[0]).toMatchObject({ type: 'storeBlob' });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        hash: `sha256:${'0'.repeat(64)}`,
+        size: 3,
+        mimeType: 'application/test',
+      },
+    });
+    await expect(store).resolves.toMatchObject({ size: 3 });
+
+    await waitForMessages(worker, 4);
+    expect(worker.messages.slice(1).map((message) => message.type)).toEqual([
+      'executeUnsafeSql',
+      'executeUnsafeSql',
+      'blobUploadQueueStats',
+    ]);
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { rows: [] },
+    });
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { rows: [{ unresolved: 0, resolved: 0, total: 0 }] },
+    });
+    worker.respond({
+      id: worker.messages[3]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { pending: 1, uploading: 0, failed: 0 },
+    });
+
+    await waitFor(() => blobUploadEvents.length > 0);
+    expect(blobUploadEvents.at(-1)).toEqual({
+      pending: 1,
+      uploading: 0,
+      failed: 0,
+    });
+    expect(lifecycleEvents.at(-1)).toMatchObject({
+      blobUploads: { pending: 1, uploading: 0, failed: 0 },
+      requiresAction: false,
+    });
+
+    const process = client.processBlobUploadQueue();
+    await waitForMessages(worker, 5);
+    expect(worker.messages[4]).toMatchObject({ type: 'processBlobUploadQueue' });
+    worker.respond({
+      id: worker.messages[4]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { uploaded: 0, failed: 1 },
+    });
+    await expect(process).resolves.toEqual({ uploaded: 0, failed: 1 });
+
+    await waitForMessages(worker, 8);
+    worker.respond({
+      id: worker.messages[5]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { rows: [] },
+    });
+    worker.respond({
+      id: worker.messages[6]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { rows: [{ unresolved: 0, resolved: 0, total: 0 }] },
+    });
+    worker.respond({
+      id: worker.messages[7]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { pending: 0, uploading: 0, failed: 1 },
+    });
+
+    await waitFor(() => blobUploadEvents.at(-1)?.failed === 1);
+    expect(lifecycleEvents.at(-1)).toMatchObject({
+      phase: 'degraded',
+      requiresAction: true,
+      blobUploads: { pending: 0, uploading: 0, failed: 1 },
+    });
+  });
+
   it('returns a redacted diagnostic snapshot for support tools', async () => {
     const worker = new FakeWorker();
     const client = new SyncularV2WorkerClient(worker.asWorker(), {
@@ -637,6 +747,13 @@ describe('Syncular v2 worker client', () => {
       ok: true,
       value: { rows: [{ unresolved: 1, resolved: 2, total: 3 }] },
     });
+    await waitForMessages(worker, 6);
+    worker.respond({
+      id: worker.messages[5]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { pending: 4, uploading: 0, failed: 1 },
+    });
 
     await expect(snapshot).resolves.toMatchObject({
       connection: {
@@ -670,6 +787,7 @@ describe('Syncular v2 worker client', () => {
       ],
       outboxStats: { pending: 2, total: 2 },
       conflictStats: { unresolved: 1, resolved: 2, total: 3 },
+      blobUploadStats: { pending: 4, uploading: 0, failed: 1 },
     });
     expect(JSON.stringify(await snapshot)).not.toContain('secret-user-id');
   });
@@ -1239,9 +1357,10 @@ describe('Syncular v2 worker client', () => {
       value: [],
     });
 
-    await waitForMessages(worker, 7);
+    await waitForMessages(worker, 8);
     expect(worker.messages[5]).toMatchObject({ type: 'executeUnsafeSql' });
     expect(worker.messages[6]).toMatchObject({ type: 'executeUnsafeSql' });
+    expect(worker.messages[7]).toMatchObject({ type: 'blobUploadQueueStats' });
     worker.respond({
       id: worker.messages[5]!.id,
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
@@ -1253,6 +1372,12 @@ describe('Syncular v2 worker client', () => {
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [{ unresolved: 0, resolved: 0, total: 0 }] },
+    });
+    worker.respond({
+      id: worker.messages[7]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { pending: 0, uploading: 0, failed: 0 },
     });
 
     await expect(resumePromise).resolves.toMatchObject({
@@ -1725,6 +1850,14 @@ async function waitForMessages(
   throw new Error(
     `expected ${count} worker messages, got ${worker.messages.length}`
   );
+}
+
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error('condition was not met');
 }
 
 function zeroBootstrapStatus(): SyncularV2BootstrapStatus {

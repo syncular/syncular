@@ -294,6 +294,12 @@ data class SyncularNativeLifecycleConflicts(
     val unresolved: Long = 0,
 )
 
+data class SyncularNativeLifecycleBlobUploads(
+    val pending: Long = 0,
+    val uploading: Long = 0,
+    val failed: Long = 0,
+)
+
 data class SyncularNativeLifecycleState(
     val phase: String,
     val online: Boolean = false,
@@ -302,6 +308,7 @@ data class SyncularNativeLifecycleState(
     val bootstrap: SyncularNativeLifecycleBootstrap? = null,
     val outbox: SyncularNativeLifecycleOutbox? = null,
     val conflicts: SyncularNativeLifecycleConflicts? = null,
+    val blobUploads: SyncularNativeLifecycleBlobUploads? = null,
 )
 
 data class SyncularNativeEvent(
@@ -553,6 +560,7 @@ private fun syncularDecodeNativeLifecycleState(value: JsonElement?): SyncularNat
     val bootstrap = state["bootstrap"]?.takeUnless { it is JsonNull }?.jsonObject
     val outbox = state["outbox"]?.takeUnless { it is JsonNull }?.jsonObject
     val conflicts = state["conflicts"]?.takeUnless { it is JsonNull }?.jsonObject
+    val blobUploads = state["blobUploads"]?.takeUnless { it is JsonNull }?.jsonObject
     return SyncularNativeLifecycleState(
         phase = state["phase"]?.jsonPrimitive?.content ?: "offline",
         online = state["online"]?.jsonPrimitive?.booleanOrNull ?: false,
@@ -567,6 +575,11 @@ private fun syncularDecodeNativeLifecycleState(value: JsonElement?): SyncularNat
         ) },
         outbox = outbox?.let { SyncularNativeLifecycleOutbox(pending = it["pending"]?.jsonPrimitive?.longOrNull ?: 0L) },
         conflicts = conflicts?.let { SyncularNativeLifecycleConflicts(unresolved = it["unresolved"]?.jsonPrimitive?.longOrNull ?: 0L) },
+        blobUploads = blobUploads?.let { SyncularNativeLifecycleBlobUploads(
+            pending = it["pending"]?.jsonPrimitive?.longOrNull ?: 0L,
+            uploading = it["uploading"]?.jsonPrimitive?.longOrNull ?: 0L,
+            failed = it["failed"]?.jsonPrimitive?.longOrNull ?: 0L,
+        ) },
     )
 }
 

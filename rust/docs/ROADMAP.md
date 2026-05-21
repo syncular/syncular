@@ -472,9 +472,13 @@ read-only review:
     generated Swift/Kotlin/Java BoltFFI wrappers. Hono/browser tests now cover
     foreground resume auth refresh and lifecycle-visible scope revocation, and
     native Swift/Kotlin/iOS/Android lifecycle smokes use `resumeFromBackground`
-    as the app-shell foreground recovery API. Next step is explicit
-    battery/network/background-budget policy for queued sync, blob, compaction,
-    and realtime recovery work.
+    as the app-shell foreground recovery API. Browser lifecycle now carries
+    `blobUploads` and emits `blobUploadsChanged`; native worker events emit
+    `BlobUploadsChanged` with matching lifecycle payloads, and generated
+    Swift/Kotlin event models decode them. The policy decision is that
+    foreground resume owns sync/realtime recovery, while blob uploads, blob
+    cache maintenance, and storage compaction remain explicit queued work
+    driven by host battery/network/background-budget policy.
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)

@@ -6614,6 +6614,11 @@ fn generate_swift_module(
     out.push_str("public struct SyncularNativeLifecycleConflicts: Decodable, Equatable {\n");
     out.push_str("    public let unresolved: UInt64\n");
     out.push_str("}\n\n");
+    out.push_str("public struct SyncularNativeLifecycleBlobUploads: Decodable, Equatable {\n");
+    out.push_str("    public let pending: Int64\n");
+    out.push_str("    public let uploading: Int64\n");
+    out.push_str("    public let failed: Int64\n");
+    out.push_str("}\n\n");
     out.push_str("public struct SyncularNativeLifecycleState: Decodable, Equatable {\n");
     out.push_str("    public let phase: String\n");
     out.push_str("    public let online: Bool\n");
@@ -6622,6 +6627,7 @@ fn generate_swift_module(
     out.push_str("    public let bootstrap: SyncularNativeLifecycleBootstrap?\n");
     out.push_str("    public let outbox: SyncularNativeLifecycleOutbox?\n");
     out.push_str("    public let conflicts: SyncularNativeLifecycleConflicts?\n");
+    out.push_str("    public let blobUploads: SyncularNativeLifecycleBlobUploads?\n");
     out.push_str("}\n\n");
     out.push_str("public struct SyncularNativeEvent: Decodable, Equatable {\n");
     out.push_str("    public let eventSeq: UInt64\n");
@@ -8295,6 +8301,11 @@ fn generate_kotlin_module(
     out.push_str("data class SyncularNativeLifecycleConflicts(\n");
     out.push_str("    val unresolved: Long = 0,\n");
     out.push_str(")\n\n");
+    out.push_str("data class SyncularNativeLifecycleBlobUploads(\n");
+    out.push_str("    val pending: Long = 0,\n");
+    out.push_str("    val uploading: Long = 0,\n");
+    out.push_str("    val failed: Long = 0,\n");
+    out.push_str(")\n\n");
     out.push_str("data class SyncularNativeLifecycleState(\n");
     out.push_str("    val phase: String,\n");
     out.push_str("    val online: Boolean = false,\n");
@@ -8303,6 +8314,7 @@ fn generate_kotlin_module(
     out.push_str("    val bootstrap: SyncularNativeLifecycleBootstrap? = null,\n");
     out.push_str("    val outbox: SyncularNativeLifecycleOutbox? = null,\n");
     out.push_str("    val conflicts: SyncularNativeLifecycleConflicts? = null,\n");
+    out.push_str("    val blobUploads: SyncularNativeLifecycleBlobUploads? = null,\n");
     out.push_str(")\n\n");
     out.push_str("data class SyncularNativeEvent(\n");
     out.push_str("    val eventSeq: Long = 0,\n");
@@ -8591,6 +8603,9 @@ fn generate_kotlin_module(
     out.push_str(
         "    val conflicts = state[\"conflicts\"]?.takeUnless { it is JsonNull }?.jsonObject\n",
     );
+    out.push_str(
+        "    val blobUploads = state[\"blobUploads\"]?.takeUnless { it is JsonNull }?.jsonObject\n",
+    );
     out.push_str("    return SyncularNativeLifecycleState(\n");
     out.push_str("        phase = state[\"phase\"]?.jsonPrimitive?.content ?: \"offline\",\n");
     out.push_str("        online = state[\"online\"]?.jsonPrimitive?.booleanOrNull ?: false,\n");
@@ -8611,6 +8626,11 @@ fn generate_kotlin_module(
     out.push_str("        ) },\n");
     out.push_str("        outbox = outbox?.let { SyncularNativeLifecycleOutbox(pending = it[\"pending\"]?.jsonPrimitive?.longOrNull ?: 0L) },\n");
     out.push_str("        conflicts = conflicts?.let { SyncularNativeLifecycleConflicts(unresolved = it[\"unresolved\"]?.jsonPrimitive?.longOrNull ?: 0L) },\n");
+    out.push_str("        blobUploads = blobUploads?.let { SyncularNativeLifecycleBlobUploads(\n");
+    out.push_str("            pending = it[\"pending\"]?.jsonPrimitive?.longOrNull ?: 0L,\n");
+    out.push_str("            uploading = it[\"uploading\"]?.jsonPrimitive?.longOrNull ?: 0L,\n");
+    out.push_str("            failed = it[\"failed\"]?.jsonPrimitive?.longOrNull ?: 0L,\n");
+    out.push_str("        ) },\n");
     out.push_str("    )\n");
     out.push_str("}\n\n");
     out.push_str("fun syncularDecodeNativeEvent(eventJson: String): SyncularNativeEvent {\n");

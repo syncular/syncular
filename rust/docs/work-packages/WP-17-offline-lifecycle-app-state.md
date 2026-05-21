@@ -58,9 +58,10 @@ mechanics into app-state APIs that developers can render and test.
 
 ## Next Action
 
-Define the remaining app lifecycle policy surface: background execution budgets,
-battery/network-aware sync gating, and whether queued blob/compaction work
-needs dedicated foreground-resume hooks or can stay on the generic worker queue.
+Add battery/network/background-budget host guidance to the generated app docs
+and validate that app shells treat `resumeFromBackground()` as sync/realtime
+recovery, while blob uploads and compaction remain explicit queued work driven
+by host policy.
 
 ## Progress
 
@@ -99,11 +100,30 @@ needs dedicated foreground-resume hooks or can stay on the generic worker queue.
 - Swift, Kotlin, iOS, and Android lifecycle smokes now call
   `resumeFromBackground()` as the foreground recovery API instead of using
   lower-level sync pokes in the app-shell examples.
+- Browser lifecycle state now includes `blobUploads` and emits
+  `blobUploadsChanged` when queued blob storage or upload processing changes
+  the queue. Failed blob uploads move lifecycle to `degraded` with
+  `requiresAction`, and diagnostic snapshots include blob upload queue stats.
+- Native worker events now include `BlobUploadsChanged` after queued blob file
+  storage and due blob upload retry processing. The native lifecycle payload
+  carries `blobUploads`, and generated Swift/Kotlin/Android event models decode
+  the same field.
+- Policy decision: `resumeFromBackground()` remains the recovery hook for
+  realtime and sync. Blob uploads, blob cache maintenance, and storage
+  compaction stay explicit queued operations so app shells can honor platform
+  background execution budgets, battery state, and network policy without the
+  runtime silently spending that budget.
 
 ## Latest Evidence
 
 - `bun test rust/bindings/browser/src/worker-client.test.ts -t "lifecycle"`
 - `bun test rust/bindings/browser/src/worker-client.test.ts -t "resumes from background"`
+- `bun test rust/bindings/browser/src/worker-client.test.ts -t "blob upload queue stats"`
+- `bun test rust/bindings/browser/src/worker-client.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_enqueues_compaction_and_blob_cache_work_on_worker`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_binding_scaffold`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/client.test.ts`
 - `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/generated-app-conformance.test.ts`
 - `bun test rust/bindings/browser/src/__tests__/auth-hono.wasm.test.ts`

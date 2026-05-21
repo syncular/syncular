@@ -140,6 +140,7 @@ pub enum NativeEventKind {
     QueriesChanged,
     ConflictsChanged,
     PresenceChanged,
+    BlobUploadsChanged,
     EventsOverflowed,
 }
 
@@ -179,6 +180,14 @@ pub struct NativeLifecycleConflicts {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct NativeLifecycleBlobUploads {
+    pub pending: i64,
+    pub uploading: i64,
+    pub failed: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NativeLifecycleState {
     pub phase: NativeLifecyclePhase,
     pub online: bool,
@@ -190,6 +199,8 @@ pub struct NativeLifecycleState {
     pub outbox: Option<NativeLifecycleOutbox>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflicts: Option<NativeLifecycleConflicts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blob_uploads: Option<NativeLifecycleBlobUploads>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub last_error: Option<NativeErrorInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -2202,6 +2213,9 @@ impl NativeEventHub {
                 operation,
                 duration_ms,
             )],
+            SyncWorkerEvent::BlobUploadsChanged { stats_json } => {
+                vec![blob_uploads_changed_event(stats_json)]
+            }
             SyncWorkerEvent::EventsOverflowed { dropped_count } => {
                 vec![events_overflowed_event(dropped_count)]
             }
@@ -2944,9 +2958,18 @@ fn conflicts_changed_event() -> NativeEvent {
         None,
         Some(NativeLifecycleConflicts { unresolved: 1 }),
         None,
+        None,
         Some(diagnostic),
     ));
     event
+}
+
+fn native_lifecycle_blob_uploads(stats_json: &Value) -> Option<NativeLifecycleBlobUploads> {
+    Some(NativeLifecycleBlobUploads {
+        pending: stats_json.get("pending")?.as_i64()?,
+        uploading: stats_json.get("uploading")?.as_i64()?,
+        failed: stats_json.get("failed")?.as_i64()?,
+    })
 }
 
 fn native_lifecycle_bootstrap(status: &BootstrapStatus) -> NativeLifecycleBootstrap {
@@ -2967,6 +2990,7 @@ fn native_lifecycle_state(
     bootstrap: Option<NativeLifecycleBootstrap>,
     outbox: Option<NativeLifecycleOutbox>,
     conflicts: Option<NativeLifecycleConflicts>,
+    blob_uploads: Option<NativeLifecycleBlobUploads>,
     last_error: Option<NativeErrorInfo>,
     last_diagnostic: Option<NativeDiagnostic>,
 ) -> NativeLifecycleState {
@@ -2978,6 +3002,7 @@ fn native_lifecycle_state(
         bootstrap,
         outbox,
         conflicts,
+        blob_uploads,
         last_error,
         last_diagnostic,
     }
@@ -3010,6 +3035,7 @@ fn native_lifecycle_for_sync_completed(
             unresolved: conflict_count,
         }),
         None,
+        None,
         Some(diagnostic),
     )
 }
@@ -3038,6 +3064,7 @@ fn native_lifecycle_for_error(
         false,
         requires_action,
         0,
+        None,
         None,
         None,
         None,
@@ -3073,6 +3100,7 @@ fn events_overflowed_event(dropped_count: usize) -> NativeEvent {
         None,
         None,
         None,
+        None,
         Some(diagnostic),
     ));
     event.payload_json = Some(json!({
@@ -3102,6 +3130,7 @@ fn sync_started_event(command_id: Option<String>) -> NativeEvent {
         false,
         false,
         1,
+        None,
         None,
         None,
         None,
@@ -3289,6 +3318,7 @@ fn local_write_committed_event(
         }),
         None,
         None,
+        None,
         Some(diagnostic),
     ));
     event
@@ -3456,6 +3486,41 @@ fn worker_command_failed_event(
     event.command_id = Some(command_id);
     event.duration_ms = Some(duration_ms);
     event.lifecycle = Some(native_lifecycle_for_error(error, false, diagnostic));
+    event
+}
+
+fn blob_uploads_changed_event(stats_json: Value) -> NativeEvent {
+    let blob_uploads = native_lifecycle_blob_uploads(&stats_json);
+    let failed_count = blob_uploads.as_ref().map_or(0, |stats| stats.failed);
+    let diagnostic = native_diagnostic(
+        if failed_count > 0 { "warn" } else { "info" },
+        "blob",
+        "blob.uploads_changed",
+        "Native Syncular blob upload queue changed",
+        [("blobUploads", stats_json.clone())],
+    );
+    let mut event = native_event(
+        NativeEventKind::BlobUploadsChanged,
+        Vec::new(),
+        Some(diagnostic.clone()),
+    );
+    event.payload_json = Some(stats_json);
+    event.lifecycle = Some(native_lifecycle_state(
+        if failed_count > 0 {
+            NativeLifecyclePhase::Degraded
+        } else {
+            NativeLifecyclePhase::Offline
+        },
+        false,
+        failed_count > 0,
+        0,
+        None,
+        None,
+        None,
+        blob_uploads,
+        None,
+        Some(diagnostic),
+    ));
     event
 }
 

@@ -232,6 +232,9 @@ pub enum SyncWorkerEvent {
         error: SyncularError,
         duration_ms: u64,
     },
+    BlobUploadsChanged {
+        stats_json: Value,
+    },
     EventsOverflowed {
         dropped_count: usize,
     },
@@ -386,6 +389,9 @@ impl Clone for SyncWorkerEvent {
                 error: clone_worker_error(error),
                 duration_ms: *duration_ms,
             },
+            Self::BlobUploadsChanged { stats_json } => Self::BlobUploadsChanged {
+                stats_json: stats_json.clone(),
+            },
             Self::EventsOverflowed { dropped_count } => Self::EventsOverflowed {
                 dropped_count: *dropped_count,
             },
@@ -525,6 +531,10 @@ pub trait SyncWorkerClientExt {
     }
 
     fn worker_process_blob_upload_queue_json(&mut self) -> Result<Option<String>> {
+        Ok(None)
+    }
+
+    fn worker_blob_upload_queue_stats_json(&mut self) -> Result<Option<String>> {
         Ok(None)
     }
 
@@ -765,6 +775,12 @@ where
     fn worker_process_blob_upload_queue_json(&mut self) -> Result<Option<String>> {
         Ok(Some(serde_json::to_string(
             &self.process_blob_upload_queue()?,
+        )?))
+    }
+
+    fn worker_blob_upload_queue_stats_json(&mut self) -> Result<Option<String>> {
+        Ok(Some(serde_json::to_string(
+            &self.blob_upload_queue_stats()?,
         )?))
     }
 
@@ -2002,9 +2018,11 @@ where
             path,
             options_json,
         } => {
-            run_worker_json_command(client, event_tx, command_id, "storeBlobFile", |client| {
+            if run_worker_json_command(client, event_tx, command_id, "storeBlobFile", |client| {
                 client.worker_store_blob_file_json(&path, options_json.as_deref())
-            });
+            }) {
+                publish_blob_uploads_changed(client, event_tx);
+            }
             true
         }
         WorkerCommand::RetrieveBlobFileJson {
@@ -2105,6 +2123,7 @@ fn process_due_blob_upload_queue<S, T>(
                 payload_json,
                 duration_ms: duration_ms(started),
             });
+            publish_blob_uploads_changed(client, event_tx);
         }
         Ok(None) => {}
         Err(error) => {
@@ -2949,7 +2968,8 @@ fn run_worker_json_command<S, T>(
     command_id: String,
     operation: &'static str,
     f: impl FnOnce(&mut SyncularClient<S, T>) -> Result<String>,
-) where
+) -> bool
+where
     S: SyncStore + SyncStateStore,
     T: SyncTransport,
 {
@@ -2970,6 +2990,7 @@ fn run_worker_json_command<S, T>(
                 payload_json,
                 duration_ms: duration_ms(started),
             });
+            true
         }
         Err(error) => {
             let _ = event_tx.publish_event(SyncWorkerEvent::WorkerCommandFailed {
@@ -2978,8 +2999,26 @@ fn run_worker_json_command<S, T>(
                 error,
                 duration_ms: duration_ms(started),
             });
+            false
         }
     }
+}
+
+fn publish_blob_uploads_changed<S, T>(
+    client: &mut SyncularClient<S, T>,
+    event_tx: &SyncWorkerEventHub,
+) where
+    S: SyncStore + SyncStateStore,
+    T: SyncTransport,
+    SyncularClient<S, T>: SyncWorkerClientExt,
+{
+    let Ok(Some(stats_json)) = client.worker_blob_upload_queue_stats_json() else {
+        return;
+    };
+    let Ok(stats_json) = serde_json::from_str::<Value>(&stats_json) else {
+        return;
+    };
+    let _ = event_tx.publish_event(SyncWorkerEvent::BlobUploadsChanged { stats_json });
 }
 
 fn queue_yjs_update_json(
