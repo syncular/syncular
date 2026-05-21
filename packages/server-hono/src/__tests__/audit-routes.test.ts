@@ -236,6 +236,118 @@ describe('createSyncRoutes audit endpoints', () => {
     expect(wrongPartition.status).toBe(404);
   });
 
+  it('returns redacted row history scoped to actor scopes', async () => {
+    const app = createApp();
+
+    const firstCommitSeq = await pushCommit({
+      app,
+      actorId: 'u1',
+      clientId: 'client-1',
+      clientCommitId: 'row-history-1',
+      rowId: 't-history',
+      title: 'History Task 1',
+    });
+    const secondCommitSeq = await pushCommit({
+      app,
+      actorId: 'u1',
+      clientId: 'client-1',
+      clientCommitId: 'row-history-2',
+      rowId: 't-history',
+      title: 'History Task 2',
+    });
+
+    const response = await app.request(
+      'http://localhost/sync/audit/rows/tasks/t-history?limit=1',
+      {
+        headers: {
+          'x-user-id': 'u1',
+          'x-partition-id': 'p1',
+        },
+      }
+    );
+
+    expect(response.status).toBe(200);
+    const history = (await response.json()) as {
+      ok: boolean;
+      table: string;
+      rowId: string;
+      history: Array<{
+        commitSeq: number;
+        clientCommitId: string;
+        fields: string[];
+        scopeFields: string[];
+      }>;
+      nextCursor: number | null;
+      rowJson?: unknown;
+    };
+    expect(history.ok).toBe(true);
+    expect(history.table).toBe('tasks');
+    expect(history.rowId).toBe('t-history');
+    expect(history.history).toHaveLength(1);
+    expect(history.history[0]).toMatchObject({
+      commitSeq: secondCommitSeq,
+      clientCommitId: 'row-history-2',
+    });
+    expect(history.history[0]?.fields).toEqual([
+      'id',
+      'server_version',
+      'title',
+      'user_id',
+    ]);
+    expect(history.history[0]?.scopeFields).toEqual(['user_id']);
+    expect(history).not.toHaveProperty('rowJson');
+    expect(history.nextCursor).toBe(secondCommitSeq);
+
+    const olderPage = await app.request(
+      `http://localhost/sync/audit/rows/tasks/t-history?beforeCommitSeq=${history.nextCursor}`,
+      {
+        headers: {
+          'x-user-id': 'u1',
+          'x-partition-id': 'p1',
+        },
+      }
+    );
+    expect(olderPage.status).toBe(200);
+    const olderHistory = (await olderPage.json()) as {
+      history: Array<{ commitSeq: number; clientCommitId: string }>;
+      nextCursor: number | null;
+    };
+    expect(olderHistory.history).toHaveLength(1);
+    expect(olderHistory.history[0]).toMatchObject({
+      commitSeq: firstCommitSeq,
+      clientCommitId: 'row-history-1',
+    });
+    expect(olderHistory.nextCursor).toBeNull();
+  });
+
+  it('does not leak unauthorized row history across actor scopes', async () => {
+    const app = createApp();
+
+    await pushCommit({
+      app,
+      actorId: 'u1',
+      clientId: 'client-1',
+      clientCommitId: 'row-history-secret',
+      rowId: 't-secret',
+      title: 'Secret Task',
+    });
+
+    const response = await app.request(
+      'http://localhost/sync/audit/rows/tasks/t-secret',
+      {
+        headers: {
+          'x-user-id': 'u2',
+          'x-partition-id': 'p1',
+        },
+      }
+    );
+
+    expect(response.status).toBe(404);
+    const bodyText = await response.text();
+    expect(bodyText).not.toContain('Secret Task');
+    expect(bodyText).not.toContain('row-history-secret');
+  });
+
   it('requires authentication for audit endpoints', async () => {
     const app = createApp();
 

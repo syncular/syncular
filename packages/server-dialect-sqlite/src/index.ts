@@ -16,6 +16,8 @@
 import type { ScopeValues, StoredScopes, SyncOp } from '@syncular/core';
 import type { DbExecutor } from '@syncular/server';
 import {
+  type AuditRowHistoryArgs,
+  type AuditRowHistoryRow,
   BaseServerSyncDialect,
   coerceIsoString,
   coerceNumber,
@@ -621,6 +623,80 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
 
     return res.rows.map((row) => ({
       commit_seq: coerceNumber(row.commit_seq) ?? 0,
+      table: row.table,
+      row_id: row.row_id,
+      op: row.op as SyncOp,
+      row_json: parseJsonValue(row.row_json),
+      row_version: coerceNumber(row.row_version),
+      scopes: parseScopes(row.scopes),
+    }));
+  }
+
+  async readAuditRowHistory<DB extends SyncCoreDb>(
+    db: DbExecutor<DB>,
+    args: AuditRowHistoryArgs
+  ): Promise<AuditRowHistoryRow[]> {
+    const partitionId = args.partitionId ?? 'default';
+    const scopeFilter = buildScopeFilterSql(args.scopes, 'c.scopes');
+    const limit = Math.max(1, Math.min(200, args.limit));
+    const whereClauses = [
+      sql`c.partition_id = ${partitionId}`,
+      sql`cm.partition_id = ${partitionId}`,
+      sql`c."table" = ${args.table}`,
+      sql`c.row_id = ${args.rowId}`,
+      sql`(${scopeFilter})`,
+    ];
+
+    if (args.beforeCommitSeq !== undefined) {
+      whereClauses.push(sql`c.commit_seq < ${args.beforeCommitSeq}`);
+    }
+    if (args.afterCommitSeq !== undefined) {
+      whereClauses.push(sql`c.commit_seq >= ${args.afterCommitSeq}`);
+    }
+
+    const res = await sql<{
+      commit_seq: unknown;
+      actor_id: string;
+      client_id: string;
+      client_commit_id: string;
+      created_at: unknown;
+      change_id: unknown;
+      table: string;
+      row_id: string;
+      op: string;
+      row_json: unknown | null;
+      row_version: unknown | null;
+      scopes: unknown;
+    }>`
+      SELECT
+        c.commit_seq,
+        cm.actor_id,
+        cm.client_id,
+        cm.client_commit_id,
+        cm.created_at,
+        c.change_id,
+        c."table",
+        c.row_id,
+        c.op,
+        c.row_json,
+        c.row_version,
+        c.scopes
+      FROM sync_changes c
+      JOIN sync_commits cm
+        ON cm.partition_id = c.partition_id
+       AND cm.commit_seq = c.commit_seq
+      WHERE ${sql.join(whereClauses, sql` AND `)}
+      ORDER BY c.commit_seq DESC, c.change_id DESC
+      LIMIT ${limit + 1}
+    `.execute(db);
+
+    return res.rows.map((row) => ({
+      commit_seq: coerceNumber(row.commit_seq) ?? 0,
+      actor_id: row.actor_id,
+      client_id: row.client_id,
+      client_commit_id: row.client_commit_id,
+      created_at: coerceIsoString(row.created_at),
+      change_id: coerceNumber(row.change_id) ?? 0,
       table: row.table,
       row_id: row.row_id,
       op: row.op as SyncOp,

@@ -47,6 +47,31 @@ export interface IncrementalPullRow {
   scopes: StoredScopes;
 }
 
+export interface AuditRowHistoryArgs {
+  table: string;
+  rowId: string;
+  scopes: ScopeValues;
+  limit: number;
+  partitionId?: string;
+  beforeCommitSeq?: number;
+  afterCommitSeq?: number;
+}
+
+export interface AuditRowHistoryRow {
+  commit_seq: number;
+  actor_id: string;
+  client_id: string;
+  client_commit_id: string;
+  created_at: string;
+  change_id: number;
+  table: string;
+  row_id: string;
+  op: SyncOp;
+  row_json: unknown | null;
+  row_version: number | null;
+  scopes: StoredScopes;
+}
+
 export type ServerSqliteDialect = ServerSyncDialect<'sqlite'>;
 export type ServerPostgresDialect = ServerSyncDialect<'postgres'>;
 
@@ -125,6 +150,17 @@ export interface ServerSyncDialect<F extends SqlFamily = SqlFamily> {
     db: DbExecutor<DB>,
     args: IncrementalPullRowsArgs
   ): AsyncGenerator<IncrementalPullRow>;
+
+  /**
+   * Read redaction-ready row history for audit views.
+   *
+   * The query must apply the same partition, table, row id, and scope filtering
+   * rules as incremental pull before returning rows to the route layer.
+   */
+  readAuditRowHistory<DB extends SyncCoreDb>(
+    db: DbExecutor<DB>,
+    args: AuditRowHistoryArgs
+  ): Promise<AuditRowHistoryRow[]>;
 
   /**
    * Optional compaction of the change log to reduce storage.

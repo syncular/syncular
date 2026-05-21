@@ -1,6 +1,6 @@
 # WP-23 Time Travel And Audit Inspection
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -66,17 +66,37 @@ and console timeline surfaces. The product contract allows audit history but
 requires verification and scoped access to match what the client/user is
 authorized to see.
 
+The first server API slice now exists:
+
+- `ServerSyncDialect.readAuditRowHistory(...)` applies partition, table, row
+  id, commit range, and resolved scope filtering before route code sees rows.
+- SQLite and Postgres dialects implement the scoped row-history query.
+- `GET /audit/rows/:table/:rowId` returns redacted row history with commit
+  metadata, operation, row version, payload field names, and scope field names.
+  It does not return stored row payloads by default.
+- Unauthorized scope attempts return `sync.not_found` and tests assert the
+  hidden title/commit id is not leaked.
+
+Evidence:
+
+- `bun test packages/server-hono/src/__tests__/audit-routes.test.ts`
+- `bun --cwd packages/server tsgo`
+- `bun --cwd packages/server-dialect-sqlite tsgo`
+- `bun --cwd packages/server-dialect-postgres tsgo`
+- `bun --cwd packages/server-hono tsgo`
+
 ## First Slice
 
 Add read-only row history and commit diff inspection for server audit APIs:
 
-1. Define scoped audit query inputs for `table`, `rowId`, and commit range.
-2. Return redacted change summaries rather than raw hidden payloads by default.
-3. Link audit results to existing console timeline/request events.
-4. Prove unauthorized row history requests fail without leaking existence or
+1. `[x]` Define scoped audit query inputs for `table`, `rowId`, and commit range.
+2. `[x]` Return redacted change summaries rather than raw hidden payloads by default.
+3. `[ ]` Link audit results to existing console timeline/request events.
+4. `[x]` Prove unauthorized row history requests fail without leaking existence or
    payload details.
 
 ## Next Action
 
-Design the scoped row-history API and add one server route test for authorized
-history plus one unauthorized access test.
+Add console/timeline integration for the scoped row-history endpoint, then add
+commit-diff redaction semantics for app rows, blobs, encrypted envelopes, and
+CRDT evidence.
