@@ -983,6 +983,7 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_enqueue_retrieve_blob_file_json(long handle, byte[] refJson, byte[] path, ByteBuffer optionsJson);
     static native byte[] boltffi_syncular_bolt_client_is_blob_local(long handle, byte[] hash);
     static native byte[] boltffi_syncular_bolt_client_process_blob_upload_queue_json(long handle);
+    static native byte[] boltffi_syncular_bolt_client_enqueue_process_blob_upload_queue(long handle);
     static native byte[] boltffi_syncular_bolt_client_blob_upload_queue_stats_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_blob_cache_stats_json(long handle);
     static native byte[] boltffi_syncular_bolt_client_prune_blob_cache(long handle, long maxBytes);

@@ -1,6 +1,6 @@
 # WP-17 Offline Lifecycle And App State Integration
 
-Status: `[~]` started
+Status: `[x]` accepted
 
 ## Goal
 
@@ -58,10 +58,8 @@ mechanics into app-state APIs that developers can render and test.
 
 ## Next Action
 
-Add battery/network/background-budget host guidance to the generated app docs
-and validate that app shells treat `resumeFromBackground()` as sync/realtime
-recovery, while blob uploads and compaction remain explicit queued work driven
-by host policy.
+Closed. Next Rust-first work package is
+[`WP-18 Production Hardening And Limits`](WP-18-production-hardening-limits.md).
 
 ## Progress
 
@@ -113,6 +111,12 @@ by host policy.
   compaction stay explicit queued operations so app shells can honor platform
   background execution budgets, battery state, and network policy without the
   runtime silently spending that budget.
+- Native runtime, C FFI, BoltFFI, Swift, Kotlin, and Java bindings now expose
+  `enqueueProcessBlobUploadQueue()` / `enqueue_process_blob_upload_queue` as
+  the nonblocking blob upload attempt API. Swift, Kotlin, iOS, and Android
+  lifecycle smokes now model a host maintenance policy: restricted background
+  state does not enqueue upload/compaction work, while foreground policy
+  explicitly queues blob upload processing and storage compaction.
 
 ## Latest Evidence
 
@@ -124,6 +128,11 @@ by host policy.
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_binding_scaffold`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+- `boltffi generate all`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_ffi`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+- `bun run rust:conformance:native`
 - `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/client.test.ts`
 - `bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/generated-app-conformance.test.ts`
 - `bun test rust/bindings/browser/src/__tests__/auth-hono.wasm.test.ts`

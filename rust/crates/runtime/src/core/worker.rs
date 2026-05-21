@@ -120,6 +120,9 @@ enum WorkerCommand {
         path: String,
         options_json: Option<String>,
     },
+    ProcessBlobUploadQueue {
+        command_id: String,
+    },
     PruneBlobCache {
         command_id: String,
         max_bytes: i64,
@@ -1611,6 +1614,10 @@ impl SyncWorker {
         })
     }
 
+    pub fn enqueue_process_blob_upload_queue(&self, command_id: String) -> Result<()> {
+        self.try_send(WorkerCommand::ProcessBlobUploadQueue { command_id })
+    }
+
     pub fn enqueue_prune_blob_cache(&self, command_id: String, max_bytes: i64) -> Result<()> {
         self.try_send(WorkerCommand::PruneBlobCache {
             command_id,
@@ -2036,6 +2043,26 @@ where
             });
             true
         }
+        WorkerCommand::ProcessBlobUploadQueue { command_id } => {
+            if run_worker_json_command(
+                client,
+                event_tx,
+                command_id,
+                "processBlobUploadQueue",
+                |client| {
+                    client
+                        .worker_process_blob_upload_queue_json()?
+                        .ok_or_else(|| {
+                            SyncularError::config(
+                                "worker-owned blob upload queue processing is not available for this client",
+                            )
+                        })
+                },
+            ) {
+                publish_blob_uploads_changed(client, event_tx);
+            }
+            true
+        }
         WorkerCommand::PruneBlobCache {
             command_id,
             max_bytes,
@@ -2338,13 +2365,15 @@ where
                     path,
                     options_json,
                 }) => {
-                    run_worker_json_command(
+                    if run_worker_json_command(
                         client,
                         event_tx,
                         command_id,
                         "storeBlobFile",
                         |client| client.worker_store_blob_file_json(&path, options_json.as_deref()),
-                    );
+                    ) {
+                        publish_blob_uploads_changed(client, event_tx);
+                    }
                 }
                 Ok(WorkerCommand::RetrieveBlobFileJson {
                     command_id,
@@ -2365,6 +2394,25 @@ where
                             )
                         },
                     );
+                }
+                Ok(WorkerCommand::ProcessBlobUploadQueue { command_id }) => {
+                    if run_worker_json_command(
+                        client,
+                        event_tx,
+                        command_id,
+                        "processBlobUploadQueue",
+                        |client| {
+                            client
+                                .worker_process_blob_upload_queue_json()?
+                                .ok_or_else(|| {
+                                    SyncularError::config(
+                                        "worker-owned blob upload queue processing is not available for this client",
+                                    )
+                                })
+                        },
+                    ) {
+                        publish_blob_uploads_changed(client, event_tx);
+                    }
                 }
                 Ok(WorkerCommand::PruneBlobCache {
                     command_id,

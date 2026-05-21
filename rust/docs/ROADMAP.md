@@ -455,7 +455,7 @@ read-only review:
     install Syncular runtime system tables themselves, and browser generated
     clients can replay older local app schema versions before validating and
     stamping the current version.
-- `[~]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
+- `[x]` [`WP-17 Offline Lifecycle And App State Integration`](work-packages/WP-17-offline-lifecycle-app-state.md)
   - Browser worker clients now expose `lifecycleState()` and
     `lifecycleChanged` with stable phases for offline, connecting, syncing,
     recovering, auth-required, degraded, complete, and closed UI states. The
@@ -477,8 +477,12 @@ read-only review:
     `BlobUploadsChanged` with matching lifecycle payloads, and generated
     Swift/Kotlin event models decode them. The policy decision is that
     foreground resume owns sync/realtime recovery, while blob uploads, blob
-    cache maintenance, and storage compaction remain explicit queued work
-    driven by host battery/network/background-budget policy.
+    cache maintenance, and storage compaction remain explicit queued work driven
+    by host battery/network/background-budget policy. Native low-level bindings
+    now expose queued blob upload processing, and Swift/Kotlin/iOS/Android
+    lifecycle smokes model restricted background policy versus foreground
+    maintenance policy. Accepted after full native facade/FFI/binding gates and
+    `bun run rust:conformance:native`.
 - `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)

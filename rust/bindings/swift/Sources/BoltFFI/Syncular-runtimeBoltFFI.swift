@@ -610,6 +610,12 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
+    public func enqueueProcessBlobUploadQueue() throws -> String {
+        let buf = boltffi_syncular_bolt_client_enqueue_process_blob_upload_queue(handle)
+        defer { boltffi_free_buf(buf) }
+        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+    }
+
     public func blobUploadQueueStatsJson() throws -> String {
         let buf = boltffi_syncular_bolt_client_blob_upload_queue_stats_json(handle)
         defer { boltffi_free_buf(buf) }

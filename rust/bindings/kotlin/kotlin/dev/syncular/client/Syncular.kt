@@ -1274,6 +1274,15 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
 
     @Throws(FfiException::class)
+    fun enqueueProcessBlobUploadQueue(): String {
+        val buf = Native.boltffi_syncular_bolt_client_enqueue_process_blob_upload_queue(handle)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
     fun blobUploadQueueStatsJson(): String {
         val buf = Native.boltffi_syncular_bolt_client_blob_upload_queue_stats_json(handle)
             ?: throw FfiException(-1, "Null buffer returned")
@@ -1680,6 +1689,7 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_retrieve_blob_file_json(handle: Long, ref_json: ByteArray, path: ByteArray, options_json: ByteBuffer): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_is_blob_local(handle: Long, hash: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_process_blob_upload_queue_json(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_process_blob_upload_queue(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_blob_upload_queue_stats_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_blob_cache_stats_json(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_prune_blob_cache(handle: Long, max_bytes: Long): ByteArray?

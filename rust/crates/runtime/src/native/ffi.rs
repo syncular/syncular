@@ -994,6 +994,17 @@ pub extern "C" fn syncular_native_client_process_blob_upload_queue_json(
 }
 
 #[no_mangle]
+pub extern "C" fn syncular_native_client_enqueue_process_blob_upload_queue(
+    handle: *mut SyncularNativeHandle,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        with_client(handle, |client| client.enqueue_process_blob_upload_queue())
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn syncular_native_client_blob_upload_queue_stats_json(
     handle: *mut SyncularNativeHandle,
     error_out: *mut *mut c_char,

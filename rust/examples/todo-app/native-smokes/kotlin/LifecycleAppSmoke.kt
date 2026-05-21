@@ -99,6 +99,19 @@ private fun JsonObject.str(key: String): String =
 private fun JsonObject.longValue(key: String): Long =
     this[key]?.jsonPrimitive?.long ?: error("missing integer field $key")
 
+private data class HostMaintenancePolicy(
+    val isForeground: Boolean,
+    val allowsExpensiveNetwork: Boolean,
+    val allowsBackgroundWork: Boolean,
+    val remainingBackgroundBudgetMs: Long,
+) {
+    val canProcessBlobUploads: Boolean
+        get() = allowsExpensiveNetwork && (isForeground || (allowsBackgroundWork && remainingBackgroundBudgetMs >= 2_000))
+
+    val canRunCompaction: Boolean
+        get() = isForeground || (allowsBackgroundWork && remainingBackgroundBudgetMs >= 1_000)
+}
+
 fun main(args: Array<String>) {
     val outDir = File(args.firstOrNull() ?: System.getProperty("java.io.tmpdir"))
     outDir.mkdirs()
@@ -146,6 +159,8 @@ fun main(args: Array<String>) {
             size = blobPayload.longValue("size"),
             mimeType = blobPayload.str("mimeType"),
         )
+        val blobStateEvent = waitForEvent(raw, kind = "BlobUploadsChanged").event
+        expect(blobStateEvent.lifecycle?.blobUploads?.pending == 1L, "Kotlin lifecycle should observe pending blob uploads")
 
         val rowId = "task-kotlin-lifecycle"
         val mutationCommandId = client.queuedMutations.tasks.insert(
@@ -186,6 +201,38 @@ fun main(args: Array<String>) {
         val outbox = raw.outboxSummariesJson()
         expect(outbox.contains(mutationEvent.clientCommitId!!), "Kotlin lifecycle outbox should contain queued mutation")
         expect(outbox.contains(crdtWriteEvent.clientCommitId!!), "Kotlin lifecycle outbox should contain queued CRDT write")
+
+        val restrictedBackground = HostMaintenancePolicy(
+            isForeground = false,
+            allowsExpensiveNetwork = false,
+            allowsBackgroundWork = false,
+            remainingBackgroundBudgetMs = 0,
+        )
+        expect(!restrictedBackground.canProcessBlobUploads, "Kotlin restricted background policy should not process blob uploads")
+        expect(!restrictedBackground.canRunCompaction, "Kotlin restricted background policy should not run compaction")
+
+        val foregroundPolicy = HostMaintenancePolicy(
+            isForeground = true,
+            allowsExpensiveNetwork = true,
+            allowsBackgroundWork = false,
+            remainingBackgroundBudgetMs = 0,
+        )
+        if (foregroundPolicy.canProcessBlobUploads) {
+            val uploadCommandId = raw.enqueueProcessBlobUploadQueue()
+            val uploadEvent = waitForEvent(
+                raw,
+                kind = "WorkerCommandCompleted",
+                commandId = uploadCommandId,
+                timeoutMs = 8_000,
+            ).event
+            expect(uploadEvent.commandId == uploadCommandId, "Kotlin lifecycle queued blob upload processing should carry command id")
+        }
+        if (foregroundPolicy.canRunCompaction) {
+            val compactCommandId = raw.enqueueCompactStorageJson("""{"olderThanMs":0}""")
+            val compactEvent = waitForEvent(raw, kind = "WorkerCommandCompleted", commandId = compactCommandId).event
+            expect(compactEvent.commandId == compactCommandId, "Kotlin lifecycle queued compaction should carry command id")
+        }
+
         expect(live.stop(client), "Kotlin lifecycle live query should unregister")
         expect(raw.shutdown(), "Kotlin lifecycle app should shut down native client")
 

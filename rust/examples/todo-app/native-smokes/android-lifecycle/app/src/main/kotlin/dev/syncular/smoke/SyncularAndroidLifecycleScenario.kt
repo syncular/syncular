@@ -111,6 +111,19 @@ private fun JsonObject.str(key: String): String =
 private fun JsonObject.longValue(key: String): Long =
     this[key]?.jsonPrimitive?.long ?: error("missing integer field $key")
 
+private data class HostMaintenancePolicy(
+    val isForeground: Boolean,
+    val allowsExpensiveNetwork: Boolean,
+    val allowsBackgroundWork: Boolean,
+    val remainingBackgroundBudgetMs: Long,
+) {
+    val canProcessBlobUploads: Boolean
+        get() = allowsExpensiveNetwork && (isForeground || (allowsBackgroundWork && remainingBackgroundBudgetMs >= 2_000))
+
+    val canRunCompaction: Boolean
+        get() = isForeground || (allowsBackgroundWork && remainingBackgroundBudgetMs >= 1_000)
+}
+
 object SyncularAndroidLifecycleScenario {
     fun run(context: Context) {
         val outDir = File(context.filesDir, "syncular-android-lifecycle").also { it.mkdirs() }
@@ -158,6 +171,8 @@ object SyncularAndroidLifecycleScenario {
                 size = blobPayload.longValue("size"),
                 mimeType = blobPayload.str("mimeType"),
             )
+            val blobStateEvent = waitForEvent(raw, kind = "BlobUploadsChanged").event
+            expect(blobStateEvent.lifecycle?.blobUploads?.pending == 1L, "Android lifecycle should observe pending blob uploads")
 
             val rowId = "task-android-lifecycle"
             val mutationCommandId = client.queuedMutations.tasks.insert(
@@ -198,6 +213,38 @@ object SyncularAndroidLifecycleScenario {
             val outbox = raw.outboxSummariesJson()
             expect(outbox.contains(mutationEvent.clientCommitId!!), "Android outbox should contain queued mutation")
             expect(outbox.contains(crdtWriteEvent.clientCommitId!!), "Android outbox should contain queued CRDT write")
+
+            val restrictedBackground = HostMaintenancePolicy(
+                isForeground = false,
+                allowsExpensiveNetwork = false,
+                allowsBackgroundWork = false,
+                remainingBackgroundBudgetMs = 0,
+            )
+            expect(!restrictedBackground.canProcessBlobUploads, "Android restricted background policy should not process blob uploads")
+            expect(!restrictedBackground.canRunCompaction, "Android restricted background policy should not run compaction")
+
+            val foregroundPolicy = HostMaintenancePolicy(
+                isForeground = true,
+                allowsExpensiveNetwork = true,
+                allowsBackgroundWork = false,
+                remainingBackgroundBudgetMs = 0,
+            )
+            if (foregroundPolicy.canProcessBlobUploads) {
+                val uploadCommandId = raw.enqueueProcessBlobUploadQueue()
+                val uploadEvent = waitForEvent(
+                    raw,
+                    kind = "WorkerCommandCompleted",
+                    commandId = uploadCommandId,
+                    timeoutMs = 8_000,
+                ).event
+                expect(uploadEvent.commandId == uploadCommandId, "Android queued blob upload processing should carry command id")
+            }
+            if (foregroundPolicy.canRunCompaction) {
+                val compactCommandId = raw.enqueueCompactStorageJson("""{"olderThanMs":0}""")
+                val compactEvent = waitForEvent(raw, kind = "WorkerCommandCompleted", commandId = compactCommandId).event
+                expect(compactEvent.commandId == compactCommandId, "Android queued compaction should carry command id")
+            }
+
             expect(live.stop(client), "Android live query should unregister")
             expect(raw.shutdown(), "Android app should shut down native client")
         } finally {

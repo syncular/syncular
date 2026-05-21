@@ -410,6 +410,11 @@ char *syncular_native_client_process_blob_upload_queue_json(
     char **error_out
 );
 
+char *syncular_native_client_enqueue_process_blob_upload_queue(
+    SyncularNativeHandle *handle,
+    char **error_out
+);
+
 char *syncular_native_client_blob_upload_queue_stats_json(
     SyncularNativeHandle *handle,
     char **error_out

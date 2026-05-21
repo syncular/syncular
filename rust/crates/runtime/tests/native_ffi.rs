@@ -12,8 +12,10 @@ use syncular_runtime::native_ffi::{
     syncular_native_client_apply_mutation_json, syncular_native_client_blob_cache_stats_json,
     syncular_native_client_blob_upload_queue_stats_json, syncular_native_client_clear_blob_cache,
     syncular_native_client_close, syncular_native_client_compact_storage_json,
-    syncular_native_client_diagnostic_snapshot_json, syncular_native_client_join_presence_handle,
-    syncular_native_client_list_table_json, syncular_native_client_materialize_crdt_field_json,
+    syncular_native_client_diagnostic_snapshot_json,
+    syncular_native_client_enqueue_process_blob_upload_queue,
+    syncular_native_client_join_presence_handle, syncular_native_client_list_table_json,
+    syncular_native_client_materialize_crdt_field_json,
     syncular_native_client_observed_queries_json, syncular_native_client_open,
     syncular_native_client_open_async, syncular_native_client_open_async_close,
     syncular_native_client_open_async_command_id, syncular_native_client_open_async_finish_timeout,
@@ -640,6 +642,10 @@ fn native_ffi_stages_blob_files_locally() {
     let process_result: Value = serde_json::from_str(&take_string(process_result)).unwrap();
     assert_eq!(process_result["uploaded"], 0);
     assert_eq!(process_result["failed"], 0);
+    let upload_command =
+        syncular_native_client_enqueue_process_blob_upload_queue(handle, &mut error);
+    assert!(error.is_null());
+    assert!(take_string(upload_command).starts_with("native-blob-upload-"));
 
     let ref_c = CString::new(blob.to_string()).unwrap();
     let output = CString::new(output_path.clone()).unwrap();
