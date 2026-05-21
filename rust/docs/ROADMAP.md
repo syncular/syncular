@@ -789,7 +789,9 @@ read-only review:
     upload queue, per-row upload completion/failure, and download failure
     diagnostics when diagnostics are subscribed. Native facade direct and queued
     blob file/cache operations now emit the same stable blob diagnostic codes
-    through the native event stream.
+    through the native event stream. Native HTTP blob transport now has
+    corrupted-download conformance coverage proving invalid bodies are rejected
+    and not cached.
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry

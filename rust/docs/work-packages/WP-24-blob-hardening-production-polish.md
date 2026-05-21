@@ -179,11 +179,11 @@ Add scope-aware blob authorization helpers and diagnostics:
 
 ## Next Action
 
-Continue WP-24 with server diagnostic payload detail for auth rejection,
-corruption, and shared failure conformance without adding polling loops or
-hash-only access fallbacks. Browser payload size limits and browser/native
-cache/upload diagnostics are now explicit; next tighten server-adapter failure
-scenarios and cross-binding conformance.
+Continue WP-24 with server diagnostic payload detail for auth rejection and
+shared failure conformance without adding polling loops or hash-only access
+fallbacks. Browser payload size limits, browser/native cache/upload
+diagnostics, and native corrupted-download coverage are now explicit; next
+tighten server-adapter failure scenarios and cross-binding conformance.
 
 Latest evidence:
 
@@ -302,3 +302,19 @@ Latest evidence:
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade blob_diagnostics --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade blob_cache_work --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+
+## Seventh Slice
+
+Add corrupted download conformance:
+
+1. `[x]` Add a native HTTP blob transport test where the server advertises the
+   expected blob hash but returns different bytes at the signed download URL.
+2. `[x]` Assert the native client rejects the body through hash/integrity
+   validation and does not cache the corrupted bytes locally.
+3. `[x]` Assert the request sequence still follows the content-addressed blob
+   path: signed URL request followed by direct download.
+
+Latest evidence:
+
+- `cargo fmt` from `rust/`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test blob_transport corrupted --features native,crdt-yjs,demo-todo-native-fixture`
