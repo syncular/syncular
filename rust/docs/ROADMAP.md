@@ -551,8 +551,10 @@ read-only review:
     without clearing data implicitly. Health checks now also report app-schema
     state mismatches, outbox commits written by newer generated clients, failed
     outbox commits, and unresolved conflicts without attempting unsafe automatic
-    repair. Next: add blob/CRDT health findings before implementing repair
-    commands.
+    repair. Blob/CRDT findings now cover invalid blob refs, failed blob
+    uploads, and CRDT document metadata pointing at missing app rows without
+    pruning or rewriting metadata. Next: add explicit repair commands for safe
+    cases while keeping manual-inspection hazards read-only.
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)

@@ -79,6 +79,10 @@ First retained slice:
   generated clients, failed outbox commits, and unresolved conflicts. These
   remain report-only and use `manualInspection` where automated repair would be
   unsafe.
+- The fourth retained slice adds blob and CRDT findings: invalid blob refs in
+  app rows, failed blob uploads, and CRDT document metadata pointing at missing
+  app rows. These findings are still read-only and deliberately do not prune or
+  rewrite metadata.
 
 Gates:
 
@@ -90,5 +94,6 @@ Gates:
 
 ## Next Action
 
-Add blob reference and CRDT document/log health findings with explicit repair
-actions but no background mutation.
+Add explicit repair commands for the safe cases already classified by the
+health report: clear orphaned subscription/root state and force rebootstrap for
+corrupted subscription/root metadata. Keep manual-inspection hazards read-only.

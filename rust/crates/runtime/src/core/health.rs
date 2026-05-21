@@ -2,8 +2,8 @@ use crate::client::SubscriptionSpec;
 use crate::error::Result;
 use crate::protocol::{BootstrapState, ScopeValues, COMMIT_INTEGRITY_HEX_LENGTH};
 use crate::store::{
-    now_ms, AppSchemaState, ConflictSummary, OutboxSummary, SubscriptionState, SyncStore,
-    SyncStoreTx, VerifiedRoot,
+    now_ms, AppSchemaState, BlobHealthSummary, ConflictSummary, CrdtHealthSummary, OutboxSummary,
+    SubscriptionState, SyncStore, SyncStoreTx, VerifiedRoot,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -19,6 +19,9 @@ pub struct LocalHealthReport {
     pub checked_verified_roots: usize,
     pub checked_outbox_commits: usize,
     pub checked_conflicts: usize,
+    pub checked_blob_references: i64,
+    pub checked_crdt_documents: i64,
+    pub checked_crdt_update_log_entries: i64,
     pub findings: Vec<LocalHealthFinding>,
 }
 
@@ -65,6 +68,9 @@ impl LocalHealthReport {
             checked_verified_roots: 0,
             checked_outbox_commits: 0,
             checked_conflicts: 0,
+            checked_blob_references: 0,
+            checked_crdt_documents: 0,
+            checked_crdt_update_log_entries: 0,
             findings: Vec::new(),
         }
     }
@@ -138,10 +144,18 @@ pub fn check_local_sync_state_health(
     app_schema_state: &AppSchemaState,
     outbox: &[OutboxSummary],
     conflicts: &[ConflictSummary],
+    blob: Option<&BlobHealthSummary>,
+    crdt: Option<&CrdtHealthSummary>,
 ) {
     check_app_schema_state(report, current_schema_version, app_schema_state);
     check_outbox_summaries(report, current_schema_version, outbox);
     check_conflict_summaries(report, conflicts);
+    if let Some(blob) = blob {
+        check_blob_health_summary(report, blob);
+    }
+    if let Some(crdt) = crdt {
+        check_crdt_health_summary(report, crdt);
+    }
 }
 
 fn check_app_schema_state(
@@ -279,6 +293,82 @@ fn check_conflict_summaries(report: &mut LocalHealthReport, conflicts: &[Conflic
         Some(LocalHealthRepairAction::ManualInspection),
         details,
     ));
+}
+
+fn check_blob_health_summary(report: &mut LocalHealthReport, blob: &BlobHealthSummary) {
+    report.checked_blob_references = blob.checked_references;
+    if blob.invalid_references > 0 {
+        let mut details = BTreeMap::new();
+        details.insert("count".to_string(), Value::from(blob.invalid_references));
+        details.insert(
+            "checkedReferences".to_string(),
+            Value::from(blob.checked_references),
+        );
+        report.add_finding(finding(
+            LocalHealthSeverity::Error,
+            "local.blob_refs_invalid",
+            "blobs",
+            "local synced rows contain invalid blob references",
+            None,
+            None,
+            Some(LocalHealthRepairAction::ManualInspection),
+            details,
+        ));
+    }
+
+    if blob.upload_failed > 0 {
+        let mut details = BTreeMap::new();
+        details.insert("count".to_string(), Value::from(blob.upload_failed));
+        report.add_finding(finding(
+            LocalHealthSeverity::Warning,
+            "local.blob_uploads_failed",
+            "blobs",
+            "local blob upload queue contains failed uploads",
+            None,
+            None,
+            Some(LocalHealthRepairAction::ManualInspection),
+            details,
+        ));
+    }
+}
+
+fn check_crdt_health_summary(report: &mut LocalHealthReport, crdt: &CrdtHealthSummary) {
+    report.checked_crdt_documents = crdt.document_count;
+    report.checked_crdt_update_log_entries = crdt.log_updates;
+    if crdt.orphaned_documents > 0 {
+        let mut details = BTreeMap::new();
+        details.insert("count".to_string(), Value::from(crdt.orphaned_documents));
+        details.insert(
+            "documentCount".to_string(),
+            Value::from(crdt.document_count),
+        );
+        report.add_finding(finding(
+            LocalHealthSeverity::Error,
+            "local.crdt_documents_orphaned",
+            "crdt",
+            "local CRDT document metadata references missing app rows",
+            None,
+            None,
+            Some(LocalHealthRepairAction::ManualInspection),
+            details,
+        ));
+    }
+
+    if crdt.orphaned_log_entries > 0 {
+        let mut details = BTreeMap::new();
+        details.insert("count".to_string(), Value::from(crdt.orphaned_log_entries));
+        details.insert("logUpdates".to_string(), Value::from(crdt.log_updates));
+        report.add_finding(finding(
+            LocalHealthSeverity::Error,
+            "local.crdt_update_log_orphaned",
+            "crdt",
+            "local CRDT update log contains entries without document metadata",
+            None,
+            None,
+            Some(LocalHealthRepairAction::ManualInspection),
+            details,
+        ));
+    }
 }
 
 fn check_subscription_state(

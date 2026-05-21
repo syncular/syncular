@@ -3463,12 +3463,16 @@ where
         let app_schema_state = self.app_schema_state()?;
         let outbox = self.outbox_summaries()?;
         let conflicts = self.conflict_summaries()?;
+        let blob_health = self.store.blob_health_summary()?;
+        let crdt_health = self.store.crdt_health_summary()?;
         crate::health::check_local_sync_state_health(
             &mut report,
             self.app_schema.current_schema_version(),
             &app_schema_state,
             &outbox,
             &conflicts,
+            blob_health.as_ref(),
+            crdt_health.as_ref(),
         );
         Ok(report)
     }
