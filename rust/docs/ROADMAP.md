@@ -747,7 +747,8 @@ read-only review:
     encrypted CRDT update/checkpoint evidence. Sync audit commit detail is now
     scoped to the authenticated actor's visible row scopes and returns redacted
     summaries rather than raw row payloads; console commit detail uses the same
-    redaction classifier.
+    redaction classifier. Testkit now exports audit redaction/leak assertions
+    for app-side tests.
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 

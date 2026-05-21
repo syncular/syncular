@@ -1,4 +1,5 @@
 export * from './assertions';
+export * from './audit';
 export * from './deterministic';
 export * from './disposable';
 export * from './faults';

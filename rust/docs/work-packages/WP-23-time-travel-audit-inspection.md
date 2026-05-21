@@ -91,15 +91,20 @@ The first server API slice now exists:
   `sync.not_found` rather than leaking commit payloads from another scope.
 - Console commit details also use redacted change summaries instead of raw
   `rowJson` payloads.
+- `@syncular/testkit` now exports audit assertions for canonical redaction
+  markers and forbidden-payload leak checks so app tests can verify Syncular
+  audit responses without mocking the runtime.
 
 Evidence:
 
 - `bun test packages/server-hono/src/__tests__/audit-routes.test.ts`
 - `bun test packages/server-hono/src/__tests__/console-routes.test.ts`
+- `bun test packages/testkit/src/audit.test.ts`
 - `bun --cwd packages/server tsgo`
 - `bun --cwd packages/server-dialect-sqlite tsgo`
 - `bun --cwd packages/server-dialect-postgres tsgo`
 - `bun --cwd packages/server-hono tsgo`
+- `bun --cwd packages/testkit tsgo`
 
 ## First Slice
 
@@ -113,6 +118,6 @@ Add read-only row history and commit diff inspection for server audit APIs:
 
 ## Next Action
 
-Add testkit scenarios for scoped row history and redacted export, then decide
-whether the console UI should render the new field/sensitivity summary directly
-or wait for the generated OpenAPI/type pass.
+Decide whether the console UI should render the new field/sensitivity summary
+directly or wait for the generated OpenAPI/type pass, then add a redacted debug
+export route.
