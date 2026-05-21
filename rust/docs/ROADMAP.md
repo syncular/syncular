@@ -397,7 +397,13 @@ read-only review:
     gzip bytes versus the configured `3,460,301` / `1,426,063` budget.
     Local and external artifact guards stayed in band; keep measuring package
     size and performance for every browser/WASM-facing change.
-- `[ ]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
+- `[~]` [`WP-11 Server Edge And Offline Auth`](work-packages/WP-11-server-edge-offline-auth.md)
+  - Pure Rust server and CF Worker rewrite remain deferred. The offline auth
+    lease model is now explicit in
+    `reference/OFFLINE_AUTH_LEASE_MODEL.md`: signed bounded leases are for
+    offline intent capture and audit only, not server acceptance or a bypass of
+    current handler authorization. Next implementation should start with Rust
+    protocol structs plus testkit issuer/verifier helpers, not a server rewrite.
 - `[~]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
 - `[x]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
