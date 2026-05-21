@@ -1,4 +1,8 @@
 use crate::app_schema::{default_app_schema, AppSchema, AppTableMetadata};
+use crate::auth_lease_selection::{
+    app_table_operation_scope, select_active_auth_lease_for_operations,
+    system_table_operation_scope, ActiveAuthLeasePolicy, MutationOperationScope,
+};
 use crate::binary_snapshot::SnapshotChunkRows;
 use crate::client::{SubscriptionSpec, SyncChangedRow};
 use crate::error::{Result, SyncularError};
@@ -72,6 +76,20 @@ pub trait AsyncWebStore {
         operation: SyncOperation,
         local_row: Option<Value>,
     ) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>>;
+
+    fn apply_mutation_with_active_auth_lease<'a>(
+        &'a mut self,
+        _actor_id: Option<&'a str>,
+        _now_ms: i64,
+        _operation: SyncOperation,
+        _local_row: Option<Value>,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>> {
+        Box::pin(async {
+            Err(SyncularError::storage(anyhow::anyhow!(
+                "strict auth-leased mutations are not supported by this store"
+            )))
+        })
+    }
 
     fn pending_outbox<'a>(
         &'a mut self,
@@ -685,6 +703,87 @@ impl AsyncWebStore for WebMemoryStore {
         })
     }
 
+    fn apply_mutation_with_active_auth_lease<'a>(
+        &'a mut self,
+        actor_id: Option<&'a str>,
+        now_ms_value: i64,
+        operation: SyncOperation,
+        local_row: Option<Value>,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>> {
+        Box::pin(async move {
+            let schema = self.app_schema();
+            let mut local_row = local_row;
+            let scope = match operation.op.as_str() {
+                "upsert" => {
+                    let row =
+                        local_row.get_or_insert_with(|| row_from_operation_payload(&operation));
+                    memory_operation_scope(&schema, &operation, Some(row), true)?
+                }
+                "delete" => {
+                    let previous_row = self
+                        .rows
+                        .get(&operation.table)
+                        .and_then(|rows| rows.get(&operation.row_id))
+                        .cloned();
+                    memory_operation_scope(
+                        &schema,
+                        &operation,
+                        previous_row.as_ref(),
+                        previous_row.is_some(),
+                    )?
+                }
+                op => {
+                    return Err(SyncularError::protocol_message(format!(
+                        "unsupported local operation: {op}"
+                    )));
+                }
+            };
+            let mut active_leases = self
+                .auth_leases
+                .values()
+                .filter(|lease| lease.status == "active")
+                .filter(|lease| lease.not_before_ms <= now_ms_value)
+                .filter(|lease| lease.expires_at_ms > now_ms_value)
+                .filter(|lease| actor_id.map_or(true, |actor_id| lease.actor_id == actor_id))
+                .cloned()
+                .collect::<Vec<_>>();
+            active_leases.sort_by_key(|lease| lease.expires_at_ms);
+            let provenance = select_active_auth_lease_for_operations(
+                ActiveAuthLeasePolicy {
+                    actor_id,
+                    now_ms: now_ms_value,
+                },
+                active_leases,
+                schema.current_schema_version(),
+                &[scope],
+            )?;
+
+            match operation.op.as_str() {
+                "upsert" => {
+                    let row = local_row.unwrap_or_else(|| row_from_operation_payload(&operation));
+                    self.upsert_row(&operation.table, row).await?;
+                }
+                "delete" => {
+                    self.apply_change(SyncChange {
+                        table: operation.table.clone(),
+                        row_id: operation.row_id.clone(),
+                        op: "delete".to_string(),
+                        row_json: None,
+                        row_version: operation.base_version,
+                        scopes: ScopeValues::new(),
+                    })
+                    .await?;
+                }
+                _ => unreachable!("operation was validated before lease selection"),
+            }
+
+            let client_commit_id = self.enqueue_outbox(vec![operation])?;
+            self.set_outbox_auth_lease(&client_commit_id, Some(provenance))
+                .await?;
+            Ok(client_commit_id)
+        })
+    }
+
     fn pending_outbox<'a>(
         &'a mut self,
         limit: usize,
@@ -1226,6 +1325,26 @@ fn row_from_operation_payload(operation: &SyncOperation) -> Value {
     row.entry("id".to_string())
         .or_insert_with(|| Value::String(operation.row_id.clone()));
     Value::Object(row)
+}
+
+fn memory_operation_scope(
+    app_schema: &AppSchema,
+    operation: &SyncOperation,
+    row: Option<&Value>,
+    row_exists_or_will_be_written: bool,
+) -> Result<MutationOperationScope> {
+    if crate::encrypted_crdt::is_encrypted_crdt_system_table(&operation.table) {
+        return Ok(system_table_operation_scope(operation));
+    }
+    let metadata = app_schema.table_metadata(&operation.table).ok_or_else(|| {
+        SyncularError::config(format!("unknown generated app table: {}", operation.table))
+    })?;
+    Ok(app_table_operation_scope(
+        metadata,
+        operation,
+        row,
+        row_exists_or_will_be_written,
+    ))
 }
 
 fn row_is_server_synced(row: &Value, server_version_column: &str) -> bool {

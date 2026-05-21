@@ -432,9 +432,11 @@ read-only review:
     and native Diesel selects an active covering lease transactionally before
     retaining the local row/outbox write. Native JSON, C FFI, BoltFFI, Swift,
     Kotlin, and Java now expose the same strict immediate/queued leased mutation
-    entry points. Remaining WP-11 gap: browser generated APIs need the same
-    explicit strict leased-offline mutation mode, followed by host-facing lease
-    refresh ergonomics.
+    entry points. Browser generated/Kysely APIs now expose the matching
+    `leasedMutations` surface, with worker/WASM auth-lease storage APIs and
+    fail-closed rollback when no covering active lease exists. Remaining WP-11
+    gap: host-facing lease refresh/lifecycle ergonomics and app-style
+    expiry/revocation UX tests.
 - `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus

@@ -21,6 +21,7 @@ import type {
   SyncularBuildYjsTextUpdateArgs,
   SyncularBuildYjsTextUpdateResult,
   SyncularV2AuthHeaders,
+  SyncularV2AuthLeaseRecord,
   SyncularV2BlobCacheStats,
   SyncularV2BlobStoreOptions,
   SyncularV2BlobUploadQueueStats,
@@ -291,6 +292,25 @@ export class SyncularV2RustClient {
     this.raw.setAuthHeadersJson(JSON.stringify(this.#authHeaders));
   }
 
+  async upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void> {
+    this.raw.upsertAuthLeaseJson(JSON.stringify(lease));
+  }
+
+  async authLease(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null> {
+    return parseJson<SyncularV2AuthLeaseRecord | null>(
+      this.raw.authLeaseJson(leaseId)
+    );
+  }
+
+  async activeAuthLeases(
+    actorId?: string | null,
+    nowMs = Date.now()
+  ): Promise<SyncularV2AuthLeaseRecord[]> {
+    return parseJson<SyncularV2AuthLeaseRecord[]>(
+      this.raw.activeAuthLeasesJson(actorId ?? null, Math.trunc(nowMs))
+    );
+  }
+
   setFieldEncryption(config: SyncularV2FieldEncryptionConfig | null): void {
     this.raw.setFieldEncryptionJson(
       config == null
@@ -323,6 +343,18 @@ export class SyncularV2RustClient {
     return commitId;
   }
 
+  async applyLeasedMutation(
+    operation: SyncOperation,
+    localRow?: unknown
+  ): Promise<string> {
+    const commitId = await this.raw.applyLeasedMutationJson(
+      JSON.stringify(operation),
+      localRow == null ? null : JSON.stringify(localRow)
+    );
+    this.#drainAndEmitRowsChanged();
+    return commitId;
+  }
+
   async applyMutationsBatch(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string[]> {
@@ -338,6 +370,16 @@ export class SyncularV2RustClient {
   ): Promise<string> {
     const commitId = parseJson<string>(
       await this.raw.applyMutationsCommitJson(JSON.stringify(operations))
+    );
+    this.#drainAndEmitRowsChanged();
+    return commitId;
+  }
+
+  async applyLeasedMutationsCommit(
+    operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
+  ): Promise<string> {
+    const commitId = parseJson<string>(
+      await this.raw.applyLeasedMutationsCommitJson(JSON.stringify(operations))
     );
     this.#drainAndEmitRowsChanged();
     return commitId;

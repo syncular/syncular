@@ -5698,8 +5698,9 @@ fn generate_typescript_module(
         ));
     }
     out.push_str("}\n\n");
-    out.push_str("export type SyncularAppDatabase = Omit<SyncularRustSqliteDatabase<SyncularAppDb>, 'mutations'> & {\n");
+    out.push_str("export type SyncularAppDatabase = Omit<SyncularRustSqliteDatabase<SyncularAppDb>, 'mutations' | 'leasedMutations'> & {\n");
     out.push_str("  mutations: SyncularAppMutations;\n");
+    out.push_str("  leasedMutations: SyncularAppMutations;\n");
     out.push_str("};\n");
     out.push_str("export type SyncularAppSubscriptionsOption =\n");
     out.push_str("  | false\n");
@@ -10509,8 +10510,9 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(output.contains("export interface SyncularAppMutations {"));
         assert!(output.contains("tasks: SyncularGeneratedTableMutations<NewTask, TaskPatch>;"));
         assert!(output.contains(
-            "export type SyncularAppDatabase = Omit<SyncularRustSqliteDatabase<SyncularAppDb>, 'mutations'> &"
+            "export type SyncularAppDatabase = Omit<SyncularRustSqliteDatabase<SyncularAppDb>, 'mutations' | 'leasedMutations'> &"
         ));
+        assert!(output.contains("leasedMutations: SyncularAppMutations;"));
         assert!(output.contains("export async function createSyncularAppDatabase("));
         assert!(output.contains(
             "export interface CreateSyncularAppDatabaseOptions extends CreateSyncularRustSqliteDatabaseOptions"

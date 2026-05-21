@@ -2,6 +2,11 @@ use crate::app_schema::{
     app_schema_from_config, checksum, empty_app_schema, split_sql_statements,
     validate_app_schema_runtime_features, AppSchema, AppSchemaJson, AppTableMetadata,
 };
+use crate::auth_lease_selection::{
+    app_table_operation_scope,
+    select_active_auth_lease_for_operations as select_auth_lease_for_operation_scopes,
+    system_table_operation_scope, ActiveAuthLeasePolicy, MutationOperationScope,
+};
 use crate::binary_snapshot::{
     BinarySnapshotCell, BinarySnapshotPayload, BinarySnapshotRowCursor,
     BorrowedBinarySnapshotRawCellVisitor, DecodedBinarySnapshotRows, SnapshotChunkRows,
@@ -940,6 +945,18 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = applyLeasedMutationJson)]
+    pub async fn apply_leased_mutation_json(
+        &mut self,
+        operation_json: &str,
+        local_row_json: Option<String>,
+    ) -> std::result::Result<String, JsValue> {
+        self.inner
+            .apply_leased_mutation_json(operation_json, local_row_json.as_deref())
+            .await
+            .map_err(error_to_js)
+    }
+
     #[wasm_bindgen(js_name = setSubscriptionsJson)]
     pub fn set_subscriptions_json(
         &mut self,
@@ -1665,6 +1682,18 @@ impl SyncularRustOwnedSqliteClient {
         self.inner
             .store_mut()
             .apply_mutations_commit_json_inner(operations_json)
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = applyLeasedMutationsCommitJson)]
+    pub fn apply_leased_mutations_commit_json(
+        &mut self,
+        operations_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        let actor_id = self.inner.config().actor_id.clone();
+        self.inner
+            .store_mut()
+            .apply_leased_mutations_commit_json_inner(Some(&actor_id), now_ms(), operations_json)
             .map_err(error_to_js)
     }
 
@@ -2634,6 +2663,29 @@ impl SyncularRustOwnedSqlite {
     }
 
     fn apply_mutations_commit_json_inner(&mut self, operations_json: &str) -> Result<String> {
+        self.apply_mutations_commit_json_inner_with_auth_lease(operations_json, None)
+    }
+
+    fn apply_leased_mutations_commit_json_inner(
+        &mut self,
+        actor_id: Option<&str>,
+        now_ms_value: i64,
+        operations_json: &str,
+    ) -> Result<String> {
+        self.apply_mutations_commit_json_inner_with_auth_lease(
+            operations_json,
+            Some(ActiveAuthLeasePolicy {
+                actor_id,
+                now_ms: now_ms_value,
+            }),
+        )
+    }
+
+    fn apply_mutations_commit_json_inner_with_auth_lease(
+        &mut self,
+        operations_json: &str,
+        auth_lease_policy: Option<ActiveAuthLeasePolicy<'_>>,
+    ) -> Result<String> {
         validate_mutation_batch_json_input_size(operations_json)?;
         let operations: Vec<RustOwnedLocalOperationBatchEntry> =
             serde_json::from_str(operations_json).map_err(SyncularError::protocol)?;
@@ -2644,6 +2696,7 @@ impl SyncularRustOwnedSqlite {
         }
         let mut changed_tables = Vec::new();
         let mut sync_operations = Vec::with_capacity(operations.len());
+        let mut operation_scopes = Vec::new();
         let mut changed_rows = Vec::new();
 
         self.begin_write_transaction()?;
@@ -2655,6 +2708,25 @@ impl SyncularRustOwnedSqlite {
                     changed_tables.push(operation.table.clone());
                 }
                 let previous_row = self.previous_local_operation_row(&operation)?;
+                if auth_lease_policy.is_some() {
+                    operation_scopes.push(match operation.op.as_str() {
+                        "delete" => self.operation_scope_for_row(
+                            &operation,
+                            previous_row.as_ref(),
+                            previous_row.is_some(),
+                        )?,
+                        "upsert" => self.operation_scope_for_row(
+                            &operation,
+                            local_row.as_ref().or(operation.payload.as_ref()),
+                            true,
+                        )?,
+                        op => {
+                            return Err(SyncularError::protocol_message(format!(
+                                "unsupported local operation: {op}"
+                            )));
+                        }
+                    });
+                }
                 if let Some(changed_row) = sync_changed_row_for_local_operation(
                     self.app_schema,
                     &operation,
@@ -2667,7 +2739,18 @@ impl SyncularRustOwnedSqlite {
                 self.apply_local_mutation(&operation, local_row.as_ref())?;
                 sync_operations.push(operation);
             }
-            self.enqueue_outbox_operations(&sync_operations)
+            let client_commit_id = self.enqueue_outbox_operations(&sync_operations)?;
+            if let Some(policy) = auth_lease_policy {
+                let active_leases = self.active_auth_leases_sync(policy.actor_id, policy.now_ms)?;
+                let provenance = select_auth_lease_for_operation_scopes(
+                    policy,
+                    active_leases,
+                    self.app_schema.current_schema_version(),
+                    &operation_scopes,
+                )?;
+                self.set_outbox_auth_lease_sync(&client_commit_id, Some(&provenance))?;
+            }
+            Ok(client_commit_id)
         })();
 
         match result {
@@ -3021,6 +3104,29 @@ impl SyncularRustOwnedSqlite {
             return Ok(None);
         };
         self.current_row_json(metadata, &operation.table, &operation.row_id)
+    }
+
+    fn operation_scope_for_row(
+        &self,
+        operation: &SyncOperation,
+        row: Option<&Value>,
+        row_exists_or_will_be_written: bool,
+    ) -> Result<MutationOperationScope> {
+        if is_encrypted_crdt_system_table(&operation.table) {
+            return Ok(system_table_operation_scope(operation));
+        }
+        let metadata = self
+            .app_schema
+            .table_metadata(&operation.table)
+            .ok_or_else(|| {
+                SyncularError::config(format!("unknown generated app table: {}", operation.table))
+            })?;
+        Ok(app_table_operation_scope(
+            metadata,
+            operation,
+            row,
+            row_exists_or_will_be_written,
+        ))
     }
 
     fn apply_pending_mutation_commit(
@@ -4751,6 +4857,68 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                     self.transform_local_operation_entry(operation, local_row)?;
                 self.apply_local_mutation(&operation, local_row.as_ref())?;
                 self.enqueue_outbox_operations(&[operation])
+            })();
+            match result {
+                Ok(client_commit_id) => {
+                    self.exec("COMMIT")?;
+                    Ok(client_commit_id)
+                }
+                Err(err) => {
+                    let _ = self.exec("ROLLBACK");
+                    Err(err)
+                }
+            }
+        })
+    }
+
+    fn apply_mutation_with_active_auth_lease<'a>(
+        &'a mut self,
+        actor_id: Option<&'a str>,
+        now_ms_value: i64,
+        operation: SyncOperation,
+        local_row: Option<Value>,
+    ) -> Pin<Box<dyn Future<Output = Result<String>> + 'a>> {
+        Box::pin(async move {
+            self.begin_write_transaction()?;
+            let result = (|| {
+                let (operation, local_row) =
+                    self.transform_local_operation_entry(operation, local_row)?;
+                let previous_row = if operation.op == "delete" {
+                    self.previous_local_operation_row(&operation)?
+                } else {
+                    None
+                };
+                let operation_scope = match operation.op.as_str() {
+                    "delete" => self.operation_scope_for_row(
+                        &operation,
+                        previous_row.as_ref(),
+                        previous_row.is_some(),
+                    )?,
+                    "upsert" => self.operation_scope_for_row(
+                        &operation,
+                        local_row.as_ref().or(operation.payload.as_ref()),
+                        true,
+                    )?,
+                    op => {
+                        return Err(SyncularError::protocol_message(format!(
+                            "unsupported local operation: {op}"
+                        )));
+                    }
+                };
+                self.apply_local_mutation(&operation, local_row.as_ref())?;
+                let client_commit_id = self.enqueue_outbox_operations(&[operation])?;
+                let active_leases = self.active_auth_leases_sync(actor_id, now_ms_value)?;
+                let provenance = select_auth_lease_for_operation_scopes(
+                    ActiveAuthLeasePolicy {
+                        actor_id,
+                        now_ms: now_ms_value,
+                    },
+                    active_leases,
+                    self.app_schema.current_schema_version(),
+                    &[operation_scope],
+                )?;
+                self.set_outbox_auth_lease_sync(&client_commit_id, Some(&provenance))?;
+                Ok(client_commit_id)
             })();
             match result {
                 Ok(client_commit_id) => {

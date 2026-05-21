@@ -1,6 +1,11 @@
 use crate::app_schema::{
     checksum, default_app_schema, split_sql_statements, AppSchema, AppTableMetadata,
 };
+use crate::auth_lease_selection::{
+    app_table_operation_scope,
+    select_active_auth_lease_for_operations as select_auth_lease_for_operation_scopes,
+    system_table_operation_scope, ActiveAuthLeasePolicy, MutationOperationScope,
+};
 use crate::binary_snapshot::{BinarySnapshotCell, DecodedBinarySnapshotRows, SnapshotChunkRows};
 use crate::client::SubscriptionSpec;
 use crate::compaction::{
@@ -648,21 +653,6 @@ pub struct DieselSqliteStore {
 pub struct DieselSqliteTx<'a> {
     conn: &'a mut SqliteConnection,
     app_schema: AppSchema,
-}
-
-#[derive(Debug, Clone)]
-struct ActiveAuthLeasePolicy<'a> {
-    actor_id: Option<&'a str>,
-    now_ms: i64,
-}
-
-#[derive(Debug, Clone)]
-struct MutationOperationScope {
-    table: String,
-    op: String,
-    scopes: ScopeValues,
-    requires_scope_values: bool,
-    missing_required_scope_values: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -2425,47 +2415,13 @@ impl<'a> DieselSqliteTx<'a> {
         policy: ActiveAuthLeasePolicy<'_>,
         operations: &[MutationOperationScope],
     ) -> Result<AuthLeaseProvenance> {
-        for operation in operations {
-            if operation.missing_required_scope_values {
-                return Err(SyncularError::protocol_message(format!(
-                    "{}: mutation for table {} is missing required lease scope values",
-                    AUTH_LEASE_CODE_SCOPE_MISMATCH, operation.table
-                )));
-            }
-        }
-
         let active_leases = self.active_auth_leases(policy.actor_id, policy.now_ms)?;
-        let current_schema_version = self.app_schema.current_schema_version();
-        for lease in active_leases {
-            if lease.schema_version != current_schema_version {
-                continue;
-            }
-            let Ok(payload) = serde_json::from_str::<AuthLeasePayload>(&lease.payload_json) else {
-                continue;
-            };
-            if payload.schema_version != current_schema_version {
-                continue;
-            }
-            if let Some(actor_id) = policy.actor_id {
-                if payload.actor_id != actor_id {
-                    continue;
-                }
-            }
-            if auth_lease_payload_covers_operations(&payload, operations) {
-                return Ok(AuthLeaseProvenance {
-                    lease_id: lease.lease_id,
-                    lease_expires_at_ms: lease.expires_at_ms,
-                    lease_status_at_enqueue: lease.status,
-                    lease_scope_summary_json: serde_json::to_string(&payload.scopes).ok(),
-                    lease_token: Some(lease.token),
-                });
-            }
-        }
-
-        Err(SyncularError::protocol_message(format!(
-            "{}: no active auth lease covers generated mutation batch",
-            AUTH_LEASE_CODE_MISSING
-        )))
+        select_auth_lease_for_operation_scopes(
+            policy,
+            active_leases,
+            self.app_schema.current_schema_version(),
+            operations,
+        )
     }
 
     fn current_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {
@@ -2478,120 +2434,6 @@ impl<'a> DieselSqliteTx<'a> {
             row.get(metadata.server_version_column)
                 .and_then(Value::as_i64)
         })
-    }
-}
-
-fn app_table_operation_scope(
-    metadata: &AppTableMetadata,
-    operation: &SyncOperation,
-    row: Option<&Value>,
-    row_exists_or_will_be_written: bool,
-) -> MutationOperationScope {
-    let mut scopes = Map::new();
-    if let Some(Value::Object(object)) = row {
-        for scope in metadata.scopes {
-            if let Some(value) = object.get(scope.column).and_then(scope_value_string) {
-                scopes.insert(scope.name.to_string(), Value::String(value));
-            }
-        }
-    }
-    let missing_required_scope_values = row_exists_or_will_be_written
-        && metadata.scopes.iter().any(|scope| {
-            scope.required
-                && !matches!(scopes.get(scope.name), Some(Value::String(value)) if !value.is_empty())
-        });
-
-    MutationOperationScope {
-        table: operation.table.clone(),
-        op: operation.op.clone(),
-        scopes,
-        requires_scope_values: row_exists_or_will_be_written
-            && metadata.scopes.iter().any(|scope| scope.required),
-        missing_required_scope_values,
-    }
-}
-
-fn system_table_operation_scope(operation: &SyncOperation) -> MutationOperationScope {
-    let scopes = operation
-        .payload
-        .as_ref()
-        .and_then(|payload| payload.get("scopes"))
-        .and_then(Value::as_object)
-        .map(|object| {
-            object
-                .iter()
-                .filter_map(|(key, value)| {
-                    scope_value_string(value).map(|value| (key.clone(), Value::String(value)))
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-
-    MutationOperationScope {
-        table: operation.table.clone(),
-        op: operation.op.clone(),
-        scopes,
-        requires_scope_values: false,
-        missing_required_scope_values: false,
-    }
-}
-
-fn auth_lease_payload_covers_operations(
-    payload: &AuthLeasePayload,
-    operations: &[MutationOperationScope],
-) -> bool {
-    operations.iter().all(|operation| {
-        let Some(scope) = payload.scopes.iter().find(|scope| {
-            scope.table == operation.table
-                && scope
-                    .operations
-                    .iter()
-                    .any(|allowed_op| allowed_op == &operation.op)
-        }) else {
-            return false;
-        };
-
-        if operation.requires_scope_values && operation.scopes.is_empty() {
-            return false;
-        }
-
-        operation.scopes.iter().all(|(name, value)| {
-            scope
-                .values
-                .get(name)
-                .is_some_and(|lease_value| lease_scope_value_covers(lease_value, value))
-        })
-    })
-}
-
-fn lease_scope_value_covers(lease_value: &Value, requested_value: &Value) -> bool {
-    let Some(requested) = scope_value_string(requested_value) else {
-        return false;
-    };
-    match lease_value {
-        Value::String(value) => value == "*" || value == &requested,
-        Value::Array(values) => values.iter().any(|value| {
-            value
-                .as_str()
-                .is_some_and(|value| value == "*" || value == requested)
-        }),
-        other => scope_value_string(other).is_some_and(|value| value == "*" || value == requested),
-    }
-}
-
-fn scope_value_string(value: &Value) -> Option<String> {
-    match value {
-        Value::Null => None,
-        Value::String(value) => {
-            if value.is_empty() {
-                None
-            } else {
-                Some(value.clone())
-            }
-        }
-        Value::Number(value) => Some(value.to_string()),
-        Value::Bool(value) => Some(value.to_string()),
-        Value::Array(_) | Value::Object(_) => None,
     }
 }
 

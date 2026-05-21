@@ -2,6 +2,8 @@ extern crate self as syncular_runtime;
 
 #[path = "core/app_schema.rs"]
 pub mod app_schema;
+#[path = "core/auth_lease_selection.rs"]
+pub mod auth_lease_selection;
 #[path = "core/binary_snapshot.rs"]
 pub mod binary_snapshot;
 #[path = "core/binary_sync_pack.rs"]

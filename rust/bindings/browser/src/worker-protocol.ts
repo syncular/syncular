@@ -7,6 +7,7 @@ import type {
   SyncularApplyYjsTextUpdatesArgs,
   SyncularBuildYjsTextUpdateArgs,
   SyncularV2AuthHeaders,
+  SyncularV2AuthLeaseRecord,
   SyncularV2BlobStoreOptions,
   SyncularV2BootstrapStatus,
   SyncularV2ClientConfig,
@@ -36,7 +37,7 @@ import type {
   SyncularV2TransportStats,
 } from './types';
 
-export const SYNCULAR_V2_WORKER_PROTOCOL_VERSION = 1;
+export const SYNCULAR_V2_WORKER_PROTOCOL_VERSION = 2;
 
 export interface SyncularV2WorkerErrorPayload {
   code: SyncularV2ErrorCode;
@@ -135,6 +136,25 @@ export type SyncularV2WorkerRequest =
   | {
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'upsertAuthLease';
+      lease: SyncularV2AuthLeaseRecord;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'authLease';
+      leaseId: string;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'activeAuthLeases';
+      actorId?: string | null;
+      nowMs: number;
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'startRealtime';
       options: SyncularV2WorkerRealtimeOptions;
     }
@@ -193,14 +213,17 @@ export type SyncularV2WorkerRequest =
   | {
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
-      type: 'applyMutation';
+      type: 'applyMutation' | 'applyLeasedMutation';
       operation: SyncOperation;
       localRow?: unknown | null;
     }
   | {
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
-      type: 'applyMutationsBatch' | 'applyMutationsCommit';
+      type:
+        | 'applyMutationsBatch'
+        | 'applyMutationsCommit'
+        | 'applyLeasedMutationsCommit';
       operations: Array<{
         operation: SyncOperation;
         localRow?: unknown | null;

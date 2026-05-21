@@ -140,6 +140,80 @@ await database.mutations.tasks.insert({
 await database.mutations.tasks.update('task-1', { completed: 1 });
 ```
 
+Strict offline writes use the same generated mutation API through
+`leasedMutations`. Store a signed active lease first; if no covering active
+lease exists, the runtime rejects the write and rolls back the local row/outbox
+transaction:
+
+```ts
+const issuedAtMs = Date.now();
+const expiresAtMs = issuedAtMs + 15 * 60_000;
+
+await database.client.upsertAuthLease({
+  leaseId: 'lease-user-1',
+  kid: 'auth-lease-key-1',
+  actorId,
+  issuedAtMs,
+  notBeforeMs: issuedAtMs - 1_000,
+  expiresAtMs,
+  schemaVersion: 1,
+  payloadJson: JSON.stringify({
+    version: 1,
+    leaseId: 'lease-user-1',
+    issuer: 'syncular',
+    audience: 'syncular-client',
+    actorId,
+    subject: {},
+    schemaVersion: 1,
+    protocolVersion: 1,
+    issuedAtMs,
+    notBeforeMs: issuedAtMs - 1_000,
+    expiresAtMs,
+    maxClockSkewMs: 30_000,
+    scopes: [
+      {
+        subscriptionId: 'tasks-by-user',
+        table: 'tasks',
+        values: { user_id: actorId },
+        operations: ['upsert', 'delete'],
+      },
+    ],
+    capabilities: {
+      allowBlobs: false,
+      allowCrdt: false,
+      allowEncryptedFields: false,
+    },
+  }),
+  token: signedLeaseToken,
+  status: 'active',
+  createdAtMs: issuedAtMs,
+  updatedAtMs: issuedAtMs,
+});
+
+await database.leasedMutations.tasks.insert({
+  id: 'task-offline-1',
+  title: 'Queue while offline',
+  completed: 0,
+  user_id: actorId,
+  project_id: projectId ?? null,
+});
+
+await database.leasedMutations.$commit(async (tx) => {
+  await tx.tasks.update('task-offline-1', { completed: 1 });
+  await tx.tasks.insert({
+    id: 'task-offline-2',
+    title: 'Same leased commit',
+    completed: 0,
+    user_id: actorId,
+    project_id: projectId ?? null,
+  });
+});
+```
+
+Do not mark outbox commits with auth leases manually from app code. Generated
+leased mutations are the app-facing path because they select lease provenance
+inside the same runtime transaction as the local write.
+
 For Yjs-backed fields, send `__yjs` envelopes or use the generic CRDT field
 runtime APIs. Do not set `title_yjs_state` in app mutations:
 

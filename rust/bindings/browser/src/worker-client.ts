@@ -18,6 +18,7 @@ import type {
   SyncularBuildYjsTextUpdateArgs,
   SyncularBuildYjsTextUpdateResult,
   SyncularV2AuthHeaders,
+  SyncularV2AuthLeaseRecord,
   SyncularV2BlobCacheStats,
   SyncularV2BlobStoreOptions,
   SyncularV2BlobUploadQueueStats,
@@ -321,6 +322,31 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     await this.#setAuthHeaders(headers, { restartRealtime: true });
   }
 
+  async upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void> {
+    await this.#requestAndDrain({
+      type: 'upsertAuthLease',
+      lease,
+    });
+  }
+
+  async authLease(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null> {
+    return this.#request({
+      type: 'authLease',
+      leaseId,
+    });
+  }
+
+  async activeAuthLeases(
+    actorId?: string | null,
+    nowMs = Date.now()
+  ): Promise<SyncularV2AuthLeaseRecord[]> {
+    return this.#request({
+      type: 'activeAuthLeases',
+      actorId: actorId ?? null,
+      nowMs: Math.trunc(nowMs),
+    });
+  }
+
   async setFieldEncryption(
     config: SyncularV2FieldEncryptionConfig | null
   ): Promise<void> {
@@ -472,6 +498,17 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     });
   }
 
+  async applyLeasedMutation(
+    operation: SyncOperation,
+    localRow?: unknown
+  ): Promise<string> {
+    return this.#requestAndDrain({
+      type: 'applyLeasedMutation',
+      operation,
+      localRow,
+    });
+  }
+
   async applyMutationsBatch(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string[]> {
@@ -486,6 +523,15 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   ): Promise<string> {
     return this.#requestAndDrain({
       type: 'applyMutationsCommit',
+      operations,
+    });
+  }
+
+  async applyLeasedMutationsCommit(
+    operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
+  ): Promise<string> {
+    return this.#requestAndDrain({
+      type: 'applyLeasedMutationsCommit',
       operations,
     });
   }
@@ -1724,8 +1770,11 @@ function shouldEmitOperationalState(
 ): boolean {
   return (
     type === 'applyMutation' ||
+    type === 'applyLeasedMutation' ||
+    type === 'upsertAuthLease' ||
     type === 'applyMutationsBatch' ||
     type === 'applyMutationsCommit' ||
+    type === 'applyLeasedMutationsCommit' ||
     type === 'syncPull' ||
     type === 'syncPush' ||
     type === 'syncOnce' ||

@@ -187,6 +187,77 @@ describe('Syncular v2 worker client', () => {
     await expect(resolve).resolves.toBeUndefined();
   });
 
+  it('forwards auth lease storage requests to the worker', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+    const lease = {
+      leaseId: 'lease-worker',
+      kid: 'kid',
+      actorId: 'user-rust',
+      issuedAtMs: 1,
+      notBeforeMs: 1,
+      expiresAtMs: 2,
+      schemaVersion: 1,
+      payloadJson: '{}',
+      token: 'token',
+      status: 'active',
+      lastValidationError: null,
+      createdAtMs: 1,
+      updatedAtMs: 1,
+    };
+
+    const upsert = client.upsertAuthLease(lease);
+    expect(worker.messages[0]).toMatchObject({
+      type: 'upsertAuthLease',
+      lease,
+    });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await waitForMessages(worker, 2);
+    expect(worker.messages[1]).toMatchObject({ type: 'drainLiveQueryEvents' });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: [],
+    });
+    await expect(upsert).resolves.toBeUndefined();
+
+    const read = client.authLease('lease-worker');
+    expect(worker.messages[2]).toMatchObject({
+      type: 'authLease',
+      leaseId: 'lease-worker',
+    });
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: lease,
+    });
+    await expect(read).resolves.toEqual(lease);
+
+    const active = client.activeAuthLeases('user-rust', 3);
+    expect(worker.messages[3]).toMatchObject({
+      type: 'activeAuthLeases',
+      actorId: 'user-rust',
+      nowMs: 3,
+    });
+    worker.respond({
+      id: worker.messages[3]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: [lease],
+    });
+    await expect(active).resolves.toEqual([lease]);
+  });
+
   it('forwards generic CRDT field requests to the worker', async () => {
     const worker = new FakeWorker();
     const client = new SyncularV2WorkerClient(worker.asWorker(), {

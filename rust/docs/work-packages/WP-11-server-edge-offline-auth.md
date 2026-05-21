@@ -45,19 +45,20 @@ is a local UX/session-cache primitive, not a signed server authorization model.
 The Rust foundation now covers protocol/testkit lease types, local client
 storage, replay provenance, server handler context, stable rejection
 diagnostics, current-auth Hono lease issue, signed replay-token validation,
-per-operation signed-scope/current-scope validation, and strict Rust generated
-leased mutations. Native JSON, C FFI, BoltFFI, Swift, Kotlin, and Java now have
-the same strict leased mutation entry points for immediate and queued writes.
-Leases remain offline intent/audit records only; they do not bypass normal
-reconnect authorization.
+per-operation signed-scope/current-scope validation, strict Rust generated
+leased mutations, native binding leased mutations, and browser generated/Kysely
+leased mutations. Native JSON, C FFI, BoltFFI, Swift, Kotlin, Java, browser
+worker, and browser Rust-owned SQLite now have strict leased mutation entry
+points. Leases remain offline intent/audit records only; they do not bypass
+normal reconnect authorization.
 
 ## Next Action
 
-Next narrow slice is browser parity for leased-offline mutation ergonomics. Rust
-and native generated APIs now have strict leased modes backed by transactional
-active-lease selection. Browser generated/Kysely APIs still need an explicit
-strict leased mutation mode instead of requiring host code to mark outbox
-commits manually.
+Next narrow slice is host-facing auth lease refresh/lifecycle ergonomics:
+surface issue/refresh storage helpers cleanly, document expiry/revocation UX,
+and add app-style tests showing a client can refresh a lease before queued
+offline writes fail closed. Do not add manual outbox lease marking to
+app-facing APIs.
 
 ## Progress
 
@@ -161,6 +162,21 @@ commits manually.
   leased mutation methods plus generated `leasedMutations` and
   `queuedLeasedMutations` app helpers. Native smoke adapters now compile
   against the stricter low-level protocol.
+- Added shared Rust active-auth-lease selection logic so native Diesel,
+  browser memory, and browser Rust-owned SQLite use the same scope matching and
+  stable `sync.auth_lease_*` failure semantics.
+- Added browser client auth lease management APIs:
+  `upsertAuthLease`, `authLease`, and `activeAuthLeases`.
+- Added browser strict leased mutation APIs through the worker protocol,
+  Rust-owned SQLite WASM exports, high-level `SyncularV2Client`, and generated
+  Kysely database surface. App code can now use
+  `database.leasedMutations.tasks.insert(...)` and
+  `database.leasedMutations.$commit(...)`; the runtime transactionally selects
+  a covering active lease and rolls back local row/outbox writes when none
+  exists.
+- Added browser core-WASM coverage proving generated leased mutations fail
+  closed without a covering lease, do not materialize the row on failure, and
+  succeed after storing a covering active lease.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol -p
   syncular-testkit` passed with `15` protocol tests and `36` testkit smoke
   tests.
@@ -238,6 +254,28 @@ commits manually.
   compiling and running Swift generated, Swift Bolt host, Swift lifecycle,
   Kotlin generated, Kotlin Bolt host, Kotlin lifecycle, and Swift/Kotlin Hono
   server-sync smokes against the new leased binding contract.
+- Gate: `cargo fmt` passed after browser leased mutation parity.
+- Gate: `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime
+  --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings` passed
+  after sharing lease selection.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+  passed after adding generated browser `leasedMutations` to the TypeScript
+  app database contract.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime
+  --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test
+  store_backends --test protocol_contract` passed after the shared-selection
+  refactor.
+- Gate: `bun run --cwd rust/bindings/browser tsgo` passed after browser
+  strict leased mutations.
+- Gate: `bun test rust/bindings/browser/src/database.test.ts
+  rust/bindings/browser/src/generated-app-conformance.test.ts
+  rust/bindings/browser/src/worker-client.test.ts` passed after browser
+  worker/auth-lease API coverage.
+- Gate: `bun run --cwd rust/bindings/browser build:wasm:dev` and
+  `bun run --cwd rust/bindings/browser build:wasm:core` passed after adding the
+  leased WASM exports.
+- Gate: `bun test rust/bindings/browser/src/__tests__/variant-core.wasm.test.ts`
+  passed after core-WASM leased mutation fail-closed coverage.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   store_backends` passed with `36` tests after the local lease storage slice.
 - Gate: `bun run rust:conformance:fast` passed after the protocol/testkit

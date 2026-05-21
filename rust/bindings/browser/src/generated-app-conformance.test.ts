@@ -21,6 +21,7 @@ import {
   createSyncularV2Dialect,
   createSyncularV2Mutations,
 } from './database';
+import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './runtime-contract';
 import type { SyncularV2Client, SyncularV2LiveQueryEvent } from './types';
 
 const conformance = JSON.parse(
@@ -266,6 +267,44 @@ describe('generated app conformance', () => {
       project_id: null,
     });
   });
+
+  it('routes browser leased mutations through the strict leased commit path', async () => {
+    let regularCommitCalled = false;
+    let leasedBatch: Array<{
+      operation: SyncOperation;
+      localRow?: unknown | null;
+    }> | null = null;
+    const client = {
+      ...fakeClient(),
+      async applyMutationsCommit() {
+        regularCommitCalled = true;
+        return 'commit-regular';
+      },
+      async applyLeasedMutationsCommit(batch) {
+        leasedBatch = batch;
+        return 'commit-leased';
+      },
+    } satisfies SyncularV2Client;
+
+    const mutations = createSyncularV2Mutations<SyncularAppDb>({
+      client,
+      requireAuthLease: true,
+      tableConfig: syncularGeneratedTableConfig,
+    }) as unknown as SyncularAppMutations;
+
+    const insert = await mutations.tasks.insert({
+      id: 'task-leased-browser',
+      title: 'Leased browser mutation',
+      completed: 0,
+      user_id: 'user-rust',
+      project_id: null,
+    });
+
+    expect(regularCommitCalled).toBe(false);
+    expect(insert.commitId).toBe('commit-leased');
+    expect(leasedBatch).toHaveLength(1);
+    expect(leasedBatch?.[0]?.operation.row_id).toBe('task-leased-browser');
+  });
 });
 
 function fakeClient(): SyncularV2Client {
@@ -286,17 +325,30 @@ function fakeClient(): SyncularV2Client {
     },
     async close() {},
     async setAuthHeaders() {},
+    async upsertAuthLease() {},
+    async authLease() {
+      return null;
+    },
+    async activeAuthLeases() {
+      return [];
+    },
     async startRealtime() {},
     async stopRealtime() {},
     async setSubscriptions() {},
     async applyMutation() {
       return 'commit';
     },
+    async applyLeasedMutation() {
+      return 'leased-commit';
+    },
     async applyMutationsBatch(operations) {
       return operations.map((_, index) => `commit-${index}`);
     },
     async applyMutationsCommit() {
       return 'commit';
+    },
+    async applyLeasedMutationsCommit() {
+      return 'leased-commit';
     },
     async buildYjsTextUpdate() {
       return {
@@ -374,7 +426,7 @@ function fakeClient(): SyncularV2Client {
       return {
         packageName: '@syncular/client-rust',
         packageVersion: '0.0.0',
-        workerProtocolVersion: 1,
+        workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
         storage: 'memory',
         workerUrl: '',
         wasmGlueUrl: '',

@@ -187,6 +187,12 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       );
     case 'setAuthHeaders':
       return requireClient().setAuthHeaders(request.headers);
+    case 'upsertAuthLease':
+      return requireClient().upsertAuthLease(request.lease);
+    case 'authLease':
+      return requireClient().authLease(request.leaseId);
+    case 'activeAuthLeases':
+      return requireClient().activeAuthLeases(request.actorId, request.nowMs);
     case 'setFieldEncryption':
       return requireClient().setFieldEncryption(request.config);
     case 'setEncryptedCrdt':
@@ -220,10 +226,17 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return requireClient().liveQueryDiagnostics();
     case 'applyMutation':
       return requireClient().applyMutation(request.operation, request.localRow);
+    case 'applyLeasedMutation':
+      return requireClient().applyLeasedMutation(
+        request.operation,
+        request.localRow
+      );
     case 'applyMutationsBatch':
       return requireClient().applyMutationsBatch(request.operations);
     case 'applyMutationsCommit':
       return requireClient().applyMutationsCommit(request.operations);
+    case 'applyLeasedMutationsCommit':
+      return requireClient().applyLeasedMutationsCommit(request.operations);
     case 'syncPull':
       return requireClient().syncPull({ syncAttempt: request.syncAttempt });
     case 'syncPush':

@@ -109,6 +109,18 @@ impl SyncularWasmClient {
             .map_err(error_to_js)
     }
 
+    #[wasm_bindgen(js_name = applyLeasedMutationJson)]
+    pub async fn apply_leased_mutation_json(
+        &mut self,
+        operation_json: &str,
+        local_row_json: Option<String>,
+    ) -> std::result::Result<String, JsValue> {
+        self.inner
+            .apply_leased_mutation_json(operation_json, local_row_json.as_deref())
+            .await
+            .map_err(error_to_js)
+    }
+
     #[wasm_bindgen(js_name = applyMutationsBatchJson)]
     pub async fn apply_mutations_batch_json(
         &mut self,
