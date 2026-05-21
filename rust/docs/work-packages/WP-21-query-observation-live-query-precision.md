@@ -78,6 +78,11 @@ First retained slice:
   skips hinted observers only when row/field metadata proves the changed row
   cannot affect the query; table-only or incomplete row metadata keeps the
   conservative notify behavior.
+- Added browser live-query diagnostics counters and a Hono/WASM regression that
+  proves inferred primary-key hints skip actual reruns under unrelated row
+  churn. The diagnostic shape reports per-query `rerunCount`,
+  `skippedRerunCount`, and `emittedEventCount`; it does not expose hinted row
+  ids.
 
 Native gates:
 
@@ -96,8 +101,33 @@ Result: passed. No browser benchmark was rerun for this native-only slice; the
 browser guardrail baseline remains
 `.context/benchmarks/wp21-live-query-hints-current.json`.
 
+Browser skip-rerun gates:
+
+```bash
+bun run tsgo
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test --cwd rust/bindings/browser \
+  src/__tests__/sync-hono.wasm.test.ts -t "skips hinted live-query reruns"
+bun test --cwd rust/bindings/browser src/database.test.ts -t "live query"
+bun test --cwd rust/bindings/browser src/worker-client.test.ts -t "live"
+bun run --cwd rust/bindings/browser test
+bun test --cwd rust/bindings/browser src/__tests__/sync-hono.wasm.test.ts
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 \
+  --output=.context/benchmarks/wp21-live-query-diagnostics-current.json
+```
+
+Result: passed. The guardrail stayed neutral against
+`.context/benchmarks/wp21-live-query-hints-current.json`: notify p95 stayed
+`1ms`, realtime live p95 moved `127.41ms -> 127.93ms`, and served Rust WASM
+bytes moved `2,372,720 -> 2,374,522`.
+
 ## Next Action
 
-Add a focused benchmark or counter that proves hinted queries skip reruns under
-unrelated row churn, then extend precision coverage to scope clears, conflicts,
-CRDT materialization, and blob metadata updates.
+Extend precision coverage to scope clears, conflicts, CRDT materialization, and
+blob metadata updates.

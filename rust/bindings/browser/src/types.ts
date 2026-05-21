@@ -969,6 +969,19 @@ export interface SyncularV2LiveQueryDependencyHint {
   fields?: readonly string[];
 }
 
+export interface SyncularV2LiveQueryDiagnostic {
+  id: string;
+  tables: string[];
+  dependencyHintCount: number;
+  rerunCount: number;
+  skippedRerunCount: number;
+  emittedEventCount: number;
+}
+
+export interface SyncularV2LiveQueryDiagnostics {
+  queries: SyncularV2LiveQueryDiagnostic[];
+}
+
 export interface SyncularV2LiveQueries {
   live<Row extends Record<string, unknown>>(
     query: { compile(): CompiledQuery },

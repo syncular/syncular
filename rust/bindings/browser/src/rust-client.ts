@@ -57,6 +57,7 @@ import type {
   SyncularV2LocalSyncResetRequest,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQueryDependencyHint,
+  SyncularV2LiveQueryDiagnostics,
   SyncularV2LiveQuerySnapshot,
   SyncularV2PullOptions,
   SyncularV2RowsChangedEvent,
@@ -484,6 +485,10 @@ export class SyncularV2RustClient {
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(): Array<SyncularV2LiveQueryEvent<Row>> {
     return parseJson(this.raw.drainLiveQueryEventsJson());
+  }
+
+  liveQueryDiagnostics(): SyncularV2LiveQueryDiagnostics {
+    return parseJson(this.raw.liveQueryDiagnosticsJson());
   }
 
   addRowsChangedListener(listener: SyncularV2RowsChangedSink): () => void {

@@ -188,6 +188,11 @@ export type SyncularV2WorkerRequest =
   | {
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'liveQueryDiagnostics';
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'applyMutation';
       operation: SyncOperation;
       localRow?: unknown | null;

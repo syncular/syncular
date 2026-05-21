@@ -19,6 +19,7 @@ import type {
   SyncularV2Client,
   SyncularV2DiagnosticEvent,
   SyncularV2LifecycleState,
+  SyncularV2LiveQueryDiagnostics,
   SyncularV2LiveQueryEvent,
   SyncularV2RowsChangedEvent,
   SyncularV2UnsafeSqlClient,
@@ -1869,6 +1870,84 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     }
   });
 
+  it('skips hinted live-query reruns for unrelated row churn', async () => {
+    const scenario = syncConformance.liveQuery;
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+    });
+    harnesses.push(sync);
+
+    const clientA = await sync.openWorkerClient({
+      clientId: `${scenario.clientAId}-hinted`,
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    await clientA.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+    await clientA.syncOnce();
+
+    const clientB = await sync.openWorkerClient({
+      clientId: `${scenario.clientBId}-hinted`,
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+
+    const dialect = createSyncularV2Dialect(clientA, {
+      appTables: syncularGeneratedAppSchema.tables.map((table) => table.name),
+      tableConfig: syncularGeneratedTableConfig,
+    });
+    const db = new Kysely<SyncularAppDb>({ dialect });
+    const events: Array<SyncularV2LiveQueryEvent<{ id: string; title: string }>> =
+      [];
+
+    try {
+      await dialect.live(
+        db
+          .selectFrom('tasks')
+          .select(['id', 'title'])
+          .where('id', '=', scenario.firstTask.id),
+        {
+          onChange(rows, event) {
+            events.push({ ...event, rows });
+          },
+        }
+      );
+      expect(events).toHaveLength(1);
+
+      await pushTaskAndPull(clientB, clientA, scenario.secondTask);
+      expect(events).toHaveLength(1);
+      await expect(liveQueryDiagnostics(clientA)).resolves.toMatchObject({
+        queries: [
+          {
+            dependencyHintCount: 1,
+            skippedRerunCount: 1,
+            rerunCount: 0,
+            emittedEventCount: 0,
+          },
+        ],
+      });
+
+      await pushTaskAndPull(clientB, clientA, scenario.firstTask);
+      expect(events).toHaveLength(2);
+      expect(events[1]).toMatchObject({
+        initial: false,
+        rows: [{ id: scenario.firstTask.id, title: scenario.firstTask.title }],
+      });
+      await expect(liveQueryDiagnostics(clientA)).resolves.toMatchObject({
+        queries: [
+          {
+            dependencyHintCount: 1,
+            skippedRerunCount: 1,
+            rerunCount: 1,
+            emittedEventCount: 1,
+          },
+        ],
+      });
+    } finally {
+      await dialect.destroyLiveQueries();
+      await db.destroy();
+    }
+  });
+
   it('keeps duplicate pushes acked once and does not create conflicts', async () => {
     const scenario = syncConformance.duplicatePush;
     const sync = await createHonoSyncHarness({
@@ -2854,6 +2933,15 @@ async function pushTaskAndPull(
     pushedCommits: 1,
   });
   await target.syncPull();
+}
+
+async function liveQueryDiagnostics(
+  client: SyncularV2Client
+): Promise<SyncularV2LiveQueryDiagnostics> {
+  const diagnostics = client as SyncularV2Client & {
+    liveQueryDiagnostics(): Promise<SyncularV2LiveQueryDiagnostics>;
+  };
+  return diagnostics.liveQueryDiagnostics();
 }
 
 async function waitForSyncRequestEventByTrace(
