@@ -86,13 +86,13 @@ describe('Syncular error responses', () => {
       retryable: false,
       recommendedAction: 'checkPermissions',
     });
-    expect(createSyncularErrorResponse('sync.auth_lease_expired')).toMatchObject(
-      {
-        category: 'auth-required',
-        retryable: true,
-        recommendedAction: 'refreshAuth',
-      }
-    );
+    expect(
+      createSyncularErrorResponse('sync.auth_lease_expired')
+    ).toMatchObject({
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+    });
     expect(
       createSyncularErrorResponse('sync.auth_lease_scope_revoked')
     ).toMatchObject({
