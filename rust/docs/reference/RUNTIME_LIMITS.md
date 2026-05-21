@@ -32,6 +32,13 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
 | `maxMutationLocalRowJsonBytes` | 1048576 | Maximum local-row JSON paired with one low-level mutation |
 | `maxMutationBatchJsonBytes` | 4194304 | Maximum low-level mutation batch JSON or typed mutation batch serialization |
 | `maxOutboxOperationsJsonBytes` | 4194304 | Maximum serialized operations stored in one outbox commit |
+| `maxBlobPayloadBytes` | 67108864 | Maximum blob payload accepted for local cache, upload, or download |
+| `maxCrdtRequestJsonBytes` | 4194304 | Maximum CRDT/Yjs JSON request accepted by native/browser helpers |
+| `maxCrdtUpdateBase64Bytes` | 1048576 | Maximum Yjs update envelope `updateBase64` length |
+| `maxCrdtStateBase64Bytes` | 4194304 | Maximum materialized Yjs document state length |
+| `maxCrdtStateVectorBase64Bytes` | 65536 | Maximum Yjs state-vector length |
+| `maxCrdtTextBytes` | 1048576 | Maximum CRDT text input accepted by text helper APIs |
+| `maxNativeDiagnosticEventPayloadJsonBytes` | 16384 | Maximum event payload retained in native diagnostic snapshots before redaction |
 
 ## Current Inventory
 
@@ -52,6 +59,11 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
 - Rust/native/browser mutation entry points reject oversized mutation operation,
   local row, batch, typed mutation, and outbox JSON with
   `runtime.limit_exceeded`.
+- Blob and CRDT/Yjs entry points reject oversized blob payloads, CRDT request
+  JSON, Yjs update/state/state-vector payloads, and CRDT text with
+  `runtime.limit_exceeded`.
+- Native diagnostic snapshots keep bounded recent event payloads by redacting
+  oversized `payload_json` values instead of retaining full host/app payloads.
 - Blob upload retries and sync retries are bounded by the runtime store
   constants and should become public limit fields in a later WP-18 slice.
 

@@ -5,7 +5,10 @@ use crate::client::{
     SyncChangedRow, SyncReport, SyncularClient, SyncularClientConfig,
 };
 use crate::crdt_field::{CrdtField, CrdtFieldId, CrdtFieldSyncMode};
-use crate::crdt_yjs::YjsUpdateEnvelope;
+use crate::crdt_yjs::{
+    validate_crdt_request_json_size, validate_yjs_text_input_size,
+    validate_yjs_update_envelope_size, YjsUpdateEnvelope,
+};
 use crate::diesel_sqlite::DieselSqliteStore;
 use crate::encrypted_crdt::{EncryptedCrdt, CRDT_CHECKPOINTS_TABLE, CRDT_UPDATES_TABLE};
 use crate::encryption::{encryption_helpers_json, FieldEncryption};
@@ -14,6 +17,7 @@ use crate::limits::{
     runtime_default_limits, RuntimeLimits, DEFAULT_CRDT_UPDATE_LOG_LIMIT,
     DEFAULT_NATIVE_EVENT_STREAM_CAPACITY, DEFAULT_NATIVE_RECENT_EVENT_LIMIT,
     DEFAULT_READONLY_QUERY_STATEMENT_CACHE_CAPACITY,
+    MAX_NATIVE_DIAGNOSTIC_EVENT_PAYLOAD_JSON_BYTES,
 };
 use crate::protocol::{validate_mutation_json_input_size, BlobRef, BootstrapState};
 use crate::runtime_schema::runtime_schema_version;
@@ -670,6 +674,7 @@ impl NativeSyncularClient {
     }
 
     pub fn enqueue_yjs_update_json(&self, update_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(update_json)?;
         let command_id = self.next_command_id("yjs")?;
         self.worker()?.enqueue_yjs_update_json(
             command_id.clone(),
@@ -680,7 +685,9 @@ impl NativeSyncularClient {
     }
 
     pub fn enqueue_crdt_field_yjs_update_json(&self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let request: NativeCrdtFieldYjsUpdateRequest = serde_json::from_str(request_json)?;
+        validate_yjs_update_envelope_size(&request.update)?;
         let field = self.writer.open_crdt_field(request.id())?;
         match field.sync_mode() {
             CrdtFieldSyncMode::ServerMerge => self.enqueue_yjs_update_json(request_json),
@@ -691,7 +698,9 @@ impl NativeSyncularClient {
     }
 
     pub fn enqueue_crdt_field_text_json(&self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let request: NativeCrdtFieldTextRequest = serde_json::from_str(request_json)?;
+        validate_yjs_text_input_size(&request.next_text)?;
         self.writer.open_crdt_field(request.id())?;
         let command_id = self.next_command_id("crdt-text")?;
         self.worker()?.enqueue_crdt_field_text_json(
@@ -703,6 +712,7 @@ impl NativeSyncularClient {
     }
 
     pub fn enqueue_crdt_field_compaction_json(&self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let request: NativeCrdtFieldCompactionRequest = serde_json::from_str(request_json)?;
         self.writer.open_crdt_field(request.id())?;
         let command_id = self.next_command_id("crdt-compact")?;
@@ -715,6 +725,7 @@ impl NativeSyncularClient {
     }
 
     pub fn enqueue_encrypted_crdt_update_json(&self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let command_id = self.next_command_id("encrypted-crdt")?;
         self.worker()?.enqueue_encrypted_crdt_update_json(
             command_id.clone(),
@@ -725,6 +736,7 @@ impl NativeSyncularClient {
     }
 
     pub fn enqueue_encrypted_crdt_checkpoint_json(&self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let command_id = self.next_command_id("encrypted-crdt-checkpoint")?;
         self.worker()?.enqueue_encrypted_crdt_checkpoint_json(
             command_id.clone(),
@@ -1126,13 +1138,16 @@ impl NativeSyncularClient {
     }
 
     pub fn open_crdt_field_json(&self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let request: NativeCrdtFieldRequest = serde_json::from_str(request_json)?;
         let field = self.writer.open_crdt_field(request.id())?;
         Ok(serde_json::to_string(&crdt_field_descriptor(&field))?)
     }
 
     pub fn apply_crdt_field_text_json(&mut self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let request: NativeCrdtFieldTextRequest = serde_json::from_str(request_json)?;
+        validate_yjs_text_input_size(&request.next_text)?;
         let field = self.writer.open_crdt_field(request.id())?;
         let receipt = self
             .writer
@@ -1142,7 +1157,9 @@ impl NativeSyncularClient {
     }
 
     pub fn apply_crdt_field_yjs_update_json(&mut self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let request: NativeCrdtFieldYjsUpdateRequest = serde_json::from_str(request_json)?;
+        validate_yjs_update_envelope_size(&request.update)?;
         let field = self.writer.open_crdt_field(request.id())?;
         let receipt = self
             .writer
@@ -1152,18 +1169,21 @@ impl NativeSyncularClient {
     }
 
     pub fn materialize_crdt_field_json(&mut self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let request: NativeCrdtFieldRequest = serde_json::from_str(request_json)?;
         let field = self.writer.open_crdt_field(request.id())?;
         crdt_field_materialization_json(self.writer.materialize_crdt_field(&field)?)
     }
 
     pub fn crdt_document_snapshot_json(&mut self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let request: NativeCrdtFieldRequest = serde_json::from_str(request_json)?;
         let field = self.writer.open_crdt_field(request.id())?;
         self.writer.crdt_document_snapshot_json(&field)
     }
 
     pub fn crdt_update_log_json(&mut self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let request: NativeCrdtFieldLogRequest = serde_json::from_str(request_json)?;
         let field = self.writer.open_crdt_field(request.id())?;
         self.writer.crdt_update_log_json(
@@ -1173,6 +1193,7 @@ impl NativeSyncularClient {
     }
 
     pub fn snapshot_crdt_field_state_vector_json(&mut self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let request: NativeCrdtFieldRequest = serde_json::from_str(request_json)?;
         let field = self.writer.open_crdt_field(request.id())?;
         Ok(serde_json::to_string(&json!({
@@ -1181,6 +1202,7 @@ impl NativeSyncularClient {
     }
 
     pub fn compact_crdt_field_json(&mut self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let request: NativeCrdtFieldCompactionRequest = serde_json::from_str(request_json)?;
         let field = self.writer.open_crdt_field(request.id())?;
         let receipt = self
@@ -1222,6 +1244,7 @@ impl NativeSyncularClient {
     }
 
     pub fn apply_encrypted_crdt_update_json(&mut self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let request: NativeEncryptedCrdtRequest = serde_json::from_str(request_json)?;
         let receipt = self.writer.apply_encrypted_crdt_update_json(request_json)?;
         self.events
@@ -1231,6 +1254,7 @@ impl NativeSyncularClient {
     }
 
     pub fn apply_encrypted_crdt_checkpoint_json(&mut self, request_json: &str) -> Result<String> {
+        validate_crdt_request_json_size(request_json)?;
         let _request: NativeEncryptedCrdtRequest = serde_json::from_str(request_json)?;
         let receipt = self
             .writer
@@ -1966,7 +1990,7 @@ impl NativeEventHub {
         let Ok(mut events) = self.recent_events.lock() else {
             return;
         };
-        events.push_back(event);
+        events.push_back(native_event_for_recent_diagnostics(event));
         while events.len() > DEFAULT_NATIVE_RECENT_EVENT_LIMIT {
             events.pop_front();
         }
@@ -2789,6 +2813,23 @@ fn crdt_field_changed_events_from_changed_rows(
         }
     }
     events
+}
+
+fn native_event_for_recent_diagnostics(mut event: NativeEvent) -> NativeEvent {
+    if let Some(payload_json) = event.payload_json.as_ref() {
+        if let Ok(bytes) = serde_json::to_vec(payload_json) {
+            if bytes.len() > MAX_NATIVE_DIAGNOSTIC_EVENT_PAYLOAD_JSON_BYTES {
+                event.payload_json = Some(json!({
+                    "truncated": true,
+                    "reason": "diagnosticPayloadLimit",
+                    "originalBytes": bytes.len(),
+                    "maxBytes": MAX_NATIVE_DIAGNOSTIC_EVENT_PAYLOAD_JSON_BYTES,
+                    "limit": "maxNativeDiagnosticEventPayloadJsonBytes"
+                }));
+            }
+        }
+    }
+    event
 }
 
 fn rows_changed_event_with_details<'a>(
@@ -3729,6 +3770,24 @@ mod tests {
         assert_eq!(value["error"]["category"], "auth-required");
         assert_eq!(value["error"]["retryable"], true);
         assert_eq!(value["error"]["recommendedAction"], "refreshAuth");
+    }
+
+    #[test]
+    fn recent_diagnostic_event_payload_is_redacted_when_too_large() {
+        let mut event = native_event(NativeEventKind::WorkerCommandCompleted, Vec::new(), None);
+        event.payload_json = Some(json!({
+            "body": "x".repeat(MAX_NATIVE_DIAGNOSTIC_EVENT_PAYLOAD_JSON_BYTES + 1)
+        }));
+
+        let event = native_event_for_recent_diagnostics(event);
+        let payload = event.payload_json.expect("redacted payload");
+        assert_eq!(payload["truncated"], true);
+        assert_eq!(payload["reason"], "diagnosticPayloadLimit");
+        assert_eq!(payload["limit"], "maxNativeDiagnosticEventPayloadJsonBytes");
+        assert!(
+            payload["originalBytes"].as_u64().unwrap()
+                > MAX_NATIVE_DIAGNOSTIC_EVENT_PAYLOAD_JSON_BYTES as u64
+        );
     }
 
     #[test]

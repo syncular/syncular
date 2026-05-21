@@ -399,6 +399,7 @@ impl BlobTransport for HttpSyncTransport {
 
     fn download_blob(&self, blob: &BlobRef) -> Result<Vec<u8>> {
         validate_blob_hash(&blob.hash)?;
+        validate_blob_ref_size(blob)?;
         let response = self.open_blob_download(blob)?;
         let bytes = response.bytes()?.to_vec();
         validate_blob_bytes(blob, &bytes)?;
@@ -407,6 +408,7 @@ impl BlobTransport for HttpSyncTransport {
 
     fn download_blob_to_file(&self, blob: &BlobRef, path: &Path) -> Result<()> {
         validate_blob_hash(&blob.hash)?;
+        validate_blob_ref_size(blob)?;
         let mut response = self.open_blob_download(blob)?;
         let temp_path = temp_download_path(path);
         let mut file = File::create(&temp_path).map_err(|err| {

@@ -749,11 +749,13 @@ impl DieselSqliteStore {
         mime_type: &str,
         enqueue_upload: bool,
     ) -> Result<BlobRef> {
+        let size = i64::try_from(data.len()).map_err(|_| {
+            SyncularError::protocol_message("blob is too large for SQLite size metadata")
+        })?;
+        validate_blob_size_bytes(size)?;
         let blob = BlobRef {
             hash: blob_hash(data),
-            size: i64::try_from(data.len()).map_err(|_| {
-                SyncularError::protocol_message("blob is too large for SQLite size metadata")
-            })?,
+            size,
             mime_type: if mime_type.trim().is_empty() {
                 "application/octet-stream".to_string()
             } else {

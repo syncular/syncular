@@ -10,7 +10,10 @@ use crate::client::{
 };
 #[cfg(feature = "native")]
 use crate::crdt_field::{CrdtField, CrdtFieldId, CrdtFieldSyncMode};
-use crate::crdt_yjs::{YjsUpdateEnvelope, YJS_PAYLOAD_KEY};
+use crate::crdt_yjs::{
+    validate_crdt_request_json_size, validate_yjs_text_input_size,
+    validate_yjs_update_envelope_size, YjsUpdateEnvelope, YJS_PAYLOAD_KEY,
+};
 #[cfg(feature = "native")]
 use crate::diesel_sqlite::DieselSqliteStore;
 use crate::encrypted_crdt::EncryptedCrdt;
@@ -1493,6 +1496,7 @@ impl SyncWorker {
         update_json: String,
         auto_sync: bool,
     ) -> Result<()> {
+        validate_save_yjs_update_json(&update_json)?;
         self.try_send(WorkerCommand::SaveYjsUpdateJson {
             command_id,
             update_json,
@@ -1506,6 +1510,7 @@ impl SyncWorker {
         request_json: String,
         auto_sync: bool,
     ) -> Result<()> {
+        validate_worker_crdt_field_text_request_json(&request_json)?;
         self.try_send(WorkerCommand::ApplyCrdtFieldTextJson {
             command_id,
             request_json,
@@ -1519,6 +1524,7 @@ impl SyncWorker {
         request_json: String,
         auto_sync: bool,
     ) -> Result<()> {
+        validate_crdt_request_json_size(&request_json)?;
         self.try_send(WorkerCommand::CompactCrdtFieldJson {
             command_id,
             request_json,
@@ -1532,6 +1538,7 @@ impl SyncWorker {
         request_json: String,
         auto_sync: bool,
     ) -> Result<()> {
+        validate_crdt_request_json_size(&request_json)?;
         self.try_send(WorkerCommand::ApplyEncryptedCrdtUpdateJson {
             command_id,
             request_json,
@@ -1545,6 +1552,7 @@ impl SyncWorker {
         request_json: String,
         auto_sync: bool,
     ) -> Result<()> {
+        validate_crdt_request_json_size(&request_json)?;
         self.try_send(WorkerCommand::ApplyEncryptedCrdtCheckpointJson {
             command_id,
             request_json,
@@ -3347,6 +3355,12 @@ struct SaveYjsUpdate {
     server_payload: Option<Value>,
 }
 
+fn validate_save_yjs_update_json(update_json: &str) -> Result<()> {
+    validate_crdt_request_json_size(update_json)?;
+    let update: SaveYjsUpdate = serde_json::from_str(update_json)?;
+    validate_yjs_update_envelope_size(&update.update)
+}
+
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct WorkerEncryptedCrdtRequest {
@@ -3367,6 +3381,12 @@ struct WorkerCrdtFieldTextRequest {
     field: String,
     #[serde(alias = "next_text")]
     next_text: String,
+}
+
+fn validate_worker_crdt_field_text_request_json(request_json: &str) -> Result<()> {
+    validate_crdt_request_json_size(request_json)?;
+    let request: WorkerCrdtFieldTextRequest = serde_json::from_str(request_json)?;
+    validate_yjs_text_input_size(&request.next_text)
 }
 
 #[derive(Debug, Deserialize)]

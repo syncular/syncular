@@ -3,8 +3,8 @@ use crate::binary_sync_pack::{decode_binary_sync_pack, is_binary_sync_pack_conte
 use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "web-blobs")]
 use crate::protocol::{
-    BlobDownloadUrlResponse, BlobRef, BlobUploadCompleteResponse, BlobUploadInitRequest,
-    BlobUploadInitResponse,
+    validate_blob_bytes, validate_blob_hash, validate_blob_ref_size, BlobDownloadUrlResponse,
+    BlobRef, BlobUploadCompleteResponse, BlobUploadInitRequest, BlobUploadInitResponse,
 };
 use crate::protocol::{
     CombinedRequest, CombinedResponse, ScopeValues, ScopedSnapshotArtifactRef, SnapshotChunkRef,
@@ -269,6 +269,7 @@ impl AsyncBlobTransport for WebSyncTransport {
         bytes: &'a [u8],
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            validate_blob_bytes(blob, bytes)?;
             let init = self
                 .initiate_blob_upload(&BlobUploadInitRequest {
                     hash: blob.hash.clone(),
@@ -307,14 +308,18 @@ impl AsyncBlobTransport for WebSyncTransport {
         blob: &'a BlobRef,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<u8>>> + 'a>> {
         Box::pin(async move {
+            validate_blob_hash(&blob.hash)?;
+            validate_blob_ref_size(blob)?;
             let download = self.get_blob_download_url(&blob.hash).await?;
-            fetch_bytes(
+            let bytes = fetch_bytes(
                 "blob download",
                 &download.url,
                 &[],
                 self.abort_signal.as_ref(),
             )
-            .await
+            .await?;
+            validate_blob_bytes(blob, &bytes)?;
+            Ok(bytes)
         })
     }
 }

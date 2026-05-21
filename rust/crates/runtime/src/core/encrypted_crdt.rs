@@ -1,8 +1,9 @@
 use crate::app_schema::{AppTableMetadata, CrdtYjsFieldMetadata};
 use crate::crdt_yjs::{
     apply_yjs_updates_to_state, build_yjs_text_update, materialize_yjs_state,
-    yjs_state_vector_base64, ApplyYjsUpdatesToStateArgs, BuildYjsTextUpdateArgs, YjsFieldKind,
-    YjsFieldRule, YjsUpdateEnvelope,
+    validate_yjs_state_base64_size, validate_yjs_text_input_size,
+    validate_yjs_update_envelope_size, yjs_state_vector_base64, ApplyYjsUpdatesToStateArgs,
+    BuildYjsTextUpdateArgs, YjsFieldKind, YjsFieldRule, YjsUpdateEnvelope,
 };
 use crate::encryption::{
     random_bytes, validate_32_bytes, xchacha_decrypt, xchacha_encrypt, FieldEncryptionContext,
@@ -230,6 +231,7 @@ impl EncryptedCrdt {
         &self,
         args: BuildEncryptedCrdtTextUpdateArgs<'_>,
     ) -> Result<PendingSyncularMutation> {
+        validate_yjs_text_input_size(args.next_text)?;
         let field = encrypted_field_metadata(args.metadata, args.field)?;
         if field.kind != "text" {
             return Err(SyncularError::config(format!(
@@ -270,6 +272,7 @@ impl EncryptedCrdt {
         &self,
         args: BuildEncryptedCrdtYjsUpdateArgs<'_>,
     ) -> Result<PendingSyncularMutation> {
+        validate_yjs_update_envelope_size(&args.update)?;
         if args.update.update_id.trim().is_empty() {
             return Err(SyncularError::protocol_message(
                 "encrypted CRDT update.updateId must be a non-empty string",
@@ -354,6 +357,7 @@ impl EncryptedCrdt {
             )
         })?;
         let state_base64 = checkpoint_state_base64(existing, field)?;
+        validate_yjs_state_base64_size(&state_base64)?;
         let scopes = scopes_from_app_row(args.metadata, existing)?;
         let stream_id = encrypted_crdt_stream_id(args.metadata.name, args.row_id, field.field);
         let target = FieldEncryptionTarget {

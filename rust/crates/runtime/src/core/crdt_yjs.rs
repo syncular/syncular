@@ -1,8 +1,12 @@
 use crate::app_schema::{AppTableMetadata, CrdtYjsFieldMetadata};
 use crate::error::{Result, SyncularError, FULL_SNAPSHOT_RESYNC_REQUIRED};
+use crate::limits::{
+    MAX_CRDT_REQUEST_JSON_BYTES, MAX_CRDT_STATE_BASE64_BYTES, MAX_CRDT_STATE_VECTOR_BASE64_BYTES,
+    MAX_CRDT_TEXT_BYTES, MAX_CRDT_UPDATE_BASE64_BYTES,
+};
 #[cfg(feature = "crdt-yjs")]
 use crate::protocol::random_syncular_id;
-use crate::protocol::SyncOperation;
+use crate::protocol::{validate_payload_bytes, SyncOperation};
 #[cfg(feature = "crdt-yjs")]
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use serde::{Deserialize, Serialize};
@@ -143,6 +147,58 @@ pub struct ApplyYjsEnvelopeToPayloadResult {
     pub payload: Value,
 }
 
+pub fn validate_crdt_request_json_size(request_json: &str) -> Result<()> {
+    validate_payload_bytes(
+        "maxCrdtRequestJsonBytes",
+        request_json.len(),
+        MAX_CRDT_REQUEST_JSON_BYTES,
+        "Syncular CRDT request JSON exceeds the configured limit",
+    )
+}
+
+pub fn validate_yjs_update_envelope_size(update: &YjsUpdateEnvelope) -> Result<()> {
+    validate_payload_bytes(
+        "maxCrdtUpdateBase64Bytes",
+        update.update_base64.len(),
+        MAX_CRDT_UPDATE_BASE64_BYTES,
+        "Syncular CRDT updateBase64 exceeds the configured limit",
+    )?;
+    if let Some(required) = &update.requires_state_vector_base64 {
+        validate_payload_bytes(
+            "maxCrdtStateVectorBase64Bytes",
+            required.len(),
+            MAX_CRDT_STATE_VECTOR_BASE64_BYTES,
+            "Syncular CRDT requiresStateVectorBase64 exceeds the configured limit",
+        )?;
+    }
+    Ok(())
+}
+
+pub fn validate_yjs_update_envelope_list_size(updates: &[YjsUpdateEnvelope]) -> Result<()> {
+    for update in updates {
+        validate_yjs_update_envelope_size(update)?;
+    }
+    Ok(())
+}
+
+pub fn validate_yjs_state_base64_size(state_base64: &str) -> Result<()> {
+    validate_payload_bytes(
+        "maxCrdtStateBase64Bytes",
+        state_base64.len(),
+        MAX_CRDT_STATE_BASE64_BYTES,
+        "Syncular CRDT stateBase64 exceeds the configured limit",
+    )
+}
+
+pub fn validate_yjs_text_input_size(next_text: &str) -> Result<()> {
+    validate_payload_bytes(
+        "maxCrdtTextBytes",
+        next_text.len(),
+        MAX_CRDT_TEXT_BYTES,
+        "Syncular CRDT text exceeds the configured limit",
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MaterializeYjsRowArgs {
@@ -165,6 +221,7 @@ pub struct MaterializeYjsRowResult {
 
 #[cfg(feature = "crdt-yjs")]
 pub fn build_yjs_text_update(args: BuildYjsTextUpdateArgs) -> Result<BuildYjsTextUpdateResult> {
+    validate_yjs_text_input_size(&args.next_text)?;
     let container_key = args.container_key.unwrap_or_else(|| "text".to_string());
     let doc = create_doc_from_state(args.previous_state_base64.as_deref())?;
     let before = {
@@ -178,13 +235,15 @@ pub fn build_yjs_text_update(args: BuildYjsTextUpdateArgs) -> Result<BuildYjsTex
     let next_state = txn.encode_state_as_update_v1(&StateVector::default());
     let next_text = text_ref.get_string(&txn);
 
+    let next_state_base64 = encode_base64(&next_state);
+    validate_yjs_state_base64_size(&next_state_base64)?;
     Ok(BuildYjsTextUpdateResult {
         update: YjsUpdateEnvelope {
             update_id: args.update_id.unwrap_or_else(random_syncular_id),
             update_base64: encode_base64(&update),
             requires_state_vector_base64: None,
         },
-        next_state_base64: encode_base64(&next_state),
+        next_state_base64,
         next_text,
     })
 }
@@ -203,8 +262,10 @@ pub fn apply_yjs_text_updates(args: ApplyYjsTextUpdatesArgs) -> Result<ApplyYjsT
     let txn = doc.transact();
     let text = text_ref.get_string(&txn);
     let next_state = txn.encode_state_as_update_v1(&StateVector::default());
+    let next_state_base64 = encode_base64(&next_state);
+    validate_yjs_state_base64_size(&next_state_base64)?;
     Ok(ApplyYjsTextUpdatesResult {
-        next_state_base64: encode_base64(&next_state),
+        next_state_base64,
         text,
     })
 }
@@ -224,9 +285,9 @@ pub fn apply_yjs_updates_to_state(
         let txn = doc.transact();
         txn.encode_state_as_update_v1(&StateVector::default())
     };
-    Ok(ApplyYjsUpdatesToStateResult {
-        next_state_base64: encode_base64(&next_state),
-    })
+    let next_state_base64 = encode_base64(&next_state);
+    validate_yjs_state_base64_size(&next_state_base64)?;
+    Ok(ApplyYjsUpdatesToStateResult { next_state_base64 })
 }
 
 #[cfg(not(feature = "crdt-yjs"))]
@@ -251,7 +312,14 @@ pub fn materialize_yjs_state(_state_base64: &str, _rule: &YjsFieldRule) -> Resul
 pub fn yjs_state_vector_base64(state_base64: Option<&str>) -> Result<String> {
     let doc = create_doc_from_state(state_base64)?;
     let txn = doc.transact();
-    Ok(encode_base64(&txn.state_vector().encode_v1()))
+    let state_vector_base64 = encode_base64(&txn.state_vector().encode_v1());
+    validate_payload_bytes(
+        "maxCrdtStateVectorBase64Bytes",
+        state_vector_base64.len(),
+        MAX_CRDT_STATE_VECTOR_BASE64_BYTES,
+        "Syncular CRDT stateVectorBase64 exceeds the configured limit",
+    )?;
+    Ok(state_vector_base64)
 }
 
 #[cfg(not(feature = "crdt-yjs"))]
@@ -288,16 +356,19 @@ pub fn materialize_yjs_row(args: MaterializeYjsRowArgs) -> Result<MaterializeYjs
 }
 
 pub fn build_yjs_text_update_json(args_json: &str) -> Result<String> {
+    validate_crdt_request_json_size(args_json)?;
     let args: BuildYjsTextUpdateArgs = serde_json::from_str(args_json)?;
     Ok(serde_json::to_string(&build_yjs_text_update(args)?)?)
 }
 
 pub fn apply_yjs_text_updates_json(args_json: &str) -> Result<String> {
+    validate_crdt_request_json_size(args_json)?;
     let args: ApplyYjsTextUpdatesArgs = serde_json::from_str(args_json)?;
     Ok(serde_json::to_string(&apply_yjs_text_updates(args)?)?)
 }
 
 pub fn apply_yjs_envelope_to_payload_json(args_json: &str) -> Result<String> {
+    validate_crdt_request_json_size(args_json)?;
     let args: ApplyYjsEnvelopeToPayloadArgs = serde_json::from_str(args_json)?;
     Ok(serde_json::to_string(&apply_yjs_envelope_to_payload(
         args,
@@ -305,6 +376,7 @@ pub fn apply_yjs_envelope_to_payload_json(args_json: &str) -> Result<String> {
 }
 
 pub fn materialize_yjs_row_json(args_json: &str) -> Result<String> {
+    validate_crdt_request_json_size(args_json)?;
     let args: MaterializeYjsRowArgs = serde_json::from_str(args_json)?;
     Ok(serde_json::to_string(&materialize_yjs_row(args)?)?)
 }
@@ -679,6 +751,7 @@ fn normalize_update_envelope(value: Value, context: &str) -> Result<YjsUpdateEnv
             "{context}.requiresStateVectorBase64 must be a non-empty base64 string when provided"
         )));
     }
+    validate_yjs_update_envelope_size(&envelope)?;
     Ok(envelope)
 }
 
@@ -686,6 +759,7 @@ fn normalize_update_envelope(value: Value, context: &str) -> Result<YjsUpdateEnv
 fn create_doc_from_state(state_base64: Option<&str>) -> Result<Doc> {
     let doc = Doc::new();
     if let Some(state_base64) = state_base64.filter(|value| !value.trim().is_empty()) {
+        validate_yjs_state_base64_size(state_base64)?;
         let bytes = decode_base64(state_base64)?;
         let update = Update::decode_v1(bytes.as_slice())
             .map_err(|err| SyncularError::protocol_message(format!("decode Yjs state: {err}")))?;
@@ -698,6 +772,7 @@ fn create_doc_from_state(state_base64: Option<&str>) -> Result<Doc> {
 
 #[cfg(feature = "crdt-yjs")]
 fn apply_updates(doc: &Doc, updates: &[YjsUpdateEnvelope]) -> Result<()> {
+    validate_yjs_update_envelope_list_size(updates)?;
     let mut txn = doc.transact_mut();
     for update in updates {
         if let Some(required) = required_state_vector(update) {
