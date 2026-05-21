@@ -83,6 +83,10 @@ First retained slice:
   churn. The diagnostic shape reports per-query `rerunCount`,
   `skippedRerunCount`, and `emittedEventCount`; it does not expose hinted row
   ids.
+- Extended scope-revocation coverage: a primary-key hinted browser live query
+  now stays subscribed while the server revokes the subscription scope. The
+  test proves table-only scoped clearing still reruns and emits the empty query
+  result instead of incorrectly trusting row-id hints.
 
 Native gates:
 
@@ -127,7 +131,17 @@ Result: passed. The guardrail stayed neutral against
 `1ms`, realtime live p95 moved `127.41ms -> 127.93ms`, and served Rust WASM
 bytes moved `2,372,720 -> 2,374,522`.
 
+Scope-revocation gate:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+bun test --cwd rust/bindings/browser \
+  src/__tests__/sync-hono.wasm.test.ts -t "clears scoped local rows"
+```
+
+Result: passed. No benchmark was rerun for this test-only coverage slice.
+
 ## Next Action
 
-Extend precision coverage to scope clears, conflicts, CRDT materialization, and
-blob metadata updates.
+Extend precision coverage to conflicts, CRDT materialization, and blob metadata
+updates.
