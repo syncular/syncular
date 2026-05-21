@@ -58,8 +58,8 @@ product-level limits.
 
 ## Next Action
 
-Add stable limit failures and diagnostics for blob, CRDT update, and diagnostic
-payload limits.
+Add stable limit failures and diagnostics for snapshot artifact/chunk and
+websocket frame payload limits.
 
 ## Progress
 
@@ -81,6 +81,10 @@ payload limits.
   JSON, local-row JSON, batch JSON, typed mutation batches, and serialized
   outbox operation JSON with the same stable `runtime.limit_exceeded`
   classification.
+- Blob and CRDT/Yjs paths now expose and enforce maximum blob payload, CRDT
+  request JSON, Yjs update/state/state-vector payload, and CRDT text limits.
+- Native diagnostic snapshots now bound retained recent-event payloads by
+  redacting oversized `payload_json` values with explicit truncation metadata.
 
 ## Latest Evidence
 
@@ -88,6 +92,9 @@ payload limits.
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_exposes_redacted_diagnostic_snapshot`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_rejects_subscription_limit_with_stable_error`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_rejects_mutation_payload_limit_with_stable_error`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_rejects_crdt_payload_limits_with_stable_error`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings native::tests::recent_diagnostic_event_payload_is_redacted_when_too_large`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime protocol::tests::oversized_blob_ref_returns_stable_limit_error`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`

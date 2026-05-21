@@ -20,8 +20,10 @@ use crate::crdt_yjs::{
     apply_yjs_text_updates_json as crdt_apply_yjs_text_updates_json, build_yjs_text_update,
     build_yjs_text_update_json as crdt_build_yjs_text_update_json, materialize_row_for_metadata,
     materialize_yjs_row_json as crdt_materialize_yjs_row_json, materialize_yjs_state,
-    transform_local_row_for_metadata, yjs_state_vector_base64 as crdt_yjs_state_vector_base64,
-    BuildYjsTextUpdateArgs, YjsUpdateEnvelope, YJS_PAYLOAD_KEY,
+    transform_local_row_for_metadata, validate_crdt_request_json_size,
+    validate_yjs_text_input_size, validate_yjs_update_envelope_size,
+    yjs_state_vector_base64 as crdt_yjs_state_vector_base64, BuildYjsTextUpdateArgs,
+    YjsUpdateEnvelope, YJS_PAYLOAD_KEY,
 };
 use crate::encrypted_crdt::{
     apply_encrypted_crdt_plaintext_to_row, encrypted_crdt_identity_column,
@@ -35,7 +37,9 @@ use crate::encryption::FieldEncryptionContext;
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::limits::DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY;
 #[cfg(feature = "web-blobs")]
-use crate::protocol::{blob_hash, validate_blob_bytes, validate_blob_hash, BlobRef};
+use crate::protocol::{
+    blob_hash, validate_blob_bytes, validate_blob_hash, validate_blob_size_bytes, BlobRef,
+};
 use crate::protocol::{
     sync_operations_json_for_outbox, validate_mutation_batch_json_input_size,
     validate_pending_mutation_batch_size, CrdtStateVectorHint, OperationResult,
@@ -1024,6 +1028,7 @@ impl SyncularRustOwnedSqliteClient {
         &mut self,
         request_json: &str,
     ) -> std::result::Result<String, JsValue> {
+        validate_crdt_request_json_size(request_json).map_err(error_to_js)?;
         let request: RustOwnedCrdtFieldRequest = serde_json::from_str(request_json)
             .map_err(|err| error_to_js(SyncularError::from(err)))?;
         let field = self
@@ -1040,6 +1045,7 @@ impl SyncularRustOwnedSqliteClient {
         &mut self,
         request_json: &str,
     ) -> std::result::Result<String, JsValue> {
+        validate_crdt_request_json_size(request_json).map_err(error_to_js)?;
         let request: RustOwnedCrdtFieldTextRequest = serde_json::from_str(request_json)
             .map_err(|err| error_to_js(SyncularError::from(err)))?;
         self.apply_crdt_field_text(request)
@@ -1052,6 +1058,7 @@ impl SyncularRustOwnedSqliteClient {
         &mut self,
         request_json: &str,
     ) -> std::result::Result<String, JsValue> {
+        validate_crdt_request_json_size(request_json).map_err(error_to_js)?;
         let request: RustOwnedCrdtFieldYjsUpdateRequest = serde_json::from_str(request_json)
             .map_err(|err| error_to_js(SyncularError::from(err)))?;
         self.apply_crdt_field_yjs_update(request)
@@ -1064,6 +1071,7 @@ impl SyncularRustOwnedSqliteClient {
         &mut self,
         request_json: &str,
     ) -> std::result::Result<String, JsValue> {
+        validate_crdt_request_json_size(request_json).map_err(error_to_js)?;
         let request: RustOwnedCrdtFieldRequest = serde_json::from_str(request_json)
             .map_err(|err| error_to_js(SyncularError::from(err)))?;
         self.materialize_crdt_field(request)
@@ -1076,6 +1084,7 @@ impl SyncularRustOwnedSqliteClient {
         &mut self,
         request_json: &str,
     ) -> std::result::Result<String, JsValue> {
+        validate_crdt_request_json_size(request_json).map_err(error_to_js)?;
         let request: RustOwnedCrdtFieldRequest = serde_json::from_str(request_json)
             .map_err(|err| error_to_js(SyncularError::from(err)))?;
         self.crdt_document_snapshot(request)
@@ -1088,6 +1097,7 @@ impl SyncularRustOwnedSqliteClient {
         &mut self,
         request_json: &str,
     ) -> std::result::Result<String, JsValue> {
+        validate_crdt_request_json_size(request_json).map_err(error_to_js)?;
         let request: RustOwnedCrdtFieldLogRequest = serde_json::from_str(request_json)
             .map_err(|err| error_to_js(SyncularError::from(err)))?;
         self.crdt_update_log(request)
@@ -1100,6 +1110,7 @@ impl SyncularRustOwnedSqliteClient {
         &mut self,
         request_json: &str,
     ) -> std::result::Result<String, JsValue> {
+        validate_crdt_request_json_size(request_json).map_err(error_to_js)?;
         let request: RustOwnedCrdtFieldRequest = serde_json::from_str(request_json)
             .map_err(|err| error_to_js(SyncularError::from(err)))?;
         self.snapshot_crdt_field_state_vector(request)
@@ -1112,6 +1123,7 @@ impl SyncularRustOwnedSqliteClient {
         &mut self,
         request_json: &str,
     ) -> std::result::Result<String, JsValue> {
+        validate_crdt_request_json_size(request_json).map_err(error_to_js)?;
         let request: RustOwnedCrdtFieldCompactionRequest = serde_json::from_str(request_json)
             .map_err(|err| error_to_js(SyncularError::from(err)))?;
         self.compact_crdt_field(request)
@@ -1138,6 +1150,7 @@ impl SyncularRustOwnedSqliteClient {
     }
 
     fn apply_crdt_field_text(&mut self, request: RustOwnedCrdtFieldTextRequest) -> Result<Value> {
+        validate_yjs_text_input_size(&request.next_text)?;
         let field = self.open_validated_crdt_field(request.id())?;
         if field.field_metadata().kind != "text" {
             return Err(SyncularError::config(format!(
@@ -1214,6 +1227,7 @@ impl SyncularRustOwnedSqliteClient {
         &mut self,
         request: RustOwnedCrdtFieldYjsUpdateRequest,
     ) -> Result<Value> {
+        validate_yjs_update_envelope_size(&request.update)?;
         let field = self.open_validated_crdt_field(request.id())?;
         match field.sync_mode() {
             CrdtFieldSyncMode::ServerMerge => {
@@ -1890,11 +1904,13 @@ impl SyncularRustOwnedSqlite {
             .mime_type
             .clone()
             .unwrap_or_else(|| "application/octet-stream".to_string());
+        let size = i64::try_from(data.len()).map_err(|_| {
+            SyncularError::protocol_message("blob is too large for SQLite size metadata")
+        })?;
+        validate_blob_size_bytes(size)?;
         let blob = BlobRef {
             hash: blob_hash(data),
-            size: i64::try_from(data.len()).map_err(|_| {
-                SyncularError::protocol_message("blob is too large for SQLite size metadata")
-            })?,
+            size,
             mime_type,
             encrypted: false,
             key_id: None,

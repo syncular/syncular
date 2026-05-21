@@ -494,6 +494,9 @@ read-only review:
     `runtime.limit_exceeded` errors. Mutation entry points now reject oversized
     low-level operation JSON, local-row JSON, batch JSON, typed mutation
     batches, and serialized outbox operation JSON with the same error family.
+    Blob and CRDT/Yjs entry points now reject oversized payloads through the
+    same stable limit errors, and native diagnostic snapshots redact oversized
+    recent-event payloads instead of retaining full app data.
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)

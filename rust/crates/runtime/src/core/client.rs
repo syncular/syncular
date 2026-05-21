@@ -12,7 +12,9 @@ use crate::crdt_field::{
 };
 #[cfg(feature = "native")]
 use crate::crdt_yjs::{
-    build_yjs_text_update, materialize_yjs_state, yjs_state_vector_base64, BuildYjsTextUpdateArgs,
+    build_yjs_text_update, materialize_yjs_state, validate_crdt_request_json_size,
+    validate_yjs_text_input_size, validate_yjs_update_envelope_size, yjs_state_vector_base64,
+    BuildYjsTextUpdateArgs,
 };
 use crate::crdt_yjs::{YjsUpdateEnvelope, YJS_PAYLOAD_KEY};
 #[cfg(feature = "native")]
@@ -1979,6 +1981,10 @@ where
         cache_local: bool,
     ) -> Result<BlobRef> {
         if cache_local {
+            let metadata = fs::metadata(path).map_err(|err| {
+                SyncularError::storage(err).context(format!("stat blob file {path:?}"))
+            })?;
+            validate_blob_size_bytes(i64::try_from(metadata.len()).unwrap_or(i64::MAX))?;
             let data = fs::read(path).map_err(|err| {
                 SyncularError::storage(err).context(format!("read blob file {path:?}"))
             })?;
@@ -2010,6 +2016,7 @@ where
             encrypted: false,
             key_id: None,
         };
+        validate_blob_ref_size(&blob)?;
         self.transport.upload_blob_file(&blob, path)?;
         Ok(blob)
     }
@@ -2107,6 +2114,10 @@ where
         mime_type: &str,
         enqueue_upload: bool,
     ) -> Result<String> {
+        let metadata = fs::metadata(path).map_err(|err| {
+            SyncularError::storage(err).context(format!("stat blob file {path:?}"))
+        })?;
+        validate_blob_size_bytes(i64::try_from(metadata.len()).unwrap_or(i64::MAX))?;
         let data = fs::read(path).map_err(|err| {
             SyncularError::storage(err).context(format!("read blob file {path:?}"))
         })?;
@@ -2900,14 +2911,17 @@ where
         &mut self,
         request_json: &str,
     ) -> Result<MutationReceipt> {
+        validate_crdt_request_json_size(request_json)?;
         let request: EncryptedCrdtUpdateJsonRequest = serde_json::from_str(request_json)?;
         let (metadata, field) =
             self.encrypted_crdt_metadata_field(&request.table, &request.field)?;
         match (request.next_text, request.update) {
             (Some(next_text), None) => {
+                validate_yjs_text_input_size(&next_text)?;
                 self.apply_encrypted_crdt_text_update(metadata, field, &request.row_id, &next_text)
             }
             (None, Some(update)) => {
+                validate_yjs_update_envelope_size(&update)?;
                 self.apply_encrypted_crdt_yjs_update(metadata, field, &request.row_id, update)
             }
             (Some(_), Some(_)) => Err(SyncularError::config(
@@ -2923,6 +2937,7 @@ where
         &mut self,
         request_json: &str,
     ) -> Result<Option<MutationReceipt>> {
+        validate_crdt_request_json_size(request_json)?;
         let request: EncryptedCrdtCheckpointJsonRequest = serde_json::from_str(request_json)?;
         let (metadata, field) =
             self.encrypted_crdt_metadata_field(&request.table, &request.field)?;
@@ -2951,6 +2966,7 @@ where
         field: &CrdtField,
         update: YjsUpdateEnvelope,
     ) -> Result<CrdtFieldWriteReceipt> {
+        validate_yjs_update_envelope_size(&update)?;
         match field.sync_mode() {
             CrdtFieldSyncMode::ServerMerge => {
                 let client_commit_id = self.store.apply_crdt_field_yjs_update(
@@ -2984,6 +3000,7 @@ where
         update: YjsUpdateEnvelope,
         max_pending_updates: i64,
     ) -> Result<CrdtFieldWriteReceipt> {
+        validate_yjs_update_envelope_size(&update)?;
         match field.sync_mode() {
             CrdtFieldSyncMode::ServerMerge => {
                 let client_commit_id =
@@ -3005,6 +3022,7 @@ where
         field: &CrdtField,
         next_text: &str,
     ) -> Result<CrdtFieldWriteReceipt> {
+        validate_yjs_text_input_size(next_text)?;
         if field.field_metadata().kind != "text" {
             return Err(SyncularError::config(format!(
                 "apply_crdt_field_text requires a text CRDT field, got {}",
@@ -3223,6 +3241,7 @@ where
         row_id: &str,
         next_text: &str,
     ) -> Result<MutationReceipt> {
+        validate_yjs_text_input_size(next_text)?;
         let Some(encryption) = &self.encrypted_crdt else {
             return Err(SyncularError::config(
                 "encrypted CRDT updates require set_encrypted_crdt(...)",
@@ -3255,6 +3274,7 @@ where
         row_id: &str,
         update: YjsUpdateEnvelope,
     ) -> Result<MutationReceipt> {
+        validate_yjs_update_envelope_size(&update)?;
         let Some(encryption) = &self.encrypted_crdt else {
             return Err(SyncularError::config(
                 "encrypted CRDT updates require set_encrypted_crdt(...)",

@@ -1,6 +1,6 @@
 use crate::error::{Result, SyncularError};
 use crate::limits::{
-    MAX_MUTATION_BATCH_JSON_BYTES, MAX_MUTATION_LOCAL_ROW_JSON_BYTES,
+    MAX_BLOB_PAYLOAD_BYTES, MAX_MUTATION_BATCH_JSON_BYTES, MAX_MUTATION_LOCAL_ROW_JSON_BYTES,
     MAX_MUTATION_OPERATION_JSON_BYTES, MAX_OUTBOX_OPERATIONS_JSON_BYTES,
 };
 use serde::{Deserialize, Serialize};
@@ -217,7 +217,7 @@ pub fn sync_operations_json_for_outbox(operations: &[SyncOperation]) -> Result<S
     Ok(operations_json)
 }
 
-fn validate_payload_bytes(
+pub fn validate_payload_bytes(
     limit: &'static str,
     observed: usize,
     max: usize,
@@ -320,6 +320,7 @@ pub fn blob_hash_reader(mut reader: impl Read) -> Result<(String, i64)> {
                 SyncularError::protocol_message("blob chunk is too large for size metadata")
             })?)
             .ok_or_else(|| SyncularError::protocol_message("blob is too large"))?;
+        validate_blob_size_bytes(size)?;
         hasher.update(&buffer[..read]);
     }
     Ok((format!("sha256:{}", hex::encode(hasher.finalize())), size))
@@ -329,10 +330,63 @@ pub fn validate_blob_hash(hash: &str) -> Result<()> {
     syncular_protocol::validate_blob_hash(hash).map_err(Into::into)
 }
 
+pub fn validate_blob_size_bytes(size: i64) -> Result<()> {
+    if size < 0 {
+        return Err(SyncularError::protocol_message(
+            "blob size cannot be negative",
+        ));
+    }
+    if size > MAX_BLOB_PAYLOAD_BYTES {
+        return Err(SyncularError::limit_exceeded(
+            "maxBlobPayloadBytes",
+            usize::try_from(size).unwrap_or(usize::MAX),
+            usize::try_from(MAX_BLOB_PAYLOAD_BYTES).unwrap_or(usize::MAX),
+            "Syncular blob payload exceeds the configured limit",
+        ));
+    }
+    Ok(())
+}
+
+pub fn validate_blob_ref_size(blob: &BlobRef) -> Result<()> {
+    validate_blob_size_bytes(blob.size)
+}
+
 pub fn validate_blob_bytes(blob: &BlobRef, data: &[u8]) -> Result<()> {
+    validate_payload_bytes(
+        "maxBlobPayloadBytes",
+        data.len(),
+        usize::try_from(MAX_BLOB_PAYLOAD_BYTES).unwrap_or(usize::MAX),
+        "Syncular blob payload exceeds the configured limit",
+    )?;
+    validate_blob_ref_size(blob)?;
     syncular_protocol::validate_blob_bytes(blob, data).map_err(Into::into)
 }
 
 pub fn validate_blob_digest(blob: &BlobRef, actual_hash: &str, actual_size: i64) -> Result<()> {
+    validate_blob_ref_size(blob)?;
+    validate_blob_size_bytes(actual_size)?;
     syncular_protocol::validate_blob_digest(blob, actual_hash, actual_size).map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_blob_ref_returns_stable_limit_error() {
+        let blob = BlobRef {
+            hash: format!("sha256:{}", "0".repeat(64)),
+            size: MAX_BLOB_PAYLOAD_BYTES + 1,
+            mime_type: "application/octet-stream".to_string(),
+            encrypted: false,
+            key_id: None,
+        };
+
+        let err = validate_blob_digest(&blob, &blob.hash, blob.size).unwrap_err();
+        let classification = err.classification();
+        assert_eq!(classification.code, "runtime.limit_exceeded");
+        assert_eq!(classification.category, "limit-exceeded");
+        assert_eq!(classification.recommended_action, "reduceInput");
+        assert!(err.message_text().contains("maxBlobPayloadBytes"));
+    }
 }

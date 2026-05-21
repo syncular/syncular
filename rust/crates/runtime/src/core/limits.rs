@@ -26,6 +26,13 @@ pub const MAX_MUTATION_OPERATION_JSON_BYTES: usize = 1024 * 1024;
 pub const MAX_MUTATION_LOCAL_ROW_JSON_BYTES: usize = 1024 * 1024;
 pub const MAX_MUTATION_BATCH_JSON_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_OUTBOX_OPERATIONS_JSON_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_BLOB_PAYLOAD_BYTES: i64 = 64 * 1024 * 1024;
+pub const MAX_CRDT_REQUEST_JSON_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_CRDT_UPDATE_BASE64_BYTES: usize = 1024 * 1024;
+pub const MAX_CRDT_STATE_BASE64_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_CRDT_STATE_VECTOR_BASE64_BYTES: usize = 64 * 1024;
+pub const MAX_CRDT_TEXT_BYTES: usize = 1024 * 1024;
+pub const MAX_NATIVE_DIAGNOSTIC_EVENT_PAYLOAD_JSON_BYTES: usize = 16 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -52,6 +59,13 @@ pub struct RuntimeLimits {
     pub max_mutation_local_row_json_bytes: usize,
     pub max_mutation_batch_json_bytes: usize,
     pub max_outbox_operations_json_bytes: usize,
+    pub max_blob_payload_bytes: i64,
+    pub max_crdt_request_json_bytes: usize,
+    pub max_crdt_update_base64_bytes: usize,
+    pub max_crdt_state_base64_bytes: usize,
+    pub max_crdt_state_vector_base64_bytes: usize,
+    pub max_crdt_text_bytes: usize,
+    pub max_native_diagnostic_event_payload_json_bytes: usize,
 }
 
 pub fn runtime_default_limits() -> RuntimeLimits {
@@ -78,5 +92,13 @@ pub fn runtime_default_limits() -> RuntimeLimits {
         max_mutation_local_row_json_bytes: MAX_MUTATION_LOCAL_ROW_JSON_BYTES,
         max_mutation_batch_json_bytes: MAX_MUTATION_BATCH_JSON_BYTES,
         max_outbox_operations_json_bytes: MAX_OUTBOX_OPERATIONS_JSON_BYTES,
+        max_blob_payload_bytes: MAX_BLOB_PAYLOAD_BYTES,
+        max_crdt_request_json_bytes: MAX_CRDT_REQUEST_JSON_BYTES,
+        max_crdt_update_base64_bytes: MAX_CRDT_UPDATE_BASE64_BYTES,
+        max_crdt_state_base64_bytes: MAX_CRDT_STATE_BASE64_BYTES,
+        max_crdt_state_vector_base64_bytes: MAX_CRDT_STATE_VECTOR_BASE64_BYTES,
+        max_crdt_text_bytes: MAX_CRDT_TEXT_BYTES,
+        max_native_diagnostic_event_payload_json_bytes:
+            MAX_NATIVE_DIAGNOSTIC_EVENT_PAYLOAD_JSON_BYTES,
     }
 }
