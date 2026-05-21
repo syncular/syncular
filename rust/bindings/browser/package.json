@@ -47,6 +47,7 @@
     }
   },
   "scripts": {
+    "generate:bridge": "bun scripts/generate-bridge.ts",
     "test": "bun test src/*.test.ts",
     "test:wasm:auth": "bun run build:wasm:dev && bun test src/__tests__/auth-hono.wasm.test.ts",
     "test:wasm:hono": "bun run build:wasm:dev && bun test src/__tests__/*-hono.wasm.test.ts",

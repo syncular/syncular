@@ -3,7 +3,7 @@
     "label": "@syncular/client Rust browser client",
     "entrypoint": "./rust/bindings/browser/src/index.ts",
     "namedImports": [
-      "createSyncularV2Client",
+      "createSyncularClient",
       "createSyncularV2Database"
     ],
     "baselineRawKb": 0,

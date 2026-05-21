@@ -1,8 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import {
   createSyncularClient,
-  createSyncularRustSqliteDatabase,
-  createSyncularV2Client,
   createSyncularV2CommandHistory,
   createSyncularV2Database,
   getSyncularV2PackagedRuntimeArtifacts,
@@ -43,17 +41,12 @@ describe('@syncular/client public API', () => {
     expect(artifacts[2]?.wasmUrl?.toString()).toContain('wasm-perf');
   });
 
-  it('keeps the Rust SQLite alias wired to the v2 database constructor', () => {
-    expect(createSyncularRustSqliteDatabase).toBe(createSyncularV2Database);
-  });
-
   it('exports the ergonomic managed browser client constructor', () => {
     expect(typeof createSyncularClient).toBe('function');
   });
 
-  it('keeps the v2 managed constructor as an internal alias', () => {
-    expect(typeof createSyncularV2Client).toBe('function');
-    expect(createSyncularV2Client).toBe(createSyncularClient);
+  it('exports the v2 database constructor', () => {
+    expect(typeof createSyncularV2Database).toBe('function');
   });
 
   it('exports generated command-history helpers', () => {

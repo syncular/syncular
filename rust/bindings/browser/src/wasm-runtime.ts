@@ -1,3 +1,4 @@
+import type { RawSyncularV2RustClient } from './generated-bridge';
 import {
   SYNCULAR_V2_CORE_RUNTIME_FEATURES,
   SYNCULAR_V2_FULL_RUNTIME_FEATURES,
@@ -33,84 +34,7 @@ export interface SyncularV2WasmGlue {
   ): Promise<RawSyncularV2RustClient>;
 }
 
-export interface RawSyncularV2RustClient {
-  setSubscriptionsJson(subscriptionsJson: string): void;
-  forceSubscriptionsBootstrapJson(subscriptionIdsJson: string): Promise<string>;
-  localHealthCheckJson(): Promise<string>;
-  exportLocalSupportBundleJson(): Promise<string>;
-  importLocalSupportBundleJson(bundleJson: string): Promise<string>;
-  repairLocalHealthJson(requestJson: string): Promise<string>;
-  resetLocalSyncStateJson(requestJson: string): Promise<string>;
-  setAuthHeadersJson(headersJson: string): void;
-  upsertAuthLeaseJson(leaseJson: string): void;
-  authLeaseJson(leaseId: string): string;
-  activeAuthLeasesJson(actorId: string | null, nowMs: bigint): string;
-  setFieldEncryptionJson(configJson: string): void;
-  setEncryptedCrdtJson(configJson: string): void;
-  setBlobEncryptionJson(configJson: string): void;
-  setAbortSignal(signal?: AbortSignal | null): void;
-  applyMutationJson(
-    operationJson: string,
-    localRowJson?: string | null
-  ): Promise<string>;
-  applyLeasedMutationJson(
-    operationJson: string,
-    localRowJson?: string | null
-  ): Promise<string>;
-  applyMutationsBatchJson(operationsJson: string): Promise<string>;
-  applyMutationsCommitJson(operationsJson: string): Promise<string>;
-  applyLeasedMutationsCommitJson(operationsJson: string): Promise<string>;
-  syncPullJson(): Promise<string>;
-  applyRealtimeSyncPackBytes(bytes: Uint8Array): Promise<string>;
-  syncPushJson(): Promise<string>;
-  recoverSyncPushErrorJson(errorMessage: string): void;
-  syncOnceJson(): Promise<string>;
-  transportStatsJson(): string;
-  resetTransportStats(): void;
-  conflictSummariesJson(): Promise<string>;
-  retryConflictKeepLocal(id: string): Promise<string>;
-  resolveConflict(id: string, resolution: string): Promise<void>;
-  listTableJson(table: string): Promise<string>;
-  storeBlobJson(data: Uint8Array, optionsJson: string): Promise<string>;
-  retrieveBlob(refJson: string): Promise<Uint8Array>;
-  isBlobLocal(hash: string): boolean;
-  processBlobUploadQueueJson(): Promise<string>;
-  blobUploadQueueStatsJson(): string;
-  blobCacheStatsJson(): string;
-  pruneBlobCache(maxBytes: bigint): bigint;
-  clearBlobCache(): void;
-  compactStorageJson(optionsJson: string): string;
-  executeSqlJson(sql: string, paramsJson: string): string;
-  executeUnsafeSqlJson(sql: string, paramsJson: string): string;
-  executeSqlValue?(sql: string, params: readonly unknown[]): unknown;
-  executeUnsafeSqlValue?(sql: string, params: readonly unknown[]): unknown;
-  buildYjsTextUpdateJson(argsJson: string): string;
-  applyYjsTextUpdatesJson(argsJson: string): string;
-  applyYjsEnvelopeToPayloadJson(argsJson: string): string;
-  materializeYjsRowJson(argsJson: string): string;
-  yjsStateVectorBase64(stateBase64?: string | null): string;
-  openCrdtFieldJson(requestJson: string): string;
-  applyCrdtFieldTextJson(requestJson: string): string;
-  applyCrdtFieldYjsUpdateJson(requestJson: string): string;
-  materializeCrdtFieldJson(requestJson: string): string;
-  crdtDocumentSnapshotJson(requestJson: string): string;
-  crdtUpdateLogJson(requestJson: string): string;
-  snapshotCrdtFieldStateVectorJson(requestJson: string): string;
-  compactCrdtFieldJson(requestJson: string): string;
-  encryptionHelperJson(method: string, argsJson: string): string;
-  generatedSchemaStateJson(): string;
-  subscribeQueryJson(
-    sql: string,
-    paramsJson: string,
-    tablesJson: string,
-    hintsJson: string
-  ): string;
-  unsubscribeQuery(id: string): void;
-  drainLiveQueryEventsJson(): string;
-  liveQueryDiagnosticsJson(): string;
-  drainRowsChangedEventsJson(): string;
-  close(): void;
-}
+export type { RawSyncularV2RustClient } from './generated-bridge';
 
 let modulePromise: Promise<SyncularV2WasmGlue> | undefined;
 

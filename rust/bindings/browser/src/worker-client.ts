@@ -16,6 +16,10 @@ import {
   createSyncularV2SyncAttempt,
   summarizeSyncularV2DiagnosticSubscriptions,
 } from './diagnostics';
+import {
+  isGeneratedSyncularV2OperationalStateWorkerRequestType,
+  type SyncularV2GeneratedWorkerRequestInput,
+} from './generated-bridge';
 import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   CreateSyncularV2DatabaseOptions,
@@ -116,12 +120,7 @@ type BlobOutboxRow = {
   error: string | null;
 };
 
-type SyncularV2WorkerRequestInput =
-  SyncularV2WorkerRequest extends infer Request
-    ? Request extends SyncularV2WorkerRequest
-      ? Omit<Request, 'id' | 'protocolVersion'>
-      : never
-    : never;
+type SyncularV2WorkerRequestInput = SyncularV2GeneratedWorkerRequestInput;
 
 const DEFAULT_SYNCULAR_V2_WORKER_REQUEST_TIMEOUT_MS = 30_000;
 
@@ -714,17 +713,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async retrieveBlob(ref: BlobRef): Promise<Uint8Array> {
-    try {
-      assertSyncularV2BlobPayloadLimit({
-        operation: 'retrieve',
-        size: ref.size,
-        limits: this.#blobLimits,
-        refHash: ref.hash,
-        diagnostics: (event) => this.#emitDiagnostic(event),
-      });
-    } catch (error) {
-      throw error;
-    }
+    assertSyncularV2BlobPayloadLimit({
+      operation: 'retrieve',
+      size: ref.size,
+      limits: this.#blobLimits,
+      refHash: ref.hash,
+      diagnostics: (event) => this.#emitDiagnostic(event),
+    });
     const wasLocal = this.#hasDiagnosticListeners()
       ? await this.#request<boolean>({
           type: 'isBlobLocal',
@@ -1982,22 +1977,7 @@ function isOpfsOpenFailure(error: unknown): boolean {
 function shouldEmitOperationalState(
   type: SyncularV2WorkerRequestInput['type']
 ): boolean {
-  return (
-    type === 'applyMutation' ||
-    type === 'applyLeasedMutation' ||
-    type === 'upsertAuthLease' ||
-    type === 'applyMutationsBatch' ||
-    type === 'applyMutationsCommit' ||
-    type === 'applyLeasedMutationsCommit' ||
-    type === 'syncPull' ||
-    type === 'syncPush' ||
-    type === 'syncOnce' ||
-    type === 'retryConflictKeepLocal' ||
-    type === 'resolveConflict' ||
-    type === 'compactStorage' ||
-    type === 'repairLocalHealth' ||
-    type === 'resetLocalSyncState'
-  );
+  return isGeneratedSyncularV2OperationalStateWorkerRequestType(type);
 }
 
 function errorMessage(error: unknown): string {
