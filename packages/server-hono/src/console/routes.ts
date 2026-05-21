@@ -112,6 +112,7 @@ import {
   type ConsoleRowInvestigationResponse,
   ConsoleRowInvestigationResponseSchema,
   type ConsoleRowInvestigationScopeEligibility,
+  type ConsoleRowInvestigationSnapshotEvidence,
   type ConsoleRowInvestigationSubscriptionEvidence,
   type ConsoleTimelineItem,
   ConsoleTimelineItemSchema,
@@ -379,6 +380,31 @@ function summarizeRequestEvidence(
     latestNonSuccessResponseStatus: latestNonSuccess?.responseStatus ?? null,
     latestNonSuccessErrorCode: latestNonSuccess?.errorCode ?? null,
   };
+}
+
+function summarizeSnapshotEvidence(
+  events: readonly ConsoleRequestEvent[]
+): ConsoleRowInvestigationSnapshotEvidence {
+  return events.reduce<ConsoleRowInvestigationSnapshotEvidence>(
+    (summary, event) => {
+      const responseSummary = event.responseSummary;
+      summary.pageCount += responseSummary?.snapshotPageCount ?? 0;
+      summary.inlineRowCount += responseSummary?.snapshotInlineRowCount ?? 0;
+      summary.chunkCount += responseSummary?.snapshotChunkCount ?? 0;
+      summary.chunkBytes += responseSummary?.snapshotChunkBytes ?? 0;
+      summary.artifactCount += responseSummary?.snapshotArtifactCount ?? 0;
+      summary.artifactBytes += responseSummary?.snapshotArtifactBytes ?? 0;
+      return summary;
+    },
+    {
+      pageCount: 0,
+      inlineRowCount: 0,
+      chunkCount: 0,
+      chunkBytes: 0,
+      artifactCount: 0,
+      artifactBytes: 0,
+    }
+  );
 }
 
 function normalizeRequestEventType(value: unknown): 'sync' | 'push' | 'pull' {
@@ -2399,6 +2425,7 @@ export function createConsoleRoutes<
       const subscriptionEvidence =
         summarizeSubscriptionEvidence(relevantEvents);
       const requestEvidence = summarizeRequestEvidence(relevantEvents);
+      const snapshotEvidence = summarizeSnapshotEvidence(relevantEvents);
 
       const latestClientEvent = relevantEvents.find(
         (event) => !clientId || event.clientId === clientId
@@ -2529,6 +2556,7 @@ export function createConsoleRoutes<
         scopeEligibility,
         subscriptionEvidence,
         requestEvidence,
+        snapshotEvidence,
         history,
         relevantEvents,
         findings,

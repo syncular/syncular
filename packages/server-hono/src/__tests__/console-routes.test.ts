@@ -1203,7 +1203,12 @@ describe('console timeline route filters', () => {
           bootstrapSubscriptionCount: 0,
           commitCount: 0,
           changeCount: 0,
-          snapshotPageCount: 0,
+          snapshotPageCount: 2,
+          snapshotInlineRowCount: 0,
+          snapshotChunkCount: 1,
+          snapshotChunkBytes: 256,
+          snapshotArtifactCount: 1,
+          snapshotArtifactBytes: 1024,
         }),
         tables: ['tasks'],
         error_message: null,
@@ -1271,6 +1276,14 @@ describe('console timeline route filters', () => {
         latestErrorCode: string | null;
         latestNonSuccessRequestId: string | null;
       };
+      snapshotEvidence: {
+        pageCount: number;
+        inlineRowCount: number;
+        chunkCount: number;
+        chunkBytes: number;
+        artifactCount: number;
+        artifactBytes: number;
+      };
       findings: Array<{ code: string }>;
       history: Array<{ fields: string[]; rowJson?: unknown }>;
       relevantEvents: Array<{ requestId: string }>;
@@ -1302,6 +1315,14 @@ describe('console timeline route filters', () => {
       latestResponseStatus: 'client_error',
       latestErrorCode: 'sync.auth_required',
       latestNonSuccessRequestId: 'req-investigate-rejected',
+    });
+    expect(payload.snapshotEvidence).toMatchObject({
+      pageCount: 2,
+      inlineRowCount: 0,
+      chunkCount: 1,
+      chunkBytes: 256,
+      artifactCount: 1,
+      artifactBytes: 1024,
     });
     expect(payload.findings.map((finding) => finding.code)).toEqual(
       expect.arrayContaining([

@@ -503,9 +503,11 @@ read-only review:
     report explicit revoked-subscription evidence without payload snapshots.
     Row investigation also summarizes persisted request-event success and
     rejection evidence for the selected table, including latest response
-    status/error code and success/non-success counts. Remaining drilldown work
-    should add stronger artifact/realtime recovery evidence only when the server
-    persists that metadata explicitly.
+    status/error code and success/non-success counts. Pull request-event
+    summaries now include redacted snapshot transport counts, and row
+    investigation surfaces inline/chunk/artifact bootstrap evidence without
+    storing row payloads. Remaining drilldown work should add stronger realtime
+    recovery evidence only when the server persists that metadata explicitly.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
 - `[x]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
   - Browser worker error payloads now carry stable public error `code`,

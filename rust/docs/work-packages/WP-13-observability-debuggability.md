@@ -200,8 +200,13 @@ non-success counts, and latest success/non-success request ids. This gives a
 durable recovery/rejection hint from persisted server metadata without payload
 capture.
 
-Next: add artifact/realtime recovery drilldowns only when the server persists
-that evidence explicitly. Do not infer missing-row causes from app tables or add
+Pull request-event summaries now also include snapshot transport counts for
+inline rows, chunk refs, chunk bytes, artifact refs, and artifact bytes. Row
+investigation aggregates that into `snapshotEvidence`, giving a redacted
+bootstrap transport hint for artifact/chunk troubleshooting.
+
+Next: add realtime recovery drilldowns only when the server persists that
+evidence explicitly. Do not infer missing-row causes from app tables or add
 payload capture by default.
 
 ## Progress
@@ -280,6 +285,10 @@ payload capture by default.
   including latest response status/error code, success and non-success counts,
   and latest success/non-success request ids. The console page now shows this as
   a separate request evidence card.
+- Added snapshot transport evidence to pull response summaries and row
+  investigation: inline row count, chunk count/bytes, artifact count/bytes, and
+  page count. The console page now shows a redacted bootstrap evidence card
+  without storing row payloads.
 - Generated OpenAPI types/docs for the row investigation endpoint so the
   console consumes it through the normal transport contract.
 - Gates:
@@ -295,6 +304,11 @@ payload capture by default.
   `bun test packages/server-hono/src/__tests__/console-routes.test.ts`,
   `bun run --cwd packages/server-hono tsgo`, and
   `bun run --cwd packages/console tsgo` passed after the request-evidence
+  slice.
+- Gates:
+  `bun test packages/server-hono/src/__tests__/console-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts`,
+  `bun run --cwd packages/server-hono tsgo`, and
+  `bun run --cwd packages/console tsgo` passed after the snapshot-evidence
   slice.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
   passed with `33` smoke tests after the diagnostic assertion slice.

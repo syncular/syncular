@@ -1754,6 +1754,11 @@ export interface operations {
                                     commitCount?: number;
                                     changeCount?: number;
                                     snapshotPageCount?: number;
+                                    snapshotInlineRowCount?: number;
+                                    snapshotChunkCount?: number;
+                                    snapshotChunkBytes?: number;
+                                    snapshotArtifactCount?: number;
+                                    snapshotArtifactBytes?: number;
                                 } & {
                                     [key: string]: unknown;
                                 }) | null;
@@ -2162,6 +2167,14 @@ export interface operations {
                             latestNonSuccessResponseStatus: string | null;
                             latestNonSuccessErrorCode: string | null;
                         };
+                        snapshotEvidence: {
+                            pageCount: number;
+                            inlineRowCount: number;
+                            chunkCount: number;
+                            chunkBytes: number;
+                            artifactCount: number;
+                            artifactBytes: number;
+                        };
                         history: {
                             commitSeq: number;
                             actorId: string;
@@ -2223,6 +2236,11 @@ export interface operations {
                                 commitCount?: number;
                                 changeCount?: number;
                                 snapshotPageCount?: number;
+                                snapshotInlineRowCount?: number;
+                                snapshotChunkCount?: number;
+                                snapshotChunkBytes?: number;
+                                snapshotArtifactCount?: number;
+                                snapshotArtifactBytes?: number;
                             } & {
                                 [key: string]: unknown;
                             }) | null;
@@ -2379,6 +2397,11 @@ export interface operations {
                                 commitCount?: number;
                                 changeCount?: number;
                                 snapshotPageCount?: number;
+                                snapshotInlineRowCount?: number;
+                                snapshotChunkCount?: number;
+                                snapshotChunkBytes?: number;
+                                snapshotArtifactCount?: number;
+                                snapshotArtifactBytes?: number;
                             } & {
                                 [key: string]: unknown;
                             }) | null;
@@ -2942,6 +2965,11 @@ export interface operations {
                                 commitCount?: number;
                                 changeCount?: number;
                                 snapshotPageCount?: number;
+                                snapshotInlineRowCount?: number;
+                                snapshotChunkCount?: number;
+                                snapshotChunkBytes?: number;
+                                snapshotArtifactCount?: number;
+                                snapshotArtifactBytes?: number;
                             } & {
                                 [key: string]: unknown;
                             }) | null;
@@ -3075,6 +3103,11 @@ export interface operations {
                             commitCount?: number;
                             changeCount?: number;
                             snapshotPageCount?: number;
+                            snapshotInlineRowCount?: number;
+                            snapshotChunkCount?: number;
+                            snapshotChunkBytes?: number;
+                            snapshotArtifactCount?: number;
+                            snapshotArtifactBytes?: number;
                         } & {
                             [key: string]: unknown;
                         }) | null;

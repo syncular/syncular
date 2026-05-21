@@ -1043,6 +1043,11 @@ describe('createSyncServer console configuration', () => {
         commitCount: 0,
         changeCount: 0,
         snapshotPageCount: 0,
+        snapshotInlineRowCount: 0,
+        snapshotChunkCount: 0,
+        snapshotChunkBytes: 0,
+        snapshotArtifactCount: 0,
+        snapshotArtifactBytes: 0,
       }
     );
 
