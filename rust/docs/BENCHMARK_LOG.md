@@ -18,6 +18,75 @@ Decision:
 Notes:
 ```
 
+## 2026-05-21 - External Local Base Contract Guard Not Accepted As New Baseline
+
+Commit: `eaba97a3` (`Expose generated local base schema`)
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change measured:
+
+- The external `offline-sync-bench` Rust adapter was updated locally to read
+  `localBaseSchema.tableSetupSql` from generated `syncular.schema.json`
+  instead of hardcoding local app-table DDL.
+- The external schema JSON was regenerated with this branch's codegen.
+- The Syncular branch server was rebuilt and the Rust browser WASM artifact was
+  rebuilt before running the guard.
+
+Commands:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Previous accepted guard:
+
+| Metric | Accepted |
+| --- | ---: |
+| 500k bootstrap | `1062.50ms` |
+| 500k local apply | `208ms` |
+| 500k response bytes | `3,537,767` |
+| 500k peak memory | `633.50MB` |
+| 500k snapshot chunks | `0` |
+
+Candidate and control runs:
+
+| Metric | Generated base, dev run 1 | Generated base, dev run 2 | Hardcoded base, dev control | Generated base, release |
+| --- | ---: | ---: | ---: | ---: |
+| Result path | `2026-05-21T13-11-36-316Z` | `2026-05-21T13-13-52-248Z` | `2026-05-21T13-15-25-119Z` | `2026-05-21T13-17-03-741Z` |
+| 500k bootstrap | `3998.24ms` | `3829.21ms` | `3765.97ms` | `3323.39ms` |
+| 500k derived schema | `2276.83ms` | `2221.79ms` | `2149.41ms` | `1064.26ms` |
+| 500k sync total | `1700ms` | `1588ms` | `1596ms` | `2229ms` |
+| 500k pull apply | `1556ms` | `1464ms` | `1463ms` | `1802ms` |
+| 500k local apply | `1426ms` | `1358ms` | `1355ms` | `334ms` |
+| 500k snapshot fetch | `130ms` | not recorded here | not recorded here | `1468ms` |
+| 500k response bytes | `3,537,771` | `3,537,685` | `3,537,763` | `3,537,873` |
+| 500k peak memory | `638.94MB` | `660.69MB` | `659.63MB` | `660.56MB` |
+| 500k snapshot chunks | `0` | `0` | `0` | `0` |
+
+Decision:
+
+- Do not replace the accepted WP-12 external baseline with these runs.
+- The generated local-base DDL is not the cause: the hardcoded-base control was
+  similarly slow in the same session.
+- Keep the local-base schema contract as a correctness/organization slice, but
+  do not claim a performance win from it.
+- Before the next performance-retained artifact change, re-establish a stable
+  external release baseline and investigate why this session's 500k guard is
+  dominated by snapshot fetch/derived-schema timing despite artifact chunks
+  staying at `0`.
+
 ## 2026-05-21 - Rejected External Local WITHOUT ROWID Probe
 
 Commit: rejected external benchmark probe, no Syncular code changed
