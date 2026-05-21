@@ -100,6 +100,7 @@ import {
   type ConsolePruneResult,
   ConsolePruneResultSchema,
   type ConsoleRequestEvent,
+  type ConsoleRequestEventResponseSummary,
   ConsoleRequestEventSchema,
   type ConsoleRequestPayload,
   ConsoleRequestPayloadSchema,
@@ -242,6 +243,23 @@ function parseScopesSummary(
   return Object.keys(summary).length > 0 ? summary : null;
 }
 
+function parseResponseSummary(
+  value: unknown
+): ConsoleRequestEventResponseSummary | null {
+  const parsed = parseJsonValue(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+
+  const summary: ConsoleRequestEventResponseSummary = {};
+  for (const [key, entry] of Object.entries(parsed)) {
+    if (typeof entry === 'number' && Number.isFinite(entry)) {
+      summary[key] = entry;
+    }
+  }
+  return Object.keys(summary).length > 0 ? summary : null;
+}
+
 function scopeValueCovers(
   allowed: ScopeValues[string] | undefined,
   rowValue: string | undefined
@@ -302,19 +320,26 @@ function summarizeSubscriptionEvidence(
   );
   const latest = subscriptionEvents[0] ?? null;
   const observedScopeKeys = new Set<string>();
+  let revokedSubscriptionCount = 0;
   for (const event of subscriptionEvents) {
     for (const key of Object.keys(event.scopesSummary ?? {})) {
       observedScopeKeys.add(key);
     }
+    revokedSubscriptionCount +=
+      event.responseSummary?.revokedSubscriptionCount ?? 0;
   }
 
   return {
     status:
       subscriptionEvents.length === 0
         ? 'unknown'
-        : subscriptionEvents.some((event) => (event.subscriptionCount ?? 0) > 0)
-          ? 'observed'
-          : 'not_observed',
+        : revokedSubscriptionCount > 0
+          ? 'revoked'
+          : subscriptionEvents.some(
+                (event) => (event.subscriptionCount ?? 0) > 0
+              )
+            ? 'observed'
+            : 'not_observed',
     matchingEventCount: subscriptionEvents.length,
     latestEventId: latest?.eventId ?? null,
     latestRequestId: latest?.requestId ?? null,
@@ -618,6 +643,7 @@ export function createConsoleRoutes<
     row_count: number | null;
     subscription_count: number | null;
     scopes_summary: unknown | null;
+    response_summary: unknown | null;
     tables: unknown;
     error_message: string | null;
     payload_ref: string | null;
@@ -804,6 +830,7 @@ export function createConsoleRoutes<
     'row_count',
     'subscription_count',
     'scopes_summary',
+    'response_summary',
     'tables',
     'error_message',
     'payload_ref',
@@ -833,6 +860,7 @@ export function createConsoleRoutes<
     rowCount: coerceNumber(row.row_count),
     subscriptionCount: coerceNumber(row.subscription_count),
     scopesSummary: parseScopesSummary(row.scopes_summary),
+    responseSummary: parseResponseSummary(row.response_summary),
     tables: options.dialect.dbToArray(row.tables),
     errorMessage: row.error_message ?? null,
     payloadRef: row.payload_ref ?? null,
@@ -864,6 +892,7 @@ export function createConsoleRoutes<
       rowCount: mapped.rowCount,
       subscriptionCount: mapped.subscriptionCount,
       scopesSummary: mapped.scopesSummary,
+      responseSummary: mapped.responseSummary,
       tables: mapped.tables,
       createdAt: mapped.createdAt,
     };
@@ -2424,6 +2453,13 @@ export function createConsoleRoutes<
           code: 'events.none_for_table',
           message:
             'No recent request events mention this table for the selected filters.',
+        });
+      } else if (subscriptionEvidence.status === 'revoked') {
+        findings.push({
+          severity: 'warning',
+          code: 'subscription.revoked',
+          message:
+            'A relevant pull event reported at least one revoked subscription.',
         });
       } else if (subscriptionEvidence.status === 'unknown') {
         findings.push({

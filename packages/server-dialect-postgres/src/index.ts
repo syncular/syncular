@@ -1014,6 +1014,7 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
         row_count INTEGER,
         subscription_count INTEGER,
         scopes_summary JSONB,
+        response_summary JSONB,
         tables TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
         error_message TEXT,
         payload_ref TEXT,
@@ -1059,6 +1060,10 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
     await sql`
       ALTER TABLE sync_request_events
       ADD COLUMN IF NOT EXISTS scopes_summary JSONB
+    `.execute(db);
+    await sql`
+      ALTER TABLE sync_request_events
+      ADD COLUMN IF NOT EXISTS response_summary JSONB
     `.execute(db);
     await sql`
       ALTER TABLE sync_request_events

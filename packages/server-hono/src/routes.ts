@@ -1098,6 +1098,52 @@ function summarizePullResponse(response: PullResult['response']): {
   };
 }
 
+function summarizePullResponseForRequestEvent(
+  response: PullResult['response']
+): {
+  subscriptionCount: number;
+  activeSubscriptionCount: number;
+  revokedSubscriptionCount: number;
+  bootstrapSubscriptionCount: number;
+  commitCount: number;
+  changeCount: number;
+  snapshotPageCount: number;
+} {
+  let activeSubscriptionCount = 0;
+  let revokedSubscriptionCount = 0;
+  let bootstrapSubscriptionCount = 0;
+  let commitCount = 0;
+  let changeCount = 0;
+  let snapshotPageCount = 0;
+
+  for (const subscription of response.subscriptions) {
+    if (subscription.status === 'revoked') {
+      revokedSubscriptionCount += 1;
+    } else {
+      activeSubscriptionCount += 1;
+    }
+    if (subscription.bootstrap) {
+      bootstrapSubscriptionCount += 1;
+    }
+    commitCount += subscription.commits.length;
+    changeCount += subscription.commits.reduce(
+      (totalChanges, commit) => totalChanges + commit.changes.length,
+      0
+    );
+    snapshotPageCount += subscription.snapshots?.length ?? 0;
+  }
+
+  return {
+    subscriptionCount: response.subscriptions.length,
+    activeSubscriptionCount,
+    revokedSubscriptionCount,
+    bootstrapSubscriptionCount,
+    commitCount,
+    changeCount,
+    snapshotPageCount,
+  };
+}
+
 function countPullRows(response: PullResult['response']): number {
   return response.subscriptions.reduce((totalRows, subscription) => {
     const commitRows = subscription.commits.reduce(
@@ -1955,6 +2001,7 @@ export function createSyncRoutes<
     rowCount?: number | null;
     subscriptionCount?: number | null;
     scopesSummary?: Record<string, string | string[]> | null;
+    responseSummary?: Record<string, unknown> | null;
     tables?: string[];
     errorMessage?: string | null;
     payloadRef?: string | null;
@@ -2006,6 +2053,9 @@ export function createSyncRoutes<
     const scopesSummaryValue = event.scopesSummary
       ? JSON.stringify(event.scopesSummary)
       : null;
+    const responseSummaryValue = event.responseSummary
+      ? JSON.stringify(event.responseSummary)
+      : null;
 
     await sql`
       INSERT INTO sync_request_events (
@@ -2013,7 +2063,7 @@ export function createSyncRoutes<
         event_type, sync_path, actor_id, client_id, transport_path,
         status_code, outcome, response_status, error_code,
         duration_ms, commit_seq, operation_count, row_count, subscription_count,
-        scopes_summary, tables, error_message, payload_ref
+        scopes_summary, response_summary, tables, error_message, payload_ref
       ) VALUES (
         ${event.partitionId}, ${event.requestId}, ${event.traceId ?? null},
         ${event.spanId ?? null}, ${event.eventType}, ${event.syncPath},
@@ -2021,8 +2071,9 @@ export function createSyncRoutes<
         ${event.statusCode}, ${event.outcome}, ${event.responseStatus},
         ${event.errorCode ?? null}, ${event.durationMs}, ${event.commitSeq ?? null},
         ${event.operationCount ?? null}, ${event.rowCount ?? null},
-        ${event.subscriptionCount ?? null}, ${scopesSummaryValue}, ${tablesValue},
-        ${event.errorMessage ?? null}, ${payloadRef}
+        ${event.subscriptionCount ?? null}, ${scopesSummaryValue},
+        ${responseSummaryValue}, ${tablesValue}, ${event.errorMessage ?? null},
+        ${payloadRef}
       )
     `.execute(options.db);
   };
@@ -2064,6 +2115,7 @@ export function createSyncRoutes<
     rowCount?: number | null;
     subscriptionCount?: number | null;
     scopesSummary?: Record<string, string | string[]> | null;
+    responseSummary?: Record<string, unknown> | null;
     payloadSnapshot?: RequestPayloadSnapshot | null;
   }): void => {
     recordRequestEventInBackground(() => ({
@@ -2086,6 +2138,7 @@ export function createSyncRoutes<
       rowCount: args.rowCount ?? null,
       subscriptionCount: args.subscriptionCount ?? null,
       scopesSummary: args.scopesSummary ?? null,
+      responseSummary: args.responseSummary ?? null,
       payloadSnapshot: args.payloadSnapshot ?? null,
     }));
 
@@ -3633,6 +3686,10 @@ export function createSyncRoutes<
         const scopesSummary = shouldRecordRequestEvents
           ? summarizeScopeValues(pullResult.effectiveScopes)
           : null;
+        const responseSummary =
+          shouldRecordRequestEvents || shouldEmitConsoleLiveEvents
+            ? summarizePullResponseForRequestEvent(pullResult.response)
+            : null;
         pullLimitEventDetails = {
           rowCount: pullRowCount,
           subscriptionCount: request.subscriptions.length,
@@ -3720,6 +3777,7 @@ export function createSyncRoutes<
               rowCount: pullRowCount,
               subscriptionCount: request.subscriptions.length,
               scopesSummary,
+              responseSummary,
               payloadSnapshot,
             };
           });
@@ -3737,6 +3795,7 @@ export function createSyncRoutes<
             durationMs: pullDurationMs,
             rowCount: pullRowCount,
             subscriptionCount: request.subscriptions.length,
+            responseSummary,
             clientCursor: pullResult.clientCursor,
           }));
 
