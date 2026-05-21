@@ -2050,6 +2050,87 @@ describe('createSyncServer console configuration', () => {
     }
   });
 
+  it('redacts sensitive fields in stored payload snapshots', async () => {
+    process.env.SYNC_CONSOLE_TOKEN = 'env-token';
+    await db.schema
+      .alterTable('tasks')
+      .addColumn('access_token', 'text')
+      .addColumn('password', 'text')
+      .addColumn('private_key', 'text')
+      .execute();
+
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      console: {},
+      routes: {
+        requestPayloadSnapshots: {
+          enabled: true,
+        },
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const requestId = 'req-redacted-payload-snapshot';
+    const response = await app.request(
+      new Request('http://localhost/sync', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-request-id': requestId,
+          authorization: 'Bearer header-token-not-captured',
+        },
+        body: JSON.stringify({
+          clientId: 'client-redacted-payload',
+          push: {
+            commits: [
+              {
+                clientCommitId: 'commit-redacted-payload',
+                schemaVersion: 1,
+                operations: [
+                  {
+                    table: 'tasks',
+                    row_id: 'task-redacted-payload',
+                    op: 'upsert',
+                    payload: {
+                      id: 'task-redacted-payload',
+                      user_id: 'u1',
+                      title: 'Visible payload title',
+                      server_version: 0,
+                      access_token: 'payload-access-token',
+                      password: 'payload-password',
+                      private_key: 'payload-private-key',
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        }),
+      })
+    );
+    expect(response.status).toBe(200);
+
+    const eventRow = await waitForRequestEventRow(requestId);
+    expect(typeof eventRow.payload_ref).toBe('string');
+    if (!eventRow.payload_ref) {
+      throw new Error('Expected payload_ref to be present.');
+    }
+
+    const storedPayload = await waitForRequestPayloadSnapshot(
+      eventRow.payload_ref
+    );
+    const storedJson = JSON.stringify(storedPayload);
+    expect(storedJson).toContain('Visible payload title');
+    expect(storedJson).toContain('[redacted]');
+    expect(storedJson).not.toContain('payload-access-token');
+    expect(storedJson).not.toContain('payload-password');
+    expect(storedJson).not.toContain('payload-private-key');
+    expect(storedJson).not.toContain('header-token-not-captured');
+  });
+
   it('forwards maxConnectionsTotal from factory to realtime route', async () => {
     const options = createOptions();
     const upgradeWebSocket = defineWebSocketHelper(async () => {});
