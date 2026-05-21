@@ -995,14 +995,39 @@ Retained twenty-third slice:
   next WP-12 slice must recover the external wall-time regression while keeping
   the lower peak-memory profile.
 
+Retained twenty-fourth slice:
+
+- Browser pull apply now skips the duplicate final subscription-state upsert
+  when a checkpointed artifact snapshot page already stored the same final
+  `bootstrapState`.
+- Verified-root persistence still runs normally; only the redundant state write
+  is skipped.
+- Correctness gates passed:
+  `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`,
+  `bun run --cwd rust/bindings/browser build:wasm:dev`,
+  `bun run --cwd rust/bindings/browser tsgo`,
+  `bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|committed SQLite snapshot artifact|artifact rows when a subscription is revoked"`,
+  and `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`.
+- Local 100k artifact bootstrap recovered from the lazy-apply rerun
+  `151.58ms -> 143.66ms`, and JS heap delta improved `7.20MB -> 2.82MB`.
+  Local 500k moved `575.99ms -> 588.73ms`, still better than the older
+  `623.02ms` context, with JS heap improving `3.12MB -> 1.69MB`.
+- External app-style scoped artifact bootstrap improved from the lazy-apply
+  rerun `1107.80ms -> 1062.50ms`, peak memory improved
+  `637.55MB -> 633.50MB`, local apply stayed flat at `208ms`, response bytes
+  stayed flat, and `snapshotChunkCount=0`.
+- Decision: retained. The change recovers part of the lazy-apply wall-time
+  regression and improves the lower-memory profile, but WP-12 remains open
+  because the old external wall-time guard was still better at `995.58ms`.
+
 ## Next Action
 
 Recover the lazy apply transaction wall-time regression without giving back the
 external memory improvement.
 
 - The retained resource-state guard is now external Rust 500k bootstrap
-  `1107.80ms`, local apply `207ms`, response bytes `3537901`, peak memory
-  `637.55MB`, and `snapshotChunkCount=0`, with external artifact precompute row
+  `1062.50ms`, local apply `208ms`, response bytes `3537767`, peak memory
+  `633.50MB`, and `snapshotChunkCount=0`, with external artifact precompute row
   limit `40000`.
 - The previous wall-time guard was better at `995.58ms`, so the next retained
   slice should target lower transaction-start/checkpoint overhead or schema

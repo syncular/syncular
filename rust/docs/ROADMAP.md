@@ -198,8 +198,11 @@ read-only review:
     is retained as a resource-state improvement: external 500k peak memory
     improved `671.13MB -> 637.55MB`, local apply stayed flat, response bytes
     stayed flat, and `snapshotChunkCount=0`, but external bootstrap regressed
-    `995.58ms -> 1107.80ms`. The next WP-12 slice must recover that wall time
-    while preserving the lower peak-memory profile.
+    `995.58ms -> 1107.80ms`. Skipping a duplicate final subscription-state
+    write after checkpointed artifact pages recovered part of that regression:
+    external bootstrap is now `1062.50ms`, peak memory is `633.50MB`, local
+    apply is `208ms`, and `snapshotChunkCount=0`. The next WP-12 slice must keep
+    recovering wall time while preserving the lower peak-memory profile.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   - First retained TypeScript generated-client slice narrows
     `database.mutations` to generated inputs and patches. App code can now call

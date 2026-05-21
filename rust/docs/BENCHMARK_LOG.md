@@ -18,6 +18,93 @@ Decision:
 Notes:
 ```
 
+## 2026-05-21 - Retained Skip Duplicate Artifact Subscription State
+
+Commit: retained slice
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- When a checkpointed snapshot artifact page already persisted the same final
+  `bootstrapState`, browser pull apply now skips the duplicate final
+  subscription-state upsert.
+- This avoids a tiny extra transaction/write after the final checkpoint in
+  artifact bootstrap while preserving verified-root persistence.
+
+Correctness gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|committed SQLite snapshot artifact|artifact rows when a subscription is revoked"
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+```
+
+Local release artifact gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/wp12-skip-duplicate-state-100k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-skip-duplicate-state-500k.json
+```
+
+| Metric | Lazy apply baseline | Skip duplicate state |
+| --- | ---: | ---: |
+| 100k bootstrap | `151.58ms` rerun | `143.66ms` |
+| 100k artifact apply | `127ms` rerun | `120ms` |
+| 100k JS heap delta | `7.20MB` rerun | `2.82MB` |
+| 500k bootstrap | `575.99ms` | `588.73ms` |
+| 500k artifact apply | `496ms` | `500ms` |
+| 500k JS heap delta | `3.12MB` | `1.69MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+External app-style scoped artifact benchmark:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T12-31-19-879Z/syncular-rust/bootstrap.json`
+
+| Metric | Lazy apply rerun | Skip duplicate state |
+| --- | ---: | ---: |
+| 500k bootstrap | `1107.80ms` | `1062.50ms` |
+| 500k derived schema | `649.25ms` | `619.26ms` |
+| 500k sync total | `442ms` | `432ms` |
+| 500k pull apply | `327ms` | `320ms` |
+| 500k local apply | `207ms` | `208ms` |
+| 500k response bytes | `3,537,901` | `3,537,767` |
+| 500k peak memory | `637.55MB` | `633.50MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Decision:
+
+- Retained. This recovers part of the lazy-apply wall-time regression and
+  improves the new memory profile further. It does not fully restore the old
+  `995.58ms` wall-time guard, so WP-12 remains open with wall-time recovery as
+  the next target.
+
 ## 2026-05-21 - Retained Lazy Browser Apply Transactions For Artifacts
 
 Commit: retained slice
