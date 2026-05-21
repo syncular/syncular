@@ -766,7 +766,15 @@ read-only review:
     actor's own request-event diagnostics when available. OpenAPI/transport
     types and the console Stream view now use the redacted change summary
     shape.
-- `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
+- `[~]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
+  - First authorization-hardening slice is in place. `@syncular/server` now
+    exports `createScopedBlobAccessChecker(...)`, an opt-in `canAccessBlob`
+    helper that grants blob download access only when the hash is referenced by
+    a configured blob column on a row visible through the table handler's
+    current scope policy. The helper emits stable allow/deny/missing-reference
+    decisions for diagnostics, and Hono blob route tests prove the helper
+    authorizes visible row references while denying the same hash across actor
+    scopes.
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry

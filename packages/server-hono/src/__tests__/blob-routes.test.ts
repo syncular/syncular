@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import type { BlobStorageAdapter } from '@syncular/core';
+import type { BlobRef, BlobStorageAdapter } from '@syncular/core';
 import { createDatabase } from '@syncular/core';
 import {
   type BlobTokenSigner,
   createBlobManager,
   createDatabaseBlobStorageAdapter,
   createHmacTokenSigner,
+  createScopedBlobAccessChecker,
+  createServerHandler,
   ensureBlobStorageSchemaSqlite,
   type SyncBlobDb,
+  type SyncCoreDb,
 } from '@syncular/server';
 import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
@@ -27,6 +30,26 @@ interface UrlResponse {
 interface CompleteResponse {
   ok: boolean;
   error?: string;
+}
+
+interface ScopedBlobTasksTable {
+  id: string;
+  user_id: string;
+  image: string | null;
+  server_version: number;
+}
+
+interface ScopedBlobRouteDb extends SyncBlobDb, SyncCoreDb {
+  tasks: ScopedBlobTasksTable;
+}
+
+interface ScopedBlobClientDb {
+  tasks: {
+    id: string;
+    user_id: string;
+    image: BlobRef | null;
+    server_version: number;
+  };
 }
 
 const ACTOR_HEADER = 'x-user-id';
@@ -557,6 +580,97 @@ describe('createBlobRoutes', () => {
     );
     expect(authorizedUrlResponse.status).toBe(200);
     expect(signDownloadCalls).toBe(1);
+  });
+
+  it('can authorize download URLs through scoped row blob references', async () => {
+    const scopedDb = db as unknown as Kysely<ScopedBlobRouteDb>;
+    await scopedDb.schema
+      .createTable('tasks')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('user_id', 'text', (col) => col.notNull())
+      .addColumn('image', 'text')
+      .addColumn('server_version', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .execute();
+
+    const tasksHandler = createServerHandler<
+      ScopedBlobRouteDb,
+      ScopedBlobClientDb,
+      'tasks'
+    >({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+    const canAccessBlob = createScopedBlobAccessChecker({
+      db: scopedDb,
+      handlers: [tasksHandler],
+      references: [{ table: 'tasks', blobColumns: ['image'] }],
+    });
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+      canAccessBlob,
+    });
+
+    const content = new TextEncoder().encode('scoped-reference-blob');
+    const hash = await createHash(content);
+    const init = await initiateUpload({
+      app,
+      hash,
+      size: content.length,
+      mimeType: 'image/png',
+    });
+    const uploadResponse = await app.request(init.uploadUrl!, {
+      method: init.uploadMethod ?? 'PUT',
+      headers: { 'content-type': 'image/png' },
+      body: content,
+    });
+    expect(uploadResponse.status).toBe(200);
+    const completeResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/complete`,
+      {
+        method: 'POST',
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(completeResponse.status).toBe(200);
+
+    await scopedDb
+      .insertInto('tasks')
+      .values({
+        id: 'task-image',
+        user_id: ACTOR_ID,
+        image: JSON.stringify({
+          hash,
+          size: content.length,
+          mimeType: 'image/png',
+        } satisfies BlobRef),
+        server_version: 1,
+      })
+      .execute();
+
+    const authorizedUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(authorizedUrlResponse.status).toBe(200);
+
+    const forbiddenUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: 'user-2' },
+      }
+    );
+    expect(forbiddenUrlResponse.status).toBe(403);
+    expect(await forbiddenUrlResponse.json()).toMatchObject({
+      error: 'blob.forbidden',
+      code: 'blob.forbidden',
+    });
   });
 
   it('uploads and downloads blobs through adapter put/get branches', async () => {
