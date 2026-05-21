@@ -59,9 +59,10 @@ Rust-first client clearly.
 
 - `@syncular/client` is now the Rust-owned browser package with TypeScript
   bindings. The previous pure TypeScript `packages/client` product runtime,
-  separate `packages/client-react`, old client plugin packages, old JS client
-  docs, demo app, and JS-client integration/runtime/perf suites were deleted.
-- `@syncular/client/react` is the remaining first-party React entrypoint, and
+  legacy React client implementation, old client plugin packages, old JS
+  client docs, demo app, and JS-client integration/runtime/perf suites were
+  deleted.
+- `@syncular/react` is the remaining first-party React entrypoint, and
   `@syncular/client-crdt-adapters` replaces the old client-side CRDT adapter
   package name.
 - The Rust todo example is now a Bun workspace package so generated TypeScript

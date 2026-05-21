@@ -183,12 +183,12 @@ inline/binary websocket applies already fall back to pull. Use
 
 ## React
 
-React apps can import the optional `@syncular/client/react` entrypoint.
+React apps can import the separate `@syncular/react` package.
 The adapter owns the Rust browser client lifecycle when passed `options`, or
 can wrap an already-created managed client:
 
 ```ts
-import { createSyncularReact } from '@syncular/client/react';
+import { createSyncularReact } from '@syncular/react';
 
 const {
   SyncProvider,

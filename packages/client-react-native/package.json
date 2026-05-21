@@ -41,7 +41,8 @@
     "release": "bunx syncular-publish"
   },
   "dependencies": {
-    "@syncular/client": "workspace:*"
+    "@syncular/client": "workspace:*",
+    "@syncular/react": "workspace:*"
   },
   "peerDependencies": {
     "kysely": "^0.28.0",

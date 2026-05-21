@@ -19,7 +19,7 @@ import {
   type SyncularV2SyncResult,
 } from '@syncular/client';
 import type { SyncAuthLeaseIssueRequest } from '@syncular/core';
-import { createSyncularReact } from '@syncular/client/react';
+import { createSyncularReact } from '@syncular/react';
 
 export type SyncularNativeEventSubscription = (() => void) | { remove(): void };
 

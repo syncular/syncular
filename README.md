@@ -62,11 +62,8 @@ npm install @syncular/server @syncular/server-hono @syncular/server-dialect-post
 **Client (React + browser)**
 
 ```bash
-npm install @syncular/client kysely
+npm install @syncular/client @syncular/react kysely
 ```
-
-React apps import the optional `@syncular/client/react` entrypoint from the same
-package.
 
 If your server runtime is Neon-backed, pair `@syncular/dialect-neon` with
 `createNeonServerDialect()` from `@syncular/server-dialect-postgres` (or
@@ -154,7 +151,8 @@ Most packages are published under the `@syncular` scope on npm. The umbrella pac
 | `@syncular/server` | Server sync engine (push, pull, pruning, snapshots, blobs) |
 | `@syncular/server-hono` | Hono adapter with HTTP routes, OpenAPI, WebSocket, and console routes |
 | `@syncular/server-cloudflare` | Cloudflare adapter for Workers and Durable Objects |
-| `@syncular/client` | Rust-owned browser client package with TypeScript and React entrypoints |
+| `@syncular/client` | Rust-owned browser client package with TypeScript runtime bindings |
+| `@syncular/react` | React hooks and provider for the Rust-owned client |
 | `@syncular/client-tauri` | Tauri JS/React bridge facade over a Rust Syncular host |
 | `@syncular/client-react-native` | React Native/Nitro bridge facade over a native Syncular host |
 | `@syncular/client-expo` | Expo-friendly aliases for the React Native bridge facade |

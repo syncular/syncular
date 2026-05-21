@@ -18,8 +18,8 @@ For web apps with a Postgres backend:
 npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
 npm install kysely pg hono
 
-# Client (Rust browser package with optional React entrypoint)
-npm install @syncular/client kysely
+# Client (Rust browser package + React hooks)
+npm install @syncular/client @syncular/react kysely
 ```
 
 For Neon-backed server runtimes:
@@ -55,7 +55,8 @@ npm install @syncular/dialect-better-sqlite3
 
 | Package | Description |
 |---------|-------------|
-| `@syncular/client` | Rust-owned browser client package with TypeScript bindings, worker runtime, Kysely local DB, blob APIs, encryption configuration, CRDT integration, and `@syncular/client/react` |
+| `@syncular/client` | Rust-owned browser client package with TypeScript bindings, worker runtime, Kysely local DB, blob APIs, encryption configuration, and CRDT integration |
+| `@syncular/react` | React hooks and provider for the Rust-owned client |
 | `@syncular/client-crdt-adapters` | Optional Yjs/editor adapters above the Rust client CRDT field APIs |
 
 ## Optional packages
