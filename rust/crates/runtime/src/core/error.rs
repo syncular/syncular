@@ -77,6 +77,24 @@ impl SyncularError {
         Self::message(ErrorKind::Codegen, message)
     }
 
+    pub fn limit_exceeded(
+        limit: &str,
+        observed: usize,
+        max: usize,
+        message: impl fmt::Display,
+    ) -> Self {
+        let payload = serde_json::json!({
+            "code": "runtime.limit_exceeded",
+            "category": "limit-exceeded",
+            "retryable": false,
+            "recommendedAction": "reduceInput",
+            "limit": limit,
+            "observed": observed,
+            "max": max,
+        });
+        Self::message(ErrorKind::Config, format!("{message}: {payload}"))
+    }
+
     pub fn kind(&self) -> ErrorKind {
         self.kind
     }
@@ -232,6 +250,7 @@ fn known_error_classification(code: &str) -> Option<SyncularErrorClassification>
         "sync.websocket_connection_limit" => ("rate-limited", true, "retryLater"),
         "sync.transport_failed" => ("transport", true, "retryLater"),
         "runtime.busy" => ("rate-limited", true, "retryLater"),
+        "runtime.limit_exceeded" => ("limit-exceeded", false, "reduceInput"),
         "runtime.config_invalid" => ("invalid-request", false, "fixRequest"),
         "runtime.codegen_mismatch" => ("schema-mismatch", false, "regenerateClient"),
         "runtime.internal" => ("internal", false, "inspectServer"),

@@ -4,7 +4,7 @@ use crate::binary_sync_pack::decode_binary_sync_pack;
 use crate::client::{
     sync_changed_row_for_change, sync_changed_row_for_local_operation,
     sync_changed_row_for_snapshot, sync_changed_rows_for_cleared_snapshot_chunk_limited,
-    SubscriptionSpec, SyncChangedRow,
+    validate_subscription_limits, SubscriptionSpec, SyncChangedRow,
 };
 use crate::crdt_yjs::YJS_PAYLOAD_KEY;
 use crate::encrypted_crdt::{is_encrypted_crdt_system_table, EncryptedCrdt};
@@ -212,8 +212,10 @@ where
         }
     }
 
-    pub fn set_subscriptions(&mut self, subscriptions: Vec<SubscriptionSpec>) {
+    pub fn set_subscriptions(&mut self, subscriptions: Vec<SubscriptionSpec>) -> Result<()> {
+        validate_subscription_limits(&subscriptions)?;
         self.subscriptions = subscriptions;
+        Ok(())
     }
 
     pub fn subscriptions(&self) -> &[SubscriptionSpec] {
@@ -1799,7 +1801,7 @@ mod tests {
                 params: Map::new(),
                 bootstrap_phase: 1,
             },
-        ]);
+        ])?;
 
         let first = block_on(client.sync_pull())?;
         assert_eq!(
@@ -1851,7 +1853,7 @@ mod tests {
             scopes: scopes(),
             params: Map::new(),
             bootstrap_phase: 0,
-        }]);
+        }])?;
 
         let commit = SyncCommit {
             commit_seq: 1,

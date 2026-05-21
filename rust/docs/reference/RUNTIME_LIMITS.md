@@ -23,6 +23,11 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
 | `crdtUpdateQueueCapacity` | 1024 | Pending server-merge CRDT updates per document before local writes fail |
 | `crdtUpdateLogDefaultLimit` | 100 | Default CRDT update-log rows returned by host APIs |
 | `yjsFlushWindowMs` | 12 | Worker coalescing window for queued Yjs updates |
+| `maxSubscriptionsPerClient` | 256 | Maximum configured subscriptions accepted by a client |
+| `maxScopeKeysPerSubscription` | 16 | Maximum distinct scope keys on one subscription |
+| `maxScopeValuesPerSubscription` | 4096 | Maximum scalar/array scope values on one subscription |
+| `maxScopeValuesPerClient` | 16384 | Maximum total scalar/array scope values across all subscriptions |
+| `maxSubscriptionParamsPerSubscription` | 32 | Maximum params keys on one subscription |
 
 ## Current Inventory
 
@@ -38,6 +43,8 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
   statement cache for snapshot apply.
 - Native and Rust worker event streams are bounded and emit
   `EventsOverflowed` / `events.overflowed` when a subscriber falls behind.
+- Rust/native/browser subscription setters reject the configured subscription
+  and scope limits above with `runtime.limit_exceeded`.
 - Blob upload retries and sync retries are bounded by the runtime store
   constants and should become public limit fields in a later WP-18 slice.
 

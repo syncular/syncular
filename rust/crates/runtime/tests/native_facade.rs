@@ -7,10 +7,13 @@ use std::time::{Duration, Instant};
 use diesel::prelude::*;
 use diesel::sql_query;
 use serde_json::{json, Value};
-use syncular_runtime::client::{BootstrapStatus, SyncChangedCrdtField, SyncChangedRow, SyncReport};
+use syncular_runtime::client::{
+    BootstrapStatus, SubscriptionSpec, SyncChangedCrdtField, SyncChangedRow, SyncReport,
+};
 use syncular_runtime::crdt_yjs::{build_yjs_text_update, BuildYjsTextUpdateArgs};
 use syncular_runtime::error::{ErrorKind, Result, SyncularError, FULL_SNAPSHOT_RESYNC_REQUIRED};
 use syncular_runtime::fixtures::todo::app_schema as demo_todo_app_schema;
+use syncular_runtime::limits::MAX_SUBSCRIPTIONS_PER_CLIENT;
 use syncular_runtime::native::{
     native_event_json_from_worker_event, native_events_from_worker_event_with_observed_queries,
     NativeClientConfig, NativeClientOptions, NativeEventKind, NativeLifecyclePhase,
@@ -2043,6 +2046,40 @@ fn native_facade_exposes_redacted_diagnostic_snapshot() -> Result<()> {
                 && item["success"] == false
                 && item["totalMs"].as_u64().is_some()
         })));
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_facade_rejects_subscription_limit_with_stable_error() -> Result<()> {
+    let path = temp_db_path("syncular-native-subscription-limit");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-subscription-limit"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+    let subscriptions = (0..=MAX_SUBSCRIPTIONS_PER_CLIENT)
+        .map(|index| SubscriptionSpec {
+            id: format!("sub-{index}"),
+            table: "tasks".to_string(),
+            scopes: serde_json::Map::new(),
+            params: serde_json::Map::new(),
+            bootstrap_phase: 0,
+        })
+        .collect::<Vec<_>>();
+
+    let err = client
+        .set_subscriptions(subscriptions)
+        .expect_err("subscription limit should fail");
+    let classification = err.classification();
+    assert_eq!(classification.code, "runtime.limit_exceeded");
+    assert_eq!(classification.category, "limit-exceeded");
+    assert_eq!(classification.retryable, false);
+    assert_eq!(classification.recommended_action, "reduceInput");
+    assert!(err.message_text().contains("maxSubscriptionsPerClient"));
 
     client.close()?;
     let _ = std::fs::remove_file(path);

@@ -164,8 +164,9 @@ impl SyncularWasmClient {
     ) -> std::result::Result<(), JsValue> {
         let subscriptions: Vec<SubscriptionSpec> = serde_json::from_str(subscriptions_json)
             .map_err(|err| JsValue::from_str(&format!("decode subscriptions: {err}")))?;
-        self.inner.set_subscriptions(subscriptions);
-        Ok(())
+        self.inner
+            .set_subscriptions(subscriptions)
+            .map_err(error_to_js)
     }
 
     #[wasm_bindgen(js_name = setAuthHeadersJson)]
