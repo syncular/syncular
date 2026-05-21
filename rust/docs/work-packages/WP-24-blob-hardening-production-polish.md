@@ -1,6 +1,6 @@
 # WP-24 Blob Hardening And Production Polish
 
-Status: `[~]` in progress
+Status: `[x]` accepted for the Rust-first foundation
 
 ## Goal
 
@@ -119,10 +119,13 @@ Known gaps:
   limits, hit/miss, prune/clear, upload completion/failure, queue processing,
   and download failures. Native direct and queued blob file/cache operations
   emit matching stable blob diagnostic codes through the native event stream.
-  Server-adapter diagnostics and console visibility still need production
-  tightening.
-- Shared conformance is good but not complete for every auth, scope,
-  encryption, corruption, browser/native, and server-adapter edge case.
+  Server-adapter max-size, hash/size mismatch, forbidden access, partition
+  isolation, stream cleanup, missing remote blobs, interrupted uploads, auth
+  failure retries, encrypted roundtrips, cache pruning, and corrupted native
+  downloads are now covered by shared Rust/browser/server tests.
+- File-asset UX, platform-native large-file bridges, console blob dashboards,
+  and real Swift/Kotlin app lifecycle validation move to WP-25/WP-09 rather
+  than staying in this foundational blob-hardening package.
 
 ## Interface Impact
 
@@ -179,11 +182,10 @@ Add scope-aware blob authorization helpers and diagnostics:
 
 ## Next Action
 
-Continue WP-24 with shared auth/scope failure conformance without adding
-polling loops or hash-only access fallbacks. Browser payload size limits,
-browser/native cache/upload diagnostics, native corrupted-download coverage,
-and server max-size route coverage are now explicit; next tighten remaining
-cross-binding blob failure coverage.
+WP-24 is accepted for the Rust-first foundation. Continue with WP-25 file asset
+sync for app-level file workflows and keep any platform-native large-file bridge
+or console blob dashboard work scoped there rather than reopening foundational
+blob protocol behavior.
 
 Latest evidence:
 
@@ -334,3 +336,23 @@ Latest evidence:
 
 - `bun --cwd packages/server-hono tsgo`
 - `bun test packages/server-hono/src/__tests__/blob-routes.test.ts`
+
+## Acceptance Sweep
+
+WP-24 is accepted for the Rust-first foundation. The remaining blob-related
+work is deliberately scoped out:
+
+- WP-25 owns app-level file asset APIs, large-file UX, and platform-native file
+  bridges.
+- WP-09 owns real Swift/Kotlin app lifecycle validation beyond generated
+  binding/API smokes.
+- Console dashboard work should consume the stable blob diagnostics added here
+  rather than changing blob protocol behavior.
+
+Latest evidence:
+
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test blob_transport --features native,crdt-yjs,e2ee,demo-todo-native-fixture`
+- `bun --cwd rust/bindings/browser tsgo`
+- `bun test src/__tests__/blob-hono.wasm.test.ts` from `rust/bindings/browser`
+- `bun test packages/server-hono/src/__tests__/blob-routes.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_binding_scaffold --features native,boltffi-bindings,crdt-yjs,e2ee,demo-todo-native-fixture`
