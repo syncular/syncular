@@ -29,6 +29,7 @@ use syncular_runtime::fixtures::todo::rusqlite_sqlite::RusqliteStore;
 use syncular_runtime::fixtures::todo::{
     app_schema as demo_todo_app_schema, diesel_tables, generated, migrations,
 };
+use syncular_runtime::limits::DEFAULT_MAX_UNRESOLVED_OUTBOX_COMMITS;
 use syncular_runtime::protocol::{
     CombinedRequest, CombinedResponse, PullResponse, PushCommitRequest, PushCommitResponse,
     ScopeValues, SnapshotChunkRef, SubscriptionResponse, SyncChange, SyncCommit, SyncOperation,
@@ -177,6 +178,75 @@ fn diesel_store_applies_generic_json_operations() -> Result<()> {
     let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
 
     assert_generic_json_operations(&mut store)?;
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn diesel_store_rejects_local_writes_when_unresolved_outbox_is_full() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-outbox-capacity");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    let now = now_ms();
+
+    sql_query(
+        r#"
+        with d(n) as (
+          values (0),(1),(2),(3),(4),(5),(6),(7),(8),(9)
+        ),
+        seq(n) as (
+          select d1.n * 1000 + d2.n * 100 + d3.n * 10 + d4.n + 1
+          from d d1
+          cross join d d2
+          cross join d d3
+          cross join d d4
+          where d1.n * 1000 + d2.n * 100 + d3.n * 10 + d4.n + 1 <= ?1
+        )
+        insert into sync_outbox_commits (
+          id, client_commit_id, status, operations_json, created_at, updated_at,
+          attempt_count, schema_version, next_attempt_at
+        )
+        select 'outbox-full-' || n, 'commit-full-' || n, 'pending', '[]', ?2, ?2,
+               0, ?3, 0
+        from seq
+        "#,
+    )
+    .bind::<BigInt, _>(DEFAULT_MAX_UNRESOLVED_OUTBOX_COMMITS as i64)
+    .bind::<BigInt, _>(now)
+    .bind::<Integer, _>(current_schema_version())
+    .execute(&mut conn)?;
+    drop(conn);
+
+    let error = store
+        .apply_local_operation(
+            SyncOperation {
+                table: "tasks".to_string(),
+                row_id: "outbox-limit-task".to_string(),
+                op: "upsert".to_string(),
+                payload: Some(json!({
+                    "title": "Outbox limit",
+                    "completed": 0,
+                    "user_id": "user-rust",
+                    "project_id": "p0"
+                })),
+                base_version: Some(0),
+            },
+            None,
+        )
+        .expect_err("full unresolved outbox should reject a new local write");
+    assert_eq!(error.kind(), ErrorKind::Config);
+    assert!(error.message_text().contains("runtime.limit_exceeded"));
+    assert!(error.message_text().contains("maxUnresolvedOutboxCommits"));
+    assert!(store.list_table_json("tasks")?.is_empty());
+    assert_eq!(
+        store
+            .outbox_summaries()?
+            .iter()
+            .filter(|item| item.status != "acked")
+            .count(),
+        DEFAULT_MAX_UNRESOLVED_OUTBOX_COMMITS
+    );
 
     let _ = std::fs::remove_file(path);
     Ok(())

@@ -19,6 +19,7 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
 | `pullLimitSnapshotRows` | 50000 | Client-requested snapshot rows per page |
 | `pullMaxSnapshotPages` | 10 | Client-requested snapshot pages per pull |
 | `outboxPushBatchLimit` | 20 | Pending outbox commits loaded for one push round |
+| `maxUnresolvedOutboxCommits` | 10000 | Maximum pending/sending/failed outbox commits retained before new local writes fail |
 | `maxSyncRetries` | 5 | Maximum retry attempts for one outbox commit before it becomes failed |
 | `syncSendingTimeoutMs` | 30000 | Stale `sending` outbox age before it is requeued or failed |
 | `maxBlobUploadRetries` | 3 | Maximum retry attempts for one queued blob upload before it becomes failed |
@@ -92,6 +93,9 @@ routes: ... })` and return `runtime.limit_exceeded` envelopes when exceeded.
 - Rust/native/browser mutation entry points reject oversized mutation operation,
   local row, batch, typed mutation, and outbox JSON with
   `runtime.limit_exceeded`.
+- Rust/native/browser local writes reject new outbox commits once unresolved
+  pending/sending/failed commits reach `maxUnresolvedOutboxCommits`; acked
+  commits do not count against this pressure cap.
 - Blob and CRDT/Yjs entry points reject oversized blob payloads, CRDT request
   JSON, Yjs update/state/state-vector payloads, and CRDT text with
   `runtime.limit_exceeded`.
