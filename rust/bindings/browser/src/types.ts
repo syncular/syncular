@@ -734,6 +734,7 @@ export type SyncularV2LocalHealthSeverity = 'info' | 'warning' | 'error';
 export type SyncularV2LocalHealthRepairAction =
   | 'forceRebootstrap'
   | 'clearOrphanedState'
+  | 'clearOrphanedSyncedRows'
   | 'manualInspection';
 
 export interface SyncularV2LocalHealthFinding {
@@ -765,6 +766,7 @@ export interface SyncularV2LocalHealthReport {
 export interface SyncularV2LocalHealthRepairRequest {
   action: SyncularV2LocalHealthRepairAction;
   subscriptionIds?: readonly string[];
+  tables?: readonly string[];
 }
 
 export interface SyncularV2LocalHealthRepairReport {
@@ -772,6 +774,8 @@ export interface SyncularV2LocalHealthRepairReport {
   deletedSubscriptionStates: number;
   deletedVerifiedRoots: number;
   forcedRebootstrapSubscriptions: number;
+  clearedOrphanedSyncedRows: number;
+  clearedTables: string[];
 }
 
 export interface SyncularV2LocalSyncResetRequest {

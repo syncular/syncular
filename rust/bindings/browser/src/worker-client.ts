@@ -639,16 +639,27 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     return this.#request({ type: 'localHealthCheck' });
   }
 
-  repairLocalHealth(
+  async repairLocalHealth(
     request: SyncularV2LocalHealthRepairRequest
   ): Promise<SyncularV2LocalHealthRepairReport> {
-    return this.#request({
+    const message = {
       type: 'repairLocalHealth',
       request: {
         action: request.action,
         subscriptionIds: [...(request.subscriptionIds ?? [])],
+        tables: [...(request.tables ?? [])],
       },
-    });
+    } satisfies SyncularV2WorkerRequestInput;
+    const result =
+      request.action === 'clearOrphanedSyncedRows'
+        ? await this.#requestAndDrain<SyncularV2LocalHealthRepairReport>(
+            message
+          )
+        : await this.#request<SyncularV2LocalHealthRepairReport>(message);
+    if (request.action === 'clearOrphanedSyncedRows') {
+      this.#emitLifecycleChanged();
+    }
+    return result;
   }
 
   async resetLocalSyncState(

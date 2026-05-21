@@ -275,42 +275,19 @@ impl SyncStateStore for RusqliteStore {
         &mut self,
         subscriptions: &[SubscriptionSpec],
     ) -> Result<Option<ScopedRowsHealthSummary>> {
-        let task_subscriptions = subscriptions
-            .iter()
-            .filter(|subscription| subscription.table == "tasks")
-            .collect::<Vec<_>>();
-        let mut statement = self.conn.prepare(
-            r#"
-            select user_id, project_id
-            from tasks
-            where server_version > 0
-            "#,
-        )?;
-        let rows = statement.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
-        })?;
-        let mut checked_synced_rows = 0i64;
-        let mut orphaned_synced_rows = 0i64;
-        for row in rows {
-            let (user_id, project_id) = row?;
-            checked_synced_rows += 1;
-            if task_subscriptions.is_empty()
-                || !task_subscriptions.iter().any(|subscription| {
-                    task_row_matches_subscription(&user_id, &project_id, subscription)
-                })
-            {
-                orphaned_synced_rows += 1;
-            }
-        }
-        Ok(Some(ScopedRowsHealthSummary {
-            checked_synced_rows,
-            orphaned_synced_rows,
-            tables: vec![ScopedRowsTableHealth {
-                table: "tasks".to_string(),
-                checked_synced_rows,
-                orphaned_synced_rows,
-            }],
-        }))
+        Ok(Some(self.task_scoped_rows_health_summary(
+            subscriptions,
+            &[],
+            false,
+        )?))
+    }
+
+    fn clear_orphaned_synced_rows(
+        &mut self,
+        subscriptions: &[SubscriptionSpec],
+        tables: &[String],
+    ) -> Result<ScopedRowsHealthSummary> {
+        self.task_scoped_rows_health_summary(subscriptions, tables, true)
     }
 
     fn resolve_conflict(&mut self, id: &str, resolution: &str) -> Result<()> {
@@ -327,6 +304,74 @@ impl SyncStateStore for RusqliteStore {
 
     fn retry_conflict_keep_local(&mut self, id: &str) -> Result<String> {
         self.transaction(|tx| tx.retry_conflict_keep_local(id))
+    }
+}
+
+impl RusqliteStore {
+    fn task_scoped_rows_health_summary(
+        &mut self,
+        subscriptions: &[SubscriptionSpec],
+        tables: &[String],
+        clear_orphaned: bool,
+    ) -> Result<ScopedRowsHealthSummary> {
+        for table in tables {
+            if table != "tasks" {
+                return Err(SyncularError::config(format!(
+                    "unknown generated app table: {table}"
+                )));
+            }
+        }
+        if !tables.is_empty() && !tables.iter().any(|table| table == "tasks") {
+            return Ok(ScopedRowsHealthSummary::default());
+        }
+        let task_subscriptions = subscriptions
+            .iter()
+            .filter(|subscription| subscription.table == "tasks")
+            .collect::<Vec<_>>();
+        let mut statement = self.conn.prepare(
+            r#"
+            select id, user_id, project_id
+            from tasks
+            where server_version > 0
+            "#,
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })?;
+        let mut checked_synced_rows = 0i64;
+        let mut orphaned_row_ids = Vec::new();
+        for row in rows {
+            let (id, user_id, project_id) = row?;
+            checked_synced_rows += 1;
+            if task_subscriptions.is_empty()
+                || !task_subscriptions.iter().any(|subscription| {
+                    task_row_matches_subscription(&user_id, &project_id, subscription)
+                })
+            {
+                orphaned_row_ids.push(id);
+            }
+        }
+        drop(statement);
+        if clear_orphaned {
+            for row_id in &orphaned_row_ids {
+                self.conn
+                    .execute("delete from tasks where id = ?1", params![row_id])?;
+            }
+        }
+        let orphaned_synced_rows = orphaned_row_ids.len() as i64;
+        Ok(ScopedRowsHealthSummary {
+            checked_synced_rows,
+            orphaned_synced_rows,
+            tables: vec![ScopedRowsTableHealth {
+                table: "tasks".to_string(),
+                checked_synced_rows,
+                orphaned_synced_rows,
+            }],
+        })
     }
 }
 

@@ -1012,6 +1012,16 @@ impl DieselSqliteStore {
         scoped_rows_health_summary_for_schema(&mut self.conn, self.app_schema, subscriptions)
     }
 
+    fn clear_orphaned_synced_rows(
+        &mut self,
+        subscriptions: &[SubscriptionSpec],
+        tables: &[String],
+    ) -> Result<ScopedRowsHealthSummary> {
+        self.conn.transaction(|conn| {
+            clear_orphaned_synced_rows_for_schema(conn, self.app_schema, subscriptions, tables)
+        })
+    }
+
     pub fn crdt_health_summary(&mut self) -> Result<CrdtHealthSummary> {
         let stats = sql_query(
             r#"
@@ -1676,6 +1686,14 @@ impl SyncStateStore for DieselSqliteStore {
             self,
             subscriptions,
         )?))
+    }
+
+    fn clear_orphaned_synced_rows(
+        &mut self,
+        subscriptions: &[SubscriptionSpec],
+        tables: &[String],
+    ) -> Result<ScopedRowsHealthSummary> {
+        DieselSqliteStore::clear_orphaned_synced_rows(self, subscriptions, tables)
     }
 
     fn resolve_conflict(&mut self, id_value: &str, resolution_value: &str) -> Result<()> {
@@ -2519,6 +2537,81 @@ fn scoped_rows_health_summary_for_schema(
     Ok(summary)
 }
 
+fn clear_orphaned_synced_rows_for_schema(
+    conn: &mut SqliteConnection,
+    app_schema: AppSchema,
+    subscriptions: &[SubscriptionSpec],
+    tables: &[String],
+) -> Result<ScopedRowsHealthSummary> {
+    validate_requested_app_tables(app_schema, tables)?;
+    let mut summary = ScopedRowsHealthSummary::default();
+    for metadata in app_schema
+        .app_table_metadata
+        .iter()
+        .filter(|metadata| tables.is_empty() || tables.iter().any(|table| table == metadata.name))
+    {
+        validate_app_table_metadata(metadata)?;
+        validate_identifier(metadata.server_version_column)?;
+        let checked_synced_rows = count_rows(
+            conn,
+            &format!(
+                "select count(*) as count from {table} where {server_version} > 0",
+                table = metadata.name,
+                server_version = metadata.server_version_column
+            ),
+        )?;
+        let table_subscriptions = subscriptions
+            .iter()
+            .filter(|subscription| subscription.table == metadata.name)
+            .collect::<Vec<_>>();
+        let orphaned_synced_rows = if checked_synced_rows == 0 {
+            0
+        } else if table_subscriptions.is_empty() {
+            delete_rows_with_count(
+                conn,
+                &format!(
+                    "delete from {table} where {server_version} > 0",
+                    table = metadata.name,
+                    server_version = metadata.server_version_column
+                ),
+            )?
+        } else {
+            let scope_clauses = table_subscriptions
+                .iter()
+                .map(|subscription| scope_clause(metadata, &subscription.scopes))
+                .collect::<Result<Vec<_>>>()?;
+            delete_rows_with_count(
+                conn,
+                &format!(
+                    "delete from {table} where {server_version} > 0 and not ({scope_clause})",
+                    table = metadata.name,
+                    server_version = metadata.server_version_column,
+                    scope_clause = scope_clauses.join(" or ")
+                ),
+            )?
+        };
+        summary.checked_synced_rows += checked_synced_rows;
+        summary.orphaned_synced_rows += orphaned_synced_rows;
+        summary.tables.push(ScopedRowsTableHealth {
+            table: metadata.name.to_string(),
+            checked_synced_rows,
+            orphaned_synced_rows,
+        });
+    }
+    Ok(summary)
+}
+
+fn validate_requested_app_tables(app_schema: AppSchema, tables: &[String]) -> Result<()> {
+    for table in tables {
+        if app_schema.table_metadata(table).is_none() {
+            return Err(SyncularError::config(format!(
+                "unknown generated app table: {table}"
+            )));
+        }
+    }
+    Ok(())
+}
+
 fn count_rows(conn: &mut SqliteConnection, sql: &str) -> Result<i64> {
     Ok(sql_query(sql)
         .load::<CountRow>(conn)?
@@ -2526,6 +2619,10 @@ fn count_rows(conn: &mut SqliteConnection, sql: &str) -> Result<i64> {
         .next()
         .map(|row| row.count)
         .unwrap_or_default())
+}
+
+fn delete_rows_with_count(conn: &mut SqliteConnection, sql: &str) -> Result<i64> {
+    Ok(sql_query(sql).execute(conn)? as i64)
 }
 
 fn preserve_encrypted_crdt_materialized_columns(

@@ -781,7 +781,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
         expect.objectContaining({
           code: 'local.synced_rows_orphaned',
           table: 'tasks',
-          repairAction: 'manualInspection',
+          repairAction: 'clearOrphanedSyncedRows',
           details: expect.objectContaining({
             count: 1,
             checkedSyncedRows: 2,
@@ -790,6 +790,29 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       ])
     );
     await expect(client.listTable('tasks')).resolves.toHaveLength(3);
+    await expect(
+      client.repairLocalHealth({
+        action: 'clearOrphanedSyncedRows',
+        tables: ['tasks'],
+      })
+    ).resolves.toMatchObject({
+      action: 'clearOrphanedSyncedRows',
+      clearedOrphanedSyncedRows: 1,
+      clearedTables: ['tasks'],
+    });
+    const rowsAfterRepair = await client.listTable('tasks');
+    expect(rowsAfterRepair).toHaveLength(2);
+    expect(rowsAfterRepair).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: 'health-owned-task' }),
+        expect.objectContaining({ id: 'health-local-only-task' }),
+      ])
+    );
+    await expect(client.localHealthCheck()).resolves.toMatchObject({
+      ok: true,
+      checkedSyncedRows: 1,
+      findings: [],
+    });
   });
 
   it('resets browser sync state while preserving local-only app rows', async () => {

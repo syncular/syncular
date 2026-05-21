@@ -332,6 +332,16 @@ pub trait SyncStateStore {
         Ok(None)
     }
 
+    fn clear_orphaned_synced_rows(
+        &mut self,
+        _subscriptions: &[SubscriptionSpec],
+        _tables: &[String],
+    ) -> Result<ScopedRowsHealthSummary> {
+        Err(SyncularError::storage(anyhow::anyhow!(
+            "clearing orphaned synced rows is not supported by this store"
+        )))
+    }
+
     fn resolve_conflict(&mut self, id: &str, resolution: &str) -> Result<()>;
 
     fn retry_conflict_keep_local(&mut self, id: &str) -> Result<String>;

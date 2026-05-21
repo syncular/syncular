@@ -4925,6 +4925,65 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         })
     }
 
+    fn clear_orphaned_synced_rows<'a>(
+        &'a mut self,
+        subscriptions: &'a [SubscriptionSpec],
+        tables: &'a [String],
+    ) -> Pin<Box<dyn Future<Output = Result<ScopedRowsHealthSummary>> + 'a>> {
+        Box::pin(async move {
+            validate_requested_app_tables(self.app_schema, tables)?;
+            let mut summary = ScopedRowsHealthSummary::default();
+            for metadata in self
+                .app_schema
+                .app_table_metadata
+                .iter()
+                .filter(|metadata| {
+                    tables.is_empty() || tables.iter().any(|table| table == metadata.name)
+                })
+            {
+                validate_table_name(metadata.name)?;
+                validate_table_name(metadata.server_version_column)?;
+                let checked_synced_rows = self.query_count(&format!(
+                    "SELECT COUNT(*) AS count FROM {table} WHERE {server_version} > 0",
+                    table = metadata.name,
+                    server_version = metadata.server_version_column
+                ))?;
+                let table_subscriptions = subscriptions
+                    .iter()
+                    .filter(|subscription| subscription.table == metadata.name)
+                    .collect::<Vec<_>>();
+                let orphaned_synced_rows = if checked_synced_rows == 0 {
+                    0
+                } else if table_subscriptions.is_empty() {
+                    self.exec_with_changes(&format!(
+                        "DELETE FROM {table} WHERE {server_version} > 0",
+                        table = metadata.name,
+                        server_version = metadata.server_version_column
+                    ))?
+                } else {
+                    let scope_clauses = table_subscriptions
+                        .iter()
+                        .map(|subscription| scope_clause(metadata, &subscription.scopes))
+                        .collect::<Result<Vec<_>>>()?;
+                    self.exec_with_changes(&format!(
+                        "DELETE FROM {table} WHERE {server_version} > 0 AND NOT ({scope_clause})",
+                        table = metadata.name,
+                        server_version = metadata.server_version_column,
+                        scope_clause = scope_clauses.join(" OR ")
+                    ))?
+                };
+                summary.checked_synced_rows += checked_synced_rows;
+                summary.orphaned_synced_rows += orphaned_synced_rows;
+                summary.tables.push(ScopedRowsTableHealth {
+                    table: metadata.name.to_string(),
+                    checked_synced_rows,
+                    orphaned_synced_rows,
+                });
+            }
+            Ok(summary)
+        })
+    }
+
     fn app_schema_state<'a>(
         &'a mut self,
         current_schema_version: i32,
@@ -5890,6 +5949,17 @@ fn scope_sql_filter(column: &str, value: &Value) -> Result<String> {
         ),
         value => format!("{column} = {}", sql_value(value)),
     })
+}
+
+fn validate_requested_app_tables(app_schema: AppSchema, tables: &[String]) -> Result<()> {
+    for table in tables {
+        if app_schema.table_metadata(table).is_none() {
+            return Err(SyncularError::config(format!(
+                "unknown generated app table: {table}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 fn parse_params(params_json: &str) -> Result<Vec<Value>> {

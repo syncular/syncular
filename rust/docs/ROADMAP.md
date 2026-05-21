@@ -574,8 +574,12 @@ read-only review:
     `local.synced_rows_orphaned` without mutating data. Scope matching is
     metadata-driven across Diesel, the rusqlite fixture, WebMemoryStore, and
     Rust-owned browser SQLite, including array scopes and fail-closed invalid
-    scope keys. Next: add the explicit repair command for the reported orphaned
-    synced rows.
+    scope keys. The explicit `clearOrphanedSyncedRows` repair now refuses
+    `subscriptionIds`, accepts optional generated app `tables`, fails closed
+    with unresolved local outbox commits, deletes only positive-server-version
+    rows outside configured scopes, preserves local-only rows, and notifies
+    browser live-query/lifecycle listeners after row-clearing repairs. Next:
+    add debug-only local support export/import with redaction.
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
