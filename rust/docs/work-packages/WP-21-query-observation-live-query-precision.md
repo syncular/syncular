@@ -72,8 +72,32 @@ First retained slice:
   Rust-owned browser SQLite store uses those hints only when changed-row
   metadata is complete; truncated or table-only changes still rerun the query.
   Disjunctive predicates intentionally do not infer row hints.
+- Added native parity for observed-query dependency hints. Native
+  `register_query_json` now accepts `dependencyHints` with table, row-id, and
+  field metadata. `RowsChanged` still always emits, while `QueriesChanged`
+  skips hinted observers only when row/field metadata proves the changed row
+  cannot affect the query; table-only or incomplete row metadata keeps the
+  conservative notify behavior.
+
+Native gates:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --test native_facade native_facade_filters_query_observers_with_row_field_hints \
+  --features native,crdt-yjs,demo-todo-native-fixture
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --test native_facade \
+  --features native,crdt-yjs,demo-todo-native-fixture
+cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features native,crdt-yjs
+```
+
+Result: passed. No browser benchmark was rerun for this native-only slice; the
+browser guardrail baseline remains
+`.context/benchmarks/wp21-live-query-hints-current.json`.
 
 ## Next Action
 
-Add native parity for row/field dependency hints, then add a focused benchmark
-or counter that proves hinted queries skip reruns under unrelated row churn.
+Add a focused benchmark or counter that proves hinted queries skip reruns under
+unrelated row churn, then extend precision coverage to scope clears, conflicts,
+CRDT materialization, and blob metadata updates.

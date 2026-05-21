@@ -594,8 +594,10 @@ read-only review:
     dependencies. Browser live-query registration now also carries optional
     row-id dependency hints for simple primary-key equality predicates, and the
     Rust-owned browser SQLite invalidator uses those hints only when
-    changed-row metadata is complete. Next: add native parity and a focused
-    skip-rerun counter/benchmark for unrelated row churn.
+    changed-row metadata is complete. Native observed queries now accept the
+    same row/field dependency-hint shape and suppress `QueriesChanged` only
+    when complete changed-row metadata proves the query cannot be affected.
+    Next: add a focused skip-rerun counter/benchmark for unrelated row churn.
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)

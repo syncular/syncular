@@ -381,9 +381,25 @@ pub struct NativePresenceEntry {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeObservedQueryDependencyHint {
+    pub table: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub row_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub fields: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeObservedQuery {
     pub id: String,
     pub tables: Vec<String>,
+    #[serde(
+        default,
+        rename = "dependencyHints",
+        skip_serializing_if = "Vec::is_empty"
+    )]
+    pub dependency_hints: Vec<NativeObservedQueryDependencyHint>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
 }
@@ -423,6 +439,8 @@ struct NativeObservedQueryRegistration {
     #[serde(default)]
     id: Option<String>,
     tables: Vec<String>,
+    #[serde(default, rename = "dependencyHints")]
+    dependency_hints: Vec<NativeObservedQueryDependencyHint>,
     #[serde(default)]
     label: Option<String>,
 }
@@ -2036,7 +2054,7 @@ impl NativeEventHub {
             changed_rows.clone(),
             source,
         ));
-        let queries = self.changed_query_ids(&tables);
+        let queries = self.changed_query_ids(&tables, &changed_rows);
         if !queries.is_empty() {
             self.publish_event(queries_changed_event_with_details(
                 &tables,
@@ -2047,7 +2065,7 @@ impl NativeEventHub {
         }
     }
 
-    fn changed_query_ids(&self, tables: &[String]) -> Vec<String> {
+    fn changed_query_ids(&self, tables: &[String], changed_rows: &[SyncChangedRow]) -> Vec<String> {
         let changed = tables.iter().map(String::as_str).collect::<BTreeSet<_>>();
         let Ok(observers) = self.query_observers.lock() else {
             return Vec::new();
@@ -2055,12 +2073,7 @@ impl NativeEventHub {
 
         observers
             .values()
-            .filter(|query| {
-                query
-                    .tables
-                    .iter()
-                    .any(|table| changed.contains(table.as_str()))
-            })
+            .filter(|query| observed_query_should_notify(query, &changed, changed_rows))
             .map(|query| query.id.clone())
             .collect()
     }
@@ -2109,7 +2122,8 @@ impl NativeEventHub {
                         report.changed_rows.clone(),
                         Some("remotePull"),
                     ));
-                    let queries = self.changed_query_ids(&report.changed_tables);
+                    let queries =
+                        self.changed_query_ids(&report.changed_tables, &report.changed_rows);
                     if !queries.is_empty() {
                         events.push(queries_changed_event_with_details(
                             &report.changed_tables,
@@ -2163,7 +2177,7 @@ impl NativeEventHub {
                         changed_rows.clone(),
                         Some("localWrite"),
                     ));
-                    let queries = self.changed_query_ids(&changed_tables);
+                    let queries = self.changed_query_ids(&changed_tables, &changed_rows);
                     if !queries.is_empty() {
                         events.push(queries_changed_event_with_details(
                             &changed_tables,
@@ -2354,9 +2368,14 @@ impl NativeObservedQueryRegistration {
             None => format!("native-query-{}", Uuid::new_v4()),
         };
 
+        let tables = normalize_observed_tables(self.tables, app_schema)?;
+        let dependency_hints =
+            normalize_observed_query_dependency_hints(self.dependency_hints, &tables, app_schema)?;
+
         Ok(NativeObservedQuery {
             id,
-            tables: normalize_observed_tables(self.tables, app_schema)?,
+            tables,
+            dependency_hints,
             label: self.label,
         })
     }
@@ -3718,6 +3737,126 @@ fn normalize_observed_tables(tables: Vec<String>, app_schema: AppSchema) -> Resu
     Ok(normalized.into_iter().collect())
 }
 
+fn normalize_observed_query_dependency_hints(
+    hints: Vec<NativeObservedQueryDependencyHint>,
+    observed_tables: &[String],
+    app_schema: AppSchema,
+) -> Result<Vec<NativeObservedQueryDependencyHint>> {
+    let observed_tables = observed_tables
+        .iter()
+        .map(String::as_str)
+        .collect::<BTreeSet<_>>();
+    let mut normalized = Vec::new();
+    for hint in hints {
+        let table = hint.table.trim();
+        if table.is_empty() {
+            return Err(SyncularError::config(
+                "native observed query dependency hint table is empty",
+            ));
+        }
+        if !observed_tables.contains(table) {
+            return Err(SyncularError::config(format!(
+                "native observed query dependency hint table {table} is not one of the observed tables"
+            )));
+        }
+        validate_app_table_name(table, app_schema)?;
+        let metadata = app_schema.table_metadata(table).ok_or_else(|| {
+            SyncularError::config(format!("unknown generated app table: {table}"))
+        })?;
+
+        let mut row_ids = BTreeSet::new();
+        for row_id in hint.row_ids {
+            if row_id.is_empty() {
+                return Err(SyncularError::config(
+                    "native observed query dependency hint row id is empty",
+                ));
+            }
+            row_ids.insert(row_id);
+        }
+
+        let mut fields = BTreeSet::new();
+        for field in hint.fields {
+            let field = field.trim();
+            if field.is_empty() {
+                return Err(SyncularError::config(
+                    "native observed query dependency hint field is empty",
+                ));
+            }
+            validate_app_column_name(metadata, field)?;
+            fields.insert(field.to_string());
+        }
+
+        normalized.push(NativeObservedQueryDependencyHint {
+            table: table.to_string(),
+            row_ids: row_ids.into_iter().collect(),
+            fields: fields.into_iter().collect(),
+        });
+    }
+    Ok(normalized)
+}
+
+fn observed_query_should_notify(
+    query: &NativeObservedQuery,
+    changed_tables: &BTreeSet<&str>,
+    changed_rows: &[SyncChangedRow],
+) -> bool {
+    let affected_tables = query
+        .tables
+        .iter()
+        .filter(|table| changed_tables.contains(table.as_str()))
+        .collect::<Vec<_>>();
+    if affected_tables.is_empty() {
+        return false;
+    }
+    if query.dependency_hints.is_empty() || changed_rows.is_empty() {
+        return true;
+    }
+
+    for table in affected_tables {
+        let table_rows = changed_rows
+            .iter()
+            .filter(|row| row.table == table.as_str())
+            .collect::<Vec<_>>();
+        if table_rows.is_empty() {
+            return true;
+        }
+        let table_hints = query
+            .dependency_hints
+            .iter()
+            .filter(|hint| hint.table == table.as_str())
+            .collect::<Vec<_>>();
+        if table_hints.is_empty() {
+            return true;
+        }
+        if table_rows.iter().any(|row| {
+            table_hints
+                .iter()
+                .any(|hint| hint_matches_changed_row(hint, row))
+        }) {
+            return true;
+        }
+    }
+    false
+}
+
+fn hint_matches_changed_row(
+    hint: &NativeObservedQueryDependencyHint,
+    row: &SyncChangedRow,
+) -> bool {
+    let Some(row_id) = row.row_id.as_deref() else {
+        return true;
+    };
+    if !hint.row_ids.is_empty() && !hint.row_ids.iter().any(|id| id == row_id) {
+        return false;
+    }
+    if hint.fields.is_empty() || row.changed_fields.is_empty() {
+        return true;
+    }
+    row.changed_fields
+        .iter()
+        .any(|field| hint.fields.iter().any(|hint_field| hint_field == field))
+}
+
 fn validate_app_table_name(table: &str, app_schema: AppSchema) -> Result<()> {
     if app_schema.table_metadata(table).is_some() {
         return Ok(());
@@ -3725,6 +3864,23 @@ fn validate_app_table_name(table: &str, app_schema: AppSchema) -> Result<()> {
 
     Err(SyncularError::config(format!(
         "unknown generated app table: {table}"
+    )))
+}
+
+fn validate_app_column_name(metadata: &AppTableMetadata, column: &str) -> Result<()> {
+    if metadata.primary_key_column == column
+        || metadata.server_version_column == column
+        || metadata
+            .columns
+            .iter()
+            .any(|metadata| metadata.name == column)
+    {
+        return Ok(());
+    }
+
+    Err(SyncularError::config(format!(
+        "unknown generated app column {}.{}",
+        metadata.name, column
     )))
 }
 
