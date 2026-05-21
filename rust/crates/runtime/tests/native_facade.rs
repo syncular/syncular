@@ -1998,6 +1998,10 @@ fn native_facade_exposes_redacted_diagnostic_snapshot() -> Result<()> {
     assert!(snapshot["connection"]["eventSubscriberCount"]
         .as_u64()
         .is_some_and(|count| count >= 1));
+    assert_eq!(snapshot["limits"]["workerCommandQueueCapacity"], 1024);
+    assert_eq!(snapshot["limits"]["nativeRecentEventLimit"], 100);
+    assert_eq!(snapshot["limits"]["pullLimitCommits"], 1000);
+    assert_eq!(snapshot["runtime"]["limits"], snapshot["limits"]);
 
     assert_eq!(snapshot["subscriptions"].as_array().map(Vec::len), Some(1));
     assert_eq!(snapshot["subscriptions"][0]["id"], "tasks-private");

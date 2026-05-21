@@ -483,7 +483,12 @@ read-only review:
     lifecycle smokes model restricted background policy versus foreground
     maintenance policy. Accepted after full native facade/FFI/binding gates and
     `bun run rust:conformance:native`.
-- `[ ]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
+- `[~]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
+  - Started with a limit inventory and the first explicit native/Rust runtime
+    limit surface. Worker queue/event capacities, native recent-event limits,
+    read statement cache capacity, pull request sizing, outbox push batch
+    sizing, CRDT queue/log defaults, and Yjs coalescing are now centralized and
+    exposed in native runtime manifests plus diagnostic snapshots.
 - `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)

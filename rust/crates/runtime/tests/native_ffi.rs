@@ -54,6 +54,13 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
     assert_eq!(manifest["worker_model"], "background-sync-worker");
     assert_eq!(manifest["error_shape"], "native-error-info-v1");
     assert_eq!(manifest["event_model"], "native-event-stream-json-v1");
+    assert_eq!(manifest["limits"]["workerCommandQueueCapacity"], 1024);
+    assert_eq!(manifest["limits"]["nativeDefaultEventStreamCapacity"], 256);
+    assert_eq!(
+        manifest["limits"]["readonlyQueryStatementCacheCapacity"],
+        64
+    );
+    assert_eq!(manifest["limits"]["pullLimitSnapshotRows"], 50_000);
     assert_eq!(manifest["app_tables"].as_array().map(Vec::len), Some(0));
     assert_eq!(
         manifest["app_table_metadata"].as_array().map(Vec::len),
@@ -96,6 +103,7 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
             "background-resume-recovery",
             "structured-diagnostics",
             "diagnostic-snapshot",
+            "runtime-limits",
             "storage-compaction",
             "streaming-blob-file-api",
             "crdt-yjs",
