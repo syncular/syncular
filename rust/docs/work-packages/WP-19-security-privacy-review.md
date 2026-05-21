@@ -96,12 +96,17 @@ before appending update/checkpoint rows. Push-boundary coverage proves an actor
 outside the CRDT row's scopes receives `sync.forbidden`, and no encrypted system
 rows or `sync_changes` are persisted.
 
+Console request payload snapshots are still opt-in and size-bounded, but now
+also redact common token/password/secret field names before persistence. The
+route test proves accepted push payload snapshots keep ordinary app values while
+removing sensitive operation payload fields.
+
 ## Next Action
 
 Use the pull/realtime/artifact, blob-token, and encrypted-CRDT outbox tests as
-templates for the remaining privacy surfaces: CRDT revocation/recovery edges,
-broader debug-bundle redaction, and any console detail/export surfaces not
-already covered by partition-bound route tests.
+templates for the remaining privacy surfaces: CRDT revocation/recovery edges
+and any future debug/export surfaces. There is no current debug-bundle export
+implementation beyond diagnostics and console payload snapshots.
 
 ## Progress
 
@@ -129,6 +134,10 @@ already covered by partition-bound route tests.
   CRDT system updates/checkpoints. Added push-boundary coverage proving
   forbidden encrypted CRDT update/checkpoint appends are rejected without system
   rows or emitted sync changes.
+- Added default redaction for sensitive field names in opt-in console request
+  payload snapshots, with route coverage proving accepted app payloads keep
+  useful non-sensitive values while token/password/private-key fields are
+  removed before persistence.
 - Gates run in `packages/server-hono`:
   `bun test src/__tests__/create-server.test.ts`,
   `bun test src/__tests__/blob-routes.test.ts`, `bun test src/__tests__`, and

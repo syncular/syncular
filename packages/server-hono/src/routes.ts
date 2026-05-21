@@ -961,9 +961,41 @@ function readSnapshotScopeValues(
   return validated.data;
 }
 
+const SENSITIVE_PAYLOAD_KEYS = new Set([
+  'accesstoken',
+  'apikey',
+  'authorization',
+  'clientsecret',
+  'cookie',
+  'idtoken',
+  'passcode',
+  'passphrase',
+  'password',
+  'privatekey',
+  'refreshtoken',
+  'secret',
+  'secretkey',
+  'sessiontoken',
+  'setcookie',
+  'token',
+  'xapikey',
+]);
+const REDACTED_PAYLOAD_VALUE = '[redacted]';
+
+function normalizePayloadKey(key: string): string {
+  return key.replace(/[^a-zA-Z0-9]/g, '').toLowerCase();
+}
+
+function payloadSnapshotReplacer(key: string, value: unknown): unknown {
+  if (key !== '' && SENSITIVE_PAYLOAD_KEYS.has(normalizePayloadKey(key))) {
+    return REDACTED_PAYLOAD_VALUE;
+  }
+  return value;
+}
+
 function encodePayloadSnapshot(value: unknown, maxBytes: number): string {
   try {
-    const serialized = JSON.stringify(value);
+    const serialized = JSON.stringify(value, payloadSnapshotReplacer);
     if (serialized.length <= maxBytes) {
       return serialized;
     }

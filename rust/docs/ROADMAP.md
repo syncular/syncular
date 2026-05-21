@@ -533,6 +533,8 @@ read-only review:
     failures now fail closed as forbidden pushes. Encrypted CRDT system
     updates/checkpoints now share the same scope authorization helper and reject
     forbidden append pushes without persisting system rows or emitted changes.
+    Opt-in console request payload snapshots now redact common token, password,
+    and secret fields before persistence.
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
