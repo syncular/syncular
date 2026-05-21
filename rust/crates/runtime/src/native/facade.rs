@@ -544,6 +544,7 @@ pub fn native_runtime_manifest() -> NativeRuntimeManifest {
             "generated-json-leased-mutations",
             "queued-json-local-operations",
             "queued-json-leased-mutations",
+            "auth-lease-issue",
             "queued-yjs-updates",
             "queued-snapshot-refresh",
             "queued-storage-compaction",
@@ -1566,6 +1567,10 @@ impl NativeSyncularClient {
     pub fn upsert_auth_lease_json(&mut self, lease_json: &str) -> Result<()> {
         let lease: AuthLeaseRecord = serde_json::from_str(lease_json)?;
         self.writer.upsert_auth_lease(&lease)
+    }
+
+    pub fn issue_auth_lease_json(&mut self, request_json: &str) -> Result<String> {
+        self.writer.issue_auth_lease_json(request_json)
     }
 
     pub fn auth_lease_json(&mut self, lease_id: &str) -> Result<String> {

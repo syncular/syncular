@@ -796,6 +796,15 @@ public final class SyncularBoltClient {
         }
     }
 
+    public func issueAuthLeaseJson(requestJson: String) throws -> String {
+        var requestJson = requestJson
+        return try requestJson.withUTF8 { requestJsonBuf in
+            let buf = boltffi_syncular_bolt_client_issue_auth_lease_json(handle, requestJsonBuf.baseAddress!, UInt(requestJsonBuf.count))
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
     public func authLeaseJson(leaseId: String) throws -> String {
         var leaseId = leaseId
         return try leaseId.withUTF8 { leaseIdBuf in

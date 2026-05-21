@@ -110,6 +110,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(swift.contains(
         "func enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?) throws -> String"
     ));
+    assert!(swift.contains("func issueAuthLeaseJson(requestJson: String) throws -> String"));
     assert!(swift.contains("func enqueueYjsUpdateJson(updateJson: String) throws -> String"));
     assert!(swift.contains("func openCrdtFieldJson(requestJson: String) throws -> String"));
     assert!(swift.contains("func applyCrdtFieldTextJson(requestJson: String) throws -> String"));
@@ -172,6 +173,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(kotlin.contains(
         "fun enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?): String"
     ));
+    assert!(kotlin.contains("fun issueAuthLeaseJson(requestJson: String): String"));
     assert!(kotlin.contains("fun enqueueYjsUpdateJson(updateJson: String): String"));
     assert!(kotlin.contains("fun openCrdtFieldJson(requestJson: String): String"));
     assert!(kotlin.contains("fun applyCrdtFieldTextJson(requestJson: String): String"));
@@ -224,6 +226,7 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java.contains(
         "public String enqueueLeasedMutationJson(String mutationJson, java.util.Optional<String> localRowJson)"
     ));
+    assert!(java.contains("public String issueAuthLeaseJson(String requestJson)"));
     assert!(java.contains("public String enqueueYjsUpdateJson(String updateJson)"));
     assert!(java.contains("public String openCrdtFieldJson(String requestJson)"));
     assert!(java.contains("public String applyCrdtFieldTextJson(String requestJson)"));
@@ -261,6 +264,8 @@ fn generated_boltffi_native_outputs_cover_current_surface() {
     assert!(java_header.contains("boltffi_syncular_bolt_client_apply_leased_mutation_json"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_enqueue_leased_mutation_json"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_enqueue_leased_mutation_json"));
+    assert!(android_header.contains("boltffi_syncular_bolt_client_issue_auth_lease_json"));
+    assert!(java_header.contains("boltffi_syncular_bolt_client_issue_auth_lease_json"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_start_event_stream"));
     assert!(java_header.contains("boltffi_syncular_bolt_client_start_event_stream"));
     assert!(android_header.contains("boltffi_syncular_bolt_client_next_event_json_timeout"));
@@ -314,6 +319,8 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(swift.contains("public struct TaskChangedFields"));
     assert!(swift.contains("public struct SyncularNativeErrorInfo"));
     assert!(swift.contains("public struct SyncularNativeEvent"));
+    assert!(swift.contains("public struct SyncularAuthLeaseIssueRequest"));
+    assert!(swift.contains("public struct SyncularAuthLeaseRecord"));
     assert!(swift.contains("public let error: SyncularNativeErrorInfo?"));
     assert!(swift.contains("public let recommendedAction: String"));
     assert!(swift.contains("public let changedRows: [SyncularChangedRow]"));
@@ -326,8 +333,10 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(swift.contains("public final class SyncularNativeLiveQuery"));
     assert!(swift.contains("func applyMutationJson(mutationJson: String"));
     assert!(swift.contains("func applyLeasedMutationJson(mutationJson: String"));
+    assert!(swift.contains("func issueAuthLeaseJson(requestJson: String"));
     assert!(swift.contains("try applyMutationJson(mutationJson: operation.jsonString()"));
     assert!(swift.contains("try applyLeasedMutationJson(mutationJson: operation.jsonString()"));
+    assert!(swift.contains("func issueAuthLease(_ request: SyncularAuthLeaseIssueRequest"));
     assert!(swift.contains("var leasedMutations: SyncularAppMutations"));
     assert!(swift.contains("var queuedLeasedMutations: SyncularAppMutations"));
     assert!(swift.contains("queryJson(requestJson: query.jsonString())"));
@@ -356,6 +365,8 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(kotlin.contains("data class TaskChangedFields"));
     assert!(kotlin.contains("data class SyncularNativeErrorInfo"));
     assert!(kotlin.contains("data class SyncularNativeEvent"));
+    assert!(kotlin.contains("data class SyncularAuthLeaseIssueRequest"));
+    assert!(kotlin.contains("data class SyncularAuthLeaseRecord"));
     assert!(kotlin.contains("val error: SyncularNativeErrorInfo? = null"));
     assert!(kotlin.contains("val recommendedAction: String"));
     assert!(kotlin.contains("val changedRows: List<SyncularChangedRow> = emptyList()"));
@@ -368,8 +379,12 @@ fn generated_app_bindings_target_boltffi_layout() {
     assert!(kotlin.contains("class SyncularNativeLiveQuery<Row>"));
     assert!(kotlin.contains("fun applyMutationJson(mutationJson: String"));
     assert!(kotlin.contains("fun applyLeasedMutationJson(mutationJson: String"));
+    assert!(kotlin.contains("fun issueAuthLeaseJson(requestJson: String): String"));
     assert!(kotlin.contains("applyMutationJson(operation.toJsonString(), localRowJson)"));
     assert!(kotlin.contains("applyLeasedMutationJson(operation.toJsonString(), localRowJson)"));
+    assert!(kotlin.contains(
+        "fun SyncularNativeJsonClient.issueAuthLease(request: SyncularAuthLeaseIssueRequest)"
+    ));
     assert!(kotlin.contains("val SyncularNativeJsonClient.leasedMutations"));
     assert!(kotlin.contains("val SyncularNativeJsonClient.queuedLeasedMutations"));
     assert!(kotlin.contains("syncularGeneratedQueryRows(queryJson(query.toJsonString()))"));

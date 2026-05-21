@@ -2,6 +2,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 pub const AUTH_LEASE_VERSION: i32 = 1;
+pub const AUTH_LEASE_PROTOCOL_VERSION: i32 = 1;
 pub const AUTH_LEASE_ALG_ES256: &str = "ES256";
 pub const AUTH_LEASE_TYP: &str = "syncular-auth-lease+jws";
 
@@ -58,6 +59,24 @@ pub struct AuthLeaseScope {
     pub table: String,
     pub values: Map<String, Value>,
     pub operations: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthLeaseIssueRequest {
+    pub schema_version: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ttl_ms: Option<i64>,
+    pub scopes: Vec<AuthLeaseScope>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthLeaseIssueResponse {
+    pub ok: bool,
+    pub token: String,
+    pub protected_header: AuthLeaseProtectedHeader,
+    pub payload: AuthLeasePayload,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

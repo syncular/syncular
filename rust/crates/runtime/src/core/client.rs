@@ -1645,6 +1645,75 @@ where
         .with_schema_version(app_schema.current_schema_version());
         Self::with_parts(config, store, transport)
     }
+
+    pub fn issue_auth_lease(
+        &mut self,
+        request: &AuthLeaseIssueRequest,
+    ) -> Result<crate::store::AuthLeaseRecord> {
+        let response = self.transport.issue_auth_lease(request)?;
+        let record = auth_lease_record_from_issue_response(response, now_ms())?;
+        self.store.transaction(|tx| tx.upsert_auth_lease(&record))?;
+        Ok(record)
+    }
+
+    pub fn issue_auth_lease_json(&mut self, request_json: &str) -> Result<String> {
+        let request: AuthLeaseIssueRequest = serde_json::from_str(request_json)?;
+        Ok(serde_json::to_string(&self.issue_auth_lease(&request)?)?)
+    }
+}
+
+#[cfg(feature = "native")]
+fn auth_lease_record_from_issue_response(
+    response: AuthLeaseIssueResponse,
+    updated_at_ms: i64,
+) -> Result<crate::store::AuthLeaseRecord> {
+    if !response.ok {
+        return Err(SyncularError::message(
+            ErrorKind::Transport,
+            "auth lease issue returned ok=false",
+        ));
+    }
+    if response.token.is_empty() {
+        return Err(SyncularError::protocol_message(
+            "auth lease issue returned an empty token",
+        ));
+    }
+    if response.protected_header.alg != AUTH_LEASE_ALG_ES256
+        || response.protected_header.typ != AUTH_LEASE_TYP
+        || response.protected_header.kid.is_empty()
+    {
+        return Err(SyncularError::protocol_message(
+            "auth lease issue returned an invalid protected header",
+        ));
+    }
+    let payload = response.payload;
+    if payload.version != AUTH_LEASE_VERSION
+        || payload.protocol_version != AUTH_LEASE_PROTOCOL_VERSION
+        || payload.lease_id.is_empty()
+        || payload.actor_id.is_empty()
+        || payload.schema_version < 1
+        || payload.scopes.is_empty()
+    {
+        return Err(SyncularError::protocol_message(
+            "auth lease issue returned an invalid payload",
+        ));
+    }
+    let payload_json = serde_json::to_string(&payload)?;
+    Ok(crate::store::AuthLeaseRecord {
+        lease_id: payload.lease_id,
+        kid: response.protected_header.kid,
+        actor_id: payload.actor_id,
+        issued_at_ms: payload.issued_at_ms,
+        not_before_ms: payload.not_before_ms,
+        expires_at_ms: payload.expires_at_ms,
+        schema_version: payload.schema_version,
+        payload_json,
+        token: response.token,
+        status: "active".to_string(),
+        last_validation_error: None,
+        created_at_ms: payload.issued_at_ms,
+        updated_at_ms,
+    })
 }
 
 impl<S, T> SyncularClient<S, T>

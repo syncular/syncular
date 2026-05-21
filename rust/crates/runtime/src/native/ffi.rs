@@ -1209,6 +1209,19 @@ pub extern "C" fn syncular_native_client_upsert_auth_lease_json(
 }
 
 #[no_mangle]
+pub extern "C" fn syncular_native_client_issue_auth_lease_json(
+    handle: *mut SyncularNativeHandle,
+    request_json: *const c_char,
+    error_out: *mut *mut c_char,
+) -> *mut c_char {
+    clear_error(error_out);
+    ffi_catch_string(error_out, || {
+        let request_json = read_c_string(request_json)?;
+        with_client(handle, |client| client.issue_auth_lease_json(&request_json))
+    })
+}
+
+#[no_mangle]
 pub extern "C" fn syncular_native_client_auth_lease_json(
     handle: *mut SyncularNativeHandle,
     lease_id: *const c_char,

@@ -22,6 +22,9 @@ use syncular_runtime::native::{
     NativeClientConfig, NativeClientOptions, NativeEventKind, NativeLifecyclePhase,
     NativeObservedQuery, NativeSyncularClient, NativeWorkerEventConverter,
 };
+use syncular_runtime::protocol::{
+    AUTH_LEASE_ALG_ES256, AUTH_LEASE_PROTOCOL_VERSION, AUTH_LEASE_TYP, AUTH_LEASE_VERSION,
+};
 use syncular_runtime::worker::SyncWorkerEvent;
 use syncular_testkit::{
     todo_app_schema_json, unique_temp_db_path, TestHttpResponse, TestSyncServer,
@@ -336,6 +339,113 @@ fn native_facade_applies_dynamic_auth_headers_to_worker_sync() -> Result<()> {
             .first()
             .and_then(|request| request.header("authorization")),
         Some("Bearer native-test")
+    );
+
+    client.close()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_facade_issues_and_stores_auth_lease() -> Result<()> {
+    let path = temp_db_path("syncular-native-auth-lease-issue");
+    let schema_version = demo_todo_app_schema().current_schema_version();
+    let issued_at_ms = 1_779_360_000_000i64;
+    let mut config = test_config(&path, "native-auth-lease-issue");
+    let server = TestSyncServer::spawn([TestHttpResponse::json(json!({
+        "ok": true,
+        "token": "signed-native-lease-token",
+        "protectedHeader": {
+            "alg": AUTH_LEASE_ALG_ES256,
+            "kid": "native-lease-key",
+            "typ": AUTH_LEASE_TYP
+        },
+        "payload": {
+            "version": AUTH_LEASE_VERSION,
+            "leaseId": "lease-native-1",
+            "issuer": "syncular.test",
+            "audience": "native-auth-lease-issue",
+            "actorId": "user-rust",
+            "subject": {},
+            "schemaVersion": schema_version,
+            "protocolVersion": AUTH_LEASE_PROTOCOL_VERSION,
+            "issuedAtMs": issued_at_ms,
+            "notBeforeMs": issued_at_ms,
+            "expiresAtMs": issued_at_ms + 60_000,
+            "maxClockSkewMs": 30_000,
+            "scopes": [{
+                "subscriptionId": "sub-tasks",
+                "table": "tasks",
+                "values": {
+                    "user_id": "user-rust",
+                    "project_id": "p0"
+                },
+                "operations": ["upsert", "delete"]
+            }],
+            "capabilities": {
+                "allowBlobs": true,
+                "allowCrdt": true,
+                "allowEncryptedFields": true
+            }
+        }
+    }))])?;
+    config.base_url = server.url();
+    let mut client = NativeSyncularClient::open_native_with_options(
+        config,
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+
+    client.set_auth_headers_json(
+        &json!({
+            "authorization": "Bearer native-current-auth"
+        })
+        .to_string(),
+    )?;
+    let request_json = json!({
+        "schemaVersion": schema_version,
+        "ttlMs": 60_000,
+        "scopes": [{
+            "subscriptionId": "sub-tasks",
+            "table": "tasks",
+            "values": {
+                "user_id": "user-rust",
+                "project_id": "p0"
+            },
+            "operations": ["upsert", "delete"]
+        }]
+    })
+    .to_string();
+
+    let issued: Value = serde_json::from_str(&client.issue_auth_lease_json(&request_json)?)?;
+    assert_eq!(issued["leaseId"], "lease-native-1");
+    assert_eq!(issued["kid"], "native-lease-key");
+    assert_eq!(issued["actorId"], "user-rust");
+    assert_eq!(issued["schemaVersion"], schema_version);
+    assert_eq!(issued["token"], "signed-native-lease-token");
+    assert_eq!(issued["status"], "active");
+
+    let stored: Value = serde_json::from_str(&client.auth_lease_json("lease-native-1")?)?;
+    assert_eq!(stored["leaseId"], "lease-native-1");
+    assert_eq!(stored["token"], "signed-native-lease-token");
+    assert_eq!(
+        serde_json::from_str::<Value>(stored["payloadJson"].as_str().expect("payload json"))?
+            ["leaseId"],
+        "lease-native-1"
+    );
+
+    let requests = server.wait_for_requests(1, Duration::from_secs(1));
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].method, "POST");
+    assert_eq!(requests[0].path, "/sync/auth-leases/issue");
+    assert_eq!(
+        requests[0].header("authorization"),
+        Some("Bearer native-current-auth")
+    );
+    assert_eq!(
+        requests[0].json().expect("issue request JSON"),
+        serde_json::from_str::<Value>(&request_json)?
     );
 
     client.close()?;

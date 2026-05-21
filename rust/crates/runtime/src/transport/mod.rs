@@ -237,6 +237,45 @@ impl HttpSyncTransport {
         self.schema_version = schema_version;
         self
     }
+
+    pub fn issue_auth_lease(
+        &self,
+        request: &AuthLeaseIssueRequest,
+    ) -> Result<AuthLeaseIssueResponse> {
+        let url = format!(
+            "{}/auth-leases/issue",
+            self.config.base_url.trim_end_matches('/')
+        );
+        let body = serde_json::to_vec(request)?;
+        let builder = self
+            .http
+            .post(&url)
+            .header("accept", "application/json")
+            .header("content-type", "application/json")
+            .header("x-syncular-schema-version", self.schema_version.to_string());
+        let response = self
+            .apply_auth(builder, "POST", &url, &body)?
+            .body(body)
+            .send()
+            .map_err(|err| SyncularError::transport(err).context(format!("POST {url}")))?;
+        let status = response.status();
+        if !status.is_success() {
+            let body = response.text().unwrap_or_default();
+            return Err(SyncularError::message(
+                ErrorKind::Transport,
+                format!("auth lease issue failed with HTTP {status}: {body}"),
+            ));
+        }
+
+        let response: AuthLeaseIssueResponse = response.json()?;
+        if !response.ok {
+            return Err(SyncularError::message(
+                ErrorKind::Transport,
+                "auth lease issue returned ok=false",
+            ));
+        }
+        Ok(response)
+    }
 }
 
 #[cfg(feature = "native")]
