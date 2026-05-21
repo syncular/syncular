@@ -3,6 +3,7 @@ use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::fmt::Write as _;
 
+pub mod auth_lease;
 pub mod binary_snapshot;
 pub mod binary_sync_pack;
 pub mod blob;
@@ -13,6 +14,13 @@ pub mod snapshot_artifact;
 pub mod snapshot_chunk;
 pub mod snapshot_manifest;
 
+pub use auth_lease::{
+    AuthLeaseCapabilities, AuthLeasePayload, AuthLeaseProtectedHeader, AuthLeaseProvenance,
+    AuthLeaseScope, AuthLeaseValidationResult, AUTH_LEASE_ALG_ES256,
+    AUTH_LEASE_CODE_BUSINESS_REJECTED, AUTH_LEASE_CODE_EXPIRED, AUTH_LEASE_CODE_INVALID,
+    AUTH_LEASE_CODE_MISSING, AUTH_LEASE_CODE_SCHEMA_MISMATCH, AUTH_LEASE_CODE_SCOPE_MISMATCH,
+    AUTH_LEASE_CODE_SCOPE_REVOKED, AUTH_LEASE_TYP, AUTH_LEASE_VERSION,
+};
 pub use blob::{
     blob_hash, validate_blob_bytes, validate_blob_digest, validate_blob_hash,
     BlobDownloadUrlResponse, BlobRef, BlobUploadCompleteResponse, BlobUploadInitRequest,

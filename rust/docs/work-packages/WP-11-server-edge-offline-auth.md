@@ -39,15 +39,18 @@ designing offline auth leases honestly.
 
 ## Current Evidence
 
-The current decision is to defer a pure Rust server. Offline auth remains a
-design item and should not weaken strict online `/sync` authorization. The
-legacy JS offline-auth package is a local UX/session-cache primitive, not a
-signed server authorization model.
+The current decision is to defer a pure Rust server. Offline auth must not
+weaken strict online `/sync` authorization. The legacy JS offline-auth package
+is a local UX/session-cache primitive, not a signed server authorization model.
+The first Rust slice now exists as protocol/testkit foundation only: typed lease
+payload/header/provenance/result structs and deterministic ES256 testkit token
+helpers.
 
 ## Next Action
 
-Implement only the first narrow lease slice after review: Rust protocol structs
-and testkit issuer/verifier helpers. Do not start a Rust server rewrite.
+Next narrow slice is local lease storage and outbox provenance behind a
+migration. Do not start a Rust server rewrite, and do not let a lease bypass
+normal reconnect authorization.
 
 ## Progress
 
@@ -60,3 +63,18 @@ and testkit issuer/verifier helpers. Do not start a Rust server rewrite.
   lease payload fields, client storage/outbox provenance, server replay order,
   stable `sync.auth_lease_*` error codes, diagnostics, and testkit/conformance
   requirements.
+- Added Rust protocol structs/constants for the v1 offline-auth lease contract:
+  protected header, payload, scopes, capabilities, validation result, outbox
+  provenance, and stable `sync.auth_lease_*` codes.
+- Added `syncular-testkit` deterministic ES256 lease helpers:
+  `TestAuthLeaseKeyPair`, `issue_test_auth_lease`, and
+  `verify_test_auth_lease`.
+- Added smoke coverage for valid, expired, and tampered test auth lease tokens.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol -p
+  syncular-testkit` passed with `15` protocol tests and `36` testkit smoke
+  tests.
+- Gate: `bun run rust:conformance:fast` passed after the protocol/testkit
+  lease slice.
+- Gate: `bun run rust:check:no-default` passed without warnings after cleaning
+  an existing CRDT-only cfg import.
+- Gate: `bun run rust:check:client-native-crdt` passed.

@@ -33,6 +33,8 @@ Initial scope:
   and app tests read the same scenario values. Use
   `sync_conformance_fixture()` for the typed Rust contract, and keep the path
   helpers for small one-off assertions.
+- Offline auth lease helpers for issuing and verifying deterministic ES256
+  test tokens without making app tests build a private signer.
 - `AppFixture` helpers that accept a generated `AppSchema` from consuming apps,
   including file-backed temp DBs and Rust-only in-memory DBs.
 - `TodoFixture` helpers backed by the generated todo schema and Diesel SQLite.
