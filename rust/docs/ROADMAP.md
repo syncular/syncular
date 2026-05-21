@@ -791,7 +791,9 @@ read-only review:
     blob file/cache operations now emit the same stable blob diagnostic codes
     through the native event stream. Native HTTP blob transport now has
     corrupted-download conformance coverage proving invalid bodies are rejected
-    and not cached.
+    and not cached. Hono blob routes now have explicit `blob.too_large`
+    coverage for upload initiation and direct upload `Content-Length`
+    enforcement.
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry
