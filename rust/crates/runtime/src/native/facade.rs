@@ -10,6 +10,11 @@ use crate::diesel_sqlite::DieselSqliteStore;
 use crate::encrypted_crdt::{EncryptedCrdt, CRDT_CHECKPOINTS_TABLE, CRDT_UPDATES_TABLE};
 use crate::encryption::{encryption_helpers_json, FieldEncryption};
 use crate::error::{ErrorKind, Result, SyncularError};
+use crate::limits::{
+    runtime_default_limits, RuntimeLimits, DEFAULT_CRDT_UPDATE_LOG_LIMIT,
+    DEFAULT_NATIVE_EVENT_STREAM_CAPACITY, DEFAULT_NATIVE_RECENT_EVENT_LIMIT,
+    DEFAULT_READONLY_QUERY_STATEMENT_CACHE_CAPACITY,
+};
 use crate::protocol::{BlobRef, BootstrapState};
 use crate::runtime_schema::runtime_schema_version;
 use crate::sqlite_query::ReadonlySqlQueryExecutor;
@@ -73,8 +78,6 @@ pub struct NativeSyncularClient {
     read_executor: Mutex<ReadonlySqlQueryExecutor>,
 }
 
-const NATIVE_RECENT_EVENT_LIMIT: usize = 100;
-
 pub struct NativeClientOpenTask {
     command_id: String,
     result_rx: Option<Receiver<Result<NativeSyncularClient>>>,
@@ -116,6 +119,7 @@ pub struct NativeRuntimeManifest {
     pub string_encoding: &'static str,
     pub error_shape: &'static str,
     pub event_model: &'static str,
+    pub limits: RuntimeLimits,
     pub capabilities: &'static [&'static str],
     pub app_tables: &'static [&'static str],
     pub app_table_metadata: &'static [AppTableMetadata],
@@ -288,6 +292,7 @@ pub struct NativeDiagnosticSnapshot {
     pub recent_events: Vec<NativeEvent>,
     pub recent_diagnostics: Vec<NativeDiagnostic>,
     pub recent_sync_timings: Vec<NativeSyncTimingSnapshot>,
+    pub limits: RuntimeLimits,
     pub bootstrap: BootstrapStatus,
     pub outbox_stats: NativeOutboxStats,
     pub conflict_stats: NativeConflictStats,
@@ -502,6 +507,7 @@ pub fn native_runtime_manifest() -> NativeRuntimeManifest {
         string_encoding: "utf-8-json",
         error_shape: "native-error-info-v1",
         event_model: "native-event-stream-json-v1",
+        limits: runtime_default_limits(),
         capabilities: &[
             "dynamic-auth-headers",
             "dynamic-subscriptions",
@@ -532,6 +538,7 @@ pub fn native_runtime_manifest() -> NativeRuntimeManifest {
             "background-resume-recovery",
             "structured-diagnostics",
             "diagnostic-snapshot",
+            "runtime-limits",
             "storage-compaction",
             "streaming-blob-file-api",
             "crdt-yjs",
@@ -595,13 +602,17 @@ impl NativeSyncularClient {
         let writer = SyncularClient::open_with_schema(config.clone(), app_schema)?;
         let worker_client = SyncularClient::open_with_schema(config.clone(), app_schema)?;
         let events = NativeEventHub::default();
-        let default_events = events.subscribe(256);
+        let default_events = events.subscribe(DEFAULT_NATIVE_EVENT_STREAM_CAPACITY);
         let worker = SyncWorker::start(worker_client);
         let worker_event_pump = Some(start_worker_event_pump(
             events.clone(),
             worker.event_source(),
         ));
-        let read_executor = ReadonlySqlQueryExecutor::open(&config.db_path, app_schema, 64)?;
+        let read_executor = ReadonlySqlQueryExecutor::open(
+            &config.db_path,
+            app_schema,
+            DEFAULT_READONLY_QUERY_STATEMENT_CACHE_CAPACITY,
+        )?;
         let presence_by_scope = Arc::new(Mutex::new(BTreeMap::new()));
 
         Ok(Self {
@@ -1154,8 +1165,10 @@ impl NativeSyncularClient {
     pub fn crdt_update_log_json(&mut self, request_json: &str) -> Result<String> {
         let request: NativeCrdtFieldLogRequest = serde_json::from_str(request_json)?;
         let field = self.writer.open_crdt_field(request.id())?;
-        self.writer
-            .crdt_update_log_json(&field, request.limit.unwrap_or(100))
+        self.writer.crdt_update_log_json(
+            &field,
+            request.limit.unwrap_or(DEFAULT_CRDT_UPDATE_LOG_LIMIT),
+        )
     }
 
     pub fn snapshot_crdt_field_state_vector_json(&mut self, request_json: &str) -> Result<String> {
@@ -1413,6 +1426,7 @@ impl NativeSyncularClient {
             recent_events,
             recent_diagnostics,
             recent_sync_timings,
+            limits: runtime_default_limits(),
             bootstrap,
             outbox_stats: native_outbox_stats(&outbox),
             conflict_stats: native_conflict_stats(&conflicts),
@@ -1952,7 +1966,7 @@ impl NativeEventHub {
             return;
         };
         events.push_back(event);
-        while events.len() > NATIVE_RECENT_EVENT_LIMIT {
+        while events.len() > DEFAULT_NATIVE_RECENT_EVENT_LIMIT {
             events.pop_front();
         }
     }

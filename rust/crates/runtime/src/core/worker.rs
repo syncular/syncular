@@ -20,6 +20,10 @@ use crate::encryption::FieldEncryption;
 use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "demo-todo-native-fixture")]
 use crate::fixtures::todo::rusqlite_sqlite::RusqliteStore;
+use crate::limits::{
+    DEFAULT_WORKER_COMMAND_QUEUE_CAPACITY, DEFAULT_WORKER_EVENT_QUEUE_CAPACITY,
+    DEFAULT_YJS_FLUSH_WINDOW_MS,
+};
 #[cfg(feature = "native")]
 use crate::protocol::BlobRef;
 use crate::protocol::SyncOperation;
@@ -39,9 +43,7 @@ use std::sync::{Arc, Condvar, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const DEFAULT_COMMAND_QUEUE_CAPACITY: usize = 1024;
-const DEFAULT_EVENT_QUEUE_CAPACITY: usize = 1024;
-const YJS_FLUSH_WINDOW: Duration = Duration::from_millis(12);
+const YJS_FLUSH_WINDOW: Duration = Duration::from_millis(DEFAULT_YJS_FLUSH_WINDOW_MS);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SyncWorkerConfig {
@@ -52,7 +54,7 @@ pub struct SyncWorkerConfig {
 impl Default for SyncWorkerConfig {
     fn default() -> Self {
         Self {
-            command_queue_capacity: DEFAULT_COMMAND_QUEUE_CAPACITY,
+            command_queue_capacity: DEFAULT_WORKER_COMMAND_QUEUE_CAPACITY,
             yjs_flush_window: YJS_FLUSH_WINDOW,
         }
     }
@@ -1364,7 +1366,7 @@ impl SyncWorker {
     {
         let (command_tx, command_rx) = mpsc::sync_channel(config.command_queue_capacity);
         let events = SyncWorkerEventHub::default();
-        let default_events = events.subscribe(DEFAULT_EVENT_QUEUE_CAPACITY);
+        let default_events = events.subscribe(DEFAULT_WORKER_EVENT_QUEUE_CAPACITY);
         let worker_events = events.clone();
         let join = thread::spawn(move || {
             let _close_events = CloseWorkerEventsOnDrop(worker_events.clone());
@@ -1458,7 +1460,7 @@ impl SyncWorker {
     }
 
     pub fn event_source(&self) -> SyncWorkerEventSubscription {
-        self.subscribe_events(DEFAULT_EVENT_QUEUE_CAPACITY)
+        self.subscribe_events(DEFAULT_WORKER_EVENT_QUEUE_CAPACITY)
     }
 
     pub fn enqueue_sync_now(&self, command_id: String) -> Result<()> {

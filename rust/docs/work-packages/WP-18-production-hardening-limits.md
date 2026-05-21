@@ -1,6 +1,6 @@
 # WP-18 Production Hardening And Limits
 
-Status: `[ ]` planned
+Status: `[~]` started
 
 ## Goal
 
@@ -58,6 +58,26 @@ product-level limits.
 
 ## Next Action
 
-Inventory current implicit limits across server pull/push, browser worker,
-runtime queues, artifacts, blobs, CRDT streams, and diagnostics; then document
-the first explicit limit set.
+Add stable limit failures and diagnostics for the next highest-risk unbounded
+surface: subscriptions/scope values or queued mutation/outbox payload size.
+
+## Progress
+
+- Started the limits inventory and created
+  [`RUNTIME_LIMITS.md`](../reference/RUNTIME_LIMITS.md) as the public
+  Rust-first limit register.
+- Centralized the native/Rust runtime defaults for worker command queues,
+  event streams, recent diagnostic events, native read statement cache, pull
+  request sizing, outbox push batch size, CRDT queue/log sizing, and Yjs
+  coalescing.
+- Native runtime manifests and native diagnostic snapshots now expose the same
+  `limits` object, so app hosts and support tools can see current runtime
+  pressure boundaries before failures happen.
+
+## Latest Evidence
+
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_ffi native_ffi_exposes_runtime_manifest_without_handle`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_exposes_redacted_diagnostic_snapshot`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+- `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`
+- `git diff --check`

@@ -33,6 +33,7 @@ use crate::encrypted_crdt::{
 use crate::encryption::encryption_helpers_json;
 use crate::encryption::FieldEncryptionContext;
 use crate::error::{ErrorKind, Result, SyncularError};
+use crate::limits::DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY;
 #[cfg(feature = "web-blobs")]
 use crate::protocol::{blob_hash, validate_blob_bytes, validate_blob_hash, BlobRef};
 use crate::protocol::{
@@ -76,7 +77,6 @@ const SNAPSHOT_UPSERT_BATCH_ROWS: usize = 2048;
 const SQLITE_BIND_PARAMETER_LIMIT: usize = 32_000;
 const QUERY_STATEMENT_CACHE_CAPACITY: usize = 64;
 const SNAPSHOT_STATEMENT_CACHE_CAPACITY: usize = 16;
-const DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY: i64 = 1024;
 const SQLITE_SNAPSHOT_ARTIFACT_SCHEMA: &str = "__syncular_snapshot_artifact";
 
 #[derive(Debug, Deserialize)]

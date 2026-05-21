@@ -16,7 +16,7 @@ use crate::crdt_yjs::{
 };
 use crate::crdt_yjs::{YjsUpdateEnvelope, YJS_PAYLOAD_KEY};
 #[cfg(feature = "native")]
-use crate::diesel_sqlite::{DieselSqliteStore, DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY};
+use crate::diesel_sqlite::DieselSqliteStore;
 #[cfg(feature = "native")]
 use crate::encrypted_crdt::{
     encrypted_crdt_stream_id, encrypted_field_metadata, BuildEncryptedCrdtCheckpointArgs,
@@ -27,6 +27,12 @@ use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "demo-todo-native-fixture")]
 use crate::fixtures::todo::rusqlite_sqlite::RusqliteStore;
+#[cfg(feature = "native")]
+use crate::limits::DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY;
+use crate::limits::{
+    DEFAULT_CRDT_STATE_VECTOR_HINT_LIMIT, DEFAULT_OUTBOX_PUSH_BATCH_LIMIT,
+    DEFAULT_PULL_LIMIT_COMMITS, DEFAULT_PULL_LIMIT_SNAPSHOT_ROWS, DEFAULT_PULL_MAX_SNAPSHOT_PAGES,
+};
 use crate::protocol::*;
 #[cfg(feature = "native")]
 use crate::store::MAX_BLOB_UPLOAD_RETRIES;
@@ -66,8 +72,6 @@ use uuid::Uuid;
 
 const DEFAULT_STATE_ID: &str = "default";
 const MAX_PULL_ROUNDS: usize = 20;
-const CRDT_STATE_VECTOR_HINT_LIMIT: i64 = 256;
-
 static ACTIVE_SYNC_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
 #[derive(Debug, Clone)]
@@ -2090,7 +2094,7 @@ where
     fn prepare_sync(&mut self) -> Result<Vec<OutboxCommit>> {
         self.store.transaction(|tx| {
             tx.requeue_stale_outbox()?;
-            let pending = tx.pending_outbox(20)?;
+            let pending = tx.pending_outbox(DEFAULT_OUTBOX_PUSH_BATCH_LIMIT)?;
             for commit in &pending {
                 validate_outbox_schema_version(commit, self.schema_version)?;
             }
@@ -2145,7 +2149,7 @@ where
                     tx.crdt_state_vector_hints(
                         &spec.table,
                         &spec.scopes,
-                        CRDT_STATE_VECTOR_HINT_LIMIT,
+                        DEFAULT_CRDT_STATE_VECTOR_HINT_LIMIT,
                     )?
                 };
                 subscriptions.push(SubscriptionRequest {
@@ -2172,9 +2176,9 @@ where
             }
 
             Ok(PullRequest {
-                limit_commits: 1000,
-                limit_snapshot_rows: 50_000,
-                max_snapshot_pages: 10,
+                limit_commits: DEFAULT_PULL_LIMIT_COMMITS,
+                limit_snapshot_rows: DEFAULT_PULL_LIMIT_SNAPSHOT_ROWS,
+                max_snapshot_pages: DEFAULT_PULL_MAX_SNAPSHOT_PAGES,
                 dedupe_rows: None,
                 snapshot_encodings: vec![SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string()],
                 snapshot_artifacts,

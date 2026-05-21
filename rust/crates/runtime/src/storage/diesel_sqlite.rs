@@ -44,7 +44,6 @@ use serde_json::{Map, Value};
 use uuid::Uuid;
 
 const SNAPSHOT_UPSERT_BATCH_ROWS: usize = 128;
-pub const DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY: i64 = 1024;
 
 #[derive(Debug, Clone, Queryable, Selectable)]
 #[diesel(table_name = schema::sync_outbox_commits)]
