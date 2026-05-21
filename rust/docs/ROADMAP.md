@@ -213,8 +213,8 @@ read-only review:
   - The legacy pure TypeScript client, React package, client plugin packages,
     demo app, and JS-client integration/runtime/perf suites have been removed.
     The Rust-owned browser binding is now the canonical `@syncular/client`
-    package, with the ergonomic `createSyncularReact()` entrypoint at
-    `@syncular/client/react` and CRDT adapters at
+    package, with ergonomic `createSyncularClient()` and
+    `createSyncularReact()` entrypoints and CRDT adapters at
     `@syncular/client-crdt-adapters`. Docs and package metadata now point at the
     Rust-first client path.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)

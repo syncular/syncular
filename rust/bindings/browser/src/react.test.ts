@@ -3,6 +3,7 @@ import { GlobalRegistrator } from '@happy-dom/global-registrator';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import { createElement, type ReactNode } from 'react';
 import type {
+  SyncularClient,
   SyncularV2BlobUploadQueueStats,
   SyncularV2BootstrapStatus,
   SyncularV2ClientEventMap,
@@ -10,7 +11,6 @@ import type {
   SyncularV2ClientEventType,
   SyncularV2ConnectionState,
   SyncularV2DiagnosticSink,
-  SyncularV2ManagedClient,
   SyncularV2PresenceChangeEvent,
   SyncularV2PresenceEntry,
   SyncularV2PresenceSink,
@@ -218,10 +218,10 @@ interface TaskRow extends Record<string, unknown> {
 
 function createWrapper<DB>(
   Provider: (props: {
-    client: SyncularV2ManagedClient<DB>;
+    client: SyncularClient<DB>;
     children?: ReactNode;
   }) => ReturnType<typeof createElement>,
-  client: SyncularV2ManagedClient<DB>
+  client: SyncularClient<DB>
 ) {
   return function Wrapper({ children }: { children: ReactNode }) {
     return createElement(Provider, { client, children });
@@ -331,7 +331,7 @@ class FakeManagedClient {
         },
       };
     },
-  } as unknown as SyncularV2ManagedClient<TestDb>;
+  } as unknown as SyncularClient<TestDb>;
 
   emitRowsChanged(event: SyncularV2RowsChangedEvent): void {
     this.emit('rowsChanged', event);

@@ -127,14 +127,13 @@ Use `bootstrap.pendingSubscriptionIds`, `bootstrap.phases`, or generated
 subscription ids to decide which views can render complete results.
 
 For apps that want a lifecycle-managed surface instead of wiring startup by
-hand, `createSyncularV2Client` wraps `createSyncularV2Database` with
-subscription setup, initial sync, realtime, reconnect catchup, and
-coordinated shutdown:
+hand, `createSyncularClient` wraps the Rust-owned database with subscription
+setup, initial sync, realtime, reconnect catchup, and coordinated shutdown:
 
 ```ts
-import { createSyncularV2Client } from '@syncular/client';
+import { createSyncularClient } from '@syncular/client';
 
-const syncular = await createSyncularV2Client<AppDb>({
+const syncular = await createSyncularClient<AppDb>({
   config: {
     baseUrl: '/sync',
     actorId: 'user-1',
@@ -148,6 +147,13 @@ const syncular = await createSyncularV2Client<AppDb>({
     },
   ],
 });
+
+const unsubscribe = syncular.on('rowsChanged', (event) => {
+  console.log(event.changedTables);
+});
+
+const status = syncular.getStatus();
+if (status.hasPendingMutations) showSavingIndicator();
 
 await syncular.destroy();
 ```
@@ -249,7 +255,7 @@ runtime event stays generic, while app code can branch on real table columns:
 ```ts
 import { syncularChangedRows } from './generated/syncular.browser';
 
-const unsubscribe = syncular.client.addRowsChangedListener((event) => {
+const unsubscribe = syncular.on('rowsChanged', (event) => {
   for (const task of syncularChangedRows.tasks(event)) {
     if (task.isDelete) {
       removeTaskFromList(task.rowId);
@@ -424,35 +430,35 @@ const unsubscribePresence = syncular.client.addPresenceListener((event) => {
   renderCollaborators(event.scopeKey, event.presence);
 });
 
-syncular.client.joinPresence('user:user-1', {
+syncular.presence.join('user:user-1', {
   editingTaskId: 'task-1',
 });
 
-syncular.client.updatePresenceMetadata('user:user-1', {
+syncular.presence.updateMetadata('user:user-1', {
   editingTaskId: 'task-2',
 });
 
-syncular.client.leavePresence('user:user-1');
+syncular.presence.leave('user:user-1');
 unsubscribePresence();
 ```
 
 `getPresence(scopeKey)` returns the latest in-memory snapshot for that scope.
 The server authorizes presence against the websocket connection's current
-subscriptions, so call `setSubscriptions()` and complete an initial sync before
-joining presence.
+subscriptions, so call `syncular.setSubscriptions()` and complete an initial
+sync before joining presence.
 
 Operational events are available on the same client surface:
 
 ```ts
-syncular.client.addEventListener('outboxChanged', (stats) => {
+syncular.on('outboxChanged', (stats) => {
   updateSyncBadge(stats.pending + stats.sending);
 });
 
-syncular.client.addEventListener('conflictsChanged', (stats) => {
+syncular.on('conflictsChanged', (stats) => {
   showConflictCount(stats.unresolved);
 });
 
-syncular.client.addEventListener('blobUploadFailed', ({ hash, error }) => {
+syncular.on('blobUploadFailed', ({ hash, error }) => {
   reportBlobUploadFailure(hash, error);
 });
 ```

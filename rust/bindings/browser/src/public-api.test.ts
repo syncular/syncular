@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import {
-  createSyncularV2Client,
+  createSyncularClient,
   createSyncularRustSqliteDatabase,
+  createSyncularV2Client,
   createSyncularV2Database,
   getSyncularV2PackagedRuntimeArtifacts,
   resolveSyncularV2ClientConfig,
@@ -44,8 +45,13 @@ describe('@syncular/client public API', () => {
     expect(createSyncularRustSqliteDatabase).toBe(createSyncularV2Database);
   });
 
-  it('exports the managed browser client constructor', () => {
+  it('exports the ergonomic managed browser client constructor', () => {
+    expect(typeof createSyncularClient).toBe('function');
+  });
+
+  it('keeps the v2 managed constructor as an internal alias', () => {
     expect(typeof createSyncularV2Client).toBe('function');
+    expect(createSyncularV2Client).toBe(createSyncularClient);
   });
 
   it('defaults generated app storage to OPFS SAH', () => {
