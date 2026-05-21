@@ -63,6 +63,20 @@ export const ConsoleCommitDetailSchema = ConsoleCommitListItemSchema.extend({
 
 export type ConsoleCommitDetail = z.infer<typeof ConsoleCommitDetailSchema>;
 
+export const ConsoleAuditChangeKindSchema = z.enum([
+  'app_row',
+  'delete',
+  'blob_reference',
+  'encrypted_field_envelope',
+  'encrypted_crdt_update',
+  'encrypted_crdt_checkpoint',
+]);
+
+export const ConsoleAuditChangeRedactionSchema = z.object({
+  payload: z.literal('omitted'),
+  reason: z.literal('audit_redacted_by_default'),
+});
+
 export const ConsoleRowHistoryEntrySchema = z.object({
   commitSeq: z.number().int(),
   actorId: z.string(),
@@ -76,6 +90,9 @@ export const ConsoleRowHistoryEntrySchema = z.object({
   rowVersion: z.number().int().nullable(),
   fields: z.array(z.string()),
   scopeFields: z.array(z.string()),
+  changeKind: ConsoleAuditChangeKindSchema,
+  sensitiveFields: z.array(z.string()),
+  redaction: ConsoleAuditChangeRedactionSchema,
   requestEventIds: z.array(z.number().int()),
   requestIds: z.array(z.string()),
   traceIds: z.array(z.string()),

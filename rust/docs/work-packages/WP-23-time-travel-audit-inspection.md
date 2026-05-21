@@ -80,6 +80,11 @@ The first server API slice now exists:
   redacted history shape for an operator-selected partition and links each
   entry to existing request/timeline evidence through request event ids,
   request ids, and trace ids.
+- Row-history responses now include stable redaction metadata:
+  `changeKind`, `sensitiveFields`, and `redaction`. The shared classifier
+  distinguishes app rows, deletes, blob references, encrypted field envelopes,
+  encrypted CRDT updates, and encrypted CRDT checkpoints without returning
+  payload values.
 
 Evidence:
 
@@ -102,6 +107,5 @@ Add read-only row history and commit diff inspection for server audit APIs:
 
 ## Next Action
 
-Add commit-diff redaction semantics for app rows, blobs, encrypted envelopes,
-and CRDT evidence. After that, add testkit scenarios for scoped row history and
-redacted export.
+Apply the same redaction classifier to commit-detail/diff endpoints, then add
+testkit scenarios for scoped row history and redacted export.

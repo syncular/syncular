@@ -742,7 +742,9 @@ read-only review:
     SQLite and Postgres dialects implement the new reader. Console now exposes a
     redacted partition-scoped row-history endpoint that links entries to request
     event ids, request ids, and trace ids for timeline navigation. Next: richer
-    commit-diff categories.
+    commit-diff categories. Row-history responses now carry shared redaction
+    metadata for app rows, deletes, blob refs, encrypted field envelopes, and
+    encrypted CRDT update/checkpoint evidence.
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 
