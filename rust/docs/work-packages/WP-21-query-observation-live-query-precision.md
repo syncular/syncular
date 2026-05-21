@@ -1,6 +1,6 @@
 # WP-21 Query Observation And Live Query Precision
 
-Status: `[~] started`
+Status: `[x] accepted`
 
 ## Goal
 
@@ -184,5 +184,8 @@ Result: passed. No benchmark was rerun for this test-only coverage slice.
 
 ## Next Action
 
-Review WP-21 for any remaining precision gaps, then either close the work
-package or split follow-up work for richer field-level inference.
+Closed. The remaining improvement is richer automatic field-level inference
+from query-builder ASTs. That is an ergonomics/performance follow-up, not a
+correctness blocker for WP-21, because the runtime already accepts explicit
+row/field hints and falls back to conservative reruns whenever metadata is
+incomplete or ambiguous.
