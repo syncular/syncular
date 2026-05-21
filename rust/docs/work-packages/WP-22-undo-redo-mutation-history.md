@@ -1,6 +1,6 @@
 # WP-22 Undo/Redo Mutation History
 
-Status: `[~]` in progress
+Status: `[x]` complete
 
 ## Goal
 
@@ -114,6 +114,12 @@ Native/Rust parity foundation is implemented:
   transaction as the mutation/outbox write. The trait keeps a non-atomic
   default for alternate clients, but the canonical native runtime path is
   atomic.
+- Leased undo fails closed after auth lease revocation without changing the
+  local row, without writing a replay commit, and while keeping the command
+  undoable for a future valid lease.
+- Swift/Kotlin generated command-history wrappers are deferred until those
+  generated mutation APIs are mature enough to avoid baking a second app-facing
+  shape.
 
 Gates:
 
@@ -123,6 +129,7 @@ Gates:
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends diesel_store_persists_command_history_records --features native,crdt-yjs,e2ee,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends diesel_generated_leased_command_history_undo_fails_after_lease_revocation --features native,crdt-yjs,e2ee,demo-todo-native-fixture`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example command_history`
 
 ## First Slice
@@ -137,11 +144,10 @@ in one TypeScript generated example:
 4. Fail with a stable code when the row has changed incompatibly or scope has
    been revoked.
 
-## Next Action
+## Deferred Follow-Ups
 
-Extend the command-history proof beyond browser TypeScript:
-
-1. Add leased-mutation/scope-revocation coverage for undo when auth authority
-   is lost after the original command.
-2. Decide whether Swift/Kotlin generated clients should expose command-history
-   wrappers now or wait until their mutation APIs mature further.
+1. Add optional command labels/metadata when apps need UI history lists.
+2. Revisit safe inverse semantics for blob/encrypted/CRDT fields only after
+   those field classes have explicit app/runtime restore policies.
+3. Add Swift/Kotlin command-history wrappers once their generated mutation APIs
+   settle.
