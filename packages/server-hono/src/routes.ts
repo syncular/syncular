@@ -58,6 +58,7 @@ import type {
 import {
   type AuthLeaseSigner,
   type CompactOptions,
+  coerceNumber,
   createServerHandlerCollection,
   createSyncRealtimeShardKey,
   createWireSubscriptionIntegrity,
@@ -462,6 +463,13 @@ const auditRowHistoryQuerySchema = z
     }
   );
 
+const auditDebugExportQuerySchema = z.object({
+  limitCommits: z.coerce.number().int().min(1).max(200).default(50),
+  limitEvents: z.coerce.number().int().min(1).max(500).default(100),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+});
+
 const auditCommitSummarySchema = z.object({
   commitSeq: z.number().int(),
   actorId: z.string(),
@@ -511,6 +519,53 @@ const auditCommitDetailResponseSchema = z.object({
   changes: z.array(auditChangeSchema),
 });
 
+const auditDebugExportCommitSchema = auditCommitSummarySchema.extend({
+  changes: z.array(auditChangeSchema),
+});
+
+const auditDebugExportEventSchema = z.object({
+  eventId: z.number().int(),
+  partitionId: z.string(),
+  requestId: z.string(),
+  traceId: z.string().nullable(),
+  spanId: z.string().nullable(),
+  eventType: z.enum(['sync', 'push', 'pull']),
+  syncPath: z.enum(['http-combined', 'ws-push']),
+  transportPath: z.enum(['direct', 'relay']),
+  actorId: z.string(),
+  clientId: z.string(),
+  statusCode: z.number().int(),
+  outcome: z.string(),
+  responseStatus: z.string(),
+  errorCode: z.string().nullable(),
+  durationMs: z.number().int(),
+  commitSeq: z.number().int().nullable(),
+  operationCount: z.number().int().nullable(),
+  rowCount: z.number().int().nullable(),
+  subscriptionCount: z.number().int().nullable(),
+  scopesSummary: z
+    .record(z.string(), z.union([z.string(), z.array(z.string())]))
+    .nullable(),
+  tables: z.array(z.string()),
+  createdAt: z.string(),
+});
+
+const auditDebugExportResponseSchema = z.object({
+  ok: z.literal(true),
+  generatedAt: z.string(),
+  partitionId: z.string(),
+  limits: z.object({
+    commits: z.number().int(),
+    requestEvents: z.number().int(),
+  }),
+  truncated: z.object({
+    commits: z.boolean(),
+    requestEvents: z.boolean(),
+  }),
+  commits: z.array(auditDebugExportCommitSchema),
+  requestEvents: z.array(auditDebugExportEventSchema),
+});
+
 const auditRowHistoryEntrySchema = z.object({
   commitSeq: z.number().int(),
   actorId: z.string(),
@@ -536,6 +591,9 @@ const auditRowHistoryResponseSchema = z.object({
   history: z.array(auditRowHistoryEntrySchema),
   nextCursor: z.number().int().nullable(),
 });
+
+type AuditChangeResponse = z.infer<typeof auditChangeSchema>;
+type AuditDebugExportEvent = z.infer<typeof auditDebugExportEventSchema>;
 
 const DEFAULT_REQUEST_PAYLOAD_SNAPSHOT_MAX_BYTES = 128 * 1024;
 const DEFAULT_MAX_SYNC_REQUEST_JSON_BYTES = 4 * 1024 * 1024;
@@ -1068,6 +1126,57 @@ function readSnapshotScopeValues(
   return validated.data;
 }
 
+function parseScopesSummary(
+  value: unknown
+): Record<string, string | string[]> | null {
+  const parsed = parseJsonValue(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+
+  const summary: Record<string, string | string[]> = {};
+  for (const [key, entry] of Object.entries(parsed)) {
+    if (typeof entry === 'string') {
+      summary[key] = entry;
+      continue;
+    }
+    if (!Array.isArray(entry)) continue;
+    summary[key] = entry.filter(
+      (value): value is string => typeof value === 'string'
+    );
+  }
+
+  return Object.keys(summary).length > 0 ? summary : null;
+}
+
+function normalizeRequestEventType(value: unknown): 'sync' | 'push' | 'pull' {
+  if (value === 'sync' || value === 'push' || value === 'pull') {
+    return value;
+  }
+  return 'pull';
+}
+
+function isMissingRequestEventsTableError(error: unknown): boolean {
+  const visited = new Set<Error>();
+  let current: unknown = error;
+
+  while (current instanceof Error && !visited.has(current)) {
+    visited.add(current);
+    const message = current.message.toLowerCase();
+    if (
+      message.includes('sync_request_events') &&
+      (message.includes('no such table') ||
+        message.includes('does not exist') ||
+        message.includes('unknown table'))
+    ) {
+      return true;
+    }
+    current = current.cause;
+  }
+
+  return false;
+}
+
 const SENSITIVE_PAYLOAD_KEYS = new Set([
   'accesstoken',
   'apikey',
@@ -1290,6 +1399,235 @@ export function createSyncRoutes<
     const pending = options.authenticate(c);
     authCache.set(c, pending);
     return pending;
+  };
+  type AuditScopeConfig = {
+    scopes: ScopeValues;
+    requiredScopeKeys: string[];
+  };
+  const createAuditScopeResolver = (auth: Auth) => {
+    const auditScopesByTable = new Map<
+      string,
+      Promise<AuditScopeConfig | null>
+    >();
+
+    return async (table: string): Promise<AuditScopeConfig | null> => {
+      const cached = auditScopesByTable.get(table);
+      if (cached) return cached;
+
+      const pending = (async () => {
+        const handler = handlerRegistry.byTable.get(table);
+        if (!handler) return null;
+
+        let allowedScopes: ScopeValues;
+        try {
+          allowedScopes = await handler.resolveScopes({
+            db: options.db,
+            actorId: auth.actorId,
+            auth,
+          });
+        } catch {
+          return null;
+        }
+
+        const scopes = selectRequiredAuditScopes(
+          handler.scopePatterns,
+          allowedScopes
+        );
+        if (!scopes) return null;
+
+        return {
+          scopes,
+          requiredScopeKeys: Array.from(
+            collectScopeVars(handler.scopePatterns)
+          ),
+        };
+      })();
+
+      auditScopesByTable.set(table, pending);
+      return pending;
+    };
+  };
+  const readVisibleAuditChanges = async (args: {
+    auth: Auth;
+    partitionId: string;
+    commitSeqs: readonly number[];
+  }): Promise<Map<number, AuditChangeResponse[]>> => {
+    const uniqueCommitSeqs = Array.from(new Set(args.commitSeqs));
+    if (uniqueCommitSeqs.length === 0) return new Map();
+
+    const changesResult = await sql<{
+      commit_seq: number;
+      change_id: number;
+      table: string;
+      row_id: string;
+      op: 'upsert' | 'delete';
+      row_json: unknown | null;
+      row_version: number | null;
+      scopes: unknown;
+    }>`
+      select
+        ${sql.ref('commit_seq')} as ${sql.ref('commit_seq')},
+        ${sql.ref('change_id')} as ${sql.ref('change_id')},
+        ${sql.ref('table')} as ${sql.ref('table')},
+        ${sql.ref('row_id')} as ${sql.ref('row_id')},
+        ${sql.ref('op')} as ${sql.ref('op')},
+        ${sql.ref('row_json')} as ${sql.ref('row_json')},
+        ${sql.ref('row_version')} as ${sql.ref('row_version')},
+        ${sql.ref('scopes')} as ${sql.ref('scopes')}
+      from ${sql.table('sync_changes')}
+      where ${sql.ref('partition_id')} = ${args.partitionId}
+        and ${sql.ref('commit_seq')} in (${sql.join(uniqueCommitSeqs)})
+      order by ${sql.ref('commit_seq')} asc, ${sql.ref('change_id')} asc
+    `.execute(options.db);
+
+    const resolveAuditScopesForTable = createAuditScopeResolver(args.auth);
+    const changesByCommitSeq = new Map<number, AuditChangeResponse[]>();
+    for (const change of changesResult.rows) {
+      const scopeConfig = await resolveAuditScopesForTable(change.table);
+      if (!scopeConfig) continue;
+
+      const rowScopes = parseStoredAuditScopes(change.scopes);
+      if (
+        !rowScopesAllowed({
+          rowScopes,
+          allowedScopes: scopeConfig.scopes,
+          requiredScopeKeys: scopeConfig.requiredScopeKeys,
+        })
+      ) {
+        continue;
+      }
+
+      const commitSeq = Number(change.commit_seq);
+      const summary = summarizeAuditChange({
+        table: change.table,
+        op: change.op,
+        rowJson: change.row_json,
+        scopes: change.scopes,
+      });
+      const changes = changesByCommitSeq.get(commitSeq) ?? [];
+      changes.push({
+        changeId: Number(change.change_id),
+        table: change.table,
+        rowId: change.row_id,
+        op: change.op,
+        rowVersion:
+          change.row_version === null ? null : Number(change.row_version),
+        ...summary,
+      });
+      changesByCommitSeq.set(commitSeq, changes);
+    }
+
+    return changesByCommitSeq;
+  };
+  const readAuditDebugRequestEvents = async (args: {
+    auth: Auth;
+    partitionId: string;
+    limit: number;
+    from?: string;
+    to?: string;
+  }): Promise<{
+    events: AuditDebugExportEvent[];
+    truncated: boolean;
+  }> => {
+    const whereClauses = [
+      sql`partition_id = ${args.partitionId}`,
+      sql`actor_id = ${args.auth.actorId}`,
+    ];
+    if (args.from) {
+      whereClauses.push(sql`created_at >= ${args.from}`);
+    }
+    if (args.to) {
+      whereClauses.push(sql`created_at <= ${args.to}`);
+    }
+
+    try {
+      const result = await sql<{
+        event_id: number | string | null;
+        partition_id: string | null;
+        request_id: string | null;
+        trace_id: string | null;
+        span_id: string | null;
+        event_type: string | null;
+        sync_path: string | null;
+        transport_path: string | null;
+        actor_id: string | null;
+        client_id: string | null;
+        status_code: number | string | null;
+        outcome: string | null;
+        response_status: string | null;
+        error_code: string | null;
+        duration_ms: number | string | null;
+        commit_seq: number | string | null;
+        operation_count: number | string | null;
+        row_count: number | string | null;
+        subscription_count: number | string | null;
+        scopes_summary: unknown | null;
+        tables: unknown;
+        created_at: string | null;
+      }>`
+        select
+          event_id,
+          partition_id,
+          request_id,
+          trace_id,
+          span_id,
+          event_type,
+          sync_path,
+          transport_path,
+          actor_id,
+          client_id,
+          status_code,
+          outcome,
+          response_status,
+          error_code,
+          duration_ms,
+          commit_seq,
+          operation_count,
+          row_count,
+          subscription_count,
+          scopes_summary,
+          tables,
+          created_at
+        from ${sql.table('sync_request_events')}
+        where ${sql.join(whereClauses, sql` and `)}
+        order by created_at desc
+        limit ${args.limit + 1}
+      `.execute(options.db);
+
+      const selectedRows = result.rows.slice(0, args.limit);
+      return {
+        truncated: result.rows.length > args.limit,
+        events: selectedRows.map((row) => ({
+          eventId: coerceNumber(row.event_id) ?? 0,
+          partitionId: row.partition_id ?? args.partitionId,
+          requestId: row.request_id ?? '',
+          traceId: row.trace_id ?? null,
+          spanId: row.span_id ?? null,
+          eventType: normalizeRequestEventType(row.event_type),
+          syncPath: row.sync_path === 'ws-push' ? 'ws-push' : 'http-combined',
+          transportPath: row.transport_path === 'relay' ? 'relay' : 'direct',
+          actorId: row.actor_id ?? '',
+          clientId: row.client_id ?? '',
+          statusCode: coerceNumber(row.status_code) ?? 0,
+          outcome: row.outcome ?? '',
+          responseStatus: row.response_status ?? 'unknown',
+          errorCode: row.error_code ?? null,
+          durationMs: coerceNumber(row.duration_ms) ?? 0,
+          commitSeq: coerceNumber(row.commit_seq),
+          operationCount: coerceNumber(row.operation_count),
+          rowCount: coerceNumber(row.row_count),
+          subscriptionCount: coerceNumber(row.subscription_count),
+          scopesSummary: parseScopesSummary(row.scopes_summary),
+          tables: options.dialect.dbToArray(row.tables),
+          createdAt: row.created_at ?? '',
+        })),
+      };
+    } catch (error) {
+      if (isMissingRequestEventsTableError(error)) {
+        return { events: [], truncated: false };
+      }
+      throw error;
+    }
   };
   const validateAuthLeaseCommit: PushCommitValidator<DB, Auth> | undefined =
     authLeaseRoutesConfig && authLeaseRoutesConfig.enabled !== false
@@ -2649,6 +2987,130 @@ export function createSyncRoutes<
   );
 
   // -------------------------------------------------------------------------
+  // GET /audit/debug/export
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/audit/debug/export',
+    describeRoute({
+      tags: ['sync'],
+      summary: 'Export a redacted sync debug bundle',
+      description:
+        'Returns a size-bounded support bundle for the authenticated actor with visible redacted commit changes and own request events.',
+      responses: {
+        200: {
+          description: 'Redacted sync debug export',
+          content: {
+            'application/json': {
+              schema: resolver(auditDebugExportResponseSchema),
+            },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('query', auditDebugExportQuerySchema),
+    async (c) => {
+      const auth = await getAuth(c);
+      if (!auth) return syncError(c, 401, 'sync.auth_required');
+
+      const partitionId = auth.partitionId ?? 'default';
+      const { limitCommits, limitEvents, from, to } = c.req.valid('query');
+
+      const commitWhereClauses = [sql`partition_id = ${partitionId}`];
+      if (from) {
+        commitWhereClauses.push(sql`created_at >= ${from}`);
+      }
+      if (to) {
+        commitWhereClauses.push(sql`created_at <= ${to}`);
+      }
+
+      const [commitResult, requestEventResult] = await Promise.all([
+        sql<{
+          commit_seq: number | string;
+          actor_id: string;
+          client_id: string;
+          client_commit_id: string;
+          created_at: string;
+          change_count: number | string;
+          affected_tables: unknown;
+        }>`
+          select
+            commit_seq,
+            actor_id,
+            client_id,
+            client_commit_id,
+            created_at,
+            change_count,
+            affected_tables
+          from ${sql.table('sync_commits')}
+          where ${sql.join(commitWhereClauses, sql` and `)}
+          order by commit_seq desc
+          limit ${limitCommits + 1}
+        `.execute(options.db),
+        readAuditDebugRequestEvents({
+          auth,
+          partitionId,
+          limit: limitEvents,
+          from,
+          to,
+        }),
+      ]);
+
+      const selectedCommitRows = commitResult.rows.slice(0, limitCommits);
+      const commitSeqs = selectedCommitRows
+        .map((row) => coerceNumber(row.commit_seq))
+        .filter((seq): seq is number => seq !== null);
+      const changesByCommitSeq = await readVisibleAuditChanges({
+        auth,
+        partitionId,
+        commitSeqs,
+      });
+      const commits = selectedCommitRows.flatMap((row) => {
+        const commitSeq = coerceNumber(row.commit_seq) ?? 0;
+        const changes = changesByCommitSeq.get(commitSeq) ?? [];
+        if (changes.length === 0) return [];
+        return [
+          {
+            commitSeq,
+            actorId: row.actor_id,
+            clientId: row.client_id,
+            clientCommitId: row.client_commit_id,
+            createdAt: row.created_at,
+            changeCount: coerceNumber(row.change_count) ?? 0,
+            affectedTables: options.dialect.dbToArray(row.affected_tables),
+            changes,
+          },
+        ];
+      });
+
+      return c.json(
+        {
+          ok: true,
+          generatedAt: new Date().toISOString(),
+          partitionId,
+          limits: {
+            commits: limitCommits,
+            requestEvents: limitEvents,
+          },
+          truncated: {
+            commits: commitResult.rows.length > limitCommits,
+            requestEvents: requestEventResult.truncated,
+          },
+          commits,
+          requestEvents: requestEventResult.events,
+        },
+        200
+      );
+    }
+  );
+
+  // -------------------------------------------------------------------------
   // GET /audit/commits/:commitSeq
   // -------------------------------------------------------------------------
 
@@ -2718,108 +3180,12 @@ export function createSyncRoutes<
         return syncError(c, 404, 'sync.not_found');
       }
 
-      const auditScopesByTable = new Map<
-        string,
-        | { scopes: ScopeValues; requiredScopeKeys: string[] }
-        | null
-        | Promise<{ scopes: ScopeValues; requiredScopeKeys: string[] } | null>
-      >();
-      const resolveAuditScopesForTable = async (
-        table: string
-      ): Promise<{
-        scopes: ScopeValues;
-        requiredScopeKeys: string[];
-      } | null> => {
-        const cached = auditScopesByTable.get(table);
-        if (cached) return cached;
-        const handler = handlerRegistry.byTable.get(table);
-        if (!handler) {
-          auditScopesByTable.set(table, null);
-          return null;
-        }
-        const loaded = (async () => {
-          let allowedScopes: ScopeValues;
-          try {
-            allowedScopes = await handler.resolveScopes({
-              db: options.db,
-              actorId: auth.actorId,
-              auth,
-            });
-          } catch {
-            return null;
-          }
-          const scopes = selectRequiredAuditScopes(
-            handler.scopePatterns,
-            allowedScopes
-          );
-          if (!scopes) return null;
-          return {
-            scopes,
-            requiredScopeKeys: Array.from(
-              collectScopeVars(handler.scopePatterns)
-            ),
-          };
-        })();
-        auditScopesByTable.set(table, loaded);
-        const resolved = await loaded;
-        auditScopesByTable.set(table, resolved);
-        return resolved;
-      };
-
-      const changesResult = await sql<{
-        change_id: number;
-        table: string;
-        row_id: string;
-        op: 'upsert' | 'delete';
-        row_json: unknown | null;
-        row_version: number | null;
-        scopes: unknown;
-      }>`
-        select
-          ${sql.ref('change_id')} as ${sql.ref('change_id')},
-          ${sql.ref('table')} as ${sql.ref('table')},
-          ${sql.ref('row_id')} as ${sql.ref('row_id')},
-          ${sql.ref('op')} as ${sql.ref('op')},
-          ${sql.ref('row_json')} as ${sql.ref('row_json')},
-          ${sql.ref('row_version')} as ${sql.ref('row_version')},
-          ${sql.ref('scopes')} as ${sql.ref('scopes')}
-        from ${sql.table('sync_changes')}
-        where ${sql.ref('partition_id')} = ${partitionId}
-          and ${sql.ref('commit_seq')} = ${commitSeq}
-        order by ${sql.ref('change_id')} asc
-      `.execute(options.db);
-
-      const changes = [];
-      for (const change of changesResult.rows) {
-        const scopeConfig = await resolveAuditScopesForTable(change.table);
-        if (!scopeConfig) continue;
-        const rowScopes = parseStoredAuditScopes(change.scopes);
-        if (
-          !rowScopesAllowed({
-            rowScopes,
-            allowedScopes: scopeConfig.scopes,
-            requiredScopeKeys: scopeConfig.requiredScopeKeys,
-          })
-        ) {
-          continue;
-        }
-
-        const summary = summarizeAuditChange({
-          table: change.table,
-          op: change.op,
-          rowJson: change.row_json,
-          scopes: change.scopes,
-        });
-        changes.push({
-          changeId: Number(change.change_id),
-          table: change.table,
-          rowId: change.row_id,
-          op: change.op,
-          rowVersion:
-            change.row_version === null ? null : Number(change.row_version),
-          ...summary,
-        });
-      }
+      const changesByCommitSeq = await readVisibleAuditChanges({
+        auth,
+        partitionId,
+        commitSeqs: [commitSeq],
+      });
+      const changes = changesByCommitSeq.get(commitSeq) ?? [];
       if (changes.length === 0) {
         return syncError(c, 404, 'sync.not_found');
       }

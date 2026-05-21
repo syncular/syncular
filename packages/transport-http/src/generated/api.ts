@@ -24,6 +24,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sync/audit/debug/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export a redacted sync debug bundle
+         * @description Returns a size-bounded support bundle for the authenticated actor with visible redacted commit changes and own request events.
+         */
+        get: operations["getSyncAuditDebugExport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sync/audit/commits/{commitSeq}": {
         parameters: {
             query?: never;
@@ -235,6 +255,23 @@ export interface paths {
         };
         /** Get redacted row history */
         get: operations["getConsoleRowHistoryByTableByRowId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/console/debug/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export a redacted debug bundle */
+        get: operations["getConsoleDebugExport"];
         put?: never;
         post?: never;
         delete?: never;
@@ -696,6 +733,122 @@ export interface operations {
                             affectedTables: string[];
                         }[];
                         nextCursor: number | null;
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getSyncAuditDebugExport: {
+        parameters: {
+            query?: {
+                limitCommits?: number;
+                limitEvents?: number;
+                from?: string;
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redacted sync debug export */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        ok: true;
+                        generatedAt: string;
+                        partitionId: string;
+                        limits: {
+                            commits: number;
+                            requestEvents: number;
+                        };
+                        truncated: {
+                            commits: boolean;
+                            requestEvents: boolean;
+                        };
+                        commits: {
+                            commitSeq: number;
+                            actorId: string;
+                            clientId: string;
+                            clientCommitId: string;
+                            createdAt: string;
+                            changeCount: number;
+                            affectedTables: string[];
+                            changes: {
+                                changeId: number;
+                                table: string;
+                                rowId: string;
+                                /** @enum {string} */
+                                op: "upsert" | "delete";
+                                rowVersion: number | null;
+                                fields: string[];
+                                scopeFields: string[];
+                                /** @enum {string} */
+                                changeKind: "app_row" | "delete" | "blob_reference" | "encrypted_field_envelope" | "encrypted_crdt_update" | "encrypted_crdt_checkpoint";
+                                sensitiveFields: string[];
+                                redaction: {
+                                    /** @constant */
+                                    payload: "omitted";
+                                    /** @constant */
+                                    reason: "audit_redacted_by_default";
+                                };
+                            }[];
+                        }[];
+                        requestEvents: {
+                            eventId: number;
+                            partitionId: string;
+                            requestId: string;
+                            traceId: string | null;
+                            spanId: string | null;
+                            /** @enum {string} */
+                            eventType: "sync" | "push" | "pull";
+                            /** @enum {string} */
+                            syncPath: "http-combined" | "ws-push";
+                            /** @enum {string} */
+                            transportPath: "direct" | "relay";
+                            actorId: string;
+                            clientId: string;
+                            statusCode: number;
+                            outcome: string;
+                            responseStatus: string;
+                            errorCode: string | null;
+                            durationMs: number;
+                            commitSeq: number | null;
+                            operationCount: number | null;
+                            rowCount: number | null;
+                            subscriptionCount: number | null;
+                            scopesSummary: {
+                                [key: string]: string | string[];
+                            } | null;
+                            tables: string[];
+                            createdAt: string;
+                        }[];
                     };
                 };
             };
@@ -1885,6 +2038,142 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleDebugExport: {
+        parameters: {
+            query?: {
+                partitionId?: string;
+                limitCommits?: number;
+                limitEvents?: number;
+                from?: string;
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Size-bounded redacted debug export */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        generatedAt: string;
+                        partitionId: string;
+                        limits: {
+                            commits: number;
+                            requestEvents: number;
+                        };
+                        truncated: {
+                            commits: boolean;
+                            requestEvents: boolean;
+                        };
+                        commits: {
+                            commitSeq: number;
+                            actorId: string;
+                            clientId: string;
+                            clientCommitId: string;
+                            createdAt: string;
+                            changeCount: number;
+                            affectedTables: string[];
+                            changes: {
+                                changeId: number;
+                                table: string;
+                                rowId: string;
+                                /** @enum {string} */
+                                op: "upsert" | "delete";
+                                rowVersion: number | null;
+                                fields: string[];
+                                scopeFields: string[];
+                                /** @enum {string} */
+                                changeKind: "app_row" | "delete" | "blob_reference" | "encrypted_field_envelope" | "encrypted_crdt_update" | "encrypted_crdt_checkpoint";
+                                sensitiveFields: string[];
+                                redaction: {
+                                    /** @constant */
+                                    payload: "omitted";
+                                    /** @constant */
+                                    reason: "audit_redacted_by_default";
+                                };
+                            }[];
+                        }[];
+                        requestEvents: {
+                            eventId: number;
+                            partitionId: string;
+                            requestId: string;
+                            traceId: string | null;
+                            spanId: string | null;
+                            /** @enum {string} */
+                            eventType: "sync" | "push" | "pull";
+                            /** @enum {string} */
+                            syncPath: "http-combined" | "ws-push";
+                            /** @enum {string} */
+                            transportPath: "direct" | "relay";
+                            actorId: string;
+                            clientId: string;
+                            statusCode: number;
+                            outcome: string;
+                            responseStatus: string;
+                            errorCode: string | null;
+                            durationMs: number;
+                            commitSeq: number | null;
+                            operationCount: number | null;
+                            rowCount: number | null;
+                            subscriptionCount: number | null;
+                            scopesSummary: {
+                                [key: string]: string | string[];
+                            } | null;
+                            tables: string[];
+                            createdAt: string;
+                        }[];
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

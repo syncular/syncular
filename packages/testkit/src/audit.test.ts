@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import { assertAuditChangeRedacted, assertAuditJsonExcludes } from './audit';
+import {
+  assertAuditChangeRedacted,
+  assertAuditDebugExportRedacted,
+  assertAuditJsonExcludes,
+} from './audit';
 
 describe('audit testkit helpers', () => {
   it('accepts canonical redacted audit changes', () => {
@@ -38,6 +42,39 @@ describe('audit testkit helpers', () => {
       assertAuditJsonExcludes({ error: 'not_found', detail: 'secret-title' }, [
         'secret-title',
       ])
+    ).toThrow(/secret-title/);
+  });
+
+  it('accepts redacted debug exports and scans for forbidden payload strings', () => {
+    const redactedExport = {
+      commits: [
+        {
+          clientCommitId: 'commit-1',
+          changes: [
+            {
+              changeKind: 'app_row',
+              redaction: {
+                payload: 'omitted',
+                reason: 'audit_redacted_by_default',
+              },
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(() =>
+      assertAuditDebugExportRedacted(redactedExport, ['secret-title'])
+    ).not.toThrow();
+
+    expect(() =>
+      assertAuditDebugExportRedacted(
+        {
+          ...redactedExport,
+          requestEvents: [{ outcome: 'secret-title' }],
+        },
+        ['secret-title']
+      )
     ).toThrow(/secret-title/);
   });
 });
