@@ -4,6 +4,7 @@ import {
   SYNCULAR_V2_PACKAGE_VERSION,
 } from './runtime-contract';
 import type {
+  SyncularV2BlobUploadEvent,
   SyncularV2BootstrapStatus,
   SyncularV2DiagnosticEvent,
   SyncularV2LifecycleState,
@@ -850,6 +851,72 @@ describe('Syncular v2 worker client', () => {
       requiresAction: true,
       blobUploads: { pending: 0, uploading: 0, failed: 1 },
     });
+  });
+
+  it('preserves encrypted blob metadata in upload completion events', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+    const completed: SyncularV2BlobUploadEvent[] = [];
+    client.addEventListener('blobUploadCompleted', (event) =>
+      completed.push(event)
+    );
+
+    const process = client.processBlobUploadQueue();
+    await waitForMessages(worker, 1);
+    expect(worker.messages[0]).toMatchObject({ type: 'executeUnsafeSql' });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        rows: [
+          {
+            hash: `sha256:${'1'.repeat(64)}`,
+            size: 64,
+            mime_type: 'application/test',
+            encrypted: 1,
+            key_id: 'blob-key',
+            status: 'pending',
+            error: null,
+          },
+        ],
+      },
+    });
+
+    await waitForMessages(worker, 2);
+    expect(worker.messages[1]).toMatchObject({
+      type: 'processBlobUploadQueue',
+    });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { uploaded: 1, failed: 0 },
+    });
+
+    await waitForMessages(worker, 3);
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { rows: [] },
+    });
+
+    await expect(process).resolves.toEqual({ uploaded: 1, failed: 0 });
+    expect(completed).toEqual([
+      {
+        ref: {
+          hash: `sha256:${'1'.repeat(64)}`,
+          size: 64,
+          mimeType: 'application/test',
+          encrypted: true,
+          keyId: 'blob-key',
+        },
+      },
+    ]);
   });
 
   it('returns a redacted diagnostic snapshot for support tools', async () => {
