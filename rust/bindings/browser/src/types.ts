@@ -567,6 +567,7 @@ export interface SyncularV2BlobUploadEvent {
 export interface SyncularV2BlobUploadErrorEvent {
   hash: string;
   error: string;
+  ref?: BlobRef;
 }
 
 export type SyncularV2LifecyclePhase =
