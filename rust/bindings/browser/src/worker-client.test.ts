@@ -4,6 +4,7 @@ import {
   SYNCULAR_V2_PACKAGE_VERSION,
 } from './runtime-contract';
 import type {
+  SyncularV2BlobUploadErrorEvent,
   SyncularV2BlobUploadEvent,
   SyncularV2BootstrapStatus,
   SyncularV2DiagnosticEvent,
@@ -914,6 +915,80 @@ describe('Syncular v2 worker client', () => {
           mimeType: 'application/test',
           encrypted: true,
           keyId: 'blob-key',
+        },
+      },
+    ]);
+  });
+
+  it('preserves encrypted blob metadata in upload failure events', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+    const failed: SyncularV2BlobUploadErrorEvent[] = [];
+    client.addEventListener('blobUploadFailed', (event) => failed.push(event));
+
+    const process = client.processBlobUploadQueue();
+    await waitForMessages(worker, 1);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        rows: [
+          {
+            hash: `sha256:${'2'.repeat(64)}`,
+            size: 65,
+            mime_type: 'application/encrypted',
+            encrypted: 1,
+            key_id: 'failed-key',
+            status: 'pending',
+            error: null,
+          },
+        ],
+      },
+    });
+
+    await waitForMessages(worker, 2);
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { uploaded: 0, failed: 1 },
+    });
+
+    await waitForMessages(worker, 3);
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        rows: [
+          {
+            hash: `sha256:${'2'.repeat(64)}`,
+            size: 65,
+            mime_type: 'application/encrypted',
+            encrypted: 1,
+            key_id: 'failed-key',
+            status: 'failed',
+            error: 'Upload failed',
+          },
+        ],
+      },
+    });
+
+    await expect(process).resolves.toEqual({ uploaded: 0, failed: 1 });
+    expect(failed).toEqual([
+      {
+        hash: `sha256:${'2'.repeat(64)}`,
+        error: 'Upload failed',
+        ref: {
+          hash: `sha256:${'2'.repeat(64)}`,
+          size: 65,
+          mimeType: 'application/encrypted',
+          encrypted: true,
+          keyId: 'failed-key',
         },
       },
     ]);

@@ -219,8 +219,11 @@ Tighten browser upload lifecycle metadata:
 1. `[x]` Preserve `encrypted` and `keyId` metadata when browser
    `blobUploadCompleted` events are reconstructed from the Rust-owned SQLite
    outbox.
-2. `[x]` Add a worker-client test proving encrypted upload completion events
-   carry the exact `BlobRef` metadata instead of reporting `encrypted=false`.
+2. `[x]` Preserve the same structured `BlobRef` metadata on
+   `blobUploadFailed` events when the failed outbox row is still available.
+3. `[x]` Add worker-client tests proving encrypted upload completion/failure
+   events carry exact `BlobRef` metadata instead of reporting
+   `encrypted=false` or hash-only failures.
 
 Latest evidence:
 

@@ -1669,6 +1669,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         this.#emitClientEvent('blobUploadFailed', {
           hash: next.hash,
           error: next.error ?? 'Blob upload failed',
+          ref: {
+            hash: next.hash,
+            size: coerceCount(next.size),
+            mimeType: next.mime_type,
+            encrypted: next.encrypted === true || next.encrypted === 1,
+            ...(next.key_id ? { keyId: next.key_id } : {}),
+          },
         });
       }
     }
