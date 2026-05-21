@@ -146,8 +146,10 @@ read-only review:
     `localBaseSchema.tableSetupSql` so app-table DDL has the same generated
     source of truth. Post-contract external guards showed generated local-base
     DDL is not the cause of the current slow 500k session because hardcoded DDL
-    was similarly slow; keep the previous accepted external baseline until a
-    stable release guard is re-established. The before-bootstrap derived-schema
+    was similarly slow; keeping local-base metadata off the hot copied
+    `AppSchema` value recovered release 500k bootstrap to `1143.42ms` and
+    local apply to `219ms`. Keep the previous accepted external baseline until
+    a stable release guard is re-established. The before-bootstrap derived-schema
     install probe was rejected because it
     regressed 500k bootstrap (`1396.01ms -> 1827.83ms`), local apply
     (`208ms -> 1525ms`), and peak memory (`695.97MB -> 761.14MB`). Keep

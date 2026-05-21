@@ -878,7 +878,6 @@ mod changed_rows_tests {
             app_tables: &TEST_TABLES,
             app_table_metadata: &TEST_TABLE_METADATA,
             migrations: &TEST_MIGRATIONS,
-            local_base_schema: crate::app_schema::EMPTY_LOCAL_BASE_SCHEMA,
             schema_version: Some(1),
             default_subscriptions,
             #[cfg(feature = "native")]
