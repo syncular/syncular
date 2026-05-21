@@ -7,7 +7,7 @@ import type {
   SyncOperation,
   SyncularErrorCode,
 } from '@syncular/core';
-import { BinarySnapshotTableWriter } from '@syncular/core';
+import { BinarySnapshotTableWriter, collectScopeVars } from '@syncular/core';
 import { sql } from 'kysely';
 import { parseScopes } from './dialect/helpers';
 import type { DbExecutor } from './dialect/types';
@@ -19,6 +19,7 @@ import type {
   ServerTableHandler,
   SyncServerAuth,
 } from './handlers/types';
+import { rowScopesAllowed } from './helpers/scope-authorization';
 import type { SyncCoreDb } from './schema';
 
 export const SYNC_CRDT_UPDATES_TABLE = 'sync_crdt_updates';
@@ -134,6 +135,39 @@ const CRDT_UPDATE_BINARY_ENCODER: BinarySnapshotRowsEncoder = (rows) =>
 const CRDT_CHECKPOINT_BINARY_ENCODER: BinarySnapshotRowsEncoder = (rows) =>
   encodeEncryptedCrdtCheckpointRows(rows);
 
+function createSystemRowScopeAuthorizer<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(options: EncryptedCrdtSystemHandlersOptions<DB, Auth>) {
+  const requiredScopeKeys = Array.from(
+    collectScopeVars(options.scopePatterns ?? [])
+  );
+
+  return async (
+    ctx: ServerApplyOperationContext<DB, Auth>,
+    rowScopes: StoredScopes
+  ): Promise<boolean> => {
+    if (requiredScopeKeys.length === 0) return true;
+
+    let allowedScopes: ScopeValues;
+    try {
+      allowedScopes = await options.resolveScopes({
+        db: ctx.db,
+        actorId: ctx.actorId,
+        auth: ctx.auth,
+      });
+    } catch {
+      return false;
+    }
+
+    return rowScopesAllowed({
+      rowScopes,
+      allowedScopes,
+      requiredScopeKeys,
+    });
+  };
+}
+
 export function encryptedCrdtStreamId(args: {
   table: string;
   rowId: string;
@@ -227,6 +261,8 @@ function createEncryptedCrdtUpdateHandler<
 >(
   options: EncryptedCrdtSystemHandlersOptions<DB, Auth>
 ): ServerTableHandler<DB, Auth> {
+  const authorizeRowScopes = createSystemRowScopeAuthorizer(options);
+
   return {
     table: SYNC_CRDT_UPDATES_TABLE,
     primaryKeyColumn: 'update_id',
@@ -255,6 +291,9 @@ function createEncryptedCrdtUpdateHandler<
 
       const payload = payloadRecord(op);
       const row = updateRowFromPayload(ctx, op, payload);
+      if (!(await authorizeRowScopes(ctx, row.scopes))) {
+        return errorResult(opIndex, 'Forbidden', 'sync.forbidden');
+      }
       if (options.authorizeUpdate) {
         const allowed = await options.authorizeUpdate({ ctx, row });
         if (!allowed) {
@@ -287,6 +326,8 @@ function createEncryptedCrdtCheckpointHandler<
 >(
   options: EncryptedCrdtSystemHandlersOptions<DB, Auth>
 ): ServerTableHandler<DB, Auth> {
+  const authorizeRowScopes = createSystemRowScopeAuthorizer(options);
+
   return {
     table: SYNC_CRDT_CHECKPOINTS_TABLE,
     primaryKeyColumn: 'checkpoint_id',
@@ -315,6 +356,9 @@ function createEncryptedCrdtCheckpointHandler<
 
       const payload = payloadRecord(op);
       const row = checkpointRowFromPayload(ctx, op, payload);
+      if (!(await authorizeRowScopes(ctx, row.scopes))) {
+        return errorResult(opIndex, 'Forbidden', 'sync.forbidden');
+      }
       if (options.authorizeCheckpoint) {
         const allowed = await options.authorizeCheckpoint({ ctx, row });
         if (!allowed) {

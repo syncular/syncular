@@ -530,7 +530,9 @@ read-only review:
     now enforce `resolveScopes(ctx)` in the built-in handler, with tests proving
     forbidden inserts/updates/deletes do not mutate app rows, emit changes, add
     routing indexes, or leak forbidden row contents; write scope resolution
-    failures now fail closed as forbidden pushes.
+    failures now fail closed as forbidden pushes. Encrypted CRDT system
+    updates/checkpoints now share the same scope authorization helper and reject
+    forbidden append pushes without persisting system rows or emitted changes.
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)

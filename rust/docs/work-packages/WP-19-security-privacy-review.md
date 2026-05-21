@@ -91,12 +91,17 @@ rows, `sync_changes`, `sync_table_commits`, or `sync_scope_commits`, and do not
 echo forbidden row contents in conflict/error payloads. Write scope resolution
 failures also fail closed with the same rejected push shape.
 
+Encrypted CRDT system handlers now apply the same declared-scope authorization
+before appending update/checkpoint rows. Push-boundary coverage proves an actor
+outside the CRDT row's scopes receives `sync.forbidden`, and no encrypted system
+rows or `sync_changes` are persisted.
+
 ## Next Action
 
 Use the pull/realtime/artifact, blob-token, and encrypted-CRDT outbox tests as
-templates for the remaining privacy surfaces: encrypted CRDT denial/revocation
-edges, broader debug-bundle redaction, and any console detail/export surfaces
-not already covered by partition-bound route tests.
+templates for the remaining privacy surfaces: CRDT revocation/recovery edges,
+broader debug-bundle redaction, and any console detail/export surfaces not
+already covered by partition-bound route tests.
 
 ## Progress
 
@@ -120,12 +125,16 @@ not already covered by partition-bound route tests.
   emitted sync changes, no routing index entries, and no forbidden row-content
   leakage in rejected responses. Added fail-closed coverage for write
   `resolveScopes` failures.
+- Added shared server scope-authorization helpers and applied them to encrypted
+  CRDT system updates/checkpoints. Added push-boundary coverage proving
+  forbidden encrypted CRDT update/checkpoint appends are rejected without system
+  rows or emitted sync changes.
 - Gates run in `packages/server-hono`:
   `bun test src/__tests__/create-server.test.ts`,
   `bun test src/__tests__/blob-routes.test.ts`, `bun test src/__tests__`, and
   `bun run tsgo`.
 - Gates run in `packages/server`: `bun test src/push-operation-codes.test.ts`,
-  `bun test src`, and `bun run tsgo`.
+  `bun test src/encrypted-crdt.test.ts`, `bun test src`, and `bun run tsgo`.
 - Gates run for runtime CRDT coverage:
   `cargo fmt --manifest-path rust/Cargo.toml --all`,
   `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field rust_client_exposes_encrypted_crdt_field_through_same_identity --features native,crdt-yjs,demo-todo-native-fixture`,

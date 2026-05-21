@@ -34,6 +34,7 @@ import type {
   UpdateResult,
 } from 'kysely';
 import { sql } from 'kysely';
+import { rowScopesAllowed } from '../helpers/scope-authorization';
 import type { SyncCoreDb } from '../schema';
 import type {
   ApplyOperationResult,
@@ -52,32 +53,6 @@ import type {
 type AuthorizeResult =
   | true
   | { error: string; code: SyncularErrorCode; retriable?: boolean };
-
-function scopeValueAllows(
-  allowed: ScopeValues[string] | undefined,
-  rowValue: string
-): boolean {
-  if (allowed === undefined) return false;
-  const allowedValues = Array.isArray(allowed) ? allowed : [allowed];
-  return allowedValues.includes('*') || allowedValues.includes(rowValue);
-}
-
-function rowScopesAllowed(args: {
-  rowScopes: StoredScopes;
-  allowedScopes: ScopeValues;
-  requiredScopeKeys: readonly string[];
-}): boolean {
-  for (const key of args.requiredScopeKeys) {
-    const rowValue = args.rowScopes[key];
-    if (typeof rowValue !== 'string' || rowValue.length === 0) {
-      return false;
-    }
-    if (!scopeValueAllows(args.allowedScopes[key], rowValue)) {
-      return false;
-    }
-  }
-  return true;
-}
 
 function classifyConstraintViolationCode(_message: string): SyncularErrorCode {
   return 'sync.constraint_violation';

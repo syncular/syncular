@@ -9,7 +9,9 @@ import {
   SYNC_CRDT_CHECKPOINTS_TABLE,
   SYNC_CRDT_UPDATES_TABLE,
 } from './encrypted-crdt';
+import { createServerHandlerCollection } from './handlers';
 import { ensureSyncSchema } from './migrate';
+import { pushCommit } from './push';
 import type { SyncCoreDb } from './schema';
 
 const dialect = createSqliteServerDialect();
@@ -159,6 +161,123 @@ describe('encrypted CRDT system handlers', () => {
     expect(checkpointTable.rows[0]?.checkpoint_id).toBe('checkpoint-1');
     expect(checkpointTable.rows[0]?.covers_seq).toBe(8);
     expect(checkpointTable.rows[0]?.scopes).toEqual({ user_id: 'user-1' });
+  });
+
+  it('rejects encrypted CRDT pushes outside resolved scopes', async () => {
+    const handlers = createServerHandlerCollection(
+      createEncryptedCrdtSystemHandlers({
+        scopePatterns: ['user:{user_id}'],
+        resolveScopes: (ctx) => ({ user_id: [ctx.actorId] }),
+      })
+    );
+    const streamId = encryptedCrdtStreamId({
+      table: 'tasks',
+      rowId: 'task-1',
+      field: 'body',
+    });
+
+    const updateResult = await pushCommit({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'user-2' },
+      request: {
+        clientId: 'client-crdt-denied',
+        clientCommitId: 'commit-crdt-update-denied',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: SYNC_CRDT_UPDATES_TABLE,
+            row_id: 'update-denied',
+            op: 'upsert',
+            base_version: null,
+            payload: {
+              stream_id: streamId,
+              app_table: 'tasks',
+              row_id: 'task-1',
+              field_name: 'body',
+              update_id: 'update-denied',
+              key_id: 'kid-1',
+              ciphertext: 'ciphertext-secret',
+              scopes: { user_id: 'user-1' },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(updateResult.response).toMatchObject({
+      status: 'rejected',
+      results: [
+        {
+          status: 'error',
+          code: 'sync.forbidden',
+          error: 'Forbidden',
+          retriable: false,
+        },
+      ],
+    });
+
+    const checkpointResult = await pushCommit({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'user-2' },
+      request: {
+        clientId: 'client-crdt-denied',
+        clientCommitId: 'commit-crdt-checkpoint-denied',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: SYNC_CRDT_CHECKPOINTS_TABLE,
+            row_id: 'checkpoint-denied',
+            op: 'upsert',
+            base_version: null,
+            payload: {
+              stream_id: streamId,
+              app_table: 'tasks',
+              row_id: 'task-1',
+              field_name: 'body',
+              checkpoint_id: 'checkpoint-denied',
+              covers_seq: 1,
+              key_id: 'kid-1',
+              ciphertext: 'checkpoint-ciphertext-secret',
+              scopes: { user_id: 'user-1' },
+            },
+          },
+        ],
+      },
+    });
+
+    expect(checkpointResult.response).toMatchObject({
+      status: 'rejected',
+      results: [
+        {
+          status: 'error',
+          code: 'sync.forbidden',
+          error: 'Forbidden',
+          retriable: false,
+        },
+      ],
+    });
+
+    const updates = await db
+      .selectFrom(SYNC_CRDT_UPDATES_TABLE)
+      .select(['update_id'])
+      .execute();
+    expect(updates).toEqual([]);
+
+    const checkpoints = await db
+      .selectFrom(SYNC_CRDT_CHECKPOINTS_TABLE)
+      .select(['checkpoint_id'])
+      .execute();
+    expect(checkpoints).toEqual([]);
+
+    const changes = await db
+      .selectFrom('sync_changes')
+      .select(['table', 'row_id'])
+      .execute();
+    expect(changes).toEqual([]);
   });
 
   it('prunes encrypted updates covered by retained same-key checkpoints', async () => {
