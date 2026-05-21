@@ -890,6 +890,19 @@ where
                     }
 
                     let inline_rows = snapshot.rows.clone();
+                    let mut prefetched_artifacts = Vec::with_capacity(artifact_refs.len());
+                    if !collect_changed_rows && !include_snapshot_rows {
+                        for artifact in artifact_refs {
+                            let snapshot_fetch_started_at = timing_now_ms();
+                            let bytes = self
+                                .transport
+                                .fetch_snapshot_artifact_bytes(&artifact, &sub.scopes)
+                                .await?;
+                            result.timings.snapshot_fetch_ms +=
+                                elapsed_ms_since(snapshot_fetch_started_at);
+                            prefetched_artifacts.push((artifact, bytes));
+                        }
+                    }
                     if snapshot.is_first_page {
                         let scope_clear_started_at = timing_now_ms();
                         self.store
@@ -910,14 +923,7 @@ where
                         result.timings.snapshot_row_apply_ms +=
                             elapsed_ms_since(row_apply_started_at);
                         let mut applied_direct_artifact = false;
-                        for artifact in artifact_refs {
-                            let snapshot_fetch_started_at = timing_now_ms();
-                            let bytes = self
-                                .transport
-                                .fetch_snapshot_artifact_bytes(&artifact, &sub.scopes)
-                                .await?;
-                            result.timings.snapshot_fetch_ms +=
-                                elapsed_ms_since(snapshot_fetch_started_at);
+                        for (_artifact, bytes) in prefetched_artifacts {
                             let artifact_apply_started_at = timing_now_ms();
                             let mode = if scope_cleared_for_snapshot {
                                 WebSnapshotArtifactApplyMode::Insert
