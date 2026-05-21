@@ -39,6 +39,12 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
 | `maxCrdtStateVectorBase64Bytes` | 65536 | Maximum Yjs state-vector length |
 | `maxCrdtTextBytes` | 1048576 | Maximum CRDT text input accepted by text helper APIs |
 | `maxNativeDiagnosticEventPayloadJsonBytes` | 16384 | Maximum event payload retained in native diagnostic snapshots before redaction |
+| `maxSnapshotChunkCompressedBytes` | 67108864 | Maximum compressed snapshot chunk payload accepted by runtime transports |
+| `maxSnapshotChunkDecompressedBytes` | 268435456 | Maximum decompressed snapshot chunk payload before row decoding |
+| `maxSnapshotArtifactCompressedBytes` | 268435456 | Maximum compressed SQLite snapshot artifact payload accepted by runtime transports |
+| `maxSnapshotArtifactDecompressedBytes` | 536870912 | Maximum decompressed SQLite snapshot artifact payload before SQLite apply |
+| `maxRealtimeSyncPackBytes` | 16777216 | Maximum realtime binary sync-pack payload accepted by browser runtime |
+| `maxWebsocketTextFrameBytes` | 8388608 | Maximum native websocket text frame sent or accepted by realtime transport |
 
 ## Current Inventory
 
@@ -64,6 +70,10 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
   `runtime.limit_exceeded`.
 - Native diagnostic snapshots keep bounded recent event payloads by redacting
   oversized `payload_json` values instead of retaining full host/app payloads.
+- Snapshot chunk/artifact transports reject oversized declared, compressed, and
+  decompressed payloads before hash/decode/apply work where possible.
+- Realtime websocket text frames and browser realtime sync-pack bytes are
+  bounded with stable limit errors.
 - Blob upload retries and sync retries are bounded by the runtime store
   constants and should become public limit fields in a later WP-18 slice.
 

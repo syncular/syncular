@@ -33,6 +33,12 @@ pub const MAX_CRDT_STATE_BASE64_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_CRDT_STATE_VECTOR_BASE64_BYTES: usize = 64 * 1024;
 pub const MAX_CRDT_TEXT_BYTES: usize = 1024 * 1024;
 pub const MAX_NATIVE_DIAGNOSTIC_EVENT_PAYLOAD_JSON_BYTES: usize = 16 * 1024;
+pub const MAX_SNAPSHOT_CHUNK_COMPRESSED_BYTES: i64 = 64 * 1024 * 1024;
+pub const MAX_SNAPSHOT_CHUNK_DECOMPRESSED_BYTES: usize = 256 * 1024 * 1024;
+pub const MAX_SNAPSHOT_ARTIFACT_COMPRESSED_BYTES: i64 = 256 * 1024 * 1024;
+pub const MAX_SNAPSHOT_ARTIFACT_DECOMPRESSED_BYTES: usize = 512 * 1024 * 1024;
+pub const MAX_REALTIME_SYNC_PACK_BYTES: usize = 16 * 1024 * 1024;
+pub const MAX_WEBSOCKET_TEXT_FRAME_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -66,6 +72,12 @@ pub struct RuntimeLimits {
     pub max_crdt_state_vector_base64_bytes: usize,
     pub max_crdt_text_bytes: usize,
     pub max_native_diagnostic_event_payload_json_bytes: usize,
+    pub max_snapshot_chunk_compressed_bytes: i64,
+    pub max_snapshot_chunk_decompressed_bytes: usize,
+    pub max_snapshot_artifact_compressed_bytes: i64,
+    pub max_snapshot_artifact_decompressed_bytes: usize,
+    pub max_realtime_sync_pack_bytes: usize,
+    pub max_websocket_text_frame_bytes: usize,
 }
 
 pub fn runtime_default_limits() -> RuntimeLimits {
@@ -100,5 +112,11 @@ pub fn runtime_default_limits() -> RuntimeLimits {
         max_crdt_text_bytes: MAX_CRDT_TEXT_BYTES,
         max_native_diagnostic_event_payload_json_bytes:
             MAX_NATIVE_DIAGNOSTIC_EVENT_PAYLOAD_JSON_BYTES,
+        max_snapshot_chunk_compressed_bytes: MAX_SNAPSHOT_CHUNK_COMPRESSED_BYTES,
+        max_snapshot_chunk_decompressed_bytes: MAX_SNAPSHOT_CHUNK_DECOMPRESSED_BYTES,
+        max_snapshot_artifact_compressed_bytes: MAX_SNAPSHOT_ARTIFACT_COMPRESSED_BYTES,
+        max_snapshot_artifact_decompressed_bytes: MAX_SNAPSHOT_ARTIFACT_DECOMPRESSED_BYTES,
+        max_realtime_sync_pack_bytes: MAX_REALTIME_SYNC_PACK_BYTES,
+        max_websocket_text_frame_bytes: MAX_WEBSOCKET_TEXT_FRAME_BYTES,
     }
 }
