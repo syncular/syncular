@@ -51,8 +51,8 @@ use crate::protocol::{
 use crate::runtime_schema::{runtime_schema_version, RUNTIME_SYSTEM_SCHEMA_SQL};
 use crate::store::{
     next_retry_at, AppSchemaState, BlobHealthSummary, ConflictSummary, CrdtHealthSummary,
-    OutboxCommit, OutboxSummary, SubscriptionState, VerifiedRoot, MAX_SYNC_RETRIES,
-    SYNC_SENDING_TIMEOUT_MS,
+    OutboxCommit, OutboxSummary, ScopedRowsHealthSummary, ScopedRowsTableHealth, SubscriptionState,
+    VerifiedRoot, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
 };
 #[cfg(feature = "web-blobs")]
 use crate::store::{BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES};
@@ -4250,6 +4250,14 @@ impl SyncularRustOwnedSqlite {
         Ok(unsafe { ffi::sqlite3_changes(self.db) as i64 })
     }
 
+    fn query_count(&self, sql: &str) -> Result<i64> {
+        Ok(self
+            .query_rows(sql, |row| row.i64("count"))?
+            .into_iter()
+            .next()
+            .unwrap_or_default())
+    }
+
     fn detach_snapshot_artifacts(&mut self) -> Result<()> {
         let mut remaining = Vec::new();
         let mut first_error = None;
@@ -4871,6 +4879,52 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         })
     }
 
+    fn scoped_rows_health_summary<'a>(
+        &'a mut self,
+        subscriptions: &'a [SubscriptionSpec],
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ScopedRowsHealthSummary>>> + 'a>> {
+        Box::pin(async move {
+            let mut summary = ScopedRowsHealthSummary::default();
+            for metadata in self.app_schema.app_table_metadata {
+                validate_table_name(metadata.name)?;
+                validate_table_name(metadata.server_version_column)?;
+                let checked_synced_rows = self.query_count(&format!(
+                    "SELECT COUNT(*) AS count FROM {table} WHERE {server_version} > 0",
+                    table = metadata.name,
+                    server_version = metadata.server_version_column
+                ))?;
+                let table_subscriptions = subscriptions
+                    .iter()
+                    .filter(|subscription| subscription.table == metadata.name)
+                    .collect::<Vec<_>>();
+                let orphaned_synced_rows = if checked_synced_rows == 0 {
+                    0
+                } else if table_subscriptions.is_empty() {
+                    checked_synced_rows
+                } else {
+                    let scope_clauses = table_subscriptions
+                        .iter()
+                        .map(|subscription| scope_clause(metadata, &subscription.scopes))
+                        .collect::<Result<Vec<_>>>()?;
+                    self.query_count(&format!(
+                        "SELECT COUNT(*) AS count FROM {table} WHERE {server_version} > 0 AND NOT ({scope_clause})",
+                        table = metadata.name,
+                        server_version = metadata.server_version_column,
+                        scope_clause = scope_clauses.join(" OR ")
+                    ))?
+                };
+                summary.checked_synced_rows += checked_synced_rows;
+                summary.orphaned_synced_rows += orphaned_synced_rows;
+                summary.tables.push(ScopedRowsTableHealth {
+                    table: metadata.name.to_string(),
+                    checked_synced_rows,
+                    orphaned_synced_rows,
+                });
+            }
+            Ok(Some(summary))
+        })
+    }
+
     fn app_schema_state<'a>(
         &'a mut self,
         current_schema_version: i32,
@@ -5019,30 +5073,9 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                 SyncularError::config(format!("unknown generated app table: {table}"))
             })?;
             validate_table_name(table)?;
-            if scopes.is_empty() {
+            let filters = scope_sql_filters(metadata, scopes)?;
+            if filters.is_empty() {
                 return self.exec(&format!("DELETE FROM {table}"));
-            }
-            let mut filters = Vec::new();
-            for (scope_name, value) in scopes {
-                let column = metadata
-                    .scopes
-                    .iter()
-                    .find(|scope| scope.name == scope_name)
-                    .map(|scope| scope.column)
-                    .unwrap_or(scope_name.as_str());
-                validate_table_name(column)?;
-                if let Value::Array(values) = value {
-                    if values.is_empty() {
-                        filters.push("0 = 1".to_string());
-                    } else {
-                        filters.push(format!(
-                            "{column} IN ({})",
-                            values.iter().map(sql_value).collect::<Vec<_>>().join(", ")
-                        ));
-                    }
-                } else {
-                    filters.push(format!("{column} = {}", sql_value(value)));
-                }
             }
             self.exec(&format!(
                 "DELETE FROM {table} WHERE {}",
@@ -5067,28 +5100,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
             })?;
             validate_table_name(table)?;
             validate_table_name(metadata.server_version_column)?;
-            let mut filters = Vec::new();
-            for (scope_name, value) in scopes {
-                let column = metadata
-                    .scopes
-                    .iter()
-                    .find(|scope| scope.name == scope_name)
-                    .map(|scope| scope.column)
-                    .unwrap_or(scope_name.as_str());
-                validate_table_name(column)?;
-                if let Value::Array(values) = value {
-                    if values.is_empty() {
-                        filters.push("0 = 1".to_string());
-                    } else {
-                        filters.push(format!(
-                            "{column} IN ({})",
-                            values.iter().map(sql_value).collect::<Vec<_>>().join(", ")
-                        ));
-                    }
-                } else {
-                    filters.push(format!("{column} = {}", sql_value(value)));
-                }
-            }
+            let mut filters = scope_sql_filters(metadata, scopes)?;
             filters.push(format!("{} > 0", metadata.server_version_column));
             self.exec_with_changes(&format!(
                 "DELETE FROM {table} WHERE {}",
@@ -5834,6 +5846,49 @@ fn row_matches_scope_values(
             Value::Array(values) => actual.is_some_and(|actual| values.iter().any(|v| v == actual)),
             value => actual == Some(value),
         }
+    })
+}
+
+fn scope_sql_filters(metadata: &AppTableMetadata, scopes: &ScopeValues) -> Result<Vec<String>> {
+    for scope_name in scopes.keys() {
+        if !metadata.scopes.iter().any(|scope| scope.name == scope_name) {
+            return Err(SyncularError::config(format!(
+                "unknown scope {scope_name} for table {}",
+                metadata.name
+            )));
+        }
+    }
+
+    let mut filters = Vec::new();
+    for scope in metadata.scopes {
+        match scopes.get(scope.name) {
+            Some(value) => filters.push(scope_sql_filter(scope.column, value)?),
+            None if scope.required => filters.push("0 = 1".to_string()),
+            None => {}
+        }
+    }
+    Ok(filters)
+}
+
+fn scope_clause(metadata: &AppTableMetadata, scopes: &ScopeValues) -> Result<String> {
+    let filters = scope_sql_filters(metadata, scopes)?;
+    if filters.is_empty() {
+        Ok("1 = 1".to_string())
+    } else {
+        Ok(format!("({})", filters.join(" AND ")))
+    }
+}
+
+fn scope_sql_filter(column: &str, value: &Value) -> Result<String> {
+    validate_table_name(column)?;
+    Ok(match value {
+        Value::Null => format!("{column} IS NULL"),
+        Value::Array(values) if values.is_empty() => "0 = 1".to_string(),
+        Value::Array(values) => format!(
+            "{column} IN ({})",
+            values.iter().map(sql_value).collect::<Vec<_>>().join(", ")
+        ),
+        value => format!("{column} = {}", sql_value(value)),
     })
 }
 

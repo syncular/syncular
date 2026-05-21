@@ -1680,6 +1680,7 @@ describe('Syncular v2 worker client', () => {
         checkedVerifiedRoots: 1,
         checkedOutboxCommits: 0,
         checkedConflicts: 0,
+        checkedSyncedRows: 0,
         checkedBlobReferences: 0,
         checkedCrdtDocuments: 0,
         checkedCrdtUpdateLogEntries: 0,

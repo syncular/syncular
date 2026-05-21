@@ -755,6 +755,7 @@ export interface SyncularV2LocalHealthReport {
   checkedVerifiedRoots: number;
   checkedOutboxCommits: number;
   checkedConflicts: number;
+  checkedSyncedRows: number;
   checkedBlobReferences: number;
   checkedCrdtDocuments: number;
   checkedCrdtUpdateLogEntries: number;

@@ -1,13 +1,15 @@
 use super::generated::{table_metadata, NewTask, TaskPatch};
 use super::migrations::{checksum, current_schema_version, split_sql_statements, MIGRATIONS};
+use crate::client::SubscriptionSpec;
 use crate::error::{Result, SyncularError};
 use crate::limits::validate_unresolved_outbox_capacity;
 use crate::protocol::*;
 use crate::runtime_schema::RUNTIME_SYSTEM_SCHEMA_SQL;
 use crate::store::{
     now_ms, AppliedMigration, ConflictSummary, DemoTaskStore, OutboxCommit, OutboxSummary,
-    SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx, Task, VerifiedRoot,
-    MAX_SYNC_RETRIES, SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
+    ScopedRowsHealthSummary, ScopedRowsTableHealth, SubscriptionState, SyncStateStore, SyncStore,
+    SyncStoreTx, Task, VerifiedRoot, MAX_SYNC_RETRIES, SQLITE_BUSY_TIMEOUT_MS,
+    SYNC_SENDING_TIMEOUT_MS,
 };
 use rusqlite::types::ValueRef;
 use rusqlite::{params, Connection, OptionalExtension, Transaction};
@@ -267,6 +269,48 @@ impl SyncStateStore for RusqliteStore {
         let rows = statement.query_map([], conflict_summary_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>()
             .map_err(Into::into)
+    }
+
+    fn scoped_rows_health_summary(
+        &mut self,
+        subscriptions: &[SubscriptionSpec],
+    ) -> Result<Option<ScopedRowsHealthSummary>> {
+        let task_subscriptions = subscriptions
+            .iter()
+            .filter(|subscription| subscription.table == "tasks")
+            .collect::<Vec<_>>();
+        let mut statement = self.conn.prepare(
+            r#"
+            select user_id, project_id
+            from tasks
+            where server_version > 0
+            "#,
+        )?;
+        let rows = statement.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })?;
+        let mut checked_synced_rows = 0i64;
+        let mut orphaned_synced_rows = 0i64;
+        for row in rows {
+            let (user_id, project_id) = row?;
+            checked_synced_rows += 1;
+            if task_subscriptions.is_empty()
+                || !task_subscriptions.iter().any(|subscription| {
+                    task_row_matches_subscription(&user_id, &project_id, subscription)
+                })
+            {
+                orphaned_synced_rows += 1;
+            }
+        }
+        Ok(Some(ScopedRowsHealthSummary {
+            checked_synced_rows,
+            orphaned_synced_rows,
+            tables: vec![ScopedRowsTableHealth {
+                table: "tasks".to_string(),
+                checked_synced_rows,
+                orphaned_synced_rows,
+            }],
+        }))
     }
 
     fn resolve_conflict(&mut self, id: &str, resolution: &str) -> Result<()> {
@@ -963,6 +1007,36 @@ fn task_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Task> {
         image: row.get(6)?,
         title_yjs_state: row.get(7)?,
     })
+}
+
+fn task_row_matches_subscription(
+    user_id: &str,
+    project_id: &Option<String>,
+    subscription: &SubscriptionSpec,
+) -> bool {
+    let Some(expected_user_id) = subscription.scopes.get("user_id") else {
+        return false;
+    };
+    if !scope_value_matches(expected_user_id, Some(user_id)) {
+        return false;
+    }
+    match subscription.scopes.get("project_id") {
+        Some(expected_project_id) => {
+            scope_value_matches(expected_project_id, project_id.as_deref())
+        }
+        None => true,
+    }
+}
+
+fn scope_value_matches(expected: &Value, actual: Option<&str>) -> bool {
+    match expected {
+        Value::Array(values) => values
+            .iter()
+            .any(|value| scope_value_matches(value, actual)),
+        Value::Null => actual.is_none(),
+        Value::String(value) => actual == Some(value.as_str()),
+        _ => actual.is_some_and(|actual| expected == &Value::String(actual.to_string())),
+    }
 }
 
 fn applied_migration_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AppliedMigration> {

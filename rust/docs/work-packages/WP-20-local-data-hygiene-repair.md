@@ -115,6 +115,16 @@ First retained slice:
   method. Runtime and WASM coverage prove pending outbox commits block row
   clearing, acked outbox state permits reset, synced rows are removed, local-only
   rows survive, and the follow-up health report is clean.
+- The eighth retained slice adds report-only scoped synced-row health checks.
+  Local health now counts server-synced generated app rows and reports
+  `local.synced_rows_orphaned` when rows with positive server-version values are
+  no longer covered by any configured subscription scope. The finding is
+  `manualInspection` for now; no row deletion is attached to health repair.
+  Local-only rows with `server_version = 0` are not counted as orphaned synced
+  rows. Diesel, the rusqlite fixture, WebMemoryStore, and Rust-owned browser
+  SQLite all share the same metadata-driven scope semantics, including array
+  scopes and fail-closed unknown/missing required scopes. Runtime and browser
+  tests prove orphaned synced rows are detected without mutating those rows.
 
 Gates:
 
@@ -126,6 +136,7 @@ Gates:
 - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`
 - `bun run build:wasm:dev`
 - `bun test src/__tests__/sync-hono.wasm.test.ts -t "reports and safely repairs browser local health findings"`
+- `bun test src/__tests__/sync-hono.wasm.test.ts -t "reports browser synced app rows outside configured subscription scopes"`
 - `bun test src/__tests__/sync-hono.wasm.test.ts -t "resets browser sync state while preserving local-only app rows"`
 - `bun test src/__tests__/sync-hono.wasm.test.ts`
 - `bun run test`
@@ -133,7 +144,8 @@ Gates:
 
 ## Next Action
 
-Add orphaned synced-row detection for scoped ownership drift, then decide the
-safe explicit repair shape. Keep the default fail-closed: report first, only
-delete rows through an explicit app/host command that proves the scope is no
-longer configured and does not touch local-only data.
+Decide and implement the safe explicit repair command for orphaned synced rows.
+The likely shape should be separate from metadata cleanup, require selected
+tables/subscriptions or an explicit all-orphaned flag, refuse unresolved local
+outbox commits, and delete only positive-server-version rows that the health
+check already reports as outside configured scopes.

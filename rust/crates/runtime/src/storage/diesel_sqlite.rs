@@ -2,6 +2,7 @@ use crate::app_schema::{
     checksum, default_app_schema, split_sql_statements, AppSchema, AppTableMetadata,
 };
 use crate::binary_snapshot::{BinarySnapshotCell, DecodedBinarySnapshotRows, SnapshotChunkRows};
+use crate::client::SubscriptionSpec;
 use crate::compaction::{
     required_compaction_cutoff, tombstone_delete_statements, StorageCompactionOptions,
     StorageCompactionReport,
@@ -30,9 +31,10 @@ use crate::runtime_schema::RUNTIME_SYSTEM_SCHEMA_SQL;
 use crate::schema;
 use crate::store::{
     now_ms, AppSchemaState, AppliedMigration, BlobHealthSummary, ConflictSummary,
-    CrdtHealthSummary, OutboxCommit, OutboxSummary, SubscriptionState, SyncStateStore, SyncStore,
-    SyncStoreTx, VerifiedRoot, APP_SCHEMA_ID, BLOB_UPLOAD_STALE_TIMEOUT_MS,
-    MAX_BLOB_UPLOAD_RETRIES, MAX_SYNC_RETRIES, SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
+    CrdtHealthSummary, OutboxCommit, OutboxSummary, ScopedRowsHealthSummary, ScopedRowsTableHealth,
+    SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx, VerifiedRoot, APP_SCHEMA_ID,
+    BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES, MAX_SYNC_RETRIES,
+    SQLITE_BUSY_TIMEOUT_MS, SYNC_SENDING_TIMEOUT_MS,
 };
 #[cfg(feature = "demo-todo-fixture")]
 use crate::store::{DemoTaskStore, Task};
@@ -1003,6 +1005,13 @@ impl DieselSqliteStore {
         Ok((checked, invalid))
     }
 
+    fn scoped_rows_health_summary(
+        &mut self,
+        subscriptions: &[SubscriptionSpec],
+    ) -> Result<ScopedRowsHealthSummary> {
+        scoped_rows_health_summary_for_schema(&mut self.conn, self.app_schema, subscriptions)
+    }
+
     pub fn crdt_health_summary(&mut self) -> Result<CrdtHealthSummary> {
         let stats = sql_query(
             r#"
@@ -1657,6 +1666,16 @@ impl SyncStateStore for DieselSqliteStore {
 
     fn crdt_health_summary(&mut self) -> Result<Option<CrdtHealthSummary>> {
         Ok(Some(DieselSqliteStore::crdt_health_summary(self)?))
+    }
+
+    fn scoped_rows_health_summary(
+        &mut self,
+        subscriptions: &[SubscriptionSpec],
+    ) -> Result<Option<ScopedRowsHealthSummary>> {
+        Ok(Some(DieselSqliteStore::scoped_rows_health_summary(
+            self,
+            subscriptions,
+        )?))
     }
 
     fn resolve_conflict(&mut self, id_value: &str, resolution_value: &str) -> Result<()> {
@@ -2449,6 +2468,66 @@ fn clear_synced_app_rows_for_scopes(
     clear_synced_rows_for_scopes_generic(conn, metadata, scopes)
 }
 
+fn scoped_rows_health_summary_for_schema(
+    conn: &mut SqliteConnection,
+    app_schema: AppSchema,
+    subscriptions: &[SubscriptionSpec],
+) -> Result<ScopedRowsHealthSummary> {
+    let mut summary = ScopedRowsHealthSummary::default();
+    for metadata in app_schema.app_table_metadata {
+        validate_app_table_metadata(metadata)?;
+        validate_identifier(metadata.server_version_column)?;
+        let checked_synced_rows = count_rows(
+            conn,
+            &format!(
+                "select count(*) as count from {table} where {server_version} > 0",
+                table = metadata.name,
+                server_version = metadata.server_version_column
+            ),
+        )?;
+        let table_subscriptions = subscriptions
+            .iter()
+            .filter(|subscription| subscription.table == metadata.name)
+            .collect::<Vec<_>>();
+        let orphaned_synced_rows = if checked_synced_rows == 0 {
+            0
+        } else if table_subscriptions.is_empty() {
+            checked_synced_rows
+        } else {
+            let scope_clauses = table_subscriptions
+                .iter()
+                .map(|subscription| scope_clause(metadata, &subscription.scopes))
+                .collect::<Result<Vec<_>>>()?;
+            count_rows(
+                conn,
+                &format!(
+                    "select count(*) as count from {table} where {server_version} > 0 and not ({scope_clause})",
+                    table = metadata.name,
+                    server_version = metadata.server_version_column,
+                    scope_clause = scope_clauses.join(" or ")
+                ),
+            )?
+        };
+        summary.checked_synced_rows += checked_synced_rows;
+        summary.orphaned_synced_rows += orphaned_synced_rows;
+        summary.tables.push(ScopedRowsTableHealth {
+            table: metadata.name.to_string(),
+            checked_synced_rows,
+            orphaned_synced_rows,
+        });
+    }
+    Ok(summary)
+}
+
+fn count_rows(conn: &mut SqliteConnection, sql: &str) -> Result<i64> {
+    Ok(sql_query(sql)
+        .load::<CountRow>(conn)?
+        .into_iter()
+        .next()
+        .map(|row| row.count)
+        .unwrap_or_default())
+}
+
 fn preserve_encrypted_crdt_materialized_columns(
     conn: &mut SqliteConnection,
     app_schema: AppSchema,
@@ -2925,20 +3004,44 @@ fn generic_column_sql_value(
 }
 
 fn scope_filters(metadata: &AppTableMetadata, scopes: &ScopeValues) -> Result<Vec<String>> {
-    metadata
-        .scopes
-        .iter()
-        .filter_map(|scope| {
-            let value = scopes.get(scope.name)?;
-            Some(scope_filter(scope.column, value))
-        })
-        .collect()
+    for scope_name in scopes.keys() {
+        if !metadata.scopes.iter().any(|scope| scope.name == scope_name) {
+            return Err(SyncularError::config(format!(
+                "unknown scope {scope_name} for table {}",
+                metadata.name
+            )));
+        }
+    }
+
+    let mut filters = Vec::new();
+    for scope in metadata.scopes {
+        match scopes.get(scope.name) {
+            Some(value) => filters.push(scope_filter(scope.column, value)?),
+            None if scope.required => filters.push("0 = 1".to_string()),
+            None => {}
+        }
+    }
+    Ok(filters)
+}
+
+fn scope_clause(metadata: &AppTableMetadata, scopes: &ScopeValues) -> Result<String> {
+    let filters = scope_filters(metadata, scopes)?;
+    if filters.is_empty() {
+        Ok("1 = 1".to_string())
+    } else {
+        Ok(format!("({})", filters.join(" and ")))
+    }
 }
 
 fn scope_filter(column: &str, value: &Value) -> Result<String> {
     validate_identifier(column)?;
     Ok(match value {
         Value::Null => format!("{column} is null"),
+        Value::Array(values) if values.is_empty() => "0 = 1".to_string(),
+        Value::Array(values) => format!(
+            "{column} in ({})",
+            values.iter().map(sql_value).collect::<Vec<_>>().join(", ")
+        ),
         value => format!("{column} = {}", sql_value(value)),
     })
 }

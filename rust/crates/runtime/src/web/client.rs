@@ -270,6 +270,10 @@ where
         let app_schema_state = self.store.app_schema_state(current_schema_version).await?;
         let outbox = self.store.outbox_summaries().await?;
         let conflicts = self.store.conflict_summaries().await?;
+        let scoped_rows = self
+            .store
+            .scoped_rows_health_summary(&self.subscriptions)
+            .await?;
         let blob_health = self.store.blob_health_summary().await?;
         let crdt_health = self.store.crdt_health_summary().await?;
         crate::health::check_local_sync_state_health(
@@ -278,6 +282,7 @@ where
             &app_schema_state,
             &outbox,
             &conflicts,
+            scoped_rows.as_ref(),
             blob_health.as_ref(),
             crdt_health.as_ref(),
         );

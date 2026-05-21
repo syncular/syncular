@@ -1,6 +1,6 @@
-use crate::app_schema::{default_app_schema, AppSchema};
+use crate::app_schema::{default_app_schema, AppSchema, AppTableMetadata};
 use crate::binary_snapshot::SnapshotChunkRows;
-use crate::client::SyncChangedRow;
+use crate::client::{SubscriptionSpec, SyncChangedRow};
 use crate::error::{Result, SyncularError};
 use crate::limits::validate_unresolved_outbox_capacity;
 use crate::protocol::{
@@ -10,8 +10,8 @@ use crate::protocol::{
 use crate::runtime_schema::runtime_schema_version;
 use crate::store::{
     now_ms, AppSchemaState, BlobHealthSummary, ConflictSummary, CrdtHealthSummary, OutboxCommit,
-    OutboxSummary, SubscriptionState, VerifiedRoot, APP_SCHEMA_ID, MAX_SYNC_RETRIES,
-    SYNC_SENDING_TIMEOUT_MS,
+    OutboxSummary, ScopedRowsHealthSummary, ScopedRowsTableHealth, SubscriptionState, VerifiedRoot,
+    APP_SCHEMA_ID, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -217,6 +217,13 @@ pub trait AsyncWebStore {
     fn crdt_health_summary<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<Option<CrdtHealthSummary>>> + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn scoped_rows_health_summary<'a>(
+        &'a mut self,
+        _subscriptions: &'a [SubscriptionSpec],
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ScopedRowsHealthSummary>>> + 'a>> {
         Box::pin(async { Ok(None) })
     }
 
@@ -453,6 +460,55 @@ impl AsyncWebStore for WebMemoryStore {
                     root: root.root.clone(),
                 })
                 .collect())
+        })
+    }
+
+    fn scoped_rows_health_summary<'a>(
+        &'a mut self,
+        subscriptions: &'a [SubscriptionSpec],
+    ) -> Pin<Box<dyn Future<Output = Result<Option<ScopedRowsHealthSummary>>> + 'a>> {
+        Box::pin(async move {
+            let app_schema = self.app_schema();
+            let mut summary = ScopedRowsHealthSummary::default();
+            for metadata in app_schema.app_table_metadata {
+                let rows = self.rows.get(metadata.name);
+                let checked_synced_rows = rows
+                    .map(|rows| {
+                        rows.values()
+                            .filter(|row| row_is_server_synced(row, metadata.server_version_column))
+                            .count() as i64
+                    })
+                    .unwrap_or_default();
+                let table_subscriptions = subscriptions
+                    .iter()
+                    .filter(|subscription| subscription.table == metadata.name)
+                    .collect::<Vec<_>>();
+                let orphaned_synced_rows = rows
+                    .map(|rows| {
+                        rows.values()
+                            .filter(|row| row_is_server_synced(row, metadata.server_version_column))
+                            .filter(|row| {
+                                table_subscriptions.is_empty()
+                                    || !table_subscriptions.iter().any(|subscription| {
+                                        row_matches_scope_values(
+                                            row,
+                                            metadata,
+                                            &subscription.scopes,
+                                        )
+                                    })
+                            })
+                            .count() as i64
+                    })
+                    .unwrap_or_default();
+                summary.checked_synced_rows += checked_synced_rows;
+                summary.orphaned_synced_rows += orphaned_synced_rows;
+                summary.tables.push(ScopedRowsTableHealth {
+                    table: metadata.name.to_string(),
+                    checked_synced_rows,
+                    orphaned_synced_rows,
+                });
+            }
+            Ok(Some(summary))
         })
     }
 
@@ -822,10 +878,14 @@ impl AsyncWebStore for WebMemoryStore {
         scopes: &'a ScopeValues,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
+            let app_schema = self.app_schema();
+            let metadata = app_schema.table_metadata(table).ok_or_else(|| {
+                SyncularError::config(format!("unknown generated app table: {table}"))
+            })?;
             let Some(rows) = self.rows.get_mut(table) else {
                 return Ok(());
             };
-            rows.retain(|_, row| !row_matches_scopes(row, scopes));
+            rows.retain(|_, row| !row_matches_scope_values(row, metadata, scopes));
             Ok(())
         })
     }
@@ -836,16 +896,17 @@ impl AsyncWebStore for WebMemoryStore {
         scopes: &'a ScopeValues,
     ) -> Pin<Box<dyn Future<Output = Result<i64>> + 'a>> {
         Box::pin(async move {
+            let app_schema = self.app_schema();
+            let metadata = app_schema.table_metadata(table).ok_or_else(|| {
+                SyncularError::config(format!("unknown generated app table: {table}"))
+            })?;
             let Some(rows) = self.rows.get_mut(table) else {
                 return Ok(0);
             };
             let before = rows.len();
             rows.retain(|_, row| {
-                let server_synced = row
-                    .get("server_version")
-                    .and_then(Value::as_i64)
-                    .is_some_and(|version| version > 0);
-                !(server_synced && row_matches_scopes(row, scopes))
+                let server_synced = row_is_server_synced(row, metadata.server_version_column);
+                !(server_synced && row_matches_scope_values(row, metadata, scopes))
             });
             Ok(before.saturating_sub(rows.len()) as i64)
         })
@@ -976,10 +1037,33 @@ fn row_from_operation_payload(operation: &SyncOperation) -> Value {
     Value::Object(row)
 }
 
-fn row_matches_scopes(row: &Value, scopes: &ScopeValues) -> bool {
-    scopes
-        .iter()
-        .all(|(column, expected)| row.get(column) == Some(expected))
+fn row_is_server_synced(row: &Value, server_version_column: &str) -> bool {
+    row.get(server_version_column)
+        .and_then(Value::as_i64)
+        .is_some_and(|version| version > 0)
+}
+
+fn row_matches_scope_values(
+    row: &Value,
+    metadata: &AppTableMetadata,
+    scopes: &ScopeValues,
+) -> bool {
+    if scopes
+        .keys()
+        .any(|scope_name| !metadata.scopes.iter().any(|scope| scope.name == scope_name))
+    {
+        return false;
+    }
+    metadata.scopes.iter().all(|scope| {
+        let Some(expected) = scopes.get(scope.name) else {
+            return !scope.required;
+        };
+        let actual = row.get(scope.column);
+        match expected {
+            Value::Array(values) => actual.is_some_and(|actual| values.iter().any(|v| v == actual)),
+            value => actual == Some(value),
+        }
+    })
 }
 
 #[cfg(test)]

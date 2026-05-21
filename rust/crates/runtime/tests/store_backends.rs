@@ -1650,6 +1650,52 @@ where
 }
 
 #[test]
+fn local_health_check_reports_orphaned_synced_app_rows() -> Result<()> {
+    let path = temp_db_path("syncular-local-health-orphaned-rows");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    store.transaction(|tx| {
+        tx.upsert_row("tasks", &task_row("scoped-health-owned"), None)?;
+        let mut orphaned = task_row("scoped-health-orphaned");
+        orphaned["user_id"] = json!("other-user");
+        tx.upsert_row("tasks", &orphaned, None)?;
+        let mut local_only_orphaned = task_row("scoped-health-local-only");
+        local_only_orphaned["user_id"] = json!("other-user");
+        local_only_orphaned["server_version"] = json!(0);
+        tx.upsert_row("tasks", &local_only_orphaned, None)
+    })?;
+
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    client.set_subscriptions(vec![SubscriptionSpec {
+        id: "sub-tasks".to_string(),
+        table: "tasks".to_string(),
+        scopes: scopes(),
+        params: serde_json::Map::new(),
+        bootstrap_phase: 0,
+    }])?;
+
+    let report = client.local_health_check()?;
+    assert!(!report.ok);
+    assert_eq!(report.checked_synced_rows, 2);
+    let finding = report
+        .findings
+        .iter()
+        .find(|finding| finding.code == "local.synced_rows_orphaned")
+        .expect("orphaned synced row finding");
+    assert_eq!(finding.table.as_deref(), Some("tasks"));
+    assert_eq!(finding.details["count"], json!(1));
+    assert_eq!(finding.details["checkedSyncedRows"], json!(2));
+    assert!(client
+        .current_row_json("tasks", "scoped-health-orphaned")?
+        .is_some());
+    assert!(client
+        .current_row_json("tasks", "scoped-health-local-only")?
+        .is_some());
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn diesel_store_compacts_old_sync_state_and_bounded_tombstones() -> Result<()> {
     let path = temp_db_path("syncular-diesel-compaction");
     let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;

@@ -720,6 +720,78 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     await expect(client.listTable('tasks')).resolves.toEqual([]);
   });
 
+  it('reports browser synced app rows outside configured subscription scopes', async () => {
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'local-health-orphaned-row-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+    await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
+    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    await unsafe.executeUnsafeSql(
+      'insert into tasks (id, title, completed, user_id, project_id, server_version, image, title_yjs_state) values (?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        'health-owned-task',
+        'Owned',
+        0,
+        ACTOR_A,
+        null,
+        42,
+        null,
+        null,
+      ]
+    );
+    await unsafe.executeUnsafeSql(
+      'insert into tasks (id, title, completed, user_id, project_id, server_version, image, title_yjs_state) values (?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        'health-orphaned-task',
+        'Orphaned',
+        0,
+        ACTOR_B,
+        null,
+        42,
+        null,
+        null,
+      ]
+    );
+    await unsafe.executeUnsafeSql(
+      'insert into tasks (id, title, completed, user_id, project_id, server_version, image, title_yjs_state) values (?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        'health-local-only-task',
+        'Local only',
+        0,
+        ACTOR_B,
+        null,
+        0,
+        null,
+        null,
+      ]
+    );
+
+    const health = await client.localHealthCheck();
+    expect(health.ok).toBe(false);
+    expect(health.checkedSyncedRows).toBe(2);
+    expect(health.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          code: 'local.synced_rows_orphaned',
+          table: 'tasks',
+          repairAction: 'manualInspection',
+          details: expect.objectContaining({
+            count: 1,
+            checkedSyncedRows: 2,
+          }),
+        }),
+      ])
+    );
+    await expect(client.listTable('tasks')).resolves.toHaveLength(3);
+  });
+
   it('resets browser sync state while preserving local-only app rows', async () => {
     const subscription = taskSubscription({ actorId: ACTOR_A });
     const sync = await createHonoSyncHarness({
