@@ -1,6 +1,6 @@
 # WP-19 Security And Privacy Review
 
-Status: `[ ]` planned
+Status: `[~]` started
 
 ## Goal
 
