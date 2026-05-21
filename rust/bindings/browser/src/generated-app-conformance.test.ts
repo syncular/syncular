@@ -320,6 +320,9 @@ function fakeClient(): SyncularV2Client {
     async syncOnce() {
       return {};
     },
+    async resumeFromBackground() {
+      return {};
+    },
     async conflictSummaries() {
       return [];
     },

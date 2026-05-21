@@ -21,9 +21,9 @@ use syncular_runtime::native_ffi::{
     syncular_native_client_outbox_summaries_json, syncular_native_client_pause_sync_worker,
     syncular_native_client_presence_json, syncular_native_client_process_blob_upload_queue_json,
     syncular_native_client_query_json, syncular_native_client_register_query_json,
-    syncular_native_client_resume_sync_worker, syncular_native_client_retrieve_blob_file,
-    syncular_native_client_retry_conflict_keep_local, syncular_native_client_set_auth_headers_json,
-    syncular_native_client_set_encrypted_crdt_json,
+    syncular_native_client_resume_from_background, syncular_native_client_resume_sync_worker,
+    syncular_native_client_retrieve_blob_file, syncular_native_client_retry_conflict_keep_local,
+    syncular_native_client_set_auth_headers_json, syncular_native_client_set_encrypted_crdt_json,
     syncular_native_client_set_field_encryption_json, syncular_native_client_store_blob_file_json,
     syncular_native_client_subscribe_events_json, syncular_native_client_sync_worker_running,
     syncular_native_client_trigger_sync, syncular_native_client_unregister_query,
@@ -91,6 +91,7 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
             "presence-changed-events",
             "blob-file-api",
             "background-worker-lifecycle",
+            "background-resume-recovery",
             "structured-diagnostics",
             "diagnostic-snapshot",
             "storage-compaction",
@@ -426,6 +427,32 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
         .starts_with("Transport: "));
 
     events.close();
+    assert!(syncular_native_client_close(handle, &mut error));
+    assert!(error.is_null());
+    let _ = std::fs::remove_file(path);
+}
+
+#[test]
+fn native_ffi_resume_from_background_enqueues_recovery_sync() {
+    let path = temp_db_path("syncular-native-ffi-background-resume");
+    let mut error = ptr::null_mut();
+    let config = ffi_config(&path, "native-ffi-background-resume");
+
+    let handle = syncular_native_client_open(config.as_ptr(), false, &mut error);
+    assert!(!handle.is_null());
+    assert!(error.is_null());
+    assert!(syncular_native_client_pause_sync_worker(handle, &mut error));
+    assert!(!syncular_native_client_sync_worker_running(
+        handle, &mut error
+    ));
+
+    let resume_command_id = syncular_native_client_resume_from_background(handle, &mut error);
+    assert!(take_string(resume_command_id).starts_with("native-sync-"));
+    assert!(error.is_null());
+    assert!(syncular_native_client_sync_worker_running(
+        handle, &mut error
+    ));
+
     assert!(syncular_native_client_close(handle, &mut error));
     assert!(error.is_null());
     let _ = std::fs::remove_file(path);

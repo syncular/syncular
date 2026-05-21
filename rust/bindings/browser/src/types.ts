@@ -954,6 +954,9 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   syncOnce(
     options?: SyncularV2SyncRequestOptions
   ): Promise<SyncularV2SyncResult>;
+  resumeFromBackground(
+    options?: SyncularV2SyncRequestOptions
+  ): Promise<SyncularV2SyncResult>;
   conflictSummaries(): Promise<SyncularV2ConflictSummary[]>;
   retryConflictKeepLocal(id: string): Promise<string>;
   resolveConflict(

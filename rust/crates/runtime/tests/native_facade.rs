@@ -2172,11 +2172,11 @@ fn native_facade_can_pause_and_resume_background_worker() -> Result<()> {
         .expect_err("paused worker should reject manual trigger");
     assert_eq!(error.kind(), ErrorKind::Internal);
 
-    client.resume_sync_worker()?;
+    let resume_command_id = client.resume_from_background()?;
+    assert!(resume_command_id.starts_with("native-sync-"));
     assert!(client.sync_worker_running());
     client.resume_sync_worker()?;
     assert!(client.sync_worker_running());
-    client.trigger_sync()?;
 
     client.close()?;
     let _ = std::fs::remove_file(path);

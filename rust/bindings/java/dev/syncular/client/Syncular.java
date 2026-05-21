@@ -942,6 +942,7 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_enqueue_sync_websocket(long handle);
     static native byte[] boltffi_syncular_bolt_client_pause_sync_worker(long handle);
     static native byte[] boltffi_syncular_bolt_client_resume_sync_worker(long handle);
+    static native byte[] boltffi_syncular_bolt_client_resume_from_background(long handle);
     static native byte[] boltffi_syncular_bolt_client_sync_worker_running(long handle);
     static native byte[] boltffi_syncular_bolt_client_start_realtime_worker(long handle);
     static native byte[] boltffi_syncular_bolt_client_start(long handle);

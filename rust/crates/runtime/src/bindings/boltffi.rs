@@ -199,6 +199,10 @@ impl SyncularBoltClient {
         self.with_client_mut(|client| client.resume_sync_worker().map(|_| true))
     }
 
+    pub fn resume_from_background(&self) -> Result<String, String> {
+        self.with_client_mut(|client| client.resume_from_background())
+    }
+
     pub fn sync_worker_running(&self) -> Result<bool, String> {
         self.with_client(|client| Ok(client.sync_worker_running()))
     }

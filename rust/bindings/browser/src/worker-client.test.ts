@@ -1155,6 +1155,112 @@ describe('Syncular v2 worker client', () => {
     await expect(authPromise).resolves.toBeUndefined();
   });
 
+  it('resumes from background by restarting realtime and syncing', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+    const lifecycleEvents: SyncularV2LifecycleState[] = [];
+    client.addEventListener('lifecycleChanged', (event) =>
+      lifecycleEvents.push(event)
+    );
+
+    const openPromise = client.open({
+      baseUrl: '/sync',
+      actorId: 'actor',
+      clientId: 'client',
+    });
+    await waitForMessages(worker, 1);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await openPromise;
+
+    const realtimeOptions = {
+      wsUrl: 'wss://example.test/sync/realtime',
+      params: { scope: 'app' },
+    };
+    const startPromise = client.startRealtime(realtimeOptions);
+    await waitForMessages(worker, 2);
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await startPromise;
+
+    const resumePromise = client.resumeFromBackground();
+    expect(lifecycleEvents.at(-1)).toMatchObject({
+      phase: 'recovering',
+      lastDiagnostic: { code: 'lifecycle.resume_from_background' },
+    });
+
+    await waitForMessages(worker, 3);
+    expect(worker.messages[2]).toMatchObject({
+      type: 'startRealtime',
+      options: {
+        wsUrl: 'wss://example.test/sync/realtime',
+        params: { scope: 'app' },
+      },
+    });
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+
+    await waitForMessages(worker, 4);
+    expect(worker.messages[3]).toMatchObject({ type: 'syncOnce' });
+    worker.respond({
+      id: worker.messages[3]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        changedTables: [],
+        changedRows: [],
+        changedRowsTruncated: false,
+        subscriptions: [],
+        bootstrap: zeroBootstrapStatus(),
+        pushedCommits: 0,
+      },
+    });
+    await waitForMessages(worker, 5);
+    expect(worker.messages[4]).toMatchObject({ type: 'drainLiveQueryEvents' });
+    worker.respond({
+      id: worker.messages[4]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: [],
+    });
+
+    await waitForMessages(worker, 7);
+    expect(worker.messages[5]).toMatchObject({ type: 'executeUnsafeSql' });
+    expect(worker.messages[6]).toMatchObject({ type: 'executeUnsafeSql' });
+    worker.respond({
+      id: worker.messages[5]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { rows: [] },
+    });
+    worker.respond({
+      id: worker.messages[6]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { rows: [{ unresolved: 0, resolved: 0, total: 0 }] },
+    });
+
+    await expect(resumePromise).resolves.toMatchObject({
+      bootstrap: { complete: true },
+    });
+    expect(lifecycleEvents.at(-1)).toMatchObject({ phase: 'complete' });
+  });
+
   it('dispatches realtime live-query events from the worker', () => {
     const worker = new FakeWorker();
     const client = new SyncularV2WorkerClient(worker.asWorker(), {

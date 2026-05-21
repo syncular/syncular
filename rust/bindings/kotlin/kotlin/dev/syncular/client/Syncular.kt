@@ -842,6 +842,15 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
 
     @Throws(FfiException::class)
+    fun resumeFromBackground(): String {
+        val buf = Native.boltffi_syncular_bolt_client_resume_from_background(handle)
+            ?: throw FfiException(-1, "Null buffer returned")
+        val reader = WireReader(buf)
+        return reader.readResult({ reader.readString() }, { reader.readString() }).getOrThrow()
+    }
+
+
+    @Throws(FfiException::class)
     fun syncWorkerRunning(): Boolean {
         val buf = Native.boltffi_syncular_bolt_client_sync_worker_running(handle)
             ?: throw FfiException(-1, "Null buffer returned")
@@ -1630,6 +1639,7 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_enqueue_sync_websocket(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_pause_sync_worker(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_resume_sync_worker(handle: Long): ByteArray?
+    @JvmStatic external fun boltffi_syncular_bolt_client_resume_from_background(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_sync_worker_running(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_start_realtime_worker(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_start(handle: Long): ByteArray?
