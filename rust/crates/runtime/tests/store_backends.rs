@@ -384,6 +384,83 @@ fn local_health_check_reports_blob_and_crdt_metadata_hazards() -> Result<()> {
 }
 
 #[test]
+fn local_health_repair_clears_safe_metadata_without_mutating_rows() -> Result<()> {
+    let path = temp_db_path("syncular-health-repair-safe");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    store.transaction(|tx| {
+        tx.upsert_row("tasks", &task_row("repair-health-task"), None)?;
+        tx.upsert_subscription_state(&SubscriptionState {
+            state_id: "default".to_string(),
+            subscription_id: "sub-tasks".to_string(),
+            table: "tasks".to_string(),
+            scopes_json: serde_json::to_string(&scopes())?,
+            params_json: "{}".to_string(),
+            cursor: 3,
+            bootstrap_state_json: None,
+            status: "active".to_string(),
+        })?;
+        tx.upsert_verified_root(&VerifiedRoot {
+            state_id: "default".to_string(),
+            subscription_id: "sub-tasks".to_string(),
+            partition_id: "default".to_string(),
+            commit_seq: 3,
+            root: "bad-root".to_string(),
+        })?;
+        tx.upsert_subscription_state(&SubscriptionState {
+            state_id: "default".to_string(),
+            subscription_id: "stale-subscription".to_string(),
+            table: "tasks".to_string(),
+            scopes_json: serde_json::to_string(&scopes())?,
+            params_json: "{}".to_string(),
+            cursor: 8,
+            bootstrap_state_json: None,
+            status: "active".to_string(),
+        })?;
+        tx.upsert_verified_root(&VerifiedRoot {
+            state_id: "default".to_string(),
+            subscription_id: "stale-subscription".to_string(),
+            partition_id: "default".to_string(),
+            commit_seq: 8,
+            root: "a".repeat(64),
+        })
+    })?;
+
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    client.set_subscriptions(vec![SubscriptionSpec {
+        id: "sub-tasks".to_string(),
+        table: "tasks".to_string(),
+        scopes: scopes(),
+        params: serde_json::Map::new(),
+        bootstrap_phase: 0,
+    }])?;
+    assert!(!client.local_health_check()?.ok);
+
+    let orphan_repair: Value = serde_json::from_str(
+        &client.repair_local_health_json(&json!({ "action": "clearOrphanedState" }).to_string())?,
+    )?;
+    assert_eq!(orphan_repair["deletedSubscriptionStates"], 1);
+    assert_eq!(orphan_repair["deletedVerifiedRoots"], 1);
+
+    let rebootstrap: Value = serde_json::from_str(&client.repair_local_health_json(
+        &json!({ "action": "forceRebootstrap", "subscriptionIds": ["sub-tasks"] }).to_string(),
+    )?)?;
+    assert_eq!(rebootstrap["deletedSubscriptionStates"], 1);
+    assert_eq!(rebootstrap["deletedVerifiedRoots"], 1);
+    assert_eq!(rebootstrap["forcedRebootstrapSubscriptions"], 1);
+
+    assert!(client.local_health_check()?.ok);
+    assert_eq!(
+        client
+            .current_row_json("tasks", "repair-health-task")?
+            .unwrap()["title"],
+        "Parity task"
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn diesel_default_schema_installs_runtime_tables_without_demo_app_tables() -> Result<()> {
     let path = temp_db_path("syncular-diesel-default-schema");
     let mut store = DieselSqliteStore::open(&path)?;

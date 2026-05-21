@@ -724,6 +724,15 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
+    public func repairLocalHealthJson(requestJson: String) throws -> String {
+        var requestJson = requestJson
+        return try requestJson.withUTF8 { requestJsonBuf in
+            let buf = boltffi_syncular_bolt_client_repair_local_health_json(handle, requestJsonBuf.baseAddress!, UInt(requestJsonBuf.count))
+            defer { boltffi_free_buf(buf) }
+            return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readString() } else { throw FfiError(message: reader.readString()) } }() }
+        }
+    }
+
     public func outboxSummariesJson() throws -> String {
         let buf = boltffi_syncular_bolt_client_outbox_summaries_json(handle)
         defer { boltffi_free_buf(buf) }

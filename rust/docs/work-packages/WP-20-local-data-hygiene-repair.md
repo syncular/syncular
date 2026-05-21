@@ -83,6 +83,12 @@ First retained slice:
   app rows, failed blob uploads, and CRDT document metadata pointing at missing
   app rows. These findings are still read-only and deliberately do not prune or
   rewrite metadata.
+- The fifth retained slice adds explicit repair commands for safe cases:
+  `clearOrphanedState` deletes only unconfigured subscription/root metadata, and
+  `forceRebootstrap` deletes state/root metadata only for explicitly named
+  configured subscriptions. Manual-inspection findings remain non-repairable.
+  Runtime coverage proves both repairs leave app rows intact and return a clean
+  health report afterward.
 
 Gates:
 
@@ -94,6 +100,6 @@ Gates:
 
 ## Next Action
 
-Add explicit repair commands for the safe cases already classified by the
-health report: clear orphaned subscription/root state and force rebootstrap for
-corrupted subscription/root metadata. Keep manual-inspection hazards read-only.
+Add browser/WASM parity for the health-check and safe-repair API, then add a
+larger reset/rebootstrap flow that is explicit about synced state versus
+app-owned local-only data.
