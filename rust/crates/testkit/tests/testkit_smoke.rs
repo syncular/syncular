@@ -20,9 +20,10 @@ use syncular_testkit::{
     assert_app_server_has_row, assert_app_server_missing_row, assert_app_server_row_count,
     assert_blob_upload_queue, assert_conflict_count, assert_crdt_field_materializes,
     assert_crdt_field_text_nonblank, assert_http_request_count, assert_http_request_header,
-    assert_native_crdt_field_materializes, assert_native_error_kind, assert_native_rows_changed,
-    assert_native_table_row_count, assert_no_conflicts, assert_outbox_empty,
-    assert_outbox_statuses, assert_table_has_row, assert_table_row_count,
+    assert_native_crdt_field_materializes, assert_native_diagnostic_code,
+    assert_native_diagnostic_detail, assert_native_error_code, assert_native_error_kind,
+    assert_native_rows_changed, assert_native_table_row_count, assert_no_conflicts,
+    assert_outbox_empty, assert_outbox_statuses, assert_table_has_row, assert_table_row_count,
     default_combined_response, encoded_blob_hash, open_app_client, open_app_client_in_memory,
     open_app_client_with_server, open_app_client_with_transport,
     open_native_client_with_schema_json_options, open_native_client_with_schema_options,
@@ -1095,6 +1096,9 @@ fn native_fixture_schema_mismatch_emits_sync_failed_without_local_mutation() {
     assert_eq!(error.code, "sync.schema_mismatch");
     assert_eq!(error.category, "schema-mismatch");
     assert_eq!(error.recommended_action, "regenerateClient");
+    assert_native_diagnostic_code(&event, "sync.failed");
+    assert_native_error_code(&event, "sync.schema_mismatch");
+    assert_native_diagnostic_detail(&event, "errorCode", json!("sync.schema_mismatch"));
 
     let rows = assert_native_table_row_count(&mut fixture.client, "tasks", 1);
     assert_eq!(rows[0]["id"], "native-schema-stable");
@@ -1121,6 +1125,8 @@ fn disposable_http_sync_server_covers_auth_expired() {
         Duration::from_secs(2),
     );
     assert_native_error_kind(&event, ErrorKind::Transport);
+    assert_native_diagnostic_code(&event, "auth.expired");
+    assert_native_diagnostic_detail(&event, "status", json!(401));
     fixture.close().expect("close native fixture");
 }
 

@@ -5,8 +5,8 @@ use syncular_runtime::app_schema::{AppSchema, AppTableMetadata, EmbeddedMigratio
 use syncular_runtime::error::{ErrorKind, Result, SyncularError};
 use syncular_runtime::fixtures::todo;
 use syncular_runtime::native::{
-    NativeClientConfig, NativeClientOptions, NativeEvent, NativeEventKind, NativeEventSubscription,
-    NativeSyncularClient,
+    NativeClientConfig, NativeClientOptions, NativeDiagnostic, NativeEvent, NativeEventKind,
+    NativeEventSubscription, NativeSyncularClient,
 };
 
 use crate::temp::TempDbPath;
@@ -218,6 +218,41 @@ pub fn assert_native_error_kind(event: &NativeEvent, expected: ErrorKind) {
         event.error.as_ref().map(|error| error.kind),
         Some(expected),
         "unexpected native event error: {event:?}"
+    );
+}
+
+pub fn assert_native_error_code(event: &NativeEvent, expected: &str) {
+    assert_eq!(
+        event.error.as_ref().map(|error| error.code.as_str()),
+        Some(expected),
+        "unexpected native event error code: {event:?}"
+    );
+}
+
+pub fn assert_native_diagnostic_code<'a>(
+    event: &'a NativeEvent,
+    expected: &str,
+) -> &'a NativeDiagnostic {
+    let diagnostic = event
+        .diagnostic
+        .as_ref()
+        .unwrap_or_else(|| panic!("expected native diagnostic on event: {event:?}"));
+    assert_eq!(
+        diagnostic.code, expected,
+        "unexpected native diagnostic code on event: {event:?}"
+    );
+    diagnostic
+}
+
+pub fn assert_native_diagnostic_detail(event: &NativeEvent, key: &str, expected: Value) {
+    let diagnostic = event
+        .diagnostic
+        .as_ref()
+        .unwrap_or_else(|| panic!("expected native diagnostic on event: {event:?}"));
+    assert_eq!(
+        diagnostic.details.get(key),
+        Some(&expected),
+        "unexpected native diagnostic detail {key} on event: {event:?}"
     );
 }
 

@@ -233,3 +233,10 @@ package from the Rust-first roadmap.
   persisted request trace id on timeline and request-event routes, including
   federated gateway schemas, generated OpenAPI client types, and Stream search
   token support.
+- Added `syncular-testkit` native diagnostic assertion helpers for stable
+  native `event.diagnostic.code`, diagnostic detail values, and native
+  `event.error.code`, then used them in the native auth-expired and
+  schema-mismatch smokes. App suites can now assert observability contracts
+  without parsing human-readable messages.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
+  passed with `33` smoke tests after the diagnostic assertion slice.

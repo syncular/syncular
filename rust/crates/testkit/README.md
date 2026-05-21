@@ -39,7 +39,8 @@ Initial scope:
 - CRDT field helpers for applying text updates and asserting materialized
   Rust/native field values.
 - Assertions for outbox, conflicts, stateful app server rows/commits/auth,
-  captured HTTP request headers, blob queue, and blob cache state.
+  captured HTTP request headers, blob queue, blob cache state, and stable
+  native error/diagnostic codes.
 
 ## App Usage
 
