@@ -211,7 +211,7 @@ const GatewayOperationsQuerySchema = ConsoleOperationsQuerySchema.extend(
 const GatewayEventsQuerySchema = ConsolePartitionedPaginationQuerySchema.extend(
   {
     ...GatewayInstanceFilterSchema.shape,
-    eventType: z.enum(['push', 'pull']).optional(),
+    eventType: z.enum(['sync', 'push', 'pull']).optional(),
     actorId: z.string().optional(),
     clientId: z.string().optional(),
     requestId: z.string().optional(),

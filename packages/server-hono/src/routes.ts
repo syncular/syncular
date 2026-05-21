@@ -359,7 +359,7 @@ export interface CreateSyncRoutesOptions<
    */
   consoleLiveEmitter?: {
     emit(event: {
-      type: 'push' | 'pull' | 'commit' | 'client_update';
+      type: 'sync' | 'push' | 'pull' | 'commit' | 'client_update';
       timestamp: string;
       data: Record<string, unknown>;
     }): void;
@@ -437,6 +437,7 @@ const DEFAULT_MAX_SYNC_BINARY_PACK_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_SNAPSHOT_CHUNK_RESPONSE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_SNAPSHOT_ARTIFACT_RESPONSE_BYTES = 256 * 1024 * 1024;
 const SNAPSHOT_SCOPES_HEADER = 'x-syncular-snapshot-scopes';
+const SYNC_CLIENT_ID_HEADER = 'x-syncular-client-id';
 
 type TraceContext = {
   traceId: string | null;
@@ -452,7 +453,7 @@ const DEFAULT_SYNC_CORS_ALLOW_HEADERS = [
   SNAPSHOT_SCOPES_HEADER,
   'x-syncular-sync-attempt-id',
   'x-syncular-transport-path',
-  'x-syncular-client-id',
+  SYNC_CLIENT_ID_HEADER,
   'sentry-trace',
   'baggage',
   'traceparent',
@@ -646,6 +647,10 @@ function readRequestId(c: Context): string {
   const headerRequestId = c.req.header('x-request-id')?.trim();
   if (headerRequestId) return headerRequestId;
   return createOpaqueId('req');
+}
+
+function readClientIdHint(c: Context): string {
+  return c.req.header(SYNC_CLIENT_ID_HEADER)?.trim() || 'unknown';
 }
 
 function parseW3cTraceparent(
@@ -979,13 +984,13 @@ function emitConsoleLiveEvent(
   emitter:
     | {
         emit(event: {
-          type: 'push' | 'pull' | 'commit' | 'client_update';
+          type: 'sync' | 'push' | 'pull' | 'commit' | 'client_update';
           timestamp: string;
           data: Record<string, unknown>;
         }): void;
       }
     | undefined,
-  type: 'push' | 'pull' | 'commit' | 'client_update',
+  type: 'sync' | 'push' | 'pull' | 'commit' | 'client_update',
   data: Record<string, unknown> | (() => Record<string, unknown>)
 ): void {
   if (!emitter) return;
@@ -1130,9 +1135,23 @@ export function createSyncRoutes<
     });
     throw error;
   });
+  const authCache = new WeakMap<Context, Promise<Auth | null>>();
+  const getAuth = (c: Context): Promise<Auth | null> => {
+    const cached = authCache.get(c);
+    if (cached) return cached;
+    const pending = options.authenticate(c);
+    authCache.set(c, pending);
+    return pending;
+  };
+
+  type SyncJsonReadFailure = {
+    statusCode: number;
+    errorCode: string;
+    errorMessage: string;
+  };
   type SyncJsonReadResult =
     | { ok: true; value: unknown }
-    | { ok: false; response: Response };
+    | { ok: false; response: Response; failure?: SyncJsonReadFailure };
   const syncJsonBodyCache = new WeakMap<Request, Promise<SyncJsonReadResult>>();
   const readLimitedSyncJsonBody = (c: Context): Promise<SyncJsonReadResult> => {
     const cached = syncJsonBodyCache.get(c.req.raw);
@@ -1162,6 +1181,11 @@ export function createSyncRoutes<
             observed: declaredLength,
             max: maxSyncRequestJsonBytes,
           }),
+          failure: {
+            statusCode: 413,
+            errorCode: 'runtime.limit_exceeded',
+            errorMessage: 'maxSyncRequestJsonBytes exceeded',
+          },
         };
       }
 
@@ -1180,6 +1204,11 @@ export function createSyncRoutes<
               observed: error.observed,
               max: error.max,
             }),
+            failure: {
+              statusCode: 413,
+              errorCode: 'runtime.limit_exceeded',
+              errorMessage: `${error.limit} exceeded`,
+            },
           };
         }
         throw error;
@@ -1351,7 +1380,7 @@ export function createSyncRoutes<
     requestId: string;
     traceId?: string | null;
     spanId?: string | null;
-    eventType: 'push' | 'pull';
+    eventType: 'sync' | 'push' | 'pull';
     syncPath: 'http-combined' | 'ws-push';
     actorId: string;
     clientId: string;
@@ -1456,6 +1485,93 @@ export function createSyncRoutes<
           error: error instanceof Error ? error.message : String(error),
         });
       });
+  };
+
+  const recordHttpCombinedFailure = (args: {
+    partitionId: string;
+    requestId: string;
+    traceContext: TraceContext;
+    actorId: string;
+    clientId: string;
+    transportPath: 'direct' | 'relay';
+    eventType: 'sync' | 'push' | 'pull';
+    statusCode: number;
+    outcome: 'rejected' | 'error';
+    durationMs: number;
+    errorCode: string;
+    errorMessage: string;
+    operationCount?: number | null;
+    rowCount?: number | null;
+    subscriptionCount?: number | null;
+    scopesSummary?: Record<string, string | string[]> | null;
+    payloadSnapshot?: RequestPayloadSnapshot | null;
+  }): void => {
+    recordRequestEventInBackground(() => ({
+      partitionId: args.partitionId,
+      requestId: args.requestId,
+      traceId: args.traceContext.traceId,
+      spanId: args.traceContext.spanId,
+      eventType: args.eventType,
+      syncPath: 'http-combined',
+      actorId: args.actorId,
+      clientId: args.clientId,
+      transportPath: args.transportPath,
+      statusCode: args.statusCode,
+      outcome: args.outcome,
+      responseStatus: normalizeResponseStatus(args.statusCode, args.outcome),
+      durationMs: args.durationMs,
+      errorCode: args.errorCode,
+      errorMessage: args.errorMessage,
+      operationCount: args.operationCount ?? null,
+      rowCount: args.rowCount ?? null,
+      subscriptionCount: args.subscriptionCount ?? null,
+      scopesSummary: args.scopesSummary ?? null,
+      payloadSnapshot: args.payloadSnapshot ?? null,
+    }));
+
+    emitConsoleLiveEvent(consoleLiveEmitter, args.eventType, () => ({
+      partitionId: args.partitionId,
+      requestId: args.requestId,
+      traceId: args.traceContext.traceId,
+      spanId: args.traceContext.spanId,
+      actorId: args.actorId,
+      clientId: args.clientId,
+      transportPath: args.transportPath,
+      syncPath: 'http-combined',
+      outcome: args.outcome,
+      statusCode: args.statusCode,
+      durationMs: args.durationMs,
+      operationCount: args.operationCount ?? null,
+      rowCount: args.rowCount ?? null,
+      subscriptionCount: args.subscriptionCount ?? null,
+      errorCode: args.errorCode,
+      errorMessage: args.errorMessage,
+    }));
+  };
+
+  const recordHttpCombinedReadFailure = async (
+    c: Context,
+    failure: SyncJsonReadFailure
+  ): Promise<void> => {
+    if (!shouldRecordRequestEvents && !shouldEmitConsoleLiveEvents) return;
+
+    const auth = await getAuth(c).catch(() => null);
+    if (!auth) return;
+
+    recordHttpCombinedFailure({
+      partitionId: auth.partitionId ?? 'default',
+      requestId: readRequestId(c),
+      traceContext: readTraceContext(c),
+      actorId: auth.actorId,
+      clientId: readClientIdHint(c),
+      transportPath: readTransportPath(c),
+      eventType: 'sync',
+      statusCode: failure.statusCode,
+      outcome: failure.statusCode >= 500 ? 'error' : 'rejected',
+      durationMs: 0,
+      errorCode: failure.errorCode,
+      errorMessage: failure.errorMessage,
+    });
   };
 
   type PushRequestBody = Omit<
@@ -2025,15 +2141,6 @@ export function createSyncRoutes<
     return pushed;
   }
 
-  const authCache = new WeakMap<Context, Promise<Auth | null>>();
-  const getAuth = (c: Context): Promise<Auth | null> => {
-    const cached = authCache.get(c);
-    if (cached) return cached;
-    const pending = options.authenticate(c);
-    authCache.set(c, pending);
-    return pending;
-  };
-
   // -------------------------------------------------------------------------
   // Rate limiting (optional)
   // -------------------------------------------------------------------------
@@ -2070,6 +2177,9 @@ export function createSyncRoutes<
       if (pullLimiter && pushLimiter && c.req.method === 'POST') {
         const parsed = await readLimitedSyncJsonBody(c);
         if (!parsed.ok) {
+          if (parsed.failure) {
+            await recordHttpCombinedReadFailure(c, parsed.failure);
+          }
           return parsed.response;
         }
         if (parsed.value !== null && typeof parsed.value === 'object') {
@@ -2383,9 +2493,15 @@ export function createSyncRoutes<
       if (!auth) return syncError(c, 401, 'sync.auth_required');
       const partitionId = auth.partitionId ?? 'default';
       const transportPath = readTransportPath(c);
+      const combinedTimer = createSyncTimer();
 
       const bodyRead = await readLimitedSyncJsonBody(c);
-      if (!bodyRead.ok) return bodyRead.response;
+      if (!bodyRead.ok) {
+        if (bodyRead.failure) {
+          await recordHttpCombinedReadFailure(c, bodyRead.failure);
+        }
+        return bodyRead.response;
+      }
       const parsedBody = SyncCombinedRequestSchema.safeParse(bodyRead.value);
       if (!parsedBody.success) {
         return syncValidationError(c, 'json', parsedBody.error.issues);
@@ -2454,6 +2570,14 @@ export function createSyncRoutes<
             >;
           };
       let pullResponse: undefined | PullResult['response'];
+      let finalizePullSuccess: (() => Promise<void>) | undefined;
+      let pullLimitEventDetails:
+        | {
+            rowCount: number | null;
+            subscriptionCount: number;
+            scopesSummary: Record<string, string | string[]> | null;
+          }
+        | undefined;
       const exposeBenchPullTimings =
         c.req.header('x-syncular-bench-timings') === '1';
       const requestedSyncPackEncodings =
@@ -2614,101 +2738,105 @@ export function createSyncRoutes<
           throw err;
         }
 
-        try {
-          await recordClientCursor(options.db, options.dialect, {
-            partitionId,
-            clientId,
-            actorId: auth.actorId,
-            cursor: pullResult.clientCursor,
-            effectiveScopes: pullResult.effectiveScopes,
-          });
-          emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
-            action: 'cursor_recorded',
-            partitionId,
-            actorId: auth.actorId,
-            clientId,
-            cursor: pullResult.clientCursor,
-          }));
-        } catch (error) {
-          logAsyncFailureOnce('sync.client_cursor_record_failed', {
-            event: 'sync.client_cursor_record_failed',
-            userId: auth.actorId,
-            clientId,
-            error: error instanceof Error ? error.message : String(error),
-          });
-        }
-
-        wsConnectionManager?.updateConnectionSubscriptions(
-          connectionOwnerKey,
-          buildRealtimeSubscriptionsForPull({
-            partitionId,
-            requestSubscriptions: request.subscriptions,
-            responseSubscriptions: pullResult.response.subscriptions,
-          })
-        );
-
         const pullDurationMs = timer();
-
-        logSyncEvent({
-          event: 'sync.pull',
-          userId: auth.actorId,
-          durationMs: pullDurationMs,
-          subscriptionCount: pullResult.response.subscriptions.length,
-          clientCursor: pullResult.clientCursor,
-        });
-
-        recordRequestEventInBackground(() => {
-          const pullRowCount = shouldRecordRequestEvents
+        const pullRowCount =
+          shouldRecordRequestEvents || shouldEmitConsoleLiveEvents
             ? countPullRows(pullResult.response)
             : null;
-          const scopesSummary = shouldRecordRequestEvents
-            ? summarizeScopeValues(pullResult.effectiveScopes)
-            : null;
-          const payloadSnapshot = shouldCaptureRequestPayloadSnapshots
-            ? {
-                request: {
-                  clientId,
-                  limitCommits: request.limitCommits,
-                  limitSnapshotRows: request.limitSnapshotRows,
-                  maxSnapshotPages: request.maxSnapshotPages,
-                  dedupeRows: request.dedupeRows,
-                  subscriptions: request.subscriptions.map((subscription) => ({
-                    id: subscription.id,
-                    table: subscription.table,
-                    scopes: subscription.scopes,
-                    cursor: subscription.cursor,
-                    bootstrapState: subscription.bootstrapState,
-                  })),
-                },
-                response: summarizePullResponse(pullResult.response),
-              }
-            : null;
+        const scopesSummary = shouldRecordRequestEvents
+          ? summarizeScopeValues(pullResult.effectiveScopes)
+          : null;
+        pullLimitEventDetails = {
+          rowCount: pullRowCount,
+          subscriptionCount: request.subscriptions.length,
+          scopesSummary,
+        };
+        finalizePullSuccess = async () => {
+          try {
+            await recordClientCursor(options.db, options.dialect, {
+              partitionId,
+              clientId,
+              actorId: auth.actorId,
+              cursor: pullResult.clientCursor,
+              effectiveScopes: pullResult.effectiveScopes,
+            });
+            emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
+              action: 'cursor_recorded',
+              partitionId,
+              actorId: auth.actorId,
+              clientId,
+              cursor: pullResult.clientCursor,
+            }));
+          } catch (error) {
+            logAsyncFailureOnce('sync.client_cursor_record_failed', {
+              event: 'sync.client_cursor_record_failed',
+              userId: auth.actorId,
+              clientId,
+              error: error instanceof Error ? error.message : String(error),
+            });
+          }
 
-          return {
-            partitionId,
-            requestId,
-            traceId: traceContext.traceId,
-            spanId: traceContext.spanId,
-            eventType: 'pull',
-            syncPath: 'http-combined',
-            actorId: auth.actorId,
-            clientId,
-            transportPath,
-            statusCode: 200,
-            outcome: 'applied',
-            responseStatus: normalizeResponseStatus(200, 'applied'),
+          wsConnectionManager?.updateConnectionSubscriptions(
+            connectionOwnerKey,
+            buildRealtimeSubscriptionsForPull({
+              partitionId,
+              requestSubscriptions: request.subscriptions,
+              responseSubscriptions: pullResult.response.subscriptions,
+            })
+          );
+
+          logSyncEvent({
+            event: 'sync.pull',
+            userId: auth.actorId,
             durationMs: pullDurationMs,
-            rowCount: pullRowCount,
-            subscriptionCount: request.subscriptions.length,
-            scopesSummary,
-            payloadSnapshot,
-          };
-        });
-        emitConsoleLiveEvent(consoleLiveEmitter, 'pull', () => {
-          const pullRowCount = shouldEmitConsoleLiveEvents
-            ? countPullRows(pullResult.response)
-            : null;
-          return {
+            subscriptionCount: pullResult.response.subscriptions.length,
+            clientCursor: pullResult.clientCursor,
+          });
+
+          recordRequestEventInBackground(() => {
+            const payloadSnapshot = shouldCaptureRequestPayloadSnapshots
+              ? {
+                  request: {
+                    clientId,
+                    limitCommits: request.limitCommits,
+                    limitSnapshotRows: request.limitSnapshotRows,
+                    maxSnapshotPages: request.maxSnapshotPages,
+                    dedupeRows: request.dedupeRows,
+                    subscriptions: request.subscriptions.map(
+                      (subscription) => ({
+                        id: subscription.id,
+                        table: subscription.table,
+                        scopes: subscription.scopes,
+                        cursor: subscription.cursor,
+                        bootstrapState: subscription.bootstrapState,
+                      })
+                    ),
+                  },
+                  response: summarizePullResponse(pullResult.response),
+                }
+              : null;
+
+            return {
+              partitionId,
+              requestId,
+              traceId: traceContext.traceId,
+              spanId: traceContext.spanId,
+              eventType: 'pull',
+              syncPath: 'http-combined',
+              actorId: auth.actorId,
+              clientId,
+              transportPath,
+              statusCode: 200,
+              outcome: 'applied',
+              responseStatus: normalizeResponseStatus(200, 'applied'),
+              durationMs: pullDurationMs,
+              rowCount: pullRowCount,
+              subscriptionCount: request.subscriptions.length,
+              scopesSummary,
+              payloadSnapshot,
+            };
+          });
+          emitConsoleLiveEvent(consoleLiveEmitter, 'pull', () => ({
             partitionId,
             requestId,
             traceId: traceContext.traceId,
@@ -2723,24 +2851,18 @@ export function createSyncRoutes<
             rowCount: pullRowCount,
             subscriptionCount: request.subscriptions.length,
             clientCursor: pullResult.clientCursor,
-          };
-        });
+          }));
 
-        if (exposeBenchPullTimings && pullResult.bootstrapTimings) {
-          c.header(
-            'x-syncular-bench-pull-timings',
-            JSON.stringify(pullResult.bootstrapTimings)
-          );
-        }
+          if (exposeBenchPullTimings && pullResult.bootstrapTimings) {
+            c.header(
+              'x-syncular-bench-pull-timings',
+              JSON.stringify(pullResult.bootstrapTimings)
+            );
+          }
+        };
 
         pullResponse = pullResult.response;
       }
-
-      triggerAutoMaintenance({
-        actorId: auth.actorId,
-        clientId,
-        partitionId,
-      });
 
       const combinedResponse: SyncCombinedResponse = {
         ok: true as const,
@@ -2748,6 +2870,34 @@ export function createSyncRoutes<
         ...(latestSchemaVersion ? { latestSchemaVersion } : {}),
         ...(pushResponse ? { push: pushResponse } : {}),
         ...(pullResponse ? { pull: pullResponse } : {}),
+      };
+      const recordResponseLimitFailure = (args: {
+        limit: string;
+        observed: number;
+        max: number;
+      }): void => {
+        recordHttpCombinedFailure({
+          partitionId,
+          requestId,
+          traceContext,
+          actorId: auth.actorId,
+          clientId,
+          transportPath,
+          eventType: body.pull ? 'pull' : 'push',
+          statusCode: 413,
+          outcome: 'rejected',
+          durationMs: combinedTimer(),
+          errorCode: 'runtime.limit_exceeded',
+          errorMessage: `${args.limit} exceeded (${args.observed} > ${args.max} bytes)`,
+          operationCount:
+            body.push?.commits.reduce(
+              (count, commit) => count + (commit.operations?.length ?? 0),
+              0
+            ) ?? null,
+          rowCount: pullLimitEventDetails?.rowCount ?? null,
+          subscriptionCount: pullLimitEventDetails?.subscriptionCount ?? null,
+          scopesSummary: pullLimitEventDetails?.scopesSummary ?? null,
+        });
       };
 
       if (shouldEncodeBinarySyncPack) {
@@ -2759,7 +2909,22 @@ export function createSyncRoutes<
           observed: encoded.byteLength,
           max: maxSyncBinaryPackBytes,
         });
-        if (limitResponse) return limitResponse;
+        if (limitResponse) {
+          recordResponseLimitFailure({
+            limit: 'maxSyncBinaryPackBytes',
+            observed: encoded.byteLength,
+            max: maxSyncBinaryPackBytes,
+          });
+          return limitResponse;
+        }
+        if (finalizePullSuccess) {
+          await finalizePullSuccess();
+        }
+        triggerAutoMaintenance({
+          actorId: auth.actorId,
+          clientId,
+          partitionId,
+        });
         const body = encoded.buffer.slice(
           encoded.byteOffset,
           encoded.byteOffset + encoded.byteLength
@@ -2769,12 +2934,28 @@ export function createSyncRoutes<
       }
 
       const jsonResponse = JSON.stringify(combinedResponse);
+      const jsonResponseBytes = byteLengthUtf8(jsonResponse);
       const limitResponse = responseBodyOverLimit(c, {
         limit: 'maxSyncResponseJsonBytes',
-        observed: byteLengthUtf8(jsonResponse),
+        observed: jsonResponseBytes,
         max: maxSyncResponseJsonBytes,
       });
-      if (limitResponse) return limitResponse;
+      if (limitResponse) {
+        recordResponseLimitFailure({
+          limit: 'maxSyncResponseJsonBytes',
+          observed: jsonResponseBytes,
+          max: maxSyncResponseJsonBytes,
+        });
+        return limitResponse;
+      }
+      if (finalizePullSuccess) {
+        await finalizePullSuccess();
+      }
+      triggerAutoMaintenance({
+        actorId: auth.actorId,
+        clientId,
+        partitionId,
+      });
 
       c.header('content-type', 'application/json');
       return c.body(jsonResponse, 200);

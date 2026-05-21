@@ -70,7 +70,7 @@ export const ConsoleClientSchema = z.object({
   isRealtimeConnected: z.boolean(),
   activityState: z.enum(['active', 'idle', 'stale']),
   lastRequestAt: z.string().nullable(),
-  lastRequestType: z.enum(['push', 'pull']).nullable(),
+  lastRequestType: z.enum(['sync', 'push', 'pull']).nullable(),
   lastRequestOutcome: z.string().nullable(),
   effectiveScopes: z.record(z.string(), z.unknown()),
   updatedAt: z.string(),
@@ -133,7 +133,7 @@ export const ConsoleRequestEventSchema = z.object({
   requestId: z.string(),
   traceId: z.string().nullable(),
   spanId: z.string().nullable(),
-  eventType: z.enum(['push', 'pull']),
+  eventType: z.enum(['sync', 'push', 'pull']),
   syncPath: z.enum(['http-combined', 'ws-push']),
   transportPath: z.enum(['direct', 'relay']),
   actorId: z.string(),
@@ -318,7 +318,7 @@ export type ConsolePaginatedResponse<T> = {
 export const ConsoleTimelineQuerySchema =
   ConsolePartitionedPaginationQuerySchema.extend({
     view: z.enum(['all', 'commits', 'events']).default('all'),
-    eventType: z.enum(['push', 'pull']).optional(),
+    eventType: z.enum(['sync', 'push', 'pull']).optional(),
     actorId: z.string().optional(),
     clientId: z.string().optional(),
     requestId: z.string().optional(),
@@ -398,7 +398,7 @@ export const LatencyQuerySchema = z.object({
 // ============================================================================
 
 export const LiveEventSchema = z.object({
-  type: z.enum(['push', 'pull', 'commit', 'client_update']),
+  type: z.enum(['sync', 'push', 'pull', 'commit', 'client_update']),
   timestamp: z.string(),
   data: z.record(z.string(), z.unknown()),
 });

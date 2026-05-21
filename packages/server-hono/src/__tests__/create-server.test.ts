@@ -231,12 +231,14 @@ describe('createSyncServer console configuration', () => {
   function createEmptyPullRequest(args: {
     clientId: string;
     userId: string;
+    requestId?: string;
   }): Request {
     return new Request('http://localhost/sync', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'x-user-id': args.userId,
+        ...(args.requestId ? { 'x-request-id': args.requestId } : {}),
       },
       body: JSON.stringify({
         clientId: args.clientId,
@@ -271,14 +273,44 @@ describe('createSyncServer console configuration', () => {
     payload_ref: string | null;
     trace_id: string | null;
     span_id: string | null;
+    event_type: string;
+    client_id: string;
+    status_code: number;
+    outcome: string;
+    response_status: string;
+    error_code: string | null;
+    error_message: string | null;
+    row_count: number | string | null;
+    subscription_count: number | string | null;
   }> {
     for (let attempt = 0; attempt < 40; attempt++) {
       const result = await sql<{
         payload_ref: string | null;
         trace_id: string | null;
         span_id: string | null;
+        event_type: string;
+        client_id: string;
+        status_code: number;
+        outcome: string;
+        response_status: string;
+        error_code: string | null;
+        error_message: string | null;
+        row_count: number | string | null;
+        subscription_count: number | string | null;
       }>`
-        SELECT payload_ref, trace_id, span_id
+        SELECT
+          payload_ref,
+          trace_id,
+          span_id,
+          event_type,
+          client_id,
+          status_code,
+          outcome,
+          response_status,
+          error_code,
+          error_message,
+          row_count,
+          subscription_count
         FROM sync_request_events
         WHERE request_id = ${requestId}
         ORDER BY event_id DESC
@@ -355,6 +387,49 @@ describe('createSyncServer console configuration', () => {
     });
   });
 
+  it('records oversized sync JSON request bodies as console limit events', async () => {
+    process.env.SYNC_CONSOLE_TOKEN = 'env-token';
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      console: {},
+      routes: {
+        maxSyncRequestJsonBytes: 96,
+      },
+    });
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const requestId = 'req-json-body-limit';
+    const response = await app.request('http://localhost/sync', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-request-id': requestId,
+        'x-syncular-client-id': 'client-json-body-limit',
+      },
+      body: JSON.stringify({
+        clientId: `client-${'x'.repeat(200)}`,
+        pull: {
+          limitCommits: 10,
+          subscriptions: [],
+        },
+      }),
+    });
+
+    expect(response.status).toBe(413);
+    const eventRow = await waitForRequestEventRow(requestId);
+    expect(eventRow).toMatchObject({
+      event_type: 'sync',
+      client_id: 'client-json-body-limit',
+      status_code: 413,
+      outcome: 'rejected',
+      response_status: 'client_error',
+      error_code: 'runtime.limit_exceeded',
+    });
+    expect(eventRow.error_message).toContain('maxSyncRequestJsonBytes');
+  });
+
   it('rejects oversized sync JSON responses with a stable limit envelope', async () => {
     const options = createOptions();
     const server = createSyncServer({
@@ -378,6 +453,58 @@ describe('createSyncServer console configuration', () => {
         max: 48,
       },
     });
+  });
+
+  it('records oversized sync JSON responses as rejected console events', async () => {
+    process.env.SYNC_CONSOLE_TOKEN = 'env-token';
+    const options = createOptions();
+    const server = createSyncServer({
+      ...options,
+      console: {},
+      routes: {
+        maxSyncResponseJsonBytes: 48,
+      },
+    });
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const requestId = 'req-json-response-limit';
+    const response = await app.request(
+      createEmptyPullRequest({
+        clientId: 'client-json-response-limit',
+        userId: 'u1',
+        requestId,
+      })
+    );
+
+    expect(response.status).toBe(413);
+    const eventRow = await waitForRequestEventRow(requestId);
+    expect(eventRow).toMatchObject({
+      event_type: 'pull',
+      client_id: 'client-json-response-limit',
+      status_code: 413,
+      outcome: 'rejected',
+      response_status: 'client_error',
+      error_code: 'runtime.limit_exceeded',
+    });
+    expect(eventRow.error_message).toContain('maxSyncResponseJsonBytes');
+    expect(Number(eventRow.row_count ?? 0)).toBe(0);
+    expect(Number(eventRow.subscription_count ?? 0)).toBe(0);
+
+    const successCountResult = await sql<{ total: number | string }>`
+      SELECT COUNT(*)::int AS total
+      FROM sync_request_events
+      WHERE request_id = ${requestId}
+        AND status_code = 200
+    `.execute(db);
+    expect(Number(successCountResult.rows[0]?.total ?? 0)).toBe(0);
+
+    const cursorCountResult = await sql<{ total: number | string }>`
+      SELECT COUNT(*)::int AS total
+      FROM sync_client_cursors
+      WHERE client_id = ${'client-json-response-limit'}
+    `.execute(db);
+    expect(Number(cursorCountResult.rows[0]?.total ?? 0)).toBe(0);
   });
 
   it('rejects oversized binary sync-pack responses with a stable limit envelope', async () => {
@@ -1832,7 +1959,7 @@ describe('createSyncServer console configuration', () => {
       data: Record<string, unknown>;
     }> = [];
     const listener = (event: {
-      type: 'push' | 'pull' | 'commit' | 'client_update';
+      type: 'sync' | 'push' | 'pull' | 'commit' | 'client_update';
       timestamp: string;
       data: Record<string, unknown>;
     }) => {

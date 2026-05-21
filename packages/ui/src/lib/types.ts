@@ -21,7 +21,7 @@ export type CommitStreamEntry = {
 };
 
 export type StreamOperation = {
-  type: 'commit' | 'push' | 'pull';
+  type: 'commit' | 'sync' | 'push' | 'pull';
   id: string;
   outcome: string;
   duration: string;

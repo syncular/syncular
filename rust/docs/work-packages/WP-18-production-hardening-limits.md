@@ -58,8 +58,8 @@ product-level limits.
 
 ## Next Action
 
-Add stress coverage for configured server/runtime limits and review console
-visibility for limit pressure.
+Add the remaining stress coverage for runtime queues/buffers and review whether
+blob/artifact pressure should get first-class console summary counters.
 
 ## Progress
 
@@ -95,6 +95,14 @@ visibility for limit pressure.
 - Hono sync routes now bound combined request JSON, JSON responses, binary
   sync-pack responses, snapshot chunk downloads, and scoped snapshot artifact
   downloads with stable `runtime.limit_exceeded` envelopes.
+- Hono console request events now surface combined-level request/response limit
+  pressure. Pre-parse combined request failures use the explicit `sync` event
+  type, and oversized response failures are recorded as rejected events instead
+  of successful pulls.
+- Pull cursor recording, realtime subscription updates, and successful pull
+  console events now happen only after the response-size gate passes, so a
+  `runtime.limit_exceeded` response does not advance client-visible server
+  cursor state.
 - Sync retry count, sending stale timeout, blob upload retry count, blob upload
   stale timeout, blob upload batch size, and SQLite busy timeout are now visible
   runtime limits in native manifests and diagnostics.
@@ -114,6 +122,9 @@ visibility for limit pressure.
 - `bun test src/__tests__` from `packages/server-hono`
 - `bun run tsgo` from `packages/core`
 - `bun run tsgo` from `packages/server-hono`
+- `bun run tsgo` from `packages/console`
+- `bun run tsgo` from `packages/transport-http`
+- `bun run tsgo` from `packages/ui`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime error_taxonomy`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_ffi native_ffi_exposes_runtime_manifest_without_handle`
