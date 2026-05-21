@@ -554,6 +554,34 @@ impl SyncularBoltClient {
         self.with_client_mut(|client| client.outbox_summaries_json())
     }
 
+    pub fn upsert_auth_lease_json(&self, lease_json: &str) -> Result<bool, String> {
+        self.with_client_mut(|client| client.upsert_auth_lease_json(lease_json).map(|_| true))
+    }
+
+    pub fn auth_lease_json(&self, lease_id: &str) -> Result<String, String> {
+        self.with_client_mut(|client| client.auth_lease_json(lease_id))
+    }
+
+    pub fn active_auth_leases_json(
+        &self,
+        actor_id: Option<String>,
+        now_ms: i64,
+    ) -> Result<String, String> {
+        self.with_client_mut(|client| client.active_auth_leases_json(actor_id.as_deref(), now_ms))
+    }
+
+    pub fn set_outbox_auth_lease_json(
+        &self,
+        client_commit_id: &str,
+        provenance_json: Option<String>,
+    ) -> Result<bool, String> {
+        self.with_client_mut(|client| {
+            client
+                .set_outbox_auth_lease_json(client_commit_id, provenance_json.as_deref())
+                .map(|_| true)
+        })
+    }
+
     pub fn conflict_summaries_json(&self) -> Result<String, String> {
         self.with_client_mut(|client| client.conflict_summaries_json())
     }

@@ -31,12 +31,13 @@ use syncular_runtime::fixtures::todo::{
 };
 use syncular_runtime::limits::DEFAULT_MAX_UNRESOLVED_OUTBOX_COMMITS;
 use syncular_runtime::protocol::{
-    CombinedRequest, CombinedResponse, PullResponse, PushCommitRequest, PushCommitResponse,
-    ScopeValues, SnapshotChunkRef, SubscriptionResponse, SyncChange, SyncCommit, SyncOperation,
-    SyncSnapshot,
+    AuthLeaseProvenance, CombinedRequest, CombinedResponse, PullResponse, PushCommitRequest,
+    PushCommitResponse, ScopeValues, SnapshotChunkRef, SubscriptionResponse, SyncChange,
+    SyncCommit, SyncOperation, SyncSnapshot,
 };
 use syncular_runtime::store::{
-    now_ms, DemoTaskStore, SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx, VerifiedRoot,
+    now_ms, AuthLeaseRecord, DemoTaskStore, SubscriptionState, SyncStateStore, SyncStore,
+    SyncStoreTx, VerifiedRoot,
 };
 use syncular_runtime::transport::{RealtimeEvent, RealtimeTransport, SyncTransport};
 use syncular_runtime::worker::{SyncWorker, SyncWorkerEvent};
@@ -673,6 +674,79 @@ fn diesel_default_schema_installs_runtime_tables_without_demo_app_tables() -> Re
             "select count(*) as count from sqlite_master where type = 'table' and name in ('comments', 'projects', 'tasks')"
         )?,
         0
+    );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn diesel_store_persists_auth_leases_and_outbox_provenance() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-auth-lease");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let now = now_ms();
+    let lease = AuthLeaseRecord {
+        lease_id: "lease-active".to_string(),
+        kid: "test-kid".to_string(),
+        actor_id: "user-rust".to_string(),
+        issued_at_ms: now - 10,
+        not_before_ms: now - 10,
+        expires_at_ms: now + 60_000,
+        schema_version: current_schema_version(),
+        payload_json: json!({
+            "leaseId": "lease-active",
+            "actorId": "user-rust",
+            "scopes": [{ "subscriptionId": "sub-tasks", "table": "tasks" }]
+        })
+        .to_string(),
+        token: "test-token".to_string(),
+        status: "active".to_string(),
+        last_validation_error: None,
+        created_at_ms: now,
+        updated_at_ms: now,
+    };
+
+    store.upsert_auth_lease(&lease)?;
+    assert_eq!(store.auth_lease("lease-active")?.unwrap().kid, "test-kid");
+    assert_eq!(store.active_auth_leases(Some("user-rust"), now)?.len(), 1);
+    assert!(store
+        .active_auth_leases(Some("other-user"), now)?
+        .is_empty());
+
+    store.add_task(
+        "user-rust",
+        None,
+        "lease-task".to_string(),
+        "auth lease task".to_string(),
+    )?;
+    let client_commit_id = store.outbox_summaries()?[0].client_commit_id.clone();
+    store.set_outbox_auth_lease(
+        &client_commit_id,
+        Some(&AuthLeaseProvenance {
+            lease_id: "lease-active".to_string(),
+            lease_expires_at_ms: lease.expires_at_ms,
+            lease_status_at_enqueue: "active".to_string(),
+            lease_scope_summary_json: Some(r#"{"tasks":["user_id"]}"#.to_string()),
+        }),
+    )?;
+
+    drop(store);
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let summaries = store.outbox_summaries()?;
+    let provenance = summaries[0]
+        .auth_lease
+        .as_ref()
+        .expect("outbox summary should include auth lease provenance");
+    assert_eq!(provenance.lease_id, "lease-active");
+    assert_eq!(provenance.lease_status_at_enqueue, "active");
+
+    let pending = store.transaction(|tx| tx.pending_outbox(1))?;
+    assert_eq!(
+        pending[0]
+            .auth_lease
+            .as_ref()
+            .map(|lease| lease.lease_id.as_str()),
+        Some("lease-active")
     );
 
     let _ = std::fs::remove_file(path);

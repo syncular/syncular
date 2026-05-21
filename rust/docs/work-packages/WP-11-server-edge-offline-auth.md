@@ -42,15 +42,16 @@ designing offline auth leases honestly.
 The current decision is to defer a pure Rust server. Offline auth must not
 weaken strict online `/sync` authorization. The legacy JS offline-auth package
 is a local UX/session-cache primitive, not a signed server authorization model.
-The first Rust slice now exists as protocol/testkit foundation only: typed lease
-payload/header/provenance/result structs and deterministic ES256 testkit token
-helpers.
+The Rust foundation now covers protocol/testkit lease types and local client
+storage. Leases remain offline intent/audit records only; they do not bypass
+normal reconnect authorization.
 
 ## Next Action
 
-Next narrow slice is local lease storage and outbox provenance behind a
-migration. Do not start a Rust server rewrite, and do not let a lease bypass
-normal reconnect authorization.
+Next narrow slice is a current-auth replay check: queued commits that carry
+lease provenance must still be sent with normal request auth, and any server
+lease rejection must surface through stable diagnostics/conflict-style recovery
+without treating the lease as authorization.
 
 ## Progress
 
@@ -70,11 +71,34 @@ normal reconnect authorization.
   `TestAuthLeaseKeyPair`, `issue_test_auth_lease`, and
   `verify_test_auth_lease`.
 - Added smoke coverage for valid, expired, and tampered test auth lease tokens.
+- Added runtime schema v8 with `sync_auth_leases` and nullable auth-lease
+  provenance columns on `sync_outbox_commits`.
+- Added shared `AuthLeaseRecord` storage APIs and optional
+  `AuthLeaseProvenance` on outbox commits/summaries.
+- Implemented lease storage/provenance read paths in the native Diesel store,
+  browser owned SQLite store, browser memory store, native facade, C FFI, and
+  BoltFFI wrapper.
+- Added native store coverage for lease roundtrip, active-lease filtering, and
+  outbox provenance on summaries plus pending push rows.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol -p
   syncular-testkit` passed with `15` protocol tests and `36` testkit smoke
   tests.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
+  store_backends` passed with `36` tests after the local lease storage slice.
 - Gate: `bun run rust:conformance:fast` passed after the protocol/testkit
-  lease slice.
+  lease slice. Final reruns after the storage API slice hit unrelated
+  timing-sensitive native HTTP/event smokes; the exact failed smokes passed when
+  rerun directly, and the constituent runtime, todo-example, and browser
+  generated-app gates passed.
 - Gate: `bun run rust:check:no-default` passed without warnings after cleaning
   an existing CRDT-only cfg import.
 - Gate: `bun run rust:check:client-native-crdt` passed.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
+  protocol_contract --test blob_transport --test crdt_field` passed after the
+  local storage API slice.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p
+  syncular-todo-app-example` passed after the local storage API slice.
+- Gate: `bun test rust/bindings/browser/src/generated-app-conformance.test.ts`
+  passed after the local storage API slice.
+- Gate: `bun run build:wasm:dev` passed in `rust/bindings/browser` after adding
+  browser owned SQLite lease APIs.

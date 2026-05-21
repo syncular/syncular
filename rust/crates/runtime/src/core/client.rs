@@ -3450,6 +3450,32 @@ where
         self.store.outbox_summaries()
     }
 
+    pub fn upsert_auth_lease(&mut self, lease: &crate::store::AuthLeaseRecord) -> Result<()> {
+        self.store.transaction(|tx| tx.upsert_auth_lease(lease))
+    }
+
+    pub fn auth_lease(&mut self, lease_id: &str) -> Result<Option<crate::store::AuthLeaseRecord>> {
+        self.store.transaction(|tx| tx.auth_lease(lease_id))
+    }
+
+    pub fn active_auth_leases(
+        &mut self,
+        actor_id: Option<&str>,
+        now_ms: i64,
+    ) -> Result<Vec<crate::store::AuthLeaseRecord>> {
+        self.store
+            .transaction(|tx| tx.active_auth_leases(actor_id, now_ms))
+    }
+
+    pub fn set_outbox_auth_lease(
+        &mut self,
+        client_commit_id: &str,
+        provenance: Option<&crate::protocol::AuthLeaseProvenance>,
+    ) -> Result<()> {
+        self.store
+            .transaction(|tx| tx.set_outbox_auth_lease(client_commit_id, provenance))
+    }
+
     pub fn conflict_summaries(&mut self) -> Result<Vec<crate::store::ConflictSummary>> {
         self.store.conflict_summaries()
     }

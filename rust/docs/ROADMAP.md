@@ -407,9 +407,12 @@ read-only review:
     `reference/OFFLINE_AUTH_LEASE_MODEL.md`: signed bounded leases are for
     offline intent capture and audit only, not server acceptance or a bypass of
     current handler authorization. Rust protocol lease structs/constants and
-    deterministic ES256 testkit issue/verify helpers now exist, with valid,
-    expired, and tampered-token smoke coverage. Next narrow slice is local lease
-    storage plus outbox provenance behind a migration, not a server rewrite.
+    deterministic ES256 testkit issue/verify helpers exist, with valid,
+    expired, and tampered-token smoke coverage. Runtime schema v8 now persists
+    `sync_auth_leases` plus outbox auth-lease provenance, exposed through the
+    native Diesel store, browser owned SQLite store, native facade, C FFI, and
+    BoltFFI wrapper. Next narrow slice is current-auth replay/diagnostics, not a
+    server rewrite or lease-based authorization bypass.
 - `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus

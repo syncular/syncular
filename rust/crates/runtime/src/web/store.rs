@@ -4,14 +4,14 @@ use crate::client::{SubscriptionSpec, SyncChangedRow};
 use crate::error::{Result, SyncularError};
 use crate::limits::validate_unresolved_outbox_capacity;
 use crate::protocol::{
-    sync_operations_json_for_outbox, BootstrapState, CrdtStateVectorHint, OperationResult,
-    PushCommitResponse, ScopeValues, SyncChange, SyncOperation,
+    sync_operations_json_for_outbox, AuthLeaseProvenance, BootstrapState, CrdtStateVectorHint,
+    OperationResult, PushCommitResponse, ScopeValues, SyncChange, SyncOperation,
 };
 use crate::runtime_schema::runtime_schema_version;
 use crate::store::{
-    now_ms, AppSchemaState, BlobHealthSummary, ConflictSummary, CrdtHealthSummary, OutboxCommit,
-    OutboxSummary, ScopedRowsHealthSummary, ScopedRowsTableHealth, SubscriptionState, VerifiedRoot,
-    APP_SCHEMA_ID, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
+    now_ms, AppSchemaState, AuthLeaseRecord, BlobHealthSummary, ConflictSummary, CrdtHealthSummary,
+    OutboxCommit, OutboxSummary, ScopedRowsHealthSummary, ScopedRowsTableHealth, SubscriptionState,
+    VerifiedRoot, APP_SCHEMA_ID, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -124,6 +124,52 @@ pub trait AsyncWebStore {
         outbox: OutboxCommit,
         result: OperationResult,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
+
+    fn upsert_auth_lease<'a>(
+        &'a mut self,
+        _lease: AuthLeaseRecord,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async {
+            Err(SyncularError::storage(anyhow::anyhow!(
+                "auth lease storage is not supported by this store"
+            )))
+        })
+    }
+
+    fn auth_lease<'a>(
+        &'a mut self,
+        _lease_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<AuthLeaseRecord>>> + 'a>> {
+        Box::pin(async {
+            Err(SyncularError::storage(anyhow::anyhow!(
+                "auth lease storage is not supported by this store"
+            )))
+        })
+    }
+
+    fn active_auth_leases<'a>(
+        &'a mut self,
+        _actor_id: Option<&'a str>,
+        _now_ms: i64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<AuthLeaseRecord>>> + 'a>> {
+        Box::pin(async {
+            Err(SyncularError::storage(anyhow::anyhow!(
+                "auth lease storage is not supported by this store"
+            )))
+        })
+    }
+
+    fn set_outbox_auth_lease<'a>(
+        &'a mut self,
+        _client_commit_id: &'a str,
+        _provenance: Option<AuthLeaseProvenance>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async {
+            Err(SyncularError::storage(anyhow::anyhow!(
+                "outbox auth lease provenance is not supported by this store"
+            )))
+        })
+    }
 
     fn conflict_summaries<'a>(
         &'a mut self,
@@ -404,6 +450,7 @@ pub struct WebMemoryStore {
     rows: HashMap<String, HashMap<String, Value>>,
     outbox: Vec<OutboxCommit>,
     conflicts: Vec<WebConflictRecord>,
+    auth_leases: HashMap<String, AuthLeaseRecord>,
 }
 
 #[derive(Debug, Clone)]
@@ -599,6 +646,7 @@ impl AsyncWebStore for WebMemoryStore {
                     client_commit_id: commit.client_commit_id.clone(),
                     status: commit.status.clone(),
                     schema_version: commit.schema_version,
+                    auth_lease: commit.auth_lease.clone(),
                 })
                 .collect())
         })
@@ -791,6 +839,63 @@ impl AsyncWebStore for WebMemoryStore {
                 resolved_at: None,
                 resolution: None,
             });
+            Ok(())
+        })
+    }
+
+    fn upsert_auth_lease<'a>(
+        &'a mut self,
+        lease: AuthLeaseRecord,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            self.auth_leases.insert(lease.lease_id.clone(), lease);
+            Ok(())
+        })
+    }
+
+    fn auth_lease<'a>(
+        &'a mut self,
+        lease_id: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<AuthLeaseRecord>>> + 'a>> {
+        Box::pin(async move { Ok(self.auth_leases.get(lease_id).cloned()) })
+    }
+
+    fn active_auth_leases<'a>(
+        &'a mut self,
+        actor_id: Option<&'a str>,
+        now_ms_value: i64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<AuthLeaseRecord>>> + 'a>> {
+        Box::pin(async move {
+            let mut leases = self
+                .auth_leases
+                .values()
+                .filter(|lease| lease.status == "active")
+                .filter(|lease| lease.not_before_ms <= now_ms_value)
+                .filter(|lease| lease.expires_at_ms > now_ms_value)
+                .filter(|lease| actor_id.map_or(true, |actor_id| lease.actor_id == actor_id))
+                .cloned()
+                .collect::<Vec<_>>();
+            leases.sort_by_key(|lease| lease.expires_at_ms);
+            Ok(leases)
+        })
+    }
+
+    fn set_outbox_auth_lease<'a>(
+        &'a mut self,
+        client_commit_id: &'a str,
+        provenance: Option<AuthLeaseProvenance>,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            let Some(commit) = self
+                .outbox
+                .iter_mut()
+                .find(|commit| commit.client_commit_id == client_commit_id)
+            else {
+                return Err(SyncularError::storage(anyhow::anyhow!(
+                    "outbox commit {client_commit_id} does not exist"
+                )));
+            };
+            commit.auth_lease = provenance;
             Ok(())
         })
     }
@@ -1085,6 +1190,7 @@ impl WebMemoryStore {
             acked_commit_seq: None,
             schema_version: runtime_schema_version(),
             next_attempt_at: 0,
+            auth_lease: None,
         });
         Ok(client_commit_id)
     }

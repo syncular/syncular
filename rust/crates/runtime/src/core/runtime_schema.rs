@@ -1,4 +1,4 @@
-pub const RUNTIME_SCHEMA_VERSION: i32 = 7;
+pub const RUNTIME_SCHEMA_VERSION: i32 = 8;
 
 pub fn runtime_schema_version() -> i32 {
     RUNTIME_SCHEMA_VERSION
@@ -42,11 +42,34 @@ CREATE TABLE IF NOT EXISTS sync_outbox_commits (
   attempt_count INTEGER NOT NULL DEFAULT 0,
   acked_commit_seq BIGINT NULL,
   schema_version INTEGER NOT NULL DEFAULT 1,
-  next_attempt_at BIGINT NOT NULL DEFAULT 0
+  next_attempt_at BIGINT NOT NULL DEFAULT 0,
+  lease_id TEXT NULL,
+  lease_expires_at_ms BIGINT NULL,
+  lease_status_at_enqueue TEXT NULL,
+  lease_scope_summary_json TEXT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sync_outbox_commits_due
   ON sync_outbox_commits (status, next_attempt_at, created_at);
+
+CREATE TABLE IF NOT EXISTS sync_auth_leases (
+  lease_id TEXT PRIMARY KEY,
+  kid TEXT NOT NULL,
+  actor_id TEXT NOT NULL,
+  issued_at_ms BIGINT NOT NULL,
+  not_before_ms BIGINT NOT NULL,
+  expires_at_ms BIGINT NOT NULL,
+  schema_version INTEGER NOT NULL,
+  payload_json TEXT NOT NULL,
+  token TEXT NOT NULL,
+  status TEXT NOT NULL,
+  last_validation_error TEXT NULL,
+  created_at_ms BIGINT NOT NULL,
+  updated_at_ms BIGINT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_sync_auth_leases_actor_status_expiry
+  ON sync_auth_leases (actor_id, status, expires_at_ms);
 
 CREATE TABLE IF NOT EXISTS sync_conflicts (
   id TEXT PRIMARY KEY,

@@ -234,7 +234,9 @@ impl SyncStateStore for RusqliteStore {
     fn outbox_summaries(&mut self) -> Result<Vec<OutboxSummary>> {
         let mut statement = self.conn.prepare(
             r#"
-            select client_commit_id, status, schema_version
+            select client_commit_id, status, schema_version,
+                   lease_id, lease_expires_at_ms, lease_status_at_enqueue,
+                   lease_scope_summary_json
             from sync_outbox_commits
             order by created_at asc
             "#,
@@ -530,7 +532,8 @@ impl SyncStoreTx for RusqliteTx<'_> {
             r#"
             select id, client_commit_id, status, operations_json, last_response_json,
                    error, created_at, updated_at, attempt_count, acked_commit_seq, schema_version,
-                   next_attempt_at
+                   next_attempt_at, lease_id, lease_expires_at_ms, lease_status_at_enqueue,
+                   lease_scope_summary_json
             from sync_outbox_commits
             where status = 'pending' and attempt_count < ?1 and next_attempt_at <= ?2
             order by created_at asc
@@ -1025,6 +1028,12 @@ fn outbox_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxCommit> {
         acked_commit_seq: row.get(9)?,
         schema_version: row.get(10)?,
         next_attempt_at: row.get(11)?,
+        auth_lease: auth_lease_provenance_from_columns(
+            row.get(12)?,
+            row.get(13)?,
+            row.get(14)?,
+            row.get(15)?,
+        ),
     })
 }
 
@@ -1098,6 +1107,26 @@ fn outbox_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxSu
         client_commit_id: row.get(0)?,
         status: row.get(1)?,
         schema_version: row.get(2)?,
+        auth_lease: auth_lease_provenance_from_columns(
+            row.get(3)?,
+            row.get(4)?,
+            row.get(5)?,
+            row.get(6)?,
+        ),
+    })
+}
+
+fn auth_lease_provenance_from_columns(
+    lease_id: Option<String>,
+    lease_expires_at_ms: Option<i64>,
+    lease_status_at_enqueue: Option<String>,
+    lease_scope_summary_json: Option<String>,
+) -> Option<AuthLeaseProvenance> {
+    Some(AuthLeaseProvenance {
+        lease_id: lease_id?,
+        lease_expires_at_ms: lease_expires_at_ms?,
+        lease_status_at_enqueue: lease_status_at_enqueue?,
+        lease_scope_summary_json,
     })
 }
 

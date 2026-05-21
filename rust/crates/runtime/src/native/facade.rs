@@ -19,10 +19,12 @@ use crate::limits::{
     DEFAULT_READONLY_QUERY_STATEMENT_CACHE_CAPACITY,
     MAX_NATIVE_DIAGNOSTIC_EVENT_PAYLOAD_JSON_BYTES,
 };
-use crate::protocol::{validate_mutation_json_input_size, BlobRef, BootstrapState};
+use crate::protocol::{
+    validate_mutation_json_input_size, AuthLeaseProvenance, BlobRef, BootstrapState,
+};
 use crate::runtime_schema::runtime_schema_version;
 use crate::sqlite_query::ReadonlySqlQueryExecutor;
-use crate::store::{now_ms, ConflictSummary, OutboxSummary};
+use crate::store::{now_ms, AuthLeaseRecord, ConflictSummary, OutboxSummary};
 use crate::transport::{
     HttpSyncTransport, RealtimeEvent, RealtimePresenceEntry, RealtimePresenceEvent,
     SyncAuthHeaderStore, SyncAuthHeaders, SyncTransportConfig,
@@ -1509,6 +1511,36 @@ impl NativeSyncularClient {
 
     pub fn outbox_summaries_json(&mut self) -> Result<String> {
         Ok(serde_json::to_string(&self.outbox_summaries()?)?)
+    }
+
+    pub fn upsert_auth_lease_json(&mut self, lease_json: &str) -> Result<()> {
+        let lease: AuthLeaseRecord = serde_json::from_str(lease_json)?;
+        self.writer.upsert_auth_lease(&lease)
+    }
+
+    pub fn auth_lease_json(&mut self, lease_id: &str) -> Result<String> {
+        Ok(serde_json::to_string(&self.writer.auth_lease(lease_id)?)?)
+    }
+
+    pub fn active_auth_leases_json(
+        &mut self,
+        actor_id: Option<&str>,
+        now_ms_value: i64,
+    ) -> Result<String> {
+        Ok(serde_json::to_string(
+            &self.writer.active_auth_leases(actor_id, now_ms_value)?,
+        )?)
+    }
+
+    pub fn set_outbox_auth_lease_json(
+        &mut self,
+        client_commit_id: &str,
+        provenance_json: Option<&str>,
+    ) -> Result<()> {
+        let provenance: Option<AuthLeaseProvenance> =
+            provenance_json.map(serde_json::from_str).transpose()?;
+        self.writer
+            .set_outbox_auth_lease(client_commit_id, provenance.as_ref())
     }
 
     pub fn conflict_summaries(&mut self) -> Result<Vec<ConflictSummary>> {
