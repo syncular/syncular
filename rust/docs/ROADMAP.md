@@ -556,8 +556,14 @@ read-only review:
     pruning or rewriting metadata. Safe repair commands now cover
     `clearOrphanedState` and explicit `forceRebootstrap`; manual-inspection
     hazards remain non-repairable. Runtime coverage proves those repairs do not
-    mutate app rows and produce a clean follow-up health report. Next: add
-    browser/WASM parity and an explicit larger reset/rebootstrap flow.
+    mutate app rows and produce a clean follow-up health report. Browser-owned
+    SQLite now exposes the same `localHealthCheck()` / `repairLocalHealth()`
+    contract through the Rust WASM client and worker API, including raw metadata
+    enumeration, app-schema/outbox/conflict/blob/CRDT summaries, and a WASM
+    regression test for corrupt configured roots plus orphaned local state. The
+    shared clock helper is platform-aware so browser health reports do not hit
+    unsupported native time APIs. Next: add an explicit larger
+    reset/rebootstrap flow for synced state versus app-owned local-only data.
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)

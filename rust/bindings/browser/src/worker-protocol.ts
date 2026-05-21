@@ -22,6 +22,7 @@ import type {
   SyncularV2ErrorCode,
   SyncularV2ErrorRecommendedAction,
   SyncularV2FieldEncryptionConfig,
+  SyncularV2LocalHealthRepairRequest,
   SyncularV2LiveQueryEvent,
   SyncularV2RealtimeConnectionState,
   SyncularV2RealtimeOptions,
@@ -281,6 +282,17 @@ export type SyncularV2WorkerRequest =
       id: number;
       protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
       type: 'generatedSchemaState';
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'localHealthCheck';
+    }
+  | {
+      id: number;
+      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      type: 'repairLocalHealth';
+      request: SyncularV2LocalHealthRepairRequest;
     }
   | {
       id: number;

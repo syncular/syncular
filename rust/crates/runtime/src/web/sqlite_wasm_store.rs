@@ -40,7 +40,8 @@ use crate::limits::DEFAULT_BLOB_UPLOAD_BATCH_LIMIT;
 use crate::limits::{validate_unresolved_outbox_capacity, DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY};
 #[cfg(feature = "web-blobs")]
 use crate::protocol::{
-    blob_hash, validate_blob_bytes, validate_blob_hash, validate_blob_size_bytes, BlobRef,
+    blob_hash, validate_blob_bytes, validate_blob_hash, validate_blob_ref_size,
+    validate_blob_size_bytes, BlobRef,
 };
 use crate::protocol::{
     sync_operations_json_for_outbox, validate_mutation_batch_json_input_size,
@@ -49,7 +50,9 @@ use crate::protocol::{
 };
 use crate::runtime_schema::{runtime_schema_version, RUNTIME_SYSTEM_SCHEMA_SQL};
 use crate::store::{
-    next_retry_at, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
+    next_retry_at, AppSchemaState, BlobHealthSummary, ConflictSummary, CrdtHealthSummary,
+    OutboxCommit, OutboxSummary, SubscriptionState, VerifiedRoot, MAX_SYNC_RETRIES,
+    SYNC_SENDING_TIMEOUT_MS,
 };
 #[cfg(feature = "web-blobs")]
 use crate::store::{BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES};
@@ -875,6 +878,25 @@ impl SyncularRustOwnedSqliteClient {
     ) -> std::result::Result<String, JsValue> {
         self.inner
             .force_subscriptions_bootstrap_json(subscription_ids_json)
+            .await
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = localHealthCheckJson)]
+    pub async fn local_health_check_json(&mut self) -> std::result::Result<String, JsValue> {
+        self.inner
+            .local_health_check_json()
+            .await
+            .map_err(error_to_js)
+    }
+
+    #[wasm_bindgen(js_name = repairLocalHealthJson)]
+    pub async fn repair_local_health_json(
+        &mut self,
+        request_json: &str,
+    ) -> std::result::Result<String, JsValue> {
+        self.inner
+            .repair_local_health_json(request_json)
             .await
             .map_err(error_to_js)
     }
@@ -2492,6 +2514,53 @@ impl SyncularRustOwnedSqlite {
 
     fn current_crdt_field_row(&self, field: &CrdtField) -> Result<Option<Value>> {
         self.current_row_json(field.metadata(), field.table(), field.row_id())
+    }
+
+    #[cfg(feature = "web-blobs")]
+    fn blob_reference_health_counts(&self) -> Result<(i64, i64)> {
+        let mut checked = 0i64;
+        let mut invalid = 0i64;
+        for metadata in self.app_schema.app_table_metadata {
+            validate_table_name(metadata.name)?;
+            for column in metadata.blob_columns {
+                validate_table_name(column)?;
+                let rows = self.query_rows(
+                    &format!(
+                        "SELECT {column} AS value FROM {table} \
+                         WHERE {column} IS NOT NULL AND {column} <> ''",
+                        table = metadata.name
+                    ),
+                    |row| row.string("value"),
+                )?;
+                for value in rows {
+                    checked += 1;
+                    let parsed = serde_json::from_str::<BlobRef>(&value);
+                    match parsed {
+                        Ok(blob) if validate_blob_ref_size(&blob).is_ok() => {}
+                        _ => invalid += 1,
+                    }
+                }
+            }
+        }
+        Ok((checked, invalid))
+    }
+
+    fn orphaned_crdt_document_count(&self) -> Result<i64> {
+        let documents = self.query_rows(
+            "SELECT app_table, row_id FROM sync_crdt_documents ORDER BY app_table ASC, row_id ASC",
+            |row| Ok((row.string("app_table")?, row.string("row_id")?)),
+        )?;
+        let mut orphaned = 0i64;
+        for (table, row_id) in documents {
+            let Some(metadata) = self.app_schema.table_metadata(&table) else {
+                orphaned += 1;
+                continue;
+            };
+            if self.current_row_json(metadata, &table, &row_id)?.is_none() {
+                orphaned += 1;
+            }
+        }
+        Ok(orphaned)
     }
 
     fn crdt_document_snapshot(&self, field: &CrdtField) -> Result<Value> {
@@ -4198,6 +4267,10 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         self.app_schema
     }
 
+    fn local_state_id(&self) -> String {
+        self.state_id.clone()
+    }
+
     fn begin_apply_batch<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async move {
             self.detach_snapshot_artifacts()?;
@@ -4678,6 +4751,32 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
         })
     }
 
+    fn subscription_states<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<SubscriptionState>>> + 'a>> {
+        Box::pin(async move {
+            self.query_rows(
+                &format!(
+                    "SELECT state_id, subscription_id, \"table\", scopes_json, params_json, cursor, bootstrap_state_json, status \
+                     FROM sync_subscription_state WHERE state_id = {} ORDER BY subscription_id ASC",
+                    sql_string(&self.state_id)
+                ),
+                |row| {
+                    Ok(SubscriptionState {
+                        state_id: row.string("state_id")?,
+                        subscription_id: row.string("subscription_id")?,
+                        table: row.string("table")?,
+                        scopes_json: row.string("scopes_json")?,
+                        params_json: row.string("params_json")?,
+                        cursor: row.i64("cursor")?,
+                        bootstrap_state_json: row.optional_string("bootstrap_state_json"),
+                        status: row.string("status")?,
+                    })
+                },
+            )
+        })
+    }
+
     fn verified_root<'a>(
         &'a mut self,
         subscription_id: &'a str,
@@ -4735,6 +4834,155 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                 sql_string(&self.state_id),
                 sql_string(subscription_id)
             ))
+        })
+    }
+
+    fn verified_roots<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<VerifiedRoot>>> + 'a>> {
+        Box::pin(async move {
+            self.query_rows(
+                &format!(
+                    "SELECT state_id, subscription_id, partition_id, commit_seq, root \
+                     FROM sync_verified_roots WHERE state_id = {} ORDER BY subscription_id ASC",
+                    sql_string(&self.state_id)
+                ),
+                |row| {
+                    Ok(VerifiedRoot {
+                        state_id: row.string("state_id")?,
+                        subscription_id: row.string("subscription_id")?,
+                        partition_id: row.string("partition_id")?,
+                        commit_seq: row.i64("commit_seq")?,
+                        root: row.string("root")?,
+                    })
+                },
+            )
+        })
+    }
+
+    fn app_schema_state<'a>(
+        &'a mut self,
+        current_schema_version: i32,
+    ) -> Pin<Box<dyn Future<Output = Result<AppSchemaState>> + 'a>> {
+        Box::pin(async move {
+            let rows = self.query_rows(
+                &format!(
+                    "SELECT schema_version, updated_at FROM syncular_app_schema WHERE schema_id = {} LIMIT 1",
+                    sql_string(GENERATED_SCHEMA_ID)
+                ),
+                |row| {
+                    Ok(AppSchemaState {
+                        schema_id: GENERATED_SCHEMA_ID.to_string(),
+                        schema_version: Some(row.i32("schema_version")?),
+                        current_schema_version,
+                        updated_at: row.optional_i64("updated_at"),
+                    })
+                },
+            )?;
+            Ok(rows.into_iter().next().unwrap_or(AppSchemaState {
+                schema_id: GENERATED_SCHEMA_ID.to_string(),
+                schema_version: None,
+                current_schema_version,
+                updated_at: None,
+            }))
+        })
+    }
+
+    fn outbox_summaries<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<OutboxSummary>>> + 'a>> {
+        Box::pin(async move {
+            self.query_rows(
+                "SELECT client_commit_id, status, schema_version \
+                 FROM sync_outbox_commits ORDER BY created_at ASC",
+                |row| {
+                    Ok(OutboxSummary {
+                        client_commit_id: row.string("client_commit_id")?,
+                        status: row.string("status")?,
+                        schema_version: row.i32("schema_version")?,
+                    })
+                },
+            )
+        })
+    }
+
+    #[cfg(feature = "web-blobs")]
+    fn blob_health_summary<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<BlobHealthSummary>>> + 'a>> {
+        Box::pin(async move {
+            let upload = self.query_rows(
+                "SELECT status, COUNT(hash) AS count FROM sync_blob_outbox GROUP BY status",
+                |row| Ok((row.string("status")?, row.i64("count")?)),
+            )?;
+            let mut upload_pending = 0i64;
+            let mut upload_uploading = 0i64;
+            let mut upload_failed = 0i64;
+            for (status, count) in upload {
+                match status.as_str() {
+                    "pending" => upload_pending = count,
+                    "uploading" => upload_uploading = count,
+                    "failed" => upload_failed = count,
+                    _ => {}
+                }
+            }
+            let cache = self.query_rows(
+                "SELECT COUNT(hash) AS count, COALESCE(SUM(size), 0) AS total_bytes FROM sync_blob_cache",
+                |row| Ok((row.i64("count")?, row.i64("total_bytes")?)),
+            )?;
+            let (cache_count, cache_bytes) = cache.into_iter().next().unwrap_or((0, 0));
+            let (checked_references, invalid_references) = self.blob_reference_health_counts()?;
+            Ok(Some(BlobHealthSummary {
+                cache_count,
+                cache_bytes,
+                upload_pending,
+                upload_uploading,
+                upload_failed,
+                checked_references,
+                invalid_references,
+            }))
+        })
+    }
+
+    fn crdt_health_summary<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<CrdtHealthSummary>>> + 'a>> {
+        Box::pin(async move {
+            let stats = self.query_rows(
+                "SELECT \
+                   COUNT(*) AS document_count, \
+                   COALESCE(SUM(pending_updates), 0) AS pending_updates, \
+                   COALESCE(SUM(flushed_updates), 0) AS flushed_updates, \
+                   COALESCE(SUM(acked_updates), 0) AS acked_updates, \
+                   COALESCE(SUM(log_updates), 0) AS log_updates \
+                 FROM sync_crdt_documents",
+                |row| {
+                    Ok(CrdtHealthSummary {
+                        document_count: row.i64("document_count")?,
+                        pending_updates: row.i64("pending_updates")?,
+                        flushed_updates: row.i64("flushed_updates")?,
+                        acked_updates: row.i64("acked_updates")?,
+                        log_updates: row.i64("log_updates")?,
+                        orphaned_documents: 0,
+                        orphaned_log_entries: 0,
+                    })
+                },
+            )?;
+            let mut summary = stats.into_iter().next().unwrap_or_default();
+            summary.orphaned_documents = self.orphaned_crdt_document_count()?;
+            summary.orphaned_log_entries = self
+                .query_rows(
+                    "SELECT COUNT(*) AS count \
+                     FROM sync_crdt_update_log log \
+                     LEFT JOIN sync_crdt_documents documents \
+                       ON documents.document_key = log.document_key \
+                     WHERE documents.document_key IS NULL",
+                    |row| row.i64("count"),
+                )?
+                .into_iter()
+                .next()
+                .unwrap_or(0);
+            Ok(Some(summary))
         })
     }
 

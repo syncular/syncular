@@ -105,54 +105,71 @@ pub fn check_local_health<S: SyncStore>(
     state_id: &str,
     subscriptions: &[SubscriptionSpec],
 ) -> Result<LocalHealthReport> {
+    let mut states = Vec::new();
+    let mut roots = Vec::new();
+    store.transaction(|tx| {
+        states = tx.subscription_states(state_id)?;
+        roots = tx.verified_roots(state_id)?;
+        Ok(())
+    })?;
+    Ok(check_local_health_records(
+        state_id,
+        subscriptions,
+        &states,
+        &roots,
+    ))
+}
+
+pub fn check_local_health_records(
+    state_id: &str,
+    subscriptions: &[SubscriptionSpec],
+    states: &[SubscriptionState],
+    roots: &[VerifiedRoot],
+) -> LocalHealthReport {
     let mut report = LocalHealthReport::new(subscriptions.len());
+    report.checked_subscription_states = states.len();
+    report.checked_verified_roots = roots.len();
+
     let specs_by_id = subscriptions
         .iter()
         .map(|spec| (spec.id.as_str(), spec))
         .collect::<HashMap<_, _>>();
-    store.transaction(|tx| {
-        let states = tx.subscription_states(state_id)?;
-        let roots = tx.verified_roots(state_id)?;
-        report.checked_subscription_states = states.len();
-        report.checked_verified_roots = roots.len();
+    let states_by_id = states
+        .iter()
+        .map(|state| (state.subscription_id.as_str(), state))
+        .collect::<HashMap<_, _>>();
+    let rooted_subscription_ids = roots
+        .iter()
+        .map(|root| root.subscription_id.as_str())
+        .collect::<HashSet<_>>();
 
-        let states_by_id = states
-            .iter()
-            .map(|state| (state.subscription_id.as_str(), state))
-            .collect::<HashMap<_, _>>();
-        let rooted_subscription_ids = roots
-            .iter()
-            .map(|root| root.subscription_id.as_str())
-            .collect::<HashSet<_>>();
-
-        for state in &states {
-            if let Some(spec) = specs_by_id.get(state.subscription_id.as_str()) {
-                check_subscription_state(&mut report, spec, state);
-            } else {
-                check_orphaned_subscription_state(
-                    &mut report,
-                    state,
-                    rooted_subscription_ids.contains(state.subscription_id.as_str()),
-                );
-            }
+    for state in states {
+        if let Some(spec) = specs_by_id.get(state.subscription_id.as_str()) {
+            check_subscription_state(&mut report, spec, state);
+        } else {
+            check_orphaned_subscription_state(
+                &mut report,
+                state,
+                rooted_subscription_ids.contains(state.subscription_id.as_str()),
+            );
         }
+    }
 
-        for root in &roots {
-            if let Some(spec) = specs_by_id.get(root.subscription_id.as_str()) {
-                check_verified_root(
-                    &mut report,
-                    spec,
-                    states_by_id.get(root.subscription_id.as_str()).copied(),
-                    root,
-                    state_id,
-                );
-            } else {
-                check_orphaned_verified_root(&mut report, root);
-            }
+    for root in roots {
+        if let Some(spec) = specs_by_id.get(root.subscription_id.as_str()) {
+            check_verified_root(
+                &mut report,
+                spec,
+                states_by_id.get(root.subscription_id.as_str()).copied(),
+                root,
+                state_id,
+            );
+        } else {
+            check_orphaned_verified_root(&mut report, root);
         }
-        Ok(())
-    })?;
-    Ok(report)
+    }
+
+    report
 }
 
 pub fn check_local_sync_state_health(

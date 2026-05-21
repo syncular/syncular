@@ -89,6 +89,19 @@ First retained slice:
   configured subscriptions. Manual-inspection findings remain non-repairable.
   Runtime coverage proves both repairs leave app rows intact and return a clean
   health report afterward.
+- The sixth retained slice brings the same health/repair contract to the
+  browser-owned SQLite client and TypeScript worker API:
+  `localHealthCheck()` returns the canonical `LocalHealthReport` shape, and
+  `repairLocalHealth()` exposes explicit `forceRebootstrap` /
+  `clearOrphanedState` repairs. The web store now enumerates raw subscription
+  state and verified-root records so malformed local metadata is reported
+  instead of failing during parsing. Browser health summaries also cover app
+  schema state, outbox summaries, unresolved conflicts, blob reference/upload
+  counts, and CRDT document/update-log hazards where those features are present.
+  WASM coverage proves configured corrupt roots and orphaned subscription/root
+  metadata can be repaired without mutating app rows. The shared clock helper is
+  now platform-aware so health reports do not call unsupported native time APIs
+  in WASM.
 
 Gates:
 
@@ -97,9 +110,14 @@ Gates:
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_binding_scaffold --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings`
+- `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`
+- `bun run build:wasm:dev`
+- `bun test src/__tests__/sync-hono.wasm.test.ts -t "reports and safely repairs browser local health findings"`
+- `bun run test`
+- `bun run tsgo`
 
 ## Next Action
 
-Add browser/WASM parity for the health-check and safe-repair API, then add a
-larger reset/rebootstrap flow that is explicit about synced state versus
-app-owned local-only data.
+Add a larger reset/rebootstrap flow that is explicit about synced state versus
+app-owned local-only data, including browser/native parity tests for what is
+deleted, what is preserved, and which events/diagnostics are emitted.

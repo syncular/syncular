@@ -3,13 +3,20 @@ use crate::error::{Result, SyncularError};
 use crate::protocol::*;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+#[cfg(not(all(target_arch = "wasm32", feature = "web-transport")))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(not(all(target_arch = "wasm32", feature = "web-transport")))]
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default()
         .as_millis() as i64
+}
+
+#[cfg(all(target_arch = "wasm32", feature = "web-transport"))]
+pub fn now_ms() -> i64 {
+    js_sys::Date::now() as i64
 }
 
 pub const MAX_SYNC_RETRIES: i32 = 5;

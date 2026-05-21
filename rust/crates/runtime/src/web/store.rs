@@ -9,7 +9,9 @@ use crate::protocol::{
 };
 use crate::runtime_schema::runtime_schema_version;
 use crate::store::{
-    now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
+    now_ms, AppSchemaState, BlobHealthSummary, ConflictSummary, CrdtHealthSummary, OutboxCommit,
+    OutboxSummary, SubscriptionState, VerifiedRoot, APP_SCHEMA_ID, MAX_SYNC_RETRIES,
+    SYNC_SENDING_TIMEOUT_MS,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -59,6 +61,10 @@ pub struct WebVerifiedRoot {
 pub trait AsyncWebStore {
     fn app_schema(&self) -> AppSchema {
         default_app_schema()
+    }
+
+    fn local_state_id(&self) -> String {
+        "default".to_string()
     }
 
     fn apply_mutation<'a>(
@@ -149,6 +155,12 @@ pub trait AsyncWebStore {
         subscription_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
 
+    fn subscription_states<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<SubscriptionState>>> + 'a>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
     fn verified_root<'a>(
         &'a mut self,
         _subscription_id: &'a str,
@@ -168,6 +180,44 @@ pub trait AsyncWebStore {
         _subscription_id: &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
         Box::pin(async { Ok(()) })
+    }
+
+    fn verified_roots<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<VerifiedRoot>>> + 'a>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn app_schema_state<'a>(
+        &'a mut self,
+        current_schema_version: i32,
+    ) -> Pin<Box<dyn Future<Output = Result<AppSchemaState>> + 'a>> {
+        Box::pin(async move {
+            Ok(AppSchemaState {
+                schema_id: APP_SCHEMA_ID.to_string(),
+                schema_version: Some(current_schema_version),
+                current_schema_version,
+                updated_at: Some(now_ms()),
+            })
+        })
+    }
+
+    fn outbox_summaries<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<OutboxSummary>>> + 'a>> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
+
+    fn blob_health_summary<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<BlobHealthSummary>>> + 'a>> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn crdt_health_summary<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<CrdtHealthSummary>>> + 'a>> {
+        Box::pin(async { Ok(None) })
     }
 
     fn crdt_state_vector_hints<'a>(
@@ -350,6 +400,66 @@ impl WebMemoryStore {
 }
 
 impl AsyncWebStore for WebMemoryStore {
+    fn subscription_states<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<SubscriptionState>>> + 'a>> {
+        Box::pin(async move {
+            self.states
+                .values()
+                .map(|state| {
+                    Ok(SubscriptionState {
+                        state_id: "default".to_string(),
+                        subscription_id: state.subscription_id.clone(),
+                        table: state.table.clone(),
+                        scopes_json: serde_json::to_string(&state.scopes)?,
+                        params_json: "{}".to_string(),
+                        cursor: state.cursor,
+                        bootstrap_state_json: state
+                            .bootstrap_state
+                            .as_ref()
+                            .map(serde_json::to_string)
+                            .transpose()?,
+                        status: state.status.clone(),
+                    })
+                })
+                .collect()
+        })
+    }
+
+    fn verified_roots<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<VerifiedRoot>>> + 'a>> {
+        Box::pin(async move {
+            Ok(self
+                .verified_roots
+                .values()
+                .map(|root| VerifiedRoot {
+                    state_id: "default".to_string(),
+                    subscription_id: root.subscription_id.clone(),
+                    partition_id: root.partition_id.clone(),
+                    commit_seq: root.commit_seq,
+                    root: root.root.clone(),
+                })
+                .collect())
+        })
+    }
+
+    fn outbox_summaries<'a>(
+        &'a mut self,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<OutboxSummary>>> + 'a>> {
+        Box::pin(async move {
+            Ok(self
+                .outbox
+                .iter()
+                .map(|commit| OutboxSummary {
+                    client_commit_id: commit.client_commit_id.clone(),
+                    status: commit.status.clone(),
+                    schema_version: commit.schema_version,
+                })
+                .collect())
+        })
+    }
+
     fn apply_mutation<'a>(
         &'a mut self,
         operation: SyncOperation,

@@ -48,6 +48,9 @@ import type {
   SyncularV2FieldEncryptionConfig,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQuerySnapshot,
+  SyncularV2LocalHealthRepairReport,
+  SyncularV2LocalHealthRepairRequest,
+  SyncularV2LocalHealthReport,
   SyncularV2LifecycleState,
   SyncularV2OutboxStats,
   SyncularV2PresenceEntry,
@@ -628,6 +631,22 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   generatedSchemaState(): Promise<SyncularV2SchemaState> {
     return this.#request({ type: 'generatedSchemaState' });
+  }
+
+  localHealthCheck(): Promise<SyncularV2LocalHealthReport> {
+    return this.#request({ type: 'localHealthCheck' });
+  }
+
+  repairLocalHealth(
+    request: SyncularV2LocalHealthRepairRequest
+  ): Promise<SyncularV2LocalHealthRepairReport> {
+    return this.#request({
+      type: 'repairLocalHealth',
+      request: {
+        action: request.action,
+        subscriptionIds: [...(request.subscriptionIds ?? [])],
+      },
+    });
   }
 
   buildYjsTextUpdate(
@@ -1656,7 +1675,8 @@ function shouldEmitOperationalState(
     type === 'syncOnce' ||
     type === 'retryConflictKeepLocal' ||
     type === 'resolveConflict' ||
-    type === 'compactStorage'
+    type === 'compactStorage' ||
+    type === 'repairLocalHealth'
   );
 }
 

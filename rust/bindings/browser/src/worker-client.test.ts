@@ -1659,6 +1659,83 @@ describe('Syncular v2 worker client', () => {
     });
   });
 
+  it('forwards local health checks and explicit repairs to the worker', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+    });
+
+    const health = client.localHealthCheck();
+    expect(worker.messages[0]).toMatchObject({ type: 'localHealthCheck' });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        generatedAt: 1,
+        ok: false,
+        checkedSubscriptions: 1,
+        checkedSubscriptionStates: 2,
+        checkedVerifiedRoots: 1,
+        checkedOutboxCommits: 0,
+        checkedConflicts: 0,
+        checkedBlobReferences: 0,
+        checkedCrdtDocuments: 0,
+        checkedCrdtUpdateLogEntries: 0,
+        findings: [
+          {
+            severity: 'error',
+            code: 'local.subscription_state_orphaned',
+            component: 'subscriptionState',
+            message: 'stored subscription state is not configured on this client',
+            subscriptionId: 'old-subscription',
+            table: 'tasks',
+            repairAction: 'clearOrphanedState',
+          },
+        ],
+      },
+    });
+    await expect(health).resolves.toMatchObject({
+      ok: false,
+      findings: [
+        expect.objectContaining({
+          code: 'local.subscription_state_orphaned',
+          repairAction: 'clearOrphanedState',
+        }),
+      ],
+    });
+
+    const repair = client.repairLocalHealth({
+      action: 'clearOrphanedState',
+      subscriptionIds: ['old-subscription'],
+    });
+    expect(worker.messages[1]).toMatchObject({
+      type: 'repairLocalHealth',
+      request: {
+        action: 'clearOrphanedState',
+        subscriptionIds: ['old-subscription'],
+      },
+    });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        action: 'clearOrphanedState',
+        deletedSubscriptionStates: 1,
+        deletedVerifiedRoots: 1,
+        forcedRebootstrapSubscriptions: 0,
+      },
+    });
+    await expect(repair).resolves.toEqual({
+      action: 'clearOrphanedState',
+      deletedSubscriptionStates: 1,
+      deletedVerifiedRoots: 1,
+      forcedRebootstrapSubscriptions: 0,
+    });
+  });
+
   it('forwards structured worker diagnostics to registered listeners', () => {
     const worker = new FakeWorker();
     const initialDiagnostics: SyncularV2DiagnosticEvent[] = [];
