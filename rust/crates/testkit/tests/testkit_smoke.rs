@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::net::{SocketAddr, TcpStream};
 use std::time::Duration;
 
-use serde_json::{json, Map};
+use serde_json::{json, Map, Value};
 use syncular_runtime::encryption::{
     FieldEncryption, FieldEncryptionRule, StaticFieldEncryptionConfig,
 };
@@ -10,8 +10,9 @@ use syncular_runtime::error::ErrorKind;
 use syncular_runtime::fixtures::todo;
 use syncular_runtime::native::{NativeClientOptions, NativeEventKind};
 use syncular_runtime::protocol::{
-    AuthLeaseCapabilities, AuthLeasePayload, AuthLeaseScope, CombinedRequest, PushCommitRequest,
-    SyncOperation, AUTH_LEASE_CODE_EXPIRED, AUTH_LEASE_CODE_INVALID, AUTH_LEASE_VERSION,
+    AuthLeaseCapabilities, AuthLeasePayload, AuthLeaseScope, BlobRef, CombinedRequest,
+    PushCommitRequest, SyncOperation, AUTH_LEASE_CODE_EXPIRED, AUTH_LEASE_CODE_INVALID,
+    AUTH_LEASE_VERSION,
 };
 use syncular_runtime::transport::{
     HttpSyncTransport, RealtimeEvent, RealtimeTransport, SyncAuthHeaderStore, SyncAuthHeaders,
@@ -27,15 +28,18 @@ use syncular_testkit::{
     assert_native_diagnostic_detail, assert_native_error_code, assert_native_error_kind,
     assert_native_rows_changed, assert_native_table_row_count, assert_no_conflicts,
     assert_outbox_empty, assert_outbox_statuses, assert_table_has_row, assert_table_row_count,
-    default_combined_response, encoded_blob_hash, issue_test_auth_lease, open_app_client,
-    open_app_client_in_memory, open_app_client_with_server, open_app_client_with_transport,
+    default_combined_response, encoded_blob_hash, file_asset_app_schema, issue_test_auth_lease,
+    open_app_client, open_app_client_in_memory, open_app_client_with_server,
+    open_app_client_with_transport, open_file_asset_client, open_file_asset_client_with_server,
     open_native_client_with_schema_json_options, open_native_client_with_schema_options,
     open_todo_client, open_todo_client_with_transport, push_conflict_response,
     snapshot_combined_response, sync_conformance_fixture, todo_app_schema_json,
     todo_snapshot_response, todo_task_row, verify_test_auth_lease, AppFixtureOptions,
     AppTestHttpServer, AppTestServer, AppTestServerOptions, FaultOperation, FaultPhase, FaultStep,
-    FaultTransport, NativeFixtureOptions, TestAuthLeaseKeyPair, TestBlobServer,
-    TestBlobServerOptions, TestSyncServer, TestTransport, TodoFixtureOptions,
+    FaultTransport, FileAssetPatch, NativeFixtureOptions, NewFileAsset, NewFileVersion,
+    TestAuthLeaseKeyPair, TestBlobServer, TestBlobServerOptions, TestSyncServer, TestTransport,
+    TodoFixtureOptions, FILES_SUBSCRIPTION_ID, FILES_TABLE, FILE_VERSIONS_SUBSCRIPTION_ID,
+    FILE_VERSIONS_TABLE,
 };
 use tungstenite::{connect, stream::MaybeTlsStream, Message};
 
@@ -985,6 +989,159 @@ fn app_test_server_uploads_and_downloads_blobs() {
         .client
         .is_blob_local(&blob.hash)
         .expect("blob local"));
+}
+
+#[test]
+fn file_asset_fixture_exposes_reference_schema() {
+    let mut fixture = open_file_asset_client().expect("file asset fixture");
+
+    let subscriptions = fixture.client.subscriptions();
+    assert_eq!(subscriptions.len(), 2);
+    assert_eq!(subscriptions[0].id, FILES_SUBSCRIPTION_ID);
+    assert_eq!(subscriptions[0].table, FILES_TABLE);
+    assert_eq!(subscriptions[1].id, FILE_VERSIONS_SUBSCRIPTION_ID);
+    assert_eq!(subscriptions[1].table, FILE_VERSIONS_TABLE);
+
+    let schema = file_asset_app_schema();
+    let versions = schema
+        .table_metadata(FILE_VERSIONS_TABLE)
+        .expect("file versions metadata");
+    assert_eq!(versions.blob_columns, &["blob_ref"]);
+    assert_table_row_count(&mut fixture.client, FILES_TABLE, 0);
+    assert_table_row_count(&mut fixture.client, FILE_VERSIONS_TABLE, 0);
+}
+
+#[test]
+fn file_asset_mutation_builders_cover_folder_lifecycle() {
+    let mut fixture = open_file_asset_client().expect("file asset fixture");
+
+    fixture
+        .client
+        .apply(NewFileAsset::folder(
+            "folder-1",
+            "Documents",
+            "user-rust",
+            Some("p0"),
+        ))
+        .expect("create folder");
+    fixture
+        .client
+        .apply(
+            NewFileAsset::file("file-1", "draft.txt", "user-rust", Some("p0"))
+                .parent_id(Some("folder-1")),
+        )
+        .expect("create file");
+    fixture
+        .client
+        .apply(
+            FileAssetPatch::new("file-1")
+                .rename("final.txt")
+                .move_to(None)
+                .soft_delete(42),
+        )
+        .expect("rename move delete");
+    let deleted = assert_table_has_row(&mut fixture.client, FILES_TABLE, "id", "file-1");
+    assert_eq!(deleted["name"], "final.txt");
+    assert_eq!(deleted["parent_id"], Value::Null);
+    assert_eq!(deleted["deleted"], 1);
+    assert_eq!(deleted["trashed_at"], 42);
+
+    fixture
+        .client
+        .apply(FileAssetPatch::new("file-1").restore())
+        .expect("restore file");
+    let restored = assert_table_has_row(&mut fixture.client, FILES_TABLE, "id", "file-1");
+    assert_eq!(restored["deleted"], 0);
+    assert_eq!(restored["trashed_at"], Value::Null);
+}
+
+#[test]
+fn file_asset_two_clients_sync_metadata_blob_and_revocation() {
+    let app_schema = file_asset_app_schema();
+    let server = AppTestServer::new(app_schema);
+    let mut writer = open_file_asset_client_with_server(
+        server.clone(),
+        app_server_options("file-assets-writer"),
+    )
+    .expect("writer fixture");
+    let mut reader = open_file_asset_client_with_server(
+        server.clone(),
+        app_server_options("file-assets-reader"),
+    )
+    .expect("reader fixture");
+    let bytes = b"file asset bytes".to_vec();
+
+    let blob = writer
+        .client
+        .store_blob_bytes(&bytes, "text/plain", false)
+        .expect("store blob");
+    let upload = writer
+        .client
+        .process_blob_upload_queue()
+        .expect("upload blob");
+    assert_eq!(upload.uploaded, 1);
+    assert_eq!(upload.failed, 0);
+
+    writer
+        .client
+        .commit_mutations(|tx| {
+            tx.push(NewFileAsset::folder(
+                "folder-1",
+                "Documents",
+                "user-rust",
+                Some("p0"),
+            ));
+            tx.push(
+                NewFileAsset::file("file-1", "hello.txt", "user-rust", Some("p0"))
+                    .parent_id(Some("folder-1")),
+            );
+            tx.push(NewFileVersion::new(
+                "version-1",
+                "file-1",
+                blob.clone(),
+                "user-rust",
+                "user-rust",
+                Some("p0"),
+                1,
+            ));
+            tx.push(FileAssetPatch::new("file-1").current_version_id(Some("version-1")));
+            Ok(())
+        })
+        .expect("commit file metadata");
+    writer.client.sync_http().expect("writer sync");
+
+    reader.client.sync_http().expect("reader pull");
+    let file = assert_table_has_row(&mut reader.client, FILES_TABLE, "id", "file-1");
+    assert_eq!(file["parent_id"], "folder-1");
+    assert_eq!(file["current_version_id"], "version-1");
+    let version = assert_table_has_row(&mut reader.client, FILE_VERSIONS_TABLE, "id", "version-1");
+    assert_eq!(version["file_id"], "file-1");
+    assert_eq!(version["content_hash"], blob.hash);
+    let version_blob = blob_ref_from_file_version_row(&version);
+    assert_eq!(version_blob.hash, blob.hash);
+    assert_eq!(version_blob.size, blob.size);
+    assert_eq!(version_blob.mime_type, blob.mime_type);
+    assert_eq!(version_blob.encrypted, blob.encrypted);
+    let downloaded = reader
+        .client
+        .retrieve_blob_bytes(&version_blob)
+        .expect("download blob");
+    assert_eq!(downloaded, bytes);
+
+    server.revoke_subscription(FILES_SUBSCRIPTION_ID);
+    server.revoke_subscription(FILE_VERSIONS_SUBSCRIPTION_ID);
+    reader.client.sync_http().expect("reader revocation pull");
+    assert_table_row_count(&mut reader.client, FILES_TABLE, 0);
+    assert_table_row_count(&mut reader.client, FILE_VERSIONS_TABLE, 0);
+}
+
+fn blob_ref_from_file_version_row(row: &serde_json::Value) -> BlobRef {
+    match &row["blob_ref"] {
+        serde_json::Value::String(encoded) => {
+            serde_json::from_str(encoded).expect("blob ref string")
+        }
+        value => serde_json::from_value(value.clone()).expect("blob ref value"),
+    }
 }
 
 #[test]
