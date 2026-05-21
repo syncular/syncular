@@ -1,4 +1,4 @@
-import type { RawSyncularV2RustClient } from './generated-bridge';
+import type { SyncularRustOwnedSqliteClient } from './generated-wasm-bindings';
 import {
   SYNCULAR_V2_CORE_RUNTIME_FEATURES,
   SYNCULAR_V2_FULL_RUNTIME_FEATURES,
@@ -31,10 +31,10 @@ export interface SyncularV2WasmGlue {
   ): Promise<RawSyncularRustOwnedSqlite>;
   openSyncularRustOwnedSqliteClient(
     config: SyncularV2ClientConfig
-  ): Promise<RawSyncularV2RustClient>;
+  ): Promise<SyncularRustOwnedSqliteClient>;
 }
 
-export type { RawSyncularV2RustClient } from './generated-bridge';
+export type { SyncularRustOwnedSqliteClient } from './generated-wasm-bindings';
 
 let modulePromise: Promise<SyncularV2WasmGlue> | undefined;
 
