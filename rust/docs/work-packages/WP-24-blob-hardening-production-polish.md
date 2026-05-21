@@ -117,8 +117,10 @@ Known gaps:
   very large browser blobs still need a platform-aware transfer strategy.
 - Browser queue/cache limits and subscribed diagnostics now cover payload
   limits, hit/miss, prune/clear, upload completion/failure, queue processing,
-  and download failures. Native parity, server-adapter diagnostics, and console
-  visibility still need production tightening.
+  and download failures. Native direct and queued blob file/cache operations
+  emit matching stable blob diagnostic codes through the native event stream.
+  Server-adapter diagnostics and console visibility still need production
+  tightening.
 - Shared conformance is good but not complete for every auth, scope,
   encryption, corruption, browser/native, and server-adapter edge case.
 
@@ -177,11 +179,11 @@ Add scope-aware blob authorization helpers and diagnostics:
 
 ## Next Action
 
-Continue WP-24 with native/server diagnostic payload detail for auth rejection,
+Continue WP-24 with server diagnostic payload detail for auth rejection,
 corruption, and shared failure conformance without adding polling loops or
-hash-only access fallbacks. Browser payload size limits and subscribed browser
-cache/upload diagnostics are now explicit; next tighten native parity and
-server-adapter failure scenarios.
+hash-only access fallbacks. Browser payload size limits and browser/native
+cache/upload diagnostics are now explicit; next tighten server-adapter failure
+scenarios and cross-binding conformance.
 
 Latest evidence:
 
@@ -277,3 +279,26 @@ Latest evidence:
 - `bun --cwd rust/bindings/browser tsgo`
 - `bun test src/worker-client.test.ts src/database.test.ts src/public-api.test.ts`
   from `rust/bindings/browser`
+
+## Sixth Slice
+
+Add native blob diagnostic parity:
+
+1. `[x]` Add a generic native `Diagnostic` event kind so direct synchronous
+   native calls can emit support diagnostics without pretending to be row,
+   worker, or lifecycle events.
+2. `[x]` Emit native direct-call diagnostics for blob file store, cache lookup,
+   retrieve hit/miss, retrieve failure, upload queue processing, cache prune,
+   and cache clear.
+3. `[x]` Specialize queued native worker command diagnostics for blob store,
+   retrieve, upload queue, prune, and clear operations instead of reporting
+   only generic `worker.command_completed` / `worker.command_failed`.
+4. `[x]` Cover direct native blob diagnostics with a native facade test and
+   keep queued blob worker behavior covered by the existing worker cache test.
+
+Latest evidence:
+
+- `cargo fmt` from `rust/`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade blob_diagnostics --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade blob_cache_work --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`

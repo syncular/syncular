@@ -787,7 +787,9 @@ read-only review:
     `blob.too_large` diagnostics with safe size/ref metadata. Browser worker
     and direct WASM clients now also emit blob cache hit/miss, cache prune/clear,
     upload queue, per-row upload completion/failure, and download failure
-    diagnostics when diagnostics are subscribed.
+    diagnostics when diagnostics are subscribed. Native facade direct and queued
+    blob file/cache operations now emit the same stable blob diagnostic codes
+    through the native event stream.
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry

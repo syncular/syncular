@@ -1957,6 +1957,108 @@ fn native_facade_enqueues_compaction_and_blob_cache_work_on_worker() -> Result<(
 }
 
 #[test]
+fn native_facade_emits_blob_diagnostics_for_direct_cache_work() -> Result<()> {
+    let path = temp_db_path("syncular-native-direct-blob-diagnostics");
+    let input_path = temp_db_path("syncular-native-direct-blob-diagnostics-input");
+    let output_path = temp_db_path("syncular-native-direct-blob-diagnostics-output");
+    let mut client = open_demo_native_with_options(
+        test_config(&path, "native-direct-blob-diagnostics"),
+        NativeClientOptions {
+            auto_sync_local_writes: false,
+        },
+    )?;
+    fs::write(&input_path, b"diagnostic blob")
+        .map_err(syncular_runtime::error::SyncularError::from)?;
+
+    let blob_ref: Value = serde_json::from_str(
+        &client.store_blob_file_json(
+            &input_path,
+            Some(
+                &json!({
+                    "mimeType": "application/test",
+                    "immediate": false,
+                    "cacheLocal": true
+                })
+                .to_string(),
+            ),
+        )?,
+    )?;
+    let store_event = client
+        .next_event_timeout(Duration::from_secs(2))
+        .expect("blob store diagnostic event");
+    assert_eq!(store_event.kind, NativeEventKind::Diagnostic);
+    assert_eq!(
+        store_event
+            .diagnostic
+            .as_ref()
+            .map(|event| event.code.as_str()),
+        Some("blob.store_queued")
+    );
+    assert_eq!(
+        store_event
+            .diagnostic
+            .as_ref()
+            .and_then(|event| event.details.get("mimeType")),
+        Some(&json!("application/test"))
+    );
+
+    assert!(client.is_blob_local(blob_ref["hash"].as_str().unwrap())?);
+    let cache_event = client
+        .next_event_timeout(Duration::from_secs(2))
+        .expect("blob cache lookup diagnostic event");
+    assert_eq!(
+        cache_event
+            .diagnostic
+            .as_ref()
+            .map(|event| event.code.as_str()),
+        Some("blob.cache_hit")
+    );
+
+    client.retrieve_blob_file(&blob_ref.to_string(), &output_path)?;
+    let retrieve_event = client
+        .next_event_timeout(Duration::from_secs(2))
+        .expect("blob retrieve diagnostic event");
+    assert_eq!(
+        retrieve_event
+            .diagnostic
+            .as_ref()
+            .map(|event| event.code.as_str()),
+        Some("blob.cache_hit")
+    );
+    assert_eq!(fs::read(&output_path).unwrap(), b"diagnostic blob");
+
+    assert!(client.prune_blob_cache(1)? > 0);
+    let prune_event = client
+        .next_event_timeout(Duration::from_secs(2))
+        .expect("blob prune diagnostic event");
+    assert_eq!(
+        prune_event
+            .diagnostic
+            .as_ref()
+            .map(|event| event.code.as_str()),
+        Some("blob.cache_pruned")
+    );
+
+    client.clear_blob_cache()?;
+    let clear_event = client
+        .next_event_timeout(Duration::from_secs(2))
+        .expect("blob clear diagnostic event");
+    assert_eq!(
+        clear_event
+            .diagnostic
+            .as_ref()
+            .map(|event| event.code.as_str()),
+        Some("blob.cache_cleared")
+    );
+
+    client.close()?;
+    let _ = fs::remove_file(path);
+    let _ = fs::remove_file(input_path);
+    let _ = fs::remove_file(output_path);
+    Ok(())
+}
+
+#[test]
 fn native_facade_emits_query_observer_events_for_changed_tables() -> Result<()> {
     let path = temp_db_path("syncular-native-query-observer");
     let mut client = open_demo_native_with_options(
