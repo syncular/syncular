@@ -117,6 +117,65 @@ export type ConsoleRowHistoryResponse = z.infer<
   typeof ConsoleRowHistoryResponseSchema
 >;
 
+export const ConsoleDebugExportCommitSchema =
+  ConsoleCommitListItemSchema.extend({
+    changes: z.array(ConsoleChangeSchema),
+  });
+
+export type ConsoleDebugExportCommit = z.infer<
+  typeof ConsoleDebugExportCommitSchema
+>;
+
+export const ConsoleDebugExportEventSchema = z.object({
+  eventId: z.number().int(),
+  partitionId: z.string(),
+  requestId: z.string(),
+  traceId: z.string().nullable(),
+  spanId: z.string().nullable(),
+  eventType: z.enum(['sync', 'push', 'pull']),
+  syncPath: z.enum(['http-combined', 'ws-push']),
+  transportPath: z.enum(['direct', 'relay']),
+  actorId: z.string(),
+  clientId: z.string(),
+  statusCode: z.number().int(),
+  outcome: z.string(),
+  responseStatus: z.string(),
+  errorCode: z.string().nullable(),
+  durationMs: z.number().int(),
+  commitSeq: z.number().int().nullable(),
+  operationCount: z.number().int().nullable(),
+  rowCount: z.number().int().nullable(),
+  subscriptionCount: z.number().int().nullable(),
+  scopesSummary: z
+    .record(z.string(), z.union([z.string(), z.array(z.string())]))
+    .nullable(),
+  tables: z.array(z.string()),
+  createdAt: z.string(),
+});
+
+export type ConsoleDebugExportEvent = z.infer<
+  typeof ConsoleDebugExportEventSchema
+>;
+
+export const ConsoleDebugExportResponseSchema = z.object({
+  generatedAt: z.string(),
+  partitionId: z.string(),
+  limits: z.object({
+    commits: z.number().int(),
+    requestEvents: z.number().int(),
+  }),
+  truncated: z.object({
+    commits: z.boolean(),
+    requestEvents: z.boolean(),
+  }),
+  commits: z.array(ConsoleDebugExportCommitSchema),
+  requestEvents: z.array(ConsoleDebugExportEventSchema),
+});
+
+export type ConsoleDebugExportResponse = z.infer<
+  typeof ConsoleDebugExportResponseSchema
+>;
+
 // ============================================================================
 // Client Schemas
 // ============================================================================
