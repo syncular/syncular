@@ -109,6 +109,11 @@ discoverability, conflict, blob, or subscription ergonomics gaps.
   direct client hooks) is removed from public docs and tests. The retained hooks
   cover typed Kysely reads, generated/table mutations, connection state, outbox
   and conflict counters, presence, and blobs.
+- Non-React browser apps now use the Rust-backed ergonomic factory
+  `createSyncularClient()`. It keeps typed Kysely reads and generated/table
+  mutations while adding `on(...)`, `getStatus()`, `setSubscriptions(...)`,
+  `presence`, and `conflicts` namespaces over the current Rust client events and
+  operations.
 - Generated TypeScript partial updates now keep sync payloads partial while
   materializing complete local SQLite rows for NOT NULL columns, so updates such
   as `{ completed: 1 }` no longer fail local apply when the row has required

@@ -15,8 +15,8 @@ import {
 } from 'react';
 import {
   type CreateSyncularV2ClientOptions,
-  createSyncularV2Client,
-  type SyncularV2ManagedClient,
+  createSyncularClient,
+  type SyncularClient,
 } from './client';
 import type {
   MutationReceipt,
@@ -39,11 +39,11 @@ export type SyncularReactStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 export interface SyncProviderProps<DB> {
   children?: ReactNode;
-  client?: SyncularV2ManagedClient<DB>;
+  client?: SyncularClient<DB>;
   options?: CreateSyncularV2ClientOptions;
   optionsKey?: unknown;
   destroyOnUnmount?: boolean;
-  onClient?: (client: SyncularV2ManagedClient<DB>) => void;
+  onClient?: (client: SyncularClient<DB>) => void;
   onError?: (error: unknown) => void;
 }
 
@@ -199,7 +199,7 @@ export interface UseBlobUploadQueueResult {
 }
 
 type ReactContextInternal<DB> = {
-  client: SyncularV2ManagedClient<DB> | null;
+  client: SyncularClient<DB> | null;
   status: SyncularReactStatus;
   error: unknown;
 };
@@ -250,7 +250,7 @@ export function createSyncularReact<DB>() {
     useEffect(() => {
       void lifecycleKey;
       let cancelled = false;
-      let ownedClient: SyncularV2ManagedClient<DB> | null = null;
+      let ownedClient: SyncularClient<DB> | null = null;
 
       if (providedClient) {
         setValue({ client: providedClient, status: 'ready', error: null });
@@ -273,7 +273,7 @@ export function createSyncularReact<DB>() {
         status: 'loading',
         error: null,
       }));
-      void createSyncularV2Client<DB>(currentOptions)
+      void createSyncularClient<DB>(currentOptions)
         .then((client) => {
           if (cancelled) {
             void client.destroy().catch(() => undefined);
@@ -311,7 +311,7 @@ export function createSyncularReact<DB>() {
     return { status: value.status, error: value.error };
   }
 
-  function useClient(): SyncularV2ManagedClient<DB> {
+  function useClient(): SyncularClient<DB> {
     const value = useContext(Context);
     if (!value) throw new Error('SyncProvider is required for Syncular hooks.');
     if (!value.client) {
@@ -790,7 +790,7 @@ function isExecutableQuery<TResult>(
 }
 
 function wrapMutationsTable<DB>(
-  client: SyncularV2ManagedClient<DB>,
+  client: SyncularClient<DB>,
   table: string,
   run: <TResult extends MutationReceipt>(
     operation: () => Promise<TResult>,
