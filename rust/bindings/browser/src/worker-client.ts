@@ -109,6 +109,8 @@ type BlobOutboxRow = {
   hash: string;
   size: number;
   mime_type: string;
+  encrypted: number | boolean;
+  key_id: string | null;
   status: string;
   error: string | null;
 };
@@ -1637,7 +1639,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     const result = await this.#request<SyncularV2SqlResult<BlobOutboxRow>>({
       type: 'executeUnsafeSql',
       sql:
-        'select hash, size, mime_type, status, error ' +
+        'select hash, size, mime_type, encrypted, key_id, status, error ' +
         'from sync_blob_outbox order by created_at asc',
       params: [],
     });
@@ -1657,7 +1659,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
             hash: before.hash,
             size: coerceCount(before.size),
             mimeType: before.mime_type,
-            encrypted: false,
+            encrypted: before.encrypted === true || before.encrypted === 1,
+            ...(before.key_id ? { keyId: before.key_id } : {}),
           },
         });
         continue;

@@ -779,7 +779,9 @@ read-only review:
     `keyId`, and host retrieval decrypts only after ciphertext hash/size
     validation. The browser and native APIs expose `setBlobEncryption` /
     `set_blob_encryption_json`, with native and Hono/WASM tests proving
-    encrypted upload/download roundtrips.
+    encrypted upload/download roundtrips. Browser upload completion events now
+    preserve encrypted `BlobRef` metadata when reconstructed from the Rust-owned
+    SQLite outbox.
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry

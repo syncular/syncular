@@ -174,10 +174,9 @@ Add scope-aware blob authorization helpers and diagnostics:
 
 ## Next Action
 
-Continue WP-24 with queue/cache diagnostics and explicit blob limits. The next
-slice should expose stable blob lifecycle events/error codes for cache hit/miss,
-upload retry/failure, auth rejection, corruption, and pruning without adding
-polling loops or hash-only access fallbacks.
+Continue WP-24 with explicit blob limits and native/browser diagnostic payload
+detail for cache hit/miss, upload retry/failure, auth rejection, corruption,
+and pruning without adding polling loops or hash-only access fallbacks.
 
 Latest evidence:
 
@@ -212,3 +211,18 @@ Latest evidence:
 - `bun --cwd rust/bindings/browser tsgo`
 - `bun run build:wasm:dev` from `rust/bindings/browser`
 - `bun test src/__tests__/blob-hono.wasm.test.ts` from `rust/bindings/browser`
+
+## Third Slice
+
+Tighten browser upload lifecycle metadata:
+
+1. `[x]` Preserve `encrypted` and `keyId` metadata when browser
+   `blobUploadCompleted` events are reconstructed from the Rust-owned SQLite
+   outbox.
+2. `[x]` Add a worker-client test proving encrypted upload completion events
+   carry the exact `BlobRef` metadata instead of reporting `encrypted=false`.
+
+Latest evidence:
+
+- `bun --cwd rust/bindings/browser tsgo`
+- `bun test src/worker-client.test.ts` from `rust/bindings/browser`
