@@ -50,11 +50,12 @@ authorization.
 
 ## Next Action
 
-Next narrow slice is replay enforcement for issued leases. The current push
-wire carries provenance, not the signed token or a server-side lease registry
-lookup result, so replay cannot yet verify signature/scope/revocation from the
-issued lease. Decide and implement the Rust-first path, likely sending the
-stored lease token with queued commits and validating it before handler auth.
+Next narrow slice is Rust client token replay plus full per-operation lease
+scope/revocation validation. The TS server can reject expired signed tokens
+now, but the Rust runtime still needs to attach the stored lease token from
+`sync_auth_leases`, and the server validator still needs to check the signed
+lease scopes against each operation instead of only validating token
+issuer/audience/schema/actor/expiry before current handler auth.
 
 ## Progress
 
@@ -112,6 +113,18 @@ stored lease token with queued commits and validating it before handler auth.
 - Added Hono route coverage for successful signed lease issue/verification,
   auth-required failure, disallowed-scope failure, malformed scope requests,
   and expiry diagnostics.
+- Added `leaseToken` to the TS push `authLease` contract so replay can carry
+  the signed lease alongside bounded provenance.
+- Added a generic server push commit validator hook that runs after idempotent
+  commit insertion but before operation application, so commit-level auth
+  rejections persist normal `sync_commits` audit/result metadata.
+- Wired Hono auth lease config into push replay validation. Leased commits now
+  require a token when auth leases are configured, and the server verifies
+  signature, issuer, audience, schema version, actor id, lease id, and expiry
+  before applying operations. Normal unleased commits still use normal request
+  auth and handler authorization.
+- Added Hono coverage proving an expired signed lease rejects the pushed commit
+  with `sync.auth_lease_expired` and leaves the app row unapplied.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol -p
   syncular-testkit` passed with `15` protocol tests and `36` testkit smoke
   tests.
@@ -130,6 +143,13 @@ stored lease token with queued commits and validating it before handler auth.
   packages/server/src/auth-leases.ts packages/server-hono/src/routes.ts
   packages/server-hono/src/__tests__/auth-leases.test.ts` passed after the
   issue-route slice.
+- Gate: `bun run --cwd packages/core tsgo`, `bun run --cwd packages/server
+  tsgo`, and `bun run --cwd packages/server-hono tsgo` passed after the replay
+  token validation slice.
+- Gate: `bun test packages/server-hono/src/__tests__/auth-leases.test.ts`
+  passed with `5` tests after the replay token validation slice.
+- Gate: `bun test packages/server/src/push-operation-codes.test.ts` passed
+  after adding the generic push commit validator hook.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   store_backends` passed with `36` tests after the local lease storage slice.
 - Gate: `bun run rust:conformance:fast` passed after the protocol/testkit

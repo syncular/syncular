@@ -419,11 +419,14 @@ read-only review:
     `POST /auth-leases/issue` endpoint backed by shared TS auth-lease schemas,
     WebCrypto ES256 signing helpers, scope resolution through the existing
     handler policy, and route coverage for successful issue, auth-required,
-    disallowed scope, malformed scope, and expiry diagnostics. Next narrow
-    slice is replay enforcement for issued leases: push replay still carries
-    provenance only, so it needs either the stored signed token on the wire or a
-    server-side lease registry before signature/scope/revocation checks are
-    real.
+    disallowed scope, malformed scope, and expiry diagnostics. Push replay now
+    has a generic post-idempotency commit validator hook and Hono auth-lease
+    validation rejects leased commits with missing/expired/invalid signed tokens
+    before applying operations while still preserving normal commit audit
+    metadata. Remaining WP-11 gap: Rust must attach the stored lease token from
+    `sync_auth_leases`, and server replay must check signed lease scopes and
+    revocation per operation instead of only validating token
+    issuer/audience/schema/actor/expiry before current handler auth.
 - `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus
