@@ -738,22 +738,20 @@ impl AsyncWebStore for WebMemoryStore {
                     )));
                 }
             };
-            let mut active_leases = self
+            let mut candidate_leases = self
                 .auth_leases
                 .values()
                 .filter(|lease| lease.status == "active")
-                .filter(|lease| lease.not_before_ms <= now_ms_value)
-                .filter(|lease| lease.expires_at_ms > now_ms_value)
                 .filter(|lease| actor_id.map_or(true, |actor_id| lease.actor_id == actor_id))
                 .cloned()
                 .collect::<Vec<_>>();
-            active_leases.sort_by_key(|lease| lease.expires_at_ms);
+            candidate_leases.sort_by_key(|lease| lease.expires_at_ms);
             let provenance = select_active_auth_lease_for_operations(
                 ActiveAuthLeasePolicy {
                     actor_id,
                     now_ms: now_ms_value,
                 },
-                active_leases,
+                candidate_leases,
                 schema.current_schema_version(),
                 &[scope],
             )?;

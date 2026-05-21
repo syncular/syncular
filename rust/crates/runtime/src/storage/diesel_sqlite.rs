@@ -2415,13 +2415,30 @@ impl<'a> DieselSqliteTx<'a> {
         policy: ActiveAuthLeasePolicy<'_>,
         operations: &[MutationOperationScope],
     ) -> Result<AuthLeaseProvenance> {
-        let active_leases = self.active_auth_leases(policy.actor_id, policy.now_ms)?;
+        let candidate_leases = self.auth_lease_candidates_for_selection(policy.actor_id)?;
         select_auth_lease_for_operation_scopes(
             policy,
-            active_leases,
+            candidate_leases,
             self.app_schema.current_schema_version(),
             operations,
         )
+    }
+
+    fn auth_lease_candidates_for_selection(
+        &mut self,
+        actor_id_value: Option<&str>,
+    ) -> Result<Vec<AuthLeaseRecord>> {
+        use schema::sync_auth_leases::dsl as l;
+
+        let mut query = l::sync_auth_leases
+            .select(AuthLeaseRecordRow::as_select())
+            .filter(l::status.eq("active"))
+            .into_boxed();
+        if let Some(actor_id_value) = actor_id_value {
+            query = query.filter(l::actor_id.eq(actor_id_value));
+        }
+        let rows = query.order(l::expires_at_ms.asc()).load(self.conn)?;
+        Ok(rows.into_iter().map(AuthLeaseRecord::from).collect())
     }
 
     fn current_row_json(&mut self, table: &str, row_id: &str) -> Result<Option<Value>> {

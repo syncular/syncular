@@ -227,6 +227,12 @@ Leases expire and can be revoked server-side. Apps should renew before
 conflicts as user-visible recovery states. A stored lease records offline intent;
 it does not guarantee server acceptance after reconnect.
 
+Local leased mutations use the same stable failure codes before a row is
+materialized. `activeAuthLeases(...)` returns only time-valid leases; if the
+only stored lease that covers a mutation is expired, the runtime rejects the
+local write with `sync.auth_lease_expired` and rolls back the local row/outbox
+transaction.
+
 For Yjs-backed fields, send `__yjs` envelopes or use the generic CRDT field
 runtime APIs. Do not set `title_yjs_state` in app mutations:
 

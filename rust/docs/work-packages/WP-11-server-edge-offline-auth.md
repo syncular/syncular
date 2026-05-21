@@ -53,12 +53,16 @@ points. Browser and Rust/native hosts now have first-class auth lease issue
 APIs that post through the normal auth transport, validate/store the returned
 signed lease, and feed generated leased mutations. Leases remain offline
 intent/audit records only; they do not bypass normal reconnect authorization.
+Local leased mutations now also classify a stored covering-but-expired lease as
+`sync.auth_lease_expired` before materializing the row or outbox write, while
+`activeAuthLeases(...)` continues to expose only time-valid leases.
 
 ## Next Action
 
-Next narrow slice is expiry/revocation app UX validation and server/proxy
-sequencing. Do not add manual outbox lease marking to app-facing APIs; generated
-leased mutations must keep selecting stored lease provenance transactionally.
+Next narrow slice is server/proxy sequencing and any remaining app-shell UX
+validation around lease revocation. Do not add manual outbox lease marking to
+app-facing APIs; generated leased mutations must keep selecting stored lease
+provenance transactionally.
 
 ## Progress
 
@@ -177,6 +181,13 @@ leased mutations must keep selecting stored lease provenance transactionally.
 - Added browser core-WASM coverage proving generated leased mutations fail
   closed without a covering lease, do not materialize the row on failure, and
   succeed after storing a covering active lease.
+- Added local expiry UX coverage for Rust Diesel and browser Rust-owned SQLite:
+  a stored covering lease that is no longer time-valid produces
+  `sync.auth_lease_expired`, leaves app rows/outbox untouched, and
+  `activeAuthLeases(...)` remains filtered to currently usable leases.
+- Fixed the browser TypeScript wrapper for `activeAuthLeases(...)` to pass
+  wasm `i64` timestamps as `bigint`, matching the generated wasm-bindgen
+  binding instead of relying on mocked worker coverage.
 - Added browser host-facing `client.issueAuthLease(...)`. It posts to the Hono
   `/auth-leases/issue` route, uses the existing auth refresh lifecycle on
   `401`/`403`, stores the returned signed lease, and returns the stored
@@ -336,3 +347,15 @@ leased mutations must keep selecting stored lease provenance transactionally.
   passed after the local storage API slice.
 - Gate: `bun run build:wasm:dev` passed in `rust/bindings/browser` after adding
   browser owned SQLite lease APIs.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
+  store_backends` passed with `41` tests after local expired-lease
+  classification.
+- Gate: `bun run --cwd rust/bindings/browser build:wasm:core`,
+  `bun run --cwd rust/bindings/browser tsgo`, and
+  `bun test rust/bindings/browser/src/__tests__/variant-core.wasm.test.ts`
+  passed after browser active-lease timestamp and expired-lease coverage.
+- Gate: `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime
+  --no-default-features --features native,crdt-yjs` and `cargo test
+  --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract
+  --features native,crdt-yjs,demo-todo-native-fixture` passed after the shared
+  selector change.
