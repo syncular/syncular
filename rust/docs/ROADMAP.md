@@ -506,8 +506,10 @@ read-only review:
     status/error code and success/non-success counts. Pull request-event
     summaries now include redacted snapshot transport counts, and row
     investigation surfaces inline/chunk/artifact bootstrap evidence without
-    storing row payloads. Remaining drilldown work should add stronger realtime
-    recovery evidence only when the server persists that metadata explicitly.
+    storing row payloads. Console-enabled servers now persist redacted realtime
+    websocket lifecycle/recovery events, and row investigation surfaces
+    connected, ACK, pull-required, rejected, and error counts for the selected
+    client.
 - `[x]` [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
 - `[x]` [`WP-15 Error Taxonomy And Recovery Semantics`](work-packages/WP-15-error-taxonomy-recovery-semantics.md)
   - Browser worker error payloads now carry stable public error `code`,
@@ -837,9 +839,12 @@ read-only review:
 
 ## Planned Server / Relay Rust Work
 
-- `[ ]` [`WP-27 Rust Relay Protocol Boundary`](work-packages/WP-27-rust-relay-protocol-boundary.md)
-  - Prove `syncular-protocol` as the shared protocol authority for relay/proxy
-    fixture validation before any production relay behavior changes.
+- `[x]` [`WP-27 Rust Relay Protocol Boundary`](work-packages/WP-27-rust-relay-protocol-boundary.md)
+  - `syncular-protocol` now has storage-free relay/proxy validation helpers and
+    cross-language fixtures for combined sync, binary sync packs, snapshot
+    chunks/artifacts, blob refs, auth lease provenance, realtime JSON messages,
+    and binary realtime frames. TypeScript schema/codec tests and Rust protocol
+    tests validate the same fixtures without changing relay runtime behavior.
 - `[ ]` [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
   - Baseline relay/server paths, evaluate where Rust protocol/edge code would
     actually help, and create follow-up WPs only from measured evidence.

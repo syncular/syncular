@@ -13,6 +13,7 @@ pub mod realtime;
 pub mod snapshot_artifact;
 pub mod snapshot_chunk;
 pub mod snapshot_manifest;
+pub mod validation;
 
 pub use auth_lease::{
     AuthLeaseCapabilities, AuthLeaseIssueRequest, AuthLeaseIssueResponse, AuthLeasePayload,
@@ -24,8 +25,8 @@ pub use auth_lease::{
 };
 pub use blob::{
     blob_hash, normalize_blob_mime_type, validate_blob_bytes, validate_blob_digest,
-    validate_blob_hash, BlobDownloadUrlResponse, BlobRef, BlobUploadCompleteResponse,
-    BlobUploadInitRequest, BlobUploadInitResponse,
+    validate_blob_hash, validate_blob_ref, BlobDownloadUrlResponse, BlobRef,
+    BlobUploadCompleteResponse, BlobUploadInitRequest, BlobUploadInitResponse,
 };
 pub use error::{ProtocolError, Result};
 pub use integrity::{
@@ -52,6 +53,10 @@ pub use snapshot_chunk::{
     SNAPSHOT_CHUNK_COMPRESSION_GZIP,
 };
 pub use snapshot_manifest::{snapshot_manifest_digest, validate_pull_snapshot_manifests};
+pub use validation::{
+    validate_combined_request, validate_combined_response, validate_realtime_presence_request,
+    validate_realtime_push_request, validate_realtime_server_message,
+};
 
 pub const COMMIT_INTEGRITY_HEX_LENGTH: usize = 64;
 pub const COMMIT_INTEGRITY_GENESIS_ROOT: &str =
