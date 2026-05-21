@@ -126,14 +126,14 @@ private enum LifecycleAppSmoke {
         expect(rows[0].image?.hash == blobRef.hash, "Swift lifecycle query should decode blob ref")
         expect(try live.refreshIfChanged(event: queryEvent, on: native)?.count == 1, "Swift lifecycle live query should refresh from native event")
 
-        let syncCommandId = try native.enqueueSyncNow()
+        let syncCommandId = try native.resumeFromBackground()
         let (syncEvent, _) = try waitForEvent(
             from: native,
             kind: "SyncFailed",
             commandId: syncCommandId,
             timeoutMs: 8_000
         )
-        expect(syncEvent.commandId == syncCommandId, "Swift lifecycle sync failure should carry command id")
+        expect(syncEvent.commandId == syncCommandId, "Swift lifecycle foreground resume sync failure should carry command id")
 
         let outbox = try native.outboxSummariesJson()
         expect(outbox.contains(mutationEvent.clientCommitId!), "Swift lifecycle outbox should contain queued mutation")

@@ -262,6 +262,15 @@ native event with the original `commandId`, so the host can correlate the failed
 foreground action, refresh headers, and enqueue another sync without reopening
 SQLite.
 
+When a browser or native UI returns to the foreground, prefer the runtime-owned
+resume hook over manually restarting internal pieces. In browser apps, call
+`database.client.resumeFromBackground()` after refreshing any host auth state.
+In Swift/Kotlin/Java BoltFFI hosts, call `resumeFromBackground()` on the native
+client. The native runtime resumes the worker if needed, restarts realtime, and
+enqueues a command-correlated sync; the browser worker marks lifecycle as
+`recovering`, restarts remembered realtime options, and resolves with the
+normal `syncOnce` result.
+
 Swift/Kotlin/JVM native apps also need subscriptions before sync when opening
 with injected `appSchemaJson`. Generated app clients now emit subscription
 helpers, so normal app code should avoid hand-written subscription JSON:
@@ -899,9 +908,10 @@ as a long-lived runtime object, not as a per-screen helper:
   precise row/field deltas. Use those deltas to route active-document CRDT
   updates, list row refreshes, deletes, and conflict indicators before falling
   back to table-level refresh.
-- refresh auth headers before foreground sync or realtime reconnect. A stale
-  HTTP 401/403 sync response is reported as `AuthExpired` with the original
-  command id.
+- refresh auth headers before foreground recovery, then call
+  `resumeFromBackground()` instead of independently poking realtime and sync. A
+  stale HTTP 401/403 sync response is reported as `AuthExpired` with the
+  original command id.
 - set generated subscriptions with `setSubscriptionsJson` before the first sync
   when opening native clients with injected `appSchemaJson`.
 - when backgrounding, only enqueue sync/blob/compaction work that fits the host
