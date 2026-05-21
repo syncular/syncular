@@ -1974,6 +1974,11 @@ impl SyncularRustOwnedSqlite {
             "sync_outbox_commits",
             "lease_scope_summary_json",
             "ALTER TABLE sync_outbox_commits ADD COLUMN lease_scope_summary_json TEXT NULL",
+        )?;
+        self.add_column_if_missing(
+            "sync_outbox_commits",
+            "lease_token",
+            "ALTER TABLE sync_outbox_commits ADD COLUMN lease_token TEXT NULL",
         )
     }
 
@@ -4026,12 +4031,22 @@ impl SyncularRustOwnedSqlite {
                 "outbox commit {client_commit_id} does not exist"
             )));
         }
+        let lease_token = match provenance {
+            Some(lease) => lease.lease_token.clone().or_else(|| {
+                self.auth_lease_sync(&lease.lease_id)
+                    .ok()
+                    .flatten()
+                    .map(|record| record.token)
+            }),
+            None => None,
+        };
         self.exec(&format!(
             "UPDATE sync_outbox_commits SET \
                lease_id = {lease_id}, \
                lease_expires_at_ms = {lease_expires_at_ms}, \
                lease_status_at_enqueue = {lease_status_at_enqueue}, \
-               lease_scope_summary_json = {lease_scope_summary_json} \
+               lease_scope_summary_json = {lease_scope_summary_json}, \
+               lease_token = {lease_token} \
              WHERE client_commit_id = {client_commit_id}",
             lease_id = optional_sql_string(provenance.map(|lease| lease.lease_id.as_str())),
             lease_expires_at_ms =
@@ -4041,6 +4056,7 @@ impl SyncularRustOwnedSqlite {
             lease_scope_summary_json = optional_sql_string(
                 provenance.and_then(|lease| lease.lease_scope_summary_json.as_deref()),
             ),
+            lease_token = optional_sql_string(lease_token.as_deref()),
             client_commit_id = sql_string(client_commit_id)
         ))
     }
@@ -4065,6 +4081,7 @@ impl SyncularRustOwnedSqlite {
                     row.optional_i64("lease_expires_at_ms"),
                     row.optional_string("lease_status_at_enqueue"),
                     row.optional_string("lease_scope_summary_json"),
+                    row.optional_string("lease_token"),
                 ),
             })
         })
@@ -5429,7 +5446,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
             self.query_rows(
                 "SELECT client_commit_id, status, schema_version, \
                         lease_id, lease_expires_at_ms, lease_status_at_enqueue, \
-                        lease_scope_summary_json \
+                        lease_scope_summary_json, lease_token \
                  FROM sync_outbox_commits ORDER BY created_at ASC",
                 |row| {
                     Ok(OutboxSummary {
@@ -5441,6 +5458,7 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                             row.optional_i64("lease_expires_at_ms"),
                             row.optional_string("lease_status_at_enqueue"),
                             row.optional_string("lease_scope_summary_json"),
+                            row.optional_string("lease_token"),
                         ),
                     })
                 },
@@ -6221,12 +6239,14 @@ fn auth_lease_provenance_from_columns(
     lease_expires_at_ms: Option<i64>,
     lease_status_at_enqueue: Option<String>,
     lease_scope_summary_json: Option<String>,
+    lease_token: Option<String>,
 ) -> Option<AuthLeaseProvenance> {
     Some(AuthLeaseProvenance {
         lease_id: lease_id?,
         lease_expires_at_ms: lease_expires_at_ms?,
         lease_status_at_enqueue: lease_status_at_enqueue?,
         lease_scope_summary_json,
+        lease_token,
     })
 }
 

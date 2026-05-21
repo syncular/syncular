@@ -120,4 +120,6 @@ pub struct AuthLeaseProvenance {
     pub lease_status_at_enqueue: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub lease_scope_summary_json: Option<String>,
+    #[serde(rename = "leaseToken", skip_serializing_if = "Option::is_none")]
+    pub lease_token: Option<String>,
 }

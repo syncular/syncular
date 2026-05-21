@@ -163,6 +163,7 @@ mod tests {
                     lease_expires_at_ms: 1_779_446_400_000,
                     lease_status_at_enqueue: "active".to_string(),
                     lease_scope_summary_json: None,
+                    lease_token: Some("lease-token".to_string()),
                 }),
             },
         );
@@ -183,7 +184,8 @@ mod tests {
                 "authLease": {
                     "leaseId": "lease-1",
                     "leaseExpiresAtMs": 1_779_446_400_000_i64,
-                    "leaseStatusAtEnqueue": "active"
+                    "leaseStatusAtEnqueue": "active",
+                    "leaseToken": "lease-token"
                 }
             })
         );

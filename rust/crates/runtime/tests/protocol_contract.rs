@@ -504,6 +504,7 @@ fn http_sync_sends_auth_lease_provenance_and_preserves_rejection_diagnostic() ->
         lease_expires_at_ms: 1_779_360_000_000,
         lease_status_at_enqueue: "expired".to_string(),
         lease_scope_summary_json: Some(r#"{"user_id":["user-rust"]}"#.to_string()),
+        lease_token: Some("signed-lease-token".to_string()),
     };
     let expected_provenance = provenance.clone();
     transport.push_http_response_fn(move |request| {
