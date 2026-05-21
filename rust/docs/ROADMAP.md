@@ -483,7 +483,7 @@ read-only review:
     lifecycle smokes model restricted background policy versus foreground
     maintenance policy. Accepted after full native facade/FFI/binding gates and
     `bun run rust:conformance:native`.
-- `[~]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
+- `[x]` [`WP-18 Production Hardening And Limits`](work-packages/WP-18-production-hardening-limits.md)
   - Started with a limit inventory and the first explicit native/Rust runtime
     limit surface. Worker queue/event capacities, native recent-event limits,
     read statement cache capacity, pull request sizing, outbox push batch
@@ -514,8 +514,9 @@ read-only review:
     `maxUnresolvedOutboxCommits`; acked commits do not count against the cap.
     Console stats now expose partition-aware snapshot chunk/artifact cache
     pressure counters, and the command dashboard surfaces total/expired
-    snapshot cache pressure as KPIs.
-- `[ ]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
+    snapshot cache pressure as KPIs. Accepted after native, browser-owned
+    SQLite, server, console, transport type, and documentation gates.
+- `[~]` [`WP-19 Security And Privacy Review`](work-packages/WP-19-security-privacy-review.md)
 - `[ ]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)

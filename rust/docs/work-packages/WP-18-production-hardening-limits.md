@@ -1,6 +1,6 @@
 # WP-18 Production Hardening And Limits
 
-Status: `[~]` started
+Status: `[x]` accepted
 
 ## Goal
 
@@ -58,8 +58,24 @@ product-level limits.
 
 ## Next Action
 
-Run a closing review against the acceptance criteria and decide whether WP-18
-can move to accepted or needs larger browser/server stress fixtures.
+Move to WP-19 security/privacy review. Future limit additions should extend
+`RUNTIME_LIMITS.md` and cite this WP as the accepted baseline.
+
+## Acceptance Review
+
+- Public Rust/native/browser/server limits are documented in
+  `RUNTIME_LIMITS.md` and visible through runtime manifests/diagnostics where
+  app hosts need them.
+- Limit failures use stable `runtime.limit_exceeded` envelopes or native error
+  classifications instead of silent clamping.
+- Console visibility now covers request/response limit pressure, client and
+  subscription pressure, blob storage routes, snapshot chunk/artifact pressure,
+  and native diagnostic queue/blob/CRDT pressure.
+- Stress coverage exists for subscription/scope limits, mutation/outbox
+  payloads, unresolved outbox growth, artifact/chunk size gates, websocket
+  overflow, event-stream overflow, and diagnostic payload bounds.
+- No hot sync/apply/query path changed in the final console/outbox-pressure
+  closure slices, so benchmark gates were not applicable for those slices.
 
 ## Progress
 
