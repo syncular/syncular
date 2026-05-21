@@ -410,6 +410,24 @@ describe('console timeline route filters', () => {
     );
   }
 
+  async function requestDebugExport(
+    query: Record<string, string | number | undefined> = {}
+  ): Promise<Response> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+    const queryString = params.toString();
+
+    return app.request(
+      `http://localhost/console/debug/export${queryString ? `?${queryString}` : ''}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+  }
+
   async function requestEventDetail(
     eventId: number,
     query: Record<string, string | number | undefined> = {}
@@ -1172,6 +1190,111 @@ describe('console timeline route filters', () => {
       sensitiveFields: ['ciphertext', 'key_id'],
     });
     expect(JSON.stringify(crdtPayload)).not.toContain('encrypted-bytes');
+  });
+
+  it('exports bounded redacted debug bundles without payload snapshots', async () => {
+    const commitRow = await db
+      .selectFrom('sync_commits')
+      .select(['commit_seq'])
+      .where('partition_id', '=', 'default')
+      .where('client_commit_id', '=', 'commit-b')
+      .executeTakeFirst();
+    const commitSeq = Number(commitRow?.commit_seq);
+    expect(Number.isFinite(commitSeq)).toBe(true);
+
+    await db
+      .insertInto('sync_changes')
+      .values({
+        partition_id: 'default',
+        commit_seq: commitSeq,
+        table: 'notes',
+        row_id: 'debug-row',
+        op: 'upsert',
+        row_json: JSON.stringify({
+          id: 'debug-row',
+          body: 'Debug Export Secret',
+        }),
+        row_version: 1,
+        scopes: JSON.stringify({ user_id: 'actor-b' }),
+      })
+      .execute();
+
+    await db
+      .insertInto('sync_request_events')
+      .values({
+        partition_id: 'default',
+        request_id: 'req-debug',
+        trace_id: 'trace-debug',
+        span_id: null,
+        event_type: 'push',
+        sync_path: 'http-combined',
+        actor_id: 'actor-b',
+        client_id: 'client-b',
+        transport_path: 'direct',
+        status_code: 500,
+        outcome: 'error',
+        response_status: 'server_error',
+        error_code: 'debug.failure',
+        duration_ms: 9,
+        commit_seq: commitSeq,
+        operation_count: 1,
+        row_count: 1,
+        subscription_count: null,
+        scopes_summary: JSON.stringify({ user_id: 'actor-b' }),
+        tables: ['notes'],
+        error_message: 'Debug Export Error Secret',
+        payload_ref: 'payload-debug-secret',
+        created_at: atIso(60),
+      })
+      .execute();
+
+    const response = await requestDebugExport({
+      partitionId: 'default',
+      limitCommits: 1,
+      limitEvents: 1,
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      partitionId: string;
+      limits: { commits: number; requestEvents: number };
+      truncated: { commits: boolean; requestEvents: boolean };
+      commits: Array<{
+        commitSeq: number;
+        changes: Array<{
+          fields: string[];
+          redaction: { payload: string; reason: string };
+          rowJson?: unknown;
+        }>;
+      }>;
+      requestEvents: Array<{
+        requestId: string;
+        errorMessage?: string;
+        payloadRef?: string;
+      }>;
+    };
+
+    expect(payload.partitionId).toBe('default');
+    expect(payload.limits).toEqual({ commits: 1, requestEvents: 1 });
+    expect(payload.truncated.commits).toBe(true);
+    expect(payload.truncated.requestEvents).toBe(true);
+    expect(payload.commits).toHaveLength(1);
+    expect(payload.commits[0]?.commitSeq).toBe(commitSeq);
+    expect(payload.commits[0]?.changes[0]).toMatchObject({
+      fields: ['body', 'id'],
+      redaction: {
+        payload: 'omitted',
+        reason: 'audit_redacted_by_default',
+      },
+    });
+    expect(payload.commits[0]?.changes[0]).not.toHaveProperty('rowJson');
+    expect(payload.requestEvents).toHaveLength(1);
+    expect(payload.requestEvents[0]?.requestId).toBe('req-debug');
+    expect(payload.requestEvents[0]).not.toHaveProperty('errorMessage');
+    expect(payload.requestEvents[0]).not.toHaveProperty('payloadRef');
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toContain('Debug Export Secret');
+    expect(serialized).not.toContain('Debug Export Error Secret');
+    expect(serialized).not.toContain('payload-debug-secret');
   });
 
   it('lists operation audit events and filters by operation type', async () => {

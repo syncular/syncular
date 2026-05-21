@@ -74,6 +74,10 @@ import {
   ConsoleCommitListItemSchema,
   type ConsoleCompactResult,
   ConsoleCompactResultSchema,
+  type ConsoleDebugExportCommit,
+  type ConsoleDebugExportEvent,
+  type ConsoleDebugExportResponse,
+  ConsoleDebugExportResponseSchema,
   type ConsoleEvictResult,
   ConsoleEvictResultSchema,
   type ConsoleHandler,
@@ -426,6 +430,12 @@ const rowHistoryQuerySchema = ConsolePartitionQuerySchema.extend({
     path: ['afterCommitSeq'],
   }
 );
+const debugExportQuerySchema = ConsolePartitionQuerySchema.extend({
+  limitCommits: z.coerce.number().int().min(1).max(200).default(50),
+  limitEvents: z.coerce.number().int().min(1).max(500).default(100),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+});
 const eventDetailQuerySchema = ConsolePartitionQuerySchema;
 const evictClientQuerySchema = ConsolePartitionQuerySchema;
 const apiKeyStatusSchema = z.enum(['active', 'revoked', 'expiring']);
@@ -723,6 +733,36 @@ export function createConsoleRoutes<
     createdAt: row.created_at ?? '',
   });
 
+  const mapDebugExportEvent = (
+    row: SyncRequestEventsTable
+  ): ConsoleDebugExportEvent => {
+    const mapped = mapRequestEvent(row);
+    return {
+      eventId: mapped.eventId,
+      partitionId: mapped.partitionId,
+      requestId: mapped.requestId,
+      traceId: mapped.traceId,
+      spanId: mapped.spanId,
+      eventType: mapped.eventType,
+      syncPath: mapped.syncPath,
+      transportPath: mapped.transportPath,
+      actorId: mapped.actorId,
+      clientId: mapped.clientId,
+      statusCode: mapped.statusCode,
+      outcome: mapped.outcome,
+      responseStatus: mapped.responseStatus,
+      errorCode: mapped.errorCode,
+      durationMs: mapped.durationMs,
+      commitSeq: mapped.commitSeq,
+      operationCount: mapped.operationCount,
+      rowCount: mapped.rowCount,
+      subscriptionCount: mapped.subscriptionCount,
+      scopesSummary: mapped.scopesSummary,
+      tables: mapped.tables,
+      createdAt: mapped.createdAt,
+    };
+  };
+
   const operationEventSelectColumns = [
     'operation_id',
     'operation_type',
@@ -752,6 +792,56 @@ export function createConsoleRoutes<
     resultPayload: parseJsonValue(row.result_payload),
     createdAt: row.created_at ?? '',
   });
+
+  const readRedactedCommitChanges = async (
+    partitionId: string,
+    commitSeqs: readonly number[]
+  ): Promise<Map<number, ConsoleChange[]>> => {
+    if (commitSeqs.length === 0) {
+      return new Map();
+    }
+
+    const rows = await db
+      .selectFrom('sync_changes')
+      .select([
+        'commit_seq',
+        'change_id',
+        'table',
+        'row_id',
+        'op',
+        'row_json',
+        'row_version',
+        'scopes',
+      ])
+      .where('partition_id', '=', partitionId)
+      .where('commit_seq', 'in', [...commitSeqs])
+      .orderBy('commit_seq', 'asc')
+      .orderBy('change_id', 'asc')
+      .execute();
+
+    const changesByCommitSeq = new Map<number, ConsoleChange[]>();
+    for (const row of rows) {
+      const commitSeq = coerceNumber(row.commit_seq);
+      if (commitSeq === null) continue;
+      const changes = changesByCommitSeq.get(commitSeq) ?? [];
+      changes.push({
+        ...summarizeAuditChange({
+          table: row.table ?? '',
+          op: row.op === 'delete' ? 'delete' : 'upsert',
+          rowJson: row.row_json,
+          scopes: row.scopes,
+        }),
+        changeId: coerceNumber(row.change_id) ?? 0,
+        table: row.table ?? '',
+        rowId: row.row_id ?? '',
+        op: row.op === 'delete' ? 'delete' : 'upsert',
+        rowVersion: coerceNumber(row.row_version),
+      });
+      changesByCommitSeq.set(commitSeq, changes);
+    }
+
+    return changesByCommitSeq;
+  };
 
   type PruneEventsRunResult = {
     requestEventsDeleted: number;
@@ -1799,19 +1889,22 @@ export function createConsoleRoutes<
         .orderBy('change_id', 'asc')
         .execute();
 
-      const changes: ConsoleChange[] = changeRows.map((row) => ({
-        ...summarizeAuditChange({
+      const changes: ConsoleChange[] = changeRows.map((row) => {
+        const op = row.op === 'delete' ? 'delete' : 'upsert';
+        return {
+          ...summarizeAuditChange({
+            table: row.table ?? '',
+            op,
+            rowJson: row.row_json,
+            scopes: row.scopes,
+          }),
+          changeId: coerceNumber(row.change_id) ?? 0,
           table: row.table ?? '',
-          op: row.op === 'delete' ? 'delete' : 'upsert',
-          rowJson: row.row_json,
-          scopes: row.scopes,
-        }),
-        changeId: coerceNumber(row.change_id) ?? 0,
-        table: row.table ?? '',
-        rowId: row.row_id ?? '',
-        op: row.op === 'delete' ? 'delete' : 'upsert',
-        rowVersion: coerceNumber(row.row_version),
-      }));
+          rowId: row.row_id ?? '',
+          op,
+          rowVersion: coerceNumber(row.row_version),
+        };
+      });
 
       const commit: ConsoleCommitDetail = {
         commitSeq: coerceNumber(commitRow.commit_seq) ?? 0,
@@ -1967,6 +2060,122 @@ export function createConsoleRoutes<
           };
         }),
         nextCursor,
+      };
+
+      return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /debug/export
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/debug/export',
+    describeConsoleRoute({
+      summary: 'Export a redacted debug bundle',
+      responses: {
+        200: {
+          description: 'Size-bounded redacted debug export',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleDebugExportResponseSchema),
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('query', debugExportQuerySchema),
+    async (c) => {
+      const { partitionId: requestedPartitionId, limitCommits, limitEvents } =
+        c.req.valid('query');
+      const { from, to } = c.req.valid('query');
+      const partitionId = requestedPartitionId ?? 'default';
+
+      let commitsQuery = db
+        .selectFrom('sync_commits')
+        .select([
+          'commit_seq',
+          'actor_id',
+          'client_id',
+          'client_commit_id',
+          'created_at',
+          'change_count',
+          'affected_tables',
+        ])
+        .where('partition_id', '=', partitionId);
+      if (from) commitsQuery = commitsQuery.where('created_at', '>=', from);
+      if (to) commitsQuery = commitsQuery.where('created_at', '<=', to);
+
+      let eventsQuery = db
+        .selectFrom('sync_request_events')
+        .select(requestEventSelectColumns)
+        .where('partition_id', '=', partitionId);
+      if (from) eventsQuery = eventsQuery.where('created_at', '>=', from);
+      if (to) eventsQuery = eventsQuery.where('created_at', '<=', to);
+
+      const [commitRows, eventRows] = await Promise.all([
+        commitsQuery
+          .orderBy('commit_seq', 'desc')
+          .limit(limitCommits + 1)
+          .execute(),
+        eventsQuery
+          .orderBy('created_at', 'desc')
+          .limit(limitEvents + 1)
+          .execute(),
+      ]);
+
+      const selectedCommitRows = commitRows.slice(0, limitCommits);
+      const selectedEventRows = eventRows.slice(0, limitEvents);
+      const commitSeqs = selectedCommitRows
+        .map((row) => coerceNumber(row.commit_seq))
+        .filter((seq): seq is number => seq !== null);
+      const changesByCommitSeq = await readRedactedCommitChanges(
+        partitionId,
+        commitSeqs
+      );
+
+      const commits: ConsoleDebugExportCommit[] = selectedCommitRows.map(
+        (row) => {
+          const commitSeq = coerceNumber(row.commit_seq) ?? 0;
+          return {
+            commitSeq,
+            actorId: row.actor_id ?? '',
+            clientId: row.client_id ?? '',
+            clientCommitId: row.client_commit_id ?? '',
+            createdAt: row.created_at ?? '',
+            changeCount: coerceNumber(row.change_count) ?? 0,
+            affectedTables: options.dialect.dbToArray(row.affected_tables),
+            changes: changesByCommitSeq.get(commitSeq) ?? [],
+          };
+        }
+      );
+
+      const response: ConsoleDebugExportResponse = {
+        generatedAt: new Date().toISOString(),
+        partitionId,
+        limits: {
+          commits: limitCommits,
+          requestEvents: limitEvents,
+        },
+        truncated: {
+          commits: commitRows.length > limitCommits,
+          requestEvents: eventRows.length > limitEvents,
+        },
+        commits,
+        requestEvents: selectedEventRows.map(mapDebugExportEvent),
       };
 
       return c.json(response, 200);
