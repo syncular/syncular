@@ -70,13 +70,13 @@ read-only review:
 
 ## Now
 
-- `[!]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
+- `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table
     import was also rejected because callback-per-cell was slower than binding.
     The accepted browser path is binary-table direct payload apply. Further
-    client apply micro-probes are stopped; the remaining large-bootstrap work
-    needs a scoped artifact design.
+    client apply micro-probes are stopped; the larger large-bootstrap direction
+    moved to and was accepted through WP-12 scoped artifacts.
 - `[x]` [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
   - New continuation of the WP-03 performance findings. Design and benchmark a
     scoped, content-addressed artifact path without whole-partition assumptions
@@ -299,7 +299,7 @@ read-only review:
     band (`6099.68ms -> 6240.52ms` Rust 500k bootstrap). Initial `countBy` read
     models are accepted; new read-model kinds should be tracked as separate
     work.
-- `[~]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
+- `[x]` [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
   - Make websocket deltas the canonical fast path with verified replay,
     overflow recovery, and runtime-owned reconnect/backoff. First retained
     slice makes `requiresPull=true`/`droppedCount>0` authoritative in the

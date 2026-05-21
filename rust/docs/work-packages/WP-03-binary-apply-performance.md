@@ -1,6 +1,6 @@
 # WP-03 Binary Apply Performance
 
-Status: `[!]` client apply path exhausted; scoped artifact decision needed
+Status: `[x]` accepted/superseded by WP-12 scoped artifacts
 
 ## Goal
 
@@ -43,14 +43,17 @@ local apply into SQLite/WASM and raw aggregate query execution.
 
 ## Next Action
 
-Stop spending time on browser client import-path variants. The rejected probes
+No local WP-03 implementation work remains. Stop spending time on browser
+client import-path variants. The rejected probes
 in the benchmark log show that adapter bypasses, smaller batches, null-mask
 precomputation, nullable-column elision, SQLite `json_each()` import, direct
 `sqlite3_carray_bind`, and Rust-backed virtual tables do not beat the current
 accepted baseline.
 
-The next retained attempt must be a larger architecture experiment, and it must
-fit scoped/CF-worker-compatible sync:
+The retained larger architecture experiment is tracked and accepted in
+[`WP-12 Scoped Snapshot Artifacts`](WP-12-scoped-snapshot-artifacts.md). Any
+future apply-path work must be a new explicit architecture slice, not another
+WP-03 micro-probe, and it must fit scoped/CF-worker-compatible sync:
 
 - server-generated SQLite snapshot artifacts are only valid as a gated
   experiment for explicitly precomputed scoped artifacts. Do not make them the
