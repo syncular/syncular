@@ -129,20 +129,20 @@ discoverability, conflict, blob, or subscription ergonomics gaps.
 
 ## Latest Evidence
 
-- `bun test rust/bindings/browser/src/react.test.ts rust/bindings/browser/src/generated-app-conformance.test.ts`
-- `bun test rust/bindings/browser/src/bridge-client.test.ts`
-- `bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts rust/bindings/browser/src/bridge-client.test.ts`
-- `bun run rust:browser:test`
+- `bun test packages/client/src/react.test.ts packages/client/src/generated-app-conformance.test.ts`
+- `bun test packages/client/src/bridge-client.test.ts`
+- `bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts packages/client/src/bridge-client.test.ts`
+- `bun run client:test`
 - `bun run --cwd packages/testkit tsgo`
 - `bun run --cwd packages/client-tauri tsgo`
 - `bun run --cwd packages/client-react-native tsgo`
 - `bun run --cwd packages/client-expo tsgo`
-- `bun run --cwd rust/bindings/browser tsgo`
+- `bun run --cwd packages/client tsgo`
 - `bun run tsgo`
 - `bun run docs:build`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`
-- `bun test rust/bindings/browser/src/generated-app-conformance.test.ts`
-- `bun run --cwd rust/bindings/browser tsgo`
+- `bun test packages/client/src/generated-app-conformance.test.ts`
+- `bun run --cwd packages/client tsgo`
 - `bash rust/examples/todo-app/native-smokes/run-local.sh`

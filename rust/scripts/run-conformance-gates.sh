@@ -63,16 +63,16 @@ run_fast() {
   run cargo test --manifest-path "${REPO_ROOT}/rust/Cargo.toml" -p syncular-testkit
   run cargo test --manifest-path "${REPO_ROOT}/rust/Cargo.toml" -p syncular-runtime --test protocol_contract --test blob_transport --test crdt_field
   run cargo test --manifest-path "${REPO_ROOT}/rust/Cargo.toml" -p syncular-todo-app-example
-  run bun test "${REPO_ROOT}/rust/bindings/browser/src/generated-app-conformance.test.ts"
+  run bun test "${REPO_ROOT}/packages/client/src/generated-app-conformance.test.ts"
 }
 
 run_browser_hono() {
   run_fast
   run bun test \
-    "${REPO_ROOT}/rust/bindings/browser/src/__tests__/auth-hono.wasm.test.ts" \
-    "${REPO_ROOT}/rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts" \
-    "${REPO_ROOT}/rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts" \
-    "${REPO_ROOT}/rust/bindings/browser/src/__tests__/blob-hono.wasm.test.ts"
+    "${REPO_ROOT}/packages/client/src/__tests__/auth-hono.wasm.test.ts" \
+    "${REPO_ROOT}/packages/client/src/__tests__/sync-hono.wasm.test.ts" \
+    "${REPO_ROOT}/packages/client/src/__tests__/realtime-hono.wasm.test.ts" \
+    "${REPO_ROOT}/packages/client/src/__tests__/blob-hono.wasm.test.ts"
 }
 
 run_native() {

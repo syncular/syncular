@@ -73,23 +73,23 @@ Examples:
 ## Required Gates
 
 - Browser package tests and typecheck:
-  - `bun run rust:browser:test`
-  - `bun run rust:browser:tsgo`
+  - `bun run client:test`
+  - `bun run client:tsgo`
 - Platform bridge tests and typechecks:
-  - `bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts rust/bindings/browser/src/bridge-client.test.ts`
+  - `bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts packages/client/src/bridge-client.test.ts`
   - `bun --cwd packages/client-tauri tsgo`
   - `bun --cwd packages/client-react-native tsgo`
   - `bun --cwd packages/client-expo tsgo`
   - `bun --cwd packages/testkit tsgo`
 - Generated client checks when generated TypeScript output changes:
   - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
-  - `bun test rust/bindings/browser/src/generated-app-conformance.test.ts`
+  - `bun test packages/client/src/generated-app-conformance.test.ts`
 - Docs/type surfaces when public package docs change:
   - `bun run docs:build`
   - `bun run tsgo`
 - Browser/WASM build and size gate when browser runtime or package exports
   change:
-  - `bun run rust:browser:build:wasm`
+  - `bun run client:build:wasm`
 
 ## Accept / Reject Rule
 
@@ -182,14 +182,14 @@ or keep old naming assumptions.
 Latest evidence:
 
 ```bash
-bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts rust/bindings/browser/src/bridge-client.test.ts
+bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts packages/client/src/bridge-client.test.ts
 bun test packages/client-react/src/index.test.ts
 bun --cwd packages/client-tauri tsgo
 bun --cwd packages/client-react-native tsgo
 bun --cwd packages/client-expo tsgo
 bun --cwd packages/testkit tsgo
 bun --cwd packages/client-react tsgo
-bun run --cwd rust/bindings/browser tsgo
+bun run --cwd packages/client tsgo
 git diff --check
 ```
 
@@ -223,8 +223,8 @@ paths.
    - WP-23 Audit/Debug
    - WP-24 Blob Hardening
 2. Audit current TypeScript package exports against the matrix:
-   - `rust/bindings/browser/src/index.ts`
-   - `rust/bindings/browser/src/react.ts`
+   - `packages/client/src/index.ts`
+   - `packages/client/src/react.ts`
    - `packages/client-tauri/src/index.ts`
    - `packages/client-react-native/src/index.ts`
    - `packages/client-expo/src/index.ts`

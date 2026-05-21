@@ -1,10 +1,7 @@
 import { describe, expect, it } from 'bun:test';
-import { codecs, type BlobRef } from '@syncular/core';
-import {
-  createServerHandler,
-  type SyncCoreDb,
-} from '../../../../../packages/server/src';
-import { createHttpServerFixture } from '../../../../../packages/testkit/src/http-fixtures';
+import { type BlobRef, codecs } from '@syncular/core';
+import { createServerHandler, type SyncCoreDb } from '../../../server/src';
+import { createHttpServerFixture } from '../../../testkit/src/http-fixtures';
 import {
   createSyncularV2Database,
   type SyncularV2Database,

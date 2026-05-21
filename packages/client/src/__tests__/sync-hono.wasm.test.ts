@@ -13,7 +13,7 @@ import {
   syncularGeneratedSchemaVersion,
   syncularGeneratedTableConfig,
   taskSubscription,
-} from '../../../../examples/todo-app/generated/typescript/syncular.generated';
+} from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import { createSyncularV2Dialect } from '../database';
 import type {
   SyncularV2AppSchema,

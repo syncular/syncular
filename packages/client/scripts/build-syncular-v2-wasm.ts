@@ -22,7 +22,7 @@ import {
 } from '../src/runtime-contract';
 
 const packageRoot = path.resolve(import.meta.dir, '..');
-const repoRoot = path.resolve(packageRoot, '../../..');
+const repoRoot = path.resolve(packageRoot, '../..');
 const outDir = path.resolve(
   packageRoot,
   readArgValue('--out-dir') ?? 'dist/wasm'

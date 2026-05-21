@@ -3,7 +3,7 @@ import {
   assertSyncularAppRuntime,
   assertSyncularAppRuntimeInfo,
   syncularGeneratedSchemaVersion,
-} from '../../../examples/todo-app/generated/typescript/syncular.generated';
+} from '../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import {
   SYNCULAR_V2_PACKAGE_NAME,
   SYNCULAR_V2_PACKAGE_VERSION,

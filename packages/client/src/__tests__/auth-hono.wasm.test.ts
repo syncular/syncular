@@ -3,7 +3,7 @@ import { createSyncularErrorResponse } from '@syncular/core';
 import {
   syncularGeneratedSchemaVersion,
   taskSubscription,
-} from '../../../../examples/todo-app/generated/typescript/syncular.generated';
+} from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import type { SyncularV2Client, SyncularV2LifecycleState } from '../types';
 import {
   createHonoSyncHarness,

@@ -31,7 +31,7 @@ host_targets = ["current"]
 
 [targets.wasm]
 enabled = false
-# Browser support is packaged through rust/bindings/browser with wasm-bindgen,
+# Browser support is packaged through packages/client with wasm-bindgen,
 # the dedicated Worker, Rust-owned SQLite, and the custom Kysely dialect.
 # The BoltFFI surface wraps the native Diesel facade and is used for Swift,
 # Kotlin/Android, and JVM bindings.

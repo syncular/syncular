@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import { createClientBridgeHarness } from '../../../../packages/testkit/src/client-bridge';
+import { createClientBridgeHarness } from '../../testkit/src/client-bridge';
 import { createSyncularBridgeClient } from './bridge-client';
 
 describe('Syncular bridge client', () => {

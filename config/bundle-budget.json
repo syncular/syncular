@@ -1,7 +1,7 @@
 {
   "target": {
     "label": "@syncular/client Rust browser client",
-    "entrypoint": "./rust/bindings/browser/src/index.ts",
+    "entrypoint": "./packages/client/src/index.ts",
     "namedImports": [
       "createSyncularClient",
       "createSyncularV2Database"

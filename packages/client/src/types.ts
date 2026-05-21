@@ -1144,7 +1144,9 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
     config: SyncularV2FieldEncryptionConfig | null
   ): Promise<void>;
   setEncryptedCrdt(config: SyncularV2EncryptedCrdtConfig | null): Promise<void>;
-  setBlobEncryption(config: SyncularV2BlobEncryptionConfig | null): Promise<void>;
+  setBlobEncryption(
+    config: SyncularV2BlobEncryptionConfig | null
+  ): Promise<void>;
   startRealtime(options?: boolean | SyncularV2RealtimeOptions): Promise<void>;
   stopRealtime(): Promise<void>;
   setSubscriptions(

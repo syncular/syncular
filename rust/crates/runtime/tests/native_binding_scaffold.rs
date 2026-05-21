@@ -12,7 +12,7 @@ fn boltffi_config_is_the_native_binding_contract() {
     assert!(config.contains("package = \"dev.syncular.client\""));
     assert!(config.contains("output = \"../../bindings/java\""));
     assert!(config.contains("enabled = false"));
-    assert!(config.contains("rust/bindings/browser"));
+    assert!(config.contains("packages/client"));
 }
 
 #[test]
