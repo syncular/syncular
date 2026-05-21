@@ -119,18 +119,18 @@ paths. Apple clang alone is not enough.
 The browser runtime suite builds the package-owned development artifact with:
 
 ```bash
-bun --cwd packages/client run build:wasm:dev
+bun --cwd rust/bindings/javascript run build:wasm:dev
 ```
 
 Package builds use the release artifact:
 
 ```bash
-bun --cwd packages/client run build:wasm
+bun --cwd rust/bindings/javascript run build:wasm
 ```
 
 Both commands compile this crate with `web-owned-sqlite` and place the
 wasm-bindgen glue plus `.wasm` file under
-`packages/client/dist/wasm`. The v2 TypeScript wrapper loads those files
+`rust/bindings/javascript/dist/wasm`. The v2 TypeScript wrapper loads those files
 inside a dedicated browser Worker by default, so app code normally does not pass
 explicit module or asset URLs. Omitting browser `storage` opens Rust-owned
 SQLite through OPFS SAH first; if the browser cannot create the sync access
@@ -222,7 +222,7 @@ JSON-oriented Syncular client boundary over `NativeSyncularClient`. Methods that
 can fail return encoded `Result` payloads; constructor failures are made
 available through `syncularTakeLastOpenError()` because BoltFFI 0.24 object
 constructors return nullable handles. Browser support is deliberately packaged
-through `packages/client` with wasm-bindgen, the dedicated Worker,
+through `rust/bindings/javascript` with wasm-bindgen, the dedicated Worker,
 Rust-owned SQLite, and the custom Kysely dialect; it is not a BoltFFI WASM
 target. The explicit Syncular lifecycle method is named `shutdown()` in the
 BoltFFI surface so Kotlin/Java can reserve `AutoCloseable.close()` for generated

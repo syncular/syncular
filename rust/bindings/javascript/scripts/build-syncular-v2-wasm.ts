@@ -11,10 +11,10 @@ import {
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import {
+  SYNCULAR_V2_CLIENT_PACKAGE_NAME,
+  SYNCULAR_V2_CLIENT_PACKAGE_VERSION,
   SYNCULAR_V2_CORE_RUNTIME_FEATURES,
   SYNCULAR_V2_FULL_RUNTIME_FEATURES,
-  SYNCULAR_V2_PACKAGE_NAME,
-  SYNCULAR_V2_PACKAGE_VERSION,
   SYNCULAR_V2_WASM_ARTIFACT_FILE,
   SYNCULAR_V2_WASM_BINARY_FILE,
   SYNCULAR_V2_WASM_GLUE_FILE,
@@ -22,7 +22,7 @@ import {
 } from '../src/runtime-contract';
 
 const packageRoot = path.resolve(import.meta.dir, '..');
-const repoRoot = path.resolve(packageRoot, '../..');
+const repoRoot = path.resolve(packageRoot, '../../..');
 const outDir = path.resolve(
   packageRoot,
   readArgValue('--out-dir') ?? 'dist/wasm'
@@ -46,17 +46,17 @@ const wasmClang =
     '/usr/local/opt/llvm/bin/clang',
   ].find((candidate) => existsSync(candidate));
 
-const packageJson = JSON.parse(
-  readFileSync(path.join(packageRoot, 'package.json'), 'utf8')
+const clientPackageJson = JSON.parse(
+  readFileSync(path.join(repoRoot, 'packages/client/package.json'), 'utf8')
 ) as { name?: string; version?: string };
-if (packageJson.name !== SYNCULAR_V2_PACKAGE_NAME) {
+if (clientPackageJson.name !== SYNCULAR_V2_CLIENT_PACKAGE_NAME) {
   throw new Error(
-    `runtime contract package name ${SYNCULAR_V2_PACKAGE_NAME} does not match package.json ${packageJson.name}`
+    `runtime contract package name ${SYNCULAR_V2_CLIENT_PACKAGE_NAME} does not match packages/client/package.json ${clientPackageJson.name}`
   );
 }
-if (packageJson.version !== SYNCULAR_V2_PACKAGE_VERSION) {
+if (clientPackageJson.version !== SYNCULAR_V2_CLIENT_PACKAGE_VERSION) {
   throw new Error(
-    `runtime contract package version ${SYNCULAR_V2_PACKAGE_VERSION} does not match package.json ${packageJson.version}`
+    `runtime contract package version ${SYNCULAR_V2_CLIENT_PACKAGE_VERSION} does not match packages/client/package.json ${clientPackageJson.version}`
   );
 }
 

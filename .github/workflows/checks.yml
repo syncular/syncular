@@ -197,14 +197,15 @@ jobs:
         run: |
           bun --cwd packages/client test
           bun --cwd packages/client tsgo
-          bun --cwd packages/client build:wasm:dev
-          bun --cwd packages/client size:wasm
+          bun --cwd rust/bindings/javascript tsgo
+          bun --cwd rust/bindings/javascript build:wasm:dev
+          bun --cwd rust/bindings/javascript size:wasm
 
       - name: Upload browser WASM artifact
         uses: actions/upload-artifact@v4
         with:
           name: syncular-rust-browser-wasm-${{ github.run_id }}
-          path: packages/client/dist/wasm
+          path: rust/bindings/javascript/dist/wasm
 
   rust-native-package:
     needs: changes

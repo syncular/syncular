@@ -102,6 +102,7 @@
       "name": "@syncular/client",
       "version": "0.0.0",
       "dependencies": {
+        "@syncular/client-javascript-bindings": "workspace:*",
         "@syncular/core": "workspace:*",
         "kysely": "^0.28.0",
         "kysely-generic-sqlite": "^1.2.1",
@@ -703,6 +704,10 @@
       "devDependencies": {
         "@syncular/config": "workspace:*",
       },
+    },
+    "rust/bindings/javascript": {
+      "name": "@syncular/client-javascript-bindings",
+      "version": "0.0.0",
     },
     "rust/examples/todo-app": {
       "name": "@syncular/example-todo-rust",
@@ -1950,6 +1955,8 @@
     "@syncular/client-crdt-adapters": ["@syncular/client-crdt-adapters@workspace:packages/client-crdt-adapters"],
 
     "@syncular/client-expo": ["@syncular/client-expo@workspace:packages/client-expo"],
+
+    "@syncular/client-javascript-bindings": ["@syncular/client-javascript-bindings@workspace:rust/bindings/javascript"],
 
     "@syncular/client-react-native": ["@syncular/client-react-native@workspace:packages/client-react-native"],
 

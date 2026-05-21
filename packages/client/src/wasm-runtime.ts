@@ -1,22 +1,30 @@
-import type { SyncularRustOwnedSqliteClient } from './generated-wasm-bindings';
 import {
-  SYNCULAR_V2_CORE_RUNTIME_FEATURES,
-  SYNCULAR_V2_FULL_RUNTIME_FEATURES,
-  SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE,
-  SYNCULAR_V2_WASM_BINARY_FILE,
-  SYNCULAR_V2_WASM_GLUE_FILE,
-} from './runtime-contract';
+  getSyncularV2WasmGlueUrl,
+  getSyncularV2WasmUrl,
+  type SyncularRustOwnedSqliteClient,
+} from '@syncular/client-javascript-bindings';
 import type {
   RawSyncularRustOwnedSqlite,
   SyncularRustOwnedSqliteConfig,
 } from './rust-store';
 import type {
   SyncularV2ClientConfig,
-  SyncularV2RuntimeArtifact,
-  SyncularV2RuntimeArtifactCandidate,
-  SyncularV2RuntimeArtifactCatalog,
   SyncularV2RustRuntimeInfo,
 } from './types';
+
+export type {
+  SyncularRustOwnedSqliteClient,
+  SyncularV2WasmArtifactVariant,
+} from '@syncular/client-javascript-bindings';
+export {
+  getSyncularV2PackagedRuntimeArtifacts,
+  getSyncularV2RuntimeArtifact,
+  getSyncularV2RuntimeArtifactCatalogUrl,
+  getSyncularV2WasmGlueUrl,
+  getSyncularV2WasmUrl,
+  resolveSyncularV2RuntimeArtifactCatalog,
+  selectSyncularV2RuntimeArtifact,
+} from '@syncular/client-javascript-bindings';
 
 export interface SyncularV2WasmGlue {
   default(moduleOrPath?: string | URL | Request): Promise<unknown>;
@@ -34,103 +42,7 @@ export interface SyncularV2WasmGlue {
   ): Promise<SyncularRustOwnedSqliteClient>;
 }
 
-export type { SyncularRustOwnedSqliteClient } from './generated-wasm-bindings';
-
 let modulePromise: Promise<SyncularV2WasmGlue> | undefined;
-
-export type SyncularV2WasmArtifactVariant = 'full' | 'full-perf' | 'core';
-
-export function getSyncularV2WasmGlueUrl(): URL {
-  return resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_GLUE_FILE);
-}
-
-export function getSyncularV2WasmUrl(): URL {
-  return resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_BINARY_FILE);
-}
-
-export function getSyncularV2RuntimeArtifactCatalogUrl(): URL {
-  const runtimeUrl = new URL(import.meta.url);
-  const sourceRuntime = runtimeUrl.pathname.endsWith('/src/wasm-runtime.ts');
-  return new URL(
-    sourceRuntime
-      ? `../dist/${SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE}`
-      : `./${SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE}`,
-    runtimeUrl
-  );
-}
-
-export function getSyncularV2RuntimeArtifact(
-  variant: SyncularV2WasmArtifactVariant = 'full'
-): SyncularV2RuntimeArtifactCandidate {
-  const dir =
-    variant === 'core'
-      ? 'wasm-core'
-      : variant === 'full-perf'
-        ? 'wasm-perf'
-        : 'wasm';
-  const features =
-    variant === 'core'
-      ? SYNCULAR_V2_CORE_RUNTIME_FEATURES
-      : SYNCULAR_V2_FULL_RUNTIME_FEATURES;
-  return {
-    name: variant,
-    features,
-    wasmGlueUrl: resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_GLUE_FILE, dir),
-    wasmUrl: resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_BINARY_FILE, dir),
-  };
-}
-
-export function getSyncularV2PackagedRuntimeArtifacts(): readonly SyncularV2RuntimeArtifactCandidate[] {
-  return [
-    getSyncularV2RuntimeArtifact('core'),
-    getSyncularV2RuntimeArtifact('full'),
-    getSyncularV2RuntimeArtifact('full-perf'),
-  ];
-}
-
-export function resolveSyncularV2RuntimeArtifactCatalog(
-  catalog: SyncularV2RuntimeArtifactCatalog,
-  options: { baseUrl?: string | URL } = {}
-): readonly SyncularV2RuntimeArtifactCandidate[] {
-  const baseUrl = options.baseUrl ?? getSyncularV2RuntimeArtifactCatalogUrl();
-  return catalog.artifacts.map((artifact) => ({
-    name: artifact.name,
-    features: artifact.features,
-    wasmGlueUrl: resolveCatalogAssetUrl(artifact.wasmGlueUrl, baseUrl),
-    wasmUrl: resolveCatalogAssetUrl(artifact.wasmUrl, baseUrl),
-  }));
-}
-
-export function selectSyncularV2RuntimeArtifact(
-  requiredFeatures: readonly string[] = [],
-  artifacts: readonly SyncularV2RuntimeArtifactCandidate[] = [
-    getSyncularV2RuntimeArtifact('full'),
-  ]
-): SyncularV2RuntimeArtifact {
-  const required = new Set(requiredFeatures);
-  for (const artifact of artifacts) {
-    const available = new Set(artifact.features);
-    let compatible = true;
-    for (const feature of required) {
-      if (!available.has(feature)) {
-        compatible = false;
-        break;
-      }
-    }
-    if (compatible) {
-      return {
-        wasmGlueUrl: artifact.wasmGlueUrl,
-        wasmUrl: artifact.wasmUrl,
-      };
-    }
-  }
-
-  throw new Error(
-    `No Syncular Rust runtime artifact satisfies required features: ${[
-      ...required,
-    ].join(', ')}`
-  );
-}
 
 export function loadSyncularV2WasmGlue(): Promise<SyncularV2WasmGlue> {
   modulePromise ??= import(
@@ -154,38 +66,4 @@ export function readSyncularV2RustRuntimeInfo(
   return JSON.parse(
     mod.syncularV2RuntimeInfoJson()
   ) as SyncularV2RustRuntimeInfo;
-}
-
-function resolveSyncularV2WasmAsset(fileName: string, dir = 'wasm'): URL {
-  const runtimeUrl = new URL(import.meta.url);
-  const sourceRuntime = runtimeUrl.pathname.endsWith('/src/wasm-runtime.ts');
-  return new URL(
-    sourceRuntime ? `../dist/${dir}/${fileName}` : `./${dir}/${fileName}`,
-    runtimeUrl
-  );
-}
-
-function resolveCatalogAssetUrl(
-  value: string,
-  baseUrl: string | URL
-): string | URL {
-  if (isAbsoluteAssetUrl(value)) return value;
-  if (baseUrl instanceof URL) {
-    return new URL(value, new URL('./', baseUrl));
-  }
-  if (hasUrlProtocol(baseUrl)) {
-    return new URL(value, new URL('./', baseUrl)).href;
-  }
-  const baseDir = baseUrl.endsWith('/')
-    ? baseUrl
-    : baseUrl.slice(0, Math.max(0, baseUrl.lastIndexOf('/') + 1));
-  return `${baseDir}${value}`;
-}
-
-function isAbsoluteAssetUrl(value: string): boolean {
-  return value.startsWith('/') || hasUrlProtocol(value);
-}
-
-function hasUrlProtocol(value: string): boolean {
-  return /^[a-z][a-z0-9+.-]*:/i.test(value);
 }
