@@ -140,7 +140,10 @@ describe('Syncular v2 worker client', () => {
       ],
     });
     await expect(summaries).resolves.toEqual([
-      expect.objectContaining({ id: 'conflict-1', code: 'sync.version_conflict' }),
+      expect.objectContaining({
+        id: 'conflict-1',
+        code: 'sync.version_conflict',
+      }),
     ]);
 
     const retry = client.retryConflictKeepLocal('conflict-1');
@@ -603,7 +606,9 @@ describe('Syncular v2 worker client', () => {
 
     const process = client.processBlobUploadQueue();
     await waitForMessages(worker, 5);
-    expect(worker.messages[4]).toMatchObject({ type: 'processBlobUploadQueue' });
+    expect(worker.messages[4]).toMatchObject({
+      type: 'processBlobUploadQueue',
+    });
     worker.respond({
       id: worker.messages[4]!.id,
       protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
@@ -1689,7 +1694,8 @@ describe('Syncular v2 worker client', () => {
             severity: 'error',
             code: 'local.subscription_state_orphaned',
             component: 'subscriptionState',
-            message: 'stored subscription state is not configured on this client',
+            message:
+              'stored subscription state is not configured on this client',
             subscriptionId: 'old-subscription',
             table: 'tasks',
             repairAction: 'clearOrphanedState',

@@ -1,9 +1,9 @@
 import * as Y from 'yjs';
-import {
-  type SyncularCrdtProjectionDefinition,
-  type SyncularCrdtProjectionEvent,
-  type YjsDocumentBinding,
-  type YjsDocumentRestoreReceipt,
+import type {
+  SyncularCrdtProjectionDefinition,
+  SyncularCrdtProjectionEvent,
+  YjsDocumentBinding,
+  YjsDocumentRestoreReceipt,
 } from './yjs-document-field-adapter';
 
 export interface YjsProseMirrorBridgeOptions {
@@ -68,7 +68,10 @@ export interface ProseMirrorReadModelStore {
 
 export interface ProseMirrorReadModelProjectionOptions {
   store: ProseMirrorReadModelStore;
-  derive?: (value: unknown, event: SyncularCrdtProjectionEvent) => {
+  derive?: (
+    value: unknown,
+    event: SyncularCrdtProjectionEvent
+  ) => {
     prosemirrorJson: unknown;
     title: string;
     preview: string;
@@ -112,10 +115,7 @@ export function createYjsProseMirrorBridge(
     docUnsubscribers.clear();
   };
 
-  const replaceDoc = (
-    nextDoc: Y.Doc,
-    receipt?: YjsDocumentRestoreReceipt
-  ) => {
+  const replaceDoc = (nextDoc: Y.Doc, receipt?: YjsDocumentRestoreReceipt) => {
     detachAllListeners();
     doc.destroy();
     doc = nextDoc;

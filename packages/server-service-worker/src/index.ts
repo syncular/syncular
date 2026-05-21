@@ -1,4 +1,7 @@
-import { createSyncularErrorResponse, type SyncTransport } from '@syncular/core';
+import {
+  createSyncularErrorResponse,
+  type SyncTransport,
+} from '@syncular/core';
 import {
   type ClientOptions,
   createHttpTransport,

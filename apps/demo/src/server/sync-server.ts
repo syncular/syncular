@@ -1,4 +1,4 @@
-import { createDatabase, type BlobRef } from '@syncular/core';
+import { type BlobRef, createDatabase } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
   createServerHandler,
@@ -31,14 +31,14 @@ interface DemoClientDb {
   tasks: DemoTaskRow;
 }
 
-export interface DemoSyncServer {
+interface DemoSyncServer {
   origin: string;
   close(): Promise<void>;
 }
 
-export async function startDemoSyncServer(options: {
-  port?: number;
-} = {}): Promise<DemoSyncServer> {
+export async function startDemoSyncServer(
+  options: { port?: number } = {}
+): Promise<DemoSyncServer> {
   const dialect = createSqliteServerDialect();
   const db = createDatabase<DemoServerDb>({
     dialect: createBunSqliteDialect({ path: ':memory:' }),
@@ -53,7 +53,12 @@ export async function startDemoSyncServer(options: {
     db,
     dialect,
     handlers: [
-      createServerHandler<DemoServerDb, DemoClientDb, 'tasks', { actorId: string }>({
+      createServerHandler<
+        DemoServerDb,
+        DemoClientDb,
+        'tasks',
+        { actorId: string }
+      >({
         table: 'tasks',
         scopes: ['user:{user_id}'],
         codecs: syncularGeneratedCodecs,
@@ -116,9 +121,7 @@ async function ensureDemoTables(db: Kysely<DemoServerDb>) {
     .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
     .addColumn('user_id', 'text', (col) => col.notNull())
     .addColumn('project_id', 'text')
-    .addColumn('server_version', 'integer', (col) =>
-      col.notNull().defaultTo(0)
-    )
+    .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
     .addColumn('image', 'text')
     .addColumn('title_yjs_state', 'text')
     .execute();
@@ -127,7 +130,10 @@ async function ensureDemoTables(db: Kysely<DemoServerDb>) {
 async function toNativeBunResponse(response: Response): Promise<Response> {
   const NativeResponse = (globalThis as Record<string, unknown>)
     .__nativeResponse as typeof Response | undefined;
-  if (!NativeResponse || NativeResponse.prototype.isPrototypeOf(response)) {
+  if (
+    !NativeResponse ||
+    Object.prototype.isPrototypeOf.call(NativeResponse.prototype, response)
+  ) {
     return response;
   }
 

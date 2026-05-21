@@ -73,7 +73,8 @@ describe('Syncular v2 worker auth against Hono sync routes', () => {
     });
     const complete = await waitForLifecycle(
       lifecycleEvents,
-      (event) => event.phase === 'complete' && event.bootstrap?.complete === true
+      (event) =>
+        event.phase === 'complete' && event.bootstrap?.complete === true
     );
     expect(complete).toMatchObject({
       phase: 'complete',

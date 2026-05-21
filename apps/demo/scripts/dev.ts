@@ -1,6 +1,6 @@
-import { $ } from 'bun';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
+import { $ } from 'bun';
 import { createServer as createViteServer, preview } from 'vite';
 import { startDemoSyncServer } from '../src/server/sync-server';
 

@@ -34,14 +34,38 @@
     "packages/server-hono/src/websocket-origin.ts": [
       "exports"
     ],
+    "config/tsconfig.react-native.json": [
+      "unlisted"
+    ],
+    "packages/core/src/snapshot-chunks.ts": [
+      "duplicates"
+    ],
+    "packages/server-hono/src/validation.ts": [
+      "exports"
+    ],
+    "rust/bindings/browser/src/client.ts": [
+      "duplicates"
+    ],
     "rust/bindings/browser/src/database.ts": [
       "duplicates"
+    ],
+    "rust/bindings/browser/src/diagnostics.ts": [
+      "exports"
+    ],
+    "rust/bindings/browser/src/sql-safety.ts": [
+      "exports"
     ],
     "rust/bindings/browser/src/worker-protocol.ts": [
       "types"
     ],
     "rust/bindings/browser/src/worker-realtime.ts": [
       "types"
+    ],
+    "rust/bindings/crdt-adapters/src/webview-host-facade.ts": [
+      "exports"
+    ],
+    "rust/bindings/crdt-adapters/src/yjs-document-field-adapter.ts": [
+      "exports"
     ]
   },
   "workspaces": {
@@ -114,6 +138,15 @@
     "packages/testkit": {
       "includeEntryExports": false
     },
+    "packages/client-expo": {
+      "includeEntryExports": false
+    },
+    "packages/client-react-native": {
+      "includeEntryExports": false
+    },
+    "packages/client-tauri": {
+      "includeEntryExports": false
+    },
     "packages/syncular": {
       "includeEntryExports": false
     },
@@ -159,6 +192,22 @@
         "src/**/*.test.ts",
         "src/**/__tests__/**/*.ts",
         "scripts/*.ts"
+      ]
+    },
+    "rust/bindings/crdt-adapters": {
+      "includeEntryExports": false,
+      "entry": [
+        "src/**/*.test.ts"
+      ]
+    },
+    "rust/examples/todo-app": {
+      "includeEntryExports": false,
+      "entry": [
+        "conformance/**/*.ts",
+        "native-smokes/**/*.ts"
+      ],
+      "ignoreDependencies": [
+        "@syncular/client"
       ]
     },
     "packages/ui": {

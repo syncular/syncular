@@ -808,7 +808,9 @@ describe('console timeline route filters', () => {
           byte_length: 300,
           manifest_digest: 'artifact-expired-manifest',
           feature_set_json: JSON.stringify([]),
-          manifest_json: JSON.stringify({ digest: 'artifact-expired-manifest' }),
+          manifest_json: JSON.stringify({
+            digest: 'artifact-expired-manifest',
+          }),
           blob_hash: 'blob:artifact-expired',
           expires_at: atIso(-10),
         },

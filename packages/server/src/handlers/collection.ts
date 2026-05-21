@@ -1,9 +1,9 @@
 import {
   assertKnownTableDependencies,
-  createTableLookup,
-  topologicallySortTablesByDependencies,
   type BinarySnapshotColumn,
   type BinarySnapshotRowsEncoder,
+  createTableLookup,
+  topologicallySortTablesByDependencies,
 } from '@syncular/core';
 import type { SyncCoreDb } from '../schema';
 import type { ServerTableHandler, SyncServerAuth } from './types';

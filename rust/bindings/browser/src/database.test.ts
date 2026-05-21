@@ -17,8 +17,8 @@ import {
   syncularGeneratedTableConfig,
 } from '../../../examples/todo-app/generated/typescript/syncular.generated';
 import {
-  createSyncularV2Commit,
   createSyncularV2BlobClient,
+  createSyncularV2Commit,
   createSyncularV2Dialect,
   withSyncularV2SchemaWrites,
 } from './database';

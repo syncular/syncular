@@ -245,8 +245,12 @@ describe('pull', () => {
 
     const chunk = await readSnapshotChunk(db, chunkRef!.id);
     if (!chunk) throw new Error('Expected stored snapshot chunk');
-    expect(chunkRef!.sha256).toBe(await sha256Hex(snapshotBodyBytes(chunk.body)));
-    const decoded = decodeBinarySnapshotTable(gunzipSync(snapshotBodyBytes(chunk.body)));
+    expect(chunkRef!.sha256).toBe(
+      await sha256Hex(snapshotBodyBytes(chunk.body))
+    );
+    const decoded = decodeBinarySnapshotTable(
+      gunzipSync(snapshotBodyBytes(chunk.body))
+    );
     expect(decoded.table).toBe('tasks');
     expect(decoded.columns.map((column) => column.name).sort()).toEqual([
       'id',
@@ -371,7 +375,9 @@ describe('pull', () => {
     );
     const chunk = await readSnapshotChunk(db, chunkRef!.id);
     if (!chunk) throw new Error('Expected stored snapshot chunk');
-    const decoded = decodeBinarySnapshotTable(gunzipSync(snapshotBodyBytes(chunk.body)));
+    const decoded = decodeBinarySnapshotTable(
+      gunzipSync(snapshotBodyBytes(chunk.body))
+    );
     expect(decoded.rows).toHaveLength(5);
   });
 
@@ -478,7 +484,9 @@ describe('pull', () => {
     const chunkRef = res.response.subscriptions[0]!.snapshots![0]!.chunks![0]!;
     const chunk = await readSnapshotChunk(db, chunkRef.id);
     if (!chunk) throw new Error('Expected stored snapshot chunk');
-    const decoded = decodeBinarySnapshotTable(gunzipSync(snapshotBodyBytes(chunk.body)));
+    const decoded = decodeBinarySnapshotTable(
+      gunzipSync(snapshotBodyBytes(chunk.body))
+    );
 
     expect(decoded.columns).toEqual([
       { name: 'id', type: 'string' },
@@ -626,7 +634,9 @@ describe('pull', () => {
     const compressedBody = snapshotBodyBytes(compressed.body);
     expect(uncompressedBody.length).toBeGreaterThan(compressedBody.length);
     expect(
-      decodeBinarySnapshotTable(gunzipSync(snapshotBodyBytes(uncompressedGzip.body))).rows
+      decodeBinarySnapshotTable(
+        gunzipSync(snapshotBodyBytes(uncompressedGzip.body))
+      ).rows
     ).toHaveLength(40);
   });
 

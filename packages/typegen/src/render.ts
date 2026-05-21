@@ -2,11 +2,7 @@
  * @syncular/typegen - TypeScript code generation
  */
 
-import type {
-  ColumnSchema,
-  TableSchema,
-  VersionedSchema,
-} from './types';
+import type { ColumnSchema, TableSchema, VersionedSchema } from './types';
 
 /**
  * Convert a snake_case table/column name to PascalCase.
