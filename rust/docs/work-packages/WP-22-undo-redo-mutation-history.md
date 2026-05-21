@@ -104,6 +104,12 @@ Native/Rust parity foundation is implemented:
 - Rust coverage also proves grouped insert undo/redo, hard-delete undo/redo,
   and soft-delete undo/redo on the generated `comments.deleted` soft-delete
   column.
+- Rust coverage proves undo-generated commits persist server push conflicts
+  through the normal conflict table/path.
+- Current field-class decision: blob columns, encrypted fields, CRDT logical
+  fields, and CRDT state columns are not automatically inverted. Replay rejects
+  commands that changed those fields with
+  `sync.command_history_unsafe_field` before writing a compensating commit.
 
 Gates:
 
@@ -131,7 +137,10 @@ in one TypeScript generated example:
 
 Extend the command-history proof beyond browser TypeScript:
 
-1. Decide which blob, encrypted-field, and CRDT-field mutations are safe to
-   invert automatically and reject unsafe cases with stable diagnostics.
-2. Add sync/conflict tests proving undo-generated commits interact with server
-   validation and conflict persistence through the normal outbox path.
+1. Decide whether native command-history recording must be atomic with the
+   mutation transaction, rather than current browser-aligned record-after-commit
+   behavior.
+2. Add leased-mutation/scope-revocation coverage for undo when auth authority
+   is lost after the original command.
+3. Decide whether Swift/Kotlin generated clients should expose command-history
+   wrappers now or wait until their mutation APIs mature further.
