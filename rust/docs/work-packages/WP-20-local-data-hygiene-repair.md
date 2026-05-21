@@ -1,6 +1,6 @@
 # WP-20 Local Data Hygiene And Repair
 
-Status: `[~] started`
+Status: `[x] complete`
 
 ## Goal
 
@@ -145,6 +145,17 @@ First retained slice:
   expose the same low-level JSON methods. Runtime and WASM coverage prove
   support bundles are importable and do not leak representative secret scope,
   param, root, cursor, partition, or row values.
+- Blob and CRDT metadata hazards deliberately remain explicit
+  `manualInspection` findings. Invalid blob refs live inside app rows, so
+  automatic repair would mean silently rewriting app data. Failed blob uploads
+  can still represent user-intended local content, and existing storage
+  compaction already offers an explicit aged `pruneFailedBlobUploads` path for
+  apps that choose that policy. CRDT orphan document/log metadata can contain
+  pending or unflushed local edits, and a missing app row can also be the result
+  of revocation or app-side lifecycle. Any future automated CRDT cleanup must
+  be a separate, explicitly selected command that proves no unresolved outbox,
+  no pending/flushed updates, and no app-owned row recovery path before
+  deleting metadata.
 
 Gates:
 
@@ -165,5 +176,4 @@ Gates:
 
 ## Next Action
 
-Revisit whether blob/CRDT orphan metadata should get similarly explicit repair
-commands or stay manual-inspection only.
+WP-20 is complete for the current foundation. Move to the next roadmap item.

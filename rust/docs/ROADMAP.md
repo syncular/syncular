@@ -537,7 +537,7 @@ read-only review:
     and secret fields before persistence. Native Diesel storage coverage now
     proves revoked scopes clear matching encrypted CRDT update/checkpoint rows
     while preserving other scopes.
-- `[~]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
+- `[x]` [`WP-20 Local Data Hygiene And Repair`](work-packages/WP-20-local-data-hygiene-repair.md)
   - First retained slice adds a stable Rust `LocalHealthReport` /
     `LocalHealthFinding` schema plus `local_health_check_json()` on the Rust
     client and native Swift/Kotlin/Java BoltFFI surface. The initial check is
@@ -582,9 +582,11 @@ read-only review:
     local support bundles now export/import through Rust/native/browser
     surfaces for support inspection without raw scopes, params, roots, row
     data, auth material, or CRDT payloads; imports validate and summarize only,
-    and refuse unredacted bundles. Next: decide whether blob/CRDT orphan
-    metadata needs explicit repair commands or should remain manual-inspection
-    only.
+    and refuse unredacted bundles. Blob and CRDT metadata hazards intentionally
+    remain `manualInspection`: automatic cleanup would risk rewriting app data
+    or deleting pending local CRDT/blob work. Existing explicit compaction
+    remains the policy surface for aged failed blob uploads and acknowledged
+    CRDT logs.
 - `[ ]` [`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
