@@ -800,9 +800,11 @@ read-only review:
     `file_versions.blob_ref` as the only blob column, mutation builders for
     file/folder/version lifecycle basics, and a two-client stateful scenario
     proving metadata sync, blob retrieval through the referenced `BlobRef`, and
-    revocation clearing. Next: production Hono/browser coverage for the same
-    row-backed file-version authorization shape, then broader file conflict and
-    trash/restore conformance.
+    revocation clearing. Hono blob routes now also prove the same row-backed
+    file-version authorization shape: hash knowledge stays forbidden until a
+    visible `file_versions.blob_ref` row exists, and cross-actor access remains
+    denied. Next: browser/WASM coverage for file-version rows and broader file
+    conflict and trash/restore conformance.
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry
     explicit TypeScript/platform `Interface Impact` sections. Browser, React,
