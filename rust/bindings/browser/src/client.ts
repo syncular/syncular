@@ -13,6 +13,7 @@ import type {
   SyncularV2ConflictStats,
   SyncularV2ConflictSummary,
   SyncularV2ConnectionState,
+  SyncularV2DiagnosticSnapshot,
   SyncularV2DiagnosticEvent,
   SyncularV2LifecycleState,
   SyncularV2OutboxStats,
@@ -80,6 +81,7 @@ export interface SyncularClient<DB> extends SyncularV2ManagedClient<DB> {
     actorId?: string | null,
     nowMs?: number
   ): Promise<SyncularV2AuthLeaseRecord[]>;
+  diagnosticSnapshot(): Promise<SyncularV2DiagnosticSnapshot>;
   presence: SyncularPresenceClientLike;
   conflicts: SyncularConflictsClientLike;
 }
@@ -134,6 +136,7 @@ export interface SyncularClientLike<DB> {
     actorId?: string | null,
     nowMs?: number
   ): Promise<SyncularV2AuthLeaseRecord[]>;
+  diagnosticSnapshot(): Promise<SyncularV2DiagnosticSnapshot>;
   presence: SyncularPresenceClientLike;
   conflicts: SyncularConflictsClientLike;
   start(): Promise<void>;
@@ -196,6 +199,7 @@ export async function createSyncularClient<DB>(
     authLease: (leaseId) => database.client.authLease(leaseId),
     activeAuthLeases: (actorId, nowMs) =>
       database.client.activeAuthLeases(actorId, nowMs),
+    diagnosticSnapshot: () => database.client.diagnosticSnapshot(),
     presence: {
       get: (scopeKey) => database.client.getPresence(scopeKey),
       join: (scopeKey, metadata) =>

@@ -168,16 +168,27 @@ or keep old naming assumptions.
     live-query/command-history capability constraints.
   - Tauri, React Native, and Expo bridge packages now have focused READMEs for
     the current Rust-backed host-binding surface.
+- Diagnostic bridge parity slice:
+  - `SyncularClientLike` now includes `diagnosticSnapshot()` so React and
+    platform bridge clients can consume the same redacted runtime snapshot shape
+    as the direct Rust browser client.
+  - `SyncularBridge`, Tauri, React Native, Expo, and the shared testkit bridge
+    harness project diagnostic snapshots through host calls instead of
+    rebuilding diagnostic state in TypeScript.
+  - The testkit bridge returns a redacted synthetic snapshot suitable for app
+    tests that assert support/diagnostic wiring without mocking Syncular
+    internals.
 
 Latest evidence:
 
 ```bash
 bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts rust/bindings/browser/src/bridge-client.test.ts
-bun test rust/bindings/browser/src/react.test.ts
+bun test packages/client-react/src/index.test.ts
 bun --cwd packages/client-tauri tsgo
 bun --cwd packages/client-react-native tsgo
 bun --cwd packages/client-expo tsgo
 bun --cwd packages/testkit tsgo
+bun --cwd packages/client-react tsgo
 bun run --cwd rust/bindings/browser tsgo
 git diff --check
 ```
@@ -193,7 +204,7 @@ paths.
 | WP-05 Adaptive Bootstrap | Runtime/generated subscriptions | `getStatus()`, `bootstrapChanged`, generated phase helpers | Hooks must expose readiness without polling hacks | Bridge status/events must preserve readiness payloads | Mostly done; audit docs/examples |
 | WP-07 CRDT Fields | Runtime CRDT primitives | Generic CRDT field APIs, row metadata, Yjs envelope helpers | Keep editor adapters app-layer; expose field events | Bridge events must preserve CRDT field metadata | Track adapter docs and bridge parity |
 | WP-11 Offline Auth Leases | Server/Rust auth lease model | `issueAuthLease`, `leasedMutations`, active lease reads | Hooks/examples should show leased vs normal mutations | Bridges need strict leased mutation methods and errors | Browser/bridge/React host surfaces added; docs still need pass |
-| WP-13 Observability | Runtime/server diagnostics | Diagnostic snapshots/support bundles | Support hooks should expose stable diagnostics, not raw internals | Bridge diagnostics must match native event/error JSON | Needs docs/testkit parity check |
+| WP-13 Observability | Runtime/server diagnostics | Diagnostic snapshots/support bundles | Support hooks should expose stable diagnostics, not raw internals | Bridge diagnostics must match native event/error JSON | Bridge/testkit diagnostic snapshot parity added; console UI remains WP-13-deferred |
 | WP-15 Error Taxonomy | Core/server/runtime taxonomy | Stable `code/category/retryable/recommendedAction` in thrown errors/events | Hooks must surface stable error objects | Bridges must preserve error shape | Mostly done; keep in generated docs |
 | WP-17 Lifecycle/App State | Runtime lifecycle model | `getStatus`, `on(...)`, `resumeFromBackground`, lifecycle events | Hooks must avoid poll-based status loops | Platform shells need app lifecycle entrypoints | Bridge resume parity added; optional polling remains explicit |
 | WP-21 Live Query Precision | Runtime observation | Kysely live query metadata, row/field deltas | Hooks must refresh from row/field events, not broad table guessing | Bridge events need precise changed rows/fields | React live-query path added; bridge observed-query registration deferred |

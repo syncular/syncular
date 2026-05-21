@@ -32,6 +32,7 @@ import type {
   SyncularV2ConflictStats,
   SyncularV2ConflictSummary,
   SyncularV2ConnectionState,
+  SyncularV2DiagnosticSnapshot,
   SyncularV2LifecycleState,
   SyncularV2OutboxStats,
   SyncularV2PresenceEntry,
@@ -114,6 +115,7 @@ export interface SyncularBridge {
     actorId?: string | null,
     nowMs?: number
   ): Promise<SyncularV2AuthLeaseRecord[]>;
+  diagnosticSnapshot?(): Promise<SyncularV2DiagnosticSnapshot>;
   on?<T extends SyncularV2ClientEventType>(
     event: T,
     listener: SyncularV2ClientEventSink<T>
@@ -184,6 +186,8 @@ export async function createSyncularBridgeClient<DB>(
         actorId,
         nowMs
       ),
+    diagnosticSnapshot: () =>
+      requireBridgeMethod(options.bridge.diagnosticSnapshot, 'diagnosticSnapshot')(),
     presence: createBridgePresence(options.bridge),
     conflicts: createBridgeConflicts(options.bridge),
     start: async () => {

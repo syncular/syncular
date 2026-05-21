@@ -61,6 +61,9 @@ describe('@syncular/client-tauri', () => {
         leaseId: lease.leaseId,
       });
       expect(await client.activeAuthLeases('actor-test')).toHaveLength(1);
+      await expect(client.diagnosticSnapshot()).resolves.toMatchObject({
+        runtime: { packageName: '@syncular/testkit' },
+      });
       await client.resumeFromBackground();
 
       const changedTables: string[][] = [];

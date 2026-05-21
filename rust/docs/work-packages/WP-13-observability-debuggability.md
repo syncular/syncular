@@ -239,6 +239,10 @@ than active local Rust-client work.
   `event.error.code`, then used them in the native auth-expired and
   schema-mismatch smokes. App suites can now assert observability contracts
   without parsing human-readable messages.
+- WP-26 now projects `diagnosticSnapshot()` through browser bridge, Tauri,
+  React Native, Expo, and the shared TypeScript bridge testkit so platform
+  clients can consume the canonical redacted snapshot shape without rebuilding
+  diagnostic state in TypeScript.
 - Deferred: the remaining acceptance gap is dedicated console investigation
   UI/drilldowns. That is a product/UI work item, not a missing Rust runtime,
   native binding, or testkit foundation slice.

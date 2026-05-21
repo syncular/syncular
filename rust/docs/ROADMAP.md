@@ -817,7 +817,7 @@ read-only review:
     explicit TypeScript/platform `Interface Impact` sections. Browser, React,
     Tauri, React Native, Expo, and testkit host surfaces expose leased
     mutations, auth leases, lifecycle resume, row/field event metadata, and
-    docs/package guidance without reviving a JavaScript sync client.
+    diagnostic snapshots without reviving a JavaScript sync client.
 
 ## Blocked / External
 
