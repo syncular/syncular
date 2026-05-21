@@ -914,6 +914,54 @@ fn diesel_generated_leased_mutations_select_active_auth_lease() -> Result<()> {
 }
 
 #[test]
+fn diesel_generated_leased_command_history_undo_fails_after_lease_revocation() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-leased-command-history-revoked");
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let now = now_ms();
+    let mut client = demo_client(test_config(&path), store, TestTransport::new());
+    client.upsert_auth_lease(&active_task_auth_lease(
+        now,
+        "lease-history-active",
+        "lease-history-token",
+    ))?;
+    client.mutations().tasks().insert(generated::NewTask::new(
+        "leased-history-task",
+        "leased history task",
+        "user-rust",
+        Some("p0"),
+    ))?;
+    client.commit_leased_with_history(|tx| {
+        tx.tasks()
+            .update(generated::TaskPatch::new("leased-history-task").completed(1))?;
+        Ok(())
+    })?;
+
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    sql_query(
+        "update sync_auth_leases set status = 'revoked' where lease_id = 'lease-history-active'",
+    )
+    .execute(&mut conn)?;
+    drop(conn);
+
+    let error = client
+        .command_history()
+        .undo_last()
+        .expect_err("leased undo should fail after lease revocation");
+    assert!(error.message_text().contains("sync.auth_lease_missing"));
+    assert_eq!(
+        client
+            .current_row_json("tasks", "leased-history-task")?
+            .expect("task row should remain after failed undo")["completed"],
+        json!(1)
+    );
+    assert_eq!(client.outbox_summaries()?.len(), 2);
+    assert!(client.command_history().can_undo()?);
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn diesel_generated_leased_mutations_fail_closed_without_covering_lease() -> Result<()> {
     let path = temp_db_path("syncular-diesel-generated-leased-missing");
     let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;

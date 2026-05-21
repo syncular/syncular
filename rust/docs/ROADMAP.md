@@ -707,7 +707,7 @@ read-only review:
     automatic field-level inference from query-builder ASTs remains a deferred
     ergonomics/performance follow-up; runtime behavior is conservative without
     it.
-- `[~]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
+- `[x]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
   - Browser TypeScript generated clients now expose `database.commandHistory`
     and wrap generated regular/leased mutations with command-history capture.
     Command groups persist before/after row snapshots in local SQLite and
@@ -729,7 +729,11 @@ read-only review:
     path, and unsafe blob/encrypted/CRDT-backed field replay is rejected before
     a compensating commit is written. Native Diesel tracked commits now record
     the command history row inside the same SQLite transaction as the local
-    mutation/outbox write.
+    mutation/outbox write. Leased undo now fails closed after auth lease
+    revocation without changing the row, without writing a replay commit, and
+    while keeping the command undoable. Swift/Kotlin command-history wrappers
+    are deferred until those generated mutation APIs are mature enough to avoid
+    baking a second app-facing shape.
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
