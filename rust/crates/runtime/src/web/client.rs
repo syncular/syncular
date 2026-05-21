@@ -781,7 +781,11 @@ where
 
         let notify_started_at = timing_now_ms();
         self.store
-            .notify_tables_changed_with_rows(&result.changed_tables, &result.changed_rows)
+            .notify_tables_changed_with_rows_meta(
+                &result.changed_tables,
+                &result.changed_rows,
+                result.changed_rows_truncated,
+            )
             .await?;
         result.timings.notify_ms = elapsed_ms_since(notify_started_at);
         result.timings.pull_request_ms = pull_request_ms;
@@ -1306,7 +1310,11 @@ where
 
         let notify_started_at = timing_now_ms();
         self.store
-            .notify_tables_changed_with_rows(&result.changed_tables, &result.changed_rows)
+            .notify_tables_changed_with_rows_meta(
+                &result.changed_tables,
+                &result.changed_rows,
+                result.changed_rows_truncated,
+            )
             .await?;
         result.timings.notify_ms = elapsed_ms_since(notify_started_at);
         result.timings.total_ms = elapsed_ms_since(total_started_at);

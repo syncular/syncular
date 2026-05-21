@@ -24,6 +24,7 @@ import type {
   SyncularV2FieldEncryptionConfig,
   SyncularV2LocalHealthRepairRequest,
   SyncularV2LocalSyncResetRequest,
+  SyncularV2LiveQueryDependencyHint,
   SyncularV2LiveQueryEvent,
   SyncularV2RealtimeConnectionState,
   SyncularV2RealtimeOptions,
@@ -171,6 +172,7 @@ export type SyncularV2WorkerRequest =
       sql: string;
       params: unknown[];
       tables: string[];
+      hints?: SyncularV2LiveQueryDependencyHint[];
     }
   | {
       id: number;

@@ -379,6 +379,15 @@ pub trait AsyncWebStore {
         self.notify_tables_changed(tables)
     }
 
+    fn notify_tables_changed_with_rows_meta<'a>(
+        &'a mut self,
+        tables: &'a [String],
+        changed_rows: &'a [SyncChangedRow],
+        _changed_rows_truncated: bool,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        self.notify_tables_changed_with_rows(tables, changed_rows)
+    }
+
     fn notify_local_tables_changed_with_rows<'a>(
         &'a mut self,
         tables: &'a [String],

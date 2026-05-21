@@ -11,6 +11,7 @@ import {
   type SyncularAppDb,
   syncularGeneratedAppSchema,
   syncularGeneratedSchemaVersion,
+  syncularGeneratedTableConfig,
   taskSubscription,
 } from '../../../../examples/todo-app/generated/typescript/syncular.generated';
 import type {
@@ -1823,6 +1824,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
 
     const dialect = createSyncularV2Dialect(clientA, {
       appTables: syncularGeneratedAppSchema.tables.map((table) => table.name),
+      tableConfig: syncularGeneratedTableConfig,
     });
     const db = new Kysely<SyncularAppDb>({ dialect });
     const events: Array<SyncularV2LiveQueryEvent<{ id: string; title: string }>> =

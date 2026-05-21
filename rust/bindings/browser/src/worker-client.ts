@@ -46,6 +46,7 @@ import type {
   SyncularV2EncryptedCrdtConfig,
   SyncularV2EncryptionHelperMethod,
   SyncularV2FieldEncryptionConfig,
+  SyncularV2LiveQueryDependencyHint,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQuerySnapshot,
   SyncularV2LocalHealthRepairReport,
@@ -429,13 +430,19 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   subscribeQuery<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params: readonly unknown[],
-    tables: readonly string[]
+    tables: readonly string[],
+    hints: readonly SyncularV2LiveQueryDependencyHint[] = []
   ): Promise<SyncularV2LiveQuerySnapshot<Row>> {
     return this.#request({
       type: 'subscribeQuery',
       sql,
       params: [...params],
       tables: [...tables],
+      hints: hints.map((hint) => ({
+        table: hint.table,
+        rowIds: [...(hint.rowIds ?? [])],
+        fields: [...(hint.fields ?? [])],
+      })),
     });
   }
 

@@ -75,6 +75,51 @@ Decision:
   worth revisiting only as part of a broader lazy-write-transaction state model
   with explicit tests for UI read/write contention and no heap regression.
 
+## 2026-05-21 - Retained Browser Live-Query Row Hints
+
+Commit: retained slice
+
+Work package:
+[`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
+
+Machine / power mode: Apple M3 Max, current local power state.
+
+Change:
+
+- The browser Kysely dialect now infers optional live-query row hints for simple
+  conjunctive primary-key equality predicates.
+- The Rust-owned browser SQLite invalidator uses those hints only when
+  changed-row metadata is complete; truncated or table-only notifications fall
+  back to normal reruns.
+
+Command:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 \
+  --output=.context/benchmarks/wp21-live-query-hints-current.json
+```
+
+Current guardrail:
+
+| Metric | Current |
+| --- | ---: |
+| 10k Rust bootstrap | `48.19ms` |
+| Rust incremental pull | `20.82ms` |
+| Rust realtime live p50 / p95 | `125.20ms` / `127.41ms` |
+| Rust realtime overhead p50 / p95 | `14.29ms` / `15.04ms` |
+| Rust realtime notify total | `1ms` |
+| Rust realtime notify p95 | `1ms` |
+| Browser served Rust WASM bytes | `2,372,720 bytes` |
+
+Decision:
+
+- Retained as the first WP-21 measurement point. There was no prior WP-21
+  artifact with this exact incremental/realtime shape in the branch, so the
+  next live-query precision change must compare against
+  `.context/benchmarks/wp21-live-query-hints-current.json`.
+
 ## 2026-05-20 - Retained Browser Sync Attempt Trace Plumbing
 
 Commit: retained slice

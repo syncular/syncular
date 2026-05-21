@@ -208,7 +208,8 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
       return requireClient().subscribeQuery(
         request.sql,
         request.params,
-        request.tables
+        request.tables,
+        request.hints ?? []
       );
     case 'unsubscribeQuery':
       requireClient().unsubscribeQuery(request.queryId);

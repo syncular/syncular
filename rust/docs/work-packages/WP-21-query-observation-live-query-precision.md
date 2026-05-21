@@ -66,10 +66,14 @@ First retained slice:
   refresh after a remote row-level sync apply. The emitted live-query event
   carries the affected `changedRows` entry (`table`, `rowId`, `operation`) so
   app code does not need broad table guessing for that path.
+- Added optional live-query dependency hints. The browser Kysely dialect now
+  infers a row-id hint for simple conjunctive primary-key equality predicates
+  and passes it through the worker/raw WASM subscription contract. The
+  Rust-owned browser SQLite store uses those hints only when changed-row
+  metadata is complete; truncated or table-only changes still rerun the query.
+  Disjunctive predicates intentionally do not infer row hints.
 
 ## Next Action
 
-Extend live-query registration with optional row/field dependency hints for
-simple generated-query shapes, starting with primary-key equality, so the
-runtime can skip rerunning queries when `changedRows` prove the changed row
-cannot affect the result.
+Add native parity for row/field dependency hints, then add a focused benchmark
+or counter that proves hinted queries skip reruns under unrelated row churn.

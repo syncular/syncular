@@ -30,6 +30,7 @@ import type {
   SyncularV2BlobStoreOptions,
   SyncularV2Client,
   SyncularV2CrdtYjsFieldConfig,
+  SyncularV2LiveQueryDependencyHint,
   SyncularV2LiveQueries,
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQueryOptions,
@@ -51,6 +52,7 @@ export interface SyncularV2Dialect extends Dialect, SyncularV2LiveQueries {
 
 export interface SyncularV2DialectOptions {
   appTables?: readonly string[];
+  tableConfig?: SyncularV2TableConfigMap;
   unsafeWrites?: boolean;
 }
 
@@ -122,6 +124,7 @@ export async function createSyncularV2Database<DB>(
   const client = await createSyncularV2WorkerClient(options);
   const dialect = createSyncularV2Dialect(client, {
     appTables: options.appTables,
+    tableConfig: options.tableConfig,
   });
   const db = new Kysely<DB>({
     dialect,
@@ -629,6 +632,7 @@ class SyncularV2Driver extends BaseSqliteDriver {
     (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => void
   >();
   readonly #appTables: Set<string> | undefined;
+  readonly #tableConfig: SyncularV2TableConfigMap | undefined;
 
   constructor(
     private readonly client: SyncularV2DriverClient,
@@ -644,6 +648,7 @@ class SyncularV2Driver extends BaseSqliteDriver {
       options.appTables == null
         ? undefined
         : new Set(normalizeLiveQueryTables(options.appTables));
+    this.#tableConfig = options.tableConfig;
   }
 
   async live<Row extends Record<string, unknown>>(
@@ -663,7 +668,12 @@ class SyncularV2Driver extends BaseSqliteDriver {
     const snapshot = await this.client.subscribeQuery<Row>(
       compiled.sql,
       compiled.parameters,
-      tables
+      tables,
+      inferDependencyHintsFromCompiledQuery(
+        compiled,
+        tables,
+        this.#tableConfig
+      )
     );
     const listener = (
       event: SyncularV2LiveQueryEvent<Record<string, unknown>>
@@ -913,6 +923,109 @@ function inferTablesFromCompiledQuery(
   );
 }
 
+function inferDependencyHintsFromCompiledQuery(
+  query: CompiledQuery,
+  tables: readonly string[],
+  tableConfig?: SyncularV2TableConfigMap
+): SyncularV2LiveQueryDependencyHint[] {
+  if (tables.length !== 1) return [];
+  const table = tables[0]!;
+  const primaryKey = tableConfig?.[table]?.primaryKeyColumn ?? 'id';
+  const rowIds = primaryKeyEqualityValues(query.query, table, primaryKey);
+  return rowIds.length > 0 ? [{ table, rowIds }] : [];
+}
+
+function primaryKeyEqualityValues(
+  query: unknown,
+  table: string,
+  primaryKey: string
+): string[] {
+  if (!isOperationNode(query) || query.kind !== 'SelectQueryNode') return [];
+  const where = query.where;
+  if (!isOperationNode(where) || where.kind !== 'WhereNode') return [];
+  return collectConjunctivePrimaryKeyValues(where.where, table, primaryKey);
+}
+
+function collectConjunctivePrimaryKeyValues(
+  node: unknown,
+  table: string,
+  primaryKey: string
+): string[] {
+  if (!isOperationNode(node)) return [];
+  if (node.kind === 'AndNode') {
+    return uniqueStrings([
+      ...collectConjunctivePrimaryKeyValues(node.left, table, primaryKey),
+      ...collectConjunctivePrimaryKeyValues(node.right, table, primaryKey),
+    ]);
+  }
+  const equality = primaryKeyEqualityValue(node, table, primaryKey);
+  return equality == null ? [] : [equality];
+}
+
+function primaryKeyEqualityValue(
+  node: unknown,
+  table: string,
+  primaryKey: string
+): string | undefined {
+  if (!isOperationNode(node) || node.kind !== 'BinaryOperationNode') {
+    return undefined;
+  }
+  const operator = node.operator;
+  if (
+    !isOperationNode(operator) ||
+    operator.kind !== 'OperatorNode' ||
+    operator.operator !== '='
+  ) {
+    return undefined;
+  }
+  return (
+    equalityValueForReference(node.leftOperand, node.rightOperand, table, primaryKey) ??
+    equalityValueForReference(node.rightOperand, node.leftOperand, table, primaryKey)
+  );
+}
+
+function equalityValueForReference(
+  reference: unknown,
+  value: unknown,
+  table: string,
+  primaryKey: string
+): string | undefined {
+  if (!referenceMatchesColumn(reference, table, primaryKey)) return undefined;
+  if (!isOperationNode(value) || value.kind !== 'ValueNode') return undefined;
+  if (typeof value.value === 'string') return value.value;
+  if (typeof value.value === 'number' && Number.isFinite(value.value)) {
+    return String(value.value);
+  }
+  return undefined;
+}
+
+function referenceMatchesColumn(
+  reference: unknown,
+  table: string,
+  column: string
+): boolean {
+  if (!isOperationNode(reference) || reference.kind !== 'ReferenceNode') {
+    return false;
+  }
+  if (reference.table != null && tableNameFromTableNode(reference.table) !== table) {
+    return false;
+  }
+  const columnNode = reference.column;
+  if (!isOperationNode(columnNode) || columnNode.kind !== 'ColumnNode') {
+    return false;
+  }
+  const identifier = columnNode.column;
+  return (
+    isOperationNode(identifier) &&
+    identifier.kind === 'IdentifierNode' &&
+    identifier.name === column
+  );
+}
+
+function uniqueStrings(values: readonly string[]): string[] {
+  return [...new Set(values)];
+}
+
 interface OperationNodeLike {
   kind?: string;
   [key: string]: unknown;
@@ -930,21 +1043,23 @@ function collectTables(node: unknown, tables: Set<string>): void {
 }
 
 function collectTableNode(node: unknown, tables: Set<string>): void {
-  if (!isOperationNode(node)) return;
-  if (node.kind === 'AliasNode') {
-    collectTableNode(node.node, tables);
-    return;
-  }
-  if (node.kind !== 'TableNode') return;
+  const table = tableNameFromTableNode(node);
+  if (table != null) tables.add(table);
+}
+
+function tableNameFromTableNode(node: unknown): string | undefined {
+  if (!isOperationNode(node)) return undefined;
+  if (node.kind === 'AliasNode') return tableNameFromTableNode(node.node);
+  if (node.kind !== 'TableNode') return undefined;
   const table = node.table;
   if (!isOperationNode(table) || table.kind !== 'SchemableIdentifierNode') {
-    return;
+    return undefined;
   }
   const identifier = table.identifier;
   if (!isOperationNode(identifier) || identifier.kind !== 'IdentifierNode') {
-    return;
+    return undefined;
   }
-  if (typeof identifier.name === 'string') tables.add(identifier.name);
+  return typeof identifier.name === 'string' ? identifier.name : undefined;
 }
 
 function isOperationNode(value: unknown): value is OperationNodeLike {
