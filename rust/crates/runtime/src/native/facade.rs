@@ -144,6 +144,59 @@ pub enum NativeEventKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum NativeLifecyclePhase {
+    Offline,
+    Syncing,
+    Recovering,
+    AuthRequired,
+    Degraded,
+    Complete,
+    Closed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeLifecycleBootstrap {
+    pub complete: bool,
+    pub critical_ready: bool,
+    pub interactive_ready: bool,
+    pub is_bootstrapping: bool,
+    pub progress_percent: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeLifecycleOutbox {
+    pub pending: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeLifecycleConflicts {
+    pub unresolved: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NativeLifecycleState {
+    pub phase: NativeLifecyclePhase,
+    pub online: bool,
+    pub requires_action: bool,
+    pub pending_requests: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bootstrap: Option<NativeLifecycleBootstrap>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbox: Option<NativeLifecycleOutbox>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflicts: Option<NativeLifecycleConflicts>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_error: Option<NativeErrorInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_diagnostic: Option<NativeDiagnostic>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NativeErrorInfo {
     pub kind: ErrorKind,
     pub code: String,
@@ -197,6 +250,8 @@ pub struct NativeEvent {
     pub queries: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub bootstrap: Option<BootstrapStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle: Option<NativeLifecycleState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub payload_json: Option<Value>,
 }
@@ -2007,6 +2062,7 @@ impl NativeEventHub {
                 client_commit_id,
                 changed_tables,
                 changed_rows,
+                outbox_count,
                 duration_ms,
             } => {
                 let mut events = vec![local_write_committed_event(
@@ -2014,6 +2070,7 @@ impl NativeEventHub {
                     client_commit_id,
                     changed_tables.clone(),
                     changed_rows.clone(),
+                    outbox_count,
                     duration_ms,
                 )];
                 if !changed_tables.is_empty() {
@@ -2859,36 +2916,158 @@ fn queries_changed_event_with_details(
 }
 
 fn conflicts_changed_event() -> NativeEvent {
-    native_event(
+    let diagnostic = native_diagnostic(
+        "warn",
+        "sync",
+        "sync.conflicts_changed",
+        "Native Syncular conflicts changed",
+        std::iter::empty::<(&str, Value)>(),
+    );
+    let mut event = native_event(
         NativeEventKind::ConflictsChanged,
         Vec::new(),
-        Some(native_diagnostic(
-            "warn",
-            "sync",
-            "sync.conflicts_changed",
-            "Native Syncular conflicts changed",
-            std::iter::empty::<(&str, Value)>(),
-        )),
+        Some(diagnostic.clone()),
+    );
+    event.lifecycle = Some(native_lifecycle_state(
+        NativeLifecyclePhase::Degraded,
+        false,
+        true,
+        0,
+        None,
+        None,
+        Some(NativeLifecycleConflicts { unresolved: 1 }),
+        None,
+        Some(diagnostic),
+    ));
+    event
+}
+
+fn native_lifecycle_bootstrap(status: &BootstrapStatus) -> NativeLifecycleBootstrap {
+    NativeLifecycleBootstrap {
+        complete: status.complete,
+        critical_ready: status.critical_ready,
+        interactive_ready: status.interactive_ready,
+        is_bootstrapping: status.is_bootstrapping,
+        progress_percent: status.progress_percent,
+    }
+}
+
+fn native_lifecycle_state(
+    phase: NativeLifecyclePhase,
+    online: bool,
+    requires_action: bool,
+    pending_requests: usize,
+    bootstrap: Option<NativeLifecycleBootstrap>,
+    outbox: Option<NativeLifecycleOutbox>,
+    conflicts: Option<NativeLifecycleConflicts>,
+    last_error: Option<NativeErrorInfo>,
+    last_diagnostic: Option<NativeDiagnostic>,
+) -> NativeLifecycleState {
+    NativeLifecycleState {
+        phase,
+        online,
+        requires_action,
+        pending_requests,
+        bootstrap,
+        outbox,
+        conflicts,
+        last_error,
+        last_diagnostic,
+    }
+}
+
+fn native_lifecycle_for_sync_completed(
+    bootstrap: &BootstrapStatus,
+    outbox_count: usize,
+    conflict_count: usize,
+    diagnostic: NativeDiagnostic,
+) -> NativeLifecycleState {
+    let has_conflicts = conflict_count > 0;
+    let phase = if has_conflicts {
+        NativeLifecyclePhase::Degraded
+    } else if bootstrap.complete {
+        NativeLifecyclePhase::Complete
+    } else {
+        NativeLifecyclePhase::Recovering
+    };
+    native_lifecycle_state(
+        phase,
+        true,
+        has_conflicts,
+        0,
+        Some(native_lifecycle_bootstrap(bootstrap)),
+        Some(NativeLifecycleOutbox {
+            pending: outbox_count,
+        }),
+        Some(NativeLifecycleConflicts {
+            unresolved: conflict_count,
+        }),
+        None,
+        Some(diagnostic),
+    )
+}
+
+fn native_lifecycle_for_error(
+    error: &SyncularError,
+    retry_scheduled: bool,
+    diagnostic: NativeDiagnostic,
+) -> NativeLifecycleState {
+    let error_info = NativeErrorInfo::from_error(error);
+    let classification = error.classification();
+    let resync_required = error.requires_full_snapshot_resync();
+    let phase = if classification.code == "sync.auth_required" {
+        NativeLifecyclePhase::AuthRequired
+    } else if resync_required {
+        NativeLifecyclePhase::Recovering
+    } else if classification.category == "offline" || retry_scheduled {
+        NativeLifecyclePhase::Offline
+    } else {
+        NativeLifecyclePhase::Degraded
+    };
+    let requires_action = matches!(phase, NativeLifecyclePhase::AuthRequired)
+        || (matches!(phase, NativeLifecyclePhase::Degraded) && !classification.retryable);
+    native_lifecycle_state(
+        phase,
+        false,
+        requires_action,
+        0,
+        None,
+        None,
+        None,
+        Some(error_info),
+        Some(diagnostic),
     )
 }
 
 fn events_overflowed_event(dropped_count: usize) -> NativeEvent {
+    let diagnostic = native_diagnostic(
+        "warn",
+        "events",
+        "events.overflowed",
+        "Native Syncular event stream overflowed",
+        [
+            ("droppedCount", json!(dropped_count)),
+            ("resyncRequired", json!(true)),
+        ],
+    );
     let mut event = native_event(
         NativeEventKind::EventsOverflowed,
         Vec::new(),
-        Some(native_diagnostic(
-            "warn",
-            "events",
-            "events.overflowed",
-            "Native Syncular event stream overflowed",
-            [
-                ("droppedCount", json!(dropped_count)),
-                ("resyncRequired", json!(true)),
-            ],
-        )),
+        Some(diagnostic.clone()),
     );
     event.dropped_count = Some(dropped_count);
     event.resync_required = Some(true);
+    event.lifecycle = Some(native_lifecycle_state(
+        NativeLifecyclePhase::Recovering,
+        false,
+        true,
+        0,
+        None,
+        None,
+        None,
+        None,
+        Some(diagnostic),
+    ));
     event.payload_json = Some(json!({
         "type": "eventsOverflowed",
         "droppedCount": dropped_count,
@@ -2898,18 +3077,30 @@ fn events_overflowed_event(dropped_count: usize) -> NativeEvent {
 }
 
 fn sync_started_event(command_id: Option<String>) -> NativeEvent {
+    let diagnostic = native_diagnostic(
+        "info",
+        "sync",
+        "sync.started",
+        "Native Syncular sync started",
+        std::iter::empty::<(&str, Value)>(),
+    );
     let mut event = native_event(
         NativeEventKind::SyncStarted,
         Vec::new(),
-        Some(native_diagnostic(
-            "info",
-            "sync",
-            "sync.started",
-            "Native Syncular sync started",
-            std::iter::empty::<(&str, Value)>(),
-        )),
+        Some(diagnostic.clone()),
     );
     event.command_id = command_id;
+    event.lifecycle = Some(native_lifecycle_state(
+        NativeLifecyclePhase::Syncing,
+        false,
+        false,
+        1,
+        None,
+        None,
+        None,
+        None,
+        Some(diagnostic),
+    ));
     event
 }
 
@@ -2921,31 +3112,38 @@ fn sync_completed_event(
     conflict_count: usize,
     duration_ms: u64,
 ) -> NativeEvent {
+    let diagnostic = native_diagnostic(
+        "info",
+        "sync",
+        "sync.completed",
+        "Native Syncular sync completed",
+        [
+            ("changedTables", json!(report.changed_tables.clone())),
+            ("changedTableCount", json!(report.changed_tables.len())),
+            ("changedRows", json!(report.changed_rows.clone())),
+            ("conflictsChanged", json!(report.conflicts_changed)),
+            ("bootstrap", json!(bootstrap.clone())),
+            ("outboxCount", json!(outbox_count)),
+            ("conflictCount", json!(conflict_count)),
+            ("durationMs", json!(duration_ms)),
+        ],
+    );
     let mut event = native_event(
         NativeEventKind::SyncCompleted,
         report.changed_tables.clone(),
-        Some(native_diagnostic(
-            "info",
-            "sync",
-            "sync.completed",
-            "Native Syncular sync completed",
-            [
-                ("changedTables", json!(report.changed_tables.clone())),
-                ("changedTableCount", json!(report.changed_tables.len())),
-                ("changedRows", json!(report.changed_rows.clone())),
-                ("conflictsChanged", json!(report.conflicts_changed)),
-                ("bootstrap", json!(bootstrap.clone())),
-                ("outboxCount", json!(outbox_count)),
-                ("conflictCount", json!(conflict_count)),
-                ("durationMs", json!(duration_ms)),
-            ],
-        )),
+        Some(diagnostic.clone()),
     );
     event.command_id = command_id;
     event.outbox_count = Some(outbox_count);
     event.conflict_count = Some(conflict_count);
     event.duration_ms = Some(duration_ms);
     event.changed_rows = report.changed_rows;
+    event.lifecycle = Some(native_lifecycle_for_sync_completed(
+        &bootstrap,
+        outbox_count,
+        conflict_count,
+        diagnostic,
+    ));
     event.bootstrap = Some(bootstrap);
     event
 }
@@ -2967,22 +3165,28 @@ fn sync_failed_event(
                 ("durationMs", json!(duration_ms)),
             ];
             push_native_error_details(&mut details, error);
+            let diagnostic = native_diagnostic(
+                "warn",
+                "auth",
+                "auth.expired",
+                "Native Syncular auth expired",
+                details,
+            );
             let mut event = native_event(
                 NativeEventKind::AuthExpired,
                 Vec::new(),
-                Some(native_diagnostic(
-                    "warn",
-                    "auth",
-                    "auth.expired",
-                    "Native Syncular auth expired",
-                    details,
-                )),
+                Some(diagnostic.clone()),
             );
             event.error = Some(NativeErrorInfo::from_error(error));
             event.auth = Some(auth);
             event.command_id = command_id;
             event.retry_scheduled = Some(retry_scheduled);
             event.duration_ms = Some(duration_ms);
+            event.lifecycle = Some(native_lifecycle_for_error(
+                error,
+                retry_scheduled,
+                diagnostic,
+            ));
             event
         }
         None => {
@@ -2993,29 +3197,35 @@ fn sync_failed_event(
                 ("resyncRequired", json!(resync_required)),
             ];
             push_native_error_details(&mut details, error);
+            let diagnostic = native_diagnostic(
+                "error",
+                "sync",
+                if resync_required {
+                    "sync.resync_required"
+                } else {
+                    "sync.failed"
+                },
+                if resync_required {
+                    "Native Syncular sync requires full resync"
+                } else {
+                    "Native Syncular sync failed"
+                },
+                details,
+            );
             let mut event = native_event(
                 NativeEventKind::SyncFailed,
                 Vec::new(),
-                Some(native_diagnostic(
-                    "error",
-                    "sync",
-                    if resync_required {
-                        "sync.resync_required"
-                    } else {
-                        "sync.failed"
-                    },
-                    if resync_required {
-                        "Native Syncular sync requires full resync"
-                    } else {
-                        "Native Syncular sync failed"
-                    },
-                    details,
-                )),
+                Some(diagnostic.clone()),
             );
             event.error = Some(NativeErrorInfo::from_error(error));
             event.command_id = command_id;
             event.retry_scheduled = Some(retry_scheduled);
             event.duration_ms = Some(duration_ms);
+            event.lifecycle = Some(native_lifecycle_for_error(
+                error,
+                retry_scheduled,
+                diagnostic,
+            ));
             if resync_required {
                 event.resync_required = Some(true);
                 event.payload_json = Some(json!({
@@ -3034,29 +3244,46 @@ fn local_write_committed_event(
     client_commit_id: String,
     changed_tables: Vec<String>,
     changed_rows: Vec<SyncChangedRow>,
+    outbox_count: usize,
     duration_ms: u64,
 ) -> NativeEvent {
+    let diagnostic = native_diagnostic(
+        "info",
+        "storage",
+        "storage.local_write_committed",
+        "Native Syncular local write committed",
+        [
+            ("commandId", json!(command_id.clone())),
+            ("clientCommitId", json!(client_commit_id.clone())),
+            ("tables", json!(changed_tables.clone())),
+            ("changedRows", json!(changed_rows.clone())),
+            ("outboxCount", json!(outbox_count)),
+            ("durationMs", json!(duration_ms)),
+        ],
+    );
     let mut event = native_event(
         NativeEventKind::LocalWriteCommitted,
         changed_tables.clone(),
-        Some(native_diagnostic(
-            "info",
-            "storage",
-            "storage.local_write_committed",
-            "Native Syncular local write committed",
-            [
-                ("commandId", json!(command_id.clone())),
-                ("clientCommitId", json!(client_commit_id.clone())),
-                ("tables", json!(changed_tables)),
-                ("changedRows", json!(changed_rows.clone())),
-                ("durationMs", json!(duration_ms)),
-            ],
-        )),
+        Some(diagnostic.clone()),
     );
     event.command_id = Some(command_id);
     event.client_commit_id = Some(client_commit_id);
+    event.outbox_count = Some(outbox_count);
     event.duration_ms = Some(duration_ms);
     event.changed_rows = changed_rows;
+    event.lifecycle = Some(native_lifecycle_state(
+        NativeLifecyclePhase::Offline,
+        false,
+        false,
+        0,
+        None,
+        Some(NativeLifecycleOutbox {
+            pending: outbox_count,
+        }),
+        None,
+        None,
+        Some(diagnostic),
+    ));
     event
 }
 
@@ -3071,21 +3298,23 @@ fn local_write_failed_event(
         ("durationMs", json!(duration_ms)),
     ];
     push_native_error_details(&mut details, error);
+    let diagnostic = native_diagnostic(
+        "error",
+        "storage",
+        "storage.local_write_failed",
+        "Native Syncular local write failed",
+        details,
+    );
     let mut event = native_event(
         NativeEventKind::LocalWriteFailed,
         Vec::new(),
-        Some(native_diagnostic(
-            "error",
-            "storage",
-            "storage.local_write_failed",
-            "Native Syncular local write failed",
-            details,
-        )),
+        Some(diagnostic.clone()),
     );
     event.error = Some(NativeErrorInfo::from_error(error));
     event.command_id = Some(command_id);
     event.payload_json = payload_json;
     event.duration_ms = Some(duration_ms);
+    event.lifecycle = Some(native_lifecycle_for_error(error, false, diagnostic));
     event
 }
 
@@ -3125,20 +3354,22 @@ fn conflict_resolution_failed_event(
         ("durationMs", json!(duration_ms)),
     ];
     push_native_error_details(&mut details, error);
+    let diagnostic = native_diagnostic(
+        "error",
+        "sync",
+        "sync.conflict_resolution_failed",
+        "Native Syncular conflict resolution failed",
+        details,
+    );
     let mut event = native_event(
         NativeEventKind::ConflictResolutionFailed,
         Vec::new(),
-        Some(native_diagnostic(
-            "error",
-            "sync",
-            "sync.conflict_resolution_failed",
-            "Native Syncular conflict resolution failed",
-            details,
-        )),
+        Some(diagnostic.clone()),
     );
     event.error = Some(NativeErrorInfo::from_error(error));
     event.command_id = Some(command_id);
     event.duration_ms = Some(duration_ms);
+    event.lifecycle = Some(native_lifecycle_for_error(error, false, diagnostic));
     event
 }
 
@@ -3202,20 +3433,22 @@ fn worker_command_failed_event(
         ("durationMs", json!(duration_ms)),
     ];
     push_native_error_details(&mut details, error);
+    let diagnostic = native_diagnostic(
+        "error",
+        "worker",
+        "worker.command_failed",
+        "Native Syncular worker command failed",
+        details,
+    );
     let mut event = native_event(
         NativeEventKind::WorkerCommandFailed,
         Vec::new(),
-        Some(native_diagnostic(
-            "error",
-            "worker",
-            "worker.command_failed",
-            "Native Syncular worker command failed",
-            details,
-        )),
+        Some(diagnostic.clone()),
     );
     event.error = Some(NativeErrorInfo::from_error(error));
     event.command_id = Some(command_id);
     event.duration_ms = Some(duration_ms);
+    event.lifecycle = Some(native_lifecycle_for_error(error, false, diagnostic));
     event
 }
 
@@ -3242,6 +3475,7 @@ fn native_event(
         changed_rows: Vec::new(),
         queries: Vec::new(),
         bootstrap: None,
+        lifecycle: None,
         payload_json: None,
     }
 }

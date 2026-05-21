@@ -410,6 +410,32 @@ public struct SyncularNativeErrorInfo: Decodable, Equatable {
     public let debug: String?
 }
 
+public struct SyncularNativeLifecycleBootstrap: Decodable, Equatable {
+    public let complete: Bool
+    public let criticalReady: Bool
+    public let interactiveReady: Bool
+    public let isBootstrapping: Bool
+    public let progressPercent: Int64
+}
+
+public struct SyncularNativeLifecycleOutbox: Decodable, Equatable {
+    public let pending: UInt64
+}
+
+public struct SyncularNativeLifecycleConflicts: Decodable, Equatable {
+    public let unresolved: UInt64
+}
+
+public struct SyncularNativeLifecycleState: Decodable, Equatable {
+    public let phase: String
+    public let online: Bool
+    public let requiresAction: Bool
+    public let pendingRequests: UInt64
+    public let bootstrap: SyncularNativeLifecycleBootstrap?
+    public let outbox: SyncularNativeLifecycleOutbox?
+    public let conflicts: SyncularNativeLifecycleConflicts?
+}
+
 public struct SyncularNativeEvent: Decodable, Equatable {
     public let eventSeq: UInt64
     public let kind: String
@@ -422,9 +448,10 @@ public struct SyncularNativeEvent: Decodable, Equatable {
     public let durationMs: UInt64?
     public let droppedCount: UInt64?
     public let bootstrap: SyncularBootstrapStatus?
+    public let lifecycle: SyncularNativeLifecycleState?
     public let resyncRequired: Bool
 
-    public init(eventSeq: UInt64 = 0, kind: String, error: SyncularNativeErrorInfo? = nil, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, bootstrap: SyncularBootstrapStatus? = nil, resyncRequired: Bool = false) {
+    public init(eventSeq: UInt64 = 0, kind: String, error: SyncularNativeErrorInfo? = nil, tables: [String] = [], queries: [String] = [], changedRows: [SyncularChangedRow] = [], commandId: String? = nil, clientCommitId: String? = nil, durationMs: UInt64? = nil, droppedCount: UInt64? = nil, bootstrap: SyncularBootstrapStatus? = nil, lifecycle: SyncularNativeLifecycleState? = nil, resyncRequired: Bool = false) {
         self.eventSeq = eventSeq
         self.kind = kind
         self.error = error
@@ -436,6 +463,7 @@ public struct SyncularNativeEvent: Decodable, Equatable {
         self.durationMs = durationMs
         self.droppedCount = droppedCount
         self.bootstrap = bootstrap
+        self.lifecycle = lifecycle
         self.resyncRequired = resyncRequired
     }
 
@@ -451,6 +479,7 @@ public struct SyncularNativeEvent: Decodable, Equatable {
         case durationMs = "duration_ms"
         case droppedCount
         case bootstrap
+        case lifecycle
         case resyncRequired
     }
 
@@ -467,6 +496,7 @@ public struct SyncularNativeEvent: Decodable, Equatable {
         durationMs = try container.decodeIfPresent(UInt64.self, forKey: .durationMs)
         droppedCount = try container.decodeIfPresent(UInt64.self, forKey: .droppedCount)
         bootstrap = try container.decodeIfPresent(SyncularBootstrapStatus.self, forKey: .bootstrap)
+        lifecycle = try container.decodeIfPresent(SyncularNativeLifecycleState.self, forKey: .lifecycle)
         resyncRequired = (try container.decodeIfPresent(Bool.self, forKey: .resyncRequired)) ?? (kind == "EventsOverflowed")
     }
 
