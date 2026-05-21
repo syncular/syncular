@@ -188,8 +188,14 @@ client cursor/scope-key metadata, relevant request events, subscription-count
 evidence from request metadata, and stable finding codes without storing or
 exposing row payloads.
 
-Next: add stronger recovery/revocation drilldowns only when the server persists
-that evidence explicitly. Do not infer missing-row causes from app tables or add
+Request events now persist a redacted pull response summary with counts for
+active, revoked, and bootstrap subscriptions, commits, changes, and snapshot
+pages. Row investigation uses that explicit metadata to classify revoked
+subscription evidence without relying on payload snapshots or app-table
+inference.
+
+Next: add stronger recovery drilldowns only when the server persists that
+evidence explicitly. Do not infer missing-row causes from app tables or add
 payload capture by default.
 
 ## Progress
@@ -260,12 +266,20 @@ payload capture by default.
   request-event metadata: observed/not-observed/unknown status, latest request
   id, latest subscription count, matching event count, and observed scope keys
   without exposing scope values.
+- Added redacted request-event `response_summary` persistence for pull
+  responses. The summary stores only counts and lets row investigation surface
+  explicit revoked-subscription evidence with a stable `subscription.revoked`
+  finding.
 - Generated OpenAPI types/docs for the row investigation endpoint so the
   console consumes it through the normal transport contract.
 - Gates:
-  `bun test packages/server-hono/src/__tests__/console-routes.test.ts`,
-  `bun test packages/server-hono/src/__tests__/create-server.test.ts`, and
-  `bun run --cwd packages/console tsgo` passed after the row-investigation
-  slice.
+  `bunx biome check packages/server-hono/src/routes.ts packages/server-hono/src/console/routes.ts packages/server-hono/src/console/schemas.ts packages/server-hono/src/__tests__/console-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts packages/server-dialect-postgres/src/index.ts packages/server-dialect-sqlite/src/index.ts packages/server-dialect-sqlite/src/index.test.ts packages/console/src/pages/RowInvestigation.tsx`,
+  `bun test packages/server-hono/src/__tests__/console-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts`,
+  `bun test packages/server-dialect-sqlite/src/index.test.ts`, and
+  `bun run --cwd packages/console tsgo`,
+  `bun run --cwd packages/server-hono tsgo`,
+  `bun run --cwd packages/server-dialect-sqlite tsgo`, and
+  `bun run --cwd packages/server-dialect-postgres tsgo` passed after the
+  response-summary slice.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
   passed with `33` smoke tests after the diagnostic assertion slice.

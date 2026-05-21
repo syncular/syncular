@@ -330,7 +330,8 @@ export function RowInvestigation({ table, rowId }: RowInvestigationProps) {
                   variant={
                     data.subscriptionEvidence.status === 'observed'
                       ? 'healthy'
-                      : data.subscriptionEvidence.status === 'not_observed'
+                      : data.subscriptionEvidence.status === 'revoked' ||
+                          data.subscriptionEvidence.status === 'not_observed'
                         ? 'offline'
                         : 'ghost'
                   }

@@ -154,7 +154,7 @@ export type ConsoleRowInvestigationFinding = z.infer<
 >;
 
 export const ConsoleRowInvestigationSubscriptionEvidenceSchema = z.object({
-  status: z.enum(['observed', 'not_observed', 'unknown']),
+  status: z.enum(['observed', 'revoked', 'not_observed', 'unknown']),
   matchingEventCount: z.number().int().nonnegative(),
   latestEventId: z.number().int().nullable(),
   latestRequestId: z.string().nullable(),
@@ -166,6 +166,22 @@ export const ConsoleRowInvestigationSubscriptionEvidenceSchema = z.object({
 
 export type ConsoleRowInvestigationSubscriptionEvidence = z.infer<
   typeof ConsoleRowInvestigationSubscriptionEvidenceSchema
+>;
+
+export const ConsoleRequestEventResponseSummarySchema = z
+  .object({
+    subscriptionCount: z.number().int().nonnegative().optional(),
+    activeSubscriptionCount: z.number().int().nonnegative().optional(),
+    revokedSubscriptionCount: z.number().int().nonnegative().optional(),
+    bootstrapSubscriptionCount: z.number().int().nonnegative().optional(),
+    commitCount: z.number().int().nonnegative().optional(),
+    changeCount: z.number().int().nonnegative().optional(),
+    snapshotPageCount: z.number().int().nonnegative().optional(),
+  })
+  .passthrough();
+
+export type ConsoleRequestEventResponseSummary = z.infer<
+  typeof ConsoleRequestEventResponseSummarySchema
 >;
 
 export const ConsoleDebugExportCommitSchema =
@@ -200,6 +216,7 @@ export const ConsoleDebugExportEventSchema = z.object({
   scopesSummary: z
     .record(z.string(), z.union([z.string(), z.array(z.string())]))
     .nullable(),
+  responseSummary: ConsoleRequestEventResponseSummarySchema.nullable(),
   tables: z.array(z.string()),
   createdAt: z.string(),
 });
@@ -322,6 +339,7 @@ export const ConsoleRequestEventSchema = z.object({
   scopesSummary: z
     .record(z.string(), z.union([z.string(), z.array(z.string())]))
     .nullable(),
+  responseSummary: ConsoleRequestEventResponseSummarySchema.nullable(),
   tables: z.array(z.string()),
   errorMessage: z.string().nullable(),
   payloadRef: z.string().nullable(),

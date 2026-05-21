@@ -206,12 +206,14 @@ describe('createSyncServer console configuration', () => {
     clientId: string;
     userId: string;
     subscriptionUserId: string;
+    requestId?: string;
   }): Request {
     return new Request('http://localhost/sync', {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
         'x-user-id': args.userId,
+        ...(args.requestId ? { 'x-request-id': args.requestId } : {}),
       },
       body: JSON.stringify({
         clientId: args.clientId,
@@ -285,6 +287,7 @@ describe('createSyncServer console configuration', () => {
     error_message: string | null;
     row_count: number | string | null;
     subscription_count: number | string | null;
+    response_summary: unknown | null;
   }> {
     for (let attempt = 0; attempt < 40; attempt++) {
       const result = await sql<{
@@ -300,6 +303,7 @@ describe('createSyncServer console configuration', () => {
         error_message: string | null;
         row_count: number | string | null;
         subscription_count: number | string | null;
+        response_summary: unknown | null;
       }>`
         SELECT
           payload_ref,
@@ -313,7 +317,8 @@ describe('createSyncServer console configuration', () => {
           error_code,
           error_message,
           row_count,
-          subscription_count
+          subscription_count,
+          response_summary
         FROM sync_request_events
         WHERE request_id = ${requestId}
         ORDER BY event_id DESC
@@ -980,9 +985,11 @@ describe('createSyncServer console configuration', () => {
   });
 
   it('allows stale-scope rebinding after a fully revoked pull', async () => {
+    process.env.SYNC_CONSOLE_TOKEN = 'env-token';
     const options = createOptions();
     const server = createSyncServer({
       ...options,
+      console: {},
       sync: {
         ...options.sync,
         authenticate: async (request) => {
@@ -1009,6 +1016,7 @@ describe('createSyncServer console configuration', () => {
         clientId: 'shared-client',
         userId: 'u2',
         subscriptionUserId: 'u1',
+        requestId: 'req-revoked-pull-summary',
       })
     );
     expect(revokedPull.status).toBe(200);
@@ -1023,6 +1031,20 @@ describe('createSyncServer console configuration', () => {
         ],
       },
     });
+    const revokedPullEvent = await waitForRequestEventRow(
+      'req-revoked-pull-summary'
+    );
+    expect(parseSnapshotValue(revokedPullEvent.response_summary)).toMatchObject(
+      {
+        subscriptionCount: 1,
+        activeSubscriptionCount: 0,
+        revokedSubscriptionCount: 1,
+        bootstrapSubscriptionCount: 0,
+        commitCount: 0,
+        changeCount: 0,
+        snapshotPageCount: 0,
+      }
+    );
 
     const reboundPull = await app.request(
       createPullRequest({

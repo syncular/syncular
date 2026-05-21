@@ -1746,6 +1746,17 @@ export interface operations {
                                 scopesSummary: {
                                     [key: string]: string | string[];
                                 } | null;
+                                responseSummary: ({
+                                    subscriptionCount?: number;
+                                    activeSubscriptionCount?: number;
+                                    revokedSubscriptionCount?: number;
+                                    bootstrapSubscriptionCount?: number;
+                                    commitCount?: number;
+                                    changeCount?: number;
+                                    snapshotPageCount?: number;
+                                } & {
+                                    [key: string]: unknown;
+                                }) | null;
                                 tables: string[];
                                 errorMessage: string | null;
                                 payloadRef: string | null;
@@ -2127,7 +2138,7 @@ export interface operations {
                         };
                         subscriptionEvidence: {
                             /** @enum {string} */
-                            status: "observed" | "not_observed" | "unknown";
+                            status: "observed" | "revoked" | "not_observed" | "unknown";
                             matchingEventCount: number;
                             latestEventId: number | null;
                             latestRequestId: string | null;
@@ -2189,6 +2200,17 @@ export interface operations {
                             scopesSummary: {
                                 [key: string]: string | string[];
                             } | null;
+                            responseSummary: ({
+                                subscriptionCount?: number;
+                                activeSubscriptionCount?: number;
+                                revokedSubscriptionCount?: number;
+                                bootstrapSubscriptionCount?: number;
+                                commitCount?: number;
+                                changeCount?: number;
+                                snapshotPageCount?: number;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
                             tables: string[];
                             errorMessage: string | null;
                             payloadRef: string | null;
@@ -2334,6 +2356,17 @@ export interface operations {
                             scopesSummary: {
                                 [key: string]: string | string[];
                             } | null;
+                            responseSummary: ({
+                                subscriptionCount?: number;
+                                activeSubscriptionCount?: number;
+                                revokedSubscriptionCount?: number;
+                                bootstrapSubscriptionCount?: number;
+                                commitCount?: number;
+                                changeCount?: number;
+                                snapshotPageCount?: number;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
                             tables: string[];
                             createdAt: string;
                         }[];
@@ -2886,6 +2919,17 @@ export interface operations {
                             scopesSummary: {
                                 [key: string]: string | string[];
                             } | null;
+                            responseSummary: ({
+                                subscriptionCount?: number;
+                                activeSubscriptionCount?: number;
+                                revokedSubscriptionCount?: number;
+                                bootstrapSubscriptionCount?: number;
+                                commitCount?: number;
+                                changeCount?: number;
+                                snapshotPageCount?: number;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
                             tables: string[];
                             errorMessage: string | null;
                             payloadRef: string | null;
@@ -3008,6 +3052,17 @@ export interface operations {
                         scopesSummary: {
                             [key: string]: string | string[];
                         } | null;
+                        responseSummary: ({
+                            subscriptionCount?: number;
+                            activeSubscriptionCount?: number;
+                            revokedSubscriptionCount?: number;
+                            bootstrapSubscriptionCount?: number;
+                            commitCount?: number;
+                            changeCount?: number;
+                            snapshotPageCount?: number;
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
                         tables: string[];
                         errorMessage: string | null;
                         payloadRef: string | null;

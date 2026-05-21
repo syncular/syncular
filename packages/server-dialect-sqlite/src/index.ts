@@ -173,6 +173,7 @@ async function ensureConsoleEventColumns<DB extends SyncCoreDb>(
     'ALTER TABLE sync_request_events ADD COLUMN error_code TEXT',
     'ALTER TABLE sync_request_events ADD COLUMN subscription_count INTEGER',
     'ALTER TABLE sync_request_events ADD COLUMN scopes_summary TEXT',
+    'ALTER TABLE sync_request_events ADD COLUMN response_summary TEXT',
     'ALTER TABLE sync_request_events ADD COLUMN payload_ref TEXT',
   ];
 
@@ -907,6 +908,7 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
       .addColumn('row_count', 'integer')
       .addColumn('subscription_count', 'integer')
       .addColumn('scopes_summary', 'text')
+      .addColumn('response_summary', 'text')
       .addColumn('tables', 'text', (col) => col.notNull().defaultTo('[]'))
       .addColumn('error_message', 'text')
       .addColumn('payload_ref', 'text')

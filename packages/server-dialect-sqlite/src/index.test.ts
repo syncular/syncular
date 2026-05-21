@@ -95,6 +95,7 @@ describe('SqliteServerSyncDialect.ensureConsoleSchema', () => {
       'error_code',
       'subscription_count',
       'scopes_summary',
+      'response_summary',
       'payload_ref',
     ]) {
       expect(columnNames).toContain(expectedColumn);
@@ -155,6 +156,7 @@ describe('SqliteServerSyncDialect.ensureConsoleSchema', () => {
       'error_code',
       'subscription_count',
       'scopes_summary',
+      'response_summary',
       'payload_ref',
     ]) {
       expect(columnNames).toContain(expectedColumn);

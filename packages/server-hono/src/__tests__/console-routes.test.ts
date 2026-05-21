@@ -31,6 +31,7 @@ interface SyncRequestEventsTable {
   row_count: number | null;
   subscription_count: number | null;
   scopes_summary: unknown | null;
+  response_summary?: unknown | null;
   tables: string[];
   error_message: string | null;
   payload_ref: string | null;
@@ -1195,6 +1196,15 @@ describe('console timeline route filters', () => {
         row_count: 0,
         subscription_count: 1,
         scopes_summary: JSON.stringify({ org_id: 'org-other' }),
+        response_summary: JSON.stringify({
+          subscriptionCount: 1,
+          activeSubscriptionCount: 0,
+          revokedSubscriptionCount: 1,
+          bootstrapSubscriptionCount: 0,
+          commitCount: 0,
+          changeCount: 0,
+          snapshotPageCount: 0,
+        }),
         tables: ['tasks'],
         error_message: null,
         payload_ref: null,
@@ -1240,14 +1250,18 @@ describe('console timeline route filters', () => {
       missingScopeKeys: ['org_id'],
     });
     expect(payload.subscriptionEvidence).toMatchObject({
-      status: 'observed',
+      status: 'revoked',
       matchingEventCount: 1,
       latestRequestId: 'req-investigate',
       latestSubscriptionCount: 1,
       observedScopeKeys: ['org_id'],
     });
     expect(payload.findings.map((finding) => finding.code)).toEqual(
-      expect.arrayContaining(['client.cursor_behind', 'scope.not_eligible'])
+      expect.arrayContaining([
+        'client.cursor_behind',
+        'scope.not_eligible',
+        'subscription.revoked',
+      ])
     );
     expect(payload.history[0]?.fields).toEqual(['id', 'org_id', 'title']);
     expect(payload.history[0]).not.toHaveProperty('rowJson');
