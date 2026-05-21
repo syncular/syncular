@@ -33,6 +33,31 @@
         "wrangler": "*",
       },
     },
+    "apps/demo": {
+      "name": "@syncular/demo",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncular/client": "workspace:*",
+        "@syncular/core": "workspace:*",
+        "@syncular/dialect-bun-sqlite": "workspace:*",
+        "@syncular/server": "workspace:*",
+        "@syncular/server-dialect-sqlite": "workspace:*",
+        "@syncular/server-hono": "workspace:*",
+        "hono": "^4.12.15",
+        "kysely": "*",
+        "lucide-react": "^1.7.0",
+        "react": "^19.2.4",
+        "react-dom": "^19.2.4",
+      },
+      "devDependencies": {
+        "@types/bun": "^1.3.11",
+        "@types/node": "^25.5.2",
+        "@types/react": "^19.2.14",
+        "@types/react-dom": "^19.2.3",
+        "typescript": "^6.0.2",
+        "vite": "^8.0.10",
+      },
+    },
     "apps/docs": {
       "name": "syncular-docs",
       "version": "0.0.0",
@@ -1862,6 +1887,8 @@
     "@syncular/console-app": ["@syncular/console-app@workspace:apps/console"],
 
     "@syncular/core": ["@syncular/core@workspace:packages/core"],
+
+    "@syncular/demo": ["@syncular/demo@workspace:apps/demo"],
 
     "@syncular/dialect-better-sqlite3": ["@syncular/dialect-better-sqlite3@workspace:packages/dialect-better-sqlite3"],
 

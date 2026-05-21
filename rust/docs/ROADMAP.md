@@ -313,7 +313,10 @@ read-only review:
     is no longer the bottleneck: `rust_realtime_apply_total_ms=25`,
     `rust_realtime_integrity_verify_total_ms=6`,
     `rust_realtime_overhead_p50_ms=16.75`, and
-    `rust_realtime_http_request_count=0`.
+    `rust_realtime_http_request_count=0`. Browser worker realtime timer
+    globals are now bound before heartbeat/reconnect scheduling, fixing Chrome
+    `Illegal invocation` failures in canonical websocket demos while keeping
+    runtime-owned reconnect/backoff.
 
 ## Next
 
