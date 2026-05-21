@@ -20,6 +20,7 @@ describe('@syncular/client-react-native', () => {
       );
 
       await client.mutations.tasks.update('task-1', { completed: 1 });
+      await client.leasedMutations.tasks.update('task-1', { title: 'Leased' });
       expect(harness.operations()).toEqual([
         {
           table: 'tasks',
@@ -28,10 +29,35 @@ describe('@syncular/client-react-native', () => {
           payload: { completed: 1 },
           base_version: null,
         },
+        {
+          table: 'tasks',
+          row_id: 'task-1',
+          op: 'upsert',
+          payload: { title: 'Leased' },
+          base_version: null,
+        },
       ]);
       expect(harness.rows('tasks')).toEqual([
-        { id: 'task-1', title: 'Native task', completed: 1 },
+        { id: 'task-1', title: 'Leased', completed: 1 },
       ]);
+      expect(harness.leasedBatches()).toHaveLength(1);
+
+      const lease = await client.issueAuthLease({
+        schemaVersion: 1,
+        scopes: [
+          {
+            subscriptionId: 'tasks',
+            table: 'tasks',
+            values: { user_id: 'user-1' },
+            operations: ['upsert'],
+          },
+        ],
+      });
+      expect(await client.authLease(lease.leaseId)).toMatchObject({
+        leaseId: lease.leaseId,
+      });
+      expect(await client.activeAuthLeases('actor-test')).toHaveLength(1);
+      await client.resumeFromBackground();
 
       const changedTables: string[][] = [];
       const unsubscribe = client.on('rowsChanged', (event) => {

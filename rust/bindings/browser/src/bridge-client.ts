@@ -1,4 +1,8 @@
-import { randomId, type SyncOperation } from '@syncular/core';
+import {
+  randomId,
+  type SyncAuthLeaseIssueRequest,
+  type SyncOperation,
+} from '@syncular/core';
 import {
   type CompiledQuery,
   type DatabaseConnection,
@@ -23,6 +27,7 @@ import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   SyncularV2ClientEventSink,
   SyncularV2ClientEventType,
+  SyncularV2AuthLeaseRecord,
   SyncularV2ConflictResolution,
   SyncularV2ConflictStats,
   SyncularV2ConflictSummary,
@@ -32,6 +37,7 @@ import type {
   SyncularV2PresenceEntry,
   SyncularV2PresenceSink,
   SyncularV2SubscriptionSpec,
+  SyncularV2SyncRequestOptions,
   SyncularV2SyncResult,
 } from './types';
 
@@ -86,13 +92,28 @@ export interface SyncularBridge {
   applyMutationsCommit(
     batch: SyncularBridgeMutationBatch
   ): Promise<string | MutationReceipt> | string | MutationReceipt;
+  applyLeasedMutationsCommit?(
+    batch: SyncularBridgeMutationBatch
+  ): Promise<string | MutationReceipt> | string | MutationReceipt;
   sync?(): Promise<SyncularV2SyncResult>;
+  resumeFromBackground?(
+    options?: SyncularV2SyncRequestOptions
+  ): Promise<SyncularV2SyncResult>;
   start?(): Promise<void>;
   stop?(): Promise<void>;
   setSubscriptions?(
     subscriptions: readonly SyncularV2SubscriptionSpec[]
   ): Promise<void>;
   getStatus?(): Promise<SyncularBridgeStatus> | SyncularBridgeStatus;
+  issueAuthLease?(
+    request: SyncAuthLeaseIssueRequest
+  ): Promise<SyncularV2AuthLeaseRecord>;
+  upsertAuthLease?(lease: SyncularV2AuthLeaseRecord): Promise<void>;
+  authLease?(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null>;
+  activeAuthLeases?(
+    actorId?: string | null,
+    nowMs?: number
+  ): Promise<SyncularV2AuthLeaseRecord[]>;
   on?<T extends SyncularV2ClientEventType>(
     event: T,
     listener: SyncularV2ClientEventSink<T>
@@ -131,12 +152,38 @@ export async function createSyncularBridgeClient<DB>(
     mutations: createSyncularBridgeMutations<DB>(options, async () => {
       if (syncAfterMutation) await client.sync().catch(() => undefined);
     }),
+    leasedMutations: createSyncularBridgeMutations<DB>(
+      options,
+      async () => {
+        if (syncAfterMutation) await client.sync().catch(() => undefined);
+      },
+      { leased: true }
+    ),
     blobs: createBridgeBlobs(options.bridge),
     on: (event, listener) => options.bridge.on?.(event, listener) ?? noop,
     getStatus: () => resolveBridgeStatusSnapshot(options.bridge),
     setSubscriptions: async (subscriptions) => {
       await options.bridge.setSubscriptions?.(subscriptions);
     },
+    resumeFromBackground: (syncOptions) =>
+      requireBridgeMethod(options.bridge.resumeFromBackground, 'resumeFromBackground')(
+        syncOptions
+      ),
+    issueAuthLease: (request) =>
+      requireBridgeMethod(options.bridge.issueAuthLease, 'issueAuthLease')(
+        request
+      ),
+    upsertAuthLease: (lease) =>
+      requireBridgeMethod(options.bridge.upsertAuthLease, 'upsertAuthLease')(
+        lease
+      ),
+    authLease: (leaseId) =>
+      requireBridgeMethod(options.bridge.authLease, 'authLease')(leaseId),
+    activeAuthLeases: (actorId, nowMs) =>
+      requireBridgeMethod(options.bridge.activeAuthLeases, 'activeAuthLeases')(
+        actorId,
+        nowMs
+      ),
     presence: createBridgePresence(options.bridge),
     conflicts: createBridgeConflicts(options.bridge),
     start: async () => {
@@ -165,15 +212,17 @@ export async function createSyncularBridgeClient<DB>(
 
 function createSyncularBridgeMutations<DB>(
   options: CreateSyncularBridgeClientOptions,
-  afterCommit: () => Promise<void>
+  afterCommit: () => Promise<void>,
+  mode: { leased?: boolean } = {}
 ): MutationsApi<DB, undefined> {
-  const commit = createSyncularBridgeCommit<DB>(options, afterCommit);
+  const commit = createSyncularBridgeCommit<DB>(options, afterCommit, mode);
   return createMutationsApi(commit);
 }
 
 function createSyncularBridgeCommit<DB>(
   options: CreateSyncularBridgeClientOptions,
-  afterCommit: () => Promise<void>
+  afterCommit: () => Promise<void>,
+  mode: { leased?: boolean } = {}
 ): MutationsCommitFn<DB, { operations: SyncOperation[] }, undefined> {
   const idColumn = options.idColumn ?? 'id';
   const versionColumn = options.versionColumn ?? 'server_version';
@@ -243,8 +292,14 @@ function createSyncularBridgeCommit<DB>(
 
     const result = await fn(tx);
     if (operations.length === 0) throw new Error('No mutations were enqueued');
+    const commitFn = mode.leased
+      ? requireBridgeMethod(
+          options.bridge.applyLeasedMutationsCommit,
+          'applyLeasedMutationsCommit'
+        )
+      : options.bridge.applyMutationsCommit.bind(options.bridge);
     const receipt = normalizeMutationReceipt(
-      await options.bridge.applyMutationsCommit({ operations })
+      await commitFn({ operations })
     );
     await afterCommit();
     return { result, receipt, meta: { operations } };
@@ -428,6 +483,14 @@ function unsupportedFn<Args extends unknown[], Result>(
   return () => {
     throw new Error(`Syncular bridge does not implement ${method}.`);
   };
+}
+
+function requireBridgeMethod<Fn extends (...args: any[]) => any>(
+  fn: Fn | undefined,
+  method: string
+): Fn {
+  if (typeof fn === 'function') return fn;
+  return unsupportedFn(method) as Fn;
 }
 
 function isPromiseLike(value: unknown): value is Promise<unknown> {

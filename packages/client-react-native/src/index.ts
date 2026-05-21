@@ -7,6 +7,7 @@ import {
   type SyncularBridgeQueryResult,
   type SyncularBridgeStatus,
   type SyncularClientLike,
+  type SyncularV2AuthLeaseRecord,
   type SyncularV2ClientEventMap,
   type SyncularV2ClientEventSink,
   type SyncularV2ClientEventType,
@@ -17,6 +18,7 @@ import {
   type SyncularV2SubscriptionSpec,
   type SyncularV2SyncResult,
 } from '@syncular/client';
+import type { SyncAuthLeaseIssueRequest } from '@syncular/core';
 import { createSyncularReact } from '@syncular/client/react';
 
 export type SyncularNativeEventSubscription = (() => void) | { remove(): void };
@@ -28,13 +30,26 @@ export interface SyncularNativeModule {
   applyMutationsCommit(
     batch: SyncularBridgeMutationBatch
   ): Promise<string> | string;
+  applyLeasedMutationsCommit?(
+    batch: SyncularBridgeMutationBatch
+  ): Promise<string> | string;
   sync?(): Promise<SyncularV2SyncResult>;
+  resumeFromBackground?(): Promise<SyncularV2SyncResult>;
   start?(): Promise<void>;
   stop?(): Promise<void>;
   setSubscriptions?(
     subscriptions: readonly SyncularV2SubscriptionSpec[]
   ): Promise<void>;
   getStatus?(): SyncularBridgeStatus;
+  issueAuthLease?(
+    request: SyncAuthLeaseIssueRequest
+  ): Promise<SyncularV2AuthLeaseRecord>;
+  upsertAuthLease?(lease: SyncularV2AuthLeaseRecord): Promise<void>;
+  authLease?(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null>;
+  activeAuthLeases?(
+    actorId?: string | null,
+    nowMs?: number
+  ): Promise<SyncularV2AuthLeaseRecord[]>;
   addListener?<T extends SyncularV2ClientEventType>(
     event: T,
     listener: SyncularV2ClientEventSink<T>
@@ -82,11 +97,17 @@ export function createSyncularNativeBridge(
       request: SyncularBridgeQueryRequest
     ) => module.executeSql<Row>(request),
     applyMutationsCommit: (batch) => module.applyMutationsCommit(batch),
+    applyLeasedMutationsCommit: module.applyLeasedMutationsCommit?.bind(module),
     sync: module.sync?.bind(module),
+    resumeFromBackground: module.resumeFromBackground?.bind(module),
     start: module.start?.bind(module),
     stop: module.stop?.bind(module),
     setSubscriptions: module.setSubscriptions?.bind(module),
     getStatus: module.getStatus?.bind(module),
+    issueAuthLease: module.issueAuthLease?.bind(module),
+    upsertAuthLease: module.upsertAuthLease?.bind(module),
+    authLease: module.authLease?.bind(module),
+    activeAuthLeases: module.activeAuthLeases?.bind(module),
     on: (event, listener) => removeable(module.addListener?.(event, listener)),
     presence: {
       get: (scopeKey) => module.getPresence?.(scopeKey) ?? [],

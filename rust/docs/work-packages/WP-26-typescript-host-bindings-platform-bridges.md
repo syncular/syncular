@@ -128,6 +128,32 @@ or keep old naming assumptions.
 - Added `Interface Impact` sections to WP-11, WP-17, WP-21, WP-22, WP-23, and
   WP-24 so feature semantics stay owned by feature WPs while WP-26 tracks
   TypeScript/platform projection.
+- First retained bridge parity slice:
+  - `SyncularClientLike` now exposes `leasedMutations`,
+    `resumeFromBackground(...)`, and auth lease methods directly instead of
+    requiring app code to reach through lower-level runtime objects.
+  - `SyncularBridge`, Tauri, React Native, Expo, and the shared testkit bridge
+    harness now project leased mutation commits, auth lease issue/read/list,
+    and resume-from-background behavior through the same client shape.
+  - Bridge tests now prove regular mutations, leased mutations, precise
+    `rowsChanged` payload delivery, auth lease roundtrip, active lease listing,
+    and foreground resume across browser bridge, Tauri, React Native, and Expo.
+
+Latest evidence:
+
+```bash
+bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts rust/bindings/browser/src/bridge-client.test.ts
+bun --cwd packages/client-tauri tsgo
+bun --cwd packages/client-react-native tsgo
+bun --cwd packages/client-expo tsgo
+bun --cwd packages/testkit tsgo
+bun run --cwd rust/bindings/browser tsgo
+git diff --check
+```
+
+Result: passed. No benchmark gate was run; this slice changes TypeScript host
+interfaces/testkit projection only and does not alter Rust/WASM runtime hot
+paths.
 
 ## Interface Catch-Up Matrix
 
@@ -135,10 +161,10 @@ or keep old naming assumptions.
 | --- | --- | --- | --- | --- | --- |
 | WP-05 Adaptive Bootstrap | Runtime/generated subscriptions | `getStatus()`, `bootstrapChanged`, generated phase helpers | Hooks must expose readiness without polling hacks | Bridge status/events must preserve readiness payloads | Mostly done; audit docs/examples |
 | WP-07 CRDT Fields | Runtime CRDT primitives | Generic CRDT field APIs, row metadata, Yjs envelope helpers | Keep editor adapters app-layer; expose field events | Bridge events must preserve CRDT field metadata | Track adapter docs and bridge parity |
-| WP-11 Offline Auth Leases | Server/Rust auth lease model | `issueAuthLease`, `leasedMutations`, active lease reads | Hooks/examples should show leased vs normal mutations | Bridges need strict leased mutation methods and errors | Needs interface-impact audit |
+| WP-11 Offline Auth Leases | Server/Rust auth lease model | `issueAuthLease`, `leasedMutations`, active lease reads | Hooks/examples should show leased vs normal mutations | Bridges need strict leased mutation methods and errors | Bridge client parity added; React docs/hooks still need audit |
 | WP-13 Observability | Runtime/server diagnostics | Diagnostic snapshots/support bundles | Support hooks should expose stable diagnostics, not raw internals | Bridge diagnostics must match native event/error JSON | Needs docs/testkit parity check |
 | WP-15 Error Taxonomy | Core/server/runtime taxonomy | Stable `code/category/retryable/recommendedAction` in thrown errors/events | Hooks must surface stable error objects | Bridges must preserve error shape | Mostly done; keep in generated docs |
-| WP-17 Lifecycle/App State | Runtime lifecycle model | `getStatus`, `on(...)`, `resumeFromBackground`, lifecycle events | Hooks must avoid poll-based status loops | Platform shells need app lifecycle entrypoints | Needs app-shell bridge audit |
+| WP-17 Lifecycle/App State | Runtime lifecycle model | `getStatus`, `on(...)`, `resumeFromBackground`, lifecycle events | Hooks must avoid poll-based status loops | Platform shells need app lifecycle entrypoints | Bridge resume parity added; React polling options still need audit |
 | WP-21 Live Query Precision | Runtime observation | Kysely live query metadata, row/field deltas | Hooks must refresh from row/field events, not broad table guessing | Bridge events need precise changed rows/fields | Needs bridge parity test pass |
 | WP-22 Undo/Redo Command History | Runtime/generated mutation history | `commandHistory.undoLast/redoLast`, generated mutation wrapping | Hooks should expose command-history state/actions when useful | Bridge packages need a decision: expose or explicitly defer | Needs explicit TS bridge milestone |
 | WP-23 Audit/Debug | Server audit/console/testkit | Admin/support APIs and redacted export helpers | Generally docs/support tools, not normal app hooks | Bridge support-bundle export only if needed | Keep scoped to support/debug |
@@ -168,7 +194,10 @@ or keep old naming assumptions.
 
 ## Next Action
 
-Audit current TypeScript exports against the new interface-impact sections,
-starting with auth lease, lifecycle, live-query, command-history, audit/debug,
-and blob surfaces. Do not add new feature behavior in this WP until the owning
-feature WP states the canonical semantics and red lines.
+Continue the export audit with React and generated-client projection: decide
+whether `useLeasedMutations` should be a first-class hook, replace broad
+React `rowsChanged` refreshes with query-observer-backed live queries where the
+client supports them, and document command-history as generated-client owned
+for platform bridges until native generated mutation wrappers are mature enough
+to expose it cleanly. Do not add new feature behavior in this WP until the
+owning feature WP states the canonical semantics and red lines.
