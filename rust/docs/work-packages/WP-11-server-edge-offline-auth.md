@@ -44,18 +44,18 @@ weaken strict online `/sync` authorization. The legacy JS offline-auth package
 is a local UX/session-cache primitive, not a signed server authorization model.
 The Rust foundation now covers protocol/testkit lease types, local client
 storage, replay provenance, server handler context, stable rejection
-diagnostics, current-auth Hono lease issue, signed replay-token validation, and
-per-operation signed-scope/current-scope validation. Leases remain offline
-intent/audit records only; they do not bypass normal reconnect authorization.
+diagnostics, current-auth Hono lease issue, signed replay-token validation,
+per-operation signed-scope/current-scope validation, and strict Rust generated
+leased mutations. Leases remain offline intent/audit records only; they do not
+bypass normal reconnect authorization.
 
 ## Next Action
 
-Next narrow slice is generated/local mutation lease policy. The Rust stores can
-now attach the stored token once an outbox commit is marked with lease
-provenance, and the server now verifies signed lease scope plus current scope
-revocation per operation before writes. Generated mutation APIs still need a
-strict leased-offline mode that selects an active covering lease automatically
-instead of requiring host code to mark outbox commits manually.
+Next narrow slice is binding parity for leased-offline mutation ergonomics. Rust
+generated mutations now have `leased_mutations()` / `commit_leased()` backed by
+transactional active-lease selection, but Swift/Kotlin/browser generated APIs
+still need the same explicit strict leased mode instead of requiring host code
+to mark outbox commits manually.
 
 ## Progress
 
@@ -142,6 +142,14 @@ instead of requiring host code to mark outbox commits manually.
 - Added Hono replay coverage for signed-scope mismatch and current-scope
   revocation. Both reject the commit with stable `sync.auth_lease_*` codes and
   leave app rows unapplied.
+- Added Rust `SyncularLeasedMutationExecutor` plus generated
+  `leased_mutations()` and `commit_leased()` APIs. Native Diesel selects an
+  active stored lease covering the generated mutation batch, tags the outbox
+  commit with signed provenance, and rolls back the local row/outbox write if no
+  covering lease exists.
+- Updated generated Rust fixture/example outputs and documented the Rust
+  leased mutation API in
+  [`../reference/GENERATED_CLIENT_API.md`](../reference/GENERATED_CLIENT_API.md).
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol -p
   syncular-testkit` passed with `15` protocol tests and `36` testkit smoke
   tests.
@@ -186,6 +194,17 @@ instead of requiring host code to mark outbox commits manually.
   packages/server-hono/src/routes.ts
   packages/server-hono/src/__tests__/auth-leases.test.ts` passed after
   per-operation lease scope/revocation validation.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
+  store_backends` passed with `38` tests after Rust generated leased mutation
+  selection and fail-closed rollback coverage.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
+  protocol_contract` passed with `42` tests after Rust generated leased
+  mutations.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+  passed after regenerating Rust fixture/example outputs for
+  `leased_mutations()` / `commit_leased()`.
+- Gate: `bun run rust:check:no-default` passed after adding the public leased
+  mutation executor trait.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   store_backends` passed with `36` tests after the local lease storage slice.
 - Gate: `bun run rust:conformance:fast` passed after the protocol/testkit

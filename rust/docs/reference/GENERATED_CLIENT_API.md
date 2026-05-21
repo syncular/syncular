@@ -52,6 +52,25 @@ client
     .update(syncular::TaskPatch::new(&inserted.id).completed(1))?;
 ```
 
+Strict offline writes use the same generated DTOs but require an active stored
+auth lease covering the mutation scope. If no covering lease exists, the local
+row and outbox write are rolled back in the same SQLite transaction:
+
+```rust
+let leased = client.leased_mutations().tasks().insert(
+    syncular::NewTask::with_generated_id(
+        "Queue offline",
+        "user-rust",
+        Some("project-rust"),
+    ),
+)?;
+
+client.commit_leased(|tx| {
+    tx.tasks().update(syncular::TaskPatch::new(&leased.id).completed(1))?;
+    Ok(())
+})?;
+```
+
 CRDT fields are written through generated CRDT helpers, not by setting the
 state column:
 

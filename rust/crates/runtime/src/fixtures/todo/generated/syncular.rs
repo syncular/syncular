@@ -9,7 +9,7 @@ pub use syncular_runtime::app_schema::{
 #[allow(unused_imports)]
 use syncular_runtime::client::{
     SubscriptionSpec, SyncChangedRow, SyncularClientConfig, SyncularEncryptedCrdtMutationExecutor,
-    SyncularMutationExecutor,
+    SyncularLeasedMutationExecutor, SyncularMutationExecutor,
 };
 use syncular_runtime::crdt_yjs::{YjsUpdateEnvelope, YJS_PAYLOAD_KEY};
 use syncular_runtime::encryption::FieldEncryptionRule;
@@ -1336,6 +1336,13 @@ pub trait SyncularGeneratedMutationsExt: SyncularMutationExecutor {
         SyncularAppMutations { client: self }
     }
 
+    fn leased_mutations(&mut self) -> SyncularAppLeasedMutations<'_, Self>
+    where
+        Self: Sized + SyncularLeasedMutationExecutor,
+    {
+        SyncularAppLeasedMutations { client: self }
+    }
+
     fn commit<R>(
         &mut self,
         f: impl FnOnce(&mut SyncularAppMutationTx<'_>) -> Result<R>,
@@ -1351,11 +1358,31 @@ pub trait SyncularGeneratedMutationsExt: SyncularMutationExecutor {
         let commit = self.apply_mutation_batch(batch)?;
         Ok(MutationCommit { result, commit })
     }
+
+    fn commit_leased<R>(
+        &mut self,
+        f: impl FnOnce(&mut SyncularAppMutationTx<'_>) -> Result<R>,
+    ) -> Result<MutationCommit<R>>
+    where
+        Self: Sized + SyncularLeasedMutationExecutor,
+    {
+        let mut batch = SyncularMutationBatch::new();
+        let result = {
+            let mut tx = SyncularAppMutationTx { batch: &mut batch };
+            f(&mut tx)?
+        };
+        let commit = self.apply_leased_mutation_batch(batch)?;
+        Ok(MutationCommit { result, commit })
+    }
 }
 
 impl<C> SyncularGeneratedMutationsExt for C where C: SyncularMutationExecutor {}
 
 pub struct SyncularAppMutations<'a, C: SyncularMutationExecutor + ?Sized> {
+    client: &'a mut C,
+}
+
+pub struct SyncularAppLeasedMutations<'a, C: SyncularLeasedMutationExecutor + ?Sized> {
     client: &'a mut C,
 }
 
@@ -1369,6 +1396,17 @@ where
 {
     pub fn comments(self) -> CommentMutations<'a, C> {
         CommentMutations {
+            client: self.client,
+        }
+    }
+}
+
+impl<'a, C> SyncularAppLeasedMutations<'a, C>
+where
+    C: SyncularLeasedMutationExecutor + ?Sized,
+{
+    pub fn comments(self) -> CommentLeasedMutations<'a, C> {
+        CommentLeasedMutations {
             client: self.client,
         }
     }
@@ -1417,6 +1455,44 @@ where
     }
 }
 
+pub struct CommentLeasedMutations<'a, C: SyncularLeasedMutationExecutor + ?Sized> {
+    client: &'a mut C,
+}
+
+impl<C> CommentLeasedMutations<'_, C>
+where
+    C: SyncularLeasedMutationExecutor + ?Sized,
+{
+    pub fn insert(self, row: NewComment) -> Result<InsertReceipt> {
+        let id = row.id.clone();
+        let commit = self.client.apply_leased_mutation(row)?;
+        Ok(InsertReceipt { id, commit })
+    }
+
+    pub fn insert_many(
+        self,
+        rows: impl IntoIterator<Item = NewComment>,
+    ) -> Result<InsertManyReceipt> {
+        let mut batch = SyncularMutationBatch::new();
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row.id.clone());
+            batch.push(row);
+        }
+        let commit = self.client.apply_leased_mutation_batch(batch)?;
+        Ok(InsertManyReceipt { ids, commit })
+    }
+
+    pub fn update(self, patch: CommentPatch) -> Result<MutationReceipt> {
+        self.client.apply_leased_mutation(patch)
+    }
+
+    pub fn delete(self, row_id: &str) -> Result<MutationReceipt> {
+        self.client
+            .apply_leased_mutation(DeleteComment::new(row_id))
+    }
+}
+
 pub struct CommentMutationTx<'a> {
     batch: &'a mut SyncularMutationBatch,
 }
@@ -1454,6 +1530,17 @@ where
 {
     pub fn projects(self) -> ProjectMutations<'a, C> {
         ProjectMutations {
+            client: self.client,
+        }
+    }
+}
+
+impl<'a, C> SyncularAppLeasedMutations<'a, C>
+where
+    C: SyncularLeasedMutationExecutor + ?Sized,
+{
+    pub fn projects(self) -> ProjectLeasedMutations<'a, C> {
+        ProjectLeasedMutations {
             client: self.client,
         }
     }
@@ -1502,6 +1589,44 @@ where
     }
 }
 
+pub struct ProjectLeasedMutations<'a, C: SyncularLeasedMutationExecutor + ?Sized> {
+    client: &'a mut C,
+}
+
+impl<C> ProjectLeasedMutations<'_, C>
+where
+    C: SyncularLeasedMutationExecutor + ?Sized,
+{
+    pub fn insert(self, row: NewProject) -> Result<InsertReceipt> {
+        let id = row.id.clone();
+        let commit = self.client.apply_leased_mutation(row)?;
+        Ok(InsertReceipt { id, commit })
+    }
+
+    pub fn insert_many(
+        self,
+        rows: impl IntoIterator<Item = NewProject>,
+    ) -> Result<InsertManyReceipt> {
+        let mut batch = SyncularMutationBatch::new();
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row.id.clone());
+            batch.push(row);
+        }
+        let commit = self.client.apply_leased_mutation_batch(batch)?;
+        Ok(InsertManyReceipt { ids, commit })
+    }
+
+    pub fn update(self, patch: ProjectPatch) -> Result<MutationReceipt> {
+        self.client.apply_leased_mutation(patch)
+    }
+
+    pub fn delete(self, row_id: &str) -> Result<MutationReceipt> {
+        self.client
+            .apply_leased_mutation(DeleteProject::new(row_id))
+    }
+}
+
 pub struct ProjectMutationTx<'a> {
     batch: &'a mut SyncularMutationBatch,
 }
@@ -1539,6 +1664,17 @@ where
 {
     pub fn tasks(self) -> TaskMutations<'a, C> {
         TaskMutations {
+            client: self.client,
+        }
+    }
+}
+
+impl<'a, C> SyncularAppLeasedMutations<'a, C>
+where
+    C: SyncularLeasedMutationExecutor + ?Sized,
+{
+    pub fn tasks(self) -> TaskLeasedMutations<'a, C> {
+        TaskLeasedMutations {
             client: self.client,
         }
     }
@@ -1584,6 +1720,40 @@ where
     }
 }
 
+pub struct TaskLeasedMutations<'a, C: SyncularLeasedMutationExecutor + ?Sized> {
+    client: &'a mut C,
+}
+
+impl<C> TaskLeasedMutations<'_, C>
+where
+    C: SyncularLeasedMutationExecutor + ?Sized,
+{
+    pub fn insert(self, row: NewTask) -> Result<InsertReceipt> {
+        let id = row.id.clone();
+        let commit = self.client.apply_leased_mutation(row)?;
+        Ok(InsertReceipt { id, commit })
+    }
+
+    pub fn insert_many(self, rows: impl IntoIterator<Item = NewTask>) -> Result<InsertManyReceipt> {
+        let mut batch = SyncularMutationBatch::new();
+        let mut ids = Vec::new();
+        for row in rows {
+            ids.push(row.id.clone());
+            batch.push(row);
+        }
+        let commit = self.client.apply_leased_mutation_batch(batch)?;
+        Ok(InsertManyReceipt { ids, commit })
+    }
+
+    pub fn update(self, patch: TaskPatch) -> Result<MutationReceipt> {
+        self.client.apply_leased_mutation(patch)
+    }
+
+    pub fn delete(self, row_id: &str) -> Result<MutationReceipt> {
+        self.client.apply_leased_mutation(DeleteTask::new(row_id))
+    }
+}
+
 pub struct TaskMutationTx<'a> {
     batch: &'a mut SyncularMutationBatch,
 }
@@ -1617,10 +1787,11 @@ impl TaskMutationTx<'_> {
 
 pub mod prelude {
     pub use super::{
-        CommentMutationTx, CommentMutations, CommentPatch, DeleteComment, DeleteProject,
-        DeleteTask, InsertManyReceipt, InsertReceipt, NewComment, NewProject, NewTask,
-        ProjectMutationTx, ProjectMutations, ProjectPatch, SyncularAppMutationTx,
-        SyncularAppMutations, SyncularGeneratedMutationsExt, TaskMutationTx, TaskMutations,
+        CommentLeasedMutations, CommentMutationTx, CommentMutations, CommentPatch, DeleteComment,
+        DeleteProject, DeleteTask, InsertManyReceipt, InsertReceipt, NewComment, NewProject,
+        NewTask, ProjectLeasedMutations, ProjectMutationTx, ProjectMutations, ProjectPatch,
+        SyncularAppLeasedMutations, SyncularAppMutationTx, SyncularAppMutations,
+        SyncularGeneratedMutationsExt, TaskLeasedMutations, TaskMutationTx, TaskMutations,
         TaskPatch,
     };
 }
