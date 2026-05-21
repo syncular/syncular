@@ -2189,18 +2189,70 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       },
       localRow
     );
-    await expect(client.syncPush()).resolves.toMatchObject({
-      pushedCommits: 0,
-    });
 
-    const conflicts = await client.conflictSummaries();
-    expect(conflicts).toHaveLength(scenario.expectedInitialConflictCount);
-    await expect(
-      client.resolveConflict(conflicts[0]!.id, scenario.keepServerResolution)
-    ).resolves.toBeUndefined();
-    await expect(client.conflictSummaries()).resolves.toHaveLength(
-      scenario.expectedAfterResolveConflictCount
-    );
+    const dialect = createSyncularV2Dialect(client, {
+      appTables: syncularGeneratedAppSchema.tables.map((table) => table.name),
+      tableConfig: syncularGeneratedTableConfig,
+    });
+    const db = new Kysely<SyncularAppDb>({ dialect });
+    const liveEvents: Array<
+      SyncularV2LiveQueryEvent<{ id: string; title: string }>
+    > = [];
+
+    try {
+      await dialect.live(
+        db
+          .selectFrom('tasks')
+          .select(['id', 'title'])
+          .where('id', '=', scenario.rowId),
+        {
+          onChange(rows, event) {
+            liveEvents.push({ ...event, rows });
+          },
+        }
+      );
+      expect(liveEvents).toHaveLength(1);
+      expect(liveEvents[0]).toMatchObject({
+        initial: true,
+        rows: [{ id: scenario.rowId, title: scenario.localTitle }],
+      });
+
+      await expect(client.syncPush()).resolves.toMatchObject({
+        pushedCommits: 0,
+      });
+      expect(liveEvents).toHaveLength(1);
+      await expect(liveQueryDiagnostics(client)).resolves.toMatchObject({
+        queries: [
+          {
+            dependencyHintCount: 1,
+            rerunCount: 0,
+            emittedEventCount: 0,
+          },
+        ],
+      });
+
+      const conflicts = await client.conflictSummaries();
+      expect(conflicts).toHaveLength(scenario.expectedInitialConflictCount);
+      await expect(
+        client.resolveConflict(conflicts[0]!.id, scenario.keepServerResolution)
+      ).resolves.toBeUndefined();
+      await expect(client.conflictSummaries()).resolves.toHaveLength(
+        scenario.expectedAfterResolveConflictCount
+      );
+      expect(liveEvents).toHaveLength(1);
+      await expect(liveQueryDiagnostics(client)).resolves.toMatchObject({
+        queries: [
+          {
+            dependencyHintCount: 1,
+            rerunCount: 0,
+            emittedEventCount: 0,
+          },
+        ],
+      });
+    } finally {
+      await dialect.destroyLiveQueries();
+      await db.destroy();
+    }
   });
 
   it('dismisses version conflicts without retrying local changes', async () => {

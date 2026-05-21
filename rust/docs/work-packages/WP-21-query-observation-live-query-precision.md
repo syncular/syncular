@@ -94,6 +94,10 @@ First retained slice:
 - Extended blob metadata coverage: a hinted browser live query now stays open
   across a synced BlobRef column update and proves the remote pull emits a
   query refresh with `changedFields` containing `image`.
+- Extended conflict coverage: a hinted browser app-row live query now stays
+  open through version-conflict creation and keep-server resolution. The test
+  proves conflict metadata changes do not spuriously rerun an app-row query
+  when the app row itself does not change.
 
 Native gates:
 
@@ -168,6 +172,17 @@ bun test --cwd rust/bindings/browser \
 
 Result: passed. No benchmark was rerun for this test-only coverage slice.
 
+Conflict metadata gate:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+bun test --cwd rust/bindings/browser \
+  src/__tests__/sync-hono.wasm.test.ts -t "resolves version conflicts"
+```
+
+Result: passed. No benchmark was rerun for this test-only coverage slice.
+
 ## Next Action
 
-Extend precision coverage to conflict creation and resolution.
+Review WP-21 for any remaining precision gaps, then either close the work
+package or split follow-up work for richer field-level inference.

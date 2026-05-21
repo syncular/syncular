@@ -604,8 +604,11 @@ read-only review:
     empty result. CRDT materialization coverage now proves a hinted query reruns
     for a matching CRDT field write and carries CRDT field metadata. Blob
     metadata coverage now proves a synced BlobRef column update refreshes a
-    hinted query with `changedFields` containing `image`. Next: extend
-    precision coverage to conflict creation and resolution.
+    hinted query with `changedFields` containing `image`. Conflict coverage now
+    proves conflict metadata creation/resolution does not spuriously rerun
+    app-row live queries when the app row itself is unchanged. Next: review
+    WP-21 for remaining precision gaps and decide whether to close it or split
+    richer field-level inference into a follow-up.
 - `[ ]` [`WP-22 Undo/Redo Mutation History`](work-packages/WP-22-undo-redo-mutation-history.md)
 - `[ ]` [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md)
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
