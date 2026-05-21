@@ -11,6 +11,7 @@ import {
   Spinner,
   StreamLog,
 } from '@syncular/ui';
+import { Link } from '@tanstack/react-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   useClearEventsMutation,
@@ -610,6 +611,17 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
                             {change.redaction.reason}
                           </div>
                         </div>
+                        <Link
+                          to="/investigate/row/$table/$rowId"
+                          params={{
+                            table: change.table,
+                            rowId: change.rowId,
+                          }}
+                        >
+                          <Button variant="ghost" size="sm">
+                            Investigate row
+                          </Button>
+                        </Link>
                       </div>
                     ))
                   )}

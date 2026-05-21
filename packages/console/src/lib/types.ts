@@ -90,6 +90,12 @@ export type ConsoleCommitListItem = PaginatedItem<'getConsoleCommits'> &
 export type ConsoleCommitDetail =
   JsonSuccessResponse<'getConsoleCommitsBySeq'> & GatewayCommitFields;
 
+export type ConsoleRowHistoryResponse =
+  JsonSuccessResponse<'getConsoleRowHistoryByTableByRowId'>;
+
+export type ConsoleRowInvestigationResponse =
+  JsonSuccessResponse<'getConsoleRowInvestigationByTableByRowId'>;
+
 export type ConsoleClient = PaginatedItem<'getConsoleClients'> &
   GatewayClientFields;
 

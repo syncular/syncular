@@ -117,6 +117,42 @@ export type ConsoleRowHistoryResponse = z.infer<
   typeof ConsoleRowHistoryResponseSchema
 >;
 
+export const ConsoleRowInvestigationClientSchema = z.object({
+  clientId: z.string(),
+  actorId: z.string(),
+  cursor: z.number().int(),
+  effectiveScopeKeys: z.array(z.string()),
+  updatedAt: z.string(),
+  lastRequestAt: z.string().nullable(),
+  lastRequestType: z.enum(['sync', 'push', 'pull']).nullable(),
+  lastRequestOutcome: z.string().nullable(),
+});
+
+export type ConsoleRowInvestigationClient = z.infer<
+  typeof ConsoleRowInvestigationClientSchema
+>;
+
+export const ConsoleRowInvestigationScopeEligibilitySchema = z.object({
+  status: z.enum(['eligible', 'not_eligible', 'unknown', 'no_client']),
+  requiredScopeKeys: z.array(z.string()),
+  matchedScopeKeys: z.array(z.string()),
+  missingScopeKeys: z.array(z.string()),
+});
+
+export type ConsoleRowInvestigationScopeEligibility = z.infer<
+  typeof ConsoleRowInvestigationScopeEligibilitySchema
+>;
+
+export const ConsoleRowInvestigationFindingSchema = z.object({
+  severity: z.enum(['info', 'warning', 'error']),
+  code: z.string(),
+  message: z.string(),
+});
+
+export type ConsoleRowInvestigationFinding = z.infer<
+  typeof ConsoleRowInvestigationFindingSchema
+>;
+
 export const ConsoleDebugExportCommitSchema =
   ConsoleCommitListItemSchema.extend({
     changes: z.array(ConsoleChangeSchema),
@@ -278,6 +314,26 @@ export const ConsoleRequestEventSchema = z.object({
 });
 
 export type ConsoleRequestEvent = z.infer<typeof ConsoleRequestEventSchema>;
+
+export const ConsoleRowInvestigationResponseSchema = z.object({
+  table: z.string(),
+  rowId: z.string(),
+  partitionId: z.string(),
+  clientId: z.string().nullable(),
+  rowKnown: z.boolean(),
+  latestCommitSeq: z.number().int().nullable(),
+  latestOp: z.enum(['upsert', 'delete']).nullable(),
+  client: ConsoleRowInvestigationClientSchema.nullable(),
+  scopeEligibility: ConsoleRowInvestigationScopeEligibilitySchema,
+  history: z.array(ConsoleRowHistoryEntrySchema),
+  relevantEvents: z.array(ConsoleRequestEventSchema),
+  findings: z.array(ConsoleRowInvestigationFindingSchema),
+  nextCursor: z.number().int().nullable(),
+});
+
+export type ConsoleRowInvestigationResponse = z.infer<
+  typeof ConsoleRowInvestigationResponseSchema
+>;
 
 export const ConsoleRequestPayloadSchema = z.object({
   payloadRef: z.string(),

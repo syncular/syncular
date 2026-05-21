@@ -263,6 +263,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/console/row-investigation/{table}/{rowId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Investigate row visibility */
+        get: operations["getConsoleRowInvestigationByTableByRowId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/console/debug/export": {
         parameters: {
             query?: never;
@@ -2038,6 +2055,167 @@ export interface operations {
             };
             /** @description Not found */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleRowInvestigationByTableByRowId: {
+        parameters: {
+            query?: {
+                partitionId?: string;
+                limit?: number;
+                beforeCommitSeq?: number;
+                afterCommitSeq?: number;
+                clientId?: string;
+            };
+            header?: never;
+            path: {
+                table: string;
+                rowId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redacted row investigation with client/event hints */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        table: string;
+                        rowId: string;
+                        partitionId: string;
+                        clientId: string | null;
+                        rowKnown: boolean;
+                        latestCommitSeq: number | null;
+                        latestOp: ("upsert" | "delete") | null;
+                        client: {
+                            clientId: string;
+                            actorId: string;
+                            cursor: number;
+                            effectiveScopeKeys: string[];
+                            updatedAt: string;
+                            lastRequestAt: string | null;
+                            lastRequestType: ("sync" | "push" | "pull") | null;
+                            lastRequestOutcome: string | null;
+                        } | null;
+                        scopeEligibility: {
+                            /** @enum {string} */
+                            status: "eligible" | "not_eligible" | "unknown" | "no_client";
+                            requiredScopeKeys: string[];
+                            matchedScopeKeys: string[];
+                            missingScopeKeys: string[];
+                        };
+                        history: {
+                            commitSeq: number;
+                            actorId: string;
+                            clientId: string;
+                            clientCommitId: string;
+                            createdAt: string;
+                            changeId: number;
+                            table: string;
+                            rowId: string;
+                            /** @enum {string} */
+                            op: "upsert" | "delete";
+                            rowVersion: number | null;
+                            fields: string[];
+                            scopeFields: string[];
+                            /** @enum {string} */
+                            changeKind: "app_row" | "delete" | "blob_reference" | "encrypted_field_envelope" | "encrypted_crdt_update" | "encrypted_crdt_checkpoint";
+                            sensitiveFields: string[];
+                            redaction: {
+                                /** @constant */
+                                payload: "omitted";
+                                /** @constant */
+                                reason: "audit_redacted_by_default";
+                            };
+                            requestEventIds: number[];
+                            requestIds: string[];
+                            traceIds: string[];
+                        }[];
+                        relevantEvents: {
+                            eventId: number;
+                            partitionId: string;
+                            requestId: string;
+                            traceId: string | null;
+                            spanId: string | null;
+                            /** @enum {string} */
+                            eventType: "sync" | "push" | "pull";
+                            /** @enum {string} */
+                            syncPath: "http-combined" | "ws-push";
+                            /** @enum {string} */
+                            transportPath: "direct" | "relay";
+                            actorId: string;
+                            clientId: string;
+                            statusCode: number;
+                            outcome: string;
+                            responseStatus: string;
+                            errorCode: string | null;
+                            durationMs: number;
+                            commitSeq: number | null;
+                            operationCount: number | null;
+                            rowCount: number | null;
+                            subscriptionCount: number | null;
+                            scopesSummary: {
+                                [key: string]: string | string[];
+                            } | null;
+                            tables: string[];
+                            errorMessage: string | null;
+                            payloadRef: string | null;
+                            createdAt: string;
+                        }[];
+                        findings: {
+                            /** @enum {string} */
+                            severity: "info" | "warning" | "error";
+                            code: string;
+                            message: string;
+                        }[];
+                        nextCursor: number | null;
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
                 headers: {
                     [name: string]: unknown;
                 };

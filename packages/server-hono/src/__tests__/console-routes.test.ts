@@ -410,6 +410,26 @@ describe('console timeline route filters', () => {
     );
   }
 
+  async function requestRowInvestigation(
+    table: string,
+    rowId: string,
+    query: Record<string, string | number | undefined> = {}
+  ): Promise<Response> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+    const queryString = params.toString();
+
+    return app.request(
+      `http://localhost/console/row-investigation/${table}/${rowId}${queryString ? `?${queryString}` : ''}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+  }
+
   async function requestDebugExport(
     query: Record<string, string | number | undefined> = {}
   ): Promise<Response> {
@@ -1111,6 +1131,133 @@ describe('console timeline route filters', () => {
       partitionId: 'tenant-b',
     });
     expect(wrongPartition.status).toBe(404);
+  });
+
+  it('returns redacted row investigation hints for client visibility', async () => {
+    const commitRow = await db
+      .selectFrom('sync_commits')
+      .select(['commit_seq'])
+      .where('partition_id', '=', 'default')
+      .where('client_commit_id', '=', 'commit-a')
+      .executeTakeFirst();
+    const commitSeq = Number(commitRow?.commit_seq);
+    expect(Number.isFinite(commitSeq)).toBe(true);
+
+    await db
+      .insertInto('sync_changes')
+      .values({
+        partition_id: 'default',
+        commit_seq: commitSeq,
+        table: 'tasks',
+        row_id: 'row-investigate',
+        op: 'upsert',
+        row_json: JSON.stringify({
+          id: 'row-investigate',
+          title: 'Investigation Secret',
+          org_id: 'org-visible',
+        }),
+        row_version: 3,
+        scopes: JSON.stringify({ org_id: 'org-visible' }),
+      })
+      .execute();
+
+    await db
+      .insertInto('sync_client_cursors')
+      .values({
+        partition_id: 'default',
+        client_id: 'client-investigate',
+        actor_id: 'actor-investigate',
+        cursor: commitSeq - 1,
+        effective_scopes: JSON.stringify({ org_id: 'org-other' }),
+        updated_at: atIso(57),
+      })
+      .execute();
+
+    await db
+      .insertInto('sync_request_events')
+      .values({
+        partition_id: 'default',
+        request_id: 'req-investigate',
+        trace_id: 'trace-investigate',
+        span_id: null,
+        event_type: 'pull',
+        sync_path: 'http-combined',
+        actor_id: 'actor-investigate',
+        client_id: 'client-investigate',
+        transport_path: 'direct',
+        status_code: 200,
+        outcome: 'applied',
+        response_status: 'success',
+        error_code: null,
+        duration_ms: 11,
+        commit_seq: null,
+        operation_count: null,
+        row_count: 0,
+        subscription_count: 1,
+        scopes_summary: JSON.stringify({ org_id: 'org-other' }),
+        tables: ['tasks'],
+        error_message: null,
+        payload_ref: null,
+        created_at: atIso(58),
+      })
+      .execute();
+
+    const response = await requestRowInvestigation('tasks', 'row-investigate', {
+      partitionId: 'default',
+      clientId: 'client-investigate',
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      rowKnown: boolean;
+      latestCommitSeq: number | null;
+      client: { cursor: number; effectiveScopeKeys: string[] } | null;
+      scopeEligibility: {
+        status: string;
+        requiredScopeKeys: string[];
+        missingScopeKeys: string[];
+      };
+      findings: Array<{ code: string }>;
+      history: Array<{ fields: string[]; rowJson?: unknown }>;
+      relevantEvents: Array<{ requestId: string }>;
+    };
+
+    expect(payload.rowKnown).toBe(true);
+    expect(payload.latestCommitSeq).toBe(commitSeq);
+    expect(payload.client).toMatchObject({
+      cursor: commitSeq - 1,
+      effectiveScopeKeys: ['org_id'],
+    });
+    expect(payload.scopeEligibility).toMatchObject({
+      status: 'not_eligible',
+      requiredScopeKeys: ['org_id'],
+      missingScopeKeys: ['org_id'],
+    });
+    expect(payload.findings.map((finding) => finding.code)).toEqual(
+      expect.arrayContaining(['client.cursor_behind', 'scope.not_eligible'])
+    );
+    expect(payload.history[0]?.fields).toEqual(['id', 'org_id', 'title']);
+    expect(payload.history[0]).not.toHaveProperty('rowJson');
+    expect(payload.relevantEvents[0]?.requestId).toBe('req-investigate');
+    expect(JSON.stringify(payload)).not.toContain('Investigation Secret');
+    expect(JSON.stringify(payload)).not.toContain('org-visible');
+
+    const missingResponse = await requestRowInvestigation(
+      'tasks',
+      'missing-row',
+      {
+        partitionId: 'default',
+        clientId: 'client-investigate',
+      }
+    );
+    expect(missingResponse.status).toBe(200);
+    const missingPayload = (await missingResponse.json()) as {
+      rowKnown: boolean;
+      findings: Array<{ code: string }>;
+    };
+    expect(missingPayload.rowKnown).toBe(false);
+    expect(missingPayload.findings.map((finding) => finding.code)).toContain(
+      'row.not_found'
+    );
   });
 
   it('classifies blob refs and encrypted CRDT evidence in row history', async () => {

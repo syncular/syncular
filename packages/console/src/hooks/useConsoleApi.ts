@@ -18,6 +18,7 @@ import type {
   ConsoleOperationType,
   ConsoleRequestEvent,
   ConsoleRequestPayload,
+  ConsoleRowInvestigationResponse,
   ConsoleTimelineItem,
   LatencyStatsResponse,
   PaginatedResponse,
@@ -66,6 +67,14 @@ type TimelineParams = ListParams & {
 };
 type EntityLookupOptions = {
   enabled?: boolean;
+  partitionId?: string;
+  instanceId?: string;
+};
+type RowInvestigationParams = {
+  table?: string;
+  rowId?: string;
+  clientId?: string;
+  limit?: number;
   partitionId?: string;
   instanceId?: string;
 };
@@ -120,6 +129,8 @@ const queryKeys = {
     partitionId?: string,
     instanceId?: string
   ) => ['console', 'event-payload', id, partitionId, instanceId] as const,
+  rowInvestigation: (params?: RowInvestigationParams) =>
+    ['console', 'row-investigation', params] as const,
   handlers: (instanceId?: string) =>
     ['console', 'handlers', instanceId] as const,
   prunePreview: (instanceId?: string) =>
@@ -520,6 +531,32 @@ export function useRequestEventPayload(
     },
     errorMessage: 'Failed to fetch event payload',
     enabled: options.enabled,
+  });
+}
+
+export function useRowInvestigation(
+  params: RowInvestigationParams = {},
+  options: RefetchableQueryOptions = {}
+) {
+  const instanceId = useEffectiveInstanceId(params.instanceId);
+  const enabled =
+    (options.enabled ?? true) && Boolean(params.table) && Boolean(params.rowId);
+
+  return useConsoleJsonQuery<ConsoleRowInvestigationResponse>({
+    queryKey: queryKeys.rowInvestigation({ ...params, instanceId }),
+    path:
+      params.table && params.rowId
+        ? `/console/row-investigation/${encodeURIComponent(params.table)}/${encodeURIComponent(params.rowId)}`
+        : '/console/row-investigation',
+    query: {
+      partitionId: params.partitionId,
+      clientId: params.clientId,
+      limit: params.limit,
+      instanceId,
+    },
+    errorMessage: 'Failed to investigate row',
+    enabled,
+    refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
   });
 }
 
