@@ -50,12 +50,14 @@ authorization.
 
 ## Next Action
 
-Next narrow slice is Rust client token replay plus full per-operation lease
-scope/revocation validation. The TS server can reject expired signed tokens
-now, but the Rust runtime still needs to attach the stored lease token from
-`sync_auth_leases`, and the server validator still needs to check the signed
-lease scopes against each operation instead of only validating token
-issuer/audience/schema/actor/expiry before current handler auth.
+Next narrow slice is generated/local mutation lease policy plus full
+per-operation lease scope/revocation validation. The Rust stores can now attach
+the stored token once an outbox commit is marked with lease provenance, but
+generated mutation APIs still need a strict leased-offline mode that selects an
+active covering lease automatically. The server validator still needs to check
+the signed lease scopes against each operation and revocation state instead of
+only validating token issuer/audience/schema/actor/expiry before current
+handler auth.
 
 ## Progress
 
@@ -125,6 +127,16 @@ issuer/audience/schema/actor/expiry before current handler auth.
   auth and handler authorization.
 - Added Hono coverage proving an expired signed lease rejects the pushed commit
   with `sync.auth_lease_expired` and leaves the app row unapplied.
+- Added `leaseToken` to Rust `AuthLeaseProvenance` and runtime
+  `sync_outbox_commits` storage so Rust/native/browser replay can carry the
+  signed lease token on HTTP and websocket pushes.
+- Updated native Diesel, browser Rust-owned SQLite, browser memory store, and
+  the demo rusqlite fixture to persist/read outbox lease tokens. When
+  `set_outbox_auth_lease` receives provenance without a token, supported stores
+  fill it from the stored `sync_auth_leases` record.
+- Added Rust storage/protocol coverage proving outbox summaries and pending
+  push rows include the filled token and auth lease replay JSON includes
+  `leaseToken`.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol -p
   syncular-testkit` passed with `15` protocol tests and `36` testkit smoke
   tests.
@@ -150,6 +162,14 @@ issuer/audience/schema/actor/expiry before current handler auth.
   passed with `5` tests after the replay token validation slice.
 - Gate: `bun test packages/server/src/push-operation-codes.test.ts` passed
   after adding the generic push commit validator hook.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
+  passed after adding `leaseToken` to Rust wire provenance.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
+  store_backends` passed with `36` tests after Rust token persistence.
+- Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
+  protocol_contract` passed with `42` tests after Rust token replay.
+- Gate: `bun run build:wasm:dev` passed in `rust/bindings/browser` after
+  browser Rust-owned SQLite token persistence.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test
   store_backends` passed with `36` tests after the local lease storage slice.
 - Gate: `bun run rust:conformance:fast` passed after the protocol/testkit

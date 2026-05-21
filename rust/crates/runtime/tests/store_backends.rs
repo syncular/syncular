@@ -727,6 +727,7 @@ fn diesel_store_persists_auth_leases_and_outbox_provenance() -> Result<()> {
             lease_expires_at_ms: lease.expires_at_ms,
             lease_status_at_enqueue: "active".to_string(),
             lease_scope_summary_json: Some(r#"{"tasks":["user_id"]}"#.to_string()),
+            lease_token: None,
         }),
     )?;
 
@@ -739,6 +740,7 @@ fn diesel_store_persists_auth_leases_and_outbox_provenance() -> Result<()> {
         .expect("outbox summary should include auth lease provenance");
     assert_eq!(provenance.lease_id, "lease-active");
     assert_eq!(provenance.lease_status_at_enqueue, "active");
+    assert_eq!(provenance.lease_token.as_deref(), Some("test-token"));
 
     let pending = store.transaction(|tx| tx.pending_outbox(1))?;
     assert_eq!(
@@ -747,6 +749,13 @@ fn diesel_store_persists_auth_leases_and_outbox_provenance() -> Result<()> {
             .as_ref()
             .map(|lease| lease.lease_id.as_str()),
         Some("lease-active")
+    );
+    assert_eq!(
+        pending[0]
+            .auth_lease
+            .as_ref()
+            .and_then(|lease| lease.lease_token.as_deref()),
+        Some("test-token")
     );
 
     let _ = std::fs::remove_file(path);

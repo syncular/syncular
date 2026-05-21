@@ -423,10 +423,13 @@ read-only review:
     has a generic post-idempotency commit validator hook and Hono auth-lease
     validation rejects leased commits with missing/expired/invalid signed tokens
     before applying operations while still preserving normal commit audit
-    metadata. Remaining WP-11 gap: Rust must attach the stored lease token from
-    `sync_auth_leases`, and server replay must check signed lease scopes and
-    revocation per operation instead of only validating token
-    issuer/audience/schema/actor/expiry before current handler auth.
+    metadata. Rust/native/browser replay now persists and sends the signed
+    `leaseToken` from `sync_auth_leases` when an outbox commit is marked with
+    lease provenance. Remaining WP-11 gap: server replay must check signed
+    lease scopes and revocation per operation instead of only validating token
+    issuer/audience/schema/actor/expiry before current handler auth, and
+    generated/local mutation APIs need a strict leased-offline mode that
+    selects an active covering lease automatically.
 - `[!]` [`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
   - First-slice client/server correlation remains complete. Testkit now exposes
     native diagnostic/error-code assertions and uses them in auth-expired plus

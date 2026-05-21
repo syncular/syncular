@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS sync_outbox_commits (
   lease_id TEXT NULL,
   lease_expires_at_ms BIGINT NULL,
   lease_status_at_enqueue TEXT NULL,
-  lease_scope_summary_json TEXT NULL
+  lease_scope_summary_json TEXT NULL,
+  lease_token TEXT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_sync_outbox_commits_due

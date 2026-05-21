@@ -895,6 +895,15 @@ impl AsyncWebStore for WebMemoryStore {
                     "outbox commit {client_commit_id} does not exist"
                 )));
             };
+            let mut provenance = provenance;
+            if let Some(lease) = provenance.as_mut() {
+                if lease.lease_token.is_none() {
+                    lease.lease_token = self
+                        .auth_leases
+                        .get(&lease.lease_id)
+                        .map(|record| record.token.clone());
+                }
+            }
             commit.auth_lease = provenance;
             Ok(())
         })

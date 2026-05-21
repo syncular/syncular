@@ -234,9 +234,9 @@ impl SyncStateStore for RusqliteStore {
     fn outbox_summaries(&mut self) -> Result<Vec<OutboxSummary>> {
         let mut statement = self.conn.prepare(
             r#"
-            select client_commit_id, status, schema_version,
-                   lease_id, lease_expires_at_ms, lease_status_at_enqueue,
-                   lease_scope_summary_json
+           select client_commit_id, status, schema_version,
+                  lease_id, lease_expires_at_ms, lease_status_at_enqueue,
+                   lease_scope_summary_json, lease_token
             from sync_outbox_commits
             order by created_at asc
             "#,
@@ -533,7 +533,7 @@ impl SyncStoreTx for RusqliteTx<'_> {
             select id, client_commit_id, status, operations_json, last_response_json,
                    error, created_at, updated_at, attempt_count, acked_commit_seq, schema_version,
                    next_attempt_at, lease_id, lease_expires_at_ms, lease_status_at_enqueue,
-                   lease_scope_summary_json
+                   lease_scope_summary_json, lease_token
             from sync_outbox_commits
             where status = 'pending' and attempt_count < ?1 and next_attempt_at <= ?2
             order by created_at asc
@@ -1033,6 +1033,7 @@ fn outbox_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxCommit> {
             row.get(13)?,
             row.get(14)?,
             row.get(15)?,
+            row.get(16)?,
         ),
     })
 }
@@ -1112,6 +1113,7 @@ fn outbox_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxSu
             row.get(4)?,
             row.get(5)?,
             row.get(6)?,
+            row.get(7)?,
         ),
     })
 }
@@ -1121,12 +1123,14 @@ fn auth_lease_provenance_from_columns(
     lease_expires_at_ms: Option<i64>,
     lease_status_at_enqueue: Option<String>,
     lease_scope_summary_json: Option<String>,
+    lease_token: Option<String>,
 ) -> Option<AuthLeaseProvenance> {
     Some(AuthLeaseProvenance {
         lease_id: lease_id?,
         lease_expires_at_ms: lease_expires_at_ms?,
         lease_status_at_enqueue: lease_status_at_enqueue?,
         lease_scope_summary_json,
+        lease_token,
     })
 }
 

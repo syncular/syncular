@@ -172,6 +172,7 @@ diesel::table! {
         lease_expires_at_ms -> Nullable<BigInt>,
         lease_status_at_enqueue -> Nullable<Text>,
         lease_scope_summary_json -> Nullable<Text>,
+        lease_token -> Nullable<Text>,
     }
 }
 

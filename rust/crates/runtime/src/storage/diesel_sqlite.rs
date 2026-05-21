@@ -69,6 +69,7 @@ struct OutboxCommitRow {
     lease_expires_at_ms: Option<i64>,
     lease_status_at_enqueue: Option<String>,
     lease_scope_summary_json: Option<String>,
+    lease_token: Option<String>,
 }
 
 #[derive(Debug, Clone, QueryableByName)]
@@ -149,6 +150,7 @@ impl From<OutboxCommitRow> for OutboxCommit {
                 row.lease_expires_at_ms,
                 row.lease_status_at_enqueue,
                 row.lease_scope_summary_json,
+                row.lease_token,
             ),
         }
     }
@@ -159,12 +161,14 @@ fn auth_lease_provenance_from_columns(
     lease_expires_at_ms: Option<i64>,
     lease_status_at_enqueue: Option<String>,
     lease_scope_summary_json: Option<String>,
+    lease_token: Option<String>,
 ) -> Option<AuthLeaseProvenance> {
     Some(AuthLeaseProvenance {
         lease_id: lease_id?,
         lease_expires_at_ms: lease_expires_at_ms?,
         lease_status_at_enqueue: lease_status_at_enqueue?,
         lease_scope_summary_json,
+        lease_token,
     })
 }
 
@@ -230,6 +234,7 @@ struct NewOutboxCommit {
     lease_expires_at_ms: Option<i64>,
     lease_status_at_enqueue: Option<String>,
     lease_scope_summary_json: Option<String>,
+    lease_token: Option<String>,
 }
 
 #[derive(Debug, Clone, Queryable, Selectable, Insertable, AsChangeset)]
@@ -402,6 +407,8 @@ struct OutboxSummaryRow {
     lease_status_at_enqueue: Option<String>,
     #[diesel(sql_type = Nullable<Text>)]
     lease_scope_summary_json: Option<String>,
+    #[diesel(sql_type = Nullable<Text>)]
+    lease_token: Option<String>,
 }
 
 impl From<OutboxSummaryRow> for OutboxSummary {
@@ -415,6 +422,7 @@ impl From<OutboxSummaryRow> for OutboxSummary {
                 row.lease_expires_at_ms,
                 row.lease_status_at_enqueue,
                 row.lease_scope_summary_json,
+                row.lease_token,
             ),
         }
     }
@@ -860,6 +868,12 @@ impl DieselSqliteStore {
             "sync_outbox_commits",
             "lease_scope_summary_json",
             "alter table sync_outbox_commits add column lease_scope_summary_json text null",
+        )?;
+        add_column_if_missing(
+            &mut self.conn,
+            "sync_outbox_commits",
+            "lease_token",
+            "alter table sync_outbox_commits add column lease_token text null",
         )
     }
 
@@ -1764,7 +1778,7 @@ impl SyncStateStore for DieselSqliteStore {
             r#"
             select client_commit_id, status, schema_version,
                    lease_id, lease_expires_at_ms, lease_status_at_enqueue,
-                   lease_scope_summary_json
+                   lease_scope_summary_json, lease_token
             from sync_outbox_commits
             order by created_at asc
             "#,
@@ -1931,6 +1945,7 @@ impl<'a> DieselSqliteTx<'a> {
             lease_expires_at_ms: None,
             lease_status_at_enqueue: None,
             lease_scope_summary_json: None,
+            lease_token: None,
         };
 
         diesel::insert_into(o::sync_outbox_commits)
@@ -3941,6 +3956,15 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
     ) -> Result<()> {
         use schema::sync_outbox_commits::dsl as o;
 
+        let lease_token_value = match provenance {
+            Some(lease) => lease.lease_token.clone().or_else(|| {
+                self.auth_lease(&lease.lease_id)
+                    .ok()
+                    .flatten()
+                    .map(|record| record.token)
+            }),
+            None => None,
+        };
         let affected = diesel::update(
             o::sync_outbox_commits.filter(o::client_commit_id.eq(client_commit_id_value)),
         )
@@ -3951,6 +3975,7 @@ impl SyncStoreTx for DieselSqliteTx<'_> {
                 .eq(provenance.map(|lease| lease.lease_status_at_enqueue.clone())),
             o::lease_scope_summary_json
                 .eq(provenance.and_then(|lease| lease.lease_scope_summary_json.clone())),
+            o::lease_token.eq(lease_token_value),
         ))
         .execute(self.conn)?;
         if affected == 0 {
