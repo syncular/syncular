@@ -1070,9 +1070,11 @@ Retained generated runtime local-base schema slice:
 
 - The generated runtime/native app schema JSON now carries the same
   `localBaseSchema.tableSetupSql` contract as `syncular.schema.json`.
-- Rust `AppSchema` parses and exposes the local-base schema, generated Rust
-  migration modules export `LOCAL_BASE_TABLE_SETUP_SQL`, and the example/native
-  app schemas wire it into `AppSchema`.
+- Generated Rust migration modules export `LOCAL_BASE_TABLE_SETUP_SQL`. The
+  runtime app-schema JSON carries the local-base contract for host tooling, but
+  the hot Rust `AppSchema` value intentionally does not store it after the
+  external guard showed a large WASM apply regression from growing that copied
+  runtime struct.
 - Generated browser setup now executes
   `syncularGeneratedAppSchema.localBaseSchema.tableSetupSql` directly instead
   of generating a separate Kysely table-builder path. This keeps app table
@@ -1086,9 +1088,12 @@ Retained generated runtime local-base schema slice:
 - External app-style guards after this slice are recorded in
   `BENCHMARK_LOG.md`. They are not accepted as a new performance baseline:
   generated local-base DDL and the previous hardcoded DDL were similarly slow in
-  the same session, so the schema contract is not the observed cause. Keep the
-  retained WP-12 baseline at external Rust 500k bootstrap `1062.50ms` until a
-  stable release guard proves otherwise.
+  the same session, so the schema contract is not the observed cause. Removing
+  the local-base field from the hot runtime `AppSchema` recovered the release
+  guard to 500k bootstrap `1143.42ms`, local apply `219ms`, peak memory
+  `643.39MB`, and `snapshotChunkCount=0`. Keep the retained WP-12 baseline at
+  external Rust 500k bootstrap `1062.50ms` until a stable release guard proves
+  otherwise.
 - Correctness gates passed:
   `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`,
   `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`,
