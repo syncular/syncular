@@ -1083,6 +1083,12 @@ Retained generated runtime local-base schema slice:
 - While running the browser package gate, a stale worker realtime test was
   updated to expect the current worker protocol version instead of hard-coded
   `1`.
+- External app-style guards after this slice are recorded in
+  `BENCHMARK_LOG.md`. They are not accepted as a new performance baseline:
+  generated local-base DDL and the previous hardcoded DDL were similarly slow in
+  the same session, so the schema contract is not the observed cause. Keep the
+  retained WP-12 baseline at external Rust 500k bootstrap `1062.50ms` until a
+  stable release guard proves otherwise.
 - Correctness gates passed:
   `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`,
   `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`,
@@ -1133,6 +1139,11 @@ external memory improvement.
   app-style Rust client distribution and confirm the benchmark adapter consumes
   generated local-base and local-derived schema metadata rather than
   benchmark-specific DDL.
+- Re-establish a stable external release baseline before retaining more
+  performance changes. The post-contract external runs were dominated by
+  snapshot fetch and derived-schema timing and should be treated as an
+  environment/harness investigation input, not as an accepted regression caused
+  by local-base schema generation.
 - The remaining derived-schema bottleneck is still app-declared index creation,
   but the obvious redundant-prefix case is handled. Avoid additional
   index-order/read-model rebuild changes unless the external app-style gate
