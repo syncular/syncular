@@ -26,6 +26,8 @@ delivery.
 - [`reference/BINARY_SNAPSHOT_CHUNK_FORMAT.md`](reference/BINARY_SNAPSHOT_CHUNK_FORMAT.md)
 - [`reference/GENERATED_CLIENT_API.md`](reference/GENERATED_CLIENT_API.md)
 - [`reference/FEATURE_VARIANTS_DECISION.md`](reference/FEATURE_VARIANTS_DECISION.md)
+- [`reference/RUNTIME_LIMITS.md`](reference/RUNTIME_LIMITS.md)
+- [`reference/SECURITY_PRIVACY_THREAT_MODEL.md`](reference/SECURITY_PRIVACY_THREAT_MODEL.md)
 - [`reference/NATIVE_PACKAGING.md`](reference/NATIVE_PACKAGING.md)
 - [`reference/LOCAL_PROJECT_INTEGRATION.md`](reference/LOCAL_PROJECT_INTEGRATION.md)
 - [`reference/SERVER_EDGE_INVESTIGATION.md`](reference/SERVER_EDGE_INVESTIGATION.md)

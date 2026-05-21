@@ -59,7 +59,17 @@ The product contract already treats scoped access, verification, E2EE, blobs,
 CRDTs, and auditability as core. This WP consolidates those rules into an
 explicit security/privacy review and test plan.
 
+The first threat model draft is now recorded in
+[`SECURITY_PRIVACY_THREAT_MODEL.md`](../reference/SECURITY_PRIVACY_THREAT_MODEL.md).
+
 ## Next Action
 
-Draft the threat model and add one cross-surface auth-boundary test that covers
-pull, realtime, and artifact access for the same unauthorized scope.
+Add one cross-surface auth-boundary test that covers pull, realtime, and
+artifact access for the same unauthorized scope, then use it as the template
+for blob/CRDT/console privacy tests.
+
+## Progress
+
+- Drafted the initial Rust-first security/privacy threat model with protected
+  assets, trust boundaries, core invariants, surface-specific threats/controls,
+  non-goals, and the required cross-surface test shape.
