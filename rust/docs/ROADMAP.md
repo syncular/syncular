@@ -350,20 +350,12 @@ read-only review:
 
 ## Next
 
-- Continue [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md).
-  The interface-impact catch-up pass is recorded in WP-11, WP-17, WP-21,
-  WP-22, WP-23, and WP-24. The first bridge parity slice added direct
-  TypeScript host access to leased mutations, auth leases, and
-  resume-from-background across browser bridge, Tauri, React Native, Expo, and
-  testkit. React now also exposes leased mutation hooks over the same generated
-  mutation shape, and `useSyncQuery(...)` uses query-observer-backed live
-  queries when the client/query supports them. Bridge live-query registration
-  is deferred until there is a canonical native observed-query stream; current
-  bridges should preserve row/field metadata and let apps own refresh policy.
-  Command history remains generated-client owned, not a generic bridge-level
-  JavaScript undo stack. Next, continue WP-26 with docs/package polish for the
-  current TypeScript host-binding APIs and explicit bridge capability
-  constraints.
+- Resume [`WP-23 Time Travel And Audit Inspection`](work-packages/WP-23-time-travel-audit-inspection.md).
+  WP-26 is accepted for the current Rust-first TypeScript host-binding
+  foundation. The next feature work should return to the oldest in-progress
+  package: add the redacted debug export route and decide which audit/debug
+  scenarios belong in shared testkit/conformance versus server-specific route
+  tests.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when WP-26 finds concrete generated-client naming, discoverability,
   conflict, blob, or subscription ergonomics gaps.
@@ -773,6 +765,12 @@ read-only review:
     use the redacted change summary shape.
 - `[ ]` [`WP-24 Blob Hardening And Production Polish`](work-packages/WP-24-blob-hardening-production-polish.md)
 - `[ ]` [`WP-25 File Asset Sync`](work-packages/WP-25-file-asset-sync.md)
+- `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
+  - Accepted for the current Rust-first foundation. Feature WPs now carry
+    explicit TypeScript/platform `Interface Impact` sections. Browser, React,
+    Tauri, React Native, Expo, and testkit host surfaces expose leased
+    mutations, auth leases, lifecycle resume, row/field event metadata, and
+    docs/package guidance without reviving a JavaScript sync client.
 
 ## Blocked / External
 

@@ -2,11 +2,11 @@
 
 Rust-owned SQLite browser client for Syncular v2.
 
-This package is intentionally separate from the v1 dialect packages. The
-browser runtime is a dedicated Worker that owns the Rust WASM module and SQLite
-handle. JavaScript keeps Kysely as the type-safe query builder; generated app
-code supplies the DB type, schema installer, mutation helpers, subscriptions,
-and runtime assertions.
+This package is the TypeScript host binding over the Rust client. The browser
+runtime is a dedicated Worker that owns the Rust WASM module and SQLite handle.
+TypeScript keeps Kysely as the type-safe query builder; generated app code
+supplies the DB type, schema installer, mutation helpers, subscriptions, and
+runtime assertions.
 
 ## Generated App Entry
 
@@ -59,6 +59,22 @@ await syncular.mutations.tasks.insert({
   completed: 0,
   user_id: 'user-1',
   project_id: 'project-1',
+});
+
+await syncular.client.issueAuthLease({
+  schemaVersion: 1,
+  scopes: [
+    {
+      subscriptionId: 'tasks:user-1',
+      table: 'tasks',
+      values: { user_id: 'user-1' },
+      operations: ['upsert'],
+    },
+  ],
+});
+
+await syncular.leasedMutations.tasks.update('task-1', {
+  title: 'Queued while offline',
 });
 
 // Local mutations sync automatically by default. To opt out, pass:
@@ -155,6 +171,7 @@ const unsubscribe = syncular.on('rowsChanged', (event) => {
 const status = syncular.getStatus();
 if (status.hasPendingMutations) showSavingIndicator();
 
+await syncular.resumeFromBackground();
 await syncular.destroy();
 ```
 
@@ -177,6 +194,7 @@ const {
   SyncProvider,
   useSyncQuery,
   useMutations,
+  useLeasedMutations,
   useMutation,
   useOutboxStats,
   usePresenceWithJoin,
@@ -212,10 +230,9 @@ function TaskList() {
     ({ selectFrom }) =>
       selectFrom('tasks')
         .select(['id', 'title'])
-        .where('user_id', '=', 'user-1')
-        .execute(),
+        .where('user_id', '=', 'user-1'),
     {
-      watchTables: ['tasks'],
+      tables: ['tasks'],
       deps: ['user-1'],
     }
   );
@@ -225,6 +242,7 @@ function TaskList() {
   });
 
   const m = useMutations();
+  const leased = useLeasedMutations();
   const createTask = (title: string) =>
     m.tasks.insert({
       title,
@@ -236,6 +254,9 @@ function TaskList() {
   const markDone = (id: string) =>
     completeTask.mutate.update(id, { completed: 1 });
 
+  const renameOffline = (id: string, title: string) =>
+    leased.tasks.update(id, { title });
+
   const connection = useSyncConnection();
   const outbox = useOutboxStats();
 }
@@ -243,11 +264,13 @@ function TaskList() {
 
 The React entrypoint is intentionally ergonomic and Rust-backed: reads use typed
 Kysely selectors through `useSyncQuery`, writes use generated mutations through
-`useMutations` or table-scoped `useMutation`, and presence stays scoped to
-server scope keys. `SyncProvider` does not recreate an owned client just because
-an inline `options` object changed identity; pass `optionsKey` when the app
-intentionally needs to tear down and reopen the Rust client for a new identity
-or database.
+`useMutations` / `useLeasedMutations` or table-scoped
+`useMutation` / `useLeasedMutation`, and presence stays scoped to server scope
+keys. When the query is a Kysely builder, `useSyncQuery` uses the runtime
+live-query observer; promise-only queries fall back to conservative row-change
+refresh. `SyncProvider` does not recreate an owned client just because an inline
+`options` object changed identity; pass `optionsKey` when the app intentionally
+needs to tear down and reopen the Rust client for a new identity or database.
 
 Generated apps also get typed row-delta helpers for realtime/UI routing. The
 runtime event stays generic, while app code can branch on real table columns:
@@ -360,6 +383,59 @@ is used for sync identity and generated default scopes; it is not sent as an
 implicit auth credential.
 If Rust reports HTTP 401/403 during sync, `authLifecycle` can refresh
 credentials and the Worker retries that sync operation once with fresh headers.
+
+Offline auth leases are explicit. They capture bounded local intent and audit
+provenance, but the server still rechecks current authorization when queued
+commits replay:
+
+```ts
+await syncular.client.issueAuthLease({
+  schemaVersion: 1,
+  scopes: [
+    {
+      subscriptionId: 'tasks:user-1',
+      table: 'tasks',
+      values: { user_id: 'user-1' },
+      operations: ['upsert', 'delete'],
+    },
+  ],
+});
+
+const active = await syncular.client.activeAuthLeases('user-1');
+await syncular.leasedMutations.tasks.update('task-1', {
+  title: 'Offline edit',
+});
+```
+
+Use normal `syncular.mutations` unless the app intentionally needs lease-backed
+offline writes.
+
+## Platform Bridges
+
+`@syncular/client-tauri`, `@syncular/client-react-native`, and
+`@syncular/client-expo` expose TypeScript host bindings over a native Rust
+runtime. They are bridge adapters, not separate JavaScript sync clients:
+
+```ts
+import { createSyncularTauriClient } from '@syncular/client-tauri';
+
+const client = await createSyncularTauriClient<AppDb>({
+  invoke,
+  listen,
+});
+
+const rows = await client.db.selectFrom('tasks').selectAll().execute();
+await client.leasedMutations.tasks.update('task-1', { title: 'Offline edit' });
+await client.resumeFromBackground();
+```
+
+Bridge packages preserve row/field metadata on `rowsChanged` events and expose
+the same leased mutation, auth lease, lifecycle, presence, conflict, and blob
+client shape where the native module provides those commands. They do not
+pretend to support live-query registration by rerunning table-level events; app
+bridges can either use row/field metadata directly or wait for a native
+observed-query stream. Command history remains generated-client owned, not a
+generic bridge-level JavaScript undo stack.
 
 ## Diagnostics
 
