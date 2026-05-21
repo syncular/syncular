@@ -1,8 +1,8 @@
+import { describe, expect, it } from 'bun:test';
 import {
   SYNC_PACK_ENCODING_BINARY_V1,
   SyncCombinedRequestSchema,
 } from '@syncular/core';
-import { describe, expect, it } from 'bun:test';
 import { createSyncCombinedRequest } from './sync-builders';
 
 describe('sync builders', () => {

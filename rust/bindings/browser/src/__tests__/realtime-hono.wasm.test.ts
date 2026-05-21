@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'bun:test';
 import { createDatabase } from '@syncular/core';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
-import { sql, type Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { createBunSqliteDialect } from '../../../../../packages/dialect-bun-sqlite/src';
 import {
   createServerHandler,

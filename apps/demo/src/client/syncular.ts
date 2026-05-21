@@ -1,15 +1,21 @@
 import { getSyncularV2RuntimeArtifact } from '@syncular/client';
 import {
   createSyncularAppDatabase,
-  taskSubscription,
   type SyncularAppDatabase,
   type TaskRow,
+  taskSubscription,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 
 export type DemoClientName = 'left' | 'right';
 export type DemoTask = Pick<
   TaskRow,
-  'id' | 'title' | 'completed' | 'user_id' | 'project_id' | 'image' | 'server_version'
+  | 'id'
+  | 'title'
+  | 'completed'
+  | 'user_id'
+  | 'project_id'
+  | 'image'
+  | 'server_version'
 >;
 
 export interface DemoClientHandle {

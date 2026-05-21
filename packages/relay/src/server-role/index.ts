@@ -6,8 +6,8 @@
 
 import type { SyncPullRequest, SyncPushRequest } from '@syncular/core';
 import {
-  createSyncularErrorResponse,
   createSyncTimer,
+  createSyncularErrorResponse,
   isRecord,
   logSyncEvent,
   ScopeValuesSchema,
@@ -188,10 +188,7 @@ export function createRelayRoutes<DB extends RelayDatabase = RelayDatabase>(
         rawBootstrapState !== null &&
         bootstrapState === null
       ) {
-        return invalidRelayRequest(
-          c,
-          'Invalid subscription bootstrapState'
-        );
+        return invalidRelayRequest(c, 'Invalid subscription bootstrapState');
       }
 
       subscriptions.push({

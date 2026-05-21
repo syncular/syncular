@@ -157,11 +157,7 @@ function utf8ByteLength(value: string): number {
   return snapshotRowFrameEncoder.encode(value).length;
 }
 
-function appendStringField(
-  parts: string[],
-  name: string,
-  value: string
-): void {
+function appendStringField(parts: string[], name: string, value: string): void {
   parts.push(`${name}:s:${utf8ByteLength(value)}:${value}`);
 }
 
@@ -192,11 +188,11 @@ export function snapshotScopeDigestFromCacheKey(scopeKey: string): string {
   const marker = ':scope:';
   const markerIndex = scopeKey.lastIndexOf(marker);
   if (markerIndex < 0) {
-    throw new Error(`Snapshot scope cache key is missing scope digest`);
+    throw new Error('Snapshot scope cache key is missing scope digest');
   }
   const digest = scopeKey.slice(markerIndex + marker.length);
   if (!/^[a-f0-9]{64}$/.test(digest)) {
-    throw new Error(`Snapshot scope cache key has invalid scope digest`);
+    throw new Error('Snapshot scope cache key has invalid scope digest');
   }
   return digest;
 }

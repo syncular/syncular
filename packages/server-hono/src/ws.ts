@@ -457,7 +457,11 @@ export class WebSocketConnectionManager {
 
   updateConnectionSubscriptionRoots(
     ownerKey: string,
-    updates: Array<{ subscriptionId: string; cursor: number; verifiedRoot: string }>
+    updates: Array<{
+      subscriptionId: string;
+      cursor: number;
+      verifiedRoot: string;
+    }>
   ): void {
     if (updates.length === 0) return;
     const subscriptions = this.subscriptionsByOwnerKey.get(ownerKey);

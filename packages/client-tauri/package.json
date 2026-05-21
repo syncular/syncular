@@ -50,7 +50,6 @@
   "devDependencies": {
     "@syncular/config": "workspace:*",
     "@syncular/testkit": "workspace:*",
-    "kysely": "*",
     "react": "*"
   },
   "files": [

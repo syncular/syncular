@@ -1,7 +1,4 @@
-import {
-  SYNCULAR_ERROR_DEFINITIONS,
-  type SyncOperation,
-} from '@syncular/core';
+import { SYNCULAR_ERROR_DEFINITIONS, type SyncOperation } from '@syncular/core';
 import type {
   SyncularApplyYjsEnvelopeToPayloadArgs,
   SyncularApplyYjsTextUpdatesArgs,
@@ -22,10 +19,10 @@ import type {
   SyncularV2ErrorCode,
   SyncularV2ErrorRecommendedAction,
   SyncularV2FieldEncryptionConfig,
-  SyncularV2LocalHealthRepairRequest,
-  SyncularV2LocalSyncResetRequest,
   SyncularV2LiveQueryDependencyHint,
   SyncularV2LiveQueryEvent,
+  SyncularV2LocalHealthRepairRequest,
+  SyncularV2LocalSyncResetRequest,
   SyncularV2RealtimeConnectionState,
   SyncularV2RealtimeOptions,
   SyncularV2RowsChangedEvent,

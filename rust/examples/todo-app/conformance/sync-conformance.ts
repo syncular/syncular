@@ -1,7 +1,7 @@
-import { readFileSync } from "node:fs";
+import { readFileSync } from 'node:fs';
 
 export const syncConformance = JSON.parse(
-  readFileSync(new URL("./sync-scenarios.json", import.meta.url), "utf8"),
+  readFileSync(new URL('./sync-scenarios.json', import.meta.url), 'utf8')
 ) as SyncScenarioFixture;
 
 export interface SyncScenarioFixture {
@@ -35,7 +35,7 @@ export interface SyncScenarioFixture {
   };
   retryBackoff: {
     clientId: string;
-    localRow: Omit<SyncScenarioTaskRow, "user_id">;
+    localRow: Omit<SyncScenarioTaskRow, 'user_id'>;
     expectedSyncPostCounts: number[];
     expectedPendingPushes: number;
   };
@@ -57,7 +57,7 @@ export interface SyncScenarioFixture {
       id: string;
       title: string;
     };
-    localRow: Omit<SyncScenarioTaskRow, "user_id">;
+    localRow: Omit<SyncScenarioTaskRow, 'user_id'>;
   };
   repeatedPull: {
     clientId: string;
@@ -73,7 +73,7 @@ export interface SyncScenarioFixture {
   };
   duplicatePush: {
     clientId: string;
-    task: Omit<SyncScenarioTaskRow, "user_id">;
+    task: Omit<SyncScenarioTaskRow, 'user_id'>;
     expectedFirstPushCommits: number;
     expectedSecondPushCommits: number;
     expectedServerRowCount: number;

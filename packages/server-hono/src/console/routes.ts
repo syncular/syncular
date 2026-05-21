@@ -19,8 +19,8 @@ import {
   createSyncularErrorResponse,
   ErrorResponseSchema,
   logSyncEvent,
-  sha256Hex,
   type SyncularErrorCode,
+  sha256Hex,
 } from '@syncular/core';
 import type { SqlFamily, SyncCoreDb, SyncServerAuth } from '@syncular/server';
 import {

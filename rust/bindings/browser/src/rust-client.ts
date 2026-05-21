@@ -8,10 +8,7 @@ import {
   syncularV2DiagnosticAttemptFields,
   syncularV2SyncAttemptHeaders,
 } from './diagnostics';
-import {
-  SyncularV2ClientError,
-  toSyncularV2ClientError,
-} from './errors';
+import { SyncularV2ClientError, toSyncularV2ClientError } from './errors';
 import { createSyncularV2RuntimeInfo } from './runtime-contract';
 import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
@@ -48,6 +45,10 @@ import type {
   SyncularV2EncryptionHelperMethod,
   SyncularV2FieldEncryptionConfig,
   SyncularV2LifecycleState,
+  SyncularV2LiveQueryDependencyHint,
+  SyncularV2LiveQueryDiagnostics,
+  SyncularV2LiveQueryEvent,
+  SyncularV2LiveQuerySnapshot,
   SyncularV2LocalHealthRepairReport,
   SyncularV2LocalHealthRepairRequest,
   SyncularV2LocalHealthReport,
@@ -55,10 +56,6 @@ import type {
   SyncularV2LocalSupportBundleImportReport,
   SyncularV2LocalSyncResetReport,
   SyncularV2LocalSyncResetRequest,
-  SyncularV2LiveQueryEvent,
-  SyncularV2LiveQueryDependencyHint,
-  SyncularV2LiveQueryDiagnostics,
-  SyncularV2LiveQuerySnapshot,
   SyncularV2PullOptions,
   SyncularV2RowsChangedEvent,
   SyncularV2RowsChangedSink,
@@ -565,7 +562,8 @@ export class SyncularV2RustClient {
   async importLocalSupportBundle(
     bundle: SyncularV2LocalSupportBundle | string
   ): Promise<SyncularV2LocalSupportBundleImportReport> {
-    const bundleJson = typeof bundle === 'string' ? bundle : JSON.stringify(bundle);
+    const bundleJson =
+      typeof bundle === 'string' ? bundle : JSON.stringify(bundle);
     return parseJson(await this.raw.importLocalSupportBundleJson(bundleJson));
   }
 

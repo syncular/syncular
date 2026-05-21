@@ -1,10 +1,10 @@
 import type {
   BlobRef,
   ColumnCodecSource,
-  SyncAuthLifecycle,
   SyncularErrorCategory as CoreSyncularErrorCategory,
   SyncularErrorCode as CoreSyncularErrorCode,
   SyncularErrorRecommendedAction as CoreSyncularErrorRecommendedAction,
+  SyncAuthLifecycle,
   SyncOperation,
 } from '@syncular/core';
 import type { CompiledQuery } from 'kysely';

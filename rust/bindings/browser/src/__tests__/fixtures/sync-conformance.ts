@@ -1,5 +1,4 @@
 export {
-  syncConformance,
   type BlobCacheStats,
   type BlobProcessResult,
   type BlobQueueStats,
@@ -9,4 +8,5 @@ export {
   type SyncScenarioFixture,
   type SyncScenarioTaskInput,
   type SyncScenarioTaskRow,
+  syncConformance,
 } from '../../../../../examples/todo-app/conformance/sync-conformance';

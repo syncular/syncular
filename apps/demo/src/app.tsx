@@ -1,18 +1,12 @@
-import {
-  CheckCircle2,
-  Circle,
-  Plus,
-  RefreshCw,
-  Trash2,
-} from 'lucide-react';
+import { CheckCircle2, Circle, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import type { Dispatch, FormEvent, SetStateAction } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  openDemoClient,
-  selectTasks,
   type DemoClientHandle,
   type DemoClientName,
   type DemoTask,
+  openDemoClient,
+  selectTasks,
 } from './client/syncular';
 
 type ClientStatus = 'opening' | 'ready' | 'syncing' | 'error';
@@ -107,7 +101,11 @@ export function App() {
           <p className="eyebrow">Rust client demo</p>
           <h1>Split view todo sync</h1>
         </div>
-        <div className="sync-meter" aria-label="Synced task summary">
+        <div
+          className="sync-meter"
+          role="status"
+          aria-label="Synced task summary"
+        >
           <span>{left.tasks.length} todos</span>
           <span>{completedCount} done</span>
         </div>
