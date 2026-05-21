@@ -554,6 +554,7 @@ export class SyncularV2RustClient {
     const normalized = {
       action: request.action,
       subscriptionIds: [...(request.subscriptionIds ?? [])],
+      tables: [...(request.tables ?? [])],
     };
     return parseJson(
       await this.raw.repairLocalHealthJson(JSON.stringify(normalized))

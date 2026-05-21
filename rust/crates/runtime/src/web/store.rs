@@ -227,6 +227,18 @@ pub trait AsyncWebStore {
         Box::pin(async { Ok(None) })
     }
 
+    fn clear_orphaned_synced_rows<'a>(
+        &'a mut self,
+        _subscriptions: &'a [SubscriptionSpec],
+        _tables: &'a [String],
+    ) -> Pin<Box<dyn Future<Output = Result<ScopedRowsHealthSummary>> + 'a>> {
+        Box::pin(async {
+            Err(SyncularError::storage(anyhow::anyhow!(
+                "clearing orphaned synced rows is not supported by this store"
+            )))
+        })
+    }
+
     fn crdt_state_vector_hints<'a>(
         &'a mut self,
         _table: &'a str,
@@ -509,6 +521,61 @@ impl AsyncWebStore for WebMemoryStore {
                 });
             }
             Ok(Some(summary))
+        })
+    }
+
+    fn clear_orphaned_synced_rows<'a>(
+        &'a mut self,
+        subscriptions: &'a [SubscriptionSpec],
+        tables: &'a [String],
+    ) -> Pin<Box<dyn Future<Output = Result<ScopedRowsHealthSummary>> + 'a>> {
+        Box::pin(async move {
+            let app_schema = self.app_schema();
+            validate_requested_app_tables(app_schema, tables)?;
+            let mut summary = ScopedRowsHealthSummary::default();
+            for metadata in app_schema.app_table_metadata.iter().filter(|metadata| {
+                tables.is_empty() || tables.iter().any(|table| table == metadata.name)
+            }) {
+                let table_subscriptions = subscriptions
+                    .iter()
+                    .filter(|subscription| subscription.table == metadata.name)
+                    .collect::<Vec<_>>();
+                let Some(rows) = self.rows.get_mut(metadata.name) else {
+                    summary.tables.push(ScopedRowsTableHealth {
+                        table: metadata.name.to_string(),
+                        checked_synced_rows: 0,
+                        orphaned_synced_rows: 0,
+                    });
+                    continue;
+                };
+                let checked_synced_rows = rows
+                    .values()
+                    .filter(|row| row_is_server_synced(row, metadata.server_version_column))
+                    .count() as i64;
+                let orphaned_ids = rows
+                    .iter()
+                    .filter(|(_, row)| row_is_server_synced(row, metadata.server_version_column))
+                    .filter(|(_, row)| {
+                        table_subscriptions.is_empty()
+                            || !table_subscriptions.iter().any(|subscription| {
+                                row_matches_scope_values(row, metadata, &subscription.scopes)
+                            })
+                    })
+                    .map(|(row_id, _)| row_id.clone())
+                    .collect::<Vec<_>>();
+                for row_id in &orphaned_ids {
+                    rows.remove(row_id);
+                }
+                let orphaned_synced_rows = orphaned_ids.len() as i64;
+                summary.checked_synced_rows += checked_synced_rows;
+                summary.orphaned_synced_rows += orphaned_synced_rows;
+                summary.tables.push(ScopedRowsTableHealth {
+                    table: metadata.name.to_string(),
+                    checked_synced_rows,
+                    orphaned_synced_rows,
+                });
+            }
+            Ok(summary)
         })
     }
 
@@ -1064,6 +1131,17 @@ fn row_matches_scope_values(
             value => actual == Some(value),
         }
     })
+}
+
+fn validate_requested_app_tables(app_schema: AppSchema, tables: &[String]) -> Result<()> {
+    for table in tables {
+        if app_schema.table_metadata(table).is_none() {
+            return Err(SyncularError::config(format!(
+                "unknown generated app table: {table}"
+            )));
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

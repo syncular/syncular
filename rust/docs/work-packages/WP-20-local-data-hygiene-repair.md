@@ -118,13 +118,20 @@ First retained slice:
 - The eighth retained slice adds report-only scoped synced-row health checks.
   Local health now counts server-synced generated app rows and reports
   `local.synced_rows_orphaned` when rows with positive server-version values are
-  no longer covered by any configured subscription scope. The finding is
-  `manualInspection` for now; no row deletion is attached to health repair.
-  Local-only rows with `server_version = 0` are not counted as orphaned synced
-  rows. Diesel, the rusqlite fixture, WebMemoryStore, and Rust-owned browser
-  SQLite all share the same metadata-driven scope semantics, including array
-  scopes and fail-closed unknown/missing required scopes. Runtime and browser
-  tests prove orphaned synced rows are detected without mutating those rows.
+  no longer covered by any configured subscription scope. Local-only rows with
+  `server_version = 0` are not counted as orphaned synced rows. Diesel, the
+  rusqlite fixture, WebMemoryStore, and Rust-owned browser SQLite all share the
+  same metadata-driven scope semantics, including array scopes and fail-closed
+  unknown/missing required scopes. Runtime and browser tests prove orphaned
+  synced rows are detected without mutating those rows.
+- The ninth retained slice adds the explicit `clearOrphanedSyncedRows` repair
+  action. It refuses `subscriptionIds`, accepts optional generated app
+  `tables`, fails closed while any local outbox commit is unresolved, deletes
+  only positive-server-version rows outside all current configured scopes, and
+  leaves local-only rows intact. Browser repairs run inside the apply batch and
+  notify live-query/lifecycle listeners when rows are cleared. Native and
+  browser tests prove pending outbox commits block the repair and acked outbox
+  state permits deterministic deletion.
 
 Gates:
 
@@ -144,8 +151,6 @@ Gates:
 
 ## Next Action
 
-Decide and implement the safe explicit repair command for orphaned synced rows.
-The likely shape should be separate from metadata cleanup, require selected
-tables/subscriptions or an explicit all-orphaned flag, refuse unresolved local
-outbox commits, and delete only positive-server-version rows that the health
-check already reports as outside configured scopes.
+Add debug-only local support export/import with redaction, then revisit whether
+blob/CRDT orphan metadata should get similarly explicit repair commands or stay
+manual-inspection only.

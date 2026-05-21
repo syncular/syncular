@@ -1727,6 +1727,8 @@ describe('Syncular v2 worker client', () => {
         deletedSubscriptionStates: 1,
         deletedVerifiedRoots: 1,
         forcedRebootstrapSubscriptions: 0,
+        clearedOrphanedSyncedRows: 0,
+        clearedTables: [],
       },
     });
     await expect(repair).resolves.toEqual({
@@ -1734,6 +1736,8 @@ describe('Syncular v2 worker client', () => {
       deletedSubscriptionStates: 1,
       deletedVerifiedRoots: 1,
       forcedRebootstrapSubscriptions: 0,
+      clearedOrphanedSyncedRows: 0,
+      clearedTables: [],
     });
   });
 

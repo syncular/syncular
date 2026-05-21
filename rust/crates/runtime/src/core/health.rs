@@ -49,6 +49,8 @@ pub struct LocalHealthRepairRequest {
     pub action: LocalHealthRepairAction,
     #[serde(default)]
     pub subscription_ids: Vec<String>,
+    #[serde(default)]
+    pub tables: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +60,8 @@ pub struct LocalHealthRepairReport {
     pub deleted_subscription_states: usize,
     pub deleted_verified_roots: usize,
     pub forced_rebootstrap_subscriptions: usize,
+    pub cleared_orphaned_synced_rows: i64,
+    pub cleared_tables: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -99,6 +103,7 @@ pub enum LocalHealthSeverity {
 pub enum LocalHealthRepairAction {
     ForceRebootstrap,
     ClearOrphanedState,
+    ClearOrphanedSyncedRows,
     ManualInspection,
 }
 
@@ -388,7 +393,7 @@ fn check_scoped_rows_health_summary(
             "local synced app rows are outside the configured subscription scopes",
             None,
             Some(&table.table),
-            Some(LocalHealthRepairAction::ManualInspection),
+            Some(LocalHealthRepairAction::ClearOrphanedSyncedRows),
             details,
         ));
     }

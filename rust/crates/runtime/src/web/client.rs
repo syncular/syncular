@@ -306,6 +306,9 @@ where
                 self.repair_clear_orphaned_state(&request.subscription_ids)
                     .await
             }
+            crate::health::LocalHealthRepairAction::ClearOrphanedSyncedRows => {
+                self.repair_clear_orphaned_synced_rows(&request).await
+            }
             crate::health::LocalHealthRepairAction::ManualInspection => Err(SyncularError::config(
                 "manualInspection health findings cannot be repaired automatically",
             )),
@@ -397,6 +400,11 @@ where
         match reset_result {
             Ok(report) => {
                 self.store.commit_apply_batch().await?;
+                if !report.cleared_tables.is_empty() {
+                    self.store
+                        .notify_local_tables_changed_with_rows(&report.cleared_tables, &[])
+                        .await?;
+                }
                 Ok(report)
             }
             Err(error) => {
@@ -495,6 +503,8 @@ where
             deleted_subscription_states,
             deleted_verified_roots,
             forced_rebootstrap_subscriptions: subscription_ids.len(),
+            cleared_orphaned_synced_rows: 0,
+            cleared_tables: Vec::new(),
         })
     }
 
@@ -542,6 +552,69 @@ where
             deleted_subscription_states: state_ids.len(),
             deleted_verified_roots: root_ids.len(),
             forced_rebootstrap_subscriptions: 0,
+            cleared_orphaned_synced_rows: 0,
+            cleared_tables: Vec::new(),
+        })
+    }
+
+    async fn repair_clear_orphaned_synced_rows(
+        &mut self,
+        request: &crate::health::LocalHealthRepairRequest,
+    ) -> Result<crate::health::LocalHealthRepairReport> {
+        if !request.subscription_ids.is_empty() {
+            return Err(SyncularError::config(
+                "clearOrphanedSyncedRows uses tables, not subscriptionIds",
+            ));
+        }
+        let unresolved_outbox = self
+            .store
+            .outbox_summaries()
+            .await?
+            .iter()
+            .filter(|commit| commit.status != "acked")
+            .count();
+        if unresolved_outbox > 0 {
+            return Err(SyncularError::config(format!(
+                "clearOrphanedSyncedRows requires an empty local outbox; found {unresolved_outbox} unresolved commits"
+            )));
+        }
+
+        self.store.begin_apply_batch().await?;
+        let repair_result = async {
+            self.store
+                .clear_orphaned_synced_rows(&self.subscriptions, &request.tables)
+                .await
+        }
+        .await;
+        let summary = match repair_result {
+            Ok(summary) => {
+                self.store.commit_apply_batch().await?;
+                summary
+            }
+            Err(error) => {
+                let _ = self.store.rollback_apply_batch().await;
+                return Err(error);
+            }
+        };
+        let cleared_orphaned_synced_rows = summary.orphaned_synced_rows;
+        let cleared_tables = summary
+            .tables
+            .into_iter()
+            .filter(|table| table.orphaned_synced_rows > 0)
+            .map(|table| table.table)
+            .collect::<Vec<_>>();
+        if !cleared_tables.is_empty() {
+            self.store
+                .notify_local_tables_changed_with_rows(&cleared_tables, &[])
+                .await?;
+        }
+        Ok(crate::health::LocalHealthRepairReport {
+            action: crate::health::LocalHealthRepairAction::ClearOrphanedSyncedRows,
+            deleted_subscription_states: 0,
+            deleted_verified_roots: 0,
+            forced_rebootstrap_subscriptions: 0,
+            cleared_orphaned_synced_rows,
+            cleared_tables,
         })
     }
 

@@ -1684,12 +1684,53 @@ fn local_health_check_reports_orphaned_synced_app_rows() -> Result<()> {
     assert_eq!(finding.table.as_deref(), Some("tasks"));
     assert_eq!(finding.details["count"], json!(1));
     assert_eq!(finding.details["checkedSyncedRows"], json!(2));
+
+    let now = now_ms();
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    sql_query(
+        r#"
+        insert into sync_outbox_commits (
+            id, client_commit_id, status, operations_json, created_at, updated_at,
+            attempt_count, schema_version, next_attempt_at
+        ) values (
+            'orphaned-row-pending-outbox', 'orphaned-row-pending-commit', 'pending', '[]',
+            ?1, ?1, 0, ?2, 0
+        )
+        "#,
+    )
+    .bind::<BigInt, _>(now)
+    .bind::<Integer, _>(current_schema_version())
+    .execute(&mut conn)?;
+    drop(conn);
+
+    let blocked = client
+        .repair_local_health_json(
+            &json!({ "action": "clearOrphanedSyncedRows", "tables": ["tasks"] }).to_string(),
+        )
+        .expect_err("pending outbox must block orphaned synced-row clearing");
+    assert_eq!(blocked.kind(), ErrorKind::Config);
+    assert!(blocked.message_text().contains("empty local outbox"));
+
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    sql_query(
+        "update sync_outbox_commits set status = 'acked' where id = 'orphaned-row-pending-outbox'",
+    )
+    .execute(&mut conn)?;
+    drop(conn);
+
+    let repair: Value = serde_json::from_str(&client.repair_local_health_json(
+        &json!({ "action": "clearOrphanedSyncedRows", "tables": ["tasks"] }).to_string(),
+    )?)?;
+    assert_eq!(repair["action"], "clearOrphanedSyncedRows");
+    assert_eq!(repair["clearedOrphanedSyncedRows"], 1);
+    assert_eq!(repair["clearedTables"], json!(["tasks"]));
     assert!(client
         .current_row_json("tasks", "scoped-health-orphaned")?
-        .is_some());
+        .is_none());
     assert!(client
         .current_row_json("tasks", "scoped-health-local-only")?
         .is_some());
+    assert!(client.local_health_check()?.ok);
 
     let _ = std::fs::remove_file(path);
     Ok(())
