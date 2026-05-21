@@ -74,11 +74,16 @@ Blob URL authorization now has a negative minting test for an existing completed
 blob: a forbidden actor receives `blob.forbidden`, and the storage adapter's
 `signDownload` path is not called.
 
+Encrypted CRDT local outbox coverage now proves durable pending operations carry
+the encrypted system-table payload (`ciphertext`) and do not persist plaintext
+text or raw `update_base64` / `state_base64` fields in the server-bound
+operation JSON.
+
 ## Next Action
 
-Use the pull/realtime/artifact and blob-token test shapes as templates for the
-remaining privacy surfaces: CRDT encrypted-field/update denial, console
-partition/detail denial, and diagnostic/debug-bundle redaction.
+Use the pull/realtime/artifact, blob-token, and encrypted-CRDT outbox tests as
+templates for the remaining privacy surfaces: encrypted CRDT denial/revocation
+edges, console partition/detail denial, and diagnostic/debug-bundle redaction.
 
 ## Progress
 
@@ -91,7 +96,15 @@ partition/detail denial, and diagnostic/debug-bundle redaction.
   delivered.
 - Added blob route coverage proving forbidden actors cannot mint signed download
   URLs for an existing completed blob.
+- Added encrypted CRDT outbox privacy coverage proving server-bound pending
+  operation JSON contains ciphertext, not plaintext text or raw Yjs
+  update/state fields.
 - Gates run in `packages/server-hono`:
   `bun test src/__tests__/create-server.test.ts`,
   `bun test src/__tests__/blob-routes.test.ts`, `bun test src/__tests__`, and
   `bun run tsgo`.
+- Gates run for runtime CRDT coverage:
+  `cargo fmt --manifest-path rust/Cargo.toml --all`,
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field rust_client_exposes_encrypted_crdt_field_through_same_identity --features native,crdt-yjs,demo-todo-native-fixture`,
+  and
+  `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field --features native,crdt-yjs,demo-todo-native-fixture`.
