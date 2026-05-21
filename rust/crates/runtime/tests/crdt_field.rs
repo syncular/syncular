@@ -1,3 +1,5 @@
+use diesel::prelude::*;
+use diesel::sql_query;
 use serde::Serialize;
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
@@ -718,6 +720,13 @@ fn rust_client_exposes_encrypted_crdt_field_through_same_identity() -> Result<()
     let receipt = client.apply_crdt_field_text(&field, "Encrypted field title")?;
     assert_eq!(receipt.sync_mode, CrdtFieldSyncMode::EncryptedUpdateLog);
     assert!(!receipt.client_commit_id.is_empty());
+
+    let outbox_json = outbox_operations_json(&path)?;
+    assert!(outbox_json.contains("sync_crdt_updates"));
+    assert!(outbox_json.contains("ciphertext"));
+    assert!(!outbox_json.contains("Encrypted field title"));
+    assert!(!outbox_json.contains("update_base64"));
+    assert!(!outbox_json.contains("state_base64"));
 
     let materialized = client.materialize_crdt_field(&field)?;
     assert_eq!(
@@ -1483,6 +1492,25 @@ fn test_encrypted_crdt() -> Result<EncryptedCrdt> {
 
 fn temp_db_path(prefix: &str) -> String {
     unique_temp_db_path(prefix)
+}
+
+#[derive(QueryableByName)]
+struct OperationsJsonRow {
+    #[diesel(sql_type = diesel::sql_types::Text)]
+    operations_json: String,
+}
+
+fn outbox_operations_json(path: &str) -> Result<String> {
+    let mut conn = diesel::sqlite::SqliteConnection::establish(path)?;
+    let rows = sql_query(
+        "select operations_json from sync_outbox_commits order by created_at asc, id asc",
+    )
+    .load::<OperationsJsonRow>(&mut conn)?;
+    Ok(rows
+        .into_iter()
+        .map(|row| row.operations_json)
+        .collect::<Vec<_>>()
+        .join("\n"))
 }
 
 #[derive(Clone, Copy)]
