@@ -4,7 +4,7 @@ import {
   SYNC_CRDT_UPDATES_TABLE,
 } from '@syncular/server';
 
-export type AuditChangeKind =
+type AuditChangeKind =
   | 'app_row'
   | 'delete'
   | 'blob_reference'
@@ -12,12 +12,12 @@ export type AuditChangeKind =
   | 'encrypted_crdt_update'
   | 'encrypted_crdt_checkpoint';
 
-export interface AuditChangeRedaction {
+interface AuditChangeRedaction {
   payload: 'omitted';
   reason: 'audit_redacted_by_default';
 }
 
-export interface AuditChangeSummary {
+interface AuditChangeSummary {
   changeKind: AuditChangeKind;
   fields: string[];
   scopeFields: string[];

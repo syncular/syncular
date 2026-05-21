@@ -35,7 +35,7 @@ export async function issueSyncularV2AuthLease(args: {
   );
 }
 
-export function syncularV2AuthLeaseRecordFromIssueResponse(
+function syncularV2AuthLeaseRecordFromIssueResponse(
   response: SyncAuthLeaseIssueResponse,
   nowMs = Date.now()
 ): SyncularV2AuthLeaseRecord {
