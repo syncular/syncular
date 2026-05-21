@@ -16,8 +16,10 @@ Initial scope:
 - `AppTestServer` for stateful generated-schema app tests: it stores rows,
   applies pushed commits, returns later pull snapshots/commits, merges
   server-merge CRDT/Yjs payloads, filters self commits, can reverse/duplicate
-  delivery, preserves encrypted field payloads, and emits realtime sync
-  wakeups. It also implements `BlobTransport` for queued upload/download tests.
+  delivery, preserves encrypted field payloads, can revoke/restore
+  subscriptions, can change required auth during a test, and emits realtime
+  sync wakeups. It also implements `BlobTransport` for queued upload/download
+  tests.
 - `AppTestHttpServer` for stateful HTTP/WebSocket app tests over the production
   native transport shape, including captured HTTP/WebSocket requests for auth
   and schema-version assertions. The same fixture can enforce a required
@@ -199,6 +201,15 @@ let server = AppTestHttpServer::start_with_server(AppTestServer::with_options(
 assert_app_server_auth_header(server.app_server(), "authorization", "Bearer test-token");
 ```
 
+The required token can also change inside one test, which is useful for auth
+refresh flows:
+
+```rust
+server.app_server().require_authorization("Bearer refreshed-token");
+// trigger a rejected sync with stale auth, refresh app auth state, then retry
+server.app_server().clear_required_authorization();
+```
+
 For rolling-deploy tests, the same stateful server can advertise future schema
 versions and let the real client fail closed:
 
@@ -214,6 +225,17 @@ let server = AppTestHttpServer::start_with_server(AppTestServer::with_options(
 
 // A client with the current generated schema receives `sync.schema_mismatch`
 // and must not apply rows from this response.
+```
+
+For scoped access revocation, the stateful server can return a real revoked
+subscription response, which lets the client clear the previous scoped rows and
+reset its cursor without a scripted transport:
+
+```rust
+server.app_server().revoke_subscription("sub-notes");
+// next sync clears rows for the previous subscription state
+server.app_server().restore_subscription("sub-notes");
+// following sync bootstraps visible rows again
 ```
 
 For native-style tests, open a real native client with the same generated schema

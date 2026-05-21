@@ -654,6 +654,94 @@ fn app_test_http_server_schema_mismatch_fails_closed() {
     assert_app_server_has_row(server.app_server(), "tasks", "schema-rollout-future");
 }
 
+#[test]
+fn app_test_server_revokes_and_restores_subscriptions_statefully() {
+    let server = AppTestServer::new(todo::app_schema());
+    server
+        .seed_row(
+            "tasks",
+            json!({
+                "id": "stateful-revoked-task",
+                "title": "Visible before revocation",
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0",
+                "server_version": 1
+            }),
+        )
+        .expect("seed visible row");
+    let mut fixture = open_app_client_with_server(
+        todo::app_schema(),
+        server.clone(),
+        app_server_options("app-server-stateful-revoke"),
+    )
+    .expect("client fixture");
+
+    fixture.client.sync_http().expect("initial bootstrap");
+    assert_table_has_row(&mut fixture.client, "tasks", "id", "stateful-revoked-task");
+
+    server.revoke_subscription("sub-tasks");
+    assert_eq!(
+        server.revoked_subscription_ids(),
+        vec!["sub-tasks".to_string()]
+    );
+    let revoked_report = fixture.client.sync_http().expect("revoked sync");
+    assert!(revoked_report.changed_tables.contains(&"tasks".to_string()));
+    assert_table_row_count(&mut fixture.client, "tasks", 0);
+
+    server.restore_subscription("sub-tasks");
+    assert!(server.revoked_subscription_ids().is_empty());
+    fixture.client.sync_http().expect("restored bootstrap");
+    let row = assert_table_has_row(&mut fixture.client, "tasks", "id", "stateful-revoked-task");
+    assert_eq!(row["title"], "Visible before revocation");
+}
+
+#[test]
+fn app_test_server_can_change_required_authorization_during_a_test() {
+    let server = AppTestServer::new(todo::app_schema());
+    server.require_authorization("Bearer fresh-stateful-token");
+    let mut fixture = open_app_client_with_server(
+        todo::app_schema(),
+        server.clone(),
+        app_server_options("app-server-dynamic-auth"),
+    )
+    .expect("client fixture");
+
+    let missing = fixture
+        .client
+        .sync_http()
+        .expect_err("missing token should be rejected");
+    assert_eq!(missing.kind(), ErrorKind::Transport);
+    assert!(missing.to_string().contains("unauthorized"));
+
+    let mut stale_headers = SyncAuthHeaders::new();
+    stale_headers.insert(
+        "authorization".to_string(),
+        "Bearer stale-stateful-token".to_string(),
+    );
+    fixture.client.set_auth_headers(stale_headers);
+    let stale = fixture
+        .client
+        .sync_http()
+        .expect_err("stale token should be rejected");
+    assert_eq!(stale.kind(), ErrorKind::Transport);
+
+    let mut fresh_headers = SyncAuthHeaders::new();
+    fresh_headers.insert(
+        "authorization".to_string(),
+        "Bearer fresh-stateful-token".to_string(),
+    );
+    fixture.client.set_auth_headers(fresh_headers);
+    fixture.client.sync_http().expect("fresh token sync");
+    assert_app_server_auth_header(&server, "authorization", "Bearer fresh-stateful-token");
+
+    server.clear_required_authorization();
+    let mut empty_headers = SyncAuthHeaders::new();
+    empty_headers.insert("authorization".to_string(), String::new());
+    fixture.client.set_auth_headers(empty_headers);
+    fixture.client.sync_http().expect("auth disabled sync");
+}
+
 fn next_realtime_event(
     socket: &mut syncular_runtime::transport::RealtimeSocket,
     timeout: Duration,
