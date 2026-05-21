@@ -58,8 +58,8 @@ product-level limits.
 
 ## Next Action
 
-Add stable limit failures and diagnostics for the next highest-risk unbounded
-surface: queued mutation/outbox payload size.
+Add stable limit failures and diagnostics for blob, CRDT update, and diagnostic
+payload limits.
 
 ## Progress
 
@@ -77,12 +77,18 @@ surface: queued mutation/outbox payload size.
   keys, scope values per subscription, total scope values, and params keys with
   a stable `runtime.limit_exceeded` classification instead of accepting
   unbounded subscription state.
+- Rust/native/browser mutation paths now reject oversized low-level operation
+  JSON, local-row JSON, batch JSON, typed mutation batches, and serialized
+  outbox operation JSON with the same stable `runtime.limit_exceeded`
+  classification.
 
 ## Latest Evidence
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_ffi native_ffi_exposes_runtime_manifest_without_handle`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_exposes_redacted_diagnostic_snapshot`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_rejects_subscription_limit_with_stable_error`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade native_facade_rejects_mutation_payload_limit_with_stable_error`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture,boltffi-bindings --test native_facade`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends --features native,crdt-yjs,demo-todo-native-fixture`
 - `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
 - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown`

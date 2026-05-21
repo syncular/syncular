@@ -28,6 +28,10 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
 | `maxScopeValuesPerSubscription` | 4096 | Maximum scalar/array scope values on one subscription |
 | `maxScopeValuesPerClient` | 16384 | Maximum total scalar/array scope values across all subscriptions |
 | `maxSubscriptionParamsPerSubscription` | 32 | Maximum params keys on one subscription |
+| `maxMutationOperationJsonBytes` | 1048576 | Maximum low-level mutation operation JSON accepted by Rust/native/browser APIs |
+| `maxMutationLocalRowJsonBytes` | 1048576 | Maximum local-row JSON paired with one low-level mutation |
+| `maxMutationBatchJsonBytes` | 4194304 | Maximum low-level mutation batch JSON or typed mutation batch serialization |
+| `maxOutboxOperationsJsonBytes` | 4194304 | Maximum serialized operations stored in one outbox commit |
 
 ## Current Inventory
 
@@ -45,6 +49,9 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
   `EventsOverflowed` / `events.overflowed` when a subscriber falls behind.
 - Rust/native/browser subscription setters reject the configured subscription
   and scope limits above with `runtime.limit_exceeded`.
+- Rust/native/browser mutation entry points reject oversized mutation operation,
+  local row, batch, typed mutation, and outbox JSON with
+  `runtime.limit_exceeded`.
 - Blob upload retries and sync retries are bounded by the runtime store
   constants and should become public limit fields in a later WP-18 slice.
 

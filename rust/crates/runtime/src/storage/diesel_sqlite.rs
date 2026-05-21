@@ -24,6 +24,7 @@ use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "demo-todo-native-fixture")]
 use crate::fixtures::todo::tasks::{insert_local_task, list_tasks, patch_local_task_title};
 use crate::protocol::*;
+use crate::protocol::{sync_operations_json_for_outbox, validate_pending_mutation_batch_size};
 use crate::runtime_schema::RUNTIME_SYSTEM_SCHEMA_SQL;
 use crate::schema;
 use crate::store::{
@@ -1571,7 +1572,7 @@ impl<'a> DieselSqliteTx<'a> {
             id: id.clone(),
             client_commit_id: client_commit_id.clone(),
             status: "pending".to_string(),
-            operations_json: serde_json::to_string(&operations)?,
+            operations_json: sync_operations_json_for_outbox(&operations)?,
             last_response_json: None,
             error: None,
             created_at: now,
@@ -1795,6 +1796,7 @@ impl<'a> DieselSqliteTx<'a> {
                 "cannot commit an empty Syncular mutation batch",
             ));
         }
+        validate_pending_mutation_batch_size(&mutations)?;
 
         let mut operations = Vec::with_capacity(mutations.len());
         for mutation in mutations {

@@ -26,7 +26,7 @@ use crate::limits::{
 };
 #[cfg(feature = "native")]
 use crate::protocol::BlobRef;
-use crate::protocol::SyncOperation;
+use crate::protocol::{validate_mutation_json_input_size, SyncOperation};
 use crate::store::{now_ms, retry_backoff_delay_ms, SyncStateStore, SyncStore};
 #[cfg(feature = "native")]
 use crate::transport::BlobTransport;
@@ -1478,6 +1478,7 @@ impl SyncWorker {
         local_row_json: Option<String>,
         auto_sync: bool,
     ) -> Result<()> {
+        validate_mutation_json_input_size(&mutation_json, local_row_json.as_deref())?;
         self.try_send(WorkerCommand::ApplyMutationJson {
             command_id,
             mutation_json,

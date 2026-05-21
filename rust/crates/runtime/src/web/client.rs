@@ -11,13 +11,13 @@ use crate::encrypted_crdt::{is_encrypted_crdt_system_table, EncryptedCrdt};
 use crate::encryption::{FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
 use crate::protocol::{
-    validate_pull_commit_integrity_metadata, validate_pull_snapshot_manifests,
-    validate_sqlite_snapshot_artifact_for_apply, verify_subscription_commit_integrity,
-    BootstrapState, CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
-    PushCommitRequest, ScopeValues, SnapshotArtifactsRequest, SubscriptionRequest, SyncChange,
-    SyncCommit, SyncOperation, VerifiedCommitRoot, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-    SNAPSHOT_CHUNK_COMPRESSION_GZIP, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-    SYNC_PACK_ENCODING_BINARY_V1,
+    validate_mutation_json_input_size, validate_pull_commit_integrity_metadata,
+    validate_pull_snapshot_manifests, validate_sqlite_snapshot_artifact_for_apply,
+    verify_subscription_commit_integrity, BootstrapState, CombinedRequest, CombinedResponse,
+    PullRequest, PullResponse, PushBatchRequest, PushCommitRequest, ScopeValues,
+    SnapshotArtifactsRequest, SubscriptionRequest, SyncChange, SyncCommit, SyncOperation,
+    VerifiedCommitRoot, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1, SNAPSHOT_CHUNK_COMPRESSION_GZIP,
+    SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1, SYNC_PACK_ENCODING_BINARY_V1,
 };
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
 use crate::transport::web::{AsyncSyncTransport, WebSyncTransport, WebSyncTransportConfig};
@@ -1149,6 +1149,7 @@ where
         operation_json: &str,
         local_row_json: Option<&str>,
     ) -> Result<String> {
+        validate_mutation_json_input_size(operation_json, local_row_json)?;
         let operation: SyncOperation = serde_json::from_str(operation_json)?;
         let changed_tables = vec![operation.table.clone()];
         let previous_row = self

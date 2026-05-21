@@ -15,7 +15,7 @@ use crate::limits::{
     DEFAULT_NATIVE_EVENT_STREAM_CAPACITY, DEFAULT_NATIVE_RECENT_EVENT_LIMIT,
     DEFAULT_READONLY_QUERY_STATEMENT_CACHE_CAPACITY,
 };
-use crate::protocol::{BlobRef, BootstrapState};
+use crate::protocol::{validate_mutation_json_input_size, BlobRef, BootstrapState};
 use crate::runtime_schema::runtime_schema_version;
 use crate::sqlite_query::ReadonlySqlQueryExecutor;
 use crate::store::{now_ms, ConflictSummary, OutboxSummary};
@@ -1097,6 +1097,7 @@ impl NativeSyncularClient {
         mutation_json: &str,
         local_row_json: Option<&str>,
     ) -> Result<String> {
+        validate_mutation_json_input_size(mutation_json, local_row_json)?;
         let operation: crate::protocol::SyncOperation = serde_json::from_str(mutation_json)?;
         let table = operation.table.clone();
         let previous_row = self

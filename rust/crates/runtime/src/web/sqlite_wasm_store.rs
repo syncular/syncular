@@ -37,8 +37,9 @@ use crate::limits::DEFAULT_CRDT_UPDATE_QUEUE_CAPACITY;
 #[cfg(feature = "web-blobs")]
 use crate::protocol::{blob_hash, validate_blob_bytes, validate_blob_hash, BlobRef};
 use crate::protocol::{
-    CrdtStateVectorHint, OperationResult, PendingSyncularMutation, PushCommitResponse, ScopeValues,
-    SyncChange, SyncOperation,
+    sync_operations_json_for_outbox, validate_mutation_batch_json_input_size,
+    validate_pending_mutation_batch_size, CrdtStateVectorHint, OperationResult,
+    PendingSyncularMutation, PushCommitResponse, ScopeValues, SyncChange, SyncOperation,
 };
 use crate::runtime_schema::{runtime_schema_version, RUNTIME_SYSTEM_SCHEMA_SQL};
 use crate::store::{
@@ -2367,6 +2368,7 @@ impl SyncularRustOwnedSqlite {
     }
 
     fn apply_mutations_batch_json_inner(&mut self, operations_json: &str) -> Result<String> {
+        validate_mutation_batch_json_input_size(operations_json)?;
         let operations: Vec<RustOwnedLocalOperationBatchEntry> =
             serde_json::from_str(operations_json).map_err(SyncularError::protocol)?;
         let mut client_commit_ids = Vec::with_capacity(operations.len());
@@ -2414,6 +2416,7 @@ impl SyncularRustOwnedSqlite {
     }
 
     fn apply_mutations_commit_json_inner(&mut self, operations_json: &str) -> Result<String> {
+        validate_mutation_batch_json_input_size(operations_json)?;
         let operations: Vec<RustOwnedLocalOperationBatchEntry> =
             serde_json::from_str(operations_json).map_err(SyncularError::protocol)?;
         if operations.is_empty() {
@@ -2760,6 +2763,7 @@ impl SyncularRustOwnedSqlite {
         mutation: PendingSyncularMutation,
         extra_changed_tables: &[&str],
     ) -> Result<String> {
+        validate_pending_mutation_batch_size(std::slice::from_ref(&mutation))?;
         let operation = mutation.operation(mutation.base_version);
         let local_row = mutation.local_row;
         let mut changed_tables = Vec::new();
@@ -3000,7 +3004,7 @@ impl SyncularRustOwnedSqlite {
         operation: &SyncOperation,
     ) -> Result<()> {
         let now = now_ms();
-        let operations_json = serde_json::to_string(&[operation])?;
+        let operations_json = sync_operations_json_for_outbox(std::slice::from_ref(operation))?;
         self.exec(&format!(
             "INSERT INTO sync_outbox_commits \
              (id, client_commit_id, status, operations_json, created_at, updated_at, schema_version, next_attempt_at) \
@@ -3017,7 +3021,7 @@ impl SyncularRustOwnedSqlite {
     fn enqueue_outbox_operations(&self, operations: &[SyncOperation]) -> Result<String> {
         let client_commit_id = Uuid::new_v4().to_string();
         let now = now_ms();
-        let operations_json = serde_json::to_string(operations)?;
+        let operations_json = sync_operations_json_for_outbox(operations)?;
         self.exec(&format!(
             "INSERT INTO sync_outbox_commits \
              (id, client_commit_id, status, operations_json, created_at, updated_at, schema_version, next_attempt_at) \
