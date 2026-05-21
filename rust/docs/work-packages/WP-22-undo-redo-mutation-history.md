@@ -78,8 +78,9 @@ First browser/generated-client slice is implemented:
   commits, cursors, roots, or audit history.
 - Stale-row undo/redo fails with stable
   `sync.command_history_conflict`.
-- The first proof covers `update -> undo -> redo` in the generated todo
-  TypeScript client and verifies three normal mutation intents.
+- Browser generated-client coverage now includes `update -> undo -> redo`,
+  insert undo/redo, hard-delete undo/redo, soft-delete undo/redo, and grouped
+  multi-row commits. The update proof verifies three normal mutation intents.
 
 Gates:
 
