@@ -806,9 +806,12 @@ read-only review:
     denied. Browser/WASM coverage now proves a reference `file_versions`
     app-schema row syncs a typed `BlobRef` through Hono and clears locally on
     subscription revocation. Testkit file asset conformance now also covers
-    rename, move, trash, restore, version conflict persistence, missing blob
-    bodies, and corrupted blob integrity failures. Next: delete-vs-update,
-    concurrent version edits, and the optional codegen-template decision.
+    rename, move, trash, restore, delete-vs-update, version conflict
+    persistence, concurrent version edits, missing blob bodies, and corrupted
+    blob integrity failures. Decision: keep the file asset schema as a
+    testkit/reference app schema, not a framework codegen template, until a real
+    app proves reusable file-product semantics beyond normal migrations and
+    `syncular.codegen.json`.
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry
     explicit TypeScript/platform `Interface Impact` sections. Browser, React,
