@@ -1324,7 +1324,7 @@ Progress:
   and documents when apps should refresh materialized state versus applying raw
   remote Yjs updates.
 - Added executable coverage for the CRDT adapter package:
-  `bun run rust:crdt-adapters:test`.
+  `bun run client-crdt-adapters:test`.
 - Linked the adapter package from `rust/bindings/browser/README.md` so browser
   consumers can find the CRDT field guidance without treating it as core API.
 - Added `rust/docs/reference/SERVER_EDGE_INVESTIGATION.md`. Current decision: do not start a
@@ -1332,9 +1332,9 @@ Progress:
   begin with a protocol-kernel crate or an edge proxy only when there is a
   concrete product target; Rust push plugins stay blocked until a Rust server
   trait model exists.
-- Added root script `rust:crdt-adapters:test` so the optional adapter example
+- Added root script `client-crdt-adapters:test` so the optional adapter example
   has a stable verification command.
-- Wired `rust:crdt-adapters:test` into `rust:ci:browser` so the example cannot
+- Wired `client-crdt-adapters:test` into `rust:ci:browser` so the example cannot
   rot separately from the browser package.
 - Added `rust/docs/reference/FEATURE_VARIANTS_DECISION.md`. Current decision: keep one npm
   package, but publish full/core WASM artifacts inside that package and let
