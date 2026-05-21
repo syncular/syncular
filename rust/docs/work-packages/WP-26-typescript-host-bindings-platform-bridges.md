@@ -147,6 +147,17 @@ or keep old naming assumptions.
   queries and bridge clients without live-query support keep the conservative
   `rowsChanged` fallback, but direct Rust browser clients no longer need broad
   table guessing for Kysely query refreshes.
+- Bridge live-query decision: Tauri/React Native/Expo should preserve precise
+  `rowsChanged.changedRows` metadata today, but should not pretend to have
+  query-observer parity by rerunning from table-level events. A future bridge
+  live-query API needs a canonical native observed-query registration/event
+  stream, or the app should own its refresh policy using row/field metadata.
+- Command-history decision: command history stays generated-client owned.
+  TypeScript generated clients already wrap `database.mutations` and
+  `database.leasedMutations`. Platform bridge packages should expose
+  command-history only through generated platform clients once those generated
+  mutation wrappers are mature, not as a generic bridge-level JavaScript undo
+  stack.
 
 Latest evidence:
 
@@ -175,8 +186,8 @@ paths.
 | WP-13 Observability | Runtime/server diagnostics | Diagnostic snapshots/support bundles | Support hooks should expose stable diagnostics, not raw internals | Bridge diagnostics must match native event/error JSON | Needs docs/testkit parity check |
 | WP-15 Error Taxonomy | Core/server/runtime taxonomy | Stable `code/category/retryable/recommendedAction` in thrown errors/events | Hooks must surface stable error objects | Bridges must preserve error shape | Mostly done; keep in generated docs |
 | WP-17 Lifecycle/App State | Runtime lifecycle model | `getStatus`, `on(...)`, `resumeFromBackground`, lifecycle events | Hooks must avoid poll-based status loops | Platform shells need app lifecycle entrypoints | Bridge resume parity added; optional polling remains explicit |
-| WP-21 Live Query Precision | Runtime observation | Kysely live query metadata, row/field deltas | Hooks must refresh from row/field events, not broad table guessing | Bridge events need precise changed rows/fields | React live-query path added; bridge live-query support still open |
-| WP-22 Undo/Redo Command History | Runtime/generated mutation history | `commandHistory.undoLast/redoLast`, generated mutation wrapping | Hooks should expose command-history state/actions when useful | Bridge packages need a decision: expose or explicitly defer | Needs explicit TS bridge milestone |
+| WP-21 Live Query Precision | Runtime observation | Kysely live query metadata, row/field deltas | Hooks must refresh from row/field events, not broad table guessing | Bridge events need precise changed rows/fields | React live-query path added; bridge observed-query registration deferred |
+| WP-22 Undo/Redo Command History | Runtime/generated mutation history | `commandHistory.undoLast/redoLast`, generated mutation wrapping | Hooks should expose command-history state/actions when useful | Bridge packages need a decision: expose or explicitly defer | Generated-client owned; no generic bridge JS undo stack |
 | WP-23 Audit/Debug | Server audit/console/testkit | Admin/support APIs and redacted export helpers | Generally docs/support tools, not normal app hooks | Bridge support-bundle export only if needed | Keep scoped to support/debug |
 | WP-24 Blob Hardening | Runtime/server blob model | Blob queue/cache/status, large payload limits | Hooks for queue/cache status and stable blob errors | Bridge modules must preserve validation/limits | Planned; use this WP for TS projection |
 
@@ -204,10 +215,9 @@ paths.
 
 ## Next Action
 
-Continue the export audit with generated-client and bridge projection: decide
-whether bridge clients should expose query-observer registration directly or
-only preserve row/field event metadata for app-owned refresh policy, and
-document command-history as generated-client owned for platform bridges until
-native generated mutation wrappers are mature enough to expose it cleanly. Do
-not add new feature behavior in this WP until the owning feature WP states the
-canonical semantics and red lines.
+Continue the export audit with docs/package polish: update browser/platform docs
+to consistently say TypeScript host bindings and platform bridges, show leased
+mutation/auth lease/resume/live-query usage against the current APIs, and make
+the bridge live-query and command-history deferrals explicit capability
+constraints. Do not add new feature behavior in this WP until the owning
+feature WP states the canonical semantics and red lines.

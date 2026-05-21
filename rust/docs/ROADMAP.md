@@ -357,9 +357,13 @@ read-only review:
   resume-from-background across browser bridge, Tauri, React Native, Expo, and
   testkit. React now also exposes leased mutation hooks over the same generated
   mutation shape, and `useSyncQuery(...)` uses query-observer-backed live
-  queries when the client/query supports them. Next, continue the export audit
-  with bridge live-query support decisions and explicit command-history
-  ownership by generated clients/platform wrappers.
+  queries when the client/query supports them. Bridge live-query registration
+  is deferred until there is a canonical native observed-query stream; current
+  bridges should preserve row/field metadata and let apps own refresh policy.
+  Command history remains generated-client owned, not a generic bridge-level
+  JavaScript undo stack. Next, continue WP-26 with docs/package polish for the
+  current TypeScript host-binding APIs and explicit bridge capability
+  constraints.
 - Reopen [`WP-14 Developer Experience And Generated APIs`](work-packages/WP-14-developer-experience-generated-apis.md)
   only when WP-26 finds concrete generated-client naming, discoverability,
   conflict, blob, or subscription ergonomics gaps.
