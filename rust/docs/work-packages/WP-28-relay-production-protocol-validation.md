@@ -110,6 +110,7 @@ instrumentation point before deciding.
 
 - WP-27 gates.
 - `bun run --cwd packages/relay evaluate:rust-boundary`
+- `bun run --cwd packages/relay evaluate:relay-paths`
 - `bun test packages/relay`
 - `bun run --cwd packages/relay tsgo`
 - Server/Hono realtime tests if relay websocket handling is touched.
@@ -145,12 +146,12 @@ instrumentation point before deciding.
   - combined request JSON: `1,368` bytes;
   - combined response JSON: `2,978` bytes;
   - binary sync pack: `2,349` bytes, wire version `14`;
-  - JSON parse p95: request `3.83us`, response `6.13us`;
-  - TypeScript schema p95: request `13.04us`, response `17.29us`;
-  - HTTP-style parse+schema p95: request `13.92us`, response `17.17us`;
-  - binary sync-pack decode p95: `12.00us`;
-  - binary sync-pack decode+schema p95: `22.83us`;
-  - validating schema-backed fixture protocol objects p95: `46.25us`.
+  - JSON parse p95: request `3.96us`, response `6.21us`;
+  - TypeScript schema p95: request `13.08us`, response `18.50us`;
+  - HTTP-style parse+schema p95: request `12.33us`, response `16.42us`;
+  - binary sync-pack decode p95: `11.96us`;
+  - binary sync-pack decode+schema p95: `22.58us`;
+  - validating schema-backed fixture protocol objects p95: `47.46us`.
 - Malformed probe coverage rejects empty client IDs, non-true combined
   responses, invalid blob hashes, and stale binary sync-pack wire versions with
   sanitized path/code/message diagnostics.
@@ -158,6 +159,23 @@ instrumentation point before deciding.
   fixture. A production Rust validation boundary only makes sense if it avoids
   extra JSON materialization/copies or proves stronger drift/correctness value
   than the existing TypeScript schemas.
+- Second evaluation slice added
+  `packages/relay/scripts/evaluate-relay-paths.ts` and
+  `packages/relay/src/evaluation/relay-paths.ts`. It measures current
+  in-memory relay app paths with Bun SQLite, `server-dialect-sqlite`, the
+  relay push/pull wrappers, `ForwardEngine`, `PullEngine`, and `RelayRealtime`.
+- Local result on 2026-05-22, 100 measured iterations with 10 warmups:
+  - local client push into relay p95: `701.46us`;
+  - relay forward to main p95: `108.63us`;
+  - relay pull from main and local apply p95: `379.96us`;
+  - local client incremental pull from relay p95: `305.67us`;
+  - realtime wakeup to 100 open mock connections p95: `33.92us`.
+- Initial comparison: schema-backed protocol validation p95 (`47.46us`) is
+  smaller than the DB/app-semantics relay paths in this local control. Rust
+  protocol validation alone is therefore unlikely to be a relay performance win
+  unless it replaces existing work without adding JSON copies or catches drift
+  the TypeScript path misses. The app-heavy paths still look TypeScript/Kysely
+  owned.
 
 ## Candidate Follow-Ups
 
@@ -172,9 +190,7 @@ instrumentation point before deciding.
 
 ## Next Action
 
-Add app-path relay baselines for local push, forward, pull/apply, local pull,
-and realtime wakeups using the existing relay tests/engines. Then compare one
-Rust call-boundary prototype only if the baseline shows protocol validation is
-hot enough, or if Rust catches protocol drift the current schemas miss. Do not
-create additional Rust relay/server WPs until this evaluation records evidence
-and a concrete follow-up target.
+Brainstorm from the two baselines before adding more code. The likely next
+technical probe, if any, is a Rust call-boundary overhead/control measurement,
+not a production relay rewrite. Do not create additional Rust relay/server WPs
+until this evaluation records a concrete follow-up target.
