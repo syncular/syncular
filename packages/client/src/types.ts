@@ -10,21 +10,21 @@ import type {
 } from '@syncular/core';
 import type { CompiledQuery } from 'kysely';
 
-export interface SyncularV2ClientConfig {
+export interface SyncularClientConfig {
   baseUrl: string;
   clientId: string;
   actorId: string;
   projectId?: string | null;
-  pull?: SyncularV2PullOptions;
+  pull?: SyncularPullOptions;
   fileName?: string;
-  storage?: SyncularV2Storage;
+  storage?: SyncularStorage;
   clearOnInit?: boolean;
   stateId?: string;
   schemaVersion?: number;
-  appSchema?: SyncularV2AppSchema;
+  appSchema?: SyncularAppSchema;
 }
 
-export interface SyncularV2PullOptions {
+export interface SyncularPullOptions {
   limitCommits?: number;
   limitSnapshotRows?: number;
   maxSnapshotPages?: number;
@@ -40,7 +40,7 @@ export interface SyncularV2PullOptions {
   collectServerTimings?: boolean;
 }
 
-export interface SyncularV2TransportStats {
+export interface SyncularTransportStats {
   requestCount: number;
   requestBytes: number;
   responseBytes: number;
@@ -67,11 +67,11 @@ export interface SyncularV2TransportStats {
   serverBootstrapChunkPersistMs: number;
 }
 
-export type SyncularV2Storage = 'memory' | 'indexedDb' | 'opfsSahPool';
+export type SyncularStorage = 'memory' | 'indexedDb' | 'opfsSahPool';
 
-export type SyncularV2AuthHeaders = Record<string, string>;
+export type SyncularAuthHeaders = Record<string, string>;
 
-export interface SyncularV2AuthLeaseRecord {
+export interface SyncularAuthLeaseRecord {
   leaseId: string;
   kid: string;
   actorId: string;
@@ -87,33 +87,33 @@ export interface SyncularV2AuthLeaseRecord {
   updatedAtMs: number;
 }
 
-export interface SyncularV2FieldEncryptionRule {
+export interface SyncularFieldEncryptionRule {
   scope: string;
   table?: string;
   fields: string[];
   rowIdField?: string;
 }
 
-export interface SyncularV2FieldEncryptionConfig {
-  rules: SyncularV2FieldEncryptionRule[];
+export interface SyncularFieldEncryptionConfig {
+  rules: SyncularFieldEncryptionRule[];
   keys: Record<string, string | Uint8Array>;
   encryptionKid?: string;
   decryptionErrorMode?: 'throw' | 'keepCiphertext';
   envelopePrefix?: string;
 }
 
-export interface SyncularV2EncryptedCrdtConfig {
+export interface SyncularEncryptedCrdtConfig {
   keys: Record<string, string | Uint8Array>;
   encryptionKid?: string;
   partitionId?: string;
 }
 
-export interface SyncularV2BlobEncryptionConfig {
+export interface SyncularBlobEncryptionConfig {
   keys: Record<string, string | Uint8Array>;
   encryptionKid?: string;
 }
 
-export type SyncularV2EncryptionHelperMethod =
+export type SyncularEncryptionHelperMethod =
   | 'generateSymmetricKey'
   | 'keyToMnemonic'
   | 'mnemonicToKey'
@@ -126,14 +126,14 @@ export type SyncularV2EncryptionHelperMethod =
   | 'deriveScopedPassphraseKeyPbkdf2'
   | 'derivePassphraseKeyArgon2id';
 
-export type SyncularV2RealtimeConnectionState =
+export type SyncularRealtimeConnectionState =
   | 'disconnected'
   | 'connecting'
   | 'connected';
 
-export type SyncularV2DiagnosticLevel = 'debug' | 'info' | 'warn' | 'error';
+export type SyncularDiagnosticLevel = 'debug' | 'info' | 'warn' | 'error';
 
-export type SyncularV2DiagnosticSource =
+export type SyncularDiagnosticSource =
   | 'client'
   | 'worker'
   | 'sync'
@@ -142,10 +142,10 @@ export type SyncularV2DiagnosticSource =
   | 'storage'
   | 'blob';
 
-export interface SyncularV2DiagnosticEvent {
+export interface SyncularDiagnosticEvent {
   at: number;
-  level: SyncularV2DiagnosticLevel;
-  source: SyncularV2DiagnosticSource;
+  level: SyncularDiagnosticLevel;
+  source: SyncularDiagnosticSource;
   code: string;
   message: string;
   syncAttemptId?: string;
@@ -159,22 +159,20 @@ export interface SyncularV2DiagnosticEvent {
   details?: Record<string, unknown>;
 }
 
-export type SyncularV2DiagnosticSink = (
-  event: SyncularV2DiagnosticEvent
-) => void;
+export type SyncularDiagnosticSink = (event: SyncularDiagnosticEvent) => void;
 
-export interface SyncularV2SyncAttempt {
+export interface SyncularSyncAttempt {
   syncAttemptId: string;
   traceId: string;
   spanId: string;
   traceparent: string;
 }
 
-export interface SyncularV2SyncRequestOptions {
-  syncAttempt?: SyncularV2SyncAttempt;
+export interface SyncularSyncRequestOptions {
+  syncAttempt?: SyncularSyncAttempt;
 }
 
-export interface SyncularV2RealtimeOptions {
+export interface SyncularRealtimeOptions {
   enabled?: boolean;
   wsUrl?: string;
   params?: Record<string, string>;
@@ -187,59 +185,74 @@ export interface SyncularV2RealtimeOptions {
   heartbeatTimeoutMs?: number;
 }
 
-export interface SyncularV2NetworkStatusSource {
+export interface SyncularNetworkStatusSource {
   isOnline(): boolean | undefined;
   addEventListener?(type: 'online' | 'offline', listener: () => void): void;
   removeEventListener?(type: 'online' | 'offline', listener: () => void): void;
 }
 
-export interface SyncularV2DatabaseSyncOptions {
+export interface SyncularDatabaseSyncOptions {
   autoSyncAfterMutation?: boolean;
   mutationSyncDebounceMs?: number | false;
-  network?: SyncularV2NetworkStatusSource | false;
+  network?: SyncularNetworkStatusSource | false;
   rowsChangedDebounceMs?: number | false;
   autoProcessBlobUploadsAfterStore?: boolean;
   blobUploadDebounceMs?: number | false;
 }
 
-export interface CreateSyncularV2DatabaseOptions {
-  config: SyncularV2ClientConfig;
-  worker?: Worker | (() => Worker);
-  requestTimeoutMs?: number;
-  runtime?: SyncularV2RuntimeArtifact;
-  runtimeArtifacts?: readonly SyncularV2RuntimeArtifactCandidate[];
-  requiredRuntimeFeatures?: readonly string[];
-  blobLimits?: SyncularV2BlobLimits;
-  codecs?: ColumnCodecSource;
-  appTables?: readonly string[];
-  tableConfig?: SyncularV2TableConfigMap;
-  getHeaders?: () => SyncularV2AuthHeaders | Promise<SyncularV2AuthHeaders>;
-  authLifecycle?: SyncAuthLifecycle;
-  diagnostics?: SyncularV2DiagnosticSink;
-  realtime?: boolean | SyncularV2RealtimeOptions;
-  sync?: SyncularV2DatabaseSyncOptions;
+export interface SyncularConsoleDiagnosticsOptions {
+  enabled?: boolean;
+  endpoint?: string;
+  baseUrl?: string;
+  token?: string;
+  getHeaders?: () => SyncularAuthHeaders | Promise<SyncularAuthHeaders>;
+  clientId?: string;
+  actorId?: string;
+  partitionId?: string;
+  debounceMs?: number | false;
+  maxPayloadBytes?: number;
+  network?: SyncularNetworkStatusSource | false;
 }
 
-export interface SyncularV2RuntimeArtifact {
+export interface CreateSyncularDatabaseOptions {
+  config: SyncularClientConfig;
+  worker?: Worker | (() => Worker);
+  requestTimeoutMs?: number;
+  runtime?: SyncularRuntimeArtifact;
+  runtimeArtifacts?: readonly SyncularRuntimeArtifactCandidate[];
+  requiredRuntimeFeatures?: readonly string[];
+  blobLimits?: SyncularBlobLimits;
+  codecs?: ColumnCodecSource;
+  appTables?: readonly string[];
+  tableConfig?: SyncularTableConfigMap;
+  getHeaders?: () => SyncularAuthHeaders | Promise<SyncularAuthHeaders>;
+  authLifecycle?: SyncAuthLifecycle;
+  diagnostics?: SyncularDiagnosticSink;
+  consoleDiagnostics?: boolean | SyncularConsoleDiagnosticsOptions;
+  realtime?: boolean | SyncularRealtimeOptions;
+  sync?: SyncularDatabaseSyncOptions;
+}
+
+export interface SyncularRuntimeArtifact {
   wasmGlueUrl?: string | URL;
   wasmUrl?: string | URL | Request;
 }
 
-export interface SyncularV2RuntimeArtifactCandidate
-  extends SyncularV2RuntimeArtifact {
+export interface SyncularRuntimeArtifactCandidate
+  extends SyncularRuntimeArtifact {
   name?: string;
   features: readonly string[];
 }
 
-export interface SyncularV2RuntimeArtifactCatalog {
+export interface SyncularRuntimeArtifactCatalog {
   catalogVersion: 1;
   packageName: string;
   packageVersion: string;
   generatedAt?: string;
-  artifacts: readonly SyncularV2RuntimeArtifactCatalogEntry[];
+  artifacts: readonly SyncularRuntimeArtifactCatalogEntry[];
 }
 
-export interface SyncularV2RuntimeArtifactCatalogEntry {
+export interface SyncularRuntimeArtifactCatalogEntry {
   name: string;
   variant?: string;
   profile?: string;
@@ -251,14 +264,14 @@ export interface SyncularV2RuntimeArtifactCatalogEntry {
   gzipBytes?: number;
 }
 
-export type SyncularV2TableConfigMap = Record<string, SyncularV2TableConfig>;
+export type SyncularTableConfigMap = Record<string, SyncularTableConfig>;
 
-export interface SyncularV2TableConfig {
+export interface SyncularTableConfig {
   primaryKeyColumn?: string;
   serverVersionColumn?: string | null;
   softDeleteColumn?: string | null;
   blobColumns?: readonly string[];
-  crdtYjsFields?: readonly SyncularV2CrdtYjsFieldConfig[];
+  crdtYjsFields?: readonly SyncularCrdtYjsFieldConfig[];
   encryptedFields?: readonly {
     field: string;
     scope?: string;
@@ -266,52 +279,52 @@ export interface SyncularV2TableConfig {
   }[];
 }
 
-export interface SyncularV2AppSchema {
+export interface SyncularAppSchema {
   schemaVersion: number;
-  localBaseSchema?: SyncularV2LocalBaseSchema;
-  tables: readonly SyncularV2AppTableMetadata[];
-  migrations?: readonly SyncularV2EmbeddedMigration[];
+  localBaseSchema?: SyncularLocalBaseSchema;
+  tables: readonly SyncularAppTableMetadata[];
+  migrations?: readonly SyncularEmbeddedMigration[];
 }
 
-export interface SyncularV2LocalBaseSchema {
+export interface SyncularLocalBaseSchema {
   tableSetupSql: readonly string[];
 }
 
-export interface SyncularV2EmbeddedMigration {
+export interface SyncularEmbeddedMigration {
   version: string;
   schemaVersion: number;
   name: string;
   upSql: string;
 }
 
-export interface SyncularV2AppTableMetadata {
+export interface SyncularAppTableMetadata {
   name: string;
   primaryKeyColumn: string;
   serverVersionColumn: string;
   softDeleteColumn?: string | null;
   subscriptionId: string;
-  columns: readonly SyncularV2ColumnMetadata[];
+  columns: readonly SyncularColumnMetadata[];
   blobColumns: readonly string[];
-  crdtYjsFields: readonly SyncularV2CrdtYjsFieldMetadata[];
-  encryptedFields: readonly SyncularV2EncryptedFieldMetadata[];
-  scopes: readonly SyncularV2ScopeMetadata[];
+  crdtYjsFields: readonly SyncularCrdtYjsFieldMetadata[];
+  encryptedFields: readonly SyncularEncryptedFieldMetadata[];
+  scopes: readonly SyncularScopeMetadata[];
 }
 
-export interface SyncularV2ColumnMetadata {
+export interface SyncularColumnMetadata {
   name: string;
   typeFamily: string;
   notnullRequired: boolean;
   primaryKey: boolean;
 }
 
-export interface SyncularV2ScopeMetadata {
+export interface SyncularScopeMetadata {
   name: string;
   column: string;
   source: 'actorId' | 'projectId';
   required: boolean;
 }
 
-export interface SyncularV2CrdtYjsFieldMetadata {
+export interface SyncularCrdtYjsFieldMetadata {
   field: string;
   stateColumn: string;
   containerKey: string;
@@ -320,7 +333,7 @@ export interface SyncularV2CrdtYjsFieldMetadata {
   syncMode: SyncularYjsSyncMode;
 }
 
-export interface SyncularV2EncryptedFieldMetadata {
+export interface SyncularEncryptedFieldMetadata {
   field: string;
   scope: string;
   rowIdField: string;
@@ -329,7 +342,7 @@ export interface SyncularV2EncryptedFieldMetadata {
 export type SyncularYjsFieldKind = 'text' | 'xml-fragment' | 'prosemirror';
 export type SyncularYjsSyncMode = 'server-merge' | 'encrypted-update-log';
 
-export interface SyncularV2CrdtYjsFieldConfig {
+export interface SyncularCrdtYjsFieldConfig {
   field: string;
   stateColumn: string;
   containerKey?: string;
@@ -351,14 +364,13 @@ export type SyncularYjsPayloadEnvelope<Field extends string = string> = {
   __yjs?: Partial<Record<Field, SyncularYjsUpdateInput>>;
 };
 
-export interface SyncularV2CrdtFieldRequest {
+export interface SyncularCrdtFieldRequest {
   table: string;
   rowId: string;
   field: string;
 }
 
-export interface SyncularV2CrdtFieldDescriptor
-  extends SyncularV2CrdtFieldRequest {
+export interface SyncularCrdtFieldDescriptor extends SyncularCrdtFieldRequest {
   stateColumn: string;
   containerKey: string;
   rowIdField: string;
@@ -366,34 +378,32 @@ export interface SyncularV2CrdtFieldDescriptor
   syncMode: SyncularYjsSyncMode;
 }
 
-export interface SyncularV2CrdtFieldTextRequest
-  extends SyncularV2CrdtFieldRequest {
+export interface SyncularCrdtFieldTextRequest extends SyncularCrdtFieldRequest {
   nextText: string;
 }
 
-export interface SyncularV2CrdtFieldYjsUpdateRequest
-  extends SyncularV2CrdtFieldRequest {
+export interface SyncularCrdtFieldYjsUpdateRequest
+  extends SyncularCrdtFieldRequest {
   update: SyncularYjsUpdateEnvelope;
 }
 
-export interface SyncularV2CrdtFieldCompactionRequest
-  extends SyncularV2CrdtFieldRequest {
+export interface SyncularCrdtFieldCompactionRequest
+  extends SyncularCrdtFieldRequest {
   minUncheckpointedUpdates?: number;
 }
 
-export interface SyncularV2CrdtFieldWriteReceipt {
+export interface SyncularCrdtFieldWriteReceipt {
   clientCommitId: string;
   syncMode: SyncularYjsSyncMode;
 }
 
-export interface SyncularV2CrdtFieldMaterialization {
+export interface SyncularCrdtFieldMaterialization {
   value: unknown;
   stateBase64?: string | null;
   stateVectorBase64: string;
 }
 
-export interface SyncularV2CrdtDocumentSnapshot
-  extends SyncularV2CrdtFieldRequest {
+export interface SyncularCrdtDocumentSnapshot extends SyncularCrdtFieldRequest {
   documentKey: string;
   stateColumn: string;
   syncMode: SyncularYjsSyncMode;
@@ -407,20 +417,20 @@ export interface SyncularV2CrdtDocumentSnapshot
   compactedAt?: number | null;
 }
 
-export type SyncularV2CrdtUpdateOrigin = 'local' | 'remote' | 'compaction';
-export type SyncularV2CrdtUpdateStatus =
+export type SyncularCrdtUpdateOrigin = 'local' | 'remote' | 'compaction';
+export type SyncularCrdtUpdateStatus =
   | 'pending'
   | 'flushed'
   | 'acked'
   | 'pruned';
 
-export interface SyncularV2CrdtUpdateLogEntry {
+export interface SyncularCrdtUpdateLogEntry {
   id: number;
   documentKey: string;
   updateId: string;
   clientCommitId?: string | null;
-  origin: SyncularV2CrdtUpdateOrigin;
-  status: SyncularV2CrdtUpdateStatus;
+  origin: SyncularCrdtUpdateOrigin;
+  status: SyncularCrdtUpdateStatus;
   updateBase64: string;
   stateVectorBase64: string;
   createdAt: number;
@@ -428,7 +438,7 @@ export interface SyncularV2CrdtUpdateLogEntry {
   ackedAt?: number | null;
 }
 
-export interface SyncularV2CrdtFieldCompactionStats {
+export interface SyncularCrdtFieldCompactionStats {
   pendingUpdates: number;
   flushedUpdates: number;
   ackedUpdates: number;
@@ -438,7 +448,7 @@ export interface SyncularV2CrdtFieldCompactionStats {
   compactedAt?: number | null;
 }
 
-export interface SyncularV2EncryptedCrdtStreamStats {
+export interface SyncularEncryptedCrdtStreamStats {
   updateCount: number;
   checkpointCount: number;
   checkpointableUpdateCount: number;
@@ -446,13 +456,13 @@ export interface SyncularV2EncryptedCrdtStreamStats {
   latestCheckpointCoversSeq?: number | null;
 }
 
-export interface SyncularV2CrdtFieldCompactionReceipt {
+export interface SyncularCrdtFieldCompactionReceipt {
   checkpointCreated: boolean;
   clientCommitId?: string | null;
-  before: SyncularV2CrdtFieldCompactionStats;
-  after: SyncularV2CrdtFieldCompactionStats;
-  encryptedStreamBefore?: SyncularV2EncryptedCrdtStreamStats | null;
-  encryptedStreamAfter?: SyncularV2EncryptedCrdtStreamStats | null;
+  before: SyncularCrdtFieldCompactionStats;
+  after: SyncularCrdtFieldCompactionStats;
+  encryptedStreamBefore?: SyncularEncryptedCrdtStreamStats | null;
+  encryptedStreamAfter?: SyncularEncryptedCrdtStreamStats | null;
 }
 
 export interface SyncularBuildYjsTextUpdateArgs {
@@ -484,13 +494,13 @@ export interface SyncularApplyYjsEnvelopeToPayloadArgs {
   rowId?: string | null;
   payload: Record<string, unknown>;
   existingRow?: Record<string, unknown> | null;
-  rules: readonly (SyncularV2CrdtYjsFieldConfig & { table: string })[];
+  rules: readonly (SyncularCrdtYjsFieldConfig & { table: string })[];
   envelopeKey?: string;
   strict?: boolean;
   stripEnvelope?: boolean;
 }
 
-export interface SyncularV2SubscriptionSpec {
+export interface SyncularSubscriptionSpec {
   id: string;
   table: string;
   scopes: Record<string, string | string[]>;
@@ -502,20 +512,20 @@ export interface SyncularV2SubscriptionSpec {
   bootstrapPhase?: number;
 }
 
-export interface SyncularV2ChangedRow {
+export interface SyncularChangedRow {
   table: string;
   rowId?: string | null;
   operation: 'insert' | 'update' | 'delete' | 'compact' | string;
   changedFields: string[];
   crdtFields: string[];
-  crdtFieldChanges?: SyncularV2ChangedCrdtField[];
+  crdtFieldChanges?: SyncularChangedCrdtField[];
   commitId?: string | null;
   commitSeq?: number | null;
   subscriptionId?: string | null;
   serverVersion?: number | null;
 }
 
-export interface SyncularV2ChangedCrdtField {
+export interface SyncularChangedCrdtField {
   field: string;
   stateColumn: string;
   containerKey: string;
@@ -524,18 +534,16 @@ export interface SyncularV2ChangedCrdtField {
   syncMode: string;
 }
 
-export interface SyncularV2RowsChangedEvent {
+export interface SyncularRowsChangedEvent {
   source: 'localWrite' | 'remotePull' | string;
   changedTables: string[];
-  changedRows: SyncularV2ChangedRow[];
+  changedRows: SyncularChangedRow[];
   changedRowsTruncated?: boolean;
 }
 
-export type SyncularV2RowsChangedSink = (
-  event: SyncularV2RowsChangedEvent
-) => void;
+export type SyncularRowsChangedSink = (event: SyncularRowsChangedEvent) => void;
 
-export interface SyncularV2OutboxStats {
+export interface SyncularOutboxStats {
   pending: number;
   sending: number;
   failed: number;
@@ -543,41 +551,41 @@ export interface SyncularV2OutboxStats {
   total: number;
 }
 
-export interface SyncularV2ConflictStats {
+export interface SyncularConflictStats {
   unresolved: number;
   resolved: number;
   total: number;
 }
 
-export interface SyncularV2PresenceEntry<TMetadata = Record<string, unknown>> {
+export interface SyncularPresenceEntry<TMetadata = Record<string, unknown>> {
   clientId: string;
   actorId: string;
   joinedAt: number;
   metadata?: TMetadata;
 }
 
-export interface SyncularV2PresenceChangeEvent<
+export interface SyncularPresenceChangeEvent<
   TMetadata = Record<string, unknown>,
 > {
   scopeKey: string;
-  presence: SyncularV2PresenceEntry<TMetadata>[];
+  presence: SyncularPresenceEntry<TMetadata>[];
 }
 
-export type SyncularV2PresenceSink<TMetadata = Record<string, unknown>> = (
-  event: SyncularV2PresenceChangeEvent<TMetadata>
+export type SyncularPresenceSink<TMetadata = Record<string, unknown>> = (
+  event: SyncularPresenceChangeEvent<TMetadata>
 ) => void;
 
-export interface SyncularV2BlobUploadEvent {
+export interface SyncularBlobUploadEvent {
   ref: BlobRef;
 }
 
-export interface SyncularV2BlobUploadErrorEvent {
+export interface SyncularBlobUploadErrorEvent {
   hash: string;
   error: string;
   ref?: BlobRef;
 }
 
-export type SyncularV2LifecyclePhase =
+export type SyncularLifecyclePhase =
   | 'closed'
   | 'offline'
   | 'connecting'
@@ -587,66 +595,65 @@ export type SyncularV2LifecyclePhase =
   | 'degraded'
   | 'complete';
 
-export interface SyncularV2LifecycleState {
-  phase: SyncularV2LifecyclePhase;
-  realtime: SyncularV2RealtimeConnectionState;
+export interface SyncularLifecycleState {
+  phase: SyncularLifecyclePhase;
+  realtime: SyncularRealtimeConnectionState;
   online: boolean;
   requiresAction: boolean;
   pendingRequests: number;
   bootstrap?: Pick<
-    SyncularV2BootstrapStatus,
+    SyncularBootstrapStatus,
     | 'complete'
     | 'criticalReady'
     | 'interactiveReady'
     | 'isBootstrapping'
     | 'progressPercent'
   >;
-  outbox?: SyncularV2OutboxStats;
-  conflicts?: SyncularV2ConflictStats;
-  blobUploads?: SyncularV2BlobUploadQueueStats;
-  lastDiagnostic?: SyncularV2DiagnosticEvent;
+  outbox?: SyncularOutboxStats;
+  conflicts?: SyncularConflictStats;
+  blobUploads?: SyncularBlobUploadQueueStats;
+  lastDiagnostic?: SyncularDiagnosticEvent;
   lastError?: {
     message: string;
     code?: string;
   };
 }
 
-export interface SyncularV2ClientEventMap {
-  rowsChanged: SyncularV2RowsChangedEvent;
-  lifecycleChanged: SyncularV2LifecycleState;
-  bootstrapChanged: SyncularV2BootstrapStatus;
-  outboxChanged: SyncularV2OutboxStats;
-  conflictsChanged: SyncularV2ConflictStats;
-  blobUploadsChanged: SyncularV2BlobUploadQueueStats;
-  blobUploadCompleted: SyncularV2BlobUploadEvent;
-  blobUploadFailed: SyncularV2BlobUploadErrorEvent;
-  presenceChanged: SyncularV2PresenceChangeEvent;
+export interface SyncularClientEventMap {
+  rowsChanged: SyncularRowsChangedEvent;
+  lifecycleChanged: SyncularLifecycleState;
+  bootstrapChanged: SyncularBootstrapStatus;
+  outboxChanged: SyncularOutboxStats;
+  conflictsChanged: SyncularConflictStats;
+  blobUploadsChanged: SyncularBlobUploadQueueStats;
+  blobUploadCompleted: SyncularBlobUploadEvent;
+  blobUploadFailed: SyncularBlobUploadErrorEvent;
+  presenceChanged: SyncularPresenceChangeEvent;
 }
 
-export type SyncularV2ClientEventType = keyof SyncularV2ClientEventMap;
+export type SyncularClientEventType = keyof SyncularClientEventMap;
 
-export type SyncularV2ClientEventSink<T extends SyncularV2ClientEventType> = (
-  event: SyncularV2ClientEventMap[T]
+export type SyncularClientEventSink<T extends SyncularClientEventType> = (
+  event: SyncularClientEventMap[T]
 ) => void;
 
-export type SyncularV2ErrorCode = CoreSyncularErrorCode;
+export type SyncularErrorCode = CoreSyncularErrorCode;
 
-export type SyncularV2ErrorCategory = CoreSyncularErrorCategory;
+export type SyncularErrorCategory = CoreSyncularErrorCategory;
 
-export type SyncularV2ErrorRecommendedAction =
-  CoreSyncularErrorRecommendedAction;
+export type SyncularErrorRecommendedAction = CoreSyncularErrorRecommendedAction;
 
-export interface SyncularV2SyncResult {
+export interface SyncularSyncResult {
   changedTables: string[];
-  changedRows: SyncularV2ChangedRow[];
+  changedRows: SyncularChangedRow[];
   changedRowsTruncated: boolean;
-  subscriptions: SyncularV2SubscriptionResult[];
-  bootstrap: SyncularV2BootstrapStatus;
+  subscriptions: SyncularSubscriptionResult[];
+  bootstrap: SyncularBootstrapStatus;
   pushedCommits: number;
-  timings: SyncularV2SyncTimings;
+  timings: SyncularSyncTimings;
 }
 
-export interface SyncularV2SyncTimings {
+export interface SyncularSyncTimings {
   totalMs: number;
   pushMs: number;
   pullMs: number;
@@ -671,7 +678,7 @@ export interface SyncularV2SyncTimings {
   notifyMs: number;
 }
 
-export interface SyncularV2ConflictSummary {
+export interface SyncularConflictSummary {
   id: string;
   clientCommitId: string;
   opIndex: number;
@@ -683,61 +690,61 @@ export interface SyncularV2ConflictSummary {
   resolution: string | null;
 }
 
-export type SyncularV2ConflictResolution =
+export type SyncularConflictResolution =
   | 'keep-local'
   | 'keep-server'
   | 'dismiss';
 
-export interface SyncularV2SubscriptionResult {
+export interface SyncularSubscriptionResult {
   id: string;
   table: string;
   status: string;
   scopes: Record<string, string | string[]>;
   nextCursor: number;
   bootstrapPhase: number;
-  bootstrapState: SyncularV2BootstrapState | null;
+  bootstrapState: SyncularBootstrapState | null;
   ready: boolean;
-  phase: SyncularV2BootstrapSubscriptionPhase;
+  phase: SyncularBootstrapSubscriptionPhase;
   progressPercent: number;
   snapshotRows: unknown[];
   commits: unknown[];
 }
 
-export interface SyncularV2BootstrapState {
+export interface SyncularBootstrapState {
   asOfCommitSeq: number;
   tables: string[];
   tableIndex: number;
   rowCursor: string | null;
 }
 
-export type SyncularV2BootstrapSubscriptionPhase =
+export type SyncularBootstrapSubscriptionPhase =
   | 'pending'
   | 'bootstrapping'
   | 'live'
   | 'error'
   | string;
 
-export type SyncularV2BootstrapChannelPhase =
+export type SyncularBootstrapChannelPhase =
   | 'idle'
   | 'bootstrapping'
   | 'live'
   | 'error'
   | string;
 
-export interface SyncularV2BootstrapSubscriptionStatus {
+export interface SyncularBootstrapSubscriptionStatus {
   id: string;
   table: string;
   expected: boolean;
   ready: boolean;
   status: string | null;
-  phase: SyncularV2BootstrapSubscriptionPhase;
+  phase: SyncularBootstrapSubscriptionPhase;
   progressPercent: number;
   cursor: number | null;
-  bootstrapState: SyncularV2BootstrapState | null;
+  bootstrapState: SyncularBootstrapState | null;
   bootstrapPhase: number;
 }
 
-export interface SyncularV2BootstrapPhaseStatus {
+export interface SyncularBootstrapPhaseStatus {
   phase: number;
   expectedSubscriptionIds: string[];
   readySubscriptionIds: string[];
@@ -746,8 +753,8 @@ export interface SyncularV2BootstrapPhaseStatus {
   progressPercent: number;
 }
 
-export interface SyncularV2BootstrapStatus {
-  channelPhase: SyncularV2BootstrapChannelPhase;
+export interface SyncularBootstrapStatus {
+  channelPhase: SyncularBootstrapChannelPhase;
   progressPercent: number;
   isBootstrapping: boolean;
   criticalReady: boolean;
@@ -757,37 +764,37 @@ export interface SyncularV2BootstrapStatus {
   expectedSubscriptionIds: string[];
   readySubscriptionIds: string[];
   pendingSubscriptionIds: string[];
-  subscriptions: SyncularV2BootstrapSubscriptionStatus[];
-  phases: SyncularV2BootstrapPhaseStatus[];
+  subscriptions: SyncularBootstrapSubscriptionStatus[];
+  phases: SyncularBootstrapPhaseStatus[];
 }
 
-export interface SyncularV2SchemaState {
+export interface SyncularSchemaState {
   schemaId: string;
   schemaVersion: number | null;
   currentSchemaVersion: number;
   updatedAt: number | null;
 }
 
-export type SyncularV2LocalHealthSeverity = 'info' | 'warning' | 'error';
+export type SyncularLocalHealthSeverity = 'info' | 'warning' | 'error';
 
-export type SyncularV2LocalHealthRepairAction =
+export type SyncularLocalHealthRepairAction =
   | 'forceRebootstrap'
   | 'clearOrphanedState'
   | 'clearOrphanedSyncedRows'
   | 'manualInspection';
 
-export interface SyncularV2LocalHealthFinding {
-  severity: SyncularV2LocalHealthSeverity;
+export interface SyncularLocalHealthFinding {
+  severity: SyncularLocalHealthSeverity;
   code: string;
   component: string;
   message: string;
   subscriptionId?: string;
   table?: string;
-  repairAction?: SyncularV2LocalHealthRepairAction;
+  repairAction?: SyncularLocalHealthRepairAction;
   details?: Record<string, unknown>;
 }
 
-export interface SyncularV2LocalHealthReport {
+export interface SyncularLocalHealthReport {
   generatedAt: number;
   ok: boolean;
   checkedSubscriptions: number;
@@ -799,17 +806,17 @@ export interface SyncularV2LocalHealthReport {
   checkedBlobReferences: number;
   checkedCrdtDocuments: number;
   checkedCrdtUpdateLogEntries: number;
-  findings: SyncularV2LocalHealthFinding[];
+  findings: SyncularLocalHealthFinding[];
 }
 
-export interface SyncularV2LocalHealthRepairRequest {
-  action: SyncularV2LocalHealthRepairAction;
+export interface SyncularLocalHealthRepairRequest {
+  action: SyncularLocalHealthRepairAction;
   subscriptionIds?: readonly string[];
   tables?: readonly string[];
 }
 
-export interface SyncularV2LocalHealthRepairReport {
-  action: SyncularV2LocalHealthRepairAction;
+export interface SyncularLocalHealthRepairReport {
+  action: SyncularLocalHealthRepairAction;
   deletedSubscriptionStates: number;
   deletedVerifiedRoots: number;
   forcedRebootstrapSubscriptions: number;
@@ -817,12 +824,12 @@ export interface SyncularV2LocalHealthRepairReport {
   clearedTables: string[];
 }
 
-export interface SyncularV2LocalSyncResetRequest {
+export interface SyncularLocalSyncResetRequest {
   subscriptionIds?: readonly string[];
   clearSyncedRows?: boolean;
 }
 
-export interface SyncularV2LocalSyncResetReport {
+export interface SyncularLocalSyncResetReport {
   resetSubscriptions: number;
   deletedSubscriptionStates: number;
   deletedVerifiedRoots: number;
@@ -830,7 +837,7 @@ export interface SyncularV2LocalSyncResetReport {
   clearedTables: string[];
 }
 
-export interface SyncularV2LocalSupportSubscription {
+export interface SyncularLocalSupportSubscription {
   id: string;
   table: string;
   scopeKeys: string[];
@@ -840,7 +847,7 @@ export interface SyncularV2LocalSupportSubscription {
   bootstrapPhase: number;
 }
 
-export interface SyncularV2LocalSupportSubscriptionState {
+export interface SyncularLocalSupportSubscriptionState {
   stateId: string;
   subscriptionId: string;
   table: string;
@@ -854,7 +861,7 @@ export interface SyncularV2LocalSupportSubscriptionState {
   bootstrapStateByteLen: number;
 }
 
-export interface SyncularV2LocalSupportVerifiedRoot {
+export interface SyncularLocalSupportVerifiedRoot {
   stateId: string;
   subscriptionId: string;
   partitionIdPresent: boolean;
@@ -864,13 +871,13 @@ export interface SyncularV2LocalSupportVerifiedRoot {
   rootIsCanonicalHex: boolean;
 }
 
-export interface SyncularV2LocalSupportOutboxSummary {
+export interface SyncularLocalSupportOutboxSummary {
   total: number;
   byStatus: Record<string, number>;
   bySchemaVersion: Record<string, number>;
 }
 
-export interface SyncularV2LocalSupportConflictSummary {
+export interface SyncularLocalSupportConflictSummary {
   total: number;
   unresolved: number;
   resolved: number;
@@ -878,23 +885,23 @@ export interface SyncularV2LocalSupportConflictSummary {
   byCode: Record<string, number>;
 }
 
-export interface SyncularV2LocalSupportBundle {
+export interface SyncularLocalSupportBundle {
   formatVersion: number;
   generatedAt: number;
   redacted: true;
   source: string;
-  health: SyncularV2LocalHealthReport;
-  appSchemaState: SyncularV2SchemaState;
-  subscriptions: SyncularV2LocalSupportSubscription[];
-  subscriptionStates: SyncularV2LocalSupportSubscriptionState[];
-  verifiedRoots: SyncularV2LocalSupportVerifiedRoot[];
-  outbox: SyncularV2LocalSupportOutboxSummary;
-  conflicts: SyncularV2LocalSupportConflictSummary;
+  health: SyncularLocalHealthReport;
+  appSchemaState: SyncularSchemaState;
+  subscriptions: SyncularLocalSupportSubscription[];
+  subscriptionStates: SyncularLocalSupportSubscriptionState[];
+  verifiedRoots: SyncularLocalSupportVerifiedRoot[];
+  outbox: SyncularLocalSupportOutboxSummary;
+  conflicts: SyncularLocalSupportConflictSummary;
   blob?: Record<string, number>;
   crdt?: Record<string, number>;
 }
 
-export interface SyncularV2LocalSupportBundleImportReport {
+export interface SyncularLocalSupportBundleImportReport {
   formatVersion: number;
   generatedAt: number;
   redacted: boolean;
@@ -911,44 +918,44 @@ export interface SyncularV2LocalSupportBundleImportReport {
   checkedSyncedRows: number;
 }
 
-export interface SyncularV2RustRuntimeInfo {
+export interface SyncularRustRuntimeInfo {
   crateName: string;
   crateVersion: string;
   schemaVersion: number;
   features: string[];
 }
 
-export interface SyncularV2RuntimeInfo {
+export interface SyncularRuntimeInfo {
   packageName: string;
   packageVersion: string;
   workerProtocolVersion: number;
-  storage?: SyncularV2Storage;
-  storageFallback?: SyncularV2StorageFallbackInfo;
+  storage?: SyncularStorage;
+  storageFallback?: SyncularStorageFallbackInfo;
   workerUrl?: string;
   wasmGlueUrl: string;
   wasmUrl: string;
-  rust?: SyncularV2RustRuntimeInfo;
+  rust?: SyncularRustRuntimeInfo;
 }
 
-export interface SyncularV2StorageFallbackInfo {
-  from: SyncularV2Storage;
-  to: SyncularV2Storage;
+export interface SyncularStorageFallbackInfo {
+  from: SyncularStorage;
+  to: SyncularStorage;
   reason: string;
 }
 
-export interface SyncularV2ConnectionState {
+export interface SyncularConnectionState {
   closed: boolean;
   pendingRequests: number;
-  realtime: SyncularV2RealtimeConnectionState;
-  storageFallback?: SyncularV2StorageFallbackInfo;
-  lastDiagnostic?: SyncularV2DiagnosticEvent;
+  realtime: SyncularRealtimeConnectionState;
+  storageFallback?: SyncularStorageFallbackInfo;
+  lastDiagnostic?: SyncularDiagnosticEvent;
   lastError?: {
     message: string;
     code?: string;
   };
 }
 
-export interface SyncularV2DiagnosticSubscriptionSnapshot {
+export interface SyncularDiagnosticSubscriptionSnapshot {
   id: string;
   table: string;
   scopeKeys: string[];
@@ -957,28 +964,28 @@ export interface SyncularV2DiagnosticSubscriptionSnapshot {
   paramsValueCount: number;
   status: string | null;
   ready: boolean;
-  phase: SyncularV2BootstrapSubscriptionPhase;
+  phase: SyncularBootstrapSubscriptionPhase;
   progressPercent: number;
   cursor: number | null;
   bootstrapPhase: number;
-  bootstrapState: SyncularV2BootstrapState | null;
+  bootstrapState: SyncularBootstrapState | null;
 }
 
-export interface SyncularV2DiagnosticSnapshot {
+export interface SyncularDiagnosticSnapshot {
   generatedAt: number;
-  runtime: SyncularV2RuntimeInfo;
-  connection: SyncularV2ConnectionState;
-  subscriptions: SyncularV2DiagnosticSubscriptionSnapshot[];
-  recentDiagnostics: SyncularV2DiagnosticEvent[];
-  recentSyncTimings: SyncularV2SyncTimings[];
-  bootstrap?: SyncularV2BootstrapStatus;
-  transportStats?: SyncularV2TransportStats;
-  outboxStats?: SyncularV2OutboxStats;
-  conflictStats?: SyncularV2ConflictStats;
-  blobUploadStats?: SyncularV2BlobUploadQueueStats;
+  runtime: SyncularRuntimeInfo;
+  connection: SyncularConnectionState;
+  subscriptions: SyncularDiagnosticSubscriptionSnapshot[];
+  recentDiagnostics: SyncularDiagnosticEvent[];
+  recentSyncTimings: SyncularSyncTimings[];
+  bootstrap?: SyncularBootstrapStatus;
+  transportStats?: SyncularTransportStats;
+  outboxStats?: SyncularOutboxStats;
+  conflictStats?: SyncularConflictStats;
+  blobUploadStats?: SyncularBlobUploadQueueStats;
 }
 
-export interface SyncularV2SqlResult<
+export interface SyncularSqlResult<
   Row extends Record<string, unknown> = Record<string, unknown>,
 > {
   rows: Row[];
@@ -986,29 +993,29 @@ export interface SyncularV2SqlResult<
   insertId?: number;
 }
 
-export interface SyncularV2LiveQuerySnapshot<
+export interface SyncularLiveQuerySnapshot<
   Row extends Record<string, unknown> = Record<string, unknown>,
 > {
   id: string;
   rows: Row[];
 }
 
-export interface SyncularV2LiveQueryEvent<
+export interface SyncularLiveQueryEvent<
   Row extends Record<string, unknown> = Record<string, unknown>,
 > {
   queryId: string;
   version: number;
-  changedRows: SyncularV2ChangedRow[];
+  changedRows: SyncularChangedRow[];
   rows: Row[];
 }
 
-export interface SyncularV2LiveQueryDependencyHint {
+export interface SyncularLiveQueryDependencyHint {
   table: string;
   rowIds?: readonly string[];
   fields?: readonly string[];
 }
 
-export interface SyncularV2LiveQueryDiagnostic {
+export interface SyncularLiveQueryDiagnostic {
   id: string;
   tables: string[];
   dependencyHintCount: number;
@@ -1017,82 +1024,77 @@ export interface SyncularV2LiveQueryDiagnostic {
   emittedEventCount: number;
 }
 
-export interface SyncularV2LiveQueryDiagnostics {
-  queries: SyncularV2LiveQueryDiagnostic[];
+export interface SyncularLiveQueryDiagnostics {
+  queries: SyncularLiveQueryDiagnostic[];
 }
 
-export interface SyncularV2LiveQueries {
+export interface SyncularLiveQueries {
   live<Row extends Record<string, unknown>>(
     query: { compile(): CompiledQuery },
-    options: SyncularV2LiveQueryOptions<Row>
-  ): Promise<SyncularV2LiveQuerySubscription>;
+    options: SyncularLiveQueryOptions<Row>
+  ): Promise<SyncularLiveQuerySubscription>;
 }
 
-export interface SyncularV2LiveQueryOptions<
-  Row extends Record<string, unknown>,
-> {
+export interface SyncularLiveQueryOptions<Row extends Record<string, unknown>> {
   tables?: readonly string[];
-  onChange(rows: Row[], event: SyncularV2LiveQueryChange<Row>): void;
+  onChange(rows: Row[], event: SyncularLiveQueryChange<Row>): void;
 }
 
-export interface SyncularV2LiveQueryChange<Row extends Record<string, unknown>>
-  extends SyncularV2LiveQueryEvent<Row> {
+export interface SyncularLiveQueryChange<Row extends Record<string, unknown>>
+  extends SyncularLiveQueryEvent<Row> {
   initial: boolean;
 }
 
-export interface SyncularV2LiveQuerySubscription {
+export interface SyncularLiveQuerySubscription {
   id: string;
   unsubscribe(): void;
 }
 
-export interface SyncularV2SqlClient {
+export interface SyncularSqlClient {
   executeSql<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params?: readonly unknown[]
-  ): Promise<SyncularV2SqlResult<Row>>;
+  ): Promise<SyncularSqlResult<Row>>;
   subscribeQuery<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params: readonly unknown[],
     tables: readonly string[],
-    hints?: readonly SyncularV2LiveQueryDependencyHint[]
-  ): Promise<SyncularV2LiveQuerySnapshot<Row>>;
+    hints?: readonly SyncularLiveQueryDependencyHint[]
+  ): Promise<SyncularLiveQuerySnapshot<Row>>;
   unsubscribeQuery(id: string): Promise<void>;
   drainLiveQueryEvents<
     Row extends Record<string, unknown> = Record<string, unknown>,
-  >(): Promise<Array<SyncularV2LiveQueryEvent<Row>>>;
+  >(): Promise<Array<SyncularLiveQueryEvent<Row>>>;
   close(): Promise<void>;
 }
 
-export interface SyncularV2UnsafeSqlClient extends SyncularV2SqlClient {
+export interface SyncularUnsafeSqlClient extends SyncularSqlClient {
   executeUnsafeSql<
     Row extends Record<string, unknown> = Record<string, unknown>,
-  >(
-    sql: string,
-    params?: readonly unknown[]
-  ): Promise<SyncularV2SqlResult<Row>>;
+  >(sql: string, params?: readonly unknown[]): Promise<SyncularSqlResult<Row>>;
 }
 
-export interface SyncularV2BlobStoreOptions {
+export interface SyncularBlobStoreOptions {
   mimeType?: string;
   immediate?: boolean;
 }
 
-export interface SyncularV2BlobLimits {
+export interface SyncularBlobLimits {
   maxPayloadBytes?: number;
 }
 
-export interface SyncularV2BlobUploadQueueStats {
+export interface SyncularBlobUploadQueueStats {
   pending: number;
   uploading: number;
   failed: number;
 }
 
-export interface SyncularV2BlobCacheStats {
+export interface SyncularBlobCacheStats {
   count: number;
   totalBytes: number;
 }
 
-export interface SyncularV2StorageCompactionOptions {
+export interface SyncularStorageCompactionOptions {
   olderThanMs?: number;
   maxBlobCacheBytes?: number;
   pruneAckedOutbox?: boolean;
@@ -1106,7 +1108,7 @@ export interface SyncularV2StorageCompactionOptions {
   pruneCrdtUpdateLog?: boolean;
 }
 
-export interface SyncularV2StorageCompactionReport {
+export interface SyncularStorageCompactionReport {
   ackedOutboxCommitsDeleted: number;
   resolvedConflictsDeleted: number;
   failedBlobUploadsDeleted: number;
@@ -1118,43 +1120,41 @@ export interface SyncularV2StorageCompactionReport {
   crdtUpdateLogDeleted: number;
 }
 
-export interface SyncularV2Blobs {
+export interface SyncularBlobs {
   store(
     data: Blob | File | Uint8Array,
-    options?: SyncularV2BlobStoreOptions
+    options?: SyncularBlobStoreOptions
   ): Promise<BlobRef>;
   retrieve(ref: BlobRef): Promise<Uint8Array>;
   isLocal(hash: string): Promise<boolean>;
   preload(refs: readonly BlobRef[]): Promise<void>;
   processUploadQueue(): Promise<{ uploaded: number; failed: number }>;
-  getUploadQueueStats(): Promise<SyncularV2BlobUploadQueueStats>;
-  getCacheStats(): Promise<SyncularV2BlobCacheStats>;
+  getUploadQueueStats(): Promise<SyncularBlobUploadQueueStats>;
+  getCacheStats(): Promise<SyncularBlobCacheStats>;
   pruneCache(maxBytes?: number): Promise<number>;
   clearCache(): Promise<void>;
 }
 
-export interface SyncularV2Client extends SyncularV2SqlClient {
-  setAuthHeaders(headers: SyncularV2AuthHeaders): Promise<void>;
+export interface SyncularRuntimeClient extends SyncularSqlClient {
+  setAuthHeaders(headers: SyncularAuthHeaders): Promise<void>;
   issueAuthLease(
     request: SyncAuthLeaseIssueRequest
-  ): Promise<SyncularV2AuthLeaseRecord>;
-  upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void>;
-  authLease(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null>;
+  ): Promise<SyncularAuthLeaseRecord>;
+  upsertAuthLease(lease: SyncularAuthLeaseRecord): Promise<void>;
+  authLease(leaseId: string): Promise<SyncularAuthLeaseRecord | null>;
   activeAuthLeases(
     actorId?: string | null,
     nowMs?: number
-  ): Promise<SyncularV2AuthLeaseRecord[]>;
+  ): Promise<SyncularAuthLeaseRecord[]>;
   setFieldEncryption(
-    config: SyncularV2FieldEncryptionConfig | null
+    config: SyncularFieldEncryptionConfig | null
   ): Promise<void>;
-  setEncryptedCrdt(config: SyncularV2EncryptedCrdtConfig | null): Promise<void>;
-  setBlobEncryption(
-    config: SyncularV2BlobEncryptionConfig | null
-  ): Promise<void>;
-  startRealtime(options?: boolean | SyncularV2RealtimeOptions): Promise<void>;
+  setEncryptedCrdt(config: SyncularEncryptedCrdtConfig | null): Promise<void>;
+  setBlobEncryption(config: SyncularBlobEncryptionConfig | null): Promise<void>;
+  startRealtime(options?: boolean | SyncularRealtimeOptions): Promise<void>;
   stopRealtime(): Promise<void>;
   setSubscriptions(
-    subscriptions: readonly SyncularV2SubscriptionSpec[]
+    subscriptions: readonly SyncularSubscriptionSpec[]
   ): Promise<void>;
   forceSubscriptionsBootstrap(
     subscriptionIds?: readonly string[]
@@ -1173,53 +1173,47 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
   applyLeasedMutationsCommit(
     operations: Array<{ operation: SyncOperation; localRow?: unknown | null }>
   ): Promise<string>;
-  syncPull(
-    options?: SyncularV2SyncRequestOptions
-  ): Promise<SyncularV2SyncResult>;
-  syncPush(
-    options?: SyncularV2SyncRequestOptions
-  ): Promise<SyncularV2SyncResult>;
-  syncOnce(
-    options?: SyncularV2SyncRequestOptions
-  ): Promise<SyncularV2SyncResult>;
+  syncPull(options?: SyncularSyncRequestOptions): Promise<SyncularSyncResult>;
+  syncPush(options?: SyncularSyncRequestOptions): Promise<SyncularSyncResult>;
+  syncOnce(options?: SyncularSyncRequestOptions): Promise<SyncularSyncResult>;
   resumeFromBackground(
-    options?: SyncularV2SyncRequestOptions
-  ): Promise<SyncularV2SyncResult>;
-  conflictSummaries(): Promise<SyncularV2ConflictSummary[]>;
+    options?: SyncularSyncRequestOptions
+  ): Promise<SyncularSyncResult>;
+  conflictSummaries(): Promise<SyncularConflictSummary[]>;
   retryConflictKeepLocal(id: string): Promise<string>;
   resolveConflict(
     id: string,
-    resolution: SyncularV2ConflictResolution
+    resolution: SyncularConflictResolution
   ): Promise<void>;
   listTable<Row extends Record<string, unknown> = Record<string, unknown>>(
     table: string
   ): Promise<Row[]>;
   storeBlob(
     data: Uint8Array,
-    options?: SyncularV2BlobStoreOptions
+    options?: SyncularBlobStoreOptions
   ): Promise<BlobRef>;
   retrieveBlob(ref: BlobRef): Promise<Uint8Array>;
   isBlobLocal(hash: string): Promise<boolean>;
   processBlobUploadQueue(): Promise<{ uploaded: number; failed: number }>;
-  blobUploadQueueStats(): Promise<SyncularV2BlobUploadQueueStats>;
-  blobCacheStats(): Promise<SyncularV2BlobCacheStats>;
+  blobUploadQueueStats(): Promise<SyncularBlobUploadQueueStats>;
+  blobCacheStats(): Promise<SyncularBlobCacheStats>;
   pruneBlobCache(maxBytes?: number): Promise<number>;
   clearBlobCache(): Promise<void>;
   compactStorage(
-    options?: SyncularV2StorageCompactionOptions
-  ): Promise<SyncularV2StorageCompactionReport>;
-  generatedSchemaState(): Promise<SyncularV2SchemaState>;
-  localHealthCheck(): Promise<SyncularV2LocalHealthReport>;
+    options?: SyncularStorageCompactionOptions
+  ): Promise<SyncularStorageCompactionReport>;
+  generatedSchemaState(): Promise<SyncularSchemaState>;
+  localHealthCheck(): Promise<SyncularLocalHealthReport>;
   repairLocalHealth(
-    request: SyncularV2LocalHealthRepairRequest
-  ): Promise<SyncularV2LocalHealthRepairReport>;
+    request: SyncularLocalHealthRepairRequest
+  ): Promise<SyncularLocalHealthRepairReport>;
   resetLocalSyncState(
-    request?: SyncularV2LocalSyncResetRequest
-  ): Promise<SyncularV2LocalSyncResetReport>;
-  exportLocalSupportBundle(): Promise<SyncularV2LocalSupportBundle>;
+    request?: SyncularLocalSyncResetRequest
+  ): Promise<SyncularLocalSyncResetReport>;
+  exportLocalSupportBundle(): Promise<SyncularLocalSupportBundle>;
   importLocalSupportBundle(
-    bundle: SyncularV2LocalSupportBundle | string
-  ): Promise<SyncularV2LocalSupportBundleImportReport>;
+    bundle: SyncularLocalSupportBundle | string
+  ): Promise<SyncularLocalSupportBundleImportReport>;
   buildYjsTextUpdate(
     args: SyncularBuildYjsTextUpdateArgs
   ): Promise<SyncularBuildYjsTextUpdateResult>;
@@ -1230,46 +1224,46 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
     args: SyncularApplyYjsEnvelopeToPayloadArgs
   ): Promise<Record<string, unknown>>;
   openCrdtField(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtFieldDescriptor>;
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtFieldDescriptor>;
   applyCrdtFieldText(
-    request: SyncularV2CrdtFieldTextRequest
-  ): Promise<SyncularV2CrdtFieldWriteReceipt>;
+    request: SyncularCrdtFieldTextRequest
+  ): Promise<SyncularCrdtFieldWriteReceipt>;
   applyCrdtFieldYjsUpdate(
-    request: SyncularV2CrdtFieldYjsUpdateRequest
-  ): Promise<SyncularV2CrdtFieldWriteReceipt>;
+    request: SyncularCrdtFieldYjsUpdateRequest
+  ): Promise<SyncularCrdtFieldWriteReceipt>;
   materializeCrdtField(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtFieldMaterialization>;
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtFieldMaterialization>;
   crdtDocumentSnapshot(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtDocumentSnapshot>;
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtDocumentSnapshot>;
   crdtUpdateLog(
-    request: SyncularV2CrdtFieldRequest & { limit?: number }
-  ): Promise<SyncularV2CrdtUpdateLogEntry[]>;
+    request: SyncularCrdtFieldRequest & { limit?: number }
+  ): Promise<SyncularCrdtUpdateLogEntry[]>;
   snapshotCrdtFieldStateVector(
-    request: SyncularV2CrdtFieldRequest
+    request: SyncularCrdtFieldRequest
   ): Promise<{ stateVectorBase64: string }>;
   compactCrdtField(
-    request: SyncularV2CrdtFieldCompactionRequest
-  ): Promise<SyncularV2CrdtFieldCompactionReceipt>;
+    request: SyncularCrdtFieldCompactionRequest
+  ): Promise<SyncularCrdtFieldCompactionReceipt>;
   encryptionHelper(
-    method: SyncularV2EncryptionHelperMethod,
+    method: SyncularEncryptionHelperMethod,
     args?: unknown
   ): Promise<unknown>;
-  runtimeInfo(): Promise<SyncularV2RuntimeInfo>;
-  connectionState(): SyncularV2ConnectionState;
-  lifecycleState(): SyncularV2LifecycleState;
-  diagnosticSnapshot(): Promise<SyncularV2DiagnosticSnapshot>;
-  addDiagnosticListener(listener: SyncularV2DiagnosticSink): () => void;
-  addEventListener<T extends SyncularV2ClientEventType>(
+  runtimeInfo(): Promise<SyncularRuntimeInfo>;
+  connectionState(): SyncularConnectionState;
+  lifecycleState(): SyncularLifecycleState;
+  diagnosticSnapshot(): Promise<SyncularDiagnosticSnapshot>;
+  addDiagnosticListener(listener: SyncularDiagnosticSink): () => void;
+  addEventListener<T extends SyncularClientEventType>(
     event: T,
-    listener: SyncularV2ClientEventSink<T>
+    listener: SyncularClientEventSink<T>
   ): () => void;
-  addRowsChangedListener(listener: SyncularV2RowsChangedSink): () => void;
+  addRowsChangedListener(listener: SyncularRowsChangedSink): () => void;
   getPresence<TMetadata = Record<string, unknown>>(
     scopeKey: string
-  ): SyncularV2PresenceEntry<TMetadata>[];
+  ): SyncularPresenceEntry<TMetadata>[];
   joinPresence(scopeKey: string, metadata?: Record<string, unknown>): void;
   leavePresence(scopeKey: string): void;
   updatePresenceMetadata(
@@ -1277,11 +1271,11 @@ export interface SyncularV2Client extends SyncularV2SqlClient {
     metadata: Record<string, unknown>
   ): void;
   addPresenceListener<TMetadata = Record<string, unknown>>(
-    listener: SyncularV2PresenceSink<TMetadata>
+    listener: SyncularPresenceSink<TMetadata>
   ): () => void;
   addLiveQueryListener(
     queryId: string,
-    listener: (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => void
+    listener: (event: SyncularLiveQueryEvent<Record<string, unknown>>) => void
   ): void;
   removeLiveQueryListener(queryId: string): void;
 }

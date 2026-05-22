@@ -7,14 +7,14 @@ const TRANSACTION_SQL_START = new Set([
   'release',
 ]);
 
-export function assertSyncularV2ReadonlySql(sql: string): void {
-  if (isSyncularV2ReadonlySql(sql)) return;
+export function assertSyncularReadonlySql(sql: string): void {
+  if (isSyncularReadonlySql(sql)) return;
   throw new Error(
-    'Syncular v2 public SQL is read-only. Use generated Syncular mutations for synced writes.'
+    'Syncular public SQL is read-only. Use generated Syncular mutations for synced writes.'
   );
 }
 
-export function isSyncularV2ReadonlySql(sql: string): boolean {
+export function isSyncularReadonlySql(sql: string): boolean {
   const normalized = stripLeadingSqlComments(sql).trimStart();
   if (!normalized) return true;
   if (hasMultipleSqlStatements(normalized)) return false;

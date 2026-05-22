@@ -1,21 +1,21 @@
 import {
-  type CreateSyncularV2ClientOptions,
+  type CreateSyncularClientOptions,
   createSyncularClient,
   type MutationReceipt,
   type MutationsApi,
+  type SyncularBlobUploadQueueStats,
+  type SyncularChangedRow,
+  type SyncularClientEventMap,
+  type SyncularClientEventType,
   type SyncularClientLike,
   type SyncularClientStatus,
-  type SyncularV2BlobUploadQueueStats,
-  type SyncularV2ChangedRow,
-  type SyncularV2ClientEventMap,
-  type SyncularV2ClientEventType,
-  type SyncularV2ConflictStats,
-  type SyncularV2ConnectionState,
-  type SyncularV2LiveQueryOptions,
-  type SyncularV2LiveQuerySubscription,
-  type SyncularV2OutboxStats,
-  type SyncularV2PresenceEntry,
-  type SyncularV2RowsChangedEvent,
+  type SyncularConflictStats,
+  type SyncularConnectionState,
+  type SyncularLiveQueryOptions,
+  type SyncularLiveQuerySubscription,
+  type SyncularOutboxStats,
+  type SyncularPresenceEntry,
+  type SyncularRowsChangedEvent,
   type TableMutations,
 } from '@syncular/client';
 import type { BlobRef } from '@syncular/core';
@@ -39,7 +39,7 @@ export type SyncularReactStatus = 'idle' | 'loading' | 'ready' | 'error';
 export interface SyncProviderProps<DB> {
   children?: ReactNode;
   client?: SyncularClientLike<DB>;
-  options?: CreateSyncularV2ClientOptions;
+  options?: CreateSyncularClientOptions;
   optionsKey?: unknown;
   destroyOnUnmount?: boolean;
   onClient?: (client: SyncularClientLike<DB>) => void;
@@ -162,7 +162,7 @@ export interface UseRowsChangedOptions {
 export interface UsePresenceResult<
   TMetadata extends Record<string, unknown> = Record<string, unknown>,
 > {
-  presence: SyncularV2PresenceEntry<TMetadata>[];
+  presence: SyncularPresenceEntry<TMetadata>[];
   isLoading: boolean;
 }
 
@@ -184,7 +184,7 @@ export interface UsePresenceWithJoinResult<
 }
 
 export interface UseSyncConnectionResult {
-  state: SyncularV2ConnectionState;
+  state: SyncularConnectionState;
   isConnected: boolean;
   isReconnecting: boolean;
   reconnect: () => Promise<void>;
@@ -192,7 +192,7 @@ export interface UseSyncConnectionResult {
 }
 
 export interface UseBlobUploadQueueResult {
-  stats: SyncularV2BlobUploadQueueStats | null;
+  stats: SyncularBlobUploadQueueStats | null;
   refresh(): Promise<void>;
   process(): Promise<{ uploaded: number; failed: number }>;
 }
@@ -347,9 +347,9 @@ export function createSyncularReact<DB>() {
     };
   }
 
-  function useSyncEvent<T extends SyncularV2ClientEventType>(
+  function useSyncEvent<T extends SyncularClientEventType>(
     event: T,
-    listener: (payload: SyncularV2ClientEventMap[T]) => void,
+    listener: (payload: SyncularClientEventMap[T]) => void,
     enabled = true
   ): void {
     const client = useClient();
@@ -361,7 +361,7 @@ export function createSyncularReact<DB>() {
   }
 
   function useRowsChanged(
-    listener: (event: SyncularV2RowsChangedEvent) => void,
+    listener: (event: SyncularRowsChangedEvent) => void,
     options: UseRowsChangedOptions = {}
   ): void {
     const listenerRef = useLatest(listener);
@@ -454,7 +454,7 @@ export function createSyncularReact<DB>() {
       if (!enabled || options.refreshOnDataChange === false) return undefined;
       let disposed = false;
       let fallbackUnsubscribe: (() => void) | undefined;
-      let liveSubscription: SyncularV2LiveQuerySubscription | undefined;
+      let liveSubscription: SyncularLiveQuerySubscription | undefined;
 
       const startFallback = () => {
         if (disposed || fallbackUnsubscribe) return;
@@ -724,14 +724,14 @@ export function createSyncularReact<DB>() {
     );
   }
 
-  function useOutboxStats(): SyncularV2OutboxStats | null {
-    const [stats, setStats] = useState<SyncularV2OutboxStats | null>(null);
+  function useOutboxStats(): SyncularOutboxStats | null {
+    const [stats, setStats] = useState<SyncularOutboxStats | null>(null);
     useSyncEvent('outboxChanged', setStats);
     return stats;
   }
 
-  function useConflictStats(): SyncularV2ConflictStats | null {
-    const [stats, setStats] = useState<SyncularV2ConflictStats | null>(null);
+  function useConflictStats(): SyncularConflictStats | null {
+    const [stats, setStats] = useState<SyncularConflictStats | null>(null);
     useSyncEvent('conflictsChanged', setStats);
     return stats;
   }
@@ -745,7 +745,7 @@ export function createSyncularReact<DB>() {
     const client = useClient();
     const enabled = options.enabled !== false;
     const [presence, setPresence] = useState<
-      SyncularV2PresenceEntry<TMetadata>[]
+      SyncularPresenceEntry<TMetadata>[]
     >([]);
     const [isLoading, setIsLoading] = useState(enabled);
 
@@ -806,7 +806,7 @@ export function createSyncularReact<DB>() {
 
   function useBlobUploadQueue(): UseBlobUploadQueueResult {
     const client = useClient();
-    const [stats, setStats] = useState<SyncularV2BlobUploadQueueStats | null>(
+    const [stats, setStats] = useState<SyncularBlobUploadQueueStats | null>(
       null
     );
     const refresh = useCallback(async () => {
@@ -898,8 +898,8 @@ function isCompilableExecutableQuery<TResult>(
 type LiveQueryCapableClient<DB> = SyncularClientLike<DB> & {
   live<Row extends Record<string, unknown>>(
     query: { compile(): CompiledQuery },
-    options: SyncularV2LiveQueryOptions<Row>
-  ): Promise<SyncularV2LiveQuerySubscription>;
+    options: SyncularLiveQueryOptions<Row>
+  ): Promise<SyncularLiveQuerySubscription>;
 };
 
 function hasLiveQueries<DB>(
@@ -1029,8 +1029,8 @@ function shallowEqualRecords(
 }
 
 export function changedRowsForTable(
-  event: SyncularV2RowsChangedEvent,
+  event: SyncularRowsChangedEvent,
   table: string
-): SyncularV2ChangedRow[] {
+): SyncularChangedRow[] {
   return event.changedRows.filter((row) => row.table === table);
 }

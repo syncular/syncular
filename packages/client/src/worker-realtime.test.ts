@@ -1,25 +1,25 @@
 import { describe, expect, it } from 'bun:test';
 import type {
-  SyncularV2BootstrapStatus,
-  SyncularV2DiagnosticEvent,
-  SyncularV2LiveQueryEvent,
-  SyncularV2SyncRequestOptions,
-  SyncularV2SyncResult,
+  SyncularBootstrapStatus,
+  SyncularDiagnosticEvent,
+  SyncularLiveQueryEvent,
+  SyncularSyncRequestOptions,
+  SyncularSyncResult,
 } from './types';
-import type { SyncularV2WorkerEvent } from './worker-protocol';
-import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
+import type { SyncularWorkerEvent } from './worker-protocol';
+import { SYNCULAR_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 import {
-  isSyncularV2RealtimeSyncMessage,
-  resolveSyncularV2RealtimeUrl,
-  type SyncularV2WorkerRealtimeClient,
-  SyncularV2WorkerRealtimeController,
-  type SyncularV2WorkerRealtimeSocket,
+  isSyncularRealtimeSyncMessage,
+  resolveSyncularRealtimeUrl,
+  type SyncularWorkerRealtimeClient,
+  SyncularWorkerRealtimeController,
+  type SyncularWorkerRealtimeSocket,
 } from './worker-realtime';
 
-describe('Syncular v2 worker realtime', () => {
+describe('Syncular worker realtime', () => {
   it('resolves the websocket URL from sync config and params', () => {
     expect(
-      resolveSyncularV2RealtimeUrl(
+      resolveSyncularRealtimeUrl(
         {
           baseUrl: '/sync',
           actorId: 'actor',
@@ -33,7 +33,7 @@ describe('Syncular v2 worker realtime', () => {
     );
 
     expect(
-      resolveSyncularV2RealtimeUrl(
+      resolveSyncularRealtimeUrl(
         {
           baseUrl: '/sync',
           actorId: 'actor',
@@ -48,9 +48,9 @@ describe('Syncular v2 worker realtime', () => {
   });
 
   it('recognizes server sync wakeup messages', () => {
-    expect(isSyncularV2RealtimeSyncMessage({ event: 'sync' })).toBe(true);
-    expect(isSyncularV2RealtimeSyncMessage({ event: 'pong' })).toBe(false);
-    expect(isSyncularV2RealtimeSyncMessage('sync')).toBe(false);
+    expect(isSyncularRealtimeSyncMessage({ event: 'sync' })).toBe(true);
+    expect(isSyncularRealtimeSyncMessage({ event: 'pong' })).toBe(false);
+    expect(isSyncularRealtimeSyncMessage('sync')).toBe(false);
   });
 
   it('binds default timer globals before scheduling heartbeats', () => {
@@ -69,7 +69,7 @@ describe('Syncular v2 worker realtime', () => {
     try {
       const client = new FakeRealtimeClient();
       const sockets: FakeRealtimeSocket[] = [];
-      const controller = new SyncularV2WorkerRealtimeController({
+      const controller = new SyncularWorkerRealtimeController({
         getClient: () => client,
         getConfig: () => ({
           baseUrl: '/sync',
@@ -98,8 +98,8 @@ describe('Syncular v2 worker realtime', () => {
   it('records websocket hello diagnostics without triggering a pull', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
-    const controller = new SyncularV2WorkerRealtimeController({
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const controller = new SyncularWorkerRealtimeController({
       getClient: () => client,
       getConfig: () => ({
         baseUrl: '/sync',
@@ -154,8 +154,8 @@ describe('Syncular v2 worker realtime', () => {
   it('sends and forwards websocket presence messages', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
-    const events: SyncularV2WorkerEvent[] = [];
-    const controller = new SyncularV2WorkerRealtimeController({
+    const events: SyncularWorkerEvent[] = [];
+    const controller = new SyncularWorkerRealtimeController({
       getClient: () => client,
       getConfig: () => ({
         baseUrl: '/sync',
@@ -203,7 +203,7 @@ describe('Syncular v2 worker realtime', () => {
     await waitFor(() => events.some((event) => event.type === 'presenceEvent'));
     expect(events).toContainEqual(
       expect.objectContaining({
-        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
         type: 'presenceEvent',
         action: 'snapshot',
         scopeKey: 'tasks:user-1',
@@ -222,7 +222,7 @@ describe('Syncular v2 worker realtime', () => {
   it('accepts websocket text frames delivered as bytes', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
-    const controller = new SyncularV2WorkerRealtimeController({
+    const controller = new SyncularWorkerRealtimeController({
       getClient: () => client,
       getConfig: () => ({
         baseUrl: '/sync',
@@ -255,8 +255,8 @@ describe('Syncular v2 worker realtime', () => {
   it('surfaces cursor-only recovery diagnostics before pulling', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
-    const controller = new SyncularV2WorkerRealtimeController({
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const controller = new SyncularWorkerRealtimeController({
       getClient: () => client,
       getConfig: () => ({
         baseUrl: '/sync',
@@ -306,8 +306,8 @@ describe('Syncular v2 worker realtime', () => {
   it('surfaces resync-required diagnostics before pulling', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
-    const controller = new SyncularV2WorkerRealtimeController({
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const controller = new SyncularWorkerRealtimeController({
       getClient: () => client,
       getConfig: () => ({
         baseUrl: '/sync',
@@ -365,9 +365,9 @@ describe('Syncular v2 worker realtime', () => {
   it('uses HTTP pull recovery for cursor-only websocket sync wakeups', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
-    const events: SyncularV2WorkerEvent[] = [];
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
-    const controller = new SyncularV2WorkerRealtimeController({
+    const events: SyncularWorkerEvent[] = [];
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const controller = new SyncularWorkerRealtimeController({
       getClient: () => client,
       getConfig: () => ({
         baseUrl: '/sync',
@@ -429,8 +429,8 @@ describe('Syncular v2 worker realtime', () => {
   it('uses HTTP pull when a websocket message requires recovery', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
-    const controller = new SyncularV2WorkerRealtimeController({
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const controller = new SyncularWorkerRealtimeController({
       getClient: () => client,
       getConfig: () => ({
         baseUrl: '/sync',
@@ -482,8 +482,8 @@ describe('Syncular v2 worker realtime', () => {
   it('applies binary websocket sync packs without an HTTP pull', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
-    const controller = new SyncularV2WorkerRealtimeController({
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const controller = new SyncularWorkerRealtimeController({
       getClient: () => client,
       getConfig: () => ({
         baseUrl: '/sync',
@@ -521,9 +521,9 @@ describe('Syncular v2 worker realtime', () => {
   it('emits structured diagnostics for reconnect scheduling', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const diagnostics: SyncularDiagnosticEvent[] = [];
     let attempts = 0;
-    const controller = new SyncularV2WorkerRealtimeController({
+    const controller = new SyncularWorkerRealtimeController({
       getClient: () => client,
       getConfig: () => ({
         baseUrl: '/sync',
@@ -563,8 +563,8 @@ describe('Syncular v2 worker realtime', () => {
   it('runs a follow-up pull when wakeups arrive during an active pull', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
-    const events: SyncularV2WorkerEvent[] = [];
-    const controller = new SyncularV2WorkerRealtimeController({
+    const events: SyncularWorkerEvent[] = [];
+    const controller = new SyncularWorkerRealtimeController({
       getClient: () => client,
       getConfig: () => ({
         baseUrl: '/sync',
@@ -619,8 +619,8 @@ describe('Syncular v2 worker realtime', () => {
   it('reconnects after close and ignores stale socket wakeups', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
-    const events: SyncularV2WorkerEvent[] = [];
-    const controller = new SyncularV2WorkerRealtimeController({
+    const events: SyncularWorkerEvent[] = [];
+    const controller = new SyncularWorkerRealtimeController({
       getClient: () => client,
       getConfig: () => ({
         baseUrl: '/sync',
@@ -670,8 +670,8 @@ describe('Syncular v2 worker realtime', () => {
   it('does not emit stale live events after realtime stops', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
-    const events: SyncularV2WorkerEvent[] = [];
-    const controller = new SyncularV2WorkerRealtimeController({
+    const events: SyncularWorkerEvent[] = [];
+    const controller = new SyncularWorkerRealtimeController({
       getClient: () => client,
       getConfig: () => ({
         baseUrl: '/sync',
@@ -709,16 +709,16 @@ describe('Syncular v2 worker realtime', () => {
   });
 });
 
-class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
+class FakeRealtimeClient implements SyncularWorkerRealtimeClient {
   syncPulls = 0;
-  syncPullOptions: SyncularV2SyncRequestOptions[] = [];
+  syncPullOptions: SyncularSyncRequestOptions[] = [];
   realtimeSyncPacks: Uint8Array[] = [];
   #pullResolvers: Array<() => void> = [];
-  #drains: Array<Array<SyncularV2LiveQueryEvent<Record<string, unknown>>>> = [];
+  #drains: Array<Array<SyncularLiveQueryEvent<Record<string, unknown>>>> = [];
 
   syncPull(
-    options: SyncularV2SyncRequestOptions = {}
-  ): Promise<SyncularV2SyncResult> {
+    options: SyncularSyncRequestOptions = {}
+  ): Promise<SyncularSyncResult> {
     this.syncPulls += 1;
     this.syncPullOptions.push(options);
     return new Promise((resolve) => {
@@ -736,9 +736,7 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
     });
   }
 
-  async applyRealtimeSyncPack(
-    bytes: Uint8Array
-  ): Promise<SyncularV2SyncResult> {
+  async applyRealtimeSyncPack(bytes: Uint8Array): Promise<SyncularSyncResult> {
     this.realtimeSyncPacks.push(bytes);
     return {
       changedTables: ['tasks'],
@@ -797,12 +795,12 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
 
   drainLiveQueryEvents<
     Row extends Record<string, unknown> = Record<string, unknown>,
-  >(): Array<SyncularV2LiveQueryEvent<Row>> {
-    return (this.#drains.shift() ?? []) as Array<SyncularV2LiveQueryEvent<Row>>;
+  >(): Array<SyncularLiveQueryEvent<Row>> {
+    return (this.#drains.shift() ?? []) as Array<SyncularLiveQueryEvent<Row>>;
   }
 
   queueDrain(
-    events: Array<SyncularV2LiveQueryEvent<Record<string, unknown>>>
+    events: Array<SyncularLiveQueryEvent<Record<string, unknown>>>
   ): void {
     this.#drains.push(events);
   }
@@ -814,7 +812,7 @@ class FakeRealtimeClient implements SyncularV2WorkerRealtimeClient {
   }
 }
 
-function zeroSyncTimings(): SyncularV2SyncResult['timings'] {
+function zeroSyncTimings(): SyncularSyncResult['timings'] {
   return {
     totalMs: 0,
     pushMs: 0,
@@ -841,7 +839,7 @@ function zeroSyncTimings(): SyncularV2SyncResult['timings'] {
   };
 }
 
-function zeroBootstrapStatus(): SyncularV2BootstrapStatus {
+function zeroBootstrapStatus(): SyncularBootstrapStatus {
   return {
     channelPhase: 'idle',
     progressPercent: 100,
@@ -858,7 +856,7 @@ function zeroBootstrapStatus(): SyncularV2BootstrapStatus {
   };
 }
 
-class FakeRealtimeSocket implements SyncularV2WorkerRealtimeSocket {
+class FakeRealtimeSocket implements SyncularWorkerRealtimeSocket {
   onopen: ((event: Event) => void) | null = null;
   onmessage: ((event: MessageEvent) => void) | null = null;
   onerror: ((event: Event) => void) | null = null;
@@ -898,7 +896,7 @@ class FakeRealtimeSocket implements SyncularV2WorkerRealtimeSocket {
   close(): void {}
 }
 
-function liveEventVersions(events: readonly SyncularV2WorkerEvent[]): number[] {
+function liveEventVersions(events: readonly SyncularWorkerEvent[]): number[] {
   return events
     .filter((event) => event.type === 'liveQueryEvents')
     .flatMap((event) => event.events.map((liveEvent) => liveEvent.version));

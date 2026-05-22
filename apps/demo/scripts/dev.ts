@@ -11,7 +11,7 @@ async function ensureBrowserWasmArtifact() {
   const javascriptBindingsDir = path.join(repoRoot, 'rust/bindings/javascript');
   const wasmPath = path.join(
     javascriptBindingsDir,
-    'dist/wasm/syncular_v2_bg.wasm'
+    'dist/wasm/syncular_bg.wasm'
   );
 
   if (existsSync(wasmPath)) {

@@ -1,13 +1,12 @@
-import type { SyncularV2ClientConfig, SyncularV2Storage } from './types';
+import type { SyncularClientConfig, SyncularStorage } from './types';
 
-export const SYNCULAR_V2_DEFAULT_STORAGE =
-  'opfsSahPool' satisfies SyncularV2Storage;
+export const SYNCULAR_DEFAULT_STORAGE = 'opfsSahPool' satisfies SyncularStorage;
 
-export function resolveSyncularV2ClientConfig(
-  config: SyncularV2ClientConfig
-): SyncularV2ClientConfig {
+export function resolveSyncularClientConfig(
+  config: SyncularClientConfig
+): SyncularClientConfig {
   return {
     ...config,
-    storage: config.storage ?? SYNCULAR_V2_DEFAULT_STORAGE,
+    storage: config.storage ?? SYNCULAR_DEFAULT_STORAGE,
   };
 }

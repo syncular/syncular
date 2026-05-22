@@ -7,7 +7,7 @@ import {
 } from 'node:fs';
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
-import { SYNCULAR_V2_WASM_BINARY_FILE } from '../src/runtime-contract';
+import { SYNCULAR_WASM_BINARY_FILE } from '../src/runtime-contract';
 
 const rawBudgetBytes = parseBudgetBytes(
   process.env.SYNCULAR_WASM_RAW_BUDGET_BYTES,
@@ -26,18 +26,18 @@ const repoRoot = path.resolve(packageRoot, '../../..');
 const wasmArg = readArgValue('--wasm');
 const wasmPath = wasmArg
   ? path.resolve(process.cwd(), wasmArg)
-  : path.join(packageRoot, 'dist/wasm', SYNCULAR_V2_WASM_BINARY_FILE);
+  : path.join(packageRoot, 'dist/wasm', SYNCULAR_WASM_BINARY_FILE);
 const profileWasmPath = path.join(
   repoRoot,
   '.context/wasm-size',
-  SYNCULAR_V2_WASM_BINARY_FILE.replace(/\.wasm$/, '.profile.wasm')
+  SYNCULAR_WASM_BINARY_FILE.replace(/\.wasm$/, '.profile.wasm')
 );
 const rawBytes = statSync(wasmPath).size;
 const gzipBytes = gzipSync(readFileSync(wasmPath)).byteLength;
 const rawWithinBudget = rawBytes <= rawBudgetBytes;
 const gzipWithinBudget = gzipBytes <= gzipBudgetBytes;
 const summaryLines = [
-  'Syncular v2 Rust-owned SQLite WASM size',
+  'Syncular Rust-owned SQLite WASM size',
   `raw: ${formatBytes(rawBytes)} / budget ${formatBytes(rawBudgetBytes)} (${formatDelta(rawBytes - rawBudgetBytes)})`,
   `gzip: ${formatBytes(gzipBytes)} / budget ${formatBytes(gzipBudgetBytes)} (${formatDelta(gzipBytes - gzipBudgetBytes)})`,
   `path: ${wasmPath}`,
@@ -96,7 +96,7 @@ if (reportPath) {
 if (check && (!rawWithinBudget || !gzipWithinBudget)) {
   console.error(
     [
-      '[syncular-v2-wasm] size budget exceeded.',
+      '[syncular-wasm] size budget exceeded.',
       `raw ${formatBytes(rawBytes)} <= ${formatBytes(rawBudgetBytes)}: ${rawWithinBudget ? 'ok' : 'fail'}`,
       `gzip ${formatBytes(gzipBytes)} <= ${formatBytes(gzipBudgetBytes)}: ${gzipWithinBudget ? 'ok' : 'fail'}`,
       'Adjust the budget only with a measured reason, or reduce enabled Rust features/dependencies.',

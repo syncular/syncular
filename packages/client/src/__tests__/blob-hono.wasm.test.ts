@@ -20,8 +20,8 @@ import {
   createNodeHonoServer,
 } from '../../../testkit/src/hono-node-server';
 import {
-  openSyncularV2RustClient,
-  type SyncularV2RustClient,
+  openSyncularRustClient,
+  type SyncularRustClient,
 } from '../rust-client';
 import { syncConformance } from './fixtures/sync-conformance';
 
@@ -29,9 +29,9 @@ const BLOB_SCENARIO = syncConformance.blob;
 const ACTOR_ID = BLOB_SCENARIO.browserActorId;
 const AUTHORIZATION = BLOB_SCENARIO.authorization;
 
-describe('Syncular v2 Rust-owned SQLite blobs against Hono routes', () => {
+describe('Syncular Rust-owned SQLite blobs against Hono routes', () => {
   const servers: Array<ReturnType<typeof createNodeHonoServer>> = [];
-  const clients: SyncularV2RustClient[] = [];
+  const clients: SyncularRustClient[] = [];
   const dbs: Array<Kysely<SyncBlobDb>> = [];
 
   afterEach(async () => {
@@ -305,7 +305,7 @@ describe('Syncular v2 Rust-owned SQLite blobs against Hono routes', () => {
       canAccessBlob: async ({ actorId }) => actorId === ACTOR_ID,
     });
 
-    const client = await openSyncularV2RustClient({
+    const client = await openSyncularRustClient({
       config: {
         baseUrl,
         clientId: options.clientId,
@@ -332,7 +332,7 @@ interface BlobHarnessOptions {
 
 interface BlobHarness {
   authHeaders: string[];
-  client: SyncularV2RustClient;
+  client: SyncularRustClient;
   db: Kysely<SyncBlobDb>;
 }
 

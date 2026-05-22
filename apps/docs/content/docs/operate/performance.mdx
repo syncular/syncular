@@ -252,7 +252,7 @@ SQLite in the browser (wa-sqlite) benefits from targeted indexes on columns you 
 
 ```typescript
 async function initializeDatabase(db: Kysely<MyDb>) {
-  await createSyncularV2Database(db);
+  await createSyncularDatabase(db);
 
   await db.schema.createTable('notes').ifNotExists()
     .addColumn('id', 'text', (col) => col.primaryKey())

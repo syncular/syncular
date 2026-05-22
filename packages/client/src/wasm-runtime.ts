@@ -1,69 +1,64 @@
 import {
-  getSyncularV2WasmGlueUrl,
-  getSyncularV2WasmUrl,
+  getSyncularWasmGlueUrl,
+  getSyncularWasmUrl,
   type SyncularRustOwnedSqliteClient,
 } from '@syncular/client-javascript-bindings';
 import type {
   RawSyncularRustOwnedSqlite,
   SyncularRustOwnedSqliteConfig,
 } from './rust-store';
-import type {
-  SyncularV2ClientConfig,
-  SyncularV2RustRuntimeInfo,
-} from './types';
+import type { SyncularClientConfig, SyncularRustRuntimeInfo } from './types';
 
 export type {
   SyncularRustOwnedSqliteClient,
-  SyncularV2WasmArtifactVariant,
+  SyncularWasmArtifactVariant,
 } from '@syncular/client-javascript-bindings';
 export {
-  getSyncularV2PackagedRuntimeArtifacts,
-  getSyncularV2RuntimeArtifact,
-  getSyncularV2RuntimeArtifactCatalogUrl,
-  getSyncularV2WasmGlueUrl,
-  getSyncularV2WasmUrl,
-  resolveSyncularV2RuntimeArtifactCatalog,
-  selectSyncularV2RuntimeArtifact,
+  getSyncularPackagedRuntimeArtifacts,
+  getSyncularRuntimeArtifact,
+  getSyncularRuntimeArtifactCatalogUrl,
+  getSyncularWasmGlueUrl,
+  getSyncularWasmUrl,
+  resolveSyncularRuntimeArtifactCatalog,
+  selectSyncularRuntimeArtifact,
 } from '@syncular/client-javascript-bindings';
 
-export interface SyncularV2WasmGlue {
+export interface SyncularWasmGlue {
   default(moduleOrPath?: string | URL | Request): Promise<unknown>;
-  syncularV2RuntimeInfoJson(): string;
-  syncularV2BuildYjsTextUpdateJson(argsJson: string): string;
-  syncularV2ApplyYjsTextUpdatesJson(argsJson: string): string;
-  syncularV2ApplyYjsEnvelopeToPayloadJson(argsJson: string): string;
-  syncularV2MaterializeYjsRowJson(argsJson: string): string;
-  syncularV2EncryptionHelperJson(method: string, argsJson: string): string;
+  syncularRuntimeInfoJson(): string;
+  syncularBuildYjsTextUpdateJson(argsJson: string): string;
+  syncularApplyYjsTextUpdatesJson(argsJson: string): string;
+  syncularApplyYjsEnvelopeToPayloadJson(argsJson: string): string;
+  syncularMaterializeYjsRowJson(argsJson: string): string;
+  syncularEncryptionHelperJson(method: string, argsJson: string): string;
   openSyncularRustOwnedSqlite(
     config: SyncularRustOwnedSqliteConfig
   ): Promise<RawSyncularRustOwnedSqlite>;
   openSyncularRustOwnedSqliteClient(
-    config: SyncularV2ClientConfig
+    config: SyncularClientConfig
   ): Promise<SyncularRustOwnedSqliteClient>;
 }
 
-let modulePromise: Promise<SyncularV2WasmGlue> | undefined;
+let modulePromise: Promise<SyncularWasmGlue> | undefined;
 
-export function loadSyncularV2WasmGlue(): Promise<SyncularV2WasmGlue> {
+export function loadSyncularWasmGlue(): Promise<SyncularWasmGlue> {
   modulePromise ??= import(
-    /* @vite-ignore */ getSyncularV2WasmGlueUrl().href
-  ) as Promise<SyncularV2WasmGlue>;
+    /* @vite-ignore */ getSyncularWasmGlueUrl().href
+  ) as Promise<SyncularWasmGlue>;
   return modulePromise;
 }
 
-export async function getSyncularV2RustRuntimeInfo(
-  mod?: SyncularV2WasmGlue | Promise<SyncularV2WasmGlue>,
-  wasmUrl: string | URL | Request = getSyncularV2WasmUrl()
-): Promise<SyncularV2RustRuntimeInfo> {
-  const resolved = await (mod ?? loadSyncularV2WasmGlue());
+export async function getSyncularRustRuntimeInfo(
+  mod?: SyncularWasmGlue | Promise<SyncularWasmGlue>,
+  wasmUrl: string | URL | Request = getSyncularWasmUrl()
+): Promise<SyncularRustRuntimeInfo> {
+  const resolved = await (mod ?? loadSyncularWasmGlue());
   await resolved.default(wasmUrl);
-  return readSyncularV2RustRuntimeInfo(resolved);
+  return readSyncularRustRuntimeInfo(resolved);
 }
 
-export function readSyncularV2RustRuntimeInfo(
-  mod: SyncularV2WasmGlue
-): SyncularV2RustRuntimeInfo {
-  return JSON.parse(
-    mod.syncularV2RuntimeInfoJson()
-  ) as SyncularV2RustRuntimeInfo;
+export function readSyncularRustRuntimeInfo(
+  mod: SyncularWasmGlue
+): SyncularRustRuntimeInfo {
+  return JSON.parse(mod.syncularRuntimeInfoJson()) as SyncularRustRuntimeInfo;
 }

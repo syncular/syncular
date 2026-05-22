@@ -1,50 +1,50 @@
 import type {
-  SyncularV2ChangedRow,
-  SyncularV2CrdtDocumentSnapshot,
-  SyncularV2CrdtFieldCompactionReceipt,
-  SyncularV2CrdtFieldDescriptor,
-  SyncularV2CrdtFieldMaterialization,
-  SyncularV2CrdtFieldRequest,
-  SyncularV2CrdtFieldWriteReceipt,
-  SyncularV2CrdtFieldYjsUpdateRequest,
-  SyncularV2CrdtUpdateLogEntry,
-  SyncularV2RowsChangedEvent,
+  SyncularChangedRow,
+  SyncularCrdtDocumentSnapshot,
+  SyncularCrdtFieldCompactionReceipt,
+  SyncularCrdtFieldDescriptor,
+  SyncularCrdtFieldMaterialization,
+  SyncularCrdtFieldRequest,
+  SyncularCrdtFieldWriteReceipt,
+  SyncularCrdtFieldYjsUpdateRequest,
+  SyncularCrdtUpdateLogEntry,
+  SyncularRowsChangedEvent,
   SyncularYjsUpdateEnvelope,
 } from '@syncular/client';
 
 export interface SyncularCrdtFieldHost {
   openCrdtField(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtFieldDescriptor>;
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtFieldDescriptor>;
   applyCrdtFieldYjsUpdate(
-    request: SyncularV2CrdtFieldYjsUpdateRequest
-  ): Promise<SyncularV2CrdtFieldWriteReceipt>;
+    request: SyncularCrdtFieldYjsUpdateRequest
+  ): Promise<SyncularCrdtFieldWriteReceipt>;
   enqueueCrdtFieldYjsUpdate?(
-    request: SyncularV2CrdtFieldYjsUpdateRequest
+    request: SyncularCrdtFieldYjsUpdateRequest
   ): Promise<string>;
   materializeCrdtField(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtFieldMaterialization>;
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtFieldMaterialization>;
   crdtDocumentSnapshot?(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtDocumentSnapshot>;
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtDocumentSnapshot>;
   crdtUpdateLog?(
-    request: SyncularV2CrdtFieldRequest & { limit?: number }
-  ): Promise<SyncularV2CrdtUpdateLogEntry[]>;
+    request: SyncularCrdtFieldRequest & { limit?: number }
+  ): Promise<SyncularCrdtUpdateLogEntry[]>;
   snapshotCrdtFieldStateVector(
-    request: SyncularV2CrdtFieldRequest
+    request: SyncularCrdtFieldRequest
   ): Promise<{ stateVectorBase64: string }>;
   compactCrdtField(request: {
     table: string;
     rowId: string;
     field: string;
     minUncheckpointedUpdates?: number;
-  }): Promise<SyncularV2CrdtFieldCompactionReceipt>;
+  }): Promise<SyncularCrdtFieldCompactionReceipt>;
 }
 
 export interface SyncularCrdtProjectionHost extends SyncularCrdtFieldHost {
   addRowsChangedListener(
-    listener: (event: SyncularV2RowsChangedEvent) => void
+    listener: (event: SyncularRowsChangedEvent) => void
   ): () => void;
 }
 
@@ -79,24 +79,24 @@ export interface YjsDocumentFieldFlushEvent {
 }
 
 export interface YjsDocumentFieldAdapter {
-  open(): Promise<SyncularV2CrdtFieldDescriptor>;
+  open(): Promise<SyncularCrdtFieldDescriptor>;
   start(): Promise<() => Promise<void>>;
   flush(): Promise<void>;
   pendingUpdateCount(): number;
   restoreFromPersistedState(): Promise<YjsDocumentRestoreReceipt>;
-  refreshMaterializedValue(): Promise<SyncularV2CrdtFieldMaterialization>;
+  refreshMaterializedValue(): Promise<SyncularCrdtFieldMaterialization>;
   snapshotStateVector(): Promise<string>;
   applyRemoteUpdate(update: SyncularYjsUpdateEnvelope): void;
   compact(
     minUncheckpointedUpdates?: number
-  ): Promise<SyncularV2CrdtFieldCompactionReceipt>;
+  ): Promise<SyncularCrdtFieldCompactionReceipt>;
 }
 
 export interface YjsDocumentRestoreReceipt {
-  field: SyncularV2CrdtFieldRequest;
-  descriptor: SyncularV2CrdtFieldDescriptor;
-  materialization: SyncularV2CrdtFieldMaterialization;
-  documentSnapshot?: SyncularV2CrdtDocumentSnapshot;
+  field: SyncularCrdtFieldRequest;
+  descriptor: SyncularCrdtFieldDescriptor;
+  materialization: SyncularCrdtFieldMaterialization;
+  documentSnapshot?: SyncularCrdtDocumentSnapshot;
   stateBase64?: string | null;
   stateVectorBase64: string;
   restoredState: boolean;
@@ -111,30 +111,30 @@ export type SyncularCrdtProjectionReason =
 
 export interface SyncularCrdtProjectionCause {
   reason: SyncularCrdtProjectionReason;
-  source: SyncularV2RowsChangedEvent['source'] | 'manual' | 'startup';
-  changedRow?: SyncularV2ChangedRow;
+  source: SyncularRowsChangedEvent['source'] | 'manual' | 'startup';
+  changedRow?: SyncularChangedRow;
 }
 
 export interface SyncularCrdtProjectionEvent {
-  field: SyncularV2CrdtFieldRequest;
-  descriptor: SyncularV2CrdtFieldDescriptor;
-  materialization: SyncularV2CrdtFieldMaterialization;
-  documentSnapshot?: SyncularV2CrdtDocumentSnapshot;
-  updateLog?: SyncularV2CrdtUpdateLogEntry[];
-  latestUpdate?: SyncularV2CrdtUpdateLogEntry;
+  field: SyncularCrdtFieldRequest;
+  descriptor: SyncularCrdtFieldDescriptor;
+  materialization: SyncularCrdtFieldMaterialization;
+  documentSnapshot?: SyncularCrdtDocumentSnapshot;
+  updateLog?: SyncularCrdtUpdateLogEntry[];
+  latestUpdate?: SyncularCrdtUpdateLogEntry;
   reason: SyncularCrdtProjectionReason;
   source: SyncularCrdtProjectionCause['source'];
-  operation?: SyncularV2ChangedRow['operation'];
+  operation?: SyncularChangedRow['operation'];
   commitId?: string | null;
   commitSeq?: number | null;
   serverVersion?: number | null;
   stateVectorBase64: string;
-  changedRow?: SyncularV2ChangedRow;
+  changedRow?: SyncularChangedRow;
 }
 
 export interface SyncularCrdtProjectionDefinition<TProjection> {
   derive(
-    materialization: SyncularV2CrdtFieldMaterialization,
+    materialization: SyncularCrdtFieldMaterialization,
     event: SyncularCrdtProjectionEvent
   ): TProjection | Promise<TProjection>;
   apply(
@@ -176,7 +176,7 @@ export interface RichEditorCrdtAdapter<_TProjection> {
   restoreFromPersistedState(): Promise<YjsDocumentRestoreReceipt>;
   compact(
     minUncheckpointedUpdates?: number
-  ): Promise<SyncularV2CrdtFieldCompactionReceipt>;
+  ): Promise<SyncularCrdtFieldCompactionReceipt>;
 }
 
 export type YjsEditorBackpressureState = 'open' | 'blocked' | 'recovering';
@@ -220,7 +220,7 @@ export interface YjsEditorBackpressureController {
 
 export function createYjsDocumentFieldAdapter(
   host: SyncularCrdtFieldHost,
-  field: SyncularV2CrdtFieldRequest,
+  field: SyncularCrdtFieldRequest,
   binding: YjsDocumentBinding,
   options: YjsDocumentFieldAdapterOptions = {}
 ): YjsDocumentFieldAdapter {
@@ -230,7 +230,7 @@ export function createYjsDocumentFieldAdapter(
   const pending: SyncularYjsUpdateEnvelope[] = [];
   let flushTimer: ReturnType<typeof setTimeout> | undefined;
   let activeFlush: Promise<void> | undefined;
-  let descriptor: SyncularV2CrdtFieldDescriptor | undefined;
+  let descriptor: SyncularCrdtFieldDescriptor | undefined;
 
   const scheduleFlush = () => {
     if (flushTimer != null) return;
@@ -506,7 +506,7 @@ export function createYjsEditorBackpressureController(
 
 export function createRichEditorCrdtAdapter<TProjection>(
   host: SyncularCrdtProjectionHost,
-  field: SyncularV2CrdtFieldRequest,
+  field: SyncularCrdtFieldRequest,
   binding: YjsDocumentBinding,
   projection: SyncularCrdtProjectionDefinition<TProjection>,
   options: RichEditorCrdtAdapterOptions<TProjection> = {}
@@ -565,11 +565,11 @@ export function createRichEditorCrdtAdapter<TProjection>(
 
 export function createCrdtFieldProjectionMaterializer<TProjection>(
   host: SyncularCrdtProjectionHost,
-  field: SyncularV2CrdtFieldRequest,
+  field: SyncularCrdtFieldRequest,
   projection: SyncularCrdtProjectionDefinition<TProjection>,
   options: SyncularCrdtProjectionMaterializerOptions<TProjection> = {}
 ): SyncularCrdtProjectionMaterializer<TProjection> {
-  let descriptor: SyncularV2CrdtFieldDescriptor | undefined;
+  let descriptor: SyncularCrdtFieldDescriptor | undefined;
   let unsubscribeRowsChanged: (() => void) | undefined;
   let queue = Promise.resolve();
 
@@ -672,9 +672,9 @@ export function createCrdtFieldProjectionMaterializer<TProjection>(
 }
 
 export function crdtChangedRowMatchesField(
-  row: SyncularV2ChangedRow,
-  field: SyncularV2CrdtFieldRequest,
-  descriptor: SyncularV2CrdtFieldDescriptor
+  row: SyncularChangedRow,
+  field: SyncularCrdtFieldRequest,
+  descriptor: SyncularCrdtFieldDescriptor
 ): boolean {
   if (row.table !== field.table || row.rowId !== field.rowId) return false;
   return (
@@ -685,8 +685,8 @@ export function crdtChangedRowMatchesField(
 }
 
 export function projectionReasonForRowsChanged(
-  event: SyncularV2RowsChangedEvent,
-  row: SyncularV2ChangedRow
+  event: SyncularRowsChangedEvent,
+  row: SyncularChangedRow
 ): SyncularCrdtProjectionReason {
   if (row.operation === 'compact') return 'compaction';
   if (event.source === 'remotePull') return 'remote-apply';

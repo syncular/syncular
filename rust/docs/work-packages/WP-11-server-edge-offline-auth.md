@@ -216,7 +216,7 @@ mutations must keep selecting stored lease provenance transactionally.
 - Added browser client auth lease management APIs:
   `upsertAuthLease`, `authLease`, and `activeAuthLeases`.
 - Added browser strict leased mutation APIs through the worker protocol,
-  Rust-owned SQLite WASM exports, high-level `SyncularV2Client`, and generated
+  Rust-owned SQLite WASM exports, high-level `SyncularClient`, and generated
   Kysely database surface. App code can now use
   `database.leasedMutations.tasks.insert(...)` and
   `database.leasedMutations.$commit(...)`; the runtime transactionally selects
@@ -235,7 +235,7 @@ mutations must keep selecting stored lease provenance transactionally.
 - Added browser host-facing `client.issueAuthLease(...)`. It posts to the Hono
   `/auth-leases/issue` route, uses the existing auth refresh lifecycle on
   `401`/`403`, stores the returned signed lease, and returns the stored
-  `SyncularV2AuthLeaseRecord`.
+  `SyncularAuthLeaseRecord`.
 - Added browser/Hono app-style coverage proving stale auth refreshes during
   auth lease issue, the refreshed lease is stored, a generated leased mutation
   can use it locally, and server replay accepts the signed lease on push.

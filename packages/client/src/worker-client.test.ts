@@ -1,33 +1,33 @@
 import { describe, expect, it } from 'bun:test';
 import {
-  SYNCULAR_V2_PACKAGE_NAME,
-  SYNCULAR_V2_PACKAGE_VERSION,
+  SYNCULAR_PACKAGE_NAME,
+  SYNCULAR_PACKAGE_VERSION,
 } from './runtime-contract';
 import type {
-  SyncularV2BlobUploadErrorEvent,
-  SyncularV2BlobUploadEvent,
-  SyncularV2BootstrapStatus,
-  SyncularV2DiagnosticEvent,
-  SyncularV2LifecycleState,
-  SyncularV2NetworkStatusSource,
-  SyncularV2SyncResult,
+  SyncularBlobUploadErrorEvent,
+  SyncularBlobUploadEvent,
+  SyncularBootstrapStatus,
+  SyncularDiagnosticEvent,
+  SyncularLifecycleState,
+  SyncularNetworkStatusSource,
+  SyncularSyncResult,
 } from './types';
 import {
-  createSyncularV2WorkerClient,
-  SyncularV2WorkerClient,
+  createSyncularWorkerClient,
+  SyncularWorkerClient,
 } from './worker-client';
 import {
-  SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
-  type SyncularV2WorkerEvent,
-  type SyncularV2WorkerOutboundMessage,
-  type SyncularV2WorkerRequest,
-  type SyncularV2WorkerResponse,
+  SYNCULAR_WORKER_PROTOCOL_VERSION,
+  type SyncularWorkerEvent,
+  type SyncularWorkerOutboundMessage,
+  type SyncularWorkerRequest,
+  type SyncularWorkerResponse,
 } from './worker-protocol';
 
-describe('Syncular v2 worker client', () => {
+describe('Syncular worker client', () => {
   it('rejects structured worker errors', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -36,7 +36,7 @@ describe('Syncular v2 worker client', () => {
     const request = worker.messages[0]!;
     worker.respond({
       id: request.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: false,
       error: {
         code: 'sync.schema_mismatch',
@@ -60,7 +60,7 @@ describe('Syncular v2 worker client', () => {
 
   it('rejects public mutating SQL before sending it to the worker', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -73,7 +73,7 @@ describe('Syncular v2 worker client', () => {
 
   it('does not drain live-query events after readonly SQL', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -82,7 +82,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[0]).toMatchObject({ type: 'executeSql' });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [{ value: 1 }] },
     });
@@ -95,7 +95,7 @@ describe('Syncular v2 worker client', () => {
 
   it('keeps unsafe SQL on an explicit internal worker request', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -108,7 +108,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: request.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [], numAffectedRows: 0 },
     });
@@ -118,7 +118,7 @@ describe('Syncular v2 worker client', () => {
 
   it('forwards conflict summary and resolution requests to the worker', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -127,7 +127,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[0]).toMatchObject({ type: 'conflictSummaries' });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: [
         {
@@ -157,7 +157,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: 'commit-retry',
     });
@@ -165,7 +165,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[2]).toMatchObject({ type: 'drainLiveQueryEvents' });
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: [],
     });
@@ -179,7 +179,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[3]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -187,7 +187,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[4]).toMatchObject({ type: 'drainLiveQueryEvents' });
     worker.respond({
       id: worker.messages[4]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: [],
     });
@@ -196,7 +196,7 @@ describe('Syncular v2 worker client', () => {
 
   it('forwards auth lease storage requests to the worker', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -223,7 +223,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -231,7 +231,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[1]).toMatchObject({ type: 'drainLiveQueryEvents' });
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: [],
     });
@@ -244,7 +244,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: lease,
     });
@@ -258,7 +258,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[3]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: [lease],
     });
@@ -310,7 +310,7 @@ describe('Syncular v2 worker client', () => {
     }) as typeof fetch;
 
     try {
-      const clientPromise = createSyncularV2WorkerClient({
+      const clientPromise = createSyncularWorkerClient({
         worker: worker.asWorker(),
         requestTimeoutMs: 100,
         getHeaders: () => ({ authorization: 'Bearer fresh-token' }),
@@ -323,14 +323,14 @@ describe('Syncular v2 worker client', () => {
       await waitForMessages(worker, 1);
       worker.respond({
         id: worker.messages[0]!.id,
-        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
         ok: true,
         value: true,
       });
       await waitForMessages(worker, 2);
       worker.respond({
         id: worker.messages[1]!.id,
-        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
         ok: true,
         value: true,
       });
@@ -355,7 +355,7 @@ describe('Syncular v2 worker client', () => {
       });
       worker.respond({
         id: worker.messages[2]!.id,
-        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
         ok: true,
         value: true,
       });
@@ -380,14 +380,14 @@ describe('Syncular v2 worker client', () => {
       });
       worker.respond({
         id: worker.messages[3]!.id,
-        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
         ok: true,
         value: true,
       });
       await waitForMessages(worker, 5);
       worker.respond({
         id: worker.messages[4]!.id,
-        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
         ok: true,
         value: [],
       });
@@ -403,7 +403,7 @@ describe('Syncular v2 worker client', () => {
 
   it('forwards generic CRDT field requests to the worker', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -416,7 +416,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         ...field,
@@ -441,7 +441,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { clientCommitId: 'commit-1', syncMode: 'server-merge' },
     });
@@ -449,7 +449,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[2]).toMatchObject({ type: 'drainLiveQueryEvents' });
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: [],
     });
@@ -461,8 +461,8 @@ describe('Syncular v2 worker client', () => {
 
   it('times out requests and sends best-effort cancel', async () => {
     const worker = new FakeWorker();
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 1,
       diagnostics: (event) => diagnostics.push(event),
@@ -479,7 +479,7 @@ describe('Syncular v2 worker client', () => {
     ]);
     expect(worker.messages[1]).toMatchObject({
       requestId: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
     });
     expect(diagnostics).toEqual([
       expect.objectContaining({
@@ -493,7 +493,7 @@ describe('Syncular v2 worker client', () => {
 
   it('returns worker runtime information', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -503,16 +503,16 @@ describe('Syncular v2 worker client', () => {
     expect(request.type).toBe('runtimeInfo');
     worker.respond({
       id: request.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
-        packageName: SYNCULAR_V2_PACKAGE_NAME,
-        packageVersion: SYNCULAR_V2_PACKAGE_VERSION,
-        workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        packageName: SYNCULAR_PACKAGE_NAME,
+        packageVersion: SYNCULAR_PACKAGE_VERSION,
+        workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
         storage: 'opfsSahPool',
-        workerUrl: 'http://localhost/syncular-v2-worker.js',
-        wasmGlueUrl: 'http://localhost/wasm/syncular_v2.js',
-        wasmUrl: 'http://localhost/wasm/syncular_v2_bg.wasm',
+        workerUrl: 'http://localhost/syncular-worker.js',
+        wasmGlueUrl: 'http://localhost/wasm/syncular.js',
+        wasmUrl: 'http://localhost/wasm/syncular_bg.wasm',
         rust: {
           crateName: 'syncular-runtime',
           crateVersion: '0.1.0',
@@ -523,8 +523,8 @@ describe('Syncular v2 worker client', () => {
     });
 
     await expect(promise).resolves.toMatchObject({
-      packageName: SYNCULAR_V2_PACKAGE_NAME,
-      workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      packageName: SYNCULAR_PACKAGE_NAME,
+      workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       storage: 'opfsSahPool',
       rust: { features: ['web-owned-sqlite'] },
     });
@@ -532,7 +532,7 @@ describe('Syncular v2 worker client', () => {
 
   it('selects compatible runtime artifacts before opening the worker', async () => {
     const worker = new FakeWorker();
-    const promise = createSyncularV2WorkerClient({
+    const promise = createSyncularWorkerClient({
       worker: worker.asWorker(),
       config: {
         baseUrl: '/sync',
@@ -544,9 +544,9 @@ describe('Syncular v2 worker client', () => {
         {
           name: 'core',
           features: ['web-owned-sqlite-core'],
-          wasmGlueUrl: '/syncular/wasm-core/syncular_v2.js',
+          wasmGlueUrl: '/syncular/wasm-core/syncular.js',
           wasmUrl: new URL(
-            'https://app.test/syncular/wasm-core/syncular_v2_bg.wasm'
+            'https://app.test/syncular/wasm-core/syncular_bg.wasm'
           ),
         },
         {
@@ -558,8 +558,8 @@ describe('Syncular v2 worker client', () => {
             'crdt-yjs',
             'e2ee',
           ],
-          wasmGlueUrl: '/syncular/wasm/syncular_v2.js',
-          wasmUrl: '/syncular/wasm/syncular_v2_bg.wasm',
+          wasmGlueUrl: '/syncular/wasm/syncular.js',
+          wasmUrl: '/syncular/wasm/syncular_bg.wasm',
         },
       ],
     });
@@ -567,23 +567,23 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[0]).toMatchObject({
       type: 'open',
       runtime: {
-        wasmGlueUrl: '/syncular/wasm-core/syncular_v2.js',
-        wasmUrl: 'https://app.test/syncular/wasm-core/syncular_v2_bg.wasm',
+        wasmGlueUrl: '/syncular/wasm-core/syncular.js',
+        wasmUrl: 'https://app.test/syncular/wasm-core/syncular_bg.wasm',
       },
     });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
-    await expect(promise).resolves.toBeInstanceOf(SyncularV2WorkerClient);
+    await expect(promise).resolves.toBeInstanceOf(SyncularWorkerClient);
   });
 
   it('rejects opening when no runtime artifact satisfies required features', async () => {
     const worker = new FakeWorker();
     await expect(
-      createSyncularV2WorkerClient({
+      createSyncularWorkerClient({
         worker: worker.asWorker(),
         config: {
           baseUrl: '/sync',
@@ -595,8 +595,8 @@ describe('Syncular v2 worker client', () => {
           {
             name: 'core',
             features: ['web-owned-sqlite-core'],
-            wasmGlueUrl: '/syncular/wasm-core/syncular_v2.js',
-            wasmUrl: '/syncular/wasm-core/syncular_v2_bg.wasm',
+            wasmGlueUrl: '/syncular/wasm-core/syncular.js',
+            wasmUrl: '/syncular/wasm-core/syncular_bg.wasm',
           },
         ],
       })
@@ -606,7 +606,7 @@ describe('Syncular v2 worker client', () => {
 
   it('reports connection state for UI surfaces', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -623,21 +623,21 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
-        packageName: SYNCULAR_V2_PACKAGE_NAME,
-        packageVersion: SYNCULAR_V2_PACKAGE_VERSION,
-        workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
-        wasmGlueUrl: 'http://localhost/wasm/syncular_v2.js',
-        wasmUrl: 'http://localhost/wasm/syncular_v2_bg.wasm',
+        packageName: SYNCULAR_PACKAGE_NAME,
+        packageVersion: SYNCULAR_PACKAGE_VERSION,
+        workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+        wasmGlueUrl: 'http://localhost/wasm/syncular.js',
+        wasmUrl: 'http://localhost/wasm/syncular_bg.wasm',
       },
     });
     await runtimePromise;
     expect(client.connectionState()).toMatchObject({ pendingRequests: 0 });
 
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'realtimeState',
       state: 'connected',
     });
@@ -652,7 +652,7 @@ describe('Syncular v2 worker client', () => {
     const failed = client.executeSql('select broken');
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: false,
       error: {
         code: 'worker.failed',
@@ -670,11 +670,11 @@ describe('Syncular v2 worker client', () => {
 
   it('emits lifecycle state for app UI surfaces', () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
-    const events: SyncularV2LifecycleState[] = [];
+    const events: SyncularLifecycleState[] = [];
     client.addEventListener('lifecycleChanged', (event) => events.push(event));
 
     expect(client.lifecycleState()).toMatchObject({
@@ -685,7 +685,7 @@ describe('Syncular v2 worker client', () => {
     });
 
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'realtimeState',
       state: 'connecting',
     });
@@ -695,7 +695,7 @@ describe('Syncular v2 worker client', () => {
     });
 
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'diagnostic',
       event: {
         at: 123,
@@ -712,7 +712,7 @@ describe('Syncular v2 worker client', () => {
     });
 
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'diagnostic',
       event: {
         at: 124,
@@ -728,12 +728,12 @@ describe('Syncular v2 worker client', () => {
     });
 
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'realtimeState',
       state: 'connected',
     });
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'bootstrapChanged',
       bootstrap: zeroBootstrapStatus(),
     });
@@ -747,14 +747,14 @@ describe('Syncular v2 worker client', () => {
   it('keeps lifecycle phase stable for local worker requests', async () => {
     const worker = new FakeWorker();
     const network = new FakeNetworkStatus(true);
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
       network,
     });
 
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'bootstrapChanged',
       bootstrap: zeroBootstrapStatus(),
     });
@@ -771,7 +771,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [{ value: 1 }] },
     });
@@ -785,7 +785,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         changedTables: [],
@@ -800,7 +800,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 3);
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: [],
     });
@@ -810,14 +810,14 @@ describe('Syncular v2 worker client', () => {
   it('surfaces browser offline state through lifecycle', () => {
     const worker = new FakeWorker();
     const network = new FakeNetworkStatus(true);
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
       network,
     });
 
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'bootstrapChanged',
       bootstrap: zeroBootstrapStatus(),
     });
@@ -837,11 +837,11 @@ describe('Syncular v2 worker client', () => {
 
   it('emits blob upload queue stats through lifecycle events', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
-    const lifecycleEvents: SyncularV2LifecycleState[] = [];
+    const lifecycleEvents: SyncularLifecycleState[] = [];
     const blobUploadEvents: Array<{
       pending: number;
       uploading: number;
@@ -860,7 +860,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[0]).toMatchObject({ type: 'storeBlob' });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         hash: `sha256:${'0'.repeat(64)}`,
@@ -878,19 +878,19 @@ describe('Syncular v2 worker client', () => {
     ]);
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [] },
     });
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [{ unresolved: 0, resolved: 0, total: 0 }] },
     });
     worker.respond({
       id: worker.messages[3]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { pending: 1, uploading: 0, failed: 0 },
     });
@@ -913,7 +913,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[4]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { uploaded: 0, failed: 1 },
     });
@@ -922,19 +922,19 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 8);
     worker.respond({
       id: worker.messages[5]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [] },
     });
     worker.respond({
       id: worker.messages[6]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [{ unresolved: 0, resolved: 0, total: 0 }] },
     });
     worker.respond({
       id: worker.messages[7]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { pending: 0, uploading: 0, failed: 1 },
     });
@@ -949,8 +949,8 @@ describe('Syncular v2 worker client', () => {
 
   it('rejects oversized blob stores before posting to the worker', async () => {
     const worker = new FakeWorker();
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
       blobLimits: { maxPayloadBytes: 2 },
@@ -987,8 +987,8 @@ describe('Syncular v2 worker client', () => {
 
   it('rejects oversized blob retrieves before posting to the worker', async () => {
     const worker = new FakeWorker();
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
       blobLimits: { maxPayloadBytes: 2 },
@@ -1026,8 +1026,8 @@ describe('Syncular v2 worker client', () => {
 
   it('emits blob cache and pruning diagnostics when diagnostics are subscribed', async () => {
     const worker = new FakeWorker();
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
       diagnostics: (event) => diagnostics.push(event),
@@ -1036,7 +1036,7 @@ describe('Syncular v2 worker client', () => {
     const local = client.isBlobLocal(`sha256:${'3'.repeat(64)}`);
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1046,7 +1046,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 2);
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: 12,
     });
@@ -1056,7 +1056,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 3);
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: undefined,
     });
@@ -1074,8 +1074,8 @@ describe('Syncular v2 worker client', () => {
 
   it('emits per-row blob upload diagnostics without requiring upload event listeners', async () => {
     const worker = new FakeWorker();
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
       diagnostics: (event) => diagnostics.push(event),
@@ -1085,7 +1085,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 1);
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         rows: [
@@ -1105,7 +1105,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 2);
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { uploaded: 0, failed: 1 },
     });
@@ -1113,7 +1113,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 3);
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         rows: [
@@ -1142,11 +1142,11 @@ describe('Syncular v2 worker client', () => {
 
   it('preserves encrypted blob metadata in upload completion events', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
-    const completed: SyncularV2BlobUploadEvent[] = [];
+    const completed: SyncularBlobUploadEvent[] = [];
     client.addEventListener('blobUploadCompleted', (event) =>
       completed.push(event)
     );
@@ -1156,7 +1156,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[0]).toMatchObject({ type: 'executeUnsafeSql' });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         rows: [
@@ -1179,7 +1179,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { uploaded: 1, failed: 0 },
     });
@@ -1187,7 +1187,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 3);
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [] },
     });
@@ -1208,18 +1208,18 @@ describe('Syncular v2 worker client', () => {
 
   it('preserves encrypted blob metadata in upload failure events', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
-    const failed: SyncularV2BlobUploadErrorEvent[] = [];
+    const failed: SyncularBlobUploadErrorEvent[] = [];
     client.addEventListener('blobUploadFailed', (event) => failed.push(event));
 
     const process = client.processBlobUploadQueue();
     await waitForMessages(worker, 1);
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         rows: [
@@ -1239,7 +1239,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 2);
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { uploaded: 0, failed: 1 },
     });
@@ -1247,7 +1247,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 3);
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         rows: [
@@ -1282,7 +1282,7 @@ describe('Syncular v2 worker client', () => {
 
   it('returns a redacted diagnostic snapshot for support tools', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -1301,14 +1301,14 @@ describe('Syncular v2 worker client', () => {
     ]);
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
     await setSubscriptions;
 
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'diagnostic',
       event: {
         at: 123,
@@ -1323,7 +1323,7 @@ describe('Syncular v2 worker client', () => {
       },
     });
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'bootstrapChanged',
       bootstrap: {
         ...zeroBootstrapStatus(),
@@ -1357,40 +1357,40 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 3);
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
-        packageName: SYNCULAR_V2_PACKAGE_NAME,
-        packageVersion: SYNCULAR_V2_PACKAGE_VERSION,
-        workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
-        wasmGlueUrl: 'http://localhost/wasm/syncular_v2.js',
-        wasmUrl: 'http://localhost/wasm/syncular_v2_bg.wasm',
+        packageName: SYNCULAR_PACKAGE_NAME,
+        packageVersion: SYNCULAR_PACKAGE_VERSION,
+        workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+        wasmGlueUrl: 'http://localhost/wasm/syncular.js',
+        wasmUrl: 'http://localhost/wasm/syncular_bg.wasm',
       },
     });
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: zeroTransportStats(),
     });
     await waitForMessages(worker, 4);
     worker.respond({
       id: worker.messages[3]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [{ status: 'pending', count: 2 }] },
     });
     await waitForMessages(worker, 5);
     worker.respond({
       id: worker.messages[4]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [{ unresolved: 1, resolved: 2, total: 3 }] },
     });
     await waitForMessages(worker, 6);
     worker.respond({
       id: worker.messages[5]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { pending: 4, uploading: 0, failed: 1 },
     });
@@ -1434,7 +1434,7 @@ describe('Syncular v2 worker client', () => {
 
   it('falls back to IndexedDB when default OPFS open fails', async () => {
     const worker = new FakeWorker();
-    const promise = createSyncularV2WorkerClient({
+    const promise = createSyncularWorkerClient({
       worker: worker.asWorker(),
       requestTimeoutMs: 100,
       config: {
@@ -1451,7 +1451,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: false,
       error: {
         code: 'worker.failed',
@@ -1466,7 +1466,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1476,15 +1476,15 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 3);
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
-        packageName: SYNCULAR_V2_PACKAGE_NAME,
-        packageVersion: SYNCULAR_V2_PACKAGE_VERSION,
-        workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        packageName: SYNCULAR_PACKAGE_NAME,
+        packageVersion: SYNCULAR_PACKAGE_VERSION,
+        workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
         storage: 'indexedDb',
-        wasmGlueUrl: 'http://localhost/wasm/syncular_v2.js',
-        wasmUrl: 'http://localhost/wasm/syncular_v2_bg.wasm',
+        wasmGlueUrl: 'http://localhost/wasm/syncular.js',
+        wasmUrl: 'http://localhost/wasm/syncular_bg.wasm',
       },
     });
     await expect(runtimePromise).resolves.toMatchObject({
@@ -1499,7 +1499,7 @@ describe('Syncular v2 worker client', () => {
   it('passes fresh auth headers through the worker before sync', async () => {
     const worker = new FakeWorker();
     let token = 'token-1';
-    const promise = createSyncularV2WorkerClient({
+    const promise = createSyncularWorkerClient({
       worker: worker.asWorker(),
       requestTimeoutMs: 100,
       getHeaders: () => ({ authorization: `Bearer ${token}` }),
@@ -1513,7 +1513,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 1);
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1525,7 +1525,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1541,14 +1541,14 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
 
     await waitForMessages(worker, 4);
     const syncRequest = worker.messages[3] as Extract<
-      SyncularV2WorkerRequest,
+      SyncularWorkerRequest,
       { type: 'syncOnce' }
     >;
     const syncAttempt = syncRequest.syncAttempt;
@@ -1561,7 +1561,7 @@ describe('Syncular v2 worker client', () => {
     );
     worker.respond({
       id: syncRequest.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         changedTables: [],
@@ -1577,7 +1577,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[4]).toMatchObject({ type: 'drainLiveQueryEvents' });
     worker.respond({
       id: worker.messages[4]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: [],
     });
@@ -1594,7 +1594,7 @@ describe('Syncular v2 worker client', () => {
 
   it('forwards field encryption config and helper calls', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -1613,7 +1613,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1631,7 +1631,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1645,7 +1645,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: 'abc',
     });
@@ -1658,7 +1658,7 @@ describe('Syncular v2 worker client', () => {
     const expiredStatuses: number[] = [];
     const retryStatuses: number[] = [];
     let refreshCount = 0;
-    const promise = createSyncularV2WorkerClient({
+    const promise = createSyncularWorkerClient({
       worker: worker.asWorker(),
       requestTimeoutMs: 100,
       getHeaders: () => ({ authorization: `Bearer ${token}` }),
@@ -1687,14 +1687,14 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 1);
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
     await waitForMessages(worker, 2);
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1708,7 +1708,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1716,14 +1716,11 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 4);
     expect(worker.messages[3]).toMatchObject({ type: 'syncOnce' });
     const failedAttempt = (
-      worker.messages[3] as Extract<
-        SyncularV2WorkerRequest,
-        { type: 'syncOnce' }
-      >
+      worker.messages[3] as Extract<SyncularWorkerRequest, { type: 'syncOnce' }>
     ).syncAttempt;
     worker.respond({
       id: worker.messages[3]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: false,
       error: {
         code: 'worker.failed',
@@ -1739,7 +1736,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[4]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1749,14 +1746,14 @@ describe('Syncular v2 worker client', () => {
     expect(
       (
         worker.messages[5] as Extract<
-          SyncularV2WorkerRequest,
+          SyncularWorkerRequest,
           { type: 'syncOnce' }
         >
       ).syncAttempt
     ).toEqual(failedAttempt);
     worker.respond({
       id: worker.messages[5]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         changedTables: ['tasks'],
@@ -1772,7 +1769,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[6]).toMatchObject({ type: 'drainLiveQueryEvents' });
     worker.respond({
       id: worker.messages[6]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: [],
     });
@@ -1792,7 +1789,7 @@ describe('Syncular v2 worker client', () => {
 
   it('starts realtime in the worker with resolved query params', async () => {
     const worker = new FakeWorker();
-    const promise = createSyncularV2WorkerClient({
+    const promise = createSyncularWorkerClient({
       worker: worker.asWorker(),
       requestTimeoutMs: 100,
       realtime: {
@@ -1812,7 +1809,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[0]).toMatchObject({ type: 'open' });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1828,17 +1825,17 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
 
-    await expect(promise).resolves.toBeInstanceOf(SyncularV2WorkerClient);
+    await expect(promise).resolves.toBeInstanceOf(SyncularWorkerClient);
   });
 
   it('restarts active realtime with fresh params after auth headers change', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -1852,7 +1849,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 1);
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1873,7 +1870,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1890,7 +1887,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1905,7 +1902,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[3]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1916,7 +1913,7 @@ describe('Syncular v2 worker client', () => {
   it('does not restart active realtime while refreshing headers for sync', async () => {
     const worker = new FakeWorker();
     let authHeader = 'Bearer initial';
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
       getHeaders: () => ({ authorization: authHeader }),
@@ -1930,14 +1927,14 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 1);
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
     await waitForMessages(worker, 2);
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1950,7 +1947,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 3);
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1958,7 +1955,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[3]).toMatchObject({ type: 'startRealtime' });
     worker.respond({
       id: worker.messages[3]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1973,7 +1970,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[4]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -1981,7 +1978,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[5]).toMatchObject({ type: 'syncOnce' });
     worker.respond({
       id: worker.messages[5]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         changedTables: [],
@@ -1996,7 +1993,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 7);
     worker.respond({
       id: worker.messages[6]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: [],
     });
@@ -2015,11 +2012,11 @@ describe('Syncular v2 worker client', () => {
 
   it('resumes from background by restarting realtime and syncing', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
-    const lifecycleEvents: SyncularV2LifecycleState[] = [];
+    const lifecycleEvents: SyncularLifecycleState[] = [];
     client.addEventListener('lifecycleChanged', (event) =>
       lifecycleEvents.push(event)
     );
@@ -2032,7 +2029,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 1);
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -2046,7 +2043,7 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 2);
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -2068,7 +2065,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -2077,7 +2074,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[3]).toMatchObject({ type: 'syncOnce' });
     worker.respond({
       id: worker.messages[3]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         changedTables: [],
@@ -2092,7 +2089,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[4]).toMatchObject({ type: 'drainLiveQueryEvents' });
     worker.respond({
       id: worker.messages[4]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: [],
     });
@@ -2103,19 +2100,19 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[7]).toMatchObject({ type: 'blobUploadQueueStats' });
     worker.respond({
       id: worker.messages[5]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [] },
     });
     worker.respond({
       id: worker.messages[6]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { rows: [{ unresolved: 0, resolved: 0, total: 0 }] },
     });
     worker.respond({
       id: worker.messages[7]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: { pending: 0, uploading: 0, failed: 0 },
     });
@@ -2128,7 +2125,7 @@ describe('Syncular v2 worker client', () => {
 
   it('dispatches realtime live-query events from the worker', () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -2136,7 +2133,7 @@ describe('Syncular v2 worker client', () => {
     client.addLiveQueryListener('query-1', (event) => events.push(event));
 
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'liveQueryEvents',
       events: [
         {
@@ -2160,7 +2157,7 @@ describe('Syncular v2 worker client', () => {
 
   it('dispatches row-level change events from the worker', () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -2168,7 +2165,7 @@ describe('Syncular v2 worker client', () => {
     const remove = client.addRowsChangedListener((event) => events.push(event));
 
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'rowsChanged',
       source: 'localWrite',
       changedTables: ['tasks'],
@@ -2185,7 +2182,7 @@ describe('Syncular v2 worker client', () => {
     });
     remove();
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'rowsChanged',
       source: 'remotePull',
       changedTables: ['tasks'],
@@ -2212,7 +2209,7 @@ describe('Syncular v2 worker client', () => {
 
   it('uses Rust-native camelCase client event names', () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -2228,14 +2225,14 @@ describe('Syncular v2 worker client', () => {
     );
 
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'rowsChanged',
       source: 'remotePull',
       changedTables: ['tasks'],
       changedRows: [],
     });
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'bootstrapChanged',
       bootstrap: {
         ...zeroBootstrapStatus(),
@@ -2243,7 +2240,7 @@ describe('Syncular v2 worker client', () => {
       },
     });
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'presenceEvent',
       action: 'snapshot',
       scopeKey: 'tasks:user-1',
@@ -2287,7 +2284,7 @@ describe('Syncular v2 worker client', () => {
 
   it('sends and tracks realtime presence events', () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -2303,12 +2300,12 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'presenceEvent',
       action: 'snapshot',
       scopeKey: 'tasks:user-1',
@@ -2343,7 +2340,7 @@ describe('Syncular v2 worker client', () => {
     });
 
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'realtimeState',
       state: 'connected',
     });
@@ -2357,7 +2354,7 @@ describe('Syncular v2 worker client', () => {
 
   it('forwards storage compaction options to the worker', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -2378,7 +2375,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: request.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         ackedOutboxCommitsDeleted: 1,
@@ -2401,7 +2398,7 @@ describe('Syncular v2 worker client', () => {
 
   it('forwards local health checks and explicit repairs to the worker', async () => {
     const worker = new FakeWorker();
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
     });
@@ -2410,7 +2407,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[0]).toMatchObject({ type: 'localHealthCheck' });
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         generatedAt: 1,
@@ -2461,7 +2458,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         action: 'clearOrphanedState',
@@ -2484,9 +2481,9 @@ describe('Syncular v2 worker client', () => {
 
   it('forwards structured worker diagnostics to registered listeners', () => {
     const worker = new FakeWorker();
-    const initialDiagnostics: SyncularV2DiagnosticEvent[] = [];
-    const additionalDiagnostics: SyncularV2DiagnosticEvent[] = [];
-    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+    const initialDiagnostics: SyncularDiagnosticEvent[] = [];
+    const additionalDiagnostics: SyncularDiagnosticEvent[] = [];
+    const client = new SyncularWorkerClient(worker.asWorker(), {
       ownsWorker: false,
       requestTimeoutMs: 100,
       diagnostics: (event) => initialDiagnostics.push(event),
@@ -2504,13 +2501,13 @@ describe('Syncular v2 worker client', () => {
       details: { changedTableCount: 1 },
     };
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'diagnostic',
       event,
     });
     remove();
     worker.emit({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'diagnostic',
       event: { ...event, code: 'sync.syncPull.completed' },
     });
@@ -2528,7 +2525,7 @@ describe('Syncular v2 worker client', () => {
     const worker = new FakeWorker();
     let token = 'expired-token';
     let refreshCount = 0;
-    const promise = createSyncularV2WorkerClient({
+    const promise = createSyncularWorkerClient({
       worker: worker.asWorker(),
       requestTimeoutMs: 100,
       getHeaders: () => ({ authorization: `Bearer ${token}` }),
@@ -2551,14 +2548,14 @@ describe('Syncular v2 worker client', () => {
     await waitForMessages(worker, 1);
     worker.respond({
       id: worker.messages[0]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
     await waitForMessages(worker, 2);
     worker.respond({
       id: worker.messages[1]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -2575,7 +2572,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[2]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -2588,7 +2585,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[3]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: false,
       error: {
         code: 'worker.failed',
@@ -2604,7 +2601,7 @@ describe('Syncular v2 worker client', () => {
     });
     worker.respond({
       id: worker.messages[4]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
     });
@@ -2613,7 +2610,7 @@ describe('Syncular v2 worker client', () => {
     expect(worker.messages[5]).toMatchObject({ type: 'storeBlob' });
     worker.respond({
       id: worker.messages[5]!.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: {
         hash: `sha256:${'0'.repeat(64)}`,
@@ -2632,29 +2629,29 @@ describe('Syncular v2 worker client', () => {
 });
 
 class FakeWorker {
-  messages: SyncularV2WorkerRequest[] = [];
+  messages: SyncularWorkerRequest[] = [];
   onmessage:
-    | ((event: MessageEvent<SyncularV2WorkerOutboundMessage>) => void)
+    | ((event: MessageEvent<SyncularWorkerOutboundMessage>) => void)
     | null = null;
   onerror: ((event: ErrorEvent) => void) | null = null;
   onmessageerror: ((event: MessageEvent) => void) | null = null;
 
-  postMessage(message: SyncularV2WorkerRequest): void {
+  postMessage(message: SyncularWorkerRequest): void {
     this.messages.push(message);
   }
 
   terminate(): void {}
 
-  respond(response: SyncularV2WorkerResponse): void {
+  respond(response: SyncularWorkerResponse): void {
     this.onmessage?.({
       data: response,
-    } as MessageEvent<SyncularV2WorkerOutboundMessage>);
+    } as MessageEvent<SyncularWorkerOutboundMessage>);
   }
 
-  emit(event: SyncularV2WorkerEvent): void {
+  emit(event: SyncularWorkerEvent): void {
     this.onmessage?.({
       data: event,
-    } as MessageEvent<SyncularV2WorkerOutboundMessage>);
+    } as MessageEvent<SyncularWorkerOutboundMessage>);
   }
 
   asWorker(): Worker {
@@ -2662,7 +2659,7 @@ class FakeWorker {
   }
 }
 
-class FakeNetworkStatus implements SyncularV2NetworkStatusSource {
+class FakeNetworkStatus implements SyncularNetworkStatusSource {
   #online: boolean;
   readonly #listeners = new Map<'online' | 'offline', Set<() => void>>([
     ['online', new Set()],
@@ -2714,7 +2711,7 @@ async function waitFor(predicate: () => boolean): Promise<void> {
   throw new Error('condition was not met');
 }
 
-function zeroBootstrapStatus(): SyncularV2BootstrapStatus {
+function zeroBootstrapStatus(): SyncularBootstrapStatus {
   return {
     channelPhase: 'idle',
     progressPercent: 100,
@@ -2731,7 +2728,7 @@ function zeroBootstrapStatus(): SyncularV2BootstrapStatus {
   };
 }
 
-function zeroSyncTimings(): SyncularV2SyncResult['timings'] {
+function zeroSyncTimings(): SyncularSyncResult['timings'] {
   return {
     totalMs: 0,
     pushMs: 0,
@@ -2757,7 +2754,7 @@ function zeroSyncTimings(): SyncularV2SyncResult['timings'] {
       snapshotChunkBindMs: 0,
       snapshotChunkStepMs: 0,
     } as object),
-  } as SyncularV2SyncResult['timings'];
+  } as SyncularSyncResult['timings'];
 }
 
 function zeroTransportStats() {

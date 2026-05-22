@@ -1,23 +1,23 @@
 import {
   type CreateSyncularBridgeClientOptions,
   createSyncularBridgeClient,
+  type SyncularAuthLeaseRecord,
   type SyncularBridge,
   type SyncularBridgeMutationBatch,
   type SyncularBridgeQueryRequest,
   type SyncularBridgeQueryResult,
   type SyncularBridgeStatus,
+  type SyncularClientEventMap,
+  type SyncularClientEventSink,
+  type SyncularClientEventType,
   type SyncularClientLike,
-  type SyncularV2AuthLeaseRecord,
-  type SyncularV2ClientEventMap,
-  type SyncularV2ClientEventSink,
-  type SyncularV2ClientEventType,
-  type SyncularV2ConflictResolution,
-  type SyncularV2ConflictSummary,
-  type SyncularV2PresenceEntry,
-  type SyncularV2PresenceSink,
-  type SyncularV2DiagnosticSnapshot,
-  type SyncularV2SubscriptionSpec,
-  type SyncularV2SyncResult,
+  type SyncularConflictResolution,
+  type SyncularConflictSummary,
+  type SyncularDiagnosticSnapshot,
+  type SyncularPresenceEntry,
+  type SyncularPresenceSink,
+  type SyncularSubscriptionSpec,
+  type SyncularSyncResult,
 } from '@syncular/client';
 import type { SyncAuthLeaseIssueRequest } from '@syncular/core';
 import { createSyncularReact } from '@syncular/react';
@@ -102,7 +102,7 @@ export function createSyncularTauriBridge(
 ): SyncularBridge {
   const commands = { ...DEFAULT_COMMANDS, ...options.commands };
   const eventPrefix = options.eventPrefix ?? 'syncular';
-  const presence = new Map<string, SyncularV2PresenceEntry[]>();
+  const presence = new Map<string, SyncularPresenceEntry[]>();
   let status: SyncularBridgeStatus = {};
 
   const invoke = <TResult>(
@@ -119,33 +119,33 @@ export function createSyncularTauriBridge(
       invoke<string>(commands.applyMutationsCommit, { batch }),
     applyLeasedMutationsCommit: (batch: SyncularBridgeMutationBatch) =>
       invoke<string>(commands.applyLeasedMutationsCommit, { batch }),
-    sync: () => invoke<SyncularV2SyncResult>(commands.sync),
+    sync: () => invoke<SyncularSyncResult>(commands.sync),
     resumeFromBackground: (syncOptions) =>
-      invoke<SyncularV2SyncResult>(commands.resumeFromBackground, {
+      invoke<SyncularSyncResult>(commands.resumeFromBackground, {
         options: syncOptions,
       }),
     start: () => invoke<void>(commands.start),
     stop: () => invoke<void>(commands.stop),
-    setSubscriptions: (subscriptions: readonly SyncularV2SubscriptionSpec[]) =>
+    setSubscriptions: (subscriptions: readonly SyncularSubscriptionSpec[]) =>
       invoke<void>(commands.setSubscriptions, {
         subscriptions: [...subscriptions],
       }),
     getStatus: () => status,
     issueAuthLease: (request: SyncAuthLeaseIssueRequest) =>
-      invoke<SyncularV2AuthLeaseRecord>(commands.issueAuthLease, { request }),
-    upsertAuthLease: (lease: SyncularV2AuthLeaseRecord) =>
+      invoke<SyncularAuthLeaseRecord>(commands.issueAuthLease, { request }),
+    upsertAuthLease: (lease: SyncularAuthLeaseRecord) =>
       invoke<void>(commands.upsertAuthLease, { lease }),
     authLease: (leaseId: string) =>
-      invoke<SyncularV2AuthLeaseRecord | null>(commands.authLease, {
+      invoke<SyncularAuthLeaseRecord | null>(commands.authLease, {
         leaseId,
       }),
     activeAuthLeases: (actorId?: string | null, nowMs?: number) =>
-      invoke<SyncularV2AuthLeaseRecord[]>(commands.activeAuthLeases, {
+      invoke<SyncularAuthLeaseRecord[]>(commands.activeAuthLeases, {
         actorId,
         nowMs,
       }),
     diagnosticSnapshot: () =>
-      invoke<SyncularV2DiagnosticSnapshot>(commands.diagnosticSnapshot),
+      invoke<SyncularDiagnosticSnapshot>(commands.diagnosticSnapshot),
     on: (event, listener) =>
       listen(options.listen, `${eventPrefix}:${event}`, (payload) => {
         if (event === 'lifecycleChanged') {
@@ -158,7 +158,7 @@ export function createSyncularTauriBridge(
       }),
     presence: {
       get: <TMetadata = Record<string, unknown>>(scopeKey: string) =>
-        (presence.get(scopeKey) ?? []) as SyncularV2PresenceEntry<TMetadata>[],
+        (presence.get(scopeKey) ?? []) as SyncularPresenceEntry<TMetadata>[],
       join: (scopeKey, metadata) => {
         void invoke<void>(commands.joinPresence, { scopeKey, metadata });
       },
@@ -172,28 +172,28 @@ export function createSyncularTauriBridge(
         });
       },
       onChange: <TMetadata = Record<string, unknown>>(
-        listener: SyncularV2PresenceSink<TMetadata>
+        listener: SyncularPresenceSink<TMetadata>
       ) =>
         listen(options.listen, `${eventPrefix}:presenceChanged`, (payload) => {
-          const event = payload as SyncularV2ClientEventMap['presenceChanged'];
+          const event = payload as SyncularClientEventMap['presenceChanged'];
           presence.set(event.scopeKey, event.presence);
-          listener(event as Parameters<SyncularV2PresenceSink<TMetadata>>[0]);
+          listener(event as Parameters<SyncularPresenceSink<TMetadata>>[0]);
         }),
     },
     conflicts: {
-      list: () => invoke<SyncularV2ConflictSummary[]>(commands.listConflicts),
+      list: () => invoke<SyncularConflictSummary[]>(commands.listConflicts),
       retryKeepLocal: (id) =>
         invoke<string>(commands.retryConflictKeepLocal, { id }),
-      resolve: (id, resolution: SyncularV2ConflictResolution) =>
+      resolve: (id, resolution: SyncularConflictResolution) =>
         invoke<void>(commands.resolveConflict, { id, resolution }),
     },
   };
 }
 
-function listen<T extends SyncularV2ClientEventType>(
+function listen<T extends SyncularClientEventType>(
   listenFn: SyncularTauriListen | undefined,
   event: string,
-  listener: SyncularV2ClientEventSink<T>
+  listener: SyncularClientEventSink<T>
 ): () => void {
   if (!listenFn) return noop;
   let unlisten: (() => void) | undefined;

@@ -1,20 +1,20 @@
 import { describe, expect, it } from 'bun:test';
 import {
-  isSyncularV2OfflineError,
-  SyncularV2ClientError,
-  toSyncularV2ClientError,
+  isSyncularOfflineError,
+  SyncularClientError,
+  toSyncularClientError,
 } from './errors';
 
-describe('Syncular v2 browser errors', () => {
+describe('Syncular browser errors', () => {
   it('classifies direct Rust schema errors', () => {
     const source = new Error(
       'server requires schema version 9, but this client supports 1'
     ) as Error & { syncularKind?: string };
     source.syncularKind = 'Schema';
 
-    const error = toSyncularV2ClientError(source);
+    const error = toSyncularClientError(source);
 
-    expect(error).toBeInstanceOf(SyncularV2ClientError);
+    expect(error).toBeInstanceOf(SyncularClientError);
     expect(error).toMatchObject({
       code: 'sync.schema_mismatch',
       category: 'schema-mismatch',
@@ -30,9 +30,9 @@ describe('Syncular v2 browser errors', () => {
     ) as Error & { syncularKind?: string };
     source.syncularKind = 'Protocol';
 
-    const error = toSyncularV2ClientError(source);
+    const error = toSyncularClientError(source);
 
-    expect(error).toBeInstanceOf(SyncularV2ClientError);
+    expect(error).toBeInstanceOf(SyncularClientError);
     expect(error).toMatchObject({
       code: 'sync.integrity_rejected',
       category: 'integrity-rejected',
@@ -47,9 +47,9 @@ describe('Syncular v2 browser errors', () => {
       'browser fetch failed with HTTP 403: {"error":"sync.forbidden","code":"sync.forbidden","category":"forbidden","retryable":false,"recommendedAction":"checkPermissions","message":"Forbidden"}'
     );
 
-    const error = toSyncularV2ClientError(source);
+    const error = toSyncularClientError(source);
 
-    expect(error).toBeInstanceOf(SyncularV2ClientError);
+    expect(error).toBeInstanceOf(SyncularClientError);
     expect(error).toMatchObject({
       code: 'sync.forbidden',
       category: 'forbidden',
@@ -63,23 +63,23 @@ describe('Syncular v2 browser errors', () => {
   });
 
   it('classifies offline transport failures', () => {
-    const error = toSyncularV2ClientError(
+    const error = toSyncularClientError(
       new Error('browser fetch failed: offline')
     );
 
-    expect(error).toBeInstanceOf(SyncularV2ClientError);
+    expect(error).toBeInstanceOf(SyncularClientError);
     expect(error).toMatchObject({
       code: 'sync.offline',
       category: 'offline',
       retryable: true,
       recommendedAction: 'retryLater',
     });
-    expect(isSyncularV2OfflineError(error)).toBe(true);
+    expect(isSyncularOfflineError(error)).toBe(true);
   });
 
   it('recognizes worker offline errors by envelope code', () => {
     expect(
-      isSyncularV2OfflineError({
+      isSyncularOfflineError({
         code: 'sync.offline',
         category: 'offline',
         message: 'browser fetch failed: offline',

@@ -18,68 +18,69 @@ import {
 } from 'kysely';
 import { BaseSqliteDialect, BaseSqliteDriver } from 'kysely-generic-sqlite';
 import {
-  assertSyncularV2BlobPayloadLimit,
-  type SyncularV2BlobLimitInput,
-  syncularV2BlobInputSize,
+  assertSyncularBlobPayloadLimit,
+  type SyncularBlobLimitInput,
+  syncularBlobInputSize,
 } from './blob-limits';
-import { isSyncularV2OfflineError } from './errors';
+import { createSyncularConsoleDiagnosticsPublisher } from './console-diagnostics';
+import { isSyncularOfflineError } from './errors';
 import {
   createMutationsApi,
   type MutationsApi,
   type MutationsCommitFn,
   type MutationsTx,
 } from './mutations';
-import { browserSyncularV2NetworkStatusSource } from './network';
-import { assertSyncularV2ReadonlySql } from './sql-safety';
+import { browserSyncularNetworkStatusSource } from './network';
+import { assertSyncularReadonlySql } from './sql-safety';
 import type {
-  CreateSyncularV2DatabaseOptions,
-  SyncularV2BlobStoreOptions,
-  SyncularV2Blobs,
-  SyncularV2Client,
-  SyncularV2CrdtYjsFieldConfig,
-  SyncularV2LiveQueries,
-  SyncularV2LiveQueryDependencyHint,
-  SyncularV2LiveQueryEvent,
-  SyncularV2LiveQueryOptions,
-  SyncularV2LiveQuerySubscription,
-  SyncularV2NetworkStatusSource,
-  SyncularV2SqlClient,
-  SyncularV2TableConfigMap,
-  SyncularV2UnsafeSqlClient,
+  CreateSyncularDatabaseOptions,
+  SyncularBlobStoreOptions,
+  SyncularBlobs,
+  SyncularCrdtYjsFieldConfig,
+  SyncularLiveQueries,
+  SyncularLiveQueryDependencyHint,
+  SyncularLiveQueryEvent,
+  SyncularLiveQueryOptions,
+  SyncularLiveQuerySubscription,
+  SyncularNetworkStatusSource,
+  SyncularRuntimeClient,
+  SyncularSqlClient,
+  SyncularTableConfigMap,
+  SyncularUnsafeSqlClient,
 } from './types';
-import { createSyncularV2WorkerClient } from './worker-client';
+import { createSyncularWorkerClient } from './worker-client';
 
-type SyncularV2DriverClient = SyncularV2Client &
-  Partial<SyncularV2UnsafeSqlClient>;
-type SyncularV2ConnectionClient = SyncularV2SqlClient &
-  Partial<SyncularV2UnsafeSqlClient>;
+type SyncularDriverClient = SyncularRuntimeClient &
+  Partial<SyncularUnsafeSqlClient>;
+type SyncularConnectionClient = SyncularSqlClient &
+  Partial<SyncularUnsafeSqlClient>;
 
-export interface SyncularV2Dialect extends Dialect, SyncularV2LiveQueries {
+export interface SyncularDialect extends Dialect, SyncularLiveQueries {
   destroyLiveQueries(): Promise<void>;
 }
 
-export interface SyncularV2DialectOptions {
+export interface SyncularDialectOptions {
   appTables?: readonly string[];
-  tableConfig?: SyncularV2TableConfigMap;
+  tableConfig?: SyncularTableConfigMap;
   unsafeWrites?: boolean;
 }
 
-export interface SyncularV2Database<DB> extends SyncularV2LiveQueries {
+export interface SyncularDatabase<DB> extends SyncularLiveQueries {
   db: Kysely<DB>;
-  client: SyncularV2Client;
-  dialect: SyncularV2Dialect;
+  client: SyncularRuntimeClient;
+  dialect: SyncularDialect;
   mutations: MutationsApi<DB, undefined>;
   leasedMutations: MutationsApi<DB, undefined>;
-  blobs: SyncularV2Blobs;
+  blobs: SyncularBlobs;
   close(): Promise<void>;
 }
 
-export async function withSyncularV2SchemaWrites<DB, Result>(
-  database: Pick<SyncularV2Database<DB>, 'client'>,
+export async function withSyncularSchemaWrites<DB, Result>(
+  database: Pick<SyncularDatabase<DB>, 'client'>,
   callback: (db: Kysely<any>) => Promise<Result>
 ): Promise<Result> {
   const client = assertUnsafeSqlClient(database.client);
-  const dialect = createSyncularV2Dialect(client, { unsafeWrites: true });
+  const dialect = createSyncularDialect(client, { unsafeWrites: true });
   const db = new Kysely<any>({ dialect });
   try {
     return await callback(db);
@@ -89,7 +90,7 @@ export async function withSyncularV2SchemaWrites<DB, Result>(
   }
 }
 
-export interface SyncularV2MutationsMeta {
+export interface SyncularMutationsMeta {
   operations: SyncOperation[];
   localMutations: Array<{
     table: string;
@@ -99,9 +100,9 @@ export interface SyncularV2MutationsMeta {
   clientCommitIds: string[];
 }
 
-export interface SyncularV2MutationsOptions {
+export interface SyncularMutationsOptions {
   client: Pick<
-    SyncularV2Client,
+    SyncularRuntimeClient,
     | 'applyMutation'
     | 'applyMutationsBatch'
     | 'applyMutationsCommit'
@@ -110,7 +111,7 @@ export interface SyncularV2MutationsOptions {
   > &
     Partial<
       Pick<
-        SyncularV2Client,
+        SyncularRuntimeClient,
         'applyLeasedMutation' | 'applyLeasedMutationsCommit'
       >
     >;
@@ -120,21 +121,21 @@ export interface SyncularV2MutationsOptions {
   idColumn?: string;
   versionColumn?: string | null;
   omitColumns?: string[];
-  tableConfig?: SyncularV2TableConfigMap;
+  tableConfig?: SyncularTableConfigMap;
   readBaseVersion?: (args: {
     table: string;
     rowId: string;
     idColumn: string;
     versionColumn: string;
   }) => Promise<number | null>;
-  afterCommit?: (meta: SyncularV2MutationsMeta) => void | Promise<void>;
+  afterCommit?: (meta: SyncularMutationsMeta) => void | Promise<void>;
 }
 
-export async function createSyncularV2Database<DB>(
-  options: CreateSyncularV2DatabaseOptions
-): Promise<SyncularV2Database<DB>> {
-  const client = await createSyncularV2WorkerClient(options);
-  const dialect = createSyncularV2Dialect(client, {
+export async function createSyncularDatabase<DB>(
+  options: CreateSyncularDatabaseOptions
+): Promise<SyncularDatabase<DB>> {
+  const client = await createSyncularWorkerClient(options);
+  const dialect = createSyncularDialect(client, {
     appTables: options.appTables,
     tableConfig: options.tableConfig,
   });
@@ -156,7 +157,7 @@ export async function createSyncularV2Database<DB>(
     network:
       options.sync?.network === false
         ? undefined
-        : (options.sync?.network ?? browserSyncularV2NetworkStatusSource()),
+        : (options.sync?.network ?? browserSyncularNetworkStatusSource()),
     isClosed: () => closed,
   });
   const blobUploadScheduler = createBlobUploadScheduler(client, {
@@ -164,7 +165,18 @@ export async function createSyncularV2Database<DB>(
     debounceMs: options.sync?.blobUploadDebounceMs ?? 10,
     isClosed: () => closed,
   });
-  const mutations = createSyncularV2Mutations<DB>({
+  const consoleDiagnostics =
+    options.consoleDiagnostics === undefined ||
+    options.consoleDiagnostics === false
+      ? undefined
+      : createSyncularConsoleDiagnosticsPublisher(client, {
+          ...(options.consoleDiagnostics === true
+            ? {}
+            : options.consoleDiagnostics),
+          config: options.config,
+          isClosed: () => closed,
+        });
+  const mutations = createSyncularMutations<DB>({
     client,
     codecs: options.codecs,
     codecDialect: 'sqlite',
@@ -172,7 +184,7 @@ export async function createSyncularV2Database<DB>(
     readBaseVersion: (args) => readCurrentBaseVersion(client, args),
     afterCommit: () => mutationSyncScheduler.schedule(),
   });
-  const leasedMutations = createSyncularV2Mutations<DB>({
+  const leasedMutations = createSyncularMutations<DB>({
     client,
     requireAuthLease: true,
     codecs: options.codecs,
@@ -181,7 +193,7 @@ export async function createSyncularV2Database<DB>(
     readBaseVersion: (args) => readCurrentBaseVersion(client, args),
     afterCommit: () => mutationSyncScheduler.schedule(),
   });
-  const blobs = createSyncularV2BlobClient(client, {
+  const blobs = createSyncularBlobClient(client, {
     diagnostics: options.diagnostics,
     limits: options.blobLimits,
     afterStore: ({ options }) => {
@@ -203,6 +215,7 @@ export async function createSyncularV2Database<DB>(
       closed = true;
       mutationSyncScheduler.destroy();
       blobUploadScheduler.destroy();
+      consoleDiagnostics?.destroy();
       try {
         await dialect.destroyLiveQueries();
         await db.destroy();
@@ -214,11 +227,11 @@ export async function createSyncularV2Database<DB>(
 }
 
 function createMutationSyncScheduler(
-  client: Pick<SyncularV2Client, 'syncOnce'>,
+  client: Pick<SyncularRuntimeClient, 'syncOnce'>,
   options: {
     enabled: boolean;
     debounceMs: number | false;
-    network: SyncularV2NetworkStatusSource | undefined;
+    network: SyncularNetworkStatusSource | undefined;
     isClosed: () => boolean;
   }
 ): { schedule(): void; destroy(): void } {
@@ -244,7 +257,7 @@ function createMutationSyncScheduler(
       .syncOnce()
       .then(() => undefined)
       .catch((error) => {
-        if (!isOnline() || isSyncularV2OfflineError(error)) queued = true;
+        if (!isOnline() || isSyncularOfflineError(error)) queued = true;
       })
       .finally(() => {
         inFlight = undefined;
@@ -290,7 +303,7 @@ function createMutationSyncScheduler(
 }
 
 function createBlobUploadScheduler(
-  client: Pick<SyncularV2Client, 'processBlobUploadQueue'>,
+  client: Pick<SyncularRuntimeClient, 'processBlobUploadQueue'>,
   options: {
     enabled: boolean;
     debounceMs: number | false;
@@ -345,9 +358,9 @@ function createBlobUploadScheduler(
   };
 }
 
-export function createSyncularV2BlobClient(
+export function createSyncularBlobClient(
   client: Pick<
-    SyncularV2Client,
+    SyncularRuntimeClient,
     | 'storeBlob'
     | 'retrieveBlob'
     | 'isBlobLocal'
@@ -358,16 +371,16 @@ export function createSyncularV2BlobClient(
     | 'clearBlobCache'
   >,
   hooks: {
-    limits?: CreateSyncularV2DatabaseOptions['blobLimits'];
-    diagnostics?: CreateSyncularV2DatabaseOptions['diagnostics'];
+    limits?: CreateSyncularDatabaseOptions['blobLimits'];
+    diagnostics?: CreateSyncularDatabaseOptions['diagnostics'];
     afterStore?: (args: {
       ref: BlobRef;
-      options?: SyncularV2BlobStoreOptions;
+      options?: SyncularBlobStoreOptions;
     }) => void | Promise<void>;
   } = {}
-): SyncularV2Blobs {
+): SyncularBlobs {
   const assertRetrieveWithinLimit = (ref: BlobRef) =>
-    assertSyncularV2BlobPayloadLimit({
+    assertSyncularBlobPayloadLimit({
       operation: 'retrieve',
       size: ref.size,
       limits: hooks.limits,
@@ -376,9 +389,9 @@ export function createSyncularV2BlobClient(
     });
   return {
     async store(data, storeOptions) {
-      assertSyncularV2BlobPayloadLimit({
+      assertSyncularBlobPayloadLimit({
         operation: 'store',
-        size: syncularV2BlobInputSize(data as SyncularV2BlobLimitInput),
+        size: syncularBlobInputSize(data as SyncularBlobLimitInput),
         limits: hooks.limits,
         options: storeOptions,
         diagnostics: hooks.diagnostics,
@@ -422,26 +435,26 @@ export function createSyncularV2BlobClient(
   };
 }
 
-export function createSyncularV2Dialect(
-  client: SyncularV2Client,
-  options: SyncularV2DialectOptions = {}
-): SyncularV2Dialect {
-  const driver = new SyncularV2Driver(client, options);
-  const dialect = new BaseSqliteDialect(() => driver) as SyncularV2Dialect;
+export function createSyncularDialect(
+  client: SyncularRuntimeClient,
+  options: SyncularDialectOptions = {}
+): SyncularDialect {
+  const driver = new SyncularDriver(client, options);
+  const dialect = new BaseSqliteDialect(() => driver) as SyncularDialect;
   dialect.live = (query, liveOptions) => driver.live(query, liveOptions);
   dialect.destroyLiveQueries = () => driver.destroy();
   return dialect;
 }
 
-export function createSyncularV2Mutations<DB>(
-  options: SyncularV2MutationsOptions
+export function createSyncularMutations<DB>(
+  options: SyncularMutationsOptions
 ): MutationsApi<DB, undefined> {
-  return createMutationsApi(createSyncularV2Commit<DB>(options));
+  return createMutationsApi(createSyncularCommit<DB>(options));
 }
 
-export function createSyncularV2Commit<DB>(
-  options: SyncularV2MutationsOptions
-): MutationsCommitFn<DB, SyncularV2MutationsMeta, undefined> {
+export function createSyncularCommit<DB>(
+  options: SyncularMutationsOptions
+): MutationsCommitFn<DB, SyncularMutationsMeta, undefined> {
   const idColumn = options.idColumn ?? 'id';
   const versionColumn = options.versionColumn ?? 'server_version';
   const omitColumns = options.omitColumns ?? [];
@@ -456,7 +469,7 @@ export function createSyncularV2Commit<DB>(
       operation: SyncOperation;
       localRow?: unknown | null;
     }> = [];
-    const localMutations: SyncularV2MutationsMeta['localMutations'] = [];
+    const localMutations: SyncularMutationsMeta['localMutations'] = [];
     const txTableCache = new Map<string, unknown>();
 
     const makeTxTable = (table: string) => {
@@ -716,9 +729,12 @@ export function createSyncularV2Commit<DB>(
 }
 
 function requireLeasedMutationClient(
-  client: SyncularV2MutationsOptions['client']
+  client: SyncularMutationsOptions['client']
 ): Required<
-  Pick<SyncularV2Client, 'applyLeasedMutation' | 'applyLeasedMutationsCommit'>
+  Pick<
+    SyncularRuntimeClient,
+    'applyLeasedMutation' | 'applyLeasedMutationsCommit'
+  >
 > {
   if (typeof client.applyLeasedMutationsCommit !== 'function') {
     throw new Error(
@@ -731,27 +747,27 @@ function requireLeasedMutationClient(
     );
   }
   return client as Required<
-    Pick<SyncularV2Client, 'applyLeasedMutation' | 'applyLeasedMutationsCommit'>
+    Pick<
+      SyncularRuntimeClient,
+      'applyLeasedMutation' | 'applyLeasedMutationsCommit'
+    >
   >;
 }
 
-class SyncularV2Driver extends BaseSqliteDriver {
+class SyncularDriver extends BaseSqliteDriver {
   #listeners = new Map<
     string,
-    (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => void
+    (event: SyncularLiveQueryEvent<Record<string, unknown>>) => void
   >();
   readonly #appTables: Set<string> | undefined;
-  readonly #tableConfig: SyncularV2TableConfigMap | undefined;
+  readonly #tableConfig: SyncularTableConfigMap | undefined;
 
   constructor(
-    private readonly client: SyncularV2DriverClient,
-    options: SyncularV2DialectOptions = {}
+    private readonly client: SyncularDriverClient,
+    options: SyncularDialectOptions = {}
   ) {
     super(async () => {
-      this.conn = new SyncularV2Connection(
-        client,
-        options.unsafeWrites ?? false
-      );
+      this.conn = new SyncularConnection(client, options.unsafeWrites ?? false);
     });
     this.#appTables =
       options.appTables == null
@@ -762,8 +778,8 @@ class SyncularV2Driver extends BaseSqliteDriver {
 
   async live<Row extends Record<string, unknown>>(
     query: { compile(): CompiledQuery },
-    options: SyncularV2LiveQueryOptions<Row>
-  ): Promise<SyncularV2LiveQuerySubscription> {
+    options: SyncularLiveQueryOptions<Row>
+  ): Promise<SyncularLiveQuerySubscription> {
     const compiled = query.compile();
     const tables = normalizeLiveQueryTables(
       options.tables ?? inferTablesFromCompiledQuery(compiled, this.#appTables),
@@ -781,9 +797,9 @@ class SyncularV2Driver extends BaseSqliteDriver {
       inferDependencyHintsFromCompiledQuery(compiled, tables, this.#tableConfig)
     );
     const listener = (
-      event: SyncularV2LiveQueryEvent<Record<string, unknown>>
+      event: SyncularLiveQueryEvent<Record<string, unknown>>
     ) => {
-      const typed = event as SyncularV2LiveQueryEvent<Row>;
+      const typed = event as SyncularLiveQueryEvent<Row>;
       options.onChange(typed.rows, { ...typed, initial: false });
     };
     this.#listeners.set(snapshot.id, listener);
@@ -823,14 +839,14 @@ class SyncularV2Driver extends BaseSqliteDriver {
   }
 }
 
-class SyncularV2Connection implements DatabaseConnection {
+class SyncularConnection implements DatabaseConnection {
   constructor(
-    private readonly client: SyncularV2ConnectionClient,
+    private readonly client: SyncularConnectionClient,
     private readonly unsafeWrites: boolean
   ) {}
 
   async executeQuery<R>(compiledQuery: CompiledQuery): Promise<QueryResult<R>> {
-    if (!this.unsafeWrites) assertSyncularV2ReadonlySql(compiledQuery.sql);
+    if (!this.unsafeWrites) assertSyncularReadonlySql(compiledQuery.sql);
     const result = this.unsafeWrites
       ? await assertUnsafeSqlClient(this.client).executeUnsafeSql<
           R & Record<string, unknown>
@@ -853,19 +869,19 @@ class SyncularV2Connection implements DatabaseConnection {
     _compiledQuery: CompiledQuery,
     _chunkSize?: number
   ): AsyncIterableIterator<QueryResult<R>> {
-    throw new Error('syncular v2 sqlite dialect does not support streaming');
+    throw new Error('syncular sqlite dialect does not support streaming');
   }
 }
 
-function assertUnsafeSqlClient<Client extends SyncularV2SqlClient>(
+function assertUnsafeSqlClient<Client extends SyncularSqlClient>(
   client: Client
-): Client & SyncularV2UnsafeSqlClient {
-  const maybe = client as Partial<SyncularV2UnsafeSqlClient>;
+): Client & SyncularUnsafeSqlClient {
+  const maybe = client as Partial<SyncularUnsafeSqlClient>;
   if (typeof maybe.executeUnsafeSql === 'function') {
-    return client as Client & SyncularV2UnsafeSqlClient;
+    return client as Client & SyncularUnsafeSqlClient;
   }
   throw new Error(
-    'Syncular v2 schema installation requires an internal unsafe SQL client.'
+    'Syncular schema installation requires an internal unsafe SQL client.'
   );
 }
 
@@ -895,20 +911,20 @@ function sanitizeOperationPayload(
 }
 
 function serverMergeCrdtYjsFields(
-  fields: readonly SyncularV2CrdtYjsFieldConfig[]
-): readonly SyncularV2CrdtYjsFieldConfig[] {
+  fields: readonly SyncularCrdtYjsFieldConfig[]
+): readonly SyncularCrdtYjsFieldConfig[] {
   return fields.filter(
     (field) => field.syncMode === undefined || field.syncMode === 'server-merge'
   );
 }
 
 async function transformCrdtYjsMutationPayload(args: {
-  client: Pick<SyncularV2Client, 'applyYjsEnvelopeToPayload'>;
+  client: Pick<SyncularRuntimeClient, 'applyYjsEnvelopeToPayload'>;
   table: string;
   rowId: string;
   payload: Record<string, unknown>;
   existingRow?: Record<string, unknown> | null;
-  crdtYjsFields: readonly SyncularV2CrdtYjsFieldConfig[];
+  crdtYjsFields: readonly SyncularCrdtYjsFieldConfig[];
 }): Promise<Record<string, unknown>> {
   if (args.crdtYjsFields.length === 0 || !('__yjs' in args.payload)) {
     return args.payload;
@@ -932,7 +948,7 @@ async function transformCrdtYjsMutationPayload(args: {
 
 function stripCrdtYjsMaterializedPayloadFields(
   payload: Record<string, unknown>,
-  crdtYjsFields: readonly SyncularV2CrdtYjsFieldConfig[]
+  crdtYjsFields: readonly SyncularCrdtYjsFieldConfig[]
 ): Record<string, unknown> {
   const envelope = objectRecord(payload.__yjs);
   if (crdtYjsFields.length === 0 || Object.keys(envelope).length === 0) {
@@ -952,11 +968,11 @@ function stripCrdtYjsMaterializedPayloadFields(
 }
 
 async function readCrdtYjsExistingRow(args: {
-  client: Pick<SyncularV2Client, 'executeSql'>;
+  client: Pick<SyncularRuntimeClient, 'executeSql'>;
   table: string;
   rowId: string;
   idColumn: string;
-  crdtYjsFields: readonly SyncularV2CrdtYjsFieldConfig[];
+  crdtYjsFields: readonly SyncularCrdtYjsFieldConfig[];
 }): Promise<Record<string, unknown> | null> {
   if (args.crdtYjsFields.length === 0) return null;
   const columns = new Set<string>([args.idColumn]);
@@ -972,7 +988,7 @@ async function readCrdtYjsExistingRow(args: {
 }
 
 async function readExistingLocalRow(args: {
-  client: Pick<SyncularV2Client, 'executeSql'>;
+  client: Pick<SyncularRuntimeClient, 'executeSql'>;
   table: string;
   rowId: string;
   idColumn: string;
@@ -990,7 +1006,7 @@ function quoteSqlIdentifier(identifier: string): string {
 }
 
 async function readCurrentBaseVersion(
-  client: Pick<SyncularV2Client, 'executeSql'>,
+  client: Pick<SyncularRuntimeClient, 'executeSql'>,
   args: {
     table: string;
     rowId: string;
@@ -1013,7 +1029,7 @@ function coerceBaseVersion(value: unknown): number | null {
 }
 
 async function resolveBaseVersion(args: {
-  options: SyncularV2MutationsOptions;
+  options: SyncularMutationsOptions;
   table: string;
   rowId: string;
   idColumn: string;
@@ -1052,8 +1068,8 @@ function inferTablesFromCompiledQuery(
 function inferDependencyHintsFromCompiledQuery(
   query: CompiledQuery,
   tables: readonly string[],
-  tableConfig?: SyncularV2TableConfigMap
-): SyncularV2LiveQueryDependencyHint[] {
+  tableConfig?: SyncularTableConfigMap
+): SyncularLiveQueryDependencyHint[] {
   if (tables.length !== 1) return [];
   const table = tables[0]!;
   const primaryKey = tableConfig?.[table]?.primaryKeyColumn ?? 'id';

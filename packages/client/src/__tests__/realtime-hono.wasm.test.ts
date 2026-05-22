@@ -17,9 +17,9 @@ import {
   getSyncWebSocketConnectionManager,
 } from '../../../server-hono/src/routes';
 import type {
-  SyncularV2Client,
-  SyncularV2DiagnosticEvent,
-  SyncularV2LiveQueryEvent,
+  SyncularDiagnosticEvent,
+  SyncularLiveQueryEvent,
+  SyncularRuntimeClient,
 } from '../types';
 import {
   ensureHonoSyncTasksTable,
@@ -33,7 +33,7 @@ const ACTOR_ID = syncConformance.actors.rust.actorId;
 const AUTHORIZATION = syncConformance.actors.rust.token;
 const REALTIME_TOKEN = syncConformance.realtime.websocketToken;
 
-describe('Syncular v2 worker realtime against Hono websocket routes', () => {
+describe('Syncular worker realtime against Hono websocket routes', () => {
   const clients: Array<{ close(): Promise<void> }> = [];
   const servers: Array<ReturnType<typeof Bun.serve>> = [];
   const dbs: Array<Kysely<HonoSyncServerDb>> = [];
@@ -251,7 +251,7 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
     await waitFor(() => connectionCount() === 1);
     const pullCountBeforeRealtimePush = httpPullCount();
     const liveEvent = waitForLiveEvent(clientA, snapshot.id);
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const diagnostics: SyncularDiagnosticEvent[] = [];
     const removeDiagnostics = clientA.addDiagnosticListener((event) => {
       diagnostics.push(event);
     });
@@ -574,7 +574,7 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
     clientId: string;
     actorId?: string;
     authorization?: string;
-  }): Promise<SyncularV2Client> {
+  }): Promise<SyncularRuntimeClient> {
     const database = await createSyncularAppDatabase({
       requestTimeoutMs: 10_000,
       getHeaders: () => ({
@@ -604,9 +604,9 @@ interface RealtimeServerHarness {
 }
 
 function waitForLiveEvent(
-  client: SyncularV2Client,
+  client: SyncularRuntimeClient,
   queryId: string
-): Promise<SyncularV2LiveQueryEvent<Record<string, unknown>>> {
+): Promise<SyncularLiveQueryEvent<Record<string, unknown>>> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
       client.removeLiveQueryListener(queryId);
@@ -656,10 +656,10 @@ async function waitForSyncRequestEventByTrace(
 }
 
 async function waitForDiagnostic(
-  client: SyncularV2Client,
-  observed: SyncularV2DiagnosticEvent[],
-  predicate: (event: SyncularV2DiagnosticEvent) => boolean
-): Promise<SyncularV2DiagnosticEvent> {
+  client: SyncularRuntimeClient,
+  observed: SyncularDiagnosticEvent[],
+  predicate: (event: SyncularDiagnosticEvent) => boolean
+): Promise<SyncularDiagnosticEvent> {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const snapshot = await client.diagnosticSnapshot();
     const event = [...observed, ...snapshot.recentDiagnostics].find(predicate);
@@ -690,7 +690,7 @@ async function toNativeBunResponse(response: Response): Promise<Response> {
 }
 
 function waitForPresenceEvent(
-  client: SyncularV2Client,
+  client: SyncularRuntimeClient,
   predicate: (event: {
     scopeKey: string;
     presence: Array<{

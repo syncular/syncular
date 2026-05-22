@@ -109,7 +109,7 @@ Initial audit inputs:
   `packages/syncular/src/dialect-wa-sqlite.ts`,
   `packages/syncular/src/server-dialect-neon.ts`, and
   `packages/syncular/src/transport-ws.ts`.
-- `rg` shows many `SyncularV2*` names remain. These are not automatically
+- `rg` shows many `Syncular*` names remain. These are not automatically
   compatibility debt because the current runtime still uses v2 naming in public
   protocol/package contracts. Rename only if a scoped API decision says the
   churn is worth it.
@@ -178,6 +178,14 @@ fresh scan rather than continuing to chase the deleted JSON paths:
   docs now describe WebSocket realtime as a verified sync-pack delta fast path
   with HTTP pull as the recovery/checkpoint path, instead of claiming websocket
   carries no data.
+- Removed explicit `json-v1` sync-pack negotiation and JSON combined sync-pack
+  response paths.
+- Removed explicit `json-row-frame-v1` snapshot chunks from TS server/core and
+  Rust transports.
+- Removed now-redundant request-time `syncPackEncodings` and
+  `snapshotEncodings` fields from TS/Rust protocol shapes, request builders,
+  testkit helpers, and protocol fixtures. Binary sync-packs and binary snapshot
+  chunks are the single current product path.
 - Gate: `bun run docs:build` passed. `bunx biome check <changed md/mdx>` was
   attempted, but Biome ignores these Markdown/MDX paths in this repo.
 - Removed the old browser wa-sqlite dialect package, old TypeScript websocket
@@ -277,14 +285,14 @@ fresh scan rather than continuing to chase the deleted JSON paths:
   uses the explicit `start_realtime_worker` / `stop_realtime_worker` API.
 - Removed unused browser client event type aliases
   (`SyncularClientEventType`, `SyncularClientEventMap`) so callers use the
-  canonical `SyncularV2ClientEventType` / `SyncularV2ClientEventMap` names.
+  canonical `SyncularClientEventType` / `SyncularClientEventMap` names.
 - Removed unused browser worker response type aliases
-  (`SyncularV2WorkerRuntimeInfoResponse`,
-  `SyncularV2WorkerTransportStatsResponse`) so the worker protocol exports only
+  (`SyncularWorkerRuntimeInfoResponse`,
+  `SyncularWorkerTransportStatsResponse`) so the worker protocol exports only
   concrete message shapes plus canonical runtime data types.
 - Removed the browser lifecycle network type alias
-  (`SyncularV2ClientNetworkStatusSource`) so lifecycle options use the
-  canonical `SyncularV2NetworkStatusSource` type directly.
+  (`SyncularClientNetworkStatusSource`) so lifecycle options use the
+  canonical `SyncularNetworkStatusSource` type directly.
 - Removed the testkit `SyncChangeRecord` alias so sync-response helpers return
   the canonical `SyncChange` type from `@syncular/core`.
 - Gates:
@@ -371,12 +379,12 @@ fresh scan rather than continuing to chase the deleted JSON paths:
   - `bun --cwd packages/core tsgo`: passed.
   - `bun --cwd packages/server tsgo && bun --cwd packages/server-hono tsgo`:
     passed.
-- Changed core sync-pack negotiation so unspecified or empty
-  `syncPackEncodings` prefer `binary-sync-pack-v1`; the follow-up slice below
-  removes the explicit `json-v1` option entirely.
+- Changed the interim sync-pack selection path so unspecified or empty requests
+  preferred `binary-sync-pack-v1`; later slices removed explicit `json-v1`
+  negotiation and then removed the request-time selector fields entirely.
 - Hono route tests now decode the response from the advertised content type
-  instead of assuming JSON; the follow-up slice below removes the JSON
-  response-size path and keeps binary response-size coverage.
+  instead of assuming JSON. Later cleanup removed the JSON response-size path
+  and kept binary response-size coverage.
 - Gates:
   - `bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts packages/core/src/__tests__/sync-packs.test.ts`:
     passed, `57` tests.
@@ -423,3 +431,24 @@ fresh scan rather than continuing to chase the deleted JSON paths:
     `packages/transport-http/src/generated/api.ts` snapshot; this slice's
     local diff in that file/snapshot is only the snapshot chunk encoding union
     narrowing to `"binary-table-v1"`.
+- Removed request-time sync/snapshot encoding negotiation fields after the
+  binary-only paths landed. `SyncCombinedRequest`, `SyncPullRequest`,
+  TS/Rust request builders, protocol fixtures, and testkit helpers no longer
+  carry `syncPackEncodings` or `snapshotEncodings`.
+- Gates:
+  - `cargo fmt --manifest-path rust/Cargo.toml --all --check`: passed.
+  - `bunx biome check` on changed TS protocol/server/testkit files: passed.
+  - `bun --cwd packages/core tsgo`, `bun --cwd packages/server tsgo`,
+    `bun --cwd packages/server-hono tsgo`, `bun --cwd packages/testkit tsgo`:
+    passed.
+  - `bun test packages/core/src/__tests__/sync-packs.test.ts packages/core/src/__tests__/snapshot-chunks.test.ts packages/core/src/__tests__/protocol-fixtures.test.ts packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts tests/unit/server-pull.test.ts packages/server/src/pull-snapshot-artifacts.test.ts packages/testkit/src/sync-builders.test.ts`:
+    passed, `100` tests.
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`:
+    passed, `20` tests.
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`:
+    passed, `3` tests.
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`: passed,
+    `45` tests.
+  - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang bun --cwd rust/bindings/javascript build:wasm:dev`:
+    passed.
+  - `git diff --check`: passed.

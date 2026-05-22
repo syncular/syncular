@@ -3,15 +3,15 @@ import {
   type SyncAuthLeaseIssueRequest,
   type SyncAuthLeaseIssueResponse,
 } from '@syncular/core';
-import type { SyncularV2AuthHeaders, SyncularV2AuthLeaseRecord } from './types';
+import type { SyncularAuthHeaders, SyncularAuthLeaseRecord } from './types';
 
-export async function issueSyncularV2AuthLease(args: {
+export async function issueSyncularAuthLease(args: {
   baseUrl: string;
-  headers: SyncularV2AuthHeaders;
+  headers: SyncularAuthHeaders;
   request: SyncAuthLeaseIssueRequest;
   fetchImpl?: typeof fetch;
   nowMs?: number;
-}): Promise<SyncularV2AuthLeaseRecord> {
+}): Promise<SyncularAuthLeaseRecord> {
   const fetchImpl = args.fetchImpl ?? fetch;
   const headers = new Headers(args.headers);
   headers.set('accept', 'application/json');
@@ -29,16 +29,16 @@ export async function issueSyncularV2AuthLease(args: {
     throw await authLeaseIssueHttpError(response);
   }
 
-  return syncularV2AuthLeaseRecordFromIssueResponse(
+  return syncularAuthLeaseRecordFromIssueResponse(
     assertAuthLeaseIssueResponse(await response.json()),
     args.nowMs
   );
 }
 
-function syncularV2AuthLeaseRecordFromIssueResponse(
+function syncularAuthLeaseRecordFromIssueResponse(
   response: SyncAuthLeaseIssueResponse,
   nowMs = Date.now()
-): SyncularV2AuthLeaseRecord {
+): SyncularAuthLeaseRecord {
   return {
     leaseId: response.payload.leaseId,
     kid: response.protectedHeader.kid,
@@ -59,7 +59,7 @@ function syncularV2AuthLeaseRecordFromIssueResponse(
 async function authLeaseIssueHttpError(response: Response): Promise<Error> {
   const body = await response.text().catch(() => '');
   return new Error(
-    `Syncular v2 auth lease issue failed with HTTP ${response.status}: ${body}`
+    `Syncular auth lease issue failed with HTTP ${response.status}: ${body}`
   );
 }
 
@@ -67,7 +67,7 @@ function assertAuthLeaseIssueResponse(
   value: unknown
 ): SyncAuthLeaseIssueResponse {
   if (!value || typeof value !== 'object') {
-    throw new Error('Syncular v2 auth lease issue returned invalid JSON');
+    throw new Error('Syncular auth lease issue returned invalid JSON');
   }
   const response = value as Partial<SyncAuthLeaseIssueResponse>;
   const payload = response.payload as
@@ -89,7 +89,7 @@ function assertAuthLeaseIssueResponse(
     !protectedHeader ||
     typeof protectedHeader.kid !== 'string'
   ) {
-    throw new Error('Syncular v2 auth lease issue returned an invalid lease');
+    throw new Error('Syncular auth lease issue returned an invalid lease');
   }
   return response as SyncAuthLeaseIssueResponse;
 }

@@ -1,14 +1,14 @@
 import type {
-  SyncularV2ChangedRow,
-  SyncularV2CrdtDocumentSnapshot,
-  SyncularV2CrdtFieldCompactionReceipt,
-  SyncularV2CrdtFieldDescriptor,
-  SyncularV2CrdtFieldMaterialization,
-  SyncularV2CrdtFieldRequest,
-  SyncularV2CrdtFieldWriteReceipt,
-  SyncularV2CrdtFieldYjsUpdateRequest,
-  SyncularV2CrdtUpdateLogEntry,
-  SyncularV2RowsChangedEvent,
+  SyncularChangedRow,
+  SyncularCrdtDocumentSnapshot,
+  SyncularCrdtFieldCompactionReceipt,
+  SyncularCrdtFieldDescriptor,
+  SyncularCrdtFieldMaterialization,
+  SyncularCrdtFieldRequest,
+  SyncularCrdtFieldWriteReceipt,
+  SyncularCrdtFieldYjsUpdateRequest,
+  SyncularCrdtUpdateLogEntry,
+  SyncularRowsChangedEvent,
 } from '@syncular/client';
 import type { SyncularCrdtProjectionHost } from './yjs-document-field-adapter';
 
@@ -59,38 +59,38 @@ export interface SyncularCrdtHostErrorPayload {
 
 export interface SyncularCrdtHostMethodMap {
   openCrdtField: {
-    request: SyncularV2CrdtFieldRequest;
-    response: SyncularV2CrdtFieldDescriptor;
+    request: SyncularCrdtFieldRequest;
+    response: SyncularCrdtFieldDescriptor;
   };
   applyCrdtFieldYjsUpdate: {
-    request: SyncularV2CrdtFieldYjsUpdateRequest;
-    response: SyncularV2CrdtFieldWriteReceipt;
+    request: SyncularCrdtFieldYjsUpdateRequest;
+    response: SyncularCrdtFieldWriteReceipt;
   };
   enqueueCrdtFieldYjsUpdate: {
-    request: SyncularV2CrdtFieldYjsUpdateRequest;
+    request: SyncularCrdtFieldYjsUpdateRequest;
     response: string;
   };
   materializeCrdtField: {
-    request: SyncularV2CrdtFieldRequest;
-    response: SyncularV2CrdtFieldMaterialization;
+    request: SyncularCrdtFieldRequest;
+    response: SyncularCrdtFieldMaterialization;
   };
   crdtDocumentSnapshot: {
-    request: SyncularV2CrdtFieldRequest;
-    response: SyncularV2CrdtDocumentSnapshot;
+    request: SyncularCrdtFieldRequest;
+    response: SyncularCrdtDocumentSnapshot;
   };
   crdtUpdateLog: {
-    request: SyncularV2CrdtFieldRequest & { limit?: number };
-    response: SyncularV2CrdtUpdateLogEntry[];
+    request: SyncularCrdtFieldRequest & { limit?: number };
+    response: SyncularCrdtUpdateLogEntry[];
   };
   snapshotCrdtFieldStateVector: {
-    request: SyncularV2CrdtFieldRequest;
+    request: SyncularCrdtFieldRequest;
     response: { stateVectorBase64: string };
   };
   compactCrdtField: {
-    request: SyncularV2CrdtFieldRequest & {
+    request: SyncularCrdtFieldRequest & {
       minUncheckpointedUpdates?: number;
     };
-    response: SyncularV2CrdtFieldCompactionReceipt;
+    response: SyncularCrdtFieldCompactionReceipt;
   };
 }
 
@@ -125,7 +125,7 @@ export type SyncularCrdtHostResponseMessage =
 export interface SyncularCrdtHostRowsChangedMessage {
   protocol: typeof SYNCULAR_CRDT_WEBVIEW_PROTOCOL;
   type: typeof SYNCULAR_CRDT_WEBVIEW_ROWS_CHANGED;
-  event: SyncularV2RowsChangedEvent;
+  event: SyncularRowsChangedEvent;
 }
 
 export type SyncularCrdtHostMessage =
@@ -136,10 +136,10 @@ export type SyncularCrdtHostMessage =
 export interface SyncularNativeRowsChangedEventLike {
   kind: string;
   tables?: string[];
-  changedRows?: SyncularV2ChangedRow[];
+  changedRows?: SyncularChangedRow[];
   payload_json?: {
     source?: string | null;
-    changedRows?: SyncularV2ChangedRow[];
+    changedRows?: SyncularChangedRow[];
   };
 }
 
@@ -178,7 +178,7 @@ export function createSyncularCrdtWebViewHost(
   const nextRequestId = options.requestId ?? randomRequestId;
   const pending = new Map<string, PendingRequest>();
   const rowsChangedListeners = new Set<
-    (event: SyncularV2RowsChangedEvent) => void
+    (event: SyncularRowsChangedEvent) => void
   >();
   let closed = false;
 
@@ -350,7 +350,7 @@ export async function createSyncularCrdtHostResponseMessage(
 }
 
 export function createSyncularCrdtRowsChangedMessage(
-  event: SyncularV2RowsChangedEvent
+  event: SyncularRowsChangedEvent
 ): SyncularCrdtHostRowsChangedMessage {
   return {
     protocol: SYNCULAR_CRDT_WEBVIEW_PROTOCOL,

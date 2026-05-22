@@ -4859,17 +4859,17 @@ fn push_rust_changed_row_helpers(out: &mut String, user_tables: &[TableInfo]) {
 
 fn push_typescript_changed_row_helpers(out: &mut String, user_tables: &[TableInfo]) {
     out.push_str(
-        "export type SyncularGeneratedChangedOperation = SyncularV2ChangedRow['operation'];\n",
+        "export type SyncularGeneratedChangedOperation = SyncularChangedRow['operation'];\n",
     );
-    out.push_str("export type SyncularChangedRowsInput = SyncularV2RowsChangedEvent | { changedRows?: readonly SyncularV2ChangedRow[] } | readonly SyncularV2ChangedRow[];\n\n");
+    out.push_str("export type SyncularChangedRowsInput = SyncularRowsChangedEvent | { changedRows?: readonly SyncularChangedRow[] } | readonly SyncularChangedRow[];\n\n");
     out.push_str("export interface SyncularGeneratedChangedRowBase<Table extends keyof SyncularAppDb, Field extends string> {\n");
-    out.push_str("  raw: SyncularV2ChangedRow;\n");
+    out.push_str("  raw: SyncularChangedRow;\n");
     out.push_str("  table: Table;\n");
     out.push_str("  rowId: string | null;\n");
     out.push_str("  operation: SyncularGeneratedChangedOperation;\n");
     out.push_str("  changedFields: Field[];\n");
     out.push_str("  crdtFields: Field[];\n");
-    out.push_str("  crdtFieldChanges: (SyncularV2ChangedCrdtField & { field: Field })[];\n");
+    out.push_str("  crdtFieldChanges: (SyncularChangedCrdtField & { field: Field })[];\n");
     out.push_str("  changed: Record<Field, boolean>;\n");
     out.push_str("  crdt: Record<Field, boolean>;\n");
     out.push_str("  commitId: string | null;\n");
@@ -4880,8 +4880,8 @@ fn push_typescript_changed_row_helpers(out: &mut String, user_tables: &[TableInf
     out.push_str("  isUpdate: boolean;\n");
     out.push_str("  isDelete: boolean;\n");
     out.push_str("}\n\n");
-    out.push_str("function syncularRowsFromChangedInput(input: SyncularChangedRowsInput): readonly SyncularV2ChangedRow[] {\n");
-    out.push_str("  return Array.isArray(input) ? input : (input as { changedRows?: readonly SyncularV2ChangedRow[] }).changedRows ?? [];\n");
+    out.push_str("function syncularRowsFromChangedInput(input: SyncularChangedRowsInput): readonly SyncularChangedRow[] {\n");
+    out.push_str("  return Array.isArray(input) ? input : (input as { changedRows?: readonly SyncularChangedRow[] }).changedRows ?? [];\n");
     out.push_str("}\n\n");
     out.push_str("function syncularColumnFlags<Field extends string>(fields: readonly string[], allFields: readonly Field[]): Record<Field, boolean> {\n");
     out.push_str("  const changed = new Set(fields);\n");
@@ -4902,7 +4902,7 @@ fn push_typescript_changed_row_helpers(out: &mut String, user_tables: &[TableInf
     out.push_str("      operation: row.operation,\n");
     out.push_str("      changedFields: row.changedFields.filter((field): field is Field => fieldSet.has(field)),\n");
     out.push_str("      crdtFields: row.crdtFields.filter((field): field is Field => fieldSet.has(field)),\n");
-    out.push_str("      crdtFieldChanges: (row.crdtFieldChanges ?? []).filter((field): field is SyncularV2ChangedCrdtField & { field: Field } => fieldSet.has(field.field)),\n");
+    out.push_str("      crdtFieldChanges: (row.crdtFieldChanges ?? []).filter((field): field is SyncularChangedCrdtField & { field: Field } => fieldSet.has(field.field)),\n");
     out.push_str("      changed: syncularColumnFlags(row.changedFields, fields),\n");
     out.push_str("      crdt: syncularColumnFlags(row.crdtFields, fields),\n");
     out.push_str("      commitId: row.commitId ?? null,\n");
@@ -5273,11 +5273,11 @@ fn generate_typescript_module(
     out.push_str("// Source: migrations/*.sql and syncular.codegen.json\n\n");
     let runtime_import_path = config.typescript_runtime_import_path()?;
     out.push_str(&format!(
-        "import {{ SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularV2CommandHistory, createSyncularV2Database, withSyncularV2SchemaWrites }} from {};\n",
+        "import {{ SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, withSyncularSchemaWrites }} from {};\n",
         ts_string(runtime_import_path)
     ));
     out.push_str(&format!(
-        "import type {{ CreateSyncularV2DatabaseOptions, SyncularV2AppSchema, SyncularV2ChangedCrdtField, SyncularV2ChangedRow, SyncularV2CommandHistory, SyncularV2Database, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
+        "import type {{ CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
         ts_string(runtime_import_path)
     ));
     out.push_str("import { sql, type Kysely } from 'kysely';\n");
@@ -5697,7 +5697,7 @@ fn generate_typescript_module(
         out.push_str("    },\n");
     }
     out.push_str("  ],\n");
-    out.push_str("} satisfies SyncularV2AppSchema;\n\n");
+    out.push_str("} satisfies SyncularAppSchema;\n\n");
     out.push_str("export const syncularGeneratedFieldEncryptionRules = [\n");
     for table in &user_tables {
         let table_config = config.table(&table.name);
@@ -5716,10 +5716,10 @@ fn generate_typescript_module(
             ));
         }
     }
-    out.push_str("] satisfies readonly SyncularV2FieldEncryptionRule[];\n\n");
+    out.push_str("] satisfies readonly SyncularFieldEncryptionRule[];\n\n");
     out.push_str("export function syncularGeneratedFieldEncryptionConfig(\n");
-    out.push_str("  options: Omit<SyncularV2FieldEncryptionConfig, 'rules'> & { rules?: SyncularV2FieldEncryptionRule[] }\n");
-    out.push_str("): SyncularV2FieldEncryptionConfig {\n");
+    out.push_str("  options: Omit<SyncularFieldEncryptionConfig, 'rules'> & { rules?: SyncularFieldEncryptionRule[] }\n");
+    out.push_str("): SyncularFieldEncryptionConfig {\n");
     out.push_str("  return {\n");
     out.push_str("    ...options,\n");
     out.push_str(
@@ -6026,10 +6026,10 @@ fn generate_typescript_module(
         ));
     }
     out.push_str("}\n\n");
-    out.push_str("export type SyncularAppDatabase = Omit<SyncularV2Database<SyncularAppDb>, 'mutations' | 'leasedMutations'> & {\n");
+    out.push_str("export type SyncularAppDatabase = Omit<SyncularDatabase<SyncularAppDb>, 'mutations' | 'leasedMutations'> & {\n");
     out.push_str("  mutations: SyncularAppMutations;\n");
     out.push_str("  leasedMutations: SyncularAppMutations;\n");
-    out.push_str("  commandHistory: SyncularV2CommandHistory;\n");
+    out.push_str("  commandHistory: SyncularCommandHistory;\n");
     out.push_str("};\n");
     out.push_str("export type SyncularAppSubscriptionsOption =\n");
     out.push_str("  | false\n");
@@ -6037,7 +6037,7 @@ fn generate_typescript_module(
     out.push_str(
         "  | ((args: SyncularSubscriptionArgs) => readonly SyncularSubscriptionSpec[]);\n\n",
     );
-    out.push_str("export interface CreateSyncularAppDatabaseOptions extends CreateSyncularV2DatabaseOptions {\n");
+    out.push_str("export interface CreateSyncularAppDatabaseOptions extends CreateSyncularDatabaseOptions {\n");
     out.push_str("  subscriptions?: SyncularAppSubscriptionsOption;\n");
     out.push_str("  bootstrapPhases?: Record<string, number>;\n");
     out.push_str("  schemaInstallMode?: 'full' | 'base' | 'none';\n");
@@ -6052,17 +6052,19 @@ fn generate_typescript_module(
     out.push_str("    throw new Error(`Syncular Rust local app schema version mismatch: local ${schemaState.schemaVersion}, generated ${syncularGeneratedSchemaVersion}`);\n");
     out.push_str("  }\n");
     out.push_str("}\n\n");
-    out.push_str("export function assertSyncularAppRuntimeInfo(runtimeInfo: SyncularV2RuntimeInfo): void {\n");
-    out.push_str("  if (runtimeInfo.packageName !== SYNCULAR_V2_PACKAGE_NAME) {\n");
-    out.push_str("    throw new Error(`Syncular runtime package mismatch: ${runtimeInfo.packageName}, expected ${SYNCULAR_V2_PACKAGE_NAME}`);\n");
+    out.push_str(
+        "export function assertSyncularAppRuntimeInfo(runtimeInfo: SyncularRuntimeInfo): void {\n",
+    );
+    out.push_str("  if (runtimeInfo.packageName !== SYNCULAR_PACKAGE_NAME) {\n");
+    out.push_str("    throw new Error(`Syncular runtime package mismatch: ${runtimeInfo.packageName}, expected ${SYNCULAR_PACKAGE_NAME}`);\n");
     out.push_str("  }\n");
-    out.push_str("  if (runtimeInfo.packageVersion !== SYNCULAR_V2_PACKAGE_VERSION) {\n");
-    out.push_str("    throw new Error(`Syncular runtime package version mismatch: ${runtimeInfo.packageVersion}, expected ${SYNCULAR_V2_PACKAGE_VERSION}`);\n");
+    out.push_str("  if (runtimeInfo.packageVersion !== SYNCULAR_PACKAGE_VERSION) {\n");
+    out.push_str("    throw new Error(`Syncular runtime package version mismatch: ${runtimeInfo.packageVersion}, expected ${SYNCULAR_PACKAGE_VERSION}`);\n");
     out.push_str("  }\n");
     out.push_str(
-        "  if (runtimeInfo.workerProtocolVersion !== SYNCULAR_V2_WORKER_PROTOCOL_VERSION) {\n",
+        "  if (runtimeInfo.workerProtocolVersion !== SYNCULAR_WORKER_PROTOCOL_VERSION) {\n",
     );
-    out.push_str("    throw new Error(`Syncular worker protocol mismatch: ${runtimeInfo.workerProtocolVersion}, expected ${SYNCULAR_V2_WORKER_PROTOCOL_VERSION}`);\n");
+    out.push_str("    throw new Error(`Syncular worker protocol mismatch: ${runtimeInfo.workerProtocolVersion}, expected ${SYNCULAR_WORKER_PROTOCOL_VERSION}`);\n");
     out.push_str("  }\n");
     out.push_str("  if (!runtimeInfo.rust) {\n");
     out.push_str(
@@ -6087,12 +6089,12 @@ fn generate_typescript_module(
     out.push_str("  return subscriptions ?? defaultSyncularSubscriptions(args);\n");
     out.push_str("}\n\n");
     out.push_str("export async function finalizeSyncularAppDatabaseSchema(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {\n");
-    out.push_str("  await withSyncularV2SchemaWrites(database, ensureSyncularAppDerivedSchema);\n");
+    out.push_str("  await withSyncularSchemaWrites(database, ensureSyncularAppDerivedSchema);\n");
     out.push_str("}\n\n");
     out.push_str("export async function createSyncularAppDatabase(\n");
     out.push_str("  options: CreateSyncularAppDatabaseOptions\n");
     out.push_str("): Promise<SyncularAppDatabase> {\n");
-    out.push_str("  const database = await createSyncularV2Database<SyncularAppDb>({\n");
+    out.push_str("  const database = await createSyncularDatabase<SyncularAppDb>({\n");
     out.push_str("    ...options,\n");
     out.push_str("    config: {\n");
     out.push_str("      ...options.config,\n");
@@ -6110,11 +6112,9 @@ fn generate_typescript_module(
     out.push_str("    await assertSyncularAppRuntime(database);\n");
     out.push_str("    const schemaInstallMode = options.schemaInstallMode ?? 'full';\n");
     out.push_str("    if (schemaInstallMode === 'full') {\n");
-    out.push_str("      await withSyncularV2SchemaWrites(database, ensureSyncularAppSchema);\n");
+    out.push_str("      await withSyncularSchemaWrites(database, ensureSyncularAppSchema);\n");
     out.push_str("    } else if (schemaInstallMode === 'base') {\n");
-    out.push_str(
-        "      await withSyncularV2SchemaWrites(database, ensureSyncularAppBaseSchema);\n",
-    );
+    out.push_str("      await withSyncularSchemaWrites(database, ensureSyncularAppBaseSchema);\n");
     out.push_str("    } else if (schemaInstallMode !== 'none') {\n");
     out.push_str(
         "      throw new Error(`Unknown Syncular schemaInstallMode: ${schemaInstallMode}`);\n",
@@ -6124,7 +6124,7 @@ fn generate_typescript_module(
         "    await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));\n",
     );
     out.push_str("    const appDatabase = database as unknown as SyncularAppDatabase;\n");
-    out.push_str("    const commandHistory = createSyncularV2CommandHistory<SyncularAppDb>({\n");
+    out.push_str("    const commandHistory = createSyncularCommandHistory<SyncularAppDb>({\n");
     out.push_str("      client: database.client,\n");
     out.push_str("      tableConfig: syncularGeneratedTableConfig,\n");
     out.push_str("      mutations: database.mutations,\n");
@@ -10587,7 +10587,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
     }
 
     #[test]
-    fn typescript_runtime_import_path_defaults_to_v2_client_package() -> Result<()> {
+    fn typescript_runtime_import_path_defaults_to_client_package() -> Result<()> {
         let config = CodegenConfig::default();
         assert_eq!(config.typescript_runtime_import_path()?, "@syncular/client");
         Ok(())
@@ -10990,10 +10990,10 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         let output = generate_typescript_module(&tables, &config, 7, None)?;
 
         assert!(output.contains(
-            "import { SYNCULAR_V2_PACKAGE_NAME, SYNCULAR_V2_PACKAGE_VERSION, SYNCULAR_V2_WORKER_PROTOCOL_VERSION, createSyncularV2CommandHistory, createSyncularV2Database, withSyncularV2SchemaWrites } from '@app/sync-runtime';"
+            "import { SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, withSyncularSchemaWrites } from '@app/sync-runtime';"
         ));
         assert!(output.contains(
-            "import type { CreateSyncularV2DatabaseOptions, SyncularV2AppSchema, SyncularV2ChangedCrdtField, SyncularV2ChangedRow, SyncularV2CommandHistory, SyncularV2Database, SyncularV2FieldEncryptionConfig, SyncularV2FieldEncryptionRule, SyncularV2RowsChangedEvent, SyncularV2RuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
+            "import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
         ));
         assert!(output.contains("import { sql, type Kysely } from 'kysely';"));
         assert!(output.contains(
@@ -11003,13 +11003,13 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(output.contains("export interface SyncularAppMutations {"));
         assert!(output.contains("tasks: SyncularGeneratedTableMutations<NewTask, TaskPatch>;"));
         assert!(output.contains(
-            "export type SyncularAppDatabase = Omit<SyncularV2Database<SyncularAppDb>, 'mutations' | 'leasedMutations'> &"
+            "export type SyncularAppDatabase = Omit<SyncularDatabase<SyncularAppDb>, 'mutations' | 'leasedMutations'> &"
         ));
         assert!(output.contains("leasedMutations: SyncularAppMutations;"));
-        assert!(output.contains("commandHistory: SyncularV2CommandHistory;"));
+        assert!(output.contains("commandHistory: SyncularCommandHistory;"));
         assert!(output.contains("export async function createSyncularAppDatabase("));
         assert!(output.contains(
-            "export interface CreateSyncularAppDatabaseOptions extends CreateSyncularV2DatabaseOptions"
+            "export interface CreateSyncularAppDatabaseOptions extends CreateSyncularDatabaseOptions"
         ));
         assert!(output.contains("subscriptions?: SyncularAppSubscriptionsOption;"));
         assert!(output.contains("bootstrapPhases?: Record<string, number>;"));
@@ -11022,11 +11022,11 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
             "export async function assertSyncularAppRuntime(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {"
         ));
         assert!(output.contains(
-            "export function assertSyncularAppRuntimeInfo(runtimeInfo: SyncularV2RuntimeInfo): void {"
+            "export function assertSyncularAppRuntimeInfo(runtimeInfo: SyncularRuntimeInfo): void {"
         ));
         assert!(output.contains("await assertSyncularAppRuntime(database);"));
         assert!(output
-            .contains("runtimeInfo.workerProtocolVersion !== SYNCULAR_V2_WORKER_PROTOCOL_VERSION"));
+            .contains("runtimeInfo.workerProtocolVersion !== SYNCULAR_WORKER_PROTOCOL_VERSION"));
         assert!(
             output.contains("const schemaState = await database.client.generatedSchemaState();")
         );
@@ -11046,18 +11046,17 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
             output.contains("requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures")
         );
         assert!(
-            output.contains("await withSyncularV2SchemaWrites(database, ensureSyncularAppSchema);")
+            output.contains("await withSyncularSchemaWrites(database, ensureSyncularAppSchema);")
         );
         assert!(output.contains("schemaInstallMode?: 'full' | 'base' | 'none';"));
         assert!(output.contains(
             "export async function finalizeSyncularAppDatabaseSchema(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {"
         ));
-        assert!(output.contains(
-            "await withSyncularV2SchemaWrites(database, ensureSyncularAppDerivedSchema);"
-        ));
+        assert!(output
+            .contains("await withSyncularSchemaWrites(database, ensureSyncularAppDerivedSchema);"));
         assert!(output.contains("const schemaInstallMode = options.schemaInstallMode ?? 'full';"));
         assert!(output
-            .contains("await withSyncularV2SchemaWrites(database, ensureSyncularAppBaseSchema);"));
+            .contains("await withSyncularSchemaWrites(database, ensureSyncularAppBaseSchema);"));
         assert!(!output.contains("ensureSyncularAppLiveSchema"));
         assert!(!output.contains("assertSyncularAppTablesEmptyForLiveSchema"));
         assert!(output.contains("await database.client.setSubscriptions("));
@@ -11065,7 +11064,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
             "await database.client.setSubscriptions(resolveSyncularAppSubscriptions(options));"
         ));
         assert!(
-            output.contains("const commandHistory = createSyncularV2CommandHistory<SyncularAppDb>")
+            output.contains("const commandHistory = createSyncularCommandHistory<SyncularAppDb>")
         );
         assert!(output.contains("appDatabase.commandHistory = commandHistory.history;"));
         assert!(output.contains("appDatabase.mutations = commandHistory.wrapMutations(database.mutations, 'mutations') as SyncularAppMutations;"));
@@ -11111,7 +11110,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         assert!(output.contains("export interface SyncularGeneratedTableConfig"));
         assert!(output.contains("export const syncularGeneratedTableConfig = {"));
         assert!(output.contains("export const syncularGeneratedAppSchema = {"));
-        assert!(output.contains("} satisfies SyncularV2AppSchema;"));
+        assert!(output.contains("} satisfies SyncularAppSchema;"));
         assert!(!output.contains("syncularGeneratedSnapshotBinaryColumns"));
         assert!(!output.contains("syncularGeneratedSnapshotBinaryEncoders"));
         assert!(!output.contains("BinarySnapshotTableWriter"));
@@ -11197,7 +11196,7 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         ));
         assert!(!output.contains("@app/sync-runtime"));
         assert!(!output.contains("createSyncularRustSqliteDatabase"));
-        assert!(!output.contains("withSyncularV2SchemaWrites"));
+        assert!(!output.contains("withSyncularSchemaWrites"));
         assert!(!output.contains("from 'kysely'"));
         assert!(output.contains("export interface SyncularAppDb"));
         assert!(output.contains("export interface TaskRow"));

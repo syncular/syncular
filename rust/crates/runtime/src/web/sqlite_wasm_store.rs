@@ -265,15 +265,15 @@ struct BlobUploadQueueResult {
 
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct SyncularV2WasmRuntimeInfo {
+struct SyncularWasmRuntimeInfo {
     crate_name: &'static str,
     crate_version: &'static str,
     schema_version: i32,
     features: Vec<&'static str>,
 }
 
-#[wasm_bindgen(js_name = syncularV2RuntimeInfoJson)]
-pub fn syncular_v2_runtime_info_json() -> String {
+#[wasm_bindgen(js_name = syncularRuntimeInfoJson)]
+pub fn syncular_runtime_info_json() -> String {
     let mut features = vec!["web-owned-sqlite-core"];
     if cfg!(feature = "web-owned-sqlite") {
         features.push("web-owned-sqlite");
@@ -287,7 +287,7 @@ pub fn syncular_v2_runtime_info_json() -> String {
     if cfg!(feature = "e2ee") {
         features.push("e2ee");
     }
-    serde_json::to_string(&SyncularV2WasmRuntimeInfo {
+    serde_json::to_string(&SyncularWasmRuntimeInfo {
         crate_name: env!("CARGO_PKG_NAME"),
         crate_version: env!("CARGO_PKG_VERSION"),
         schema_version: runtime_schema_version(),
@@ -296,36 +296,34 @@ pub fn syncular_v2_runtime_info_json() -> String {
     .expect("runtime info serializes")
 }
 
-#[wasm_bindgen(js_name = syncularV2BuildYjsTextUpdateJson)]
-pub fn syncular_v2_build_yjs_text_update_json(
+#[wasm_bindgen(js_name = syncularBuildYjsTextUpdateJson)]
+pub fn syncular_build_yjs_text_update_json(
     args_json: &str,
 ) -> std::result::Result<String, JsValue> {
     crdt_build_yjs_text_update_json(args_json).map_err(error_to_js)
 }
 
-#[wasm_bindgen(js_name = syncularV2ApplyYjsTextUpdatesJson)]
-pub fn syncular_v2_apply_yjs_text_updates_json(
+#[wasm_bindgen(js_name = syncularApplyYjsTextUpdatesJson)]
+pub fn syncular_apply_yjs_text_updates_json(
     args_json: &str,
 ) -> std::result::Result<String, JsValue> {
     crdt_apply_yjs_text_updates_json(args_json).map_err(error_to_js)
 }
 
-#[wasm_bindgen(js_name = syncularV2ApplyYjsEnvelopeToPayloadJson)]
-pub fn syncular_v2_apply_yjs_envelope_to_payload_json(
+#[wasm_bindgen(js_name = syncularApplyYjsEnvelopeToPayloadJson)]
+pub fn syncular_apply_yjs_envelope_to_payload_json(
     args_json: &str,
 ) -> std::result::Result<String, JsValue> {
     crdt_apply_yjs_envelope_to_payload_json(args_json).map_err(error_to_js)
 }
 
-#[wasm_bindgen(js_name = syncularV2MaterializeYjsRowJson)]
-pub fn syncular_v2_materialize_yjs_row_json(
-    args_json: &str,
-) -> std::result::Result<String, JsValue> {
+#[wasm_bindgen(js_name = syncularMaterializeYjsRowJson)]
+pub fn syncular_materialize_yjs_row_json(args_json: &str) -> std::result::Result<String, JsValue> {
     crdt_materialize_yjs_row_json(args_json).map_err(error_to_js)
 }
 
-#[wasm_bindgen(js_name = syncularV2EncryptionHelperJson)]
-pub fn syncular_v2_encryption_helper_json(
+#[wasm_bindgen(js_name = syncularEncryptionHelperJson)]
+pub fn syncular_encryption_helper_json(
     method: &str,
     args_json: &str,
 ) -> std::result::Result<String, JsValue> {

@@ -733,9 +733,9 @@ Scope: keep the Rust browser package shippable.
 
 Current notes:
 
-- `build:wasm` now runs `size-syncular-v2-wasm.ts --check` after the optimized
+- `build:wasm` now runs `size-syncular-wasm.ts --check` after the optimized
   release build and writes an attribution report to
-  `.context/wasm-size/syncular-v2-wasm-size.txt`.
+  `.context/wasm-size/syncular-wasm-size.txt`.
 - Current budgets are `3.25 MiB` raw and `1.35 MiB` gzip, overrideable through
   `SYNCULAR_WASM_RAW_BUDGET_BYTES` and `SYNCULAR_WASM_GZIP_BUDGET_BYTES` for
   deliberate release-size decisions.
@@ -819,11 +819,11 @@ Current notes:
   and Rust owns binary sync-pack decode/apply plus native WebSocket support.
   Removing browser Rust WebSocket ownership is a product-boundary cleanup, not
   a meaningful package-size lever.
-- Browser variant builds now write `syncular-v2-runtime-artifact.json` next to
-  each optimized artifact and `dist/syncular-v2-runtime-artifacts.json` as an
+- Browser variant builds now write `syncular-runtime-artifact.json` next to
+  each optimized artifact and `dist/syncular-runtime-artifacts.json` as an
   ordered catalog. The public browser package exposes
-  `resolveSyncularV2RuntimeArtifactCatalog` and
-  `getSyncularV2PackagedRuntimeArtifacts`, so generated app clients can select
+  `resolveSyncularRuntimeArtifactCatalog` and
+  `getSyncularPackagedRuntimeArtifacts`, so generated app clients can select
   the smallest compatible artifact by feature requirements without changing the
   query/mutation API. The browser package `build` now produces the full/core
   artifact pair plus the catalog.
@@ -1346,8 +1346,8 @@ Progress:
   the public JSON/API surface but fail E2EE operations with a clear capability
   error.
 - Added internal browser variant measurement support:
-  `build-syncular-v2-wasm.ts --features ... --out-dir ...` and
-  `size-syncular-v2-wasm.ts --wasm ...`. Latest local optimized measurements:
+  `build-syncular-wasm.ts --features ... --out-dir ...` and
+  `size-syncular-wasm.ts --wasm ...`. Latest local optimized measurements:
   canonical full `2.92 MiB` raw / `1.20 MiB` gzip, internal core `2.19 MiB`
   raw / `925.6 KiB` gzip.
 - Added runtime capability validation for the measured split. Rust rejects app
@@ -1368,7 +1368,7 @@ Progress:
   `build:wasm:core`, `build:wasm:variants`, `size:wasm:core`, and matching
   root aliases. The package `build` now writes the full artifact to
   `dist/wasm`, the no-CRDT/no-E2EE/no-blob core artifact to `dist/wasm-core`,
-  and a top-level `dist/syncular-v2-runtime-artifacts.json` catalog.
+  and a top-level `dist/syncular-runtime-artifacts.json` catalog.
 - Added first core-variant conformance coverage:
   `test:wasm:variants` builds `web-owned-sqlite-core`, opens a basic
   non-CRDT/non-E2EE app schema through the Worker, performs a local typed
@@ -1388,7 +1388,7 @@ Progress:
   controller, while Rust continues to own binary sync-pack decode/apply and
   native WebSocket transport.
 - Added per-artifact manifests and catalog helpers. Each optimized artifact now
-  writes `syncular-v2-runtime-artifact.json` with runtime features, Rust
+  writes `syncular-runtime-artifact.json` with runtime features, Rust
   features, files, profile, raw size, and gzip size. `catalog:wasm` combines
   those into the ordered runtime catalog, and the public browser API can
   resolve catalog-relative URLs for app serving.

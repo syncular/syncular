@@ -4,7 +4,7 @@
     "entrypoint": "./packages/client/src/index.ts",
     "namedImports": [
       "createSyncularClient",
-      "createSyncularV2Database"
+      "createSyncularDatabase"
     ],
     "baselineRawKb": 0,
     "baselineGzipKb": 0,

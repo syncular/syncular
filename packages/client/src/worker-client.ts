@@ -4,110 +4,110 @@ import type {
   SyncAuthOperation,
   SyncOperation,
 } from '@syncular/core';
-import { issueSyncularV2AuthLease } from './auth-leases';
-import { assertSyncularV2BlobPayloadLimit } from './blob-limits';
+import { issueSyncularAuthLease } from './auth-leases';
+import { assertSyncularBlobPayloadLimit } from './blob-limits';
 import {
-  resolveSyncularV2ClientConfig,
-  SYNCULAR_V2_DEFAULT_STORAGE,
+  resolveSyncularClientConfig,
+  SYNCULAR_DEFAULT_STORAGE,
 } from './client-config';
 import {
-  appendSyncularV2DiagnosticEvent,
-  appendSyncularV2SyncTimings,
-  createSyncularV2SyncAttempt,
-  summarizeSyncularV2DiagnosticSubscriptions,
+  appendSyncularDiagnosticEvent,
+  appendSyncularSyncTimings,
+  createSyncularSyncAttempt,
+  summarizeSyncularDiagnosticSubscriptions,
 } from './diagnostics';
 import {
-  isGeneratedSyncularV2OperationalStateWorkerRequestType,
-  type SyncularV2GeneratedWorkerRequestInput,
+  isGeneratedSyncularOperationalStateWorkerRequestType,
+  type SyncularGeneratedWorkerRequestInput,
 } from './generated-bridge';
-import { browserSyncularV2NetworkStatusSource } from './network';
-import { assertSyncularV2ReadonlySql } from './sql-safety';
+import { browserSyncularNetworkStatusSource } from './network';
+import { assertSyncularReadonlySql } from './sql-safety';
 import type {
-  CreateSyncularV2DatabaseOptions,
+  CreateSyncularDatabaseOptions,
   SyncularApplyYjsEnvelopeToPayloadArgs,
   SyncularApplyYjsTextUpdatesArgs,
   SyncularApplyYjsTextUpdatesResult,
+  SyncularAuthHeaders,
+  SyncularAuthLeaseRecord,
+  SyncularBlobCacheStats,
+  SyncularBlobEncryptionConfig,
+  SyncularBlobStoreOptions,
+  SyncularBlobUploadQueueStats,
+  SyncularBootstrapStatus,
   SyncularBuildYjsTextUpdateArgs,
   SyncularBuildYjsTextUpdateResult,
-  SyncularV2AuthHeaders,
-  SyncularV2AuthLeaseRecord,
-  SyncularV2BlobCacheStats,
-  SyncularV2BlobEncryptionConfig,
-  SyncularV2BlobStoreOptions,
-  SyncularV2BlobUploadQueueStats,
-  SyncularV2BootstrapStatus,
-  SyncularV2Client,
-  SyncularV2ClientConfig,
-  SyncularV2ClientEventMap,
-  SyncularV2ClientEventSink,
-  SyncularV2ClientEventType,
-  SyncularV2ConflictResolution,
-  SyncularV2ConflictStats,
-  SyncularV2ConflictSummary,
-  SyncularV2ConnectionState,
-  SyncularV2CrdtDocumentSnapshot,
-  SyncularV2CrdtFieldCompactionReceipt,
-  SyncularV2CrdtFieldCompactionRequest,
-  SyncularV2CrdtFieldDescriptor,
-  SyncularV2CrdtFieldMaterialization,
-  SyncularV2CrdtFieldRequest,
-  SyncularV2CrdtFieldTextRequest,
-  SyncularV2CrdtFieldWriteReceipt,
-  SyncularV2CrdtFieldYjsUpdateRequest,
-  SyncularV2CrdtUpdateLogEntry,
-  SyncularV2DiagnosticEvent,
-  SyncularV2DiagnosticSink,
-  SyncularV2DiagnosticSnapshot,
-  SyncularV2EncryptedCrdtConfig,
-  SyncularV2EncryptionHelperMethod,
-  SyncularV2FieldEncryptionConfig,
-  SyncularV2LifecycleState,
-  SyncularV2LiveQueryDependencyHint,
-  SyncularV2LiveQueryDiagnostics,
-  SyncularV2LiveQueryEvent,
-  SyncularV2LiveQuerySnapshot,
-  SyncularV2LocalHealthRepairReport,
-  SyncularV2LocalHealthRepairRequest,
-  SyncularV2LocalHealthReport,
-  SyncularV2LocalSupportBundle,
-  SyncularV2LocalSupportBundleImportReport,
-  SyncularV2LocalSyncResetReport,
-  SyncularV2LocalSyncResetRequest,
-  SyncularV2NetworkStatusSource,
-  SyncularV2OutboxStats,
-  SyncularV2PresenceEntry,
-  SyncularV2PresenceSink,
-  SyncularV2RealtimeConnectionState,
-  SyncularV2RealtimeOptions,
-  SyncularV2RowsChangedSink,
-  SyncularV2RuntimeInfo,
-  SyncularV2SchemaState,
-  SyncularV2SqlResult,
-  SyncularV2StorageCompactionOptions,
-  SyncularV2StorageCompactionReport,
-  SyncularV2StorageFallbackInfo,
-  SyncularV2SubscriptionSpec,
-  SyncularV2SyncRequestOptions,
-  SyncularV2SyncResult,
-  SyncularV2SyncTimings,
-  SyncularV2TransportStats,
+  SyncularClientConfig,
+  SyncularClientEventMap,
+  SyncularClientEventSink,
+  SyncularClientEventType,
+  SyncularConflictResolution,
+  SyncularConflictStats,
+  SyncularConflictSummary,
+  SyncularConnectionState,
+  SyncularCrdtDocumentSnapshot,
+  SyncularCrdtFieldCompactionReceipt,
+  SyncularCrdtFieldCompactionRequest,
+  SyncularCrdtFieldDescriptor,
+  SyncularCrdtFieldMaterialization,
+  SyncularCrdtFieldRequest,
+  SyncularCrdtFieldTextRequest,
+  SyncularCrdtFieldWriteReceipt,
+  SyncularCrdtFieldYjsUpdateRequest,
+  SyncularCrdtUpdateLogEntry,
+  SyncularDiagnosticEvent,
+  SyncularDiagnosticSink,
+  SyncularDiagnosticSnapshot,
+  SyncularEncryptedCrdtConfig,
+  SyncularEncryptionHelperMethod,
+  SyncularFieldEncryptionConfig,
+  SyncularLifecycleState,
+  SyncularLiveQueryDependencyHint,
+  SyncularLiveQueryDiagnostics,
+  SyncularLiveQueryEvent,
+  SyncularLiveQuerySnapshot,
+  SyncularLocalHealthRepairReport,
+  SyncularLocalHealthRepairRequest,
+  SyncularLocalHealthReport,
+  SyncularLocalSupportBundle,
+  SyncularLocalSupportBundleImportReport,
+  SyncularLocalSyncResetReport,
+  SyncularLocalSyncResetRequest,
+  SyncularNetworkStatusSource,
+  SyncularOutboxStats,
+  SyncularPresenceEntry,
+  SyncularPresenceSink,
+  SyncularRealtimeConnectionState,
+  SyncularRealtimeOptions,
+  SyncularRowsChangedSink,
+  SyncularRuntimeClient,
+  SyncularRuntimeInfo,
+  SyncularSchemaState,
+  SyncularSqlResult,
+  SyncularStorageCompactionOptions,
+  SyncularStorageCompactionReport,
+  SyncularStorageFallbackInfo,
+  SyncularSubscriptionSpec,
+  SyncularSyncRequestOptions,
+  SyncularSyncResult,
+  SyncularSyncTimings,
+  SyncularTransportStats,
 } from './types';
-import { selectSyncularV2RuntimeArtifact } from './wasm-runtime';
+import { selectSyncularRuntimeArtifact } from './wasm-runtime';
 import type {
-  SyncularV2WorkerErrorPayload,
-  SyncularV2WorkerOutboundMessage,
-  SyncularV2WorkerRealtimeOptions,
-  SyncularV2WorkerRequest,
-  SyncularV2WorkerResponse,
-  SyncularV2WorkerRuntimeArtifact,
+  SyncularWorkerErrorPayload,
+  SyncularWorkerOutboundMessage,
+  SyncularWorkerRealtimeOptions,
+  SyncularWorkerRequest,
+  SyncularWorkerResponse,
+  SyncularWorkerRuntimeArtifact,
 } from './worker-protocol';
 import {
-  createSyncularV2WorkerErrorPayload,
-  SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+  createSyncularWorkerErrorPayload,
+  SYNCULAR_WORKER_PROTOCOL_VERSION,
 } from './worker-protocol';
 
 type PendingRequest = {
-  type: SyncularV2WorkerRequestInput['type'];
+  type: SyncularWorkerRequestInput['type'];
   timeout: ReturnType<typeof setTimeout> | undefined;
   resolve(value: unknown): void;
   reject(reason: unknown): void;
@@ -123,25 +123,25 @@ type BlobOutboxRow = {
   error: string | null;
 };
 
-type SyncularV2WorkerRequestInput = SyncularV2GeneratedWorkerRequestInput;
+type SyncularWorkerRequestInput = SyncularGeneratedWorkerRequestInput;
 
-const DEFAULT_SYNCULAR_V2_WORKER_REQUEST_TIMEOUT_MS = 30_000;
+const DEFAULT_SYNCULAR_WORKER_REQUEST_TIMEOUT_MS = 30_000;
 
-export async function createSyncularV2WorkerClient(
-  options: CreateSyncularV2DatabaseOptions
-): Promise<SyncularV2WorkerClient> {
-  const config = resolveSyncularV2ClientConfig(options.config);
+export async function createSyncularWorkerClient(
+  options: CreateSyncularDatabaseOptions
+): Promise<SyncularWorkerClient> {
+  const config = resolveSyncularClientConfig(options.config);
   const runtime =
     options.runtime ??
-    selectSyncularV2RuntimeArtifact(
+    selectSyncularRuntimeArtifact(
       options.requiredRuntimeFeatures,
       options.runtimeArtifacts
     );
   const worker =
     typeof options.worker === 'function'
       ? options.worker()
-      : (options.worker ?? createDefaultSyncularV2Worker());
-  const client = new SyncularV2WorkerClient(worker, {
+      : (options.worker ?? createDefaultSyncularWorker());
+  const client = new SyncularWorkerClient(worker, {
     ownsWorker: options.worker == null,
     requestTimeoutMs: options.requestTimeoutMs,
     getHeaders: options.getHeaders,
@@ -151,7 +151,7 @@ export async function createSyncularV2WorkerClient(
     network:
       options.sync?.network === false
         ? undefined
-        : (options.sync?.network ?? browserSyncularV2NetworkStatusSource()),
+        : (options.sync?.network ?? browserSyncularNetworkStatusSource()),
     blobLimits: options.blobLimits,
   });
   try {
@@ -159,12 +159,12 @@ export async function createSyncularV2WorkerClient(
   } catch (err) {
     if (
       options.config.storage == null &&
-      config.storage === SYNCULAR_V2_DEFAULT_STORAGE &&
+      config.storage === SYNCULAR_DEFAULT_STORAGE &&
       isOpfsOpenFailure(err)
     ) {
       const fallbackConfig = { ...config, storage: 'indexedDb' as const };
       client.setStorageFallback({
-        from: SYNCULAR_V2_DEFAULT_STORAGE,
+        from: SYNCULAR_DEFAULT_STORAGE,
         to: fallbackConfig.storage,
         reason: errorMessage(err),
       });
@@ -179,7 +179,7 @@ export async function createSyncularV2WorkerClient(
   return client;
 }
 
-export function getDefaultSyncularV2WorkerUrl(): URL {
+export function getDefaultSyncularWorkerUrl(): URL {
   const runtimeUrl = new URL(import.meta.url);
   const sourceRuntime = runtimeUrl.pathname.endsWith('/src/worker-client.ts');
   return new URL(
@@ -188,23 +188,23 @@ export function getDefaultSyncularV2WorkerUrl(): URL {
   );
 }
 
-export function createDefaultSyncularV2Worker(): Worker {
-  return new Worker(getDefaultSyncularV2WorkerUrl(), {
+export function createDefaultSyncularWorker(): Worker {
+  return new Worker(getDefaultSyncularWorkerUrl(), {
     type: 'module',
     credentials: 'same-origin',
   });
 }
 
-export class SyncularV2WorkerError extends Error {
-  readonly code: SyncularV2WorkerErrorPayload['code'];
-  readonly category: SyncularV2WorkerErrorPayload['category'];
+export class SyncularWorkerError extends Error {
+  readonly code: SyncularWorkerErrorPayload['code'];
+  readonly category: SyncularWorkerErrorPayload['category'];
   readonly retryable: boolean;
-  readonly recommendedAction: SyncularV2WorkerErrorPayload['recommendedAction'];
+  readonly recommendedAction: SyncularWorkerErrorPayload['recommendedAction'];
   readonly details: unknown;
 
-  constructor(payload: SyncularV2WorkerErrorPayload) {
+  constructor(payload: SyncularWorkerErrorPayload) {
     super(payload.message);
-    this.name = payload.name ?? 'SyncularV2WorkerError';
+    this.name = payload.name ?? 'SyncularWorkerError';
     this.code = payload.code;
     this.category = payload.category;
     this.retryable = payload.retryable === true;
@@ -214,56 +214,56 @@ export class SyncularV2WorkerError extends Error {
   }
 }
 
-export class SyncularV2WorkerClient implements SyncularV2Client {
+export class SyncularWorkerClient implements SyncularRuntimeClient {
   #nextId = 1;
   #pending = new Map<number, PendingRequest>();
   #closed = false;
   #requestTimeoutMs: number;
-  #getHeaders: CreateSyncularV2DatabaseOptions['getHeaders'] | undefined;
-  #authHeaders: SyncularV2AuthHeaders = {};
-  #authLifecycle: CreateSyncularV2DatabaseOptions['authLifecycle'] | undefined;
+  #getHeaders: CreateSyncularDatabaseOptions['getHeaders'] | undefined;
+  #authHeaders: SyncularAuthHeaders = {};
+  #authLifecycle: CreateSyncularDatabaseOptions['authLifecycle'] | undefined;
   #authRefreshInFlight: Promise<boolean> | undefined;
-  #config: SyncularV2ClientConfig | undefined;
-  #realtimeOptions: SyncularV2RealtimeOptions | undefined;
-  #realtimeState: SyncularV2RealtimeConnectionState = 'disconnected';
-  #storageFallback: SyncularV2StorageFallbackInfo | undefined;
-  #lastDiagnostic: SyncularV2DiagnosticEvent | undefined;
+  #config: SyncularClientConfig | undefined;
+  #realtimeOptions: SyncularRealtimeOptions | undefined;
+  #realtimeState: SyncularRealtimeConnectionState = 'disconnected';
+  #storageFallback: SyncularStorageFallbackInfo | undefined;
+  #lastDiagnostic: SyncularDiagnosticEvent | undefined;
   #lastError: { message: string; code?: string } | undefined;
-  #lastLifecycleState: SyncularV2LifecycleState | undefined;
+  #lastLifecycleState: SyncularLifecycleState | undefined;
   #recoveryRequired = false;
   #authRequired = false;
-  #subscriptions: SyncularV2SubscriptionSpec[] = [];
-  #lastBootstrap: SyncularV2BootstrapStatus | undefined;
-  #recentDiagnostics: SyncularV2DiagnosticEvent[] = [];
-  #recentSyncTimings: SyncularV2SyncTimings[] = [];
+  #subscriptions: SyncularSubscriptionSpec[] = [];
+  #lastBootstrap: SyncularBootstrapStatus | undefined;
+  #recentDiagnostics: SyncularDiagnosticEvent[] = [];
+  #recentSyncTimings: SyncularSyncTimings[] = [];
   #rowsChangedDebounceMs: number | false;
   #rowsChangedDebounceTimer: ReturnType<typeof setTimeout> | undefined;
   #pendingRowsChanged:
     | {
         source: string;
         changedTables: Set<string>;
-        changedRows: SyncularV2SyncResult['changedRows'];
+        changedRows: SyncularSyncResult['changedRows'];
         changedRowsTruncated: boolean;
       }
     | undefined;
-  #lastOutboxStats: SyncularV2OutboxStats | undefined;
-  #lastConflictStats: SyncularV2ConflictStats | undefined;
-  #lastBlobUploadStats: SyncularV2BlobUploadQueueStats | undefined;
-  #blobLimits: CreateSyncularV2DatabaseOptions['blobLimits'];
-  #network: SyncularV2NetworkStatusSource | undefined;
+  #lastOutboxStats: SyncularOutboxStats | undefined;
+  #lastConflictStats: SyncularConflictStats | undefined;
+  #lastBlobUploadStats: SyncularBlobUploadQueueStats | undefined;
+  #blobLimits: CreateSyncularDatabaseOptions['blobLimits'];
+  #network: SyncularNetworkStatusSource | undefined;
   #networkOnline: boolean | undefined;
   #unsubscribeNetwork: (() => void) | undefined;
-  #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
-  #rowsChangedListeners = new Set<SyncularV2RowsChangedSink>();
+  #diagnosticListeners = new Set<SyncularDiagnosticSink>();
+  #rowsChangedListeners = new Set<SyncularRowsChangedSink>();
   #eventListeners = new Map<
-    SyncularV2ClientEventType,
-    Set<SyncularV2ClientEventSink<SyncularV2ClientEventType>>
+    SyncularClientEventType,
+    Set<SyncularClientEventSink<SyncularClientEventType>>
   >();
-  #presenceByScopeKey = new Map<string, SyncularV2PresenceEntry[]>();
+  #presenceByScopeKey = new Map<string, SyncularPresenceEntry[]>();
   #joinedPresence = new Map<string, Record<string, unknown> | undefined>();
   #liveListeners = new Map<
     string,
-    (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => void
+    (event: SyncularLiveQueryEvent<Record<string, unknown>>) => void
   >();
 
   constructor(
@@ -271,16 +271,16 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     options: {
       ownsWorker: boolean;
       requestTimeoutMs?: number;
-      getHeaders?: CreateSyncularV2DatabaseOptions['getHeaders'];
-      authLifecycle?: CreateSyncularV2DatabaseOptions['authLifecycle'];
-      diagnostics?: SyncularV2DiagnosticSink;
+      getHeaders?: CreateSyncularDatabaseOptions['getHeaders'];
+      authLifecycle?: CreateSyncularDatabaseOptions['authLifecycle'];
+      diagnostics?: SyncularDiagnosticSink;
       rowsChangedDebounceMs?: number | false;
-      network?: SyncularV2NetworkStatusSource;
-      blobLimits?: CreateSyncularV2DatabaseOptions['blobLimits'];
+      network?: SyncularNetworkStatusSource;
+      blobLimits?: CreateSyncularDatabaseOptions['blobLimits'];
     }
   ) {
     this.#requestTimeoutMs =
-      options.requestTimeoutMs ?? DEFAULT_SYNCULAR_V2_WORKER_REQUEST_TIMEOUT_MS;
+      options.requestTimeoutMs ?? DEFAULT_SYNCULAR_WORKER_REQUEST_TIMEOUT_MS;
     this.#getHeaders = options.getHeaders;
     this.#authLifecycle = options.authLifecycle;
     this.#blobLimits = options.blobLimits;
@@ -295,14 +295,14 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       this.#diagnosticListeners.add(options.diagnostics);
     }
     this.worker.onmessage = (
-      event: MessageEvent<SyncularV2WorkerOutboundMessage>
+      event: MessageEvent<SyncularWorkerOutboundMessage>
     ) => {
       this.#handleWorkerMessage(event.data);
     };
     this.worker.onerror = (event) => {
-      const payload = createSyncularV2WorkerErrorPayload(
+      const payload = createSyncularWorkerErrorPayload(
         'worker.failed',
-        event.message || 'Syncular v2 worker failed'
+        event.message || 'Syncular worker failed'
       );
       this.#emitDiagnostic({
         level: 'error',
@@ -313,9 +313,9 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       this.#rejectAll(payload);
     };
     this.worker.onmessageerror = () => {
-      const payload = createSyncularV2WorkerErrorPayload(
+      const payload = createSyncularWorkerErrorPayload(
         'worker.message_unreadable',
-        'Syncular v2 worker sent an unreadable message'
+        'Syncular worker sent an unreadable message'
       );
       this.#emitDiagnostic({
         level: 'error',
@@ -331,8 +331,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   private readonly ownsWorker: boolean;
 
   async open(
-    config: CreateSyncularV2DatabaseOptions['config'],
-    runtime?: CreateSyncularV2DatabaseOptions['runtime']
+    config: CreateSyncularDatabaseOptions['config'],
+    runtime?: CreateSyncularDatabaseOptions['runtime']
   ): Promise<void> {
     await this.#request({
       type: 'open',
@@ -346,13 +346,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     await this.#refreshAuthHeaders();
   }
 
-  async setAuthHeaders(headers: SyncularV2AuthHeaders): Promise<void> {
+  async setAuthHeaders(headers: SyncularAuthHeaders): Promise<void> {
     await this.#setAuthHeaders(headers, { restartRealtime: true });
   }
 
   async issueAuthLease(
     request: SyncAuthLeaseIssueRequest
-  ): Promise<SyncularV2AuthLeaseRecord> {
+  ): Promise<SyncularAuthLeaseRecord> {
     await this.#refreshAuthHeaders();
     try {
       return await this.#issueAuthLeaseWithCurrentHeaders(request);
@@ -364,14 +364,14 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     }
   }
 
-  async upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void> {
+  async upsertAuthLease(lease: SyncularAuthLeaseRecord): Promise<void> {
     await this.#requestAndDrain({
       type: 'upsertAuthLease',
       lease,
     });
   }
 
-  async authLease(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null> {
+  async authLease(leaseId: string): Promise<SyncularAuthLeaseRecord | null> {
     return this.#request({
       type: 'authLease',
       leaseId,
@@ -381,7 +381,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   async activeAuthLeases(
     actorId?: string | null,
     nowMs = Date.now()
-  ): Promise<SyncularV2AuthLeaseRecord[]> {
+  ): Promise<SyncularAuthLeaseRecord[]> {
     return this.#request({
       type: 'activeAuthLeases',
       actorId: actorId ?? null,
@@ -390,7 +390,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async setFieldEncryption(
-    config: SyncularV2FieldEncryptionConfig | null
+    config: SyncularFieldEncryptionConfig | null
   ): Promise<void> {
     await this.#request({
       type: 'setFieldEncryption',
@@ -399,7 +399,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async setEncryptedCrdt(
-    config: SyncularV2EncryptedCrdtConfig | null
+    config: SyncularEncryptedCrdtConfig | null
   ): Promise<void> {
     await this.#request({
       type: 'setEncryptedCrdt',
@@ -408,7 +408,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async setBlobEncryption(
-    config: SyncularV2BlobEncryptionConfig | null
+    config: SyncularBlobEncryptionConfig | null
   ): Promise<void> {
     await this.#request({
       type: 'setBlobEncryption',
@@ -417,7 +417,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async #setAuthHeaders(
-    headers: SyncularV2AuthHeaders,
+    headers: SyncularAuthHeaders,
     options: { restartRealtime: boolean }
   ): Promise<void> {
     this.#authHeaders = cloneAuthHeaders(headers);
@@ -430,14 +430,14 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   async #issueAuthLeaseWithCurrentHeaders(
     request: SyncAuthLeaseIssueRequest
-  ): Promise<SyncularV2AuthLeaseRecord> {
+  ): Promise<SyncularAuthLeaseRecord> {
     const config = this.#config;
     if (!config) {
       throw new Error(
-        'Syncular v2 worker client must be opened before auth lease issue'
+        'Syncular worker client must be opened before auth lease issue'
       );
     }
-    const lease = await issueSyncularV2AuthLease({
+    const lease = await issueSyncularAuthLease({
       baseUrl: config.baseUrl,
       headers: this.#authHeaders,
       request,
@@ -447,7 +447,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       level: 'info',
       source: 'auth',
       code: 'auth_lease.issued',
-      message: 'Syncular v2 auth lease issued and stored',
+      message: 'Syncular auth lease issued and stored',
       details: {
         leaseId: lease.leaseId,
         expiresAtMs: lease.expiresAtMs,
@@ -458,7 +458,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async startRealtime(
-    options: boolean | SyncularV2RealtimeOptions = {}
+    options: boolean | SyncularRealtimeOptions = {}
   ): Promise<void> {
     if (options === false) {
       await this.stopRealtime();
@@ -466,9 +466,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     }
     const config = this.#config;
     if (!config) {
-      throw new Error(
-        'Syncular v2 worker client must be opened before realtime'
-      );
+      throw new Error('Syncular worker client must be opened before realtime');
     }
     const realtimeOptions = options === true ? {} : options;
     if (realtimeOptions.enabled === false) {
@@ -489,7 +487,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async setSubscriptions(
-    subscriptions: readonly SyncularV2SubscriptionSpec[]
+    subscriptions: readonly SyncularSubscriptionSpec[]
   ): Promise<void> {
     this.#subscriptions = [...subscriptions];
     this.#lastBootstrap = undefined;
@@ -513,8 +511,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   >(
     sql: string,
     params: readonly unknown[] = []
-  ): Promise<SyncularV2SqlResult<Row>> {
-    assertSyncularV2ReadonlySql(sql);
+  ): Promise<SyncularSqlResult<Row>> {
+    assertSyncularReadonlySql(sql);
     return this.#request({
       type: 'executeSql',
       sql,
@@ -527,7 +525,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   >(
     sql: string,
     params: readonly unknown[] = []
-  ): Promise<SyncularV2SqlResult<Row>> {
+  ): Promise<SyncularSqlResult<Row>> {
     return this.#request({
       type: 'executeUnsafeSql',
       sql,
@@ -539,8 +537,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     sql: string,
     params: readonly unknown[],
     tables: readonly string[],
-    hints: readonly SyncularV2LiveQueryDependencyHint[] = []
-  ): Promise<SyncularV2LiveQuerySnapshot<Row>> {
+    hints: readonly SyncularLiveQueryDependencyHint[] = []
+  ): Promise<SyncularLiveQuerySnapshot<Row>> {
     return this.#request({
       type: 'subscribeQuery',
       sql,
@@ -560,11 +558,11 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   drainLiveQueryEvents<
     Row extends Record<string, unknown> = Record<string, unknown>,
-  >(): Promise<Array<SyncularV2LiveQueryEvent<Row>>> {
+  >(): Promise<Array<SyncularLiveQueryEvent<Row>>> {
     return this.#request({ type: 'drainLiveQueryEvents' });
   }
 
-  liveQueryDiagnostics(): Promise<SyncularV2LiveQueryDiagnostics> {
+  liveQueryDiagnostics(): Promise<SyncularLiveQueryDiagnostics> {
     return this.#request({ type: 'liveQueryDiagnostics' });
   }
 
@@ -618,54 +616,54 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async syncPull(
-    options: SyncularV2SyncRequestOptions = {}
-  ): Promise<SyncularV2SyncResult> {
+    options: SyncularSyncRequestOptions = {}
+  ): Promise<SyncularSyncResult> {
     return this.#syncWithAuthRetry({
       type: 'syncPull',
-      syncAttempt: options.syncAttempt ?? createSyncularV2SyncAttempt(),
+      syncAttempt: options.syncAttempt ?? createSyncularSyncAttempt(),
     });
   }
 
   async syncPush(
-    options: SyncularV2SyncRequestOptions = {}
-  ): Promise<SyncularV2SyncResult> {
+    options: SyncularSyncRequestOptions = {}
+  ): Promise<SyncularSyncResult> {
     return this.#syncWithAuthRetry({
       type: 'syncPush',
-      syncAttempt: options.syncAttempt ?? createSyncularV2SyncAttempt(),
+      syncAttempt: options.syncAttempt ?? createSyncularSyncAttempt(),
     });
   }
 
   async syncOnce(
-    options: SyncularV2SyncRequestOptions = {}
-  ): Promise<SyncularV2SyncResult> {
+    options: SyncularSyncRequestOptions = {}
+  ): Promise<SyncularSyncResult> {
     return this.#syncWithAuthRetry({
       type: 'syncOnce',
-      syncAttempt: options.syncAttempt ?? createSyncularV2SyncAttempt(),
+      syncAttempt: options.syncAttempt ?? createSyncularSyncAttempt(),
     });
   }
 
   async resumeFromBackground(
-    options: SyncularV2SyncRequestOptions = {}
-  ): Promise<SyncularV2SyncResult> {
+    options: SyncularSyncRequestOptions = {}
+  ): Promise<SyncularSyncResult> {
     this.#recoveryRequired = true;
     this.#emitDiagnostic({
       level: 'info',
       source: 'client',
       code: 'lifecycle.resume_from_background',
-      message: 'Syncular v2 resumed from background',
+      message: 'Syncular resumed from background',
     });
     await this.#refreshAuthHeaders({ restartRealtime: false });
     await this.#restartRealtime();
     return this.#syncWithAuthRetry(
       {
         type: 'syncOnce',
-        syncAttempt: options.syncAttempt ?? createSyncularV2SyncAttempt(),
+        syncAttempt: options.syncAttempt ?? createSyncularSyncAttempt(),
       },
       { refreshAuthHeaders: false }
     );
   }
 
-  transportStats(): Promise<SyncularV2TransportStats> {
+  transportStats(): Promise<SyncularTransportStats> {
     return this.#request({ type: 'transportStats' });
   }
 
@@ -673,7 +671,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     await this.#request({ type: 'resetTransportStats' });
   }
 
-  conflictSummaries(): Promise<SyncularV2ConflictSummary[]> {
+  conflictSummaries(): Promise<SyncularConflictSummary[]> {
     return this.#request({ type: 'conflictSummaries' });
   }
 
@@ -686,7 +684,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   async resolveConflict(
     id: string,
-    resolution: SyncularV2ConflictResolution
+    resolution: SyncularConflictResolution
   ): Promise<void> {
     await this.#requestAndDrain({
       type: 'resolveConflict',
@@ -703,10 +701,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   storeBlob(
     data: Uint8Array,
-    options?: SyncularV2BlobStoreOptions
+    options?: SyncularBlobStoreOptions
   ): Promise<BlobRef> {
     try {
-      assertSyncularV2BlobPayloadLimit({
+      assertSyncularBlobPayloadLimit({
         operation: 'store',
         size: data.byteLength,
         limits: this.#blobLimits,
@@ -730,7 +728,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async retrieveBlob(ref: BlobRef): Promise<Uint8Array> {
-    assertSyncularV2BlobPayloadLimit({
+    assertSyncularBlobPayloadLimit({
       operation: 'retrieve',
       size: ref.size,
       limits: this.#blobLimits,
@@ -834,13 +832,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     return result;
   }
 
-  async blobUploadQueueStats(): Promise<SyncularV2BlobUploadQueueStats> {
+  async blobUploadQueueStats(): Promise<SyncularBlobUploadQueueStats> {
     const stats = await this.#readBlobUploadStats();
     this.#lastBlobUploadStats = stats;
     return stats;
   }
 
-  blobCacheStats(): Promise<SyncularV2BlobCacheStats> {
+  blobCacheStats(): Promise<SyncularBlobCacheStats> {
     return this.#request({ type: 'blobCacheStats' });
   }
 
@@ -877,26 +875,26 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   compactStorage(
-    options: SyncularV2StorageCompactionOptions = {}
-  ): Promise<SyncularV2StorageCompactionReport> {
+    options: SyncularStorageCompactionOptions = {}
+  ): Promise<SyncularStorageCompactionReport> {
     return this.#request({ type: 'compactStorage', options });
   }
 
-  generatedSchemaState(): Promise<SyncularV2SchemaState> {
+  generatedSchemaState(): Promise<SyncularSchemaState> {
     return this.#request({ type: 'generatedSchemaState' });
   }
 
-  localHealthCheck(): Promise<SyncularV2LocalHealthReport> {
+  localHealthCheck(): Promise<SyncularLocalHealthReport> {
     return this.#request({ type: 'localHealthCheck' });
   }
 
-  exportLocalSupportBundle(): Promise<SyncularV2LocalSupportBundle> {
+  exportLocalSupportBundle(): Promise<SyncularLocalSupportBundle> {
     return this.#request({ type: 'exportLocalSupportBundle' });
   }
 
   importLocalSupportBundle(
-    bundle: SyncularV2LocalSupportBundle | string
-  ): Promise<SyncularV2LocalSupportBundleImportReport> {
+    bundle: SyncularLocalSupportBundle | string
+  ): Promise<SyncularLocalSupportBundleImportReport> {
     return this.#request({
       type: 'importLocalSupportBundle',
       bundleJson: typeof bundle === 'string' ? bundle : JSON.stringify(bundle),
@@ -904,8 +902,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async repairLocalHealth(
-    request: SyncularV2LocalHealthRepairRequest
-  ): Promise<SyncularV2LocalHealthRepairReport> {
+    request: SyncularLocalHealthRepairRequest
+  ): Promise<SyncularLocalHealthRepairReport> {
     const message = {
       type: 'repairLocalHealth',
       request: {
@@ -913,13 +911,11 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         subscriptionIds: [...(request.subscriptionIds ?? [])],
         tables: [...(request.tables ?? [])],
       },
-    } satisfies SyncularV2WorkerRequestInput;
+    } satisfies SyncularWorkerRequestInput;
     const result =
       request.action === 'clearOrphanedSyncedRows'
-        ? await this.#requestAndDrain<SyncularV2LocalHealthRepairReport>(
-            message
-          )
-        : await this.#request<SyncularV2LocalHealthRepairReport>(message);
+        ? await this.#requestAndDrain<SyncularLocalHealthRepairReport>(message)
+        : await this.#request<SyncularLocalHealthRepairReport>(message);
     if (request.action === 'clearOrphanedSyncedRows') {
       this.#emitLifecycleChanged();
     }
@@ -927,13 +923,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async resetLocalSyncState(
-    request: SyncularV2LocalSyncResetRequest = {}
-  ): Promise<SyncularV2LocalSyncResetReport> {
+    request: SyncularLocalSyncResetRequest = {}
+  ): Promise<SyncularLocalSyncResetReport> {
     const normalized = {
       subscriptionIds: [...(request.subscriptionIds ?? [])],
       clearSyncedRows: request.clearSyncedRows === true,
     };
-    const result = await this.#requestAndDrain<SyncularV2LocalSyncResetReport>({
+    const result = await this.#requestAndDrain<SyncularLocalSyncResetReport>({
       type: 'resetLocalSyncState',
       request: normalized,
     });
@@ -961,20 +957,20 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   openCrdtField(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtFieldDescriptor> {
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtFieldDescriptor> {
     return this.#request({ type: 'openCrdtField', request });
   }
 
   applyCrdtFieldText(
-    request: SyncularV2CrdtFieldTextRequest
-  ): Promise<SyncularV2CrdtFieldWriteReceipt> {
+    request: SyncularCrdtFieldTextRequest
+  ): Promise<SyncularCrdtFieldWriteReceipt> {
     return this.#requestAndDrain({ type: 'applyCrdtFieldText', request });
   }
 
   applyCrdtFieldYjsUpdate(
-    request: SyncularV2CrdtFieldYjsUpdateRequest
-  ): Promise<SyncularV2CrdtFieldWriteReceipt> {
+    request: SyncularCrdtFieldYjsUpdateRequest
+  ): Promise<SyncularCrdtFieldWriteReceipt> {
     return this.#requestAndDrain({
       type: 'applyCrdtFieldYjsUpdate',
       request,
@@ -982,44 +978,44 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   materializeCrdtField(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtFieldMaterialization> {
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtFieldMaterialization> {
     return this.#request({ type: 'materializeCrdtField', request });
   }
 
   crdtDocumentSnapshot(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtDocumentSnapshot> {
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtDocumentSnapshot> {
     return this.#request({ type: 'crdtDocumentSnapshot', request });
   }
 
   crdtUpdateLog(
-    request: SyncularV2CrdtFieldRequest & { limit?: number }
-  ): Promise<SyncularV2CrdtUpdateLogEntry[]> {
+    request: SyncularCrdtFieldRequest & { limit?: number }
+  ): Promise<SyncularCrdtUpdateLogEntry[]> {
     return this.#request({ type: 'crdtUpdateLog', request });
   }
 
   snapshotCrdtFieldStateVector(
-    request: SyncularV2CrdtFieldRequest
+    request: SyncularCrdtFieldRequest
   ): Promise<{ stateVectorBase64: string }> {
     return this.#request({ type: 'snapshotCrdtFieldStateVector', request });
   }
 
   compactCrdtField(
-    request: SyncularV2CrdtFieldCompactionRequest
-  ): Promise<SyncularV2CrdtFieldCompactionReceipt> {
+    request: SyncularCrdtFieldCompactionRequest
+  ): Promise<SyncularCrdtFieldCompactionReceipt> {
     return this.#requestAndDrain({ type: 'compactCrdtField', request });
   }
 
   encryptionHelper(
-    method: SyncularV2EncryptionHelperMethod,
+    method: SyncularEncryptionHelperMethod,
     args: unknown = {}
   ): Promise<unknown> {
     return this.#request({ type: 'encryptionHelper', method, args });
   }
 
-  runtimeInfo(): Promise<SyncularV2RuntimeInfo> {
-    return this.#request<SyncularV2RuntimeInfo>({ type: 'runtimeInfo' }).then(
+  runtimeInfo(): Promise<SyncularRuntimeInfo> {
+    return this.#request<SyncularRuntimeInfo>({ type: 'runtimeInfo' }).then(
       (info) => ({
         ...info,
         storageFallback: this.#storageFallback,
@@ -1027,7 +1023,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     );
   }
 
-  connectionState(): SyncularV2ConnectionState {
+  connectionState(): SyncularConnectionState {
     return {
       closed: this.#closed,
       pendingRequests: this.#pending.size,
@@ -1040,11 +1036,11 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     };
   }
 
-  lifecycleState(): SyncularV2LifecycleState {
+  lifecycleState(): SyncularLifecycleState {
     return this.#computeLifecycleState();
   }
 
-  #computeLifecycleState(): SyncularV2LifecycleState {
+  #computeLifecycleState(): SyncularLifecycleState {
     const outbox = this.#lastOutboxStats;
     const conflicts = this.#lastConflictStats;
     const blobUploads = this.#lastBlobUploadStats;
@@ -1064,7 +1060,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       this.#authRequired || this.#lastError?.code === 'sync.auth_required';
     const offline = this.#networkOnline === false;
     const pendingSyncRequests = this.#pendingSyncRequestCount();
-    const phase: SyncularV2LifecycleState['phase'] = this.#closed
+    const phase: SyncularLifecycleState['phase'] = this.#closed
       ? 'closed'
       : authRequired
         ? 'authRequired'
@@ -1098,7 +1094,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     };
   }
 
-  async diagnosticSnapshot(): Promise<SyncularV2DiagnosticSnapshot> {
+  async diagnosticSnapshot(): Promise<SyncularDiagnosticSnapshot> {
     const [runtime, transportStats] = await Promise.all([
       this.runtimeInfo(),
       this.transportStats().catch(() => undefined),
@@ -1118,7 +1114,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       generatedAt: Date.now(),
       runtime,
       connection: this.connectionState(),
-      subscriptions: summarizeSyncularV2DiagnosticSubscriptions(
+      subscriptions: summarizeSyncularDiagnosticSubscriptions(
         this.#subscriptions,
         this.#lastBootstrap
       ),
@@ -1132,13 +1128,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     };
   }
 
-  setStorageFallback(fallback: SyncularV2StorageFallbackInfo): void {
+  setStorageFallback(fallback: SyncularStorageFallbackInfo): void {
     this.#storageFallback = fallback;
     this.#emitDiagnostic({
       level: 'warn',
       source: 'storage',
       code: 'storage.fallback',
-      message: `Syncular v2 storage fell back from ${fallback.from} to ${fallback.to}`,
+      message: `Syncular storage fell back from ${fallback.from} to ${fallback.to}`,
       details: {
         from: fallback.from,
         to: fallback.to,
@@ -1147,31 +1143,29 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     });
   }
 
-  addDiagnosticListener(listener: SyncularV2DiagnosticSink): () => void {
+  addDiagnosticListener(listener: SyncularDiagnosticSink): () => void {
     this.#diagnosticListeners.add(listener);
     return () => {
       this.#diagnosticListeners.delete(listener);
     };
   }
 
-  addEventListener<T extends SyncularV2ClientEventType>(
+  addEventListener<T extends SyncularClientEventType>(
     event: T,
-    listener: SyncularV2ClientEventSink<T>
+    listener: SyncularClientEventSink<T>
   ): () => void {
     const listeners = this.#eventListeners.get(event) ?? new Set();
-    listeners.add(
-      listener as SyncularV2ClientEventSink<SyncularV2ClientEventType>
-    );
+    listeners.add(listener as SyncularClientEventSink<SyncularClientEventType>);
     this.#eventListeners.set(event, listeners);
     return () => {
       listeners.delete(
-        listener as SyncularV2ClientEventSink<SyncularV2ClientEventType>
+        listener as SyncularClientEventSink<SyncularClientEventType>
       );
       if (listeners.size === 0) this.#eventListeners.delete(event);
     };
   }
 
-  addRowsChangedListener(listener: SyncularV2RowsChangedSink): () => void {
+  addRowsChangedListener(listener: SyncularRowsChangedSink): () => void {
     this.#rowsChangedListeners.add(listener);
     return () => {
       this.#rowsChangedListeners.delete(listener);
@@ -1180,9 +1174,9 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   getPresence<TMetadata = Record<string, unknown>>(
     scopeKey: string
-  ): SyncularV2PresenceEntry<TMetadata>[] {
+  ): SyncularPresenceEntry<TMetadata>[] {
     return (this.#presenceByScopeKey.get(scopeKey) ??
-      []) as SyncularV2PresenceEntry<TMetadata>[];
+      []) as SyncularPresenceEntry<TMetadata>[];
   }
 
   joinPresence(scopeKey: string, metadata?: Record<string, unknown>): void {
@@ -1197,7 +1191,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         level: 'warn',
         source: 'realtime',
         code: 'realtime.presence_join_failed',
-        message: `Syncular v2 presence join failed: ${errorMessage(error)}`,
+        message: `Syncular presence join failed: ${errorMessage(error)}`,
         details: { scopeKey },
       });
     });
@@ -1221,7 +1215,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         level: 'warn',
         source: 'realtime',
         code: 'realtime.presence_leave_failed',
-        message: `Syncular v2 presence leave failed: ${errorMessage(error)}`,
+        message: `Syncular presence leave failed: ${errorMessage(error)}`,
         details: { scopeKey },
       });
     });
@@ -1250,7 +1244,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         level: 'warn',
         source: 'realtime',
         code: 'realtime.presence_update_failed',
-        message: `Syncular v2 presence update failed: ${errorMessage(error)}`,
+        message: `Syncular presence update failed: ${errorMessage(error)}`,
         details: { scopeKey },
       });
     });
@@ -1264,17 +1258,17 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   addPresenceListener<TMetadata = Record<string, unknown>>(
-    listener: SyncularV2PresenceSink<TMetadata>
+    listener: SyncularPresenceSink<TMetadata>
   ): () => void {
     return this.addEventListener(
       'presenceChanged',
-      listener as SyncularV2ClientEventSink<'presenceChanged'>
+      listener as SyncularClientEventSink<'presenceChanged'>
     );
   }
 
   addLiveQueryListener(
     queryId: string,
-    listener: (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => void
+    listener: (event: SyncularLiveQueryEvent<Record<string, unknown>>) => void
   ): void {
     this.#liveListeners.set(queryId, listener);
   }
@@ -1295,16 +1289,16 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     } finally {
       this.#flushRowsChanged();
       this.#rejectAll(
-        createSyncularV2WorkerErrorPayload(
+        createSyncularWorkerErrorPayload(
           'worker.closed',
-          'Syncular v2 worker client closed'
+          'Syncular worker client closed'
         )
       );
       if (this.ownsWorker) this.worker.terminate();
     }
   }
 
-  async #requestAndDrain<T>(request: SyncularV2WorkerRequestInput): Promise<T> {
+  async #requestAndDrain<T>(request: SyncularWorkerRequestInput): Promise<T> {
     const value = await this.#request<T>(request);
     await this.#emitLiveEvents();
     if (shouldEmitOperationalState(request.type)) {
@@ -1315,30 +1309,30 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 
   async #syncWithAuthRetry(
     request: Extract<
-      SyncularV2WorkerRequestInput,
+      SyncularWorkerRequestInput,
       { type: 'syncPull' | 'syncPush' | 'syncOnce' }
     >,
     options: { refreshAuthHeaders: boolean } = { refreshAuthHeaders: true }
-  ): Promise<SyncularV2SyncResult> {
+  ): Promise<SyncularSyncResult> {
     if (options.refreshAuthHeaders) {
       await this.#refreshAuthHeaders({ restartRealtime: false });
     }
     try {
-      const result = await this.#requestAndDrain<SyncularV2SyncResult>(request);
+      const result = await this.#requestAndDrain<SyncularSyncResult>(request);
       this.#emitBootstrapChanged(result);
       return result;
     } catch (error) {
       const shouldRetry = await this.#resolveAuthRetry(error, 'sync');
       if (!shouldRetry) throw error;
       await this.#refreshAuthHeaders({ restartRealtime: false });
-      const result = await this.#requestAndDrain<SyncularV2SyncResult>(request);
+      const result = await this.#requestAndDrain<SyncularSyncResult>(request);
       this.#emitBootstrapChanged(result);
       return result;
     }
   }
 
   async #requestWithAuthRetry<T>(
-    request: SyncularV2WorkerRequestInput,
+    request: SyncularWorkerRequestInput,
     operation: SyncAuthOperation
   ): Promise<T> {
     await this.#refreshAuthHeaders();
@@ -1361,7 +1355,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       level: 'debug',
       source: 'auth',
       code: 'auth.headers_refreshed',
-      message: 'Syncular v2 auth headers refreshed',
+      message: 'Syncular auth headers refreshed',
       details: { headerCount: Object.keys(headers).length },
     });
     await this.#setAuthHeaders(headers, options);
@@ -1390,7 +1384,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       level: 'warn',
       source: 'auth',
       code: 'auth.expired',
-      message: `Syncular v2 auth expired during ${operation}`,
+      message: `Syncular auth expired during ${operation}`,
       details: context,
     });
     await lifecycle.onAuthExpired?.(context);
@@ -1400,8 +1394,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       source: 'auth',
       code: refreshResult ? 'auth.refresh_succeeded' : 'auth.refresh_failed',
       message: refreshResult
-        ? 'Syncular v2 auth refresh succeeded'
-        : 'Syncular v2 auth refresh did not produce fresh credentials',
+        ? 'Syncular auth refresh succeeded'
+        : 'Syncular auth refresh did not produce fresh credentials',
       details: context,
     });
     if (lifecycle.retryWithFreshToken) {
@@ -1433,13 +1427,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     }
   }
 
-  #request<T>(request: SyncularV2WorkerRequestInput): Promise<T> {
+  #request<T>(request: SyncularWorkerRequestInput): Promise<T> {
     if (this.#closed && request.type !== 'close') {
       return Promise.reject(
-        new SyncularV2WorkerError(
-          createSyncularV2WorkerErrorPayload(
+        new SyncularWorkerError(
+          createSyncularWorkerErrorPayload(
             'worker.closed',
-            'Syncular v2 worker client is closed'
+            'Syncular worker client is closed'
           )
         )
       );
@@ -1448,8 +1442,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     const message = {
       ...request,
       id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
-    } as SyncularV2WorkerRequest;
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+    } as SyncularWorkerRequest;
     return new Promise<T>((resolve, reject) => {
       const timeout =
         this.#requestTimeoutMs > 0
@@ -1460,17 +1454,17 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
                 level: 'warn',
                 source: 'worker',
                 code: 'worker.request_timeout',
-                message: `Syncular v2 worker request ${request.type} timed out`,
+                message: `Syncular worker request ${request.type} timed out`,
                 details: {
                   requestId: id,
                   requestType: request.type,
                   timeoutMs: this.#requestTimeoutMs,
                 },
               });
-              const error = new SyncularV2WorkerError(
-                createSyncularV2WorkerErrorPayload(
+              const error = new SyncularWorkerError(
+                createSyncularWorkerErrorPayload(
                   'worker.request_timeout',
-                  `Syncular v2 worker request ${request.type} timed out after ${this.#requestTimeoutMs}ms`,
+                  `Syncular worker request ${request.type} timed out after ${this.#requestTimeoutMs}ms`,
                   { details: { requestId: id, requestType: request.type } }
                 )
               );
@@ -1493,13 +1487,13 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     });
   }
 
-  #handleWorkerMessage(message: SyncularV2WorkerOutboundMessage): void {
-    if (message.protocolVersion !== SYNCULAR_V2_WORKER_PROTOCOL_VERSION) {
+  #handleWorkerMessage(message: SyncularWorkerOutboundMessage): void {
+    if (message.protocolVersion !== SYNCULAR_WORKER_PROTOCOL_VERSION) {
       this.#rejectAll(
-        createSyncularV2WorkerErrorPayload(
+        createSyncularWorkerErrorPayload(
           'worker.protocol_mismatch',
-          `Unsupported Syncular v2 worker protocol ${message.protocolVersion}`,
-          { details: { supported: SYNCULAR_V2_WORKER_PROTOCOL_VERSION } }
+          `Unsupported Syncular worker protocol ${message.protocolVersion}`,
+          { details: { supported: SYNCULAR_WORKER_PROTOCOL_VERSION } }
         )
       );
       return;
@@ -1511,7 +1505,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     this.#handleResponse(message);
   }
 
-  #handleResponse(response: SyncularV2WorkerResponse): void {
+  #handleResponse(response: SyncularWorkerResponse): void {
     const pending = this.#pending.get(response.id);
     if (!pending) return;
     this.#pending.delete(response.id);
@@ -1519,7 +1513,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     if (response.ok) {
       pending.resolve(response.value);
     } else {
-      const error = new SyncularV2WorkerError(response.error);
+      const error = new SyncularWorkerError(response.error);
       this.#lastError = {
         message: error.message,
         code: error.code,
@@ -1530,7 +1524,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   #handleWorkerEvent(
-    event: Exclude<SyncularV2WorkerOutboundMessage, SyncularV2WorkerResponse>
+    event: Exclude<SyncularWorkerOutboundMessage, SyncularWorkerResponse>
   ): void {
     if (event.type === 'liveQueryEvents') {
       for (const liveEvent of event.events) {
@@ -1564,7 +1558,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
         level: 'info',
         source: 'realtime',
         code: 'realtime.state',
-        message: `Syncular v2 realtime is ${event.state}`,
+        message: `Syncular realtime is ${event.state}`,
         details: { state: event.state },
       });
       if (event.state === 'connected') {
@@ -1580,17 +1574,15 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     this.#emitDiagnostic(event.event);
   }
 
-  #emitClientEvent<T extends SyncularV2ClientEventType>(
+  #emitClientEvent<T extends SyncularClientEventType>(
     event: T,
-    payload: SyncularV2ClientEventMap[T]
+    payload: SyncularClientEventMap[T]
   ): void {
     const listeners = this.#eventListeners.get(event);
     if (!listeners || listeners.size === 0) return;
     for (const listener of listeners) {
       try {
-        listener(
-          payload as SyncularV2ClientEventMap[SyncularV2ClientEventType]
-        );
+        listener(payload as SyncularClientEventMap[SyncularClientEventType]);
       } catch {
         // Client event listeners must never break sync control flow.
       }
@@ -1637,7 +1629,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     };
   }
 
-  #hasClientEventListeners(event: SyncularV2ClientEventType): boolean {
+  #hasClientEventListeners(event: SyncularClientEventType): boolean {
     return (this.#eventListeners.get(event)?.size ?? 0) > 0;
   }
 
@@ -1645,7 +1637,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     return this.#diagnosticListeners.size > 0;
   }
 
-  #emitRowsChanged(event: SyncularV2ClientEventMap['rowsChanged']): void {
+  #emitRowsChanged(event: SyncularClientEventMap['rowsChanged']): void {
     if (
       this.#rowsChangedDebounceMs === false ||
       this.#rowsChangedDebounceMs <= 0
@@ -1691,7 +1683,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     });
   }
 
-  #deliverRowsChanged(event: SyncularV2ClientEventMap['rowsChanged']): void {
+  #deliverRowsChanged(event: SyncularClientEventMap['rowsChanged']): void {
     for (const listener of this.#rowsChangedListeners) {
       try {
         listener(event);
@@ -1702,12 +1694,12 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     this.#emitClientEvent('rowsChanged', event);
   }
 
-  #emitBootstrapChanged(result: SyncularV2SyncResult): void {
+  #emitBootstrapChanged(result: SyncularSyncResult): void {
     this.#lastBootstrap = result.bootstrap;
     this.#recoveryRequired = false;
     this.#authRequired = false;
     this.#lastError = undefined;
-    appendSyncularV2SyncTimings(this.#recentSyncTimings, result.timings);
+    appendSyncularSyncTimings(this.#recentSyncTimings, result.timings);
     this.#emitClientEvent('bootstrapChanged', result.bootstrap);
     this.#emitLifecycleChanged();
   }
@@ -1752,19 +1744,19 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     this.#emitLifecycleChanged();
   }
 
-  #readBlobUploadStats(): Promise<SyncularV2BlobUploadQueueStats> {
+  #readBlobUploadStats(): Promise<SyncularBlobUploadQueueStats> {
     return this.#request({ type: 'blobUploadQueueStats' });
   }
 
-  async #readOutboxStats(): Promise<SyncularV2OutboxStats> {
+  async #readOutboxStats(): Promise<SyncularOutboxStats> {
     const result = await this.#request<
-      SyncularV2SqlResult<{ status: string; count: number }>
+      SyncularSqlResult<{ status: string; count: number }>
     >({
       type: 'executeUnsafeSql',
       sql: 'select status, count(*) as count from sync_outbox_commits group by status',
       params: [],
     });
-    const stats: SyncularV2OutboxStats = {
+    const stats: SyncularOutboxStats = {
       pending: 0,
       sending: 0,
       failed: 0,
@@ -1782,9 +1774,9 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     return stats;
   }
 
-  async #readConflictStats(): Promise<SyncularV2ConflictStats> {
+  async #readConflictStats(): Promise<SyncularConflictStats> {
     const result = await this.#request<
-      SyncularV2SqlResult<{
+      SyncularSqlResult<{
         unresolved: number;
         resolved: number;
         total: number;
@@ -1807,7 +1799,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   }
 
   async #readBlobOutboxRows(): Promise<BlobOutboxRow[]> {
-    const result = await this.#request<SyncularV2SqlResult<BlobOutboxRow>>({
+    const result = await this.#request<SyncularSqlResult<BlobOutboxRow>>({
       type: 'executeUnsafeSql',
       sql:
         'select hash, size, mime_type, encrypted, key_id, status, error ' +
@@ -1881,12 +1873,12 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     clientId?: string;
     actorId?: string;
     metadata?: Record<string, unknown>;
-    entries?: SyncularV2PresenceEntry[];
+    entries?: SyncularPresenceEntry[];
   }): void {
     const scopeKey = normalizePresenceScopeKey(event.scopeKey);
     if (!scopeKey) return;
     const current = this.#presenceByScopeKey.get(scopeKey) ?? [];
-    let next: SyncularV2PresenceEntry[];
+    let next: SyncularPresenceEntry[];
     if (event.action === 'snapshot') {
       next = event.entries ?? [];
     } else {
@@ -1943,19 +1935,19 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
           level: 'warn',
           source: 'realtime',
           code: 'realtime.presence_rejoin_failed',
-          message: `Syncular v2 presence rejoin failed: ${errorMessage(error)}`,
+          message: `Syncular presence rejoin failed: ${errorMessage(error)}`,
           details: { scopeKey },
         });
       });
     }
   }
 
-  #rejectAll(reason: SyncularV2WorkerErrorPayload | Error): void {
+  #rejectAll(reason: SyncularWorkerErrorPayload | Error): void {
     const error =
-      reason instanceof Error ? reason : new SyncularV2WorkerError(reason);
+      reason instanceof Error ? reason : new SyncularWorkerError(reason);
     this.#lastError = {
       message: error.message,
-      ...(error instanceof SyncularV2WorkerError ? { code: error.code } : {}),
+      ...(error instanceof SyncularWorkerError ? { code: error.code } : {}),
     };
     for (const pending of this.#pending.values()) {
       if (pending.timeout) clearTimeout(pending.timeout);
@@ -1968,16 +1960,16 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     const id = this.#nextId++;
     this.worker.postMessage({
       id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'cancel',
       requestId,
-    } satisfies SyncularV2WorkerRequest);
+    } satisfies SyncularWorkerRequest);
   }
 
   #emitDiagnostic(
-    event: Omit<SyncularV2DiagnosticEvent, 'at'> & { at?: number }
+    event: Omit<SyncularDiagnosticEvent, 'at'> & { at?: number }
   ): void {
-    const diagnostic: SyncularV2DiagnosticEvent = {
+    const diagnostic: SyncularDiagnosticEvent = {
       at: event.at ?? Date.now(),
       level: event.level,
       source: event.source,
@@ -2007,7 +1999,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       this.#authRequired = false;
     }
     this.#lastDiagnostic = diagnostic;
-    appendSyncularV2DiagnosticEvent(this.#recentDiagnostics, diagnostic);
+    appendSyncularDiagnosticEvent(this.#recentDiagnostics, diagnostic);
     this.#emitLifecycleChanged();
     if (this.#diagnosticListeners.size === 0) return;
     for (const listener of this.#diagnosticListeners) {
@@ -2021,7 +2013,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
 }
 
 function isOpfsOpenFailure(error: unknown): boolean {
-  if (!(error instanceof SyncularV2WorkerError)) return false;
+  if (!(error instanceof SyncularWorkerError)) return false;
   const message = errorMessage(error).toLowerCase();
   return (
     message.includes('opfs') ||
@@ -2031,9 +2023,9 @@ function isOpfsOpenFailure(error: unknown): boolean {
 }
 
 function shouldEmitOperationalState(
-  type: SyncularV2WorkerRequestInput['type']
+  type: SyncularWorkerRequestInput['type']
 ): boolean {
-  return isGeneratedSyncularV2OperationalStateWorkerRequestType(type);
+  return isGeneratedSyncularOperationalStateWorkerRequestType(type);
 }
 
 function errorMessage(error: unknown): string {
@@ -2054,15 +2046,13 @@ function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
-function cloneAuthHeaders(
-  headers: SyncularV2AuthHeaders
-): SyncularV2AuthHeaders {
+function cloneAuthHeaders(headers: SyncularAuthHeaders): SyncularAuthHeaders {
   return Object.fromEntries(Object.entries(headers));
 }
 
 function serializeRuntimeArtifact(
-  runtime: CreateSyncularV2DatabaseOptions['runtime'] | undefined
-): SyncularV2WorkerRuntimeArtifact | undefined {
+  runtime: CreateSyncularDatabaseOptions['runtime'] | undefined
+): SyncularWorkerRuntimeArtifact | undefined {
   if (!runtime) return undefined;
   return {
     wasmGlueUrl:
@@ -2080,8 +2070,8 @@ function runtimeUrlHref(value: string | URL | Request): string {
 }
 
 function normalizeFieldEncryptionConfig(
-  config: SyncularV2FieldEncryptionConfig
-): Omit<SyncularV2FieldEncryptionConfig, 'keys'> & {
+  config: SyncularFieldEncryptionConfig
+): Omit<SyncularFieldEncryptionConfig, 'keys'> & {
   keys: Record<string, string>;
 } {
   const keys: Record<string, string> = {};
@@ -2092,8 +2082,8 @@ function normalizeFieldEncryptionConfig(
 }
 
 function normalizeEncryptedCrdtConfig(
-  config: SyncularV2EncryptedCrdtConfig
-): Omit<SyncularV2EncryptedCrdtConfig, 'keys'> & {
+  config: SyncularEncryptedCrdtConfig
+): Omit<SyncularEncryptedCrdtConfig, 'keys'> & {
   keys: Record<string, string>;
 } {
   const keys: Record<string, string> = {};
@@ -2104,8 +2094,8 @@ function normalizeEncryptedCrdtConfig(
 }
 
 function normalizeBlobEncryptionConfig(
-  config: SyncularV2BlobEncryptionConfig
-): Omit<SyncularV2BlobEncryptionConfig, 'keys'> & {
+  config: SyncularBlobEncryptionConfig
+): Omit<SyncularBlobEncryptionConfig, 'keys'> & {
   keys: Record<string, string>;
 } {
   const keys: Record<string, string> = {};
@@ -2116,8 +2106,8 @@ function normalizeBlobEncryptionConfig(
 }
 
 function arePresenceEntriesEqual(
-  left: readonly SyncularV2PresenceEntry[],
-  right: readonly SyncularV2PresenceEntry[]
+  left: readonly SyncularPresenceEntry[],
+  right: readonly SyncularPresenceEntry[]
 ): boolean {
   if (left.length !== right.length) return false;
   for (let index = 0; index < left.length; index += 1) {
@@ -2145,9 +2135,9 @@ function bytesToBase64Url(bytes: Uint8Array): string {
 }
 
 async function resolveRealtimeWorkerOptions(
-  options: SyncularV2RealtimeOptions,
-  config: SyncularV2ClientConfig
-): Promise<SyncularV2WorkerRealtimeOptions> {
+  options: SyncularRealtimeOptions,
+  config: SyncularClientConfig
+): Promise<SyncularWorkerRealtimeOptions> {
   const params = {
     ...(options.params ?? {}),
     ...((await options.getParams?.({ clientId: config.clientId })) ?? {}),
@@ -2171,17 +2161,14 @@ async function resolveRealtimeWorkerOptions(
 }
 
 function isWorkerEvent(
-  message: SyncularV2WorkerOutboundMessage
-): message is Exclude<
-  SyncularV2WorkerOutboundMessage,
-  SyncularV2WorkerResponse
-> {
+  message: SyncularWorkerOutboundMessage
+): message is Exclude<SyncularWorkerOutboundMessage, SyncularWorkerResponse> {
   return 'type' in message && !('id' in message);
 }
 
 function authStatusFromError(error: unknown): 401 | 403 | undefined {
   const details =
-    error instanceof SyncularV2WorkerError ? error.details : undefined;
+    error instanceof SyncularWorkerError ? error.details : undefined;
   if (
     details &&
     typeof details === 'object' &&

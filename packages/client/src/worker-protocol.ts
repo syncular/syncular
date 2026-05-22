@@ -1,38 +1,38 @@
 import { SYNCULAR_ERROR_DEFINITIONS } from '@syncular/core';
-import type { SyncularV2GeneratedWorkerRequest } from './generated-bridge';
+import type { SyncularGeneratedWorkerRequest } from './generated-bridge';
 import type {
-  SyncularV2BootstrapStatus,
-  SyncularV2DiagnosticEvent,
-  SyncularV2ErrorCategory,
-  SyncularV2ErrorCode,
-  SyncularV2ErrorRecommendedAction,
-  SyncularV2LiveQueryEvent,
-  SyncularV2RealtimeConnectionState,
-  SyncularV2RowsChangedEvent,
+  SyncularBootstrapStatus,
+  SyncularDiagnosticEvent,
+  SyncularErrorCategory,
+  SyncularErrorCode,
+  SyncularErrorRecommendedAction,
+  SyncularLiveQueryEvent,
+  SyncularRealtimeConnectionState,
+  SyncularRowsChangedEvent,
 } from './types';
 
-export const SYNCULAR_V2_WORKER_PROTOCOL_VERSION = 2;
+export const SYNCULAR_WORKER_PROTOCOL_VERSION = 2;
 
-export interface SyncularV2WorkerErrorPayload {
-  code: SyncularV2ErrorCode;
+export interface SyncularWorkerErrorPayload {
+  code: SyncularErrorCode;
   message: string;
-  category?: SyncularV2ErrorCategory;
+  category?: SyncularErrorCategory;
   retryable?: boolean;
-  recommendedAction?: SyncularV2ErrorRecommendedAction;
+  recommendedAction?: SyncularErrorRecommendedAction;
   name?: string;
   stack?: string;
   details?: unknown;
 }
 
-export function createSyncularV2WorkerErrorPayload(
-  code: SyncularV2ErrorCode,
+export function createSyncularWorkerErrorPayload(
+  code: SyncularErrorCode,
   message?: string,
   options: {
     name?: string;
     stack?: string;
     details?: unknown;
   } = {}
-): SyncularV2WorkerErrorPayload {
+): SyncularWorkerErrorPayload {
   const definition = SYNCULAR_ERROR_DEFINITIONS[code];
   return {
     code,
@@ -47,45 +47,45 @@ export function createSyncularV2WorkerErrorPayload(
 }
 
 export type {
-  SyncularV2WorkerRealtimeOptions,
-  SyncularV2WorkerRuntimeArtifact,
+  SyncularWorkerRealtimeOptions,
+  SyncularWorkerRuntimeArtifact,
 } from './generated-bridge';
-export type SyncularV2WorkerRequest = SyncularV2GeneratedWorkerRequest;
+export type SyncularWorkerRequest = SyncularGeneratedWorkerRequest;
 
-interface SyncularV2WorkerResponseBase {
+interface SyncularWorkerResponseBase {
   id: number;
-  protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+  protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
 }
 
-interface SyncularV2WorkerEventBase {
-  protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+interface SyncularWorkerEventBase {
+  protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
 }
 
-export type SyncularV2WorkerResponse =
-  | (SyncularV2WorkerResponseBase & { ok: true; value?: unknown })
-  | (SyncularV2WorkerResponseBase & {
+export type SyncularWorkerResponse =
+  | (SyncularWorkerResponseBase & { ok: true; value?: unknown })
+  | (SyncularWorkerResponseBase & {
       ok: false;
-      error: SyncularV2WorkerErrorPayload;
+      error: SyncularWorkerErrorPayload;
     });
 
-export type SyncularV2WorkerEvent =
-  | (SyncularV2WorkerEventBase & {
+export type SyncularWorkerEvent =
+  | (SyncularWorkerEventBase & {
       type: 'liveQueryEvents';
-      events: Array<SyncularV2LiveQueryEvent<Record<string, unknown>>>;
+      events: Array<SyncularLiveQueryEvent<Record<string, unknown>>>;
     })
-  | (SyncularV2WorkerEventBase &
-      SyncularV2RowsChangedEvent & {
+  | (SyncularWorkerEventBase &
+      SyncularRowsChangedEvent & {
         type: 'rowsChanged';
       })
-  | (SyncularV2WorkerEventBase & {
+  | (SyncularWorkerEventBase & {
       type: 'bootstrapChanged';
-      bootstrap: SyncularV2BootstrapStatus;
+      bootstrap: SyncularBootstrapStatus;
     })
-  | (SyncularV2WorkerEventBase & {
+  | (SyncularWorkerEventBase & {
       type: 'realtimeState';
-      state: SyncularV2RealtimeConnectionState;
+      state: SyncularRealtimeConnectionState;
     })
-  | (SyncularV2WorkerEventBase & {
+  | (SyncularWorkerEventBase & {
       type: 'presenceEvent';
       action: 'join' | 'leave' | 'update' | 'snapshot';
       scopeKey: string;
@@ -99,11 +99,11 @@ export type SyncularV2WorkerEvent =
         metadata?: Record<string, unknown>;
       }>;
     })
-  | (SyncularV2WorkerEventBase & {
+  | (SyncularWorkerEventBase & {
       type: 'diagnostic';
-      event: SyncularV2DiagnosticEvent;
+      event: SyncularDiagnosticEvent;
     });
 
-export type SyncularV2WorkerOutboundMessage =
-  | SyncularV2WorkerResponse
-  | SyncularV2WorkerEvent;
+export type SyncularWorkerOutboundMessage =
+  | SyncularWorkerResponse
+  | SyncularWorkerEvent;
