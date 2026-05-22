@@ -266,7 +266,14 @@ current Rust-first path no longer needs them.
 - Removed native realtime lifecycle `start` / `stop` aliases from the Rust
   native facade, C FFI, and BoltFFI Swift/Kotlin/Java bindings. Host code now
   uses the explicit `start_realtime_worker` / `stop_realtime_worker` API.
+- Removed unused browser client event type aliases
+  (`SyncularClientEventType`, `SyncularClientEventMap`) so callers use the
+  canonical `SyncularV2ClientEventType` / `SyncularV2ClientEventMap` names.
 - Gates:
+  - `bunx biome check packages/client/src/client.ts`: passed.
+  - `bun --cwd packages/client tsgo`: passed.
+  - `bun --cwd packages/client test`: passed, `110` tests.
+- Native alias gates:
   - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade`:
     passed, `38` tests.
   - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_header`:

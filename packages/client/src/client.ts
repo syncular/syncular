@@ -8,7 +8,6 @@ import type {
   SyncularV2AuthLeaseRecord,
   SyncularV2BlobUploadQueueStats,
   SyncularV2Client,
-  SyncularV2ClientEventMap,
   SyncularV2ClientEventSink,
   SyncularV2ClientEventType,
   SyncularV2ConflictResolution,
@@ -150,9 +149,6 @@ export interface SyncularClientLike<DB> {
   sync(): Promise<SyncularV2SyncResult>;
   destroy(): Promise<void>;
 }
-
-export type SyncularClientEventType = SyncularV2ClientEventType;
-export type SyncularClientEventMap = SyncularV2ClientEventMap;
 
 type LifecycleClient = Pick<
   SyncularV2Client,
