@@ -4,7 +4,8 @@
  * Covers:
  * - pull() with chunkStorage parameter stores chunks externally
  * - Chunk body is retrieved from external storage
- * - Fallback to inline body when external read fails
+ * - External reads fail closed when the external body is missing
+ * - Database-inline bodies work when no external chunkStorage is configured
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
@@ -138,10 +139,10 @@ describe('External chunk storage integration', () => {
         readChunk: async () => null,
       };
 
-      // Insert chunk with inline body
-      const body = new TextEncoder().encode('inline fallback data');
+      // Insert a DB-inline body to prove external reads do not fall back to it.
+      const body = new TextEncoder().encode('inline body not used');
       await insertSnapshotChunk(db, {
-        chunkId: 'test-fallback',
+        chunkId: 'test-missing-external-body',
         partitionId: 'test',
         scopeKey: 'test',
         scope: 'test_items',
@@ -150,16 +151,18 @@ describe('External chunk storage integration', () => {
         rowLimit: 100,
         encoding: 'json-row-frame-v1',
         compression: 'gzip',
-        sha256: 'fallback123',
+        sha256: 'missing123',
         body,
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       });
 
       await expect(
-        readSnapshotChunk(db, 'test-fallback', {
+        readSnapshotChunk(db, 'test-missing-external-body', {
           chunkStorage: failingChunkStorage,
         })
-      ).rejects.toThrow('Snapshot chunk body missing for chunk test-fallback');
+      ).rejects.toThrow(
+        'Snapshot chunk body missing for chunk test-missing-external-body'
+      );
     });
 
     it('returns null when chunk not found', async () => {
