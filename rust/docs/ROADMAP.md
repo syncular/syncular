@@ -108,7 +108,10 @@ read-only review:
     now accepts only generated camelCase fields, and the old websocket timing
     alias was removed so transport stats read the current server field names.
     Browser realtime diagnostics now name binary apply failure directly instead
-    of calling HTTP pull recovery a fallback.
+    of calling HTTP pull recovery a fallback. Rust native/browser transports no
+    longer decode JSON row-frame snapshot chunks; runtime clients request
+    `binary-table-v1`, while the remaining JSON row-frame decision is scoped to
+    server/core defaults and fixtures.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,

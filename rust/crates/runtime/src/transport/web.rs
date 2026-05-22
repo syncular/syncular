@@ -12,13 +12,11 @@ use crate::protocol::{
     validate_snapshot_chunk_decompressed_bytes, validate_snapshot_chunk_ref_size, CombinedRequest,
     CombinedResponse, ScopeValues, ScopedSnapshotArtifactRef, SnapshotChunkRef,
     SNAPSHOT_CHUNK_COMPRESSION_GZIP, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-    SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
 };
 use crate::runtime_schema::runtime_schema_version;
 use crate::transport::{SyncAuthHeaderStore, SyncAuthHeaders};
 use js_sys::{Array, Function, Promise, Reflect, Uint8Array};
 use serde::{Deserialize, Serialize};
-use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::cell::RefCell;
 use std::future::Future;
@@ -771,9 +769,6 @@ async fn decode_snapshot_rows(
     let decoded = decode_snapshot_chunk_bytes(chunk, compressed, stats).await?;
     let decode_started_at = timing_now_ms();
     let rows = match chunk.encoding.as_str() {
-        SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 => {
-            decode_srf1_rows(&decoded).map(SnapshotChunkRows::Json)
-        }
         SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 => {
             let payload = decode_binary_snapshot_payload(decoded)?;
             Ok(SnapshotChunkRows::BinaryPayload(payload))
@@ -899,40 +894,6 @@ async fn decompress_gzip_with_browser(compressed: &[u8]) -> Result<Vec<u8>> {
         .await
         .map_err(|err| js_error(ErrorKind::Transport, "await gzip output array buffer", err))?;
     Ok(Uint8Array::new(&buffer).to_vec())
-}
-
-fn decode_srf1_rows(bytes: &[u8]) -> Result<Vec<Value>> {
-    if bytes.len() < 4 || &bytes[0..4] != b"SRF1" {
-        return Err(SyncularError::protocol_message(
-            "unexpected snapshot chunk frame header",
-        ));
-    }
-
-    let mut offset = 4usize;
-    let mut rows = Vec::with_capacity(estimated_snapshot_row_count(bytes.len()));
-    while offset < bytes.len() {
-        if offset + 4 > bytes.len() {
-            return Err(SyncularError::protocol_message(
-                "snapshot frame ended mid-header",
-            ));
-        }
-        let len = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-        offset += 4;
-        if offset + len > bytes.len() {
-            return Err(SyncularError::protocol_message(
-                "snapshot frame ended mid-body",
-            ));
-        }
-        let row: Map<String, Value> = serde_json::from_slice(&bytes[offset..offset + len])?;
-        rows.push(Value::Object(row));
-        offset += len;
-    }
-
-    Ok(rows)
-}
-
-fn estimated_snapshot_row_count(byte_len: usize) -> usize {
-    (byte_len / 160).clamp(1, 20_000)
 }
 
 #[cfg(feature = "web-blobs")]
