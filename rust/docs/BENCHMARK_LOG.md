@@ -6712,3 +6712,58 @@ Decision:
   fixed `100` probe remains a useful upper-bound comparison for apps that know
   they are draining large outboxes, but it was too broad as a default because
   the `100`-write lane was slower.
+
+## 2026-05-22 - WP-31 IndexedDB-Compatible Durable Reopen Probe
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added opt-in `SYNCULAR_RUST_DURABLE_REOPEN=1` for the external
+  `syncular-rust` offline replay lanes.
+- The probe uses the Rust WASM `indexedDb` storage backend under Bun with
+  `fake-indexeddb`, queues writes while the Syncular service is down, closes the
+  client, reopens the same SQLite file with `clearOnInit=false`, verifies the
+  pending outbox and local row changes survived, then restarts the service and
+  drains replay.
+- Result metadata records `storage`, `durableReopen`, `reopenedOutbox`, and
+  `reopenedMatchedTitleCount`.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_RUST_DURABLE_REOPEN=1 \
+  bun run bench:run -- --stack syncular-rust --scenario offline-replay
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_RUST_DURABLE_REOPEN=1 \
+SYNCULAR_RUST_LARGE_OFFLINE_QUEUE_SIZES=100 \
+  bun run bench:run -- --stack syncular-rust --scenario large-offline-queue
+```
+
+`bun run typecheck` in `offline-sync-bench` still fails on the known
+`stacks/syncular/syncular-app/src/index.ts` package-export mismatch against the
+published `@syncular/server` packages; it did not report errors in
+`src/adapters/syncular-rust.ts`.
+
+Results:
+
+| Scenario | Run ID | Reopened evidence | Replay result |
+| --- | --- | --- | --- |
+| `offline-replay` | `2026-05-22T21-38-53-388Z` | `10` unresolved / `10` pending outbox commits; `10` matching local titles | `64.01ms`, `1` sync attempt, final outbox `10` acked / `0` unresolved |
+| `large-offline-queue` | `2026-05-22T21-39-19-680Z` | `100` unresolved / `100` pending outbox commits; `100` matching local titles | `266.92ms`, `5` sync attempts, final outbox `100` acked / `0` unresolved |
+
+Decision:
+
+- Retain as an opt-in benchmark mode. It verifies the Rust IndexedDB-compatible
+  persistence path without changing default memory-backed comparison runs.
+- Do not overclaim process-restart or browser OPFS durability from this slice.
+  A full browser-worker OPFS/process-restart harness remains the stronger
+  follow-up if product decisions need that exact evidence.

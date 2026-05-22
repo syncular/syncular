@@ -721,13 +721,59 @@ Decision:
   choose `outboxBatchLimit: 100`; that remains useful when the app knows its
   workload is a large replay lane.
 
+## Slice 12 IndexedDB-Compatible Durable Reopen Probe
+
+Retained benchmark-adapter change on 2026-05-22:
+
+- Added opt-in `SYNCULAR_RUST_DURABLE_REOPEN=1` for Rust outbox replay
+  scenarios.
+- Durable reopen mode uses the Rust `indexedDb` storage backend under Bun with
+  `fake-indexeddb`, queues offline writes while the Syncular service is down,
+  closes the Rust client, reopens the same SQLite file with `clearOnInit=false`,
+  verifies the outbox and local title changes survived, and only then restarts
+  the service for replay.
+- Result metadata now records `storage`, `durableReopen`, `reopenedOutbox`, and
+  `reopenedMatchedTitleCount`.
+- This is not the final browser-worker OPFS/process-restart lane. It is a
+  lower-cost IndexedDB-compatible reopen probe that closes the biggest
+  benchmark evidence gap without adding a browser runner dependency.
+
+Verification:
+
+- `SYNCULAR_RUST_DURABLE_REOPEN=1 bun run bench:run -- --stack syncular-rust --scenario offline-replay`:
+  passed.
+- `SYNCULAR_RUST_DURABLE_REOPEN=1 SYNCULAR_RUST_LARGE_OFFLINE_QUEUE_SIZES=100 bun run bench:run -- --stack syncular-rust --scenario large-offline-queue`:
+  passed.
+- `bun run typecheck` in `offline-sync-bench`: still blocked by the existing
+  stack-app package export mismatch against published `@syncular/server`
+  packages; the reported errors are limited to
+  `stacks/syncular/syncular-app/src/index.ts`.
+
+Targeted external results:
+
+| Scenario | Run ID | Key result |
+| --- | --- | --- |
+| `offline-replay` durable reopen | `2026-05-22T21-38-53-388Z` | reopened outbox `10` unresolved / `10` pending; reopened matching titles `10`; replay convergence `64.01ms`; final outbox `10` acked, `0` unresolved; success rate `1.0` |
+| `large-offline-queue` durable reopen | `2026-05-22T21-39-19-680Z` | queue `100`; reopened outbox `100` unresolved / `100` pending; reopened matching titles `100`; replay convergence `266.92ms`; final outbox `100` acked, `0` unresolved; success rate `1.0` |
+
+Decision:
+
+- Retain the opt-in lane. It proves the Rust WASM IndexedDB-compatible storage
+  path can retain queued outbox commits and locally applied rows across
+  close/reopen before replay.
+- Keep the default benchmark lane memory-backed so existing comparisons remain
+  stable.
+- Full browser-worker OPFS/process restart remains a stronger future evidence
+  item, but this slice is enough to stop describing Rust outbox replay as
+  active-session-only when `SYNCULAR_RUST_DURABLE_REOPEN=1` is used.
+
 ## Next Action
 
 The unsupported benchmark rows are now covered by native Rust client behavior.
 The next optimization slices should be evidence-gated and scoped:
 
-- Add a browser-worker durable storage lane before accepting process-restart
-  outbox/blob durability in this benchmark.
+- Add a full browser-worker OPFS/process-restart lane if we need stronger
+  durability evidence than the IndexedDB-compatible close/reopen probe.
 - Keep online-propagation on binary-pack regression watch; only tune direct
   websocket payload caps if future runs report non-null `payloadBytes` and
   `payload-too-large`.
