@@ -504,6 +504,47 @@ describe('Syncular worker sync protocol against Hono routes', () => {
     });
   });
 
+  it('adapts default Rust outbox push batches for large queues', async () => {
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'adaptive-push-batch-client',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+
+    for (let index = 0; index < 200; index += 1) {
+      const localRow = {
+        id: `adaptive-push-batch-task-${index}`,
+        title: `Adaptive push batch task ${index}`,
+        completed: 0,
+        user_id: ACTOR_A,
+        project_id: null,
+        server_version: 0,
+        image: null,
+        title_yjs_state: null,
+      };
+      await client.applyMutation(
+        newTaskOperation({
+          id: localRow.id,
+          title: localRow.title,
+          user_id: ACTOR_A,
+        }),
+        localRow
+      );
+    }
+
+    await expect(client.syncPush()).resolves.toMatchObject({
+      pushedCommits: 100,
+    });
+    await expect(client.syncPush()).resolves.toMatchObject({
+      pushedCommits: 100,
+    });
+  });
+
   it('surfaces revoked sessions when auth refresh declines retry', async () => {
     const scenario = syncConformance.revokedSession;
     const sync = await createHonoSyncHarness({

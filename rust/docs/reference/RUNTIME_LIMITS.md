@@ -19,6 +19,8 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
 | `pullLimitSnapshotRows` | 50000 | Client-requested snapshot rows per page |
 | `pullMaxSnapshotPages` | 10 | Client-requested snapshot pages per pull |
 | `outboxPushBatchLimit` | 20 | Pending outbox commits loaded for one push round |
+| `adaptiveOutboxPushBatchLimit` | 100 | Default Rust web-client batch size while draining large due outboxes |
+| `adaptiveOutboxPushThreshold` | 100 | Due outbox count that must be exceeded before adaptive Rust web-client batching engages |
 | `maxUnresolvedOutboxCommits` | 10000 | Maximum pending/sending/failed outbox commits retained before new local writes fail |
 | `maxSyncRetries` | 5 | Maximum retry attempts for one outbox commit before it becomes failed |
 | `syncSendingTimeoutMs` | 30000 | Stale `sending` outbox age before it is requeued or failed |
@@ -109,6 +111,10 @@ routes: ... })` and return `runtime.limit_exceeded` envelopes when exceeded.
 - Blob upload retries, sync retries, stale sending/uploading timeouts, blob
   upload processing batch size, and SQLite busy timeout are public native
   runtime limits.
+- Rust web clients keep the fixed `outboxPushBatchLimit` path for due outboxes
+  at or below `adaptiveOutboxPushThreshold`, then drain larger due outboxes in
+  batches up to `adaptiveOutboxPushBatchLimit` unless an explicit
+  `config.push.outboxBatchLimit` fixed override is provided.
 
 ## Rules
 

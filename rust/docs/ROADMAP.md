@@ -182,10 +182,16 @@ read-only review:
     path versus direct HTTP, but the `250`-client external-write storm still
     hits an approximately `2s` cursor-only HTTP recovery cliff. That cliff is
     handed off to WP-32 because it needs server/realtime payload or recovery
-    fanout design, not more client retry tuning. Remaining WP-31 client-side
-    follow-ups are adaptive outbox batching, browser-worker durable storage
-    benchmarking, online binary-pack regression watch, and optional explicit
-    blob `retryNow`/online-event retry evaluation.
+    fanout design, not more client retry tuning. Slice 11 makes the default
+    Rust web outbox batch adaptive: `100`-write queues keep the old `20`-commit
+    path, while due queues over `100` drain in `100`-commit pushes until the
+    large queue is exhausted. Same-session large-offline-queue control improved
+    `500` writes from `1307.71ms` to `779.54ms` and `1000` writes from
+    `2486.82ms` to `1887.19ms`, both with `80%` fewer requests; explicit
+    `outboxBatchLimit` remains a fixed override. Remaining WP-31 client-side
+    follow-ups are browser-worker durable storage benchmarking, online
+    binary-pack regression watch, and optional explicit blob
+    `retryNow`/online-event retry evaluation.
 - `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table

@@ -6647,3 +6647,68 @@ Decision:
 - Rust remains out of this server app path. The measured bottleneck was
   subscription state/recovery and benchmark observation, not binary protocol
   encode/validate.
+
+## 2026-05-22 - WP-31 Adaptive Rust Outbox Batch Default
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Default Rust web-client push batching now keeps the old fixed `20`-commit
+  path for due outboxes of `100` commits or less.
+- When the due pending outbox exceeds `100`, the client enters a stateful
+  adaptive drain and sends up to `100` commits per push until the large queue is
+  drained.
+- Explicit `config.push.outboxBatchLimit` remains a fixed override.
+- Added a due-pending outbox count API for web stores plus a client-side count
+  hint so small queues do not repeatedly deserialize operation JSON just to
+  decide whether to adapt.
+- The external benchmark adapter records the effective batch mode and adaptive
+  defaults in result metadata.
+
+Verification:
+
+```bash
+bun --cwd rust/bindings/javascript build:wasm
+bun --cwd packages/client test src/__tests__/sync-hono.wasm.test.ts -t "outbox push batch"
+bun --cwd packages/client build
+```
+
+`bun run typecheck` in `offline-sync-bench` still fails on the known
+`stacks/syncular/syncular-app/src/index.ts` package-export mismatch against the
+published `@syncular/server` packages; it did not report errors in
+`src/adapters/syncular-rust.ts`.
+
+Same-session external control and candidate:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_RUST_LARGE_OFFLINE_QUEUE_SIZES=100,500,1000 \
+SYNCULAR_RUST_OUTBOX_PUSH_BATCH_LIMIT=20 \
+  bun run bench:run -- --stack syncular-rust --scenario large-offline-queue
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_RUST_LARGE_OFFLINE_QUEUE_SIZES=100,500,1000 \
+  bun run bench:run -- --stack syncular-rust --scenario large-offline-queue
+```
+
+| Queue | Fixed `20` run `2026-05-22T21-13-24-530Z` | Adaptive run `2026-05-22T21-15-52-240Z` | Request/attempt delta |
+| ---: | ---: | ---: | --- |
+| `100` | `272.17ms`, `10` requests, `5` attempts | `270.55ms`, `10` requests, `5` attempts | unchanged |
+| `500` | `1307.71ms`, `50` requests, `25` attempts | `779.54ms`, `10` requests, `5` attempts | `80%` fewer requests |
+| `1000` | `2486.82ms`, `100` requests, `50` attempts | `1887.19ms`, `20` requests, `10` attempts | `80%` fewer requests |
+
+Decision:
+
+- Retain. The adaptive default improves large offline replay while preserving
+  the old small-queue batch pattern and request count.
+- Keep `outboxBatchLimit` available for explicit fixed tuning. The earlier
+  fixed `100` probe remains a useful upper-bound comparison for apps that know
+  they are draining large outboxes, but it was too broad as a default because
+  the `100`-write lane was slower.

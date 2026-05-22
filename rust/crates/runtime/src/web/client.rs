@@ -10,7 +10,10 @@ use crate::crdt_yjs::YJS_PAYLOAD_KEY;
 use crate::encrypted_crdt::{is_encrypted_crdt_system_table, EncryptedCrdt};
 use crate::encryption::{BlobEncryption, FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
-use crate::limits::{DEFAULT_OUTBOX_PUSH_BATCH_LIMIT, MAX_OUTBOX_PUSH_BATCH_LIMIT};
+use crate::limits::{
+    DEFAULT_ADAPTIVE_OUTBOX_PUSH_BATCH_LIMIT, DEFAULT_ADAPTIVE_OUTBOX_PUSH_THRESHOLD,
+    DEFAULT_OUTBOX_PUSH_BATCH_LIMIT, MAX_OUTBOX_PUSH_BATCH_LIMIT,
+};
 use crate::protocol::{
     validate_mutation_json_input_size, validate_pull_commit_integrity_metadata,
     validate_pull_snapshot_manifests, validate_realtime_sync_pack_bytes,
@@ -90,14 +93,20 @@ impl Default for WebSyncPullOptions {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebSyncPushOptions {
-    #[serde(default = "default_outbox_push_batch_limit")]
-    pub outbox_batch_limit: i64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outbox_batch_limit: Option<i64>,
+    #[serde(default = "default_adaptive_outbox_push_batch_limit")]
+    pub adaptive_outbox_batch_limit: i64,
+    #[serde(default = "default_adaptive_outbox_push_threshold")]
+    pub adaptive_outbox_batch_threshold: i64,
 }
 
 impl Default for WebSyncPushOptions {
     fn default() -> Self {
         Self {
-            outbox_batch_limit: default_outbox_push_batch_limit(),
+            outbox_batch_limit: None,
+            adaptive_outbox_batch_limit: default_adaptive_outbox_push_batch_limit(),
+            adaptive_outbox_batch_threshold: default_adaptive_outbox_push_threshold(),
         }
     }
 }
@@ -108,6 +117,14 @@ fn default_limit_commits() -> i64 {
 
 fn default_outbox_push_batch_limit() -> i64 {
     DEFAULT_OUTBOX_PUSH_BATCH_LIMIT
+}
+
+fn default_adaptive_outbox_push_batch_limit() -> i64 {
+    DEFAULT_ADAPTIVE_OUTBOX_PUSH_BATCH_LIMIT
+}
+
+fn default_adaptive_outbox_push_threshold() -> i64 {
+    DEFAULT_ADAPTIVE_OUTBOX_PUSH_THRESHOLD
 }
 
 fn default_limit_snapshot_rows() -> i64 {
@@ -146,6 +163,8 @@ pub struct WebSyncularClient<T = WebSyncTransport, S = WebMemoryStore> {
     field_encryption: Option<FieldEncryption>,
     encrypted_crdt: Option<EncryptedCrdt>,
     blob_encryption: Option<BlobEncryption>,
+    adaptive_outbox_batch_active: bool,
+    adaptive_outbox_pending_count_hint: Option<usize>,
 }
 
 #[derive(Debug, Default, Serialize)]
@@ -233,6 +252,8 @@ where
             field_encryption: None,
             encrypted_crdt: None,
             blob_encryption: None,
+            adaptive_outbox_batch_active: false,
+            adaptive_outbox_pending_count_hint: None,
         }
     }
 
@@ -743,6 +764,7 @@ where
     }
 
     pub fn store_mut(&mut self) -> &mut S {
+        self.adaptive_outbox_pending_count_hint = None;
         &mut self.store
     }
 
@@ -1494,6 +1516,7 @@ where
         let response = match self.transport.post_sync(&request).await {
             Ok(response) => response,
             Err(error) => {
+                self.adaptive_outbox_pending_count_hint = None;
                 return Err(error);
             }
         };
@@ -1502,12 +1525,14 @@ where
             response.latest_schema_version,
             self.schema_version(),
         ) {
+            self.adaptive_outbox_pending_count_hint = None;
             self.schedule_outbox_retry(&pending, &error).await?;
             return Err(error);
         }
         if !response.ok {
             let error =
                 SyncularError::protocol_message("combined browser push response was not ok");
+            self.adaptive_outbox_pending_count_hint = None;
             self.schedule_outbox_retry(&pending, &error).await?;
             return Err(error);
         }
@@ -1516,6 +1541,7 @@ where
         if let Some(push) = response.push {
             if !push.ok {
                 let error = SyncularError::protocol_message("browser push response was not ok");
+                self.adaptive_outbox_pending_count_hint = None;
                 self.schedule_outbox_retry(&pending, &error).await?;
                 return Err(error);
             }
@@ -1562,6 +1588,9 @@ where
             pushed_commits,
             ..WebSyncResult::default()
         };
+        if let Some(count) = &mut self.adaptive_outbox_pending_count_hint {
+            *count = count.saturating_sub(pushed_commits);
+        }
         result.timings.total_ms = elapsed_ms_since(total_started_at);
         result.timings.push_ms = result.timings.total_ms;
         Ok(result)
@@ -1577,7 +1606,7 @@ where
     ) -> Result<()> {
         let sending = self
             .store
-            .sending_outbox(self.outbox_push_batch_limit()?)
+            .sending_outbox(self.outbox_recovery_batch_limit()?)
             .await?;
         let error = SyncularError::message(ErrorKind::Transport, error_message);
         self.schedule_outbox_retry_inner(&sending, &error, true)
@@ -1654,6 +1683,7 @@ where
             .store
             .apply_mutation(operation.clone(), local_row.clone())
             .await?;
+        self.adaptive_outbox_pending_count_hint = None;
         let changed_rows = sync_changed_row_for_local_operation(
             self.store.app_schema(),
             &operation,
@@ -1691,6 +1721,7 @@ where
                 local_row.clone(),
             )
             .await?;
+        self.adaptive_outbox_pending_count_hint = None;
         let changed_rows = sync_changed_row_for_local_operation(
             self.store.app_schema(),
             &operation,
@@ -1824,10 +1855,7 @@ where
     async fn prepare_push(&mut self) -> Result<Vec<OutboxCommit>> {
         let schema_version = self.schema_version();
         self.store.requeue_stale_outbox().await?;
-        let pending = self
-            .store
-            .pending_outbox(self.outbox_push_batch_limit()?)
-            .await?;
+        let pending = self.pending_outbox_for_next_push().await?;
         for commit in &pending {
             validate_outbox_schema_version(commit, schema_version)?;
         }
@@ -1837,18 +1865,86 @@ where
         Ok(pending)
     }
 
+    async fn pending_outbox_for_next_push(&mut self) -> Result<Vec<OutboxCommit>> {
+        let fixed_limit = self.outbox_push_batch_limit()?;
+        if self.config.push.outbox_batch_limit.is_some() {
+            self.adaptive_outbox_batch_active = false;
+            return self.store.pending_outbox(fixed_limit).await;
+        }
+
+        let adaptive_limit = self.outbox_adaptive_batch_limit()?;
+        let adaptive_threshold = self.outbox_adaptive_batch_threshold()?;
+        if adaptive_limit <= fixed_limit {
+            self.adaptive_outbox_batch_active = false;
+            return self.store.pending_outbox(fixed_limit).await;
+        }
+
+        if self.adaptive_outbox_batch_active {
+            let pending = self.store.pending_outbox(adaptive_limit).await?;
+            if pending.len() < adaptive_limit {
+                self.adaptive_outbox_batch_active = false;
+            }
+            return Ok(pending);
+        }
+
+        let pending_count = match self.adaptive_outbox_pending_count_hint {
+            Some(count) => count,
+            None => {
+                let count = self.store.pending_outbox_count().await?;
+                self.adaptive_outbox_pending_count_hint = Some(count);
+                count
+            }
+        };
+        if pending_count > adaptive_threshold {
+            self.adaptive_outbox_batch_active = true;
+            return self.store.pending_outbox(adaptive_limit).await;
+        }
+
+        self.adaptive_outbox_batch_active = false;
+        self.store.pending_outbox(fixed_limit).await
+    }
+
     fn outbox_push_batch_limit(&self) -> Result<usize> {
-        let limit = self.config.push.outbox_batch_limit;
+        self.validate_outbox_batch_limit(
+            "push.outboxBatchLimit",
+            self.config
+                .push
+                .outbox_batch_limit
+                .unwrap_or_else(default_outbox_push_batch_limit),
+        )
+    }
+
+    fn outbox_adaptive_batch_limit(&self) -> Result<usize> {
+        self.validate_outbox_batch_limit(
+            "push.adaptiveOutboxBatchLimit",
+            self.config.push.adaptive_outbox_batch_limit,
+        )
+    }
+
+    fn outbox_adaptive_batch_threshold(&self) -> Result<usize> {
+        self.validate_outbox_batch_limit(
+            "push.adaptiveOutboxBatchThreshold",
+            self.config.push.adaptive_outbox_batch_threshold,
+        )
+    }
+
+    fn outbox_recovery_batch_limit(&self) -> Result<usize> {
+        if self.config.push.outbox_batch_limit.is_some() {
+            return self.outbox_push_batch_limit();
+        }
+        Ok(self
+            .outbox_push_batch_limit()?
+            .max(self.outbox_adaptive_batch_limit()?))
+    }
+
+    fn validate_outbox_batch_limit(&self, name: &str, limit: i64) -> Result<usize> {
         if !(1..=MAX_OUTBOX_PUSH_BATCH_LIMIT).contains(&limit) {
             return Err(SyncularError::config(format!(
-                "push.outboxBatchLimit must be between 1 and {MAX_OUTBOX_PUSH_BATCH_LIMIT}; got {limit}"
+                "{name} must be between 1 and {MAX_OUTBOX_PUSH_BATCH_LIMIT}; got {limit}"
             )));
         }
-        usize::try_from(limit).map_err(|_| {
-            SyncularError::config(format!(
-                "push.outboxBatchLimit cannot be represented: {limit}"
-            ))
-        })
+        usize::try_from(limit)
+            .map_err(|_| SyncularError::config(format!("{name} cannot be represented: {limit}")))
     }
 
     fn build_push_request(&self, pending: &[OutboxCommit]) -> Result<Option<PushBatchRequest>> {
@@ -2264,7 +2360,8 @@ mod tests {
     use super::*;
     use crate::protocol::{
         snapshot_manifest_digest, wire_commit_chain_root, wire_commit_digest, CombinedResponse,
-        PullResponse, ScopedSnapshotArtifactManifest, ScopedSnapshotArtifactRef, SnapshotChunkRef,
+        OperationResult, PullResponse, PushBatchResponse, PushCommitResponse,
+        ScopedSnapshotArtifactManifest, ScopedSnapshotArtifactRef, SnapshotChunkRef,
         SnapshotManifest, SnapshotManifestChunkRef, SubscriptionIntegrity, SubscriptionResponse,
         SyncSnapshot, COMMIT_INTEGRITY_GENESIS_ROOT, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
         SNAPSHOT_CHUNK_COMPRESSION_GZIP,
@@ -2296,6 +2393,73 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0]["id"], "existing-task");
 
+        Ok(())
+    }
+
+    #[test]
+    fn default_push_batch_stays_small_for_hundred_commit_queue() -> Result<()> {
+        let batch_sizes = Arc::new(Mutex::new(Vec::new()));
+        let transport = PushCaptureTransport {
+            batch_sizes: Arc::clone(&batch_sizes),
+        };
+        let config = test_config("web-client-default-small-outbox");
+        let mut client = WebSyncularClient::with_parts(config, transport, WebMemoryStore::new());
+        enqueue_task_mutations(&mut client, 100)?;
+
+        let result = block_on(client.sync_push())?;
+
+        assert_eq!(
+            result.pushed_commits,
+            DEFAULT_OUTBOX_PUSH_BATCH_LIMIT as usize
+        );
+        assert_eq!(
+            *batch_sizes.lock().expect("captured push batches"),
+            vec![DEFAULT_OUTBOX_PUSH_BATCH_LIMIT as usize]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn default_push_batch_adapts_for_large_commit_queue() -> Result<()> {
+        let batch_sizes = Arc::new(Mutex::new(Vec::new()));
+        let transport = PushCaptureTransport {
+            batch_sizes: Arc::clone(&batch_sizes),
+        };
+        let config = test_config("web-client-default-large-outbox");
+        let mut client = WebSyncularClient::with_parts(config, transport, WebMemoryStore::new());
+        enqueue_task_mutations(&mut client, 101)?;
+
+        let result = block_on(client.sync_push())?;
+
+        assert_eq!(
+            result.pushed_commits,
+            DEFAULT_ADAPTIVE_OUTBOX_PUSH_BATCH_LIMIT as usize
+        );
+        assert_eq!(
+            *batch_sizes.lock().expect("captured push batches"),
+            vec![DEFAULT_ADAPTIVE_OUTBOX_PUSH_BATCH_LIMIT as usize]
+        );
+        Ok(())
+    }
+
+    #[test]
+    fn configured_push_batch_limit_disables_adaptive_default() -> Result<()> {
+        let batch_sizes = Arc::new(Mutex::new(Vec::new()));
+        let transport = PushCaptureTransport {
+            batch_sizes: Arc::clone(&batch_sizes),
+        };
+        let mut config = test_config("web-client-configured-outbox");
+        config.push.outbox_batch_limit = Some(25);
+        let mut client = WebSyncularClient::with_parts(config, transport, WebMemoryStore::new());
+        enqueue_task_mutations(&mut client, 101)?;
+
+        let result = block_on(client.sync_push())?;
+
+        assert_eq!(result.pushed_commits, 25);
+        assert_eq!(
+            *batch_sizes.lock().expect("captured push batches"),
+            vec![25]
+        );
         Ok(())
     }
 
@@ -2650,6 +2814,75 @@ mod tests {
         }
     }
 
+    struct PushCaptureTransport {
+        batch_sizes: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl AsyncSyncTransport for PushCaptureTransport {
+        fn post_sync<'a>(
+            &'a self,
+            request: &'a CombinedRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<CombinedResponse>> + 'a>> {
+            Box::pin(async move {
+                let commits = request
+                    .push
+                    .as_ref()
+                    .map(|push| push.commits.clone())
+                    .unwrap_or_default();
+                self.batch_sizes
+                    .lock()
+                    .expect("captured push batches")
+                    .push(commits.len());
+                Ok(CombinedResponse {
+                    ok: true,
+                    required_schema_version: None,
+                    latest_schema_version: None,
+                    push: Some(PushBatchResponse {
+                        ok: true,
+                        commits: commits
+                            .into_iter()
+                            .enumerate()
+                            .map(|(index, commit)| PushCommitResponse {
+                                client_commit_id: commit.client_commit_id,
+                                status: "applied".to_string(),
+                                commit_seq: Some((index + 1) as i64),
+                                results: commit
+                                    .operations
+                                    .into_iter()
+                                    .enumerate()
+                                    .map(|(op_index, _operation)| OperationResult {
+                                        op_index: op_index as i32,
+                                        status: "applied".to_string(),
+                                        message: None,
+                                        error: None,
+                                        code: None,
+                                        retriable: None,
+                                        server_version: Some(2),
+                                        server_row: None,
+                                    })
+                                    .collect(),
+                            })
+                            .collect(),
+                    }),
+                    pull: None,
+                })
+            })
+        }
+
+        fn fetch_snapshot_chunk_rows<'a>(
+            &'a self,
+            _chunk: &'a SnapshotChunkRef,
+            _scopes: &'a ScopeValues,
+        ) -> Pin<Box<dyn Future<Output = Result<SnapshotChunkRows>> + 'a>> {
+            Box::pin(async move {
+                Err(SyncularError::message(
+                    ErrorKind::Transport,
+                    "push capture transport does not fetch chunks",
+                ))
+            })
+        }
+    }
+
     struct ArtifactTransport;
 
     impl AsyncSyncTransport for ArtifactTransport {
@@ -2852,6 +3085,29 @@ mod tests {
             "image": null,
             "title_yjs_state": null
         })
+    }
+
+    fn enqueue_task_mutations<T>(
+        client: &mut WebSyncularClient<T, WebMemoryStore>,
+        count: usize,
+    ) -> Result<()>
+    where
+        T: AsyncSyncTransport,
+    {
+        for index in 0..count {
+            let id = format!("task-{index}");
+            let operation = SyncOperation {
+                table: "tasks".to_string(),
+                row_id: id.clone(),
+                op: "upsert".to_string(),
+                payload: Some(json!({ "title": id })),
+                base_version: Some(1),
+            };
+            let operation_json = serde_json::to_string(&operation)?;
+            let local_row_json = serde_json::to_string(&task_row(&id, "p0"))?;
+            block_on(client.apply_mutation_json(&operation_json, Some(&local_row_json)))?;
+        }
+        Ok(())
     }
 
     fn snapshot_artifact_for_test() -> ScopedSnapshotArtifactRef {
