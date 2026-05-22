@@ -9,8 +9,6 @@ import type {
   SyncularV2LiveQueryEvent,
   SyncularV2RealtimeConnectionState,
   SyncularV2RowsChangedEvent,
-  SyncularV2RuntimeInfo,
-  SyncularV2TransportStats,
 } from './types';
 
 export const SYNCULAR_V2_WORKER_PROTOCOL_VERSION = 2;
@@ -109,6 +107,3 @@ export type SyncularV2WorkerEvent =
 export type SyncularV2WorkerOutboundMessage =
   | SyncularV2WorkerResponse
   | SyncularV2WorkerEvent;
-
-export type SyncularV2WorkerRuntimeInfoResponse = SyncularV2RuntimeInfo;
-export type SyncularV2WorkerTransportStatsResponse = SyncularV2TransportStats;

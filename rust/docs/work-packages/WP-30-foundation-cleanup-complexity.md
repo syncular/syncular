@@ -269,8 +269,13 @@ current Rust-first path no longer needs them.
 - Removed unused browser client event type aliases
   (`SyncularClientEventType`, `SyncularClientEventMap`) so callers use the
   canonical `SyncularV2ClientEventType` / `SyncularV2ClientEventMap` names.
+- Removed unused browser worker response type aliases
+  (`SyncularV2WorkerRuntimeInfoResponse`,
+  `SyncularV2WorkerTransportStatsResponse`) so the worker protocol exports only
+  concrete message shapes plus canonical runtime data types.
 - Gates:
   - `bunx biome check packages/client/src/client.ts`: passed.
+  - `bunx biome check packages/client/src/worker-protocol.ts`: passed.
   - `bun --cwd packages/client tsgo`: passed.
   - `bun --cwd packages/client test`: passed, `110` tests.
 - Native alias gates:
