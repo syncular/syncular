@@ -2,6 +2,7 @@ import type { BlobRef, SyncAuthLeaseIssueRequest } from '@syncular/core';
 import { createSyncularV2Database, type SyncularV2Database } from './database';
 import { isSyncularV2OfflineError } from './errors';
 import type { MutationsApi } from './mutations';
+import { browserSyncularV2NetworkStatusSource } from './network';
 import type {
   CreateSyncularV2DatabaseOptions,
   SyncularV2AuthLeaseRecord,
@@ -17,6 +18,7 @@ import type {
   SyncularV2DiagnosticEvent,
   SyncularV2DiagnosticSnapshot,
   SyncularV2LifecycleState,
+  SyncularV2NetworkStatusSource,
   SyncularV2OutboxStats,
   SyncularV2PresenceEntry,
   SyncularV2PresenceSink,
@@ -36,11 +38,7 @@ export interface SyncularV2ClientLifecycleOptions {
   network?: SyncularV2ClientNetworkStatusSource | false;
 }
 
-export interface SyncularV2ClientNetworkStatusSource {
-  isOnline(): boolean | undefined;
-  addEventListener?(type: 'online' | 'offline', listener: () => void): void;
-  removeEventListener?(type: 'online' | 'offline', listener: () => void): void;
-}
+export type SyncularV2ClientNetworkStatusSource = SyncularV2NetworkStatusSource;
 
 export interface CreateSyncularV2ClientOptions
   extends Omit<CreateSyncularV2DatabaseOptions, 'realtime'> {
@@ -284,7 +282,7 @@ export class SyncularV2ClientLifecycle {
     this.#network =
       options.network === false
         ? undefined
-        : (options.network ?? browserNetworkStatusSource());
+        : (options.network ?? browserSyncularV2NetworkStatusSource());
   }
 
   async start(): Promise<void> {
@@ -429,35 +427,4 @@ export class SyncularV2ClientLifecycle {
     clearInterval(this.#pollTimer);
     this.#pollTimer = undefined;
   }
-}
-
-function browserNetworkStatusSource():
-  | SyncularV2ClientNetworkStatusSource
-  | undefined {
-  const target = globalThis as unknown as {
-    navigator?: { onLine?: boolean };
-    addEventListener?: (
-      type: string,
-      listener: EventListenerOrEventListenerObject
-    ) => void;
-    removeEventListener?: (
-      type: string,
-      listener: EventListenerOrEventListenerObject
-    ) => void;
-  };
-  if (
-    typeof target.navigator?.onLine !== 'boolean' &&
-    (!target.addEventListener || !target.removeEventListener)
-  ) {
-    return undefined;
-  }
-  return {
-    isOnline: () => target.navigator?.onLine,
-    addEventListener: target.addEventListener
-      ? (type, listener) => target.addEventListener?.(type, listener)
-      : undefined,
-    removeEventListener: target.removeEventListener
-      ? (type, listener) => target.removeEventListener?.(type, listener)
-      : undefined,
-  };
 }
