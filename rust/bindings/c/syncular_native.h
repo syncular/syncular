@@ -105,6 +105,11 @@ bool syncular_native_client_resume_sync_worker(
     char **error_out
 );
 
+char *syncular_native_client_resume_from_background(
+    SyncularNativeHandle *handle,
+    char **error_out
+);
+
 bool syncular_native_client_sync_worker_running(
     SyncularNativeHandle *handle,
     char **error_out
@@ -237,7 +242,21 @@ char *syncular_native_client_apply_mutation_json(
     char **error_out
 );
 
+char *syncular_native_client_apply_leased_mutation_json(
+    SyncularNativeHandle *handle,
+    const char *mutation_json,
+    const char *local_row_json,
+    char **error_out
+);
+
 char *syncular_native_client_enqueue_mutation_json(
+    SyncularNativeHandle *handle,
+    const char *mutation_json,
+    const char *local_row_json,
+    char **error_out
+);
+
+char *syncular_native_client_enqueue_leased_mutation_json(
     SyncularNativeHandle *handle,
     const char *mutation_json,
     const char *local_row_json,
@@ -346,6 +365,11 @@ char *syncular_native_client_app_tables_json(
 );
 
 char *syncular_native_client_app_table_metadata_json(
+    SyncularNativeHandle *handle,
+    char **error_out
+);
+
+char *syncular_native_client_app_schema_state_json(
     SyncularNativeHandle *handle,
     char **error_out
 );
@@ -482,8 +506,45 @@ char *syncular_native_client_observed_queries_json(
     char **error_out
 );
 
+char *syncular_native_client_diagnostic_snapshot_json(
+    SyncularNativeHandle *handle,
+    char **error_out
+);
+
 char *syncular_native_client_outbox_summaries_json(
     SyncularNativeHandle *handle,
+    char **error_out
+);
+
+bool syncular_native_client_upsert_auth_lease_json(
+    SyncularNativeHandle *handle,
+    const char *lease_json,
+    char **error_out
+);
+
+char *syncular_native_client_issue_auth_lease_json(
+    SyncularNativeHandle *handle,
+    const char *request_json,
+    char **error_out
+);
+
+char *syncular_native_client_auth_lease_json(
+    SyncularNativeHandle *handle,
+    const char *lease_id,
+    char **error_out
+);
+
+char *syncular_native_client_active_auth_leases_json(
+    SyncularNativeHandle *handle,
+    const char *actor_id,
+    int64_t now_ms,
+    char **error_out
+);
+
+bool syncular_native_client_set_outbox_auth_lease_json(
+    SyncularNativeHandle *handle,
+    const char *client_commit_id,
+    const char *provenance_json,
     char **error_out
 );
 

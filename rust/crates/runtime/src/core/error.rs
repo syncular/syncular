@@ -227,6 +227,13 @@ fn syncular_error_classification(
 fn known_error_classification(code: &str) -> Option<SyncularErrorClassification> {
     let (category, retryable, recommended_action) = match code {
         "sync.auth_required" => ("auth-required", true, "refreshAuth"),
+        "sync.auth_lease_missing" => ("auth-required", true, "refreshAuth"),
+        "sync.auth_lease_invalid" => ("auth-required", true, "refreshAuth"),
+        "sync.auth_lease_expired" => ("auth-required", true, "refreshAuth"),
+        "sync.auth_lease_schema_mismatch" => ("schema-mismatch", false, "regenerateClient"),
+        "sync.auth_lease_scope_mismatch" => ("forbidden", false, "checkPermissions"),
+        "sync.auth_lease_scope_revoked" => ("scope-revoked", false, "checkPermissions"),
+        "sync.auth_lease_business_rejected" => ("conflict", false, "resolveConflict"),
         "sync.forbidden" => ("forbidden", false, "checkPermissions"),
         "sync.invalid_request" => ("invalid-request", false, "fixRequest"),
         "sync.invalid_client_id" => ("invalid-request", false, "resetClientId"),
