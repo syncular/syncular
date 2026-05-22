@@ -1,6 +1,7 @@
 import { Route as rootRoute } from './routes/__root';
 import { Route as configRoute } from './routes/config';
 import { Route as fleetRoute } from './routes/fleet';
+import { Route as fleetClientRoute } from './routes/fleet-client';
 import { Route as indexRoute } from './routes/index';
 import { Route as investigateCommitRoute } from './routes/investigate-commit';
 import { Route as investigateEventRoute } from './routes/investigate-event';
@@ -15,6 +16,7 @@ export const routeTree = rootRoute.addChildren([
   investigateCommitRoute,
   investigateEventRoute,
   investigateRowRoute,
+  fleetClientRoute,
   fleetRoute,
   opsRoute,
   storageRoute,

@@ -69,6 +69,10 @@ import {
   type ConsoleClearEventsResult,
   ConsoleClearEventsResultSchema,
   type ConsoleClient,
+  type ConsoleClientDiagnosticIngest,
+  ConsoleClientDiagnosticIngestSchema,
+  type ConsoleClientDiagnosticRecord,
+  ConsoleClientDiagnosticRecordSchema,
   ConsoleClientSchema,
   type ConsoleCommitDetail,
   ConsoleCommitDetailSchema,
@@ -614,6 +618,11 @@ const rowHistoryParamSchema = z.object({
 const clientIdParamSchema = z.object({ id: z.string().min(1) });
 const eventIdParamSchema = z.object({ id: z.coerce.number().int() });
 const apiKeyIdParamSchema = z.object({ id: z.string().min(1) });
+const clientDiagnosticsQuerySchema =
+  ConsolePartitionedPaginationQuerySchema.extend({
+    clientId: z.string().min(1).optional(),
+  });
+const clientDiagnosticDetailQuerySchema = ConsolePartitionQuerySchema;
 
 const eventsQuerySchema = ConsolePartitionedPaginationQuerySchema.extend({
   eventType: z.enum(['sync', 'push', 'pull']).optional(),
@@ -681,6 +690,7 @@ const DEFAULT_OPERATION_EVENTS_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_OPERATION_EVENTS_MAX_ROWS = 5_000;
 const DEFAULT_TIMELINE_SCAN_MAX_ROWS = 10_000;
 const DEFAULT_AUTO_EVENTS_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_CLIENT_DIAGNOSTICS_MAX_RECORDS = 500;
 
 function readNonNegativeInteger(
   value: number | undefined,
@@ -693,6 +703,46 @@ function readNonNegativeInteger(
     return fallback;
   }
   return Math.floor(value);
+}
+
+function isoFromUnixMs(value: number | undefined, fallback: Date): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback.toISOString();
+  }
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return fallback.toISOString();
+  }
+  return date.toISOString();
+}
+
+function clientDiagnosticStoreKey(partitionId: string, clientId: string) {
+  return `${partitionId}\u0000${clientId}`;
+}
+
+function buildClientDiagnosticRecord(
+  payload: ConsoleClientDiagnosticIngest,
+  receivedAt: Date
+): ConsoleClientDiagnosticRecord {
+  const { snapshot } = payload;
+  return {
+    clientId: payload.clientId,
+    actorId: payload.actorId ?? null,
+    partitionId: payload.partitionId,
+    reportedAt: isoFromUnixMs(snapshot.generatedAt, receivedAt),
+    receivedAt: receivedAt.toISOString(),
+    runtime: snapshot.runtime ?? null,
+    connection: snapshot.connection ?? null,
+    lifecycle: payload.lifecycle ?? null,
+    bootstrap: snapshot.bootstrap ?? null,
+    transportStats: snapshot.transportStats ?? null,
+    outboxStats: snapshot.outboxStats ?? null,
+    conflictStats: snapshot.conflictStats ?? null,
+    blobUploadStats: snapshot.blobUploadStats ?? null,
+    subscriptions: snapshot.subscriptions ?? [],
+    recentDiagnostics: snapshot.recentDiagnostics ?? [],
+    recentSyncTimings: snapshot.recentSyncTimings ?? [],
+  };
 }
 
 export function createConsoleRoutes<
@@ -837,6 +887,11 @@ export function createConsoleRoutes<
     options.maintenance?.autoPruneIntervalMs,
     DEFAULT_AUTO_EVENTS_PRUNE_INTERVAL_MS
   );
+  const clientDiagnosticRecords = new Map<
+    string,
+    ConsoleClientDiagnosticRecord
+  >();
+  const clientDiagnosticsMaxRecords = DEFAULT_CLIENT_DIAGNOSTICS_MAX_RECORDS;
   let lastEventsPruneRunAt = 0;
 
   // Ensure console schema exists before handlers query console tables.
@@ -2981,6 +3036,171 @@ export function createConsoleRoutes<
 
       c.header('X-Total-Count', String(total));
       return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /client-diagnostics
+  // -------------------------------------------------------------------------
+
+  routes.post(
+    '/client-diagnostics',
+    describeConsoleRoute({
+      summary: 'Ingest a redacted Rust client diagnostic snapshot',
+      responses: {
+        202: {
+          description: 'Accepted client diagnostic snapshot',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleClientDiagnosticRecordSchema),
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('json', ConsoleClientDiagnosticIngestSchema),
+    async (c) => {
+      const payload = c.req.valid('json');
+      const record = buildClientDiagnosticRecord(payload, new Date());
+      clientDiagnosticRecords.set(
+        clientDiagnosticStoreKey(record.partitionId, record.clientId),
+        record
+      );
+
+      if (clientDiagnosticRecords.size > clientDiagnosticsMaxRecords) {
+        const recordsByAge = Array.from(clientDiagnosticRecords.values()).sort(
+          (a, b) =>
+            (parseDate(a.receivedAt) ?? 0) - (parseDate(b.receivedAt) ?? 0)
+        );
+        const recordsToDelete =
+          clientDiagnosticRecords.size - clientDiagnosticsMaxRecords;
+        for (const staleRecord of recordsByAge.slice(0, recordsToDelete)) {
+          clientDiagnosticRecords.delete(
+            clientDiagnosticStoreKey(
+              staleRecord.partitionId,
+              staleRecord.clientId
+            )
+          );
+        }
+      }
+
+      return c.json(record, 202);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /client-diagnostics
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/client-diagnostics',
+    describeConsoleRoute({
+      summary: 'List latest redacted Rust client diagnostic snapshots',
+      responses: {
+        200: {
+          description: 'Paginated client diagnostic snapshots',
+          content: {
+            'application/json': {
+              schema: resolver(
+                ConsolePaginatedResponseSchema(
+                  ConsoleClientDiagnosticRecordSchema
+                )
+              ),
+            },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('query', clientDiagnosticsQuerySchema),
+    async (c) => {
+      const { limit, offset, partitionId, clientId } = c.req.valid('query');
+      const filtered = Array.from(clientDiagnosticRecords.values())
+        .filter(
+          (record) =>
+            (!partitionId || record.partitionId === partitionId) &&
+            (!clientId || record.clientId === clientId)
+        )
+        .sort(
+          (a, b) =>
+            (parseDate(b.receivedAt) ?? 0) - (parseDate(a.receivedAt) ?? 0)
+        );
+
+      const response: ConsolePaginatedResponse<ConsoleClientDiagnosticRecord> =
+        {
+          items: filtered.slice(offset, offset + limit),
+          total: filtered.length,
+          offset,
+          limit,
+        };
+
+      c.header('X-Total-Count', String(filtered.length));
+      return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /client-diagnostics/:id
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/client-diagnostics/:id',
+    describeConsoleRoute({
+      summary: 'Get latest redacted Rust client diagnostic snapshot',
+      responses: {
+        200: {
+          description: 'Client diagnostic snapshot',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleClientDiagnosticRecordSchema),
+            },
+          },
+        },
+        404: {
+          description: 'Diagnostic snapshot not found',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('param', clientIdParamSchema),
+    zValidator('query', clientDiagnosticDetailQuerySchema),
+    async (c) => {
+      const { id } = c.req.valid('param');
+      const { partitionId } = c.req.valid('query');
+      const matches = Array.from(clientDiagnosticRecords.values())
+        .filter(
+          (record) =>
+            record.clientId === id &&
+            (!partitionId || record.partitionId === partitionId)
+        )
+        .sort(
+          (a, b) =>
+            (parseDate(b.receivedAt) ?? 0) - (parseDate(a.receivedAt) ?? 0)
+        );
+      const record = matches[0] ?? null;
+      if (!record) {
+        return consoleNotFound(c, 'Client diagnostic snapshot not found.');
+      }
+      return c.json(record, 200);
     }
   );
 

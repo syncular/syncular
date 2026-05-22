@@ -13,6 +13,7 @@ import {
   Spinner,
   SyncHorizon,
 } from '@syncular/ui';
+import { useNavigate } from '@tanstack/react-router';
 import { useEffect, useState } from 'react';
 import {
   useClients,
@@ -106,6 +107,7 @@ export function Fleet({
 } = {}) {
   const [page, setPage] = useState(1);
   const [evictingClientId, setEvictingClientId] = useState<string | null>(null);
+  const navigate = useNavigate();
   const { preferences } = usePreferences();
   const { partitionId } = usePartitionContext();
   const pageSize = preferences.pageSize;
@@ -180,6 +182,12 @@ export function Fleet({
         <FleetTable
           clients={syncNodes}
           headSeq={headSeq}
+          onInspect={(clientId) => {
+            void navigate({
+              to: '/fleet/$clientId',
+              params: { clientId },
+            });
+          }}
           onEvict={(clientId) => {
             const item = data?.items.find((c) => c.clientId === clientId);
             setEvictingClientId(item?.clientId ?? clientId);

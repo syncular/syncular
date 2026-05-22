@@ -10,6 +10,7 @@ import type {
   ConsoleApiKeyBulkRevokeResponse,
   ConsoleBlobListResponse,
   ConsoleClient,
+  ConsoleClientDiagnosticRecord,
   ConsoleCommitDetail,
   ConsoleCommitListItem,
   ConsoleHandler,
@@ -50,6 +51,9 @@ type ListParams = {
   offset?: number;
   partitionId?: string;
   instanceId?: string;
+};
+type ClientDiagnosticsParams = ListParams & {
+  clientId?: string;
 };
 type TimelineParams = ListParams & {
   view?: 'all' | 'commits' | 'events';
@@ -119,6 +123,8 @@ const queryKeys = {
   timeline: (params?: TimelineParams) =>
     ['console', 'timeline', params] as const,
   clients: (params?: ListParams) => ['console', 'clients', params] as const,
+  clientDiagnostics: (params?: ClientDiagnosticsParams) =>
+    ['console', 'client-diagnostics', params] as const,
   eventDetail: (
     id?: string | number,
     partitionId?: string,
@@ -488,6 +494,28 @@ export function useClients(
       instanceId,
     },
     errorMessage: 'Failed to fetch clients',
+    enabled: options.enabled,
+    refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
+  });
+}
+
+export function useClientDiagnostics(
+  params: ClientDiagnosticsParams = {},
+  options: RefetchableQueryOptions = {}
+) {
+  const instanceId = useEffectiveInstanceId(params.instanceId);
+
+  return useConsoleJsonQuery<PaginatedResponse<ConsoleClientDiagnosticRecord>>({
+    queryKey: queryKeys.clientDiagnostics({ ...params, instanceId }),
+    path: '/console/client-diagnostics',
+    query: {
+      limit: params.limit,
+      offset: params.offset,
+      partitionId: params.partitionId,
+      clientId: params.clientId,
+      instanceId,
+    },
+    errorMessage: 'Failed to fetch client diagnostics',
     enabled: options.enabled,
     refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
   });
