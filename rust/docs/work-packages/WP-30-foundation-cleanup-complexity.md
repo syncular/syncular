@@ -244,3 +244,7 @@ current Rust-first path no longer needs them.
     passed.
   - `bun test tests/unit/external-chunk-storage-integration.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts`:
     passed, `17` tests.
+- Moved stale already-removed protocol rows (`Inline JSON snapshot fallback for
+  binary clients`, older binary sync-pack wire decoding) out of Current Items
+  and into Recently Removed so the register's active section only contains live
+  decisions.
