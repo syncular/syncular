@@ -193,9 +193,11 @@ read-only review:
     replay keeps `10` pending outbox commits and `10` local title changes across
     close/reopen before draining to `10` acked commits, and the `100`-write
     large queue keeps `100` pending commits and local title changes across the
-    same reopen. Remaining WP-31 client-side follow-ups are a full
-    browser-worker OPFS/process-restart harness if needed, online binary-pack
-    regression watch, and optional explicit blob `retryNow`/online-event retry
+    same reopen. Slice 13 records a watch-only online binary-pack guard:
+    `15/15` reader realtime sync-packs applied through the binary path, with
+    `0` pull-required recoveries and p95 visibility `21.73ms`. Remaining WP-31
+    client-side follow-ups are a full browser-worker OPFS/process-restart
+    harness if needed and optional explicit blob `retryNow`/online-event retry
     evaluation.
 - `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
