@@ -3,22 +3,21 @@ import { gzipSync } from 'node:zlib';
 import { SYNCULAR_ERROR_DEFINITIONS } from '../src/error-responses';
 import {
   type BinarySnapshotTable,
-  createSnapshotManifest,
   createScopedSnapshotArtifactManifest,
+  createSnapshotManifest,
   decodeBinarySnapshotTable,
   decodeSnapshotRows,
   encodeBinarySnapshotTable,
   encodeSnapshotRows,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
   SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+  SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-  SYNC_SNAPSHOT_CHUNK_COMPRESSION,
 } from '../src/snapshot-chunks';
 import {
   encodeBinarySyncPack,
   SYNC_PACK_ENCODING_BINARY_V1,
-  SYNC_PACK_ENCODING_JSON_V1,
 } from '../src/sync-packs';
 import { sha256Hex } from '../src/utils/crypto';
 
@@ -65,10 +64,7 @@ function jsonCombinedSyncFixture() {
     name: 'json-combined-sync-v1',
     request: {
       clientId: 'fixture-client-1',
-      syncPackEncodings: [
-        SYNC_PACK_ENCODING_BINARY_V1,
-        SYNC_PACK_ENCODING_JSON_V1,
-      ],
+      syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
       push: {
         commits: [
           {
@@ -106,10 +102,7 @@ function jsonCombinedSyncFixture() {
           SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
           SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
         ],
-        syncPackEncodings: [
-          SYNC_PACK_ENCODING_BINARY_V1,
-          SYNC_PACK_ENCODING_JSON_V1,
-        ],
+        syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
         subscriptions: [
           {
             id: 'sub-tasks',
@@ -504,10 +497,7 @@ async function relayProtocolBoundaryFixture() {
   const combined = {
     request: {
       clientId,
-      syncPackEncodings: [
-        SYNC_PACK_ENCODING_BINARY_V1,
-        SYNC_PACK_ENCODING_JSON_V1,
-      ],
+      syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
       push: {
         commits: [
           {
@@ -548,10 +538,7 @@ async function relayProtocolBoundaryFixture() {
           ],
           featureSet: ['blobs', 'field-e2ee'],
         },
-        syncPackEncodings: [
-          SYNC_PACK_ENCODING_BINARY_V1,
-          SYNC_PACK_ENCODING_JSON_V1,
-        ],
+        syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
         subscriptions: [
           {
             id: subscriptionId,

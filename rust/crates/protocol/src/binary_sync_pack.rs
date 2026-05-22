@@ -7,7 +7,7 @@ use crate::{
 };
 use serde_json::{Map, Value};
 
-pub use crate::{SYNC_PACK_CONTENT_TYPE, SYNC_PACK_ENCODING_BINARY_V1, SYNC_PACK_ENCODING_JSON_V1};
+pub use crate::{SYNC_PACK_CONTENT_TYPE, SYNC_PACK_ENCODING_BINARY_V1};
 
 const MAGIC: &[u8; 4] = b"SSP1";
 const VERSION: u16 = BINARY_SYNC_PACK_WIRE_VERSION;

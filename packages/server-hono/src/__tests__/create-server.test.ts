@@ -4,7 +4,6 @@ import {
   decodeBinarySyncPack,
   isBinarySyncPackContentType,
   SYNC_PACK_ENCODING_BINARY_V1,
-  SYNC_PACK_ENCODING_JSON_V1,
 } from '@syncular/core';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
@@ -499,55 +498,25 @@ describe('createSyncServer console configuration', () => {
     expect(eventRow.error_message).toContain('maxSyncRequestJsonBytes');
   });
 
-  it('rejects oversized sync JSON responses with a stable limit envelope', async () => {
-    const options = createOptions();
-    const server = createSyncServer({
-      ...options,
-      routes: {
-        maxSyncResponseJsonBytes: 48,
-      },
-    });
-    const app = new Hono();
-    app.route('/sync', server.syncRoutes);
-
-    const response = await app.request(
-      createEmptyPullRequest({
-        clientId: 'client-json-limit',
-        userId: 'u1',
-        syncPackEncodings: [SYNC_PACK_ENCODING_JSON_V1],
-      })
-    );
-
-    expect(response.status).toBe(413);
-    expect(await response.json()).toMatchObject({
-      error: 'runtime.limit_exceeded',
-      details: {
-        limit: 'maxSyncResponseJsonBytes',
-        max: 48,
-      },
-    });
-  });
-
-  it('records oversized sync JSON responses as rejected console events', async () => {
+  it('records oversized binary sync-pack responses as rejected console events', async () => {
     process.env.SYNC_CONSOLE_TOKEN = 'env-token';
     const options = createOptions();
     const server = createSyncServer({
       ...options,
       console: {},
       routes: {
-        maxSyncResponseJsonBytes: 48,
+        maxSyncBinaryPackBytes: 1,
       },
     });
     const app = new Hono();
     app.route('/sync', server.syncRoutes);
 
-    const requestId = 'req-json-response-limit';
+    const requestId = 'req-binary-response-limit';
     const response = await app.request(
       createEmptyPullRequest({
-        clientId: 'client-json-response-limit',
+        clientId: 'client-binary-response-limit',
         userId: 'u1',
         requestId,
-        syncPackEncodings: [SYNC_PACK_ENCODING_JSON_V1],
       })
     );
 
@@ -555,13 +524,13 @@ describe('createSyncServer console configuration', () => {
     const eventRow = await waitForRequestEventRow(requestId);
     expect(eventRow).toMatchObject({
       event_type: 'pull',
-      client_id: 'client-json-response-limit',
+      client_id: 'client-binary-response-limit',
       status_code: 413,
       outcome: 'rejected',
       response_status: 'client_error',
       error_code: 'runtime.limit_exceeded',
     });
-    expect(eventRow.error_message).toContain('maxSyncResponseJsonBytes');
+    expect(eventRow.error_message).toContain('maxSyncBinaryPackBytes');
     expect(Number(eventRow.row_count ?? 0)).toBe(0);
     expect(Number(eventRow.subscription_count ?? 0)).toBe(0);
 
@@ -576,7 +545,7 @@ describe('createSyncServer console configuration', () => {
     const cursorCountResult = await sql<{ total: number | string }>`
       SELECT COUNT(*)::int AS total
       FROM sync_client_cursors
-      WHERE client_id = ${'client-json-response-limit'}
+      WHERE client_id = ${'client-binary-response-limit'}
     `.execute(db);
     expect(Number(cursorCountResult.rows[0]?.total ?? 0)).toBe(0);
   });

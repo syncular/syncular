@@ -3,8 +3,7 @@
   "request": {
     "clientId": "fixture-client-1",
     "syncPackEncodings": [
-      "binary-sync-pack-v1",
-      "json-v1"
+      "binary-sync-pack-v1"
     ],
     "push": {
       "commits": [
@@ -44,8 +43,7 @@
         "json-row-frame-v1"
       ],
       "syncPackEncodings": [
-        "binary-sync-pack-v1",
-        "json-v1"
+        "binary-sync-pack-v1"
       ],
       "subscriptions": [
         {
