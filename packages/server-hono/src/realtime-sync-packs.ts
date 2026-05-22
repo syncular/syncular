@@ -54,6 +54,11 @@ export interface NotifyWebSocketConnectionsWithSyncPacksResult {
 
 interface OwnerPackBuildResult {
   bytes?: Uint8Array;
+  rootUpdates?: Array<{
+    subscriptionId: string;
+    cursor: number;
+    verifiedRoot: string;
+  }>;
   unavailableReason?: RealtimeSyncPackUnavailableReason;
   encodeFailed?: boolean;
 }
@@ -69,6 +74,7 @@ export async function notifyWebSocketConnectionsWithSyncPacks(
     connections.map((connection) => connection.ownerKey)
   );
   const syncPacksByOwnerKey = new Map<string, Uint8Array | undefined>();
+  const buildCache = new Map<string, Promise<OwnerPackBuildResult>>();
   const result: NotifyWebSocketConnectionsWithSyncPacksResult = {
     scopeKeyCount: args.scopeKeys.length,
     connectionCount: connections.length,
@@ -87,19 +93,33 @@ export async function notifyWebSocketConnectionsWithSyncPacks(
 
   await Promise.all(
     Array.from(ownerKeys).map(async (ownerKey) => {
-      const built = await buildRealtimeSyncPackForOwner({
-        manager: args.manager,
-        partitionId,
-        ownerKey,
-        cursor: args.cursor,
-        commits: args.commits,
-        changeRowEncoders: args.changeRowEncoders,
-        onPackUnavailable: args.onPackUnavailable,
-        onPackEncodeFailed: args.onPackEncodeFailed,
-      });
+      const subscriptions = args.manager.getConnectionSubscriptions(ownerKey);
+      const cacheKey = realtimeSubscriptionPackCacheKey(subscriptions);
+      let builtPromise =
+        cacheKey.length > 0 ? buildCache.get(cacheKey) : undefined;
+      if (!builtPromise) {
+        builtPromise = buildRealtimeSyncPackForOwner({
+          partitionId,
+          ownerKey,
+          cursor: args.cursor,
+          commits: args.commits,
+          subscriptions,
+          changeRowEncoders: args.changeRowEncoders,
+          onPackUnavailable: args.onPackUnavailable,
+          onPackEncodeFailed: args.onPackEncodeFailed,
+        });
+        if (cacheKey.length > 0) {
+          buildCache.set(cacheKey, builtPromise);
+        }
+      }
+      const built = await builtPromise;
 
       syncPacksByOwnerKey.set(ownerKey, built.bytes);
       if (built.bytes) {
+        args.manager.updateConnectionSubscriptionRoots(
+          ownerKey,
+          built.rootUpdates ?? []
+        );
         result.binaryPackOwnerCount += 1;
         result.totalPayloadBytes += built.bytes.byteLength;
         result.maxPayloadBytes = Math.max(
@@ -189,17 +209,16 @@ export function applyPartitionToRealtimeScopeKeys(
 }
 
 async function buildRealtimeSyncPackForOwner(args: {
-  manager: WebSocketConnectionManager;
   partitionId: string;
   ownerKey: string;
   cursor: number;
   commits: readonly SyncCommit[];
+  subscriptions: readonly WebSocketRealtimeSubscription[];
   changeRowEncoders?: Partial<Record<string, BinarySnapshotRowsEncoder>>;
   onPackUnavailable?: (event: RealtimeSyncPackUnavailableEvent) => void;
   onPackEncodeFailed?: (event: RealtimeSyncPackEncodeFailureEvent) => void;
 }): Promise<OwnerPackBuildResult> {
-  const subscriptions = args.manager.getConnectionSubscriptions(args.ownerKey);
-  if (subscriptions.length === 0) {
+  if (args.subscriptions.length === 0) {
     args.onPackUnavailable?.({
       ownerKey: args.ownerKey,
       reason: 'no_subscriptions',
@@ -220,7 +239,7 @@ async function buildRealtimeSyncPackForOwner(args: {
     cursor: number;
     verifiedRoot: string;
   }> = [];
-  for (const subscription of subscriptions) {
+  for (const subscription of args.subscriptions) {
     const commits = selectRealtimeCommitsForSubscription(
       args.partitionId,
       args.commits,
@@ -259,7 +278,7 @@ async function buildRealtimeSyncPackForOwner(args: {
     args.onPackUnavailable?.({
       ownerKey: args.ownerKey,
       reason: 'no_matching_subscription_commits',
-      subscriptionCount: subscriptions.length,
+      subscriptionCount: args.subscriptions.length,
       emittedCommitCount: args.commits.length,
     });
     return { unavailableReason: 'no_matching_subscription_commits' };
@@ -278,12 +297,27 @@ async function buildRealtimeSyncPackForOwner(args: {
         changeRowEncoders: args.changeRowEncoders,
       }
     );
-    args.manager.updateConnectionSubscriptionRoots(args.ownerKey, rootUpdates);
-    return { bytes };
+    return { bytes, rootUpdates };
   } catch (error) {
     args.onPackEncodeFailed?.({ ownerKey: args.ownerKey, error });
     return { encodeFailed: true };
   }
+}
+
+function realtimeSubscriptionPackCacheKey(
+  subscriptions: readonly WebSocketRealtimeSubscription[]
+): string {
+  if (subscriptions.length === 0) return '';
+  return JSON.stringify(
+    subscriptions.map((subscription) => ({
+      id: subscription.id,
+      table: subscription.table,
+      scopes: subscription.scopes,
+      scopeKeys: [...subscription.scopeKeys].sort(),
+      cursor: subscription.cursor,
+      verifiedRoot: subscription.verifiedRoot ?? null,
+    }))
+  );
 }
 
 function selectRealtimeCommitsForSubscription(

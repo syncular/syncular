@@ -378,6 +378,7 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
       .addColumn('effective_scopes', 'json', (col) =>
         col.notNull().defaultTo('{}')
       )
+      .addColumn('realtime_subscriptions', 'json')
       .addColumn('updated_at', 'text', (col) => col.notNull().defaultTo(nowIso))
       .addPrimaryKeyConstraint('sync_client_cursors_pk', [
         'partition_id',
@@ -385,6 +386,13 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
       ])
       .execute();
     await ensurePartitionColumn(db, 'sync_client_cursors');
+    try {
+      await sql`ALTER TABLE sync_client_cursors ADD COLUMN realtime_subscriptions json`.execute(
+        db
+      );
+    } catch {
+      // Ignore when column already exists.
+    }
 
     // Ensure unique index matches ON CONFLICT clause in recordClientCursor
     // (needed when migrating from old schema where PK was only (client_id))

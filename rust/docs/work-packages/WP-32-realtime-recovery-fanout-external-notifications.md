@@ -207,20 +207,52 @@ SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indiana
 - Online propagation regression guard stayed healthy after the helper:
   - run `2026-05-22T14-45-03-883Z`: reader visibility p50 `9.34ms`, p95
     `12.28ms`, `15/15` binary applies, `0` pull recoveries.
+- Slice 2 retained persisted realtime subscription metadata and corrected the
+  reconnect-storm visibility observer:
+  - `sync_client_cursors` now stores active realtime subscriptions and ACKed
+    roots, allowing a restarted sync service to hydrate websocket scope/root
+    state before clients perform any HTTP reconnect pull;
+  - worker reconnect catch-up can now stay gated on `hello.requiresSync`
+    because restarted servers can build binary replay/external packs from
+    persisted subscription state;
+  - identical realtime subscription snapshots share one external binary pack
+    build per notification;
+  - benchmark `/benchmark/external-write` now reports DB/external notify/
+    realtime fanout timings, and reconnect-storm uses row-change events
+    instead of post-event worker SQL readback to measure visibility.
+- Slice 2 same-machine external evidence:
+  - persisted subscriptions before the observer fix, run
+    `2026-05-22T14-59-27-231Z`: `25` clients converged in `40.61ms`,
+    `125` in `74.27ms`, and `250` still showed visible p95 `2016.53ms`,
+    all with `0` HTTP requests and full binary apply counts;
+  - instrumentation run `2026-05-22T16-15-25-220Z` showed the external write
+    took `25.55ms`, realtime fanout `4.17ms`, and a slow sample had binary
+    apply at `74ms` and `rowsChangedMs=178.67ms` but `visibleMs=2031.19ms`;
+    the tail was the benchmark's 250 concurrent worker SQL readbacks, not
+    realtime delivery;
+  - corrected full-scale run `2026-05-22T16-25-35-103Z`: `25` clients
+    converged in `34.17ms`, `125` in `67.69ms`, and `250` in `360.30ms`,
+    with `0` HTTP requests, `0` pull-required recoveries, and full binary
+    apply counts at every scale;
+  - corrected single `250` run `2026-05-22T16-23-57-672Z`: convergence
+    `158.18ms`, visible p95 `157.56ms`, `250/250` binary applies, and
+    external realtime fanout `7.14ms`;
+  - online propagation guard `2026-05-22T16-28-24-669Z`: reader visibility p50
+    `9.32ms`, p95 `16.97ms`, `15/15` binary applies, and `0` pull recoveries.
 
 ## Next Action
 
-The next slice should target the remaining `250`-client tail without client-only
-retry tuning:
+WP-32's original reconnect/external-notification goal is complete enough to
+close this WP once the retained changes are committed.
 
-1. Persist or reconstruct enough realtime subscription metadata across
-   sync-service restarts to build binary reconnect/external packs before each
-   client performs an HTTP pull.
-2. Add timing buckets for reconnect establishment and pack availability reasons
-   (`no_subscriptions`, missing roots, encode failure, payload too large) so the
-   `250` tail can be split into connection timing, subscription metadata, and
-   HTTP pull recovery.
-3. Evaluate a bounded replay/recovery artifact keyed by compatible
-   subscription shape. Keep TypeScript/Kysely app semantics in place; consider
-   Rust only for byte-preserving protocol encode/validate if the timing buckets
-   show binary protocol work is the hot path.
+Follow-up work should stay separate and evidence-driven:
+
+1. Add a small benchmark regression assertion or dashboard callout that reports
+   both row-change visibility and worker SQL readback separately, so future
+   harness changes do not reintroduce observer latency as product latency.
+2. If reconnect storms remain important, add a dedicated connection-acceptance
+   benchmark that measures websocket reconnect establishment independent of
+   external row fanout.
+3. Keep TypeScript/Kysely app semantics in place; consider Rust only for a
+   byte-preserving protocol helper if future timings show encode/validate is
+   actually hot.

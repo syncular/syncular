@@ -1716,6 +1716,146 @@ describe('createSyncServer console configuration', () => {
     });
   });
 
+  it('hydrates persisted realtime subscriptions after server restart', async () => {
+    const options = createOptions();
+    const bootstrapServer = createSyncServer(options);
+    const bootstrapApp = new Hono();
+    bootstrapApp.route('/sync', bootstrapServer.syncRoutes);
+
+    const subscribed = await bootstrapApp.request(
+      createPullRequest({
+        clientId: 'client-persisted-realtime',
+        userId: 'u1',
+        subscriptionUserId: 'u1',
+      })
+    );
+    expect(subscribed.status).toBe(200);
+
+    const persistedBeforeConnect = await sql<{
+      realtime_subscriptions: unknown;
+    }>`
+      SELECT realtime_subscriptions
+      FROM sync_client_cursors
+      WHERE partition_id = 'default'
+        AND client_id = 'client-persisted-realtime'
+    `.execute(db);
+    expect(
+      parseSnapshotValue(persistedBeforeConnect.rows[0]?.realtime_subscriptions)
+    ).toEqual([
+      expect.objectContaining({
+        id: 'tasks-sub',
+        table: 'tasks',
+        cursor: 0,
+        verifiedRoot: null,
+      }),
+    ]);
+
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+    const restartedServer = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+    });
+    const restartedApp = new Hono();
+    restartedApp.route('/sync', restartedServer.syncRoutes);
+
+    const response = await restartedApp.request(
+      'http://localhost/sync/realtime?clientId=client-persisted-realtime&syncPackEncoding=binary-sync-pack-v1'
+    );
+    expect(response.status).toBe(200);
+
+    const events = capturedEvents;
+    if (!events?.onOpen || !events.onMessage) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstream = createUpstreamSocketHarness();
+    events.onOpen(new Event('open'), upstream.ws);
+
+    const firstPush = await restartedApp.request(
+      createPushRequest({
+        clientCommitId: 'commit-persisted-realtime-1',
+        clientId: 'writer-client',
+        rowId: 'task-persisted-realtime-1',
+      })
+    );
+    expect(firstPush.status).toBe(200);
+    await waitFor(async () => upstream.binaryMessages.length === 1);
+
+    const firstPack = decodeBinarySyncPack(upstream.binaryMessages[0]!);
+    const firstIntegrity = firstPack.pull?.subscriptions[0]?.integrity;
+    expect(firstIntegrity).toMatchObject({
+      previousChainRoot: '0'.repeat(64),
+      commitSeq: 1,
+    });
+
+    await events.onMessage(
+      new MessageEvent('message', {
+        data: JSON.stringify({ type: 'ack', cursor: 1 }),
+      }),
+      upstream.ws
+    );
+
+    await waitFor(async () => {
+      const stored = await sql<{ realtime_subscriptions: unknown }>`
+        SELECT realtime_subscriptions
+        FROM sync_client_cursors
+        WHERE partition_id = 'default'
+          AND client_id = 'client-persisted-realtime'
+      `.execute(db);
+      const subscriptions = parseSnapshotValue(
+        stored.rows[0]?.realtime_subscriptions
+      );
+      return (
+        Array.isArray(subscriptions) &&
+        Number(subscriptions[0]?.cursor) === 1 &&
+        subscriptions[0]?.verifiedRoot === firstIntegrity?.commitChainRoot
+      );
+    });
+
+    capturedEvents = null;
+    const restartedAgainServer = createSyncServer({
+      ...options,
+      upgradeWebSocket,
+    });
+    const restartedAgainApp = new Hono();
+    restartedAgainApp.route('/sync', restartedAgainServer.syncRoutes);
+
+    const responseAfterAck = await restartedAgainApp.request(
+      'http://localhost/sync/realtime?clientId=client-persisted-realtime&syncPackEncoding=binary-sync-pack-v1'
+    );
+    expect(responseAfterAck.status).toBe(200);
+
+    const eventsAfterAck = capturedEvents;
+    if (!eventsAfterAck?.onOpen) {
+      throw new Error('Expected websocket handlers to be captured.');
+    }
+
+    const upstreamAfterAck = createUpstreamSocketHarness();
+    eventsAfterAck.onOpen(new Event('open'), upstreamAfterAck.ws);
+
+    const secondPush = await restartedAgainApp.request(
+      createPushRequest({
+        clientCommitId: 'commit-persisted-realtime-2',
+        clientId: 'writer-client',
+        rowId: 'task-persisted-realtime-2',
+      })
+    );
+    expect(secondPush.status).toBe(200);
+    await waitFor(async () => upstreamAfterAck.binaryMessages.length === 1);
+
+    const secondPack = decodeBinarySyncPack(
+      upstreamAfterAck.binaryMessages[0]!
+    );
+    expect(secondPack.pull?.subscriptions[0]?.integrity).toMatchObject({
+      previousChainRoot: firstIntegrity?.commitChainRoot,
+      commitSeq: 2,
+    });
+  });
+
   it('accepts refreshed realtime auth tokens for the same actor', async () => {
     const options = createOptions();
     let capturedEvents: WSEvents | null = null;

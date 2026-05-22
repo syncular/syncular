@@ -2431,6 +2431,18 @@ export function createSyncRoutes<
     return subscriptions;
   }
 
+  function serializeRealtimeSubscriptions(
+    subscriptions: readonly WebSocketRealtimeSubscription[]
+  ): unknown[] {
+    return subscriptions.map((subscription) => ({
+      id: subscription.id,
+      table: subscription.table,
+      scopes: subscription.scopes,
+      cursor: subscription.cursor,
+      verifiedRoot: subscription.verifiedRoot ?? null,
+    }));
+  }
+
   function recordPushExecutionSideEffects(
     ctx: PushExecutionContext,
     summary: PushExecutionSummary
@@ -3629,6 +3641,11 @@ export function createSyncRoutes<
           subscriptionCount: request.subscriptions.length,
           scopesSummary,
         };
+        const realtimeSubscriptions = buildRealtimeSubscriptionsForPull({
+          partitionId,
+          requestSubscriptions: request.subscriptions,
+          responseSubscriptions: pullResult.response.subscriptions,
+        });
         finalizePullSuccess = async () => {
           try {
             await recordClientCursor(options.db, options.dialect, {
@@ -3637,6 +3654,9 @@ export function createSyncRoutes<
               actorId: auth.actorId,
               cursor: pullResult.clientCursor,
               effectiveScopes: pullResult.effectiveScopes,
+              realtimeSubscriptions: serializeRealtimeSubscriptions(
+                realtimeSubscriptions
+              ),
             });
             emitConsoleLiveEvent(consoleLiveEmitter, 'client_update', () => ({
               action: 'cursor_recorded',
@@ -3656,11 +3676,7 @@ export function createSyncRoutes<
 
           wsConnectionManager?.updateConnectionSubscriptions(
             connectionOwnerKey,
-            buildRealtimeSubscriptionsForPull({
-              partitionId,
-              requestSubscriptions: request.subscriptions,
-              responseSubscriptions: pullResult.response.subscriptions,
-            })
+            realtimeSubscriptions
           );
 
           logSyncEvent({
@@ -4164,6 +4180,7 @@ export function createSyncRoutes<
       // Load last-known effective scopes for this client (best-effort).
       // Keeps /realtime lightweight and avoids sending large subscription payloads over the URL.
       let initialScopeKeys: string[] = [];
+      let initialRealtimeSubscriptions: WebSocketRealtimeSubscription[] = [];
       let lastAckedCursor = -1;
       let latestCommitSeq = 0;
       try {
@@ -4202,6 +4219,17 @@ export function createSyncRoutes<
           partitionId,
           scopeValuesToScopeKeys(parsed)
         );
+        initialRealtimeSubscriptions = parsePersistedRealtimeSubscriptions(
+          clientState.realtimeSubscriptions,
+          partitionId
+        );
+        if (initialRealtimeSubscriptions.length > 0) {
+          initialScopeKeys = uniqueScopeKeys(
+            initialRealtimeSubscriptions.flatMap(
+              (subscription) => subscription.scopeKeys
+            )
+          );
+        }
         lastAckedCursor = clientState.cursor ?? -1;
         latestCommitSeq = clientState.latestCommitSeq;
       } catch {
@@ -4372,6 +4400,12 @@ export function createSyncRoutes<
           }
 
           unregister = wsConnectionManager.register(conn, initialScopeKeys);
+          if (initialRealtimeSubscriptions.length > 0) {
+            wsConnectionManager.updateConnectionSubscriptions(
+              connectionOwnerKey,
+              initialRealtimeSubscriptions
+            );
+          }
           conn.sendHello({
             protocolVersion: 1,
             sessionId: createRealtimeSessionId(),
@@ -4522,10 +4556,16 @@ export function createSyncRoutes<
                 });
                 void recordRealtimeAck({
                   db: options.db,
+                  dialect: options.dialect,
                   actorId: auth.actorId,
                   clientId,
                   cursor,
                   partitionId,
+                  realtimeSubscriptions: serializeRealtimeSubscriptions(
+                    wsConnectionManager.getConnectionSubscriptions(
+                      connectionOwnerKey
+                    )
+                  ),
                 }).catch((error) => {
                   logAsyncFailureOnce('sync.realtime.ack_record_failed', {
                     event: 'sync.realtime.ack_record_failed',
@@ -4988,6 +5028,79 @@ function applyPartitionToScopeKeys(
   return Array.from(prefixed);
 }
 
+function uniqueScopeKeys(scopeKeys: readonly string[]): string[] {
+  return Array.from(
+    new Set(scopeKeys.filter((scopeKey) => scopeKey.length > 0))
+  );
+}
+
+function parseRealtimeSubscriptionScopes(
+  value: unknown
+): Record<string, string | string[]> {
+  const parsed = parseJsonValue(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return {};
+  }
+
+  const scopes: Record<string, string | string[]> = {};
+  for (const [key, scopeValue] of Object.entries(
+    parsed as Record<string, unknown>
+  )) {
+    if (typeof scopeValue === 'string' && scopeValue.length > 0) {
+      scopes[key] = scopeValue;
+      continue;
+    }
+    if (Array.isArray(scopeValue)) {
+      const values = scopeValue.filter(
+        (item): item is string => typeof item === 'string' && item.length > 0
+      );
+      if (values.length > 0) {
+        scopes[key] = values;
+      }
+    }
+  }
+  return scopes;
+}
+
+function parsePersistedRealtimeSubscriptions(
+  value: unknown,
+  partitionId: string
+): WebSocketRealtimeSubscription[] {
+  const parsed = parseJsonValue(value);
+  if (!Array.isArray(parsed)) return [];
+
+  const subscriptions: WebSocketRealtimeSubscription[] = [];
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const id = typeof record.id === 'string' ? record.id : '';
+    const table = typeof record.table === 'string' ? record.table : '';
+    if (!id || !table) continue;
+
+    const scopes = parseRealtimeSubscriptionScopes(record.scopes);
+    const scopeKeys = applyPartitionToScopeKeys(
+      partitionId,
+      scopeValuesToScopeKeys(scopes)
+    );
+    if (scopeKeys.length === 0) continue;
+
+    const cursor = coerceNumber(record.cursor);
+    subscriptions.push({
+      id,
+      table,
+      scopes,
+      scopeKeys,
+      cursor: cursor === null ? -1 : Math.max(-1, cursor),
+      verifiedRoot:
+        typeof record.verifiedRoot === 'string' &&
+        record.verifiedRoot.length > 0
+          ? record.verifiedRoot
+          : null,
+    });
+  }
+  return subscriptions;
+}
+
 function normalizeScopeKeyForPartition(
   partitionId: string,
   scopeKey: string
@@ -5024,56 +5137,61 @@ async function readClientState<DB extends SyncCoreDb>(
 ): Promise<{
   ownerActorId: string | null;
   effectiveScopes: unknown;
+  realtimeSubscriptions: unknown;
   cursor: number | null;
   latestCommitSeq: number;
   hasConflict: boolean;
 }> {
-  const [cursorResult, latestClientCommitResult, latestCommitResult] =
-    await Promise.all([
-      sql<{
-        actor_id: string | null;
-        effective_scopes: unknown;
-        cursor: number | string | null;
-      }>`
-      SELECT actor_id, effective_scopes, cursor
-      FROM sync_client_cursors
-      WHERE partition_id = ${partitionId} AND client_id = ${clientId}
-      LIMIT 1
-    `.execute(db),
-      sql<{ actor_id: string | null }>`
-      SELECT actor_id
-      FROM sync_commits
-      WHERE partition_id = ${partitionId} AND client_id = ${clientId}
-      ORDER BY commit_seq DESC
-      LIMIT 1
-    `.execute(db),
-      sql<{ latest_commit_seq: number | string | null }>`
-      SELECT COALESCE(MAX(commit_seq), 0) AS latest_commit_seq
-      FROM sync_commits
-      WHERE partition_id = ${partitionId}
-    `.execute(db),
-    ]);
-  const cursorRow = cursorResult.rows[0];
-  const latestClientCommitRow = latestClientCommitResult.rows[0];
-  const latestCommitRow = latestCommitResult.rows[0];
+  const result = await sql<{
+    cursor_actor_id: string | null;
+    effective_scopes: unknown;
+    realtime_subscriptions: unknown;
+    cursor: number | string | null;
+    latest_client_actor_id: string | null;
+    latest_commit_seq: number | string | null;
+  }>`
+    SELECT
+      cc.actor_id AS cursor_actor_id,
+      cc.effective_scopes,
+      cc.realtime_subscriptions,
+      cc.cursor,
+      (
+        SELECT actor_id
+        FROM sync_commits
+        WHERE partition_id = ${partitionId} AND client_id = ${clientId}
+        ORDER BY commit_seq DESC
+        LIMIT 1
+      ) AS latest_client_actor_id,
+      (
+        SELECT COALESCE(MAX(commit_seq), 0)
+        FROM sync_commits
+        WHERE partition_id = ${partitionId}
+      ) AS latest_commit_seq
+    FROM (SELECT 1) AS realtime_state
+    LEFT JOIN sync_client_cursors AS cc
+      ON cc.partition_id = ${partitionId} AND cc.client_id = ${clientId}
+    LIMIT 1
+  `.execute(db);
+  const cursorRow = result.rows[0];
 
   // Cursor state reflects the current authenticated owner for a clientId.
   // Commit history is only used to seed ownership before the first pull.
   const ownerActorId =
-    cursorRow?.actor_id ?? latestClientCommitRow?.actor_id ?? null;
+    cursorRow?.cursor_actor_id ?? cursorRow?.latest_client_actor_id ?? null;
   const cursor =
     cursorRow?.cursor === null || cursorRow?.cursor === undefined
       ? null
       : Number(cursorRow.cursor);
   const latestCommitSeq =
-    latestCommitRow?.latest_commit_seq === null ||
-    latestCommitRow?.latest_commit_seq === undefined
+    cursorRow?.latest_commit_seq === null ||
+    cursorRow?.latest_commit_seq === undefined
       ? 0
-      : Number(latestCommitRow.latest_commit_seq);
+      : Number(cursorRow.latest_commit_seq);
 
   return {
     ownerActorId,
     effectiveScopes: cursorRow?.effective_scopes ?? null,
+    realtimeSubscriptions: cursorRow?.realtime_subscriptions ?? null,
     cursor: Number.isFinite(cursor) ? cursor : null,
     latestCommitSeq: Number.isFinite(latestCommitSeq) ? latestCommitSeq : 0,
     hasConflict: false,
@@ -5082,12 +5200,22 @@ async function readClientState<DB extends SyncCoreDb>(
 
 async function recordRealtimeAck<DB extends SyncCoreDb>(args: {
   db: Kysely<DB>;
+  dialect: ServerSyncDialect;
   partitionId: string;
   actorId: string;
   clientId: string;
   cursor: number;
+  realtimeSubscriptions?: unknown;
 }): Promise<void> {
   const now = new Date().toISOString();
+  const realtimeSubscriptionsJson =
+    args.realtimeSubscriptions === undefined
+      ? null
+      : JSON.stringify(args.realtimeSubscriptions);
+  const realtimeSubscriptionsSet =
+    args.dialect.family === 'postgres'
+      ? sql`realtime_subscriptions = ${realtimeSubscriptionsJson}::jsonb,`
+      : sql`realtime_subscriptions = ${realtimeSubscriptionsJson},`;
   await sql`
     UPDATE sync_client_cursors
     SET
@@ -5113,6 +5241,7 @@ async function recordRealtimeAck<DB extends SyncCoreDb>(args: {
         END
         ELSE cursor
       END,
+      ${realtimeSubscriptionsSet}
       updated_at = ${now}
     WHERE partition_id = ${args.partitionId}
       AND client_id = ${args.clientId}

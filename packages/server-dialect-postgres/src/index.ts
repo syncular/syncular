@@ -276,6 +276,7 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       .addColumn('effective_scopes', 'jsonb', (col) =>
         col.notNull().defaultTo(sql`'{}'::jsonb`)
       )
+      .addColumn('realtime_subscriptions', 'jsonb')
       .addColumn('updated_at', 'timestamptz', (col) =>
         col.notNull().defaultTo(sql`now()`)
       )
@@ -289,6 +290,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       ADD COLUMN IF NOT EXISTS partition_id text NOT NULL DEFAULT 'default'`.execute(
       db
     );
+    await sql`ALTER TABLE sync_client_cursors
+      ADD COLUMN IF NOT EXISTS realtime_subscriptions jsonb`.execute(db);
 
     await db.schema
       .createIndex('idx_sync_client_cursors_updated_at')
@@ -602,19 +605,38 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       actorId: string;
       cursor: number;
       effectiveScopes: ScopeValues;
+      realtimeSubscriptions?: unknown;
     }
   ): Promise<void> {
     const partitionId = args.partitionId ?? 'default';
     const now = new Date().toISOString();
     const scopesJson = JSON.stringify(args.effectiveScopes);
 
+    if (args.realtimeSubscriptions === undefined) {
+      await sql`
+        INSERT INTO sync_client_cursors (partition_id, client_id, actor_id, cursor, effective_scopes, updated_at)
+        VALUES (${partitionId}, ${args.clientId}, ${args.actorId}, ${args.cursor}, ${scopesJson}::jsonb, ${now})
+        ON CONFLICT(partition_id, client_id) DO UPDATE SET
+          actor_id = ${args.actorId},
+          cursor = ${args.cursor},
+          effective_scopes = ${scopesJson}::jsonb,
+          updated_at = ${now}
+      `.execute(db);
+      return;
+    }
+
+    const realtimeSubscriptionsJson = JSON.stringify(
+      args.realtimeSubscriptions
+    );
+
     await sql`
-      INSERT INTO sync_client_cursors (partition_id, client_id, actor_id, cursor, effective_scopes, updated_at)
-      VALUES (${partitionId}, ${args.clientId}, ${args.actorId}, ${args.cursor}, ${scopesJson}::jsonb, ${now})
+      INSERT INTO sync_client_cursors (partition_id, client_id, actor_id, cursor, effective_scopes, realtime_subscriptions, updated_at)
+      VALUES (${partitionId}, ${args.clientId}, ${args.actorId}, ${args.cursor}, ${scopesJson}::jsonb, ${realtimeSubscriptionsJson}::jsonb, ${now})
       ON CONFLICT(partition_id, client_id) DO UPDATE SET
         actor_id = ${args.actorId},
         cursor = ${args.cursor},
         effective_scopes = ${scopesJson}::jsonb,
+        realtime_subscriptions = ${realtimeSubscriptionsJson}::jsonb,
         updated_at = ${now}
     `.execute(db);
   }
