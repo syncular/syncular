@@ -34,10 +34,8 @@ export interface SyncularV2ClientLifecycleOptions {
   realtime?: boolean | SyncularV2RealtimeOptions;
   syncOnRealtimeConnect?: boolean;
   pollIntervalMs?: number | false;
-  network?: SyncularV2ClientNetworkStatusSource | false;
+  network?: SyncularV2NetworkStatusSource | false;
 }
-
-export type SyncularV2ClientNetworkStatusSource = SyncularV2NetworkStatusSource;
 
 export interface CreateSyncularV2ClientOptions
   extends Omit<CreateSyncularV2DatabaseOptions, 'realtime'> {
@@ -262,7 +260,7 @@ export class SyncularV2ClientLifecycle {
   #syncAgain = false;
   #hasConnectedRealtime = false;
   #realtimeStarted = false;
-  readonly #network: SyncularV2ClientNetworkStatusSource | undefined;
+  readonly #network: SyncularV2NetworkStatusSource | undefined;
 
   constructor(
     private readonly client: LifecycleClient,
@@ -272,7 +270,7 @@ export class SyncularV2ClientLifecycle {
       initialSync?: boolean;
       syncOnRealtimeConnect?: boolean;
       pollIntervalMs?: number | false;
-      network?: SyncularV2ClientNetworkStatusSource | false;
+      network?: SyncularV2NetworkStatusSource | false;
     } = {}
   ) {
     this.#network =

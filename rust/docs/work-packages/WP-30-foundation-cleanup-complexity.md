@@ -273,8 +273,12 @@ current Rust-first path no longer needs them.
   (`SyncularV2WorkerRuntimeInfoResponse`,
   `SyncularV2WorkerTransportStatsResponse`) so the worker protocol exports only
   concrete message shapes plus canonical runtime data types.
+- Removed the browser lifecycle network type alias
+  (`SyncularV2ClientNetworkStatusSource`) so lifecycle options use the
+  canonical `SyncularV2NetworkStatusSource` type directly.
 - Gates:
-  - `bunx biome check packages/client/src/client.ts`: passed.
+  - `bunx biome check packages/client/src/client.ts packages/client/src/client.test.ts`:
+    passed.
   - `bunx biome check packages/client/src/worker-protocol.ts`: passed.
   - `bun --cwd packages/client tsgo`: passed.
   - `bun --cwd packages/client test`: passed, `110` tests.
