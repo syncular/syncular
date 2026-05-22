@@ -35,7 +35,6 @@ exception.
 
 | Item | Status | Where | Why It Exists | Risk | Removal / Decision |
 | --- | --- | --- | --- | --- | --- |
-| JavaScript-hosted browser store bridge | `Test-only` | `rust/crates/runtime/src/web/host_store.rs` | Early browser parity and scaffolding | Maintains two storage mental models if treated as product runtime | Keep only under `web-store` tests/fixtures. Product browser path is Rust-owned SQLite |
 | Browser OPFS to IndexedDB fallback | `Accepted` | Browser runtime docs/worker behavior | Platform capability fallback when OPFS sync access handles are unavailable | Can hide slower storage mode if not reported | Keep only if diagnostics report selected storage mode and perf gates cover it |
 | `json-v1` sync-pack path | `Temporary` | `packages/core/src/sync-packs.ts`, `rust/crates/protocol/src/binary_sync_pack.rs`, protocol fixtures | Existing JSON sync-pack encoding and fixture coverage | Becomes an old-protocol fallback beside binary path | WP-02/WP-03 should decide current Rust-first path. Do not add more JSON fallback logic for Rust clients |
 | `json-row-frame-v1` snapshot chunks | `Temporary` | Server snapshot chunk docs/tests, `rust/crates/runtime/src/core/binary_snapshot.rs` | Existing snapshot chunk format and fixture coverage | Rust bootstrap work may optimize old row-frame path instead of binary-table/direct apply | Rust-first bootstrap should prefer `binary-table-v1` or successor. Keep row-frame only until protocol kernel/binary v2 decision |
@@ -69,6 +68,7 @@ exception.
 | Service-worker legacy single-commit wake parsing | `Removed` | `packages/server-service-worker/src/index.ts`, service-worker tests | Wake resolution now reads current batched `push.commits` request/response shapes only. Legacy single `push.operations` / `push.status` handling was removed instead of carried as an old protocol branch |
 | Browser low-level Rust store type aliases | `Removed` | `packages/client/src/rust-store.ts` | Removed the unused `SyncularRustOwnedSqliteClientConfig` alias and renamed the executor/live-query helper types to the canonical `SyncularRustOwned*` names |
 | `accept-server` conflict-resolution alias | `Removed` | `packages/client/src/types.ts`, `rust/crates/runtime/src/core/client.rs` | `keep-server` is the canonical conflict-resolution spelling. The old `accept-server` spelling was removed instead of kept as a compatibility alias |
+| JavaScript-hosted browser store bridge | `Removed` | `rust/crates/runtime/src/web/host_store.rs`, `rust/crates/runtime/src/web/wasm.rs`, `web-store` Cargo features | Product browser runtime is Rust-owned SQLite. The old wasm `SyncularWasmClient` host-store bridge was removed instead of retained as test-only scaffolding |
 
 ## Items That Are Not Compatibility Debt
 
