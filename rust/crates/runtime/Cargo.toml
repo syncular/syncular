@@ -46,7 +46,6 @@ web-transport = [
 ]
 web-blobs = ["web-transport"]
 web-client = ["web-transport"]
-web-store = ["web-client", "demo-todo-fixture"]
 web-owned-sqlite = ["web-owned-sqlite-core", "web-blobs", "crdt-yjs", "e2ee"]
 web-owned-sqlite-core = [
     "web-client",

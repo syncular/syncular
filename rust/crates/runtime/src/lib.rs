@@ -66,18 +66,12 @@ pub mod transport;
 #[cfg(all(feature = "web-client", target_arch = "wasm32"))]
 #[path = "web/client.rs"]
 pub mod web_client;
-#[cfg(all(feature = "web-store", target_arch = "wasm32"))]
-#[path = "web/host_store.rs"]
-pub mod web_host_store;
 #[cfg(all(feature = "web-owned-sqlite-core", target_arch = "wasm32"))]
 #[path = "web/sqlite_wasm_store.rs"]
 pub mod web_sqlite_wasm_store;
 #[cfg(feature = "web-client")]
 #[path = "web/store.rs"]
 pub mod web_store;
-#[cfg(all(feature = "web-store", target_arch = "wasm32"))]
-#[path = "web/wasm.rs"]
-pub mod web_wasm;
 #[path = "core/worker.rs"]
 pub mod worker;
 

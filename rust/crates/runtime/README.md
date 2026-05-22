@@ -40,7 +40,7 @@ That keeps the Rust SDK/CLI thin while leaving a reusable core behind
 Swift/Kotlin/TypeScript bindings or a different storage/transport adapter.
 rusqlite remains useful as a fixture/test parity backend, but Diesel is the
 supported native SQLite store. Browser/WASM uses Rust-owned SQLite through
-`sqlite-wasm-rs`/`sqlite-wasm-vfs` instead of a JavaScript host store.
+`sqlite-wasm-rs`/`sqlite-wasm-vfs`.
 
 Feature flags now make that boundary explicit:
 
@@ -53,8 +53,6 @@ Feature flags now make that boundary explicit:
   `wasm32-unknown-unknown`
 - `web-client` owns the first async browser facade and async store boundary over
   `web-transport`
-- `web-store` owns the first wasm-only persistent-store integration boundary,
-  currently a legacy JavaScript-hosted Promise bridge used by parity tests
 - `syncular-client` owns the demo command-line binary and depends on this
   runtime's `native` feature
 - `syncular-codegen` owns the schema generator binary
@@ -71,35 +69,9 @@ snapshots/commits through the async store, and returns JSON-friendly
 changed-table/subscription results. The async store boundary now includes mutation
 application, pending outbox status transitions, conflict summaries,
 manual conflict resolution, and keep-local conflict retry. `WebMemoryStore` is a
-testable placeholder for Rust-owned browser SQLite.
-
-`web-store` adds `WebHostStore`, a wasm-only adapter that implements
-`AsyncWebStore` by delegating to a JavaScript object. That path is legacy
-scaffolding for parity tests and custom experiments; the browser product
-direction is Rust-owned SQLite. The host object must return Promises from these
-methods. The runtime tests keep a local `createSyncularWebStoreHost()` fixture
-backed by a Kysely SQLite database:
-
-```ts
-type SyncularWebStoreHost = {
-  applyMutation(operation: SyncOperation, localRow: unknown | null): Promise<string>
-  pendingOutbox(limit: number): Promise<OutboxCommit[]>
-  markOutboxSending(rowId: string): Promise<void>
-  markOutboxAcked(rowId: string, response: PushCommitResponse): Promise<void>
-  markOutboxFailed(rowId: string, error: string, response: PushCommitResponse): Promise<void>
-  insertConflict(outbox: OutboxCommit, result: OperationResult): Promise<void>
-  conflictSummaries(): Promise<ConflictSummary[]>
-  resolveConflict(id: string, resolution: string): Promise<void>
-  retryConflictKeepLocal(id: string): Promise<string>
-  subscriptionState(subscriptionId: string): Promise<WebSubscriptionState | null>
-  upsertSubscriptionState(state: WebSubscriptionState): Promise<void>
-  deleteSubscriptionState(subscriptionId: string): Promise<void>
-  clearTableForScopes(table: string, scopes: Record<string, unknown>): Promise<void>
-  upsertRow(table: string, row: unknown): Promise<void>
-  applyChange(change: SyncChange): Promise<void>
-  listTableJson(table: string): Promise<string>
-}
-```
+testable placeholder for Rust-owned browser SQLite. Product browser bindings use
+the Rust-owned SQLite store directly; there is no JavaScript-hosted store bridge
+in the current runtime surface.
 
 When compiled for `wasm32-unknown-unknown` with `--features web-owned-sqlite`,
 the crate exports `openSyncularRustOwnedSqlite()` and
@@ -107,9 +79,7 @@ the crate exports `openSyncularRustOwnedSqlite()` and
 package default for browser Rust work: SQLite is opened from Rust through
 `sqlite-wasm-rs` and `sqlite-wasm-vfs`, Kysely forwards compiled SQL into that
 same handle, and sync/local writes/live-query invalidation all share one Rust
-store. The older `web-store` feature can still export `SyncularWasmClient` for a
-JavaScript host-store bridge, but that path is legacy scaffolding rather than
-the browser product direction.
+store.
 
 `sqlite-wasm-rs` compiles SQLite C code for `wasm32-unknown-unknown`, so local
 Mac builds need a clang with the wasm backend. The browser runtime server uses
@@ -148,8 +118,8 @@ instead of only ignoring the eventual response.
 That packaged client is smoke-tested in Chromium through the generated
 OPFS-first v2 Worker path, Kysely/live queries over Rust-owned SQLite, and a
 mutation -> push -> pull flow over the existing Syncular HTTP server. The
-browser suite still keeps separate wa-sqlite, IndexedDB, and host-store contract
-checks for parity, but those do not define the packaged Rust client artifact.
+browser suite still keeps storage-mode coverage for the packaged Rust-owned
+SQLite client, but no longer carries a JavaScript host-store bridge.
 
 The first native-facing facade is `NativeSyncularClient`. It deliberately uses
 Diesel as the default storage backend, starts a background `SyncWorker`, and

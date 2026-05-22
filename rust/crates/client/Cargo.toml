@@ -32,7 +32,6 @@ native = ["syncular-runtime/native"]
 web-blobs = ["syncular-runtime/web-blobs"]
 web-transport = ["syncular-runtime/web-transport"]
 web-client = ["syncular-runtime/web-client"]
-web-store = ["syncular-runtime/web-store"]
 web-owned-sqlite = ["syncular-runtime/web-owned-sqlite"]
 
 [dependencies]
