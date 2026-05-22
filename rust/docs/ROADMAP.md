@@ -852,18 +852,18 @@ read-only review:
     chunks/artifacts, blob refs, auth lease provenance, realtime JSON messages,
     and binary realtime frames. TypeScript schema/codec tests and Rust protocol
     tests validate the same fixtures without changing relay runtime behavior.
-- `[~]` [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
+- `[x]` [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
   - Retained evaluation now has both a repeatable protocol-boundary baseline
     over the WP-27 fixture and an in-memory relay app-path baseline. Current
     local p95s: combined response parse+schema `16.42us`, binary sync-pack
     decode+schema `22.58us`, schema-backed fixture validation `47.46us`, local
     relay push `701.46us`, forward once `108.63us`, main pull/apply `379.96us`,
     local incremental pull `305.67us`, and realtime wakeup to 100 mock
-    connections `33.92us`. No Rust relay production path is retained yet; the
-    interim read is that relay app semantics should stay
-    TypeScript/Kysely-owned. The only plausible next technical probe is no-op
-    plus byte-buffer Rust call-boundary overhead; otherwise close WP-28 with
-    Rust protocol validation kept in fixtures/dev tooling only.
+    connections `33.92us`. Final decision: keep Rust protocol checks in
+    fixtures/dev tooling only. No Rust relay production path or follow-up Rust
+    relay/server component WP is retained from this evidence; relay app
+    semantics stay TypeScript/Kysely-owned unless a future product decision and
+    new measurements say otherwise.
 
 ## Blocked / External
 

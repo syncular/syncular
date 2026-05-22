@@ -1,6 +1,6 @@
 # WP-28 Relay Rust Evaluation And Protocol Validation
 
-Status: `[~]` in progress, depends on WP-27
+Status: `[x]` accepted, depends on WP-27
 
 ## Goal
 
@@ -176,6 +176,12 @@ instrumentation point before deciding.
   unless it replaces existing work without adding JSON copies or catches drift
   the TypeScript path misses. The app-heavy paths still look TypeScript/Kysely
   owned.
+- Existing Rust JavaScript bindings are the full browser/client WASM runtime,
+  not a small relay-callable protocol validation package. Using that surface as
+  a relay/server boundary probe would measure full runtime startup/package
+  shape, not the byte-level protocol validation candidate this WP is evaluating.
+  A meaningful future probe would need a deliberately scoped protocol-only
+  wasm/native binding.
 
 ## Interim Brainstorm
 
@@ -210,10 +216,9 @@ Bad shapes from the current data:
 
 ## Candidate Follow-Ups
 
-- Preferred current default: Rust protocol validation remains in fixtures/dev
-  tooling only.
-- Optional next probe: no-op plus byte-buffer Rust call-boundary measurement for
-  binary sync-pack/snapshot/blob validation.
+- Rust protocol validation remains in fixtures/dev tooling only.
+- A protocol-only wasm/native binding can be proposed later only if binary
+  validation becomes a real product need and the probe can keep bodies as bytes.
 - Rust realtime fanout WP only if connection/fanout load tests, not the local
   100-connection control, show pressure.
 - Rust edge proxy WP only if deployment/auth/rate-limit/network offload is the
@@ -221,9 +226,25 @@ Bad shapes from the current data:
 - Rust server trait-model WP only if we explicitly decide Rust should own app
   mutation semantics.
 
+## Final Decision
+
+Keep Rust protocol checks in fixtures/dev tooling only for now. Do not retain a
+production Rust validation path in relay/server, do not create new Rust
+relay/server component WPs from this evaluation, and do not move relay app
+semantics into Rust.
+
+This decision is based on three points:
+
+- The current TypeScript protocol checks are measurable but small on the WP-27
+  fixture.
+- The measured relay paths are dominated by DB/app semantics rather than
+  protocol validation.
+- The repo does not currently have a small relay-callable Rust protocol binding;
+  the available JS/WASM binding is the full browser client runtime and would be
+  the wrong integration surface for this decision.
+
 ## Next Action
 
-Either close WP-28 with a dev/test-only Rust protocol decision, or run one
-small no-op plus byte-buffer Rust call-boundary overhead probe. Do not create
-additional Rust relay/server WPs until this evaluation records a concrete
-follow-up target.
+WP-28 is closed. Reopen relay/server Rust planning only with new evidence from
+load tests, a product need for byte-preserving edge verification/proxying, or a
+scoped protocol-only binding proposal.
