@@ -94,7 +94,11 @@ export function isBinarySyncPackContentType(value: string | null): boolean {
 export function prefersBinarySyncPack(
   encodings: readonly SyncPackEncoding[] | undefined
 ): boolean {
-  return encodings?.includes(SYNC_PACK_ENCODING_BINARY_V1) === true;
+  return (
+    !encodings ||
+    encodings.length === 0 ||
+    encodings.includes(SYNC_PACK_ENCODING_BINARY_V1)
+  );
 }
 
 export function encodeBinarySyncPack(

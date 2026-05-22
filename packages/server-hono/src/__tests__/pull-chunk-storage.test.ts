@@ -99,6 +99,13 @@ function decodeSnapshotChunkRows(
   return decodeSnapshotRows(decoded) as Record<string, unknown>[];
 }
 
+async function readCombinedResponse(response: Response) {
+  if (isBinarySyncPackContentType(response.headers.get('content-type'))) {
+    return decodeBinarySyncPack(new Uint8Array(await response.arrayBuffer()));
+  }
+  return SyncCombinedResponseSchema.parse(await response.json());
+}
+
 async function streamToBytes(
   stream: ReadableStream<Uint8Array>
 ): Promise<Uint8Array> {
@@ -239,9 +246,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
 
     expect(pullResponse.status).toBe(200);
-    const combined = SyncCombinedResponseSchema.parse(
-      await pullResponse.json()
-    );
+    const combined = await readCombinedResponse(pullResponse);
     const parsed = combined.pull!;
     const chunkRef = mustGetFirstChunk(parsed);
     const chunkId = chunkRef.id;
@@ -476,9 +481,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
 
     expect(pullResponse.status).toBe(200);
-    const combined = SyncCombinedResponseSchema.parse(
-      await pullResponse.json()
-    );
+    const combined = await readCombinedResponse(pullResponse);
     const parsed = combined.pull!;
     const chunkRef = mustGetFirstChunk(parsed);
     const chunkId = chunkRef.id;
@@ -557,9 +560,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
 
     expect(pullResponse.status).toBe(200);
-    const combined = SyncCombinedResponseSchema.parse(
-      await pullResponse.json()
-    );
+    const combined = await readCombinedResponse(pullResponse);
     const parsed = combined.pull!;
     const chunkRef = mustGetFirstChunk(parsed);
     const chunkId = chunkRef.id;
@@ -660,9 +661,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
 
     expect(pullResponse.status).toBe(200);
-    const combined = SyncCombinedResponseSchema.parse(
-      await pullResponse.json()
-    );
+    const combined = await readCombinedResponse(pullResponse);
     const chunkId = mustGetFirstChunkId(combined.pull!);
 
     const oversizedResponse = await app.request(
@@ -1086,9 +1085,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
 
     expect(pullResponse.status).toBe(200);
-    const combined = SyncCombinedResponseSchema.parse(
-      await pullResponse.json()
-    );
+    const combined = await readCombinedResponse(pullResponse);
     const parsed = combined.pull!;
     const chunkRef = mustGetFirstChunk(parsed);
     const chunkId = chunkRef.id;

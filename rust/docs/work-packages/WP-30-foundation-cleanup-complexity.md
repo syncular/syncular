@@ -161,10 +161,11 @@ Package/API alias cleanup is mostly exhausted. Remaining quick-scan hits are
 accepted platform fallbacks, numeric defaults, CTE alias test wording, or
 canonical public contract names.
 
-The remaining compatibility-register cleanup is protocol-level:
+The remaining compatibility-register cleanup is explicit protocol-format
+surface:
 
-- `json-v1` sync-pack path;
-- `json-row-frame-v1` snapshot chunks.
+- explicit `json-v1` sync-pack negotiation and fixtures;
+- explicit `json-row-frame-v1` snapshot chunk negotiation and fixtures.
 
 Do not remove either as a micro-cleanup. Treat the next slice as a protocol
 decision batch: identify which runtime/server/test paths still require each JSON
@@ -371,4 +372,19 @@ JSON path, then run protocol/runtime/conformance gates before committing.
     passed.
   - `bun --cwd packages/core tsgo`: passed.
   - `bun --cwd packages/server tsgo && bun --cwd packages/server-hono tsgo`:
+    passed.
+- Changed core sync-pack negotiation so unspecified or empty
+  `syncPackEncodings` now prefer `binary-sync-pack-v1`. JSON combined sync
+  responses are still available only when explicitly requested, which keeps
+  protocol fixture/debug coverage separate from the default Rust-first server
+  path.
+- Hono route tests now decode the response from the advertised content type
+  instead of assuming JSON, and the response-size tests opt into JSON
+  explicitly because they are testing JSON limit behavior.
+- Gates:
+  - `bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts packages/core/src/__tests__/sync-packs.test.ts`:
+    passed, `57` tests.
+  - `bunx biome check packages/core/src/sync-packs.ts packages/core/src/__tests__/sync-packs.test.ts packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts`:
+    passed.
+  - `bun --cwd packages/core tsgo && bun --cwd packages/server-hono tsgo`:
     passed.

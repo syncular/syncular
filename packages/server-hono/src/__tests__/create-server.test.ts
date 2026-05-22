@@ -2,7 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
   createDatabase,
   decodeBinarySyncPack,
+  isBinarySyncPackContentType,
   SYNC_PACK_ENCODING_BINARY_V1,
+  SYNC_PACK_ENCODING_JSON_V1,
 } from '@syncular/core';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
@@ -207,6 +209,7 @@ describe('createSyncServer console configuration', () => {
     userId: string;
     subscriptionUserId: string;
     requestId?: string;
+    syncPackEncodings?: string[];
   }): Request {
     return new Request('http://localhost/sync', {
       method: 'POST',
@@ -217,7 +220,13 @@ describe('createSyncServer console configuration', () => {
       },
       body: JSON.stringify({
         clientId: args.clientId,
+        ...(args.syncPackEncodings
+          ? { syncPackEncodings: args.syncPackEncodings }
+          : {}),
         pull: {
+          ...(args.syncPackEncodings
+            ? { syncPackEncodings: args.syncPackEncodings }
+            : {}),
           limitCommits: 10,
           subscriptions: [
             {
@@ -237,6 +246,7 @@ describe('createSyncServer console configuration', () => {
     clientId: string;
     userId: string;
     requestId?: string;
+    syncPackEncodings?: string[];
   }): Request {
     return new Request('http://localhost/sync', {
       method: 'POST',
@@ -247,7 +257,13 @@ describe('createSyncServer console configuration', () => {
       },
       body: JSON.stringify({
         clientId: args.clientId,
+        ...(args.syncPackEncodings
+          ? { syncPackEncodings: args.syncPackEncodings }
+          : {}),
         pull: {
+          ...(args.syncPackEncodings
+            ? { syncPackEncodings: args.syncPackEncodings }
+            : {}),
           limitCommits: 10,
           subscriptions: [],
         },
@@ -264,6 +280,13 @@ describe('createSyncServer console configuration', () => {
     } catch {
       return value;
     }
+  }
+
+  async function readSyncResponse(response: Response): Promise<unknown> {
+    if (isBinarySyncPackContentType(response.headers.get('content-type'))) {
+      return decodeBinarySyncPack(new Uint8Array(await response.arrayBuffer()));
+    }
+    return response.json();
   }
 
   async function waitFor(predicate: () => Promise<boolean>): Promise<void> {
@@ -488,7 +511,11 @@ describe('createSyncServer console configuration', () => {
     app.route('/sync', server.syncRoutes);
 
     const response = await app.request(
-      createEmptyPullRequest({ clientId: 'client-json-limit', userId: 'u1' })
+      createEmptyPullRequest({
+        clientId: 'client-json-limit',
+        userId: 'u1',
+        syncPackEncodings: [SYNC_PACK_ENCODING_JSON_V1],
+      })
     );
 
     expect(response.status).toBe(413);
@@ -520,6 +547,7 @@ describe('createSyncServer console configuration', () => {
         clientId: 'client-json-response-limit',
         userId: 'u1',
         requestId,
+        syncPackEncodings: [SYNC_PACK_ENCODING_JSON_V1],
       })
     );
 
@@ -1058,7 +1086,7 @@ describe('createSyncServer console configuration', () => {
       })
     );
     expect(revokedPull.status).toBe(200);
-    expect(await revokedPull.json()).toMatchObject({
+    expect(await readSyncResponse(revokedPull)).toMatchObject({
       ok: true,
       pull: {
         subscriptions: [
@@ -1097,7 +1125,7 @@ describe('createSyncServer console configuration', () => {
       })
     );
     expect(reboundPull.status).toBe(200);
-    expect(await reboundPull.json()).toMatchObject({
+    expect(await readSyncResponse(reboundPull)).toMatchObject({
       ok: true,
       pull: {
         subscriptions: [
@@ -1183,7 +1211,7 @@ describe('createSyncServer console configuration', () => {
       })
     );
     expect(deniedPull.status).toBe(200);
-    const deniedPullBody = await deniedPull.json();
+    const deniedPullBody = await readSyncResponse(deniedPull);
     expect(deniedPullBody).toMatchObject({
       ok: true,
       pull: {

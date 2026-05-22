@@ -21,6 +21,7 @@ import {
   encodeBinarySyncPack,
   isBinarySyncPackContentType,
   isSyncPackEncoding,
+  prefersBinarySyncPack,
   SYNC_PACK_CONTENT_TYPE,
   SYNC_PACK_ENCODING_BINARY_V1,
   SYNC_PACK_ENCODING_JSON_V1,
@@ -61,6 +62,12 @@ describe('sync pack protocol negotiation', () => {
     expect(
       isBinarySyncPackContentType(`${SYNC_PACK_CONTENT_TYPE}; charset=binary`)
     ).toBe(true);
+  });
+
+  it('defaults unspecified sync-pack negotiation to binary', () => {
+    expect(prefersBinarySyncPack(undefined)).toBe(true);
+    expect(prefersBinarySyncPack([])).toBe(true);
+    expect(prefersBinarySyncPack([SYNC_PACK_ENCODING_JSON_V1])).toBe(false);
   });
 });
 
