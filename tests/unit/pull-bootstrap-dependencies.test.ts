@@ -2,7 +2,9 @@ import { describe, expect, it } from 'bun:test';
 import { gunzipSync } from 'node:zlib';
 import {
   createDatabase,
+  decodeBinarySnapshotTable,
   decodeSnapshotRows,
+  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   type SyncPullRequest,
 } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
@@ -52,12 +54,17 @@ interface ClientDb {
 }
 
 function decodeSnapshotRowsGzip(
-  bytes: Uint8Array | ReadableStream<Uint8Array>
+  bytes: Uint8Array | ReadableStream<Uint8Array>,
+  encoding: string
 ): unknown[] {
   if (!(bytes instanceof Uint8Array)) {
     throw new Error('Expected Uint8Array snapshot body in this test');
   }
-  return decodeSnapshotRows(gunzipSync(bytes));
+  const decoded = gunzipSync(bytes);
+  if (encoding === SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1) {
+    return decodeBinarySnapshotTable(decoded).rows;
+  }
+  return decodeSnapshotRows(decoded);
 }
 
 async function readSnapshotRows(
@@ -68,17 +75,17 @@ async function readSnapshotRows(
     return snapshot.rows;
   }
 
-  const chunkId = snapshot.chunks?.[0]?.id;
-  if (!chunkId) {
+  const chunkRef = snapshot.chunks?.[0];
+  if (!chunkRef) {
     throw new Error('Expected inline rows or a snapshot chunk');
   }
 
-  const chunk = await readSnapshotChunk(db, chunkId);
+  const chunk = await readSnapshotChunk(db, chunkRef.id);
   if (!chunk) {
     throw new Error('Expected stored snapshot chunk');
   }
 
-  return decodeSnapshotRowsGzip(chunk.body);
+  return decodeSnapshotRowsGzip(chunk.body, chunkRef.encoding);
 }
 
 describe('pull bootstrap behavior', () => {
@@ -374,7 +381,12 @@ describe('pull bootstrap behavior', () => {
       const chunk = await readSnapshotChunk(db, chunkId);
       if (!chunk) throw new Error('Expected stored snapshot chunk');
 
-      expect(decodeSnapshotRowsGzip(chunk.body)).toEqual([
+      expect(
+        decodeSnapshotRowsGzip(
+          chunk.body,
+          subscription.snapshots[0]!.chunks![0]!.encoding
+        )
+      ).toEqual([
         {
           id: 't1',
           user_id: 'u1',

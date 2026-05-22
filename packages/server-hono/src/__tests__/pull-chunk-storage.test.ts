@@ -88,6 +88,17 @@ function mustGetFirstChunk(payload: SyncPullResponse): SyncSnapshotChunkRef {
   return chunk;
 }
 
+function decodeSnapshotChunkRows(
+  bytes: Uint8Array,
+  encoding: SyncSnapshotChunkRef['encoding']
+): Record<string, unknown>[] {
+  const decoded = gunzipSync(bytes);
+  if (encoding === SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1) {
+    return decodeBinarySnapshotTable(decoded).rows;
+  }
+  return decodeSnapshotRows(decoded) as Record<string, unknown>[];
+}
+
 async function streamToBytes(
   stream: ReadableStream<Uint8Array>
 ): Promise<Uint8Array> {
@@ -232,7 +243,8 @@ describe('createSyncRoutes chunkStorage wiring', () => {
       await pullResponse.json()
     );
     const parsed = combined.pull!;
-    const chunkId = mustGetFirstChunkId(parsed);
+    const chunkRef = mustGetFirstChunk(parsed);
+    const chunkId = chunkRef.id;
     expect(storeChunkCalls).toBe(1);
     expect(externalChunkBodies.has(chunkId)).toBe(true);
 
@@ -241,7 +253,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
       throw new Error('Expected external chunk body to be stored.');
     }
 
-    const rows = decodeSnapshotRows(gunzipSync(storedExternal));
+    const rows = decodeSnapshotChunkRows(storedExternal, chunkRef.encoding);
 
     const snapshotChunkCountRow = await db
       .selectFrom('sync_snapshot_chunks')
@@ -468,7 +480,8 @@ describe('createSyncRoutes chunkStorage wiring', () => {
       await pullResponse.json()
     );
     const parsed = combined.pull!;
-    const chunkId = mustGetFirstChunkId(parsed);
+    const chunkRef = mustGetFirstChunk(parsed);
+    const chunkId = chunkRef.id;
 
     expect(storeChunkStreamCalls).toBe(1);
     expect(storeChunkCalls).toBe(0);
@@ -479,7 +492,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
       throw new Error('Expected external chunk body to be stored.');
     }
 
-    const rows = decodeSnapshotRows(gunzipSync(storedExternal));
+    const rows = decodeSnapshotChunkRows(storedExternal, chunkRef.encoding);
     expect(rows).toEqual([
       { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },
       { id: 't2', user_id: 'u1', title: 'Task 2', server_version: 2 },
@@ -548,7 +561,8 @@ describe('createSyncRoutes chunkStorage wiring', () => {
       await pullResponse.json()
     );
     const parsed = combined.pull!;
-    const chunkId = mustGetFirstChunkId(parsed);
+    const chunkRef = mustGetFirstChunk(parsed);
+    const chunkId = chunkRef.id;
 
     const noScopesResponse = await app.request(
       new Request(`http://localhost/sync/snapshot-chunks/${chunkId}`, {
@@ -579,7 +593,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
     expect(validScopesResponse.status).toBe(200);
     const chunkBytes = new Uint8Array(await validScopesResponse.arrayBuffer());
-    const rows = decodeSnapshotRows(gunzipSync(chunkBytes));
+    const rows = decodeSnapshotChunkRows(chunkBytes, chunkRef.encoding);
     expect(rows).toEqual([
       { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },
     ]);
@@ -1076,7 +1090,8 @@ describe('createSyncRoutes chunkStorage wiring', () => {
       await pullResponse.json()
     );
     const parsed = combined.pull!;
-    const chunkId = mustGetFirstChunkId(parsed);
+    const chunkRef = mustGetFirstChunk(parsed);
+    const chunkId = chunkRef.id;
 
     expect(parsed.subscriptions[0]?.snapshots?.length).toBe(1);
     expect(storeChunkCalls).toBe(1);
@@ -1086,7 +1101,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
       throw new Error('Expected external chunk body to be stored.');
     }
 
-    const rows = decodeSnapshotRows(gunzipSync(storedExternal));
+    const rows = decodeSnapshotChunkRows(storedExternal, chunkRef.encoding);
 
     expect(rows).toEqual([
       { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },

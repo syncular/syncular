@@ -357,3 +357,18 @@ JSON path, then run protocol/runtime/conformance gates before committing.
   - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang bun --cwd rust/bindings/javascript build:wasm:dev`:
     passed.
   - `bun --cwd packages/client test`: passed, `110` tests.
+- Changed the server/core default snapshot chunk encoding from
+  `json-row-frame-v1` to `binary-table-v1`. Explicit JSON row-frame negotiation
+  and protocol fixtures still exist, but an unspecified pull now follows the
+  Rust-first binary chunk path. Server/Hono tests now decode chunk bodies using
+  the encoding advertised by the chunk ref instead of assuming row frames.
+- Gates:
+  - `bun test tests/unit/server-pull.test.ts tests/unit/create-server-handler.test.ts tests/unit/pull-bootstrap-dependencies.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts packages/core/src/__tests__/snapshot-chunks.test.ts`:
+    passed, `61` tests.
+  - `bun test packages/core/src/__tests__/protocol-fixtures.test.ts packages/core/src/__tests__/sync-packs.test.ts packages/core/src/__tests__/snapshot-chunks.test.ts`:
+    passed, `23` tests.
+  - `bunx biome check packages/core/src/snapshot-chunks.ts tests/unit/server-pull.test.ts tests/unit/create-server-handler.test.ts tests/unit/pull-bootstrap-dependencies.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts`:
+    passed.
+  - `bun --cwd packages/core tsgo`: passed.
+  - `bun --cwd packages/server tsgo && bun --cwd packages/server-hono tsgo`:
+    passed.

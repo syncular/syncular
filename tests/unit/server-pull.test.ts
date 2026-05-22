@@ -39,10 +39,15 @@ interface ClientDb {
 }
 
 function decodeSnapshotRowsGzip(
-  bytes: Uint8Array | ReadableStream<Uint8Array>
+  bytes: Uint8Array | ReadableStream<Uint8Array>,
+  encoding: string
 ): unknown[] {
   if (!(bytes instanceof Uint8Array)) throw new Error('Expected Uint8Array');
-  return decodeSnapshotRows(gunzipSync(bytes));
+  const decoded = gunzipSync(bytes);
+  if (encoding === SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1) {
+    return decodeBinarySnapshotTable(decoded).rows;
+  }
+  return decodeSnapshotRows(decoded);
 }
 
 function snapshotBodyBytes(
@@ -72,7 +77,7 @@ async function readSnapshotRows(
     throw new Error('Expected stored snapshot chunk');
   }
 
-  return decodeSnapshotRowsGzip(chunk.body);
+  return decodeSnapshotRowsGzip(chunk.body, chunkRef.encoding);
 }
 
 describe('pull', () => {
