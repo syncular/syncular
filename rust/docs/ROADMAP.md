@@ -860,8 +860,10 @@ read-only review:
     relay push `701.46us`, forward once `108.63us`, main pull/apply `379.96us`,
     local incremental pull `305.67us`, and realtime wakeup to 100 mock
     connections `33.92us`. No Rust relay production path is retained yet; the
-    next step is brainstorming from the evidence or measuring Rust call-boundary
-    overhead, not starting a relay rewrite.
+    interim read is that relay app semantics should stay
+    TypeScript/Kysely-owned. The only plausible next technical probe is no-op
+    plus byte-buffer Rust call-boundary overhead; otherwise close WP-28 with
+    Rust protocol validation kept in fixtures/dev tooling only.
 
 ## Blocked / External
 

@@ -177,20 +177,53 @@ instrumentation point before deciding.
   the TypeScript path misses. The app-heavy paths still look TypeScript/Kysely
   owned.
 
+## Interim Brainstorm
+
+The current evidence does not justify moving relay/server app semantics into
+Rust. `relayPushCommit`, `ForwardEngine`, `PullEngine`, `relayPull`, and
+Kysely-backed relay storage are doing authorization/handler/DB orchestration,
+not just protocol parsing. Moving those into Rust would duplicate server table
+handler semantics and raise deployment complexity before there is a measured
+target.
+
+Potentially sensible Rust shapes:
+
+- Keep `syncular-protocol` as a cross-language oracle in tests/dev tooling.
+  This already catches fixture drift without adding production boundary cost.
+- Measure a byte-level Rust validator only for bodies that can stay binary:
+  binary sync packs, binary snapshot chunks, artifact refs, blob hashes, and
+  realtime binary frames. This needs a no-op/call-boundary control first.
+- Consider a Rust edge/proxy only if the product need is byte-preserving
+  forwarding, request authentication/rate-limit policy, or binary verification
+  before forwarding. It should not become partial table-handler/server logic.
+
+Bad shapes from the current data:
+
+- Wrapping already-parsed TypeScript objects in Rust validation on relay hot
+  paths. It would likely pay JSON/object mapping cost around a cheap schema
+  check.
+- Moving `ForwardEngine`, `PullEngine`, sequence mapping, Kysely storage, or
+  server table handlers into Rust without a separate product decision that Rust
+  owns server-side mutation/apply semantics.
+- Creating more Rust relay/server WPs before a call-boundary measurement or a
+  concrete product need exists.
+
 ## Candidate Follow-Ups
 
-- Rust protocol validation retained inside the TypeScript relay path.
-- Rust protocol validation used only in fixtures/dev tooling.
-- Rust realtime fanout WP if realtime measurements show connection/fanout
-  pressure.
-- Rust edge proxy WP if deployment/auth/rate-limit/network offload is the
-  concrete product need.
+- Preferred current default: Rust protocol validation remains in fixtures/dev
+  tooling only.
+- Optional next probe: no-op plus byte-buffer Rust call-boundary measurement for
+  binary sync-pack/snapshot/blob validation.
+- Rust realtime fanout WP only if connection/fanout load tests, not the local
+  100-connection control, show pressure.
+- Rust edge proxy WP only if deployment/auth/rate-limit/network offload is the
+  concrete product need and bodies can stay byte-preserving.
 - Rust server trait-model WP only if we explicitly decide Rust should own app
   mutation semantics.
 
 ## Next Action
 
-Brainstorm from the two baselines before adding more code. The likely next
-technical probe, if any, is a Rust call-boundary overhead/control measurement,
-not a production relay rewrite. Do not create additional Rust relay/server WPs
-until this evaluation records a concrete follow-up target.
+Either close WP-28 with a dev/test-only Rust protocol decision, or run one
+small no-op plus byte-buffer Rust call-boundary overhead probe. Do not create
+additional Rust relay/server WPs until this evaluation records a concrete
+follow-up target.
