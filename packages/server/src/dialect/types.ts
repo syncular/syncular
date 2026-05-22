@@ -184,6 +184,7 @@ export interface ServerSyncDialect<F extends SqlFamily = SqlFamily> {
       actorId: string;
       cursor: number;
       effectiveScopes: ScopeValues;
+      realtimeSubscriptions?: unknown;
     }
   ): Promise<void>;
 

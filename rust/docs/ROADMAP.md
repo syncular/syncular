@@ -983,7 +983,7 @@ read-only review:
     relay/server component WP is retained from this evidence; relay app
     semantics stay TypeScript/Kysely-owned unless a future product decision and
     new measurements say otherwise.
-- `[~]` [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](work-packages/WP-32-realtime-recovery-fanout-external-notifications.md)
+- `[x]` [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](work-packages/WP-32-realtime-recovery-fanout-external-notifications.md)
   - Created from WP-31 reconnect-storm evidence, not from WP-28 protocol
     validation. Slice 1 retained TypeScript/Hono binary sync-pack construction
     for known external row-change commits and capped reconnect jitter at the
@@ -991,13 +991,19 @@ read-only review:
     packs at `25/25` and `125/125`, dropping those lanes to `39.91ms` and
     `89.14ms` convergence with one reconnect pull per client; online propagation
     stays on `15/15` binary applies with p95 `12.28ms`. The `250`-client lane
-    still has an unstable approximately `2s` tail, and a client-only
-    hello-gated reconnect experiment was rejected because process restart loses
-    in-memory subscription roots and forces cursor-only `server-wakeup`
-    recovery. Next WP-32 slices should persist/reconstruct realtime
-    subscription metadata or add bounded recovery replay/fanout. Rust remains
-    limited to a future byte-preserving protocol helper if timing buckets prove
-    it is useful; app semantics stay TypeScript/Kysely-owned.
+    originally still showed an approximately `2s` tail, but slice 2 persisted
+    realtime subscription/root state in `sync_client_cursors`, hydrated that
+    state on websocket reconnect, gated reconnect catch-up on
+    `hello.requiresSync`, and fixed the benchmark observer so row-change
+    visibility is not measured through 250 queued worker SQL readbacks.
+    Corrected final evidence applies binary packs at every scale with zero HTTP
+    reconnect pulls: run `2026-05-22T16-25-35-103Z` reports `25` clients
+    `34.17ms`, `125` clients `67.69ms`, and `250` clients `360.30ms`
+    convergence, while a single `250` rerun `2026-05-22T16-23-57-672Z` reports
+    `158.18ms`. Online propagation guard `2026-05-22T16-28-24-669Z` stays on
+    `15/15` binary applies with p95 `16.97ms`. Rust remains out of the server
+    app path; the measured work was subscription recovery and benchmark
+    observation, not protocol encode/validate.
 
 ## Blocked / External
 

@@ -128,7 +128,7 @@ describe('Syncular worker realtime', () => {
         cursor: 3,
         latestCursor: 5,
         scopeCount: 2,
-        requiresSync: true,
+        requiresSync: false,
         syncPackEncoding: 'binary-sync-pack-v1',
       },
     });
@@ -145,10 +145,64 @@ describe('Syncular worker realtime', () => {
           shardKey: 'sync-realtime-v1:default:default:default',
           cursor: 3,
           latestCursor: 5,
-          requiresSync: true,
+          requiresSync: false,
         }),
       })
     );
+  });
+
+  it('uses hello requiresSync as a reconnect catch-up fallback', async () => {
+    const client = new FakeRealtimeClient();
+    const sockets: FakeRealtimeSocket[] = [];
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const controller = new SyncularWorkerRealtimeController({
+      getClient: () => client,
+      getConfig: () => ({
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client-1',
+      }),
+      getLocationOrigin: () => 'https://app.example',
+      createWebSocket: (url) => {
+        const socket = new FakeRealtimeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+      postEvent: () => {},
+      postDiagnostic: (event) =>
+        diagnostics.push({ ...event, at: event.at ?? Date.now() }),
+    });
+
+    controller.start({ heartbeatTimeoutMs: 0 });
+    sockets[0]!.open();
+    sockets[0]!.message({
+      event: 'hello',
+      data: {
+        cursor: 3,
+        latestCursor: 5,
+        requiresSync: true,
+      },
+    });
+
+    await waitFor(() => client.syncPulls === 1);
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'realtime.reconnect_catchup_scheduled',
+        details: expect.objectContaining({
+          cursor: 5,
+        }),
+      })
+    );
+    expect(diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'realtime.pull_required',
+        details: expect.objectContaining({
+          cursor: 5,
+          reason: 'reconnect-catchup',
+        }),
+      })
+    );
+    client.resolvePull();
   });
 
   it('sends and forwards websocket presence messages', async () => {
@@ -822,10 +876,17 @@ describe('Syncular worker realtime', () => {
     expect(client.syncPulls).toBe(0);
 
     sockets[1]!.open();
-    await waitFor(() => client.syncPulls === 1);
+    sockets[1]!.message({
+      event: 'hello',
+      data: { cursor: 3, latestCursor: 3, requiresSync: false },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 15));
+    expect(client.syncPulls).toBe(0);
     sockets[0]!.message({ event: 'sync' });
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(client.syncPulls).toBe(1);
+    expect(client.syncPulls).toBe(0);
+    sockets[1]!.message({ event: 'sync' });
+    await waitFor(() => client.syncPulls === 1);
     client.resolvePull();
 
     expect(

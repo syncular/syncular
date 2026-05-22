@@ -278,19 +278,38 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
       actorId: string;
       cursor: number;
       effectiveScopes: ScopeValues;
+      realtimeSubscriptions?: unknown;
     }
   ): Promise<void> {
     const partitionId = args.partitionId ?? 'default';
     const now = new Date().toISOString();
     const scopesJson = JSON.stringify(args.effectiveScopes);
 
+    if (args.realtimeSubscriptions === undefined) {
+      await sql`
+        INSERT INTO sync_client_cursors (partition_id, client_id, actor_id, cursor, effective_scopes, updated_at)
+        VALUES (${partitionId}, ${args.clientId}, ${args.actorId}, ${args.cursor}, ${scopesJson}, ${now})
+        ON CONFLICT(partition_id, client_id) DO UPDATE SET
+          actor_id = ${args.actorId},
+          cursor = ${args.cursor},
+          effective_scopes = ${scopesJson},
+          updated_at = ${now}
+      `.execute(db);
+      return;
+    }
+
+    const realtimeSubscriptionsJson = JSON.stringify(
+      args.realtimeSubscriptions
+    );
+
     await sql`
-      INSERT INTO sync_client_cursors (partition_id, client_id, actor_id, cursor, effective_scopes, updated_at)
-      VALUES (${partitionId}, ${args.clientId}, ${args.actorId}, ${args.cursor}, ${scopesJson}, ${now})
+      INSERT INTO sync_client_cursors (partition_id, client_id, actor_id, cursor, effective_scopes, realtime_subscriptions, updated_at)
+      VALUES (${partitionId}, ${args.clientId}, ${args.actorId}, ${args.cursor}, ${scopesJson}, ${realtimeSubscriptionsJson}, ${now})
       ON CONFLICT(partition_id, client_id) DO UPDATE SET
         actor_id = ${args.actorId},
         cursor = ${args.cursor},
         effective_scopes = ${scopesJson},
+        realtime_subscriptions = ${realtimeSubscriptionsJson},
         updated_at = ${now}
     `.execute(db);
   }

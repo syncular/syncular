@@ -89,9 +89,9 @@ export class SyncularWorkerRealtimeController {
   #state: SyncularRealtimeConnectionState = 'disconnected';
   #options: SyncularWorkerRealtimeOptions | undefined;
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
+  #reconnectCatchupTimer: ReturnType<typeof setTimeout> | undefined;
   #heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
   #reconnectAttempts = 0;
-  #connectedOnce = false;
   #stopped = true;
   #syncInFlight: Promise<void> | undefined;
   #syncAgainMessage: SyncularRealtimeSyncMessage | undefined;
@@ -123,7 +123,6 @@ export class SyncularWorkerRealtimeController {
     this.#options = options;
     this.#stopped = false;
     this.#reconnectAttempts = 0;
-    this.#connectedOnce = false;
     this.#connect();
   }
 
@@ -132,7 +131,7 @@ export class SyncularWorkerRealtimeController {
     this.#syncAgainMessage = undefined;
     this.#syncInFlight = undefined;
     this.#clearSyncJitterTimers();
-    this.#connectedOnce = false;
+    this.#clearReconnectCatchupTimer();
     this.#clearReconnectTimer();
     this.#clearHeartbeatTimer();
     this.#closeSocket();
@@ -196,17 +195,9 @@ export class SyncularWorkerRealtimeController {
 
     socket.onopen = () => {
       if (socket !== this.#socket) return;
-      const shouldCatchUp = this.#connectedOnce;
-      this.#connectedOnce = true;
       this.#reconnectAttempts = 0;
       this.#setState('connected');
       this.#resetHeartbeatTimer();
-      if (shouldCatchUp) {
-        this.#scheduleSync({
-          reason: 'reconnect',
-          requiresPull: true,
-        });
-      }
     };
     socket.onmessage = (event) => {
       if (socket !== this.#socket) return;
@@ -243,6 +234,7 @@ export class SyncularWorkerRealtimeController {
           bytes: bytes.byteLength,
         },
       });
+      this.#clearReconnectCatchupTimer();
       this.#scheduleSync({ syncPackBytes: bytes });
       return;
     }
@@ -264,6 +256,7 @@ export class SyncularWorkerRealtimeController {
         message: 'Syncular realtime session accepted',
         details: { ...helloMessage },
       });
+      this.#scheduleHelloCatchup(helloMessage);
       return;
     }
     const presenceMessage = readSyncularRealtimePresenceMessage(message);
@@ -288,11 +281,13 @@ export class SyncularWorkerRealtimeController {
           payloadBytes: syncMessage.payloadBytes ?? null,
         },
       });
+      this.#clearReconnectCatchupTimer();
       this.#scheduleRealtimeWakeupSync(syncMessage);
     }
   }
 
   #reconnect(): void {
+    this.#clearReconnectCatchupTimer();
     this.#clearHeartbeatTimer();
     this.#closeSocket();
     this.#setState('disconnected');
@@ -325,6 +320,35 @@ export class SyncularWorkerRealtimeController {
     });
     this.#reconnectAttempts += 1;
     this.#reconnectTimer = this.#setTimeout(() => this.#connect(), delay);
+  }
+
+  #scheduleHelloCatchup(message: SyncularRealtimeHelloMessage): void {
+    this.#clearReconnectCatchupTimer();
+    if (!message.requiresSync) return;
+    const maxJitter = Math.max(0, this.#options?.pullRecoveryJitterMs ?? 0);
+    const delay = maxJitter > 0 ? maxJitter * this.#random() : 10;
+    const cursor = Number.isFinite(message.latestCursor)
+      ? message.latestCursor
+      : message.cursor;
+    const syncMessage: SyncularRealtimeSyncMessage = {
+      reason: 'reconnect-catchup',
+      requiresPull: true,
+      ...(Number.isFinite(cursor) ? { cursor } : {}),
+    };
+    this.#diagnostic({
+      level: 'debug',
+      code: 'realtime.reconnect_catchup_scheduled',
+      message: 'Syncular realtime reconnect catch-up scheduled from hello',
+      details: {
+        cursor: syncMessage.cursor ?? null,
+        delayMs: delay,
+        maxJitterMs: maxJitter,
+      },
+    });
+    this.#reconnectCatchupTimer = this.#setTimeout(() => {
+      this.#reconnectCatchupTimer = undefined;
+      this.#scheduleSync(syncMessage);
+    }, delay);
   }
 
   #scheduleSync(message?: SyncularRealtimeSyncMessage): void {
@@ -532,6 +556,12 @@ export class SyncularWorkerRealtimeController {
     if (!this.#reconnectTimer) return;
     this.#clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = undefined;
+  }
+
+  #clearReconnectCatchupTimer(): void {
+    if (!this.#reconnectCatchupTimer) return;
+    this.#clearTimeout(this.#reconnectCatchupTimer);
+    this.#reconnectCatchupTimer = undefined;
   }
 
   #clearHeartbeatTimer(): void {

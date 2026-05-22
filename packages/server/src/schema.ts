@@ -88,6 +88,15 @@ export interface SyncClientCursorsTable {
    * This is the intersection of requested scopes and allowed scopes.
    */
   effective_scopes: unknown;
+  /**
+   * Last active realtime subscription snapshot for websocket binary packs.
+   *
+   * This duplicates the protocol-level subscription id/table/scope/cursor/root
+   * shape from the latest successful pull so a restarted realtime server can
+   * rebuild scoped binary notifications before the client performs another
+   * HTTP pull.
+   */
+  realtime_subscriptions: unknown | null;
   /** Last update timestamp */
   updated_at: Generated<string>;
 }

@@ -6559,3 +6559,91 @@ Decision:
   across sync-service restarts, then evaluate bounded replay/recovery fanout.
   Rust remains out of the server app path unless byte-preserving protocol
   encode/validate becomes the measured bottleneck.
+
+## 2026-05-22 - WP-32 Persisted Realtime Recovery And Benchmark Tail Fix
+
+Work package: [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](work-packages/WP-32-realtime-recovery-fanout-external-notifications.md)
+
+Change:
+
+- Persisted each client's active realtime subscription metadata with
+  `sync_client_cursors`, and hydrate websocket subscription roots/scopes from
+  that state after a sync-service restart.
+- Kept reconnect catch-up behind `hello.requiresSync` now that restarted
+  servers can build binary replay/external packs before each client performs an
+  HTTP pull.
+- Updated realtime ACK persistence to store the latest hydrated subscription
+  roots, and collapsed the websocket handshake client-state read into one SQL
+  round trip.
+- Coalesced identical external realtime pack builds across owners.
+- Fixed the reconnect-storm benchmark visibility observer: it now uses
+  `rowsChanged.changedTables/changedRows` and records binary/rowsChanged
+  offsets instead of issuing one post-event worker SQL read per client.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bunx biome check --write packages/client/src/worker-realtime.test.ts packages/client/src/worker-realtime.ts packages/server-dialect-postgres/src/index.ts packages/server-dialect-sqlite/src/index.ts packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/realtime-sync-packs.ts packages/server-hono/src/routes.ts packages/server/src/clients.ts packages/server/src/dialect/base.ts packages/server/src/dialect/types.ts packages/server/src/schema.ts
+bun --cwd packages/client test src/worker-realtime.test.ts
+bun --cwd packages/server-hono tsgo && bun --cwd packages/server tsgo && bun --cwd packages/server-dialect-postgres tsgo && bun --cwd packages/server-dialect-sqlite tsgo
+bun test packages/server-hono/src/__tests__/create-server.test.ts --test-name-pattern "persisted realtime|records realtime cursor acks|chains verified roots|catch-up wakeup|requires pull on reconnect"
+bun --cwd packages/client build
+bun --cwd rust/bindings/javascript build:wasm
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+COMPOSE_BAKE=false \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose --progress=plain -f stacks/syncular/docker-compose.yml build --no-cache syncular
+docker compose -f stacks/syncular/docker-compose.yml up -d syncular
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_RECONNECT_MODE=worker-realtime \
+SYNCULAR_RUST_RECONNECT_CLIENT_COUNTS=25,125,250 \
+  bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  bun run bench:run -- --stack syncular-rust --scenario online-propagation
+```
+
+Result:
+
+| Scenario | Run ID | Scale | Result |
+| --- | --- | ---: | --- |
+| Persisted subscriptions, pre-observer fix | `2026-05-22T14-59-27-231Z` | `25` | convergence `40.61ms`, requests `0`, binary applies `25`, pull-required `0` |
+| Persisted subscriptions, pre-observer fix | `2026-05-22T14-59-27-231Z` | `125` | convergence `74.27ms`, requests `0`, binary applies `125`, pull-required `0` |
+| Persisted subscriptions, pre-observer fix | `2026-05-22T14-59-27-231Z` | `250` | convergence `2016.72ms`, visible p50 `2014.74ms`, visible p95 `2016.53ms`, requests `0`, binary applies `250`, pull-required `0` |
+| Pack coalescing, pre-observer fix | `2026-05-22T15-10-01-723Z` | `250` | convergence `2023.73ms`, visible p50 `152.53ms`, visible p95 `2022.98ms`, requests `0`, binary applies `250`, pull-required `0` |
+| Instrumented observer proof | `2026-05-22T16-15-25-220Z` | `250` | external write total `25.55ms`, realtime fanout `4.17ms`, binary apply p95 around `138ms`; slow sample had `rowsChangedMs=178.67ms` but `visibleMs=2031.19ms`, proving worker SQL readback was the tail |
+| Corrected single scale | `2026-05-22T16-23-57-672Z` | `250` | convergence `158.18ms`, visible p95 `157.56ms`, requests `0`, binary applies `250`, pull-required `0`, external realtime fanout `7.14ms` |
+| Corrected full scale | `2026-05-22T16-25-35-103Z` | `25` | convergence `34.17ms`, visible p95 `33.52ms`, requests `0`, binary applies `25`, pull-required `0`, external realtime fanout `2.86ms` |
+| Corrected full scale | `2026-05-22T16-25-35-103Z` | `125` | convergence `67.69ms`, visible p95 `66.62ms`, requests `0`, binary applies `125`, pull-required `0`, external realtime fanout `3.16ms` |
+| Corrected full scale | `2026-05-22T16-25-35-103Z` | `250` | convergence `360.30ms`, visible p95 `359.87ms`, requests `0`, binary applies `250`, pull-required `0`, external realtime fanout `4.12ms` |
+| Online propagation guard | `2026-05-22T16-28-24-669Z` | `15` iterations | reader visibility p50 `9.32ms`, p95 `16.97ms`, binary applies `15`, pull-required `0`, reader binary apply p95 `2ms` |
+
+Decision:
+
+- Retain persisted realtime subscription metadata and ACK root persistence.
+  This removes the post-restart dependency on each client doing an immediate
+  HTTP reconnect pull before external binary notifications can be built.
+- Retain the corrected benchmark observer and external-write timing fields.
+  The previous approximately `2s` `250`-client tail was mostly a harness
+  readback artifact once binary frames were available.
+- Retain identical-pack coalescing as a small server CPU/work reduction, but
+  do not attribute the main reconnect improvement to it; fanout timing was
+  already single-digit milliseconds after instrumentation.
+- Rust remains out of this server app path. The measured bottleneck was
+  subscription state/recovery and benchmark observation, not binary protocol
+  encode/validate.
