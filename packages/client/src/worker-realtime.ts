@@ -305,7 +305,10 @@ export class SyncularWorkerRealtimeController {
     const initial = this.#options?.initialReconnectDelayMs ?? 1_000;
     const max = this.#options?.maxReconnectDelayMs ?? 30_000;
     const factor = this.#options?.reconnectBackoffFactor ?? 2;
-    const baseDelay = Math.min(initial * factor ** this.#reconnectAttempts, max);
+    const baseDelay = Math.min(
+      initial * factor ** this.#reconnectAttempts,
+      max
+    );
     const jitterRatio = Math.max(0, this.#options?.reconnectJitterRatio ?? 0);
     const jitter = baseDelay * jitterRatio * this.#random();
     const delay = baseDelay + jitter;

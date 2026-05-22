@@ -486,22 +486,20 @@ describe('push operation result error codes', () => {
       )
       .execute();
 
-    const stringDb =
-      db as unknown as ReturnType<
-        typeof createBunSqliteDialect<StringVersionTestDb>
-      >;
-    const stringHandlers =
-      createServerHandlerCollection<StringVersionTestDb>([
-        createServerHandler<
-          StringVersionTestDb,
-          StringVersionClientDb,
-          'string_tasks'
-        >({
-          table: 'string_tasks',
-          scopes: ['user:{user_id}'],
-          resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
-        }),
-      ]);
+    const stringDb = db as unknown as ReturnType<
+      typeof createBunSqliteDialect<StringVersionTestDb>
+    >;
+    const stringHandlers = createServerHandlerCollection<StringVersionTestDb>([
+      createServerHandler<
+        StringVersionTestDb,
+        StringVersionClientDb,
+        'string_tasks'
+      >({
+        table: 'string_tasks',
+        scopes: ['user:{user_id}'],
+        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+      }),
+    ]);
 
     const inserted = await pushCommit({
       db: stringDb,

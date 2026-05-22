@@ -380,11 +380,11 @@ describe('pull bootstrap behavior', () => {
       const chunk = await readSnapshotChunk(db, chunkId);
       if (!chunk) throw new Error('Expected stored snapshot chunk');
 
+      const snapshot = subscription.snapshots?.[0];
+      if (!snapshot) throw new Error('Expected subscription snapshot');
+
       expect(
-        decodeSnapshotChunkRowsGzip(
-          chunk.body,
-          subscription.snapshots[0]!.chunks![0]!.encoding
-        )
+        decodeSnapshotChunkRowsGzip(chunk.body, snapshot.chunks![0]!.encoding)
       ).toEqual([
         {
           id: 't1',
