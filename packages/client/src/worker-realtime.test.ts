@@ -560,6 +560,96 @@ describe('Syncular worker realtime', () => {
     });
   });
 
+  it('applies reconnect jitter to scheduled reconnect delay', () => {
+    const client = new FakeRealtimeClient();
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    let scheduledDelay: number | undefined;
+    const controller = new SyncularWorkerRealtimeController({
+      getClient: () => client,
+      getConfig: () => ({
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client-1',
+      }),
+      getLocationOrigin: () => 'https://app.example',
+      createWebSocket: () => {
+        throw new Error('socket unavailable');
+      },
+      postEvent: () => {},
+      postDiagnostic: (event) =>
+        diagnostics.push({ ...event, at: event.at ?? Date.now() }),
+      random: () => 0.5,
+      setTimeout: ((handler, timeout) => {
+        scheduledDelay = Number(timeout);
+        return setTimeout(handler, 1);
+      }) as typeof setTimeout,
+    });
+
+    controller.start({
+      heartbeatTimeoutMs: 0,
+      initialReconnectDelayMs: 100,
+      maxReconnectDelayMs: 100,
+      reconnectJitterRatio: 0.5,
+    });
+
+    controller.stop();
+    expect(scheduledDelay).toBe(125);
+    expect(diagnostics[1]).toMatchObject({
+      code: 'realtime.reconnect_scheduled',
+      details: {
+        baseDelayMs: 100,
+        jitterMs: 25,
+        delayMs: 125,
+      },
+    });
+  });
+
+  it('can jitter realtime HTTP pull recovery wakeups', async () => {
+    const client = new FakeRealtimeClient();
+    const sockets: FakeRealtimeSocket[] = [];
+    let scheduledDelay: number | undefined;
+    let scheduledHandler: (() => void) | undefined;
+    const controller = new SyncularWorkerRealtimeController({
+      getClient: () => client,
+      getConfig: () => ({
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client-1',
+      }),
+      getLocationOrigin: () => 'https://app.example',
+      createWebSocket: (url) => {
+        const socket = new FakeRealtimeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+      postEvent: () => {},
+      random: () => 0.5,
+      setTimeout: ((handler, timeout) => {
+        scheduledDelay = Number(timeout);
+        scheduledHandler = handler as () => void;
+        return 1 as ReturnType<typeof setTimeout>;
+      }) as typeof setTimeout,
+      clearTimeout: (() => {}) as typeof clearTimeout,
+    });
+
+    controller.start({
+      heartbeatTimeoutMs: 0,
+      pullRecoveryJitterMs: 100,
+    });
+    sockets[0]!.open();
+    sockets[0]!.message({
+      event: 'sync',
+      data: { cursor: 10, requiresPull: true, reason: 'server-wakeup' },
+    });
+
+    expect(client.syncPulls).toBe(0);
+    await waitFor(() => scheduledDelay !== undefined);
+    expect(scheduledDelay).toBe(50);
+    scheduledHandler?.();
+    await waitFor(() => client.syncPulls === 1);
+    controller.stop();
+  });
+
   it('runs a follow-up pull when wakeups arrive during an active pull', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
@@ -616,6 +706,44 @@ describe('Syncular worker realtime', () => {
     expect(liveEventVersions(events)).toEqual([1, 2]);
   });
 
+  it('skips queued wakeup pulls already covered by the active pull cursor', async () => {
+    const client = new FakeRealtimeClient();
+    const sockets: FakeRealtimeSocket[] = [];
+    const controller = new SyncularWorkerRealtimeController({
+      getClient: () => client,
+      getConfig: () => ({
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client-1',
+      }),
+      getLocationOrigin: () => 'https://app.example',
+      createWebSocket: (url) => {
+        const socket = new FakeRealtimeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+      postEvent: () => {},
+    });
+
+    controller.start({ heartbeatTimeoutMs: 0 });
+    sockets[0]!.open();
+    client.queuePullCursor(10);
+    sockets[0]!.message({
+      event: 'sync',
+      data: { cursor: 10, requiresPull: true },
+    });
+    sockets[0]!.message({
+      event: 'sync',
+      data: { cursor: 8, requiresPull: true },
+    });
+    await waitFor(() => client.syncPulls === 1);
+
+    client.resolvePull();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    expect(client.syncPulls).toBe(1);
+  });
+
   it('reconnects after close and ignores stale socket wakeups', async () => {
     const client = new FakeRealtimeClient();
     const sockets: FakeRealtimeSocket[] = [];
@@ -650,8 +778,10 @@ describe('Syncular worker realtime', () => {
     expect(client.syncPulls).toBe(0);
 
     sockets[1]!.open();
-    sockets[1]!.message({ event: 'sync' });
     await waitFor(() => client.syncPulls === 1);
+    sockets[0]!.message({ event: 'sync' });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(client.syncPulls).toBe(1);
     client.resolvePull();
 
     expect(
@@ -715,6 +845,7 @@ class FakeRealtimeClient implements SyncularWorkerRealtimeClient {
   realtimeSyncPacks: Uint8Array[] = [];
   #pullResolvers: Array<() => void> = [];
   #drains: Array<Array<SyncularLiveQueryEvent<Record<string, unknown>>>> = [];
+  #pullCursors: number[] = [];
 
   syncPull(
     options: SyncularSyncRequestOptions = {}
@@ -727,13 +858,17 @@ class FakeRealtimeClient implements SyncularWorkerRealtimeClient {
           changedTables: [],
           changedRows: [],
           changedRowsTruncated: false,
-          subscriptions: [],
+          subscriptions: subscriptionResults(this.#pullCursors.shift()),
           bootstrap: zeroBootstrapStatus(),
           pushedCommits: 0,
           timings: zeroSyncTimings(),
         })
       );
     });
+  }
+
+  queuePullCursor(cursor: number): void {
+    this.#pullCursors.push(cursor);
   }
 
   async applyRealtimeSyncPack(bytes: Uint8Array): Promise<SyncularSyncResult> {
@@ -837,6 +972,28 @@ function zeroSyncTimings(): SyncularSyncResult['timings'] {
     subscriptionStateMs: 0,
     notifyMs: 0,
   };
+}
+
+function subscriptionResults(
+  cursor: number | undefined
+): SyncularSyncResult['subscriptions'] {
+  if (cursor === undefined) return [];
+  return [
+    {
+      id: 'tasks-subscription',
+      table: 'tasks',
+      status: 'active',
+      scopes: {},
+      nextCursor: cursor,
+      bootstrapPhase: 0,
+      bootstrapState: null,
+      ready: true,
+      phase: 'live',
+      progressPercent: 100,
+      snapshotRows: [],
+      commits: [],
+    },
+  ];
 }
 
 function zeroBootstrapStatus(): SyncularBootstrapStatus {

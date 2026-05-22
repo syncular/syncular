@@ -156,6 +156,10 @@ Implications:
 - HTTP pull remains the recovery/checkpoint path.
 - Reconnect, overflow, auth refresh, and schema mismatch must produce explicit
   resync/recovery behavior.
+- Reconnecting workers must run a catch-up sync so writes committed while the
+  websocket was down are recovered.
+- Cursor-only or overflow HTTP recovery should be jitterable so a client fleet
+  does not stampede the recovery endpoint.
 - Server-side direct WebSocket sync-pack size caps are explicit configuration.
   When no binary delta is produced, diagnostics must distinguish that from an
   oversized payload so HTTP recovery is not mistaken for the fast path.
