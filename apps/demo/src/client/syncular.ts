@@ -1,6 +1,6 @@
 import {
   getSyncularV2RuntimeArtifact,
-  isSyncularV2OfflineError,
+  SyncularV2ClientLifecycle,
 } from '@syncular/client';
 import {
   createSyncularAppDatabase,
@@ -24,8 +24,6 @@ export type DemoTask = Pick<
 export interface DemoClientHandle {
   name: DemoClientName;
   database: SyncularAppDatabase;
-  startRealtime(): Promise<void>;
-  syncNow(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -94,12 +92,10 @@ function startConsoleDiagnosticPublishing(
     database.client.addEventListener('conflictsChanged', schedulePublish),
     database.client.addEventListener('blobUploadsChanged', schedulePublish),
   ];
-  const interval = window.setInterval(schedulePublish, 2_500);
   schedulePublish();
 
   return () => {
     closed = true;
-    window.clearInterval(interval);
     for (const stop of stopListening) stop();
   };
 }
@@ -123,47 +119,39 @@ export async function openDemoClient(
     runtimeArtifacts: [getSyncularV2RuntimeArtifact('full')],
     subscriptions: [taskSubscription({ actorId })],
     sync: {
-      autoSyncAfterMutation: false,
       rowsChangedDebounceMs: 25,
+      mutationSyncDebounceMs: 25,
     },
   });
 
-  const startRealtime = async () => {
-    await database.client.startRealtime({
+  const lifecycle = new SyncularV2ClientLifecycle(database.client, {
+    realtime: {
       params: { token: demoToken },
       initialReconnectDelayMs: 500,
       maxReconnectDelayMs: 5_000,
-    });
-  };
-
-  const syncNow = async () => {
-    await database.client.syncOnce();
-  };
-
-  if (browserIsOnline()) await ignoreOffline(syncNow());
-  if (browserIsOnline()) await ignoreOffline(startRealtime());
-  const stopConsoleDiagnostics = startConsoleDiagnosticPublishing(
-    `demo-${name}`,
-    database
-  );
-
-  return {
-    name,
-    database,
-    startRealtime,
-    syncNow,
-    close: async () => {
-      stopConsoleDiagnostics();
-      await database.close();
     },
-  };
-}
+    pollIntervalMs: false,
+  });
 
-async function ignoreOffline(promise: Promise<void>): Promise<void> {
   try {
-    await promise;
+    await lifecycle.start();
+    const stopConsoleDiagnostics = startConsoleDiagnosticPublishing(
+      `demo-${name}`,
+      database
+    );
+
+    return {
+      name,
+      database,
+      close: async () => {
+        stopConsoleDiagnostics();
+        await lifecycle.stop();
+        await database.close();
+      },
+    };
   } catch (error) {
-    if (!isSyncularV2OfflineError(error) && browserIsOnline()) throw error;
+    await database.close();
+    throw error;
   }
 }
 

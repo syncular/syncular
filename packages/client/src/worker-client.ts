@@ -20,6 +20,7 @@ import {
   isGeneratedSyncularV2OperationalStateWorkerRequestType,
   type SyncularV2GeneratedWorkerRequestInput,
 } from './generated-bridge';
+import { browserSyncularV2NetworkStatusSource } from './network';
 import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   CreateSyncularV2DatabaseOptions,
@@ -71,6 +72,7 @@ import type {
   SyncularV2LocalSupportBundleImportReport,
   SyncularV2LocalSyncResetReport,
   SyncularV2LocalSyncResetRequest,
+  SyncularV2NetworkStatusSource,
   SyncularV2OutboxStats,
   SyncularV2PresenceEntry,
   SyncularV2PresenceSink,
@@ -145,6 +147,10 @@ export async function createSyncularV2WorkerClient(
     authLifecycle: options.authLifecycle,
     diagnostics: options.diagnostics,
     rowsChangedDebounceMs: options.sync?.rowsChangedDebounceMs,
+    network:
+      options.sync?.network === false
+        ? undefined
+        : (options.sync?.network ?? browserSyncularV2NetworkStatusSource()),
     blobLimits: options.blobLimits,
   });
   try {
@@ -243,6 +249,9 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
   #lastConflictStats: SyncularV2ConflictStats | undefined;
   #lastBlobUploadStats: SyncularV2BlobUploadQueueStats | undefined;
   #blobLimits: CreateSyncularV2DatabaseOptions['blobLimits'];
+  #network: SyncularV2NetworkStatusSource | undefined;
+  #networkOnline: boolean | undefined;
+  #unsubscribeNetwork: (() => void) | undefined;
   #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
   #rowsChangedListeners = new Set<SyncularV2RowsChangedSink>();
   #eventListeners = new Map<
@@ -265,6 +274,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
       authLifecycle?: CreateSyncularV2DatabaseOptions['authLifecycle'];
       diagnostics?: SyncularV2DiagnosticSink;
       rowsChangedDebounceMs?: number | false;
+      network?: SyncularV2NetworkStatusSource;
       blobLimits?: CreateSyncularV2DatabaseOptions['blobLimits'];
     }
   ) {
@@ -273,6 +283,9 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     this.#getHeaders = options.getHeaders;
     this.#authLifecycle = options.authLifecycle;
     this.#blobLimits = options.blobLimits;
+    this.#network = options.network;
+    this.#networkOnline = this.#network?.isOnline();
+    this.#unsubscribeNetwork = this.#subscribeNetworkEvents();
     this.#rowsChangedDebounceMs =
       options.rowsChangedDebounceMs === false
         ? false
@@ -1045,26 +1058,30 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     const hasFailedBlobUploads = (blobUploads?.failed ?? 0) > 0;
     const authRequired =
       this.#authRequired || this.#lastError?.code === 'sync.auth_required';
+    const offline = this.#networkOnline === false;
+    const pendingSyncRequests = this.#pendingSyncRequestCount();
     const phase: SyncularV2LifecycleState['phase'] = this.#closed
       ? 'closed'
       : authRequired
         ? 'authRequired'
-        : this.#recoveryRequired || bootstrap?.isBootstrapping === true
-          ? 'recovering'
-          : this.#pending.size > 0
-            ? 'syncing'
-            : this.#realtimeState === 'connecting'
-              ? 'connecting'
-              : hasFailedOutbox || hasConflicts || hasFailedBlobUploads
-                ? 'degraded'
-                : bootstrap?.complete === true
-                  ? 'complete'
-                  : 'offline';
+        : offline
+          ? 'offline'
+          : this.#recoveryRequired || bootstrap?.isBootstrapping === true
+            ? 'recovering'
+            : pendingSyncRequests > 0
+              ? 'syncing'
+              : this.#realtimeState === 'connecting'
+                ? 'connecting'
+                : hasFailedOutbox || hasConflicts || hasFailedBlobUploads
+                  ? 'degraded'
+                  : bootstrap?.complete === true
+                    ? 'complete'
+                    : 'offline';
 
     return {
       phase,
       realtime: this.#realtimeState,
-      online: this.#realtimeState === 'connected',
+      online: this.#networkOnline ?? this.#realtimeState === 'connected',
       requiresAction:
         authRequired || hasFailedOutbox || hasConflicts || hasFailedBlobUploads,
       pendingRequests: this.#pending.size,
@@ -1266,6 +1283,8 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     if (this.#closed) return;
     this.#closed = true;
     this.#realtimeState = 'disconnected';
+    this.#unsubscribeNetwork?.();
+    this.#unsubscribeNetwork = undefined;
     this.#emitLifecycleChanged();
     try {
       await this.#request({ type: 'close' });
@@ -1297,7 +1316,9 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     >,
     options: { refreshAuthHeaders: boolean } = { refreshAuthHeaders: true }
   ): Promise<SyncularV2SyncResult> {
-    if (options.refreshAuthHeaders) await this.#refreshAuthHeaders();
+    if (options.refreshAuthHeaders) {
+      await this.#refreshAuthHeaders({ restartRealtime: false });
+    }
     try {
       const result = await this.#requestAndDrain<SyncularV2SyncResult>(request);
       this.#emitBootstrapChanged(result);
@@ -1305,7 +1326,7 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     } catch (error) {
       const shouldRetry = await this.#resolveAuthRetry(error, 'sync');
       if (!shouldRetry) throw error;
-      await this.#refreshAuthHeaders();
+      await this.#refreshAuthHeaders({ restartRealtime: false });
       const result = await this.#requestAndDrain<SyncularV2SyncResult>(request);
       this.#emitBootstrapChanged(result);
       return result;
@@ -1579,6 +1600,37 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     }
     this.#lastLifecycleState = state;
     this.#emitClientEvent('lifecycleChanged', state);
+  }
+
+  #pendingSyncRequestCount(): number {
+    let count = 0;
+    for (const pending of this.#pending.values()) {
+      if (
+        pending.type === 'syncOnce' ||
+        pending.type === 'syncPull' ||
+        pending.type === 'syncPush'
+      ) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  #subscribeNetworkEvents(): (() => void) | undefined {
+    const network = this.#network;
+    if (!network?.addEventListener || !network.removeEventListener) return;
+    const refresh = () => {
+      const next = network.isOnline();
+      if (next === this.#networkOnline) return;
+      this.#networkOnline = next;
+      this.#emitLifecycleChanged();
+    };
+    network.addEventListener('online', refresh);
+    network.addEventListener('offline', refresh);
+    return () => {
+      network.removeEventListener?.('online', refresh);
+      network.removeEventListener?.('offline', refresh);
+    };
   }
 
   #hasClientEventListeners(event: SyncularV2ClientEventType): boolean {

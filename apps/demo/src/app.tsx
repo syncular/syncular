@@ -1,4 +1,4 @@
-import { isSyncularV2OfflineError } from '@syncular/client';
+import type { SyncularV2LifecycleState } from '@syncular/client';
 import {
   CheckCircle2,
   Circle,
@@ -25,7 +25,6 @@ interface ClientState {
   tasks: DemoTask[];
   status: ClientStatus;
   error: string | null;
-  lastSyncAt: number | null;
   canUndo: boolean;
   canRedo: boolean;
 }
@@ -35,7 +34,6 @@ const initialClientState: ClientState = {
   tasks: [],
   status: 'opening',
   error: null,
-  lastSyncAt: null,
   canUndo: false,
   canRedo: false,
 };
@@ -43,21 +41,11 @@ const initialClientState: ClientState = {
 export function App() {
   const [left, setLeft] = useState<ClientState>(initialClientState);
   const [right, setRight] = useState<ClientState>(initialClientState);
-  const leftRef = useRef(left);
-  const rightRef = useRef(right);
 
   const completedCount = useMemo(
     () => left.tasks.filter((task) => task.completed).length,
     [left.tasks]
   );
-
-  useEffect(() => {
-    leftRef.current = left;
-  }, [left]);
-
-  useEffect(() => {
-    rightRef.current = right;
-  }, [right]);
 
   useEffect(() => {
     const cleanups: Array<() => void | Promise<void>> = [];
@@ -75,7 +63,9 @@ export function App() {
         }
 
         const applyLifecycle = () => {
-          const nextStatus = statusFromHandle(handle);
+          const nextStatus = statusFromLifecycle(
+            handle.database.client.lifecycleState()
+          );
           setClient((state) => ({
             ...state,
             status: nextStatus,
@@ -105,14 +95,15 @@ export function App() {
           return handle.close();
         });
 
-        const status = statusFromHandle(handle);
+        const status = statusFromLifecycle(
+          handle.database.client.lifecycleState()
+        );
         const commandState = await readCommandState(handle);
         setClient((state) => ({
           ...state,
           handle,
           status,
           error: null,
-          lastSyncAt: Date.now(),
           ...commandState,
         }));
       } catch (err) {
@@ -128,22 +119,6 @@ export function App() {
       await open('left', setLeft);
       await open('right', setRight);
     })();
-
-    const markOffline = () => {
-      setLeft(markClientOffline);
-      setRight(markClientOffline);
-    };
-    const syncOnline = () => {
-      void syncAfterOnline(leftRef.current, setLeft);
-      void syncAfterOnline(rightRef.current, setRight);
-    };
-
-    window.addEventListener('offline', markOffline);
-    window.addEventListener('online', syncOnline);
-    cleanups.push(() => {
-      window.removeEventListener('offline', markOffline);
-      window.removeEventListener('online', syncOnline);
-    });
 
     return () => {
       disposed = true;
@@ -217,7 +192,6 @@ function ClientPane({
         user_id: 'demo-user',
         project_id: null,
       });
-      await syncNowIfOnline(handle);
     });
   };
 
@@ -225,7 +199,6 @@ function ClientPane({
     if (!state.handle || !state.canUndo) return;
     await runClientAction(setState, state.handle, async (handle) => {
       await handle.database.commandHistory.undoLast();
-      await syncNowIfOnline(handle);
     });
   };
 
@@ -233,7 +206,6 @@ function ClientPane({
     if (!state.handle || !state.canRedo) return;
     await runClientAction(setState, state.handle, async (handle) => {
       await handle.database.commandHistory.redoLast();
-      await syncNowIfOnline(handle);
     });
   };
 
@@ -333,7 +305,6 @@ function TaskRow({
         },
         { baseVersion: task.server_version }
       );
-      await syncNowIfOnline(client);
     });
   };
 
@@ -343,7 +314,6 @@ function TaskRow({
       await client.database.mutations.tasks.delete(task.id, {
         baseVersion: task.server_version,
       });
-      await syncNowIfOnline(client);
     });
   };
 
@@ -399,31 +369,19 @@ async function runClientAction(
 ) {
   setState((state) => ({
     ...state,
-    status: 'syncing',
     error: null,
   }));
   try {
     await action(handle);
-    const status = statusFromHandle(handle);
+    const status = statusFromLifecycle(handle.database.client.lifecycleState());
     const commandState = await readCommandState(handle);
     setState((state) => ({
       ...state,
       status,
-      lastSyncAt: Date.now(),
       error: null,
       ...commandState,
     }));
   } catch (err) {
-    if (isOfflineCondition(err)) {
-      const commandState = await readCommandState(handle);
-      setState((state) => ({
-        ...state,
-        status: 'offline',
-        error: null,
-        ...commandState,
-      }));
-      return;
-    }
     setState((state) => ({
       ...state,
       status: 'error',
@@ -458,9 +416,9 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function statusFromHandle(handle: DemoClientHandle): ClientStatus {
-  if (!browserIsOnline()) return 'offline';
-  const lifecycle = handle.database.client.lifecycleState();
+function statusFromLifecycle(
+  lifecycle: SyncularV2LifecycleState
+): ClientStatus {
   if (
     lifecycle.phase === 'syncing' ||
     lifecycle.phase === 'recovering' ||
@@ -471,38 +429,4 @@ function statusFromHandle(handle: DemoClientHandle): ClientStatus {
   if (lifecycle.phase === 'offline') return 'offline';
   if (lifecycle.requiresAction) return 'error';
   return 'ready';
-}
-
-function markClientOffline(state: ClientState): ClientState {
-  if (!state.handle) return state;
-  return {
-    ...state,
-    status: 'offline',
-    error: null,
-  };
-}
-
-async function syncAfterOnline(
-  state: ClientState,
-  setState: Dispatch<SetStateAction<ClientState>>
-): Promise<void> {
-  const handle = state.handle;
-  if (!handle) return;
-  await runClientAction(setState, handle, async (client) => {
-    await client.startRealtime();
-    await client.syncNow();
-  });
-}
-
-async function syncNowIfOnline(handle: DemoClientHandle): Promise<void> {
-  if (!browserIsOnline()) return;
-  await handle.syncNow();
-}
-
-function isOfflineCondition(error: unknown): boolean {
-  return !browserIsOnline() || isSyncularV2OfflineError(error);
-}
-
-function browserIsOnline(): boolean {
-  return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
