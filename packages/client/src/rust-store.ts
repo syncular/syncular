@@ -7,7 +7,6 @@ import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   SyncularV2AppSchema,
   SyncularV2ChangedRow,
-  SyncularV2ClientConfig,
   SyncularV2LiveQueryDependencyHint,
   SyncularV2LiveQueryDiagnostics,
   SyncularV2RowsChangedEvent,
@@ -28,9 +27,6 @@ export interface SyncularRustOwnedSqliteConfig {
   schemaVersion?: number;
   appSchema?: SyncularV2AppSchema;
 }
-
-export interface SyncularRustOwnedSqliteClientConfig
-  extends SyncularV2ClientConfig {}
 
 export interface CreateSyncularRustOwnedSqliteOptions {
   module?: SyncularV2WasmGlue | Promise<SyncularV2WasmGlue>;
@@ -126,7 +122,7 @@ export interface SyncularRustOwnedSchemaState {
   updatedAt: number | null;
 }
 
-export interface SyncularRustSqliteExecutor {
+export interface SyncularRustOwnedSqliteExecutor {
   executeSql<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params?: readonly unknown[]
@@ -135,22 +131,22 @@ export interface SyncularRustSqliteExecutor {
     sql: string,
     params: readonly unknown[],
     tables: readonly string[]
-  ): RustOwnedLiveQuerySnapshot<Row>;
+  ): SyncularRustOwnedLiveQuerySnapshot<Row>;
   unsubscribeQuery(id: string): void;
   drainLiveQueryEvents<
     Row extends Record<string, unknown> = Record<string, unknown>,
-  >(): Array<RustOwnedLiveQueryEvent<Row>>;
+  >(): Array<SyncularRustOwnedLiveQueryEvent<Row>>;
   close?(): void;
 }
 
-export interface RustOwnedLiveQuerySnapshot<
+export interface SyncularRustOwnedLiveQuerySnapshot<
   Row extends Record<string, unknown> = Record<string, unknown>,
 > {
   id: string;
   rows: Row[];
 }
 
-export interface RustOwnedLiveQueryEvent<
+export interface SyncularRustOwnedLiveQueryEvent<
   Row extends Record<string, unknown> = Record<string, unknown>,
 > {
   queryId: string;
@@ -169,7 +165,9 @@ export async function createSyncularRustOwnedSqlite(
   );
 }
 
-export class SyncularRustOwnedSqlite implements SyncularRustSqliteExecutor {
+export class SyncularRustOwnedSqlite
+  implements SyncularRustOwnedSqliteExecutor
+{
   constructor(private readonly raw: RawSyncularRustOwnedSqlite) {}
 
   executeSql<Row extends Record<string, unknown> = Record<string, unknown>>(
@@ -202,7 +200,7 @@ export class SyncularRustOwnedSqlite implements SyncularRustSqliteExecutor {
     params: readonly unknown[],
     tables: readonly string[],
     hints: readonly SyncularV2LiveQueryDependencyHint[] = []
-  ): RustOwnedLiveQuerySnapshot<Row> {
+  ): SyncularRustOwnedLiveQuerySnapshot<Row> {
     return parseJson(
       this.raw.subscribeQueryJson(
         sql,
@@ -219,7 +217,7 @@ export class SyncularRustOwnedSqlite implements SyncularRustSqliteExecutor {
 
   drainLiveQueryEvents<
     Row extends Record<string, unknown> = Record<string, unknown>,
-  >(): Array<RustOwnedLiveQueryEvent<Row>> {
+  >(): Array<SyncularRustOwnedLiveQueryEvent<Row>> {
     return parseJson(this.raw.drainLiveQueryEventsJson());
   }
 
