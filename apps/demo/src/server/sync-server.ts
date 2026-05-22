@@ -91,7 +91,12 @@ export async function startDemoSyncServer(
     upgradeWebSocket,
     console: {
       token: DEMO_CONSOLE_TOKEN,
-      corsOrigins: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+      corsOrigins: [
+        'http://localhost:3000',
+        'http://127.0.0.1:3000',
+        'http://localhost:5173',
+        'http://127.0.0.1:5173',
+      ],
     },
   });
 

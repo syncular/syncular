@@ -165,6 +165,30 @@ type ApiKeysResponse = {
   limit: number;
 };
 
+type ClientDiagnosticsResponse = {
+  items: Array<{
+    clientId: string;
+    actorId: string | null;
+    partitionId: string;
+    runtime: {
+      packageName?: string;
+      rust?: { crateName?: string; schemaVersion?: number };
+    } | null;
+    lifecycle: Record<string, unknown> | null;
+    transportStats: Record<string, unknown> | null;
+    subscriptions: Array<{ id: string; table: string; scopeKeys: string[] }>;
+    recentDiagnostics: Array<{
+      level: 'debug' | 'info' | 'warn' | 'error';
+      source: string;
+      code: string;
+      syncAttemptId?: string;
+    }>;
+  }>;
+  total: number;
+  offset: number;
+  limit: number;
+};
+
 function timelineItemKey(item: TimelineResponse['items'][number]): string {
   if (item.type === 'commit') {
     return `C${item.commit?.commitSeq ?? 'unknown'}`;
@@ -298,6 +322,36 @@ describe('console timeline route filters', () => {
         headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
       }
     );
+  }
+
+  async function postClientDiagnostic(body: unknown): Promise<Response> {
+    return app.request('http://localhost/console/client-diagnostics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${CONSOLE_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function readClientDiagnostics(
+    query: Record<string, string | number | undefined> = {}
+  ): Promise<ClientDiagnosticsResponse> {
+    const params = new URLSearchParams({ limit: '50', offset: '0' });
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+
+    const response = await app.request(
+      `http://localhost/console/client-diagnostics?${params.toString()}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(response.status).toBe(200);
+    return (await response.json()) as ClientDiagnosticsResponse;
   }
 
   async function requestEvents(
@@ -1889,6 +1943,97 @@ describe('console timeline route filters', () => {
     expect(tenantOps.total).toBe(1);
     expect(tenantOps.items[0]?.partitionId).toBe('tenant-b');
     expect(tenantOps.items[0]?.operationType).toBe('notify_data_change');
+  });
+
+  it('ingests and lists redacted Rust client diagnostic snapshots', async () => {
+    const response = await postClientDiagnostic({
+      clientId: 'client-rust',
+      actorId: 'actor-rust',
+      partitionId: 'default',
+      lifecycle: {
+        phase: 'complete',
+        realtime: 'connected',
+        online: true,
+        requiresAction: false,
+        pendingRequests: 0,
+      },
+      snapshot: {
+        generatedAt: baseTimeMs,
+        runtime: {
+          packageName: '@syncular/client',
+          packageVersion: '0.0.0',
+          workerProtocolVersion: 2,
+          storage: 'indexedDb',
+          rust: {
+            crateName: 'syncular-runtime',
+            crateVersion: '0.0.0',
+            schemaVersion: 3,
+            features: ['web-owned-sqlite', 'realtime'],
+          },
+        },
+        connection: {
+          closed: false,
+          pendingRequests: 0,
+          realtime: 'connected',
+        },
+        subscriptions: [
+          {
+            id: 'tasks:owner',
+            table: 'tasks',
+            scopeKeys: ['user_id'],
+            scopeValueCount: 1,
+            paramsKeys: ['actorId'],
+            paramsValueCount: 1,
+            status: 'active',
+            ready: true,
+            phase: 'complete',
+            progressPercent: 100,
+            cursor: 2,
+            bootstrapPhase: 0,
+            bootstrapState: null,
+          },
+        ],
+        recentDiagnostics: [
+          {
+            at: baseTimeMs,
+            level: 'info',
+            source: 'sync',
+            code: 'sync.pull.applied',
+            message: 'pull applied',
+            syncAttemptId: 'attempt-1',
+          },
+        ],
+        recentSyncTimings: [{ totalMs: 12, pullApplyMs: 4 }],
+        transportStats: {
+          requestCount: 2,
+          responseBytes: 512,
+          snapshotArtifactCount: 1,
+        },
+      },
+    });
+
+    expect(response.status).toBe(202);
+    const accepted =
+      (await response.json()) as ClientDiagnosticsResponse['items'][number];
+    expect(accepted.clientId).toBe('client-rust');
+    expect(accepted.runtime?.rust?.crateName).toBe('syncular-runtime');
+    expect(accepted.subscriptions[0]?.scopeKeys).toEqual(['user_id']);
+    expect(accepted.recentDiagnostics[0]?.syncAttemptId).toBe('attempt-1');
+
+    const list = await readClientDiagnostics({ clientId: 'client-rust' });
+    expect(list.total).toBe(1);
+    expect(list.items[0]?.transportStats?.responseBytes).toBe(512);
+
+    const detail = await app.request(
+      'http://localhost/console/client-diagnostics/client-rust',
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(detail.status).toBe(200);
+    const detailPayload =
+      (await detail.json()) as ClientDiagnosticsResponse['items'][number];
+    expect(detailPayload.lifecycle?.phase).toBe('complete');
   });
 
   it('guards detail endpoints and client eviction with partition filters', async () => {
