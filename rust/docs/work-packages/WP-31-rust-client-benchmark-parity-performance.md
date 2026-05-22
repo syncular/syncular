@@ -678,14 +678,22 @@ Decision:
 The unsupported benchmark rows are now covered by native Rust client behavior.
 The next optimization slices should be evidence-gated and scoped:
 
+- Evaluate adaptive Rust outbox batching beyond the fixed
+  `config.push.outboxBatchLimit` knob. The accepted benchmark shows `100` is
+  better than the default `20` for the `1000`-write fixture, but larger batches
+  are slower, so any default change needs payload/request-size measurement and
+  rollback evidence.
 - Add a browser-worker durable storage lane before accepting process-restart
   outbox/blob durability in this benchmark.
 - Keep online-propagation on binary-pack regression watch; only tune direct
   websocket payload caps if future runs report non-null `payloadBytes` and
   `payload-too-large`.
-- For reconnect storm, evaluate binary payload support for external row-change
-  notifications or server/relay-side recovery fanout before more client-side
-  retry tuning.
 - If blob retry latency still matters, evaluate an explicit manual
   `retryNow`/online-event path instead of lowering automatic blob retry delay
   below `100ms`.
+
+The `250`-client reconnect cliff is no longer a WP-31 client tuning item. It is
+handed off to
+[`WP-32 Realtime Recovery Fanout And External Notification Payloads`](WP-32-realtime-recovery-fanout-external-notifications.md),
+because fixing it requires server/realtime fanout design rather than more
+client-side retry backoff changes.
