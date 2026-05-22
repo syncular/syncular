@@ -688,7 +688,6 @@ export type SyncularV2ConflictResolution =
   | 'keep-local'
   | 'keep-server'
   | 'dismiss'
-  | 'accept-server'
   | (string & {});
 
 export interface SyncularV2SubscriptionResult {
