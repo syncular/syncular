@@ -1,4 +1,6 @@
 import { describe, expect, it } from 'bun:test';
+import { decodeBinarySyncPack } from '@syncular/core';
+import { notifyWebSocketConnectionsWithSyncPacks } from '../realtime-sync-packs';
 import {
   createWebSocketConnectionOwnerKey,
   type WebSocketConnection,
@@ -341,6 +343,77 @@ describe('WebSocketConnectionManager (scopes)', () => {
     });
 
     expect(seen).toEqual([{ kind: 'binary', bytes: 80 * 1024 }]);
+  });
+
+  it('builds scoped binary realtime packs for known external row changes', async () => {
+    const mgr = new WebSocketConnectionManager({ heartbeatIntervalMs: 0 });
+    const binaryPacks: Uint8Array[] = [];
+    const binary = createConn({
+      actorId: 'u1',
+      clientId: 'binary',
+      syncPackEncoding: 'binary-sync-pack-v1',
+      onSync: () => {},
+      onSyncPack: (bytes) => binaryPacks.push(bytes),
+    });
+
+    mgr.register(binary);
+    mgr.updateConnectionSubscriptions(binary.ownerKey, [
+      {
+        id: 'tasks',
+        table: 'tasks',
+        scopes: { project_id: 'p1' },
+        scopeKeys: ['default::project:p1'],
+        cursor: 0,
+        verifiedRoot: null,
+      },
+    ]);
+
+    const result = await notifyWebSocketConnectionsWithSyncPacks({
+      manager: mgr,
+      partitionId: 'default',
+      scopeKeys: ['default::project:p1'],
+      cursor: 1,
+      commits: [
+        {
+          commitSeq: 1,
+          createdAt: '2026-05-22T00:00:00.000Z',
+          actorId: '__external__',
+          changes: [
+            {
+              table: 'tasks',
+              row_id: 't1',
+              op: 'upsert',
+              row_json: {
+                id: 't1',
+                project_id: 'p1',
+                title: 'Updated externally',
+              },
+              row_version: 2,
+              scopes: { project_id: 'p1' },
+            },
+          ],
+        },
+      ],
+    });
+
+    expect(result).toMatchObject({
+      connectionCount: 1,
+      ownerCount: 1,
+      binaryPackOwnerCount: 1,
+      unavailableOwnerCount: 0,
+      encodeFailureCount: 0,
+    });
+    expect(binaryPacks).toHaveLength(1);
+
+    const decoded = decodeBinarySyncPack(binaryPacks[0]!);
+    expect(
+      decoded.pull?.subscriptions[0]?.commits[0]?.changes[0]
+    ).toMatchObject({
+      table: 'tasks',
+      row_id: 't1',
+      op: 'upsert',
+      row_version: 2,
+    });
   });
 
   it('sends resync-required frames while a connection is over its in-flight limit', () => {

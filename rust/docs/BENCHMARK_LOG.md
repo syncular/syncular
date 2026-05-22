@@ -6462,3 +6462,100 @@ Decision:
   enough payload for binary websocket packs, or add a server/relay-side recovery
   fanout design that avoids hundreds of clients performing identical HTTP
   recovery pulls at once.
+
+## 2026-05-22 - WP-32 External Notification Binary Packs
+
+Work package: [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](work-packages/WP-32-realtime-recovery-fanout-external-notifications.md)
+
+Change:
+
+- Moved the server/Hono realtime binary sync-pack construction into
+  `realtime-sync-packs.ts` so normal pushes and known external row-change
+  notifications can use the same scoped binary payload path.
+- Updated the external benchmark Syncular app to turn the synthetic external
+  row commit into a scoped binary websocket sync-pack instead of a cursor-only
+  `notifyAllClients` wakeup.
+- Capped worker realtime reconnect jitter at `maxReconnectDelayMs`; this keeps
+  the option's ceiling meaningful, but is not claimed as the `250`-client fix.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd rust/bindings/javascript build:wasm
+bun --cwd packages/client build
+bun --cwd packages/server-hono tsgo
+bun test packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+bun --cwd packages/client test src/worker-realtime.test.ts
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_RECONNECT_MODE=worker-realtime \
+SYNCULAR_RUST_RECONNECT_CLIENT_COUNTS=25,125 \
+  bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_RECONNECT_MODE=worker-realtime \
+SYNCULAR_RUST_RECONNECT_CLIENT_COUNTS=250 \
+  bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  bun run bench:run -- --stack syncular-rust --scenario online-propagation
+```
+
+Result:
+
+| Scenario | Run ID | Scale | Result |
+| --- | --- | ---: | --- |
+| Reconnect baseline before helper | `2026-05-22T14-17-01-204Z` | `25` | convergence `129.34ms`, visible p95 `129.16ms`, requests `50`, binary applies `0`, pull-required `50` |
+| Reconnect baseline before helper | `2026-05-22T14-17-01-204Z` | `125` | convergence `2009.92ms`, visible p95 `2009.69ms`, requests `250`, binary applies `0`, pull-required `250` |
+| Binary external helper | `2026-05-22T14-43-40-460Z` | `25` | convergence `39.91ms`, visible p95 `39.73ms`, requests `25`, binary applies `25`, reconnect pulls `25` |
+| Binary external helper | `2026-05-22T14-43-40-460Z` | `125` | convergence `89.14ms`, visible p95 `86.33ms`, requests `125`, binary applies `125`, reconnect pulls `125` |
+| Binary external helper | `2026-05-22T14-41-55-010Z` | `250` | convergence `2027.66ms`, visible p50 `209.01ms`, visible p95 `2026.47ms`, requests `250`, binary applies `250`, reconnect pulls `250` |
+| Online propagation guard | `2026-05-22T14-45-03-883Z` | `15` iterations | reader visibility p50 `9.34ms`, p95 `12.28ms`, binary applies `15`, pull-required `0` |
+
+Rejected candidate:
+
+- A client-only experiment moved reconnect catch-up behind `hello.requiresSync`.
+  It was rejected because a sync-service restart loses in-memory realtime
+  subscription roots; without the immediate reconnect pull, external
+  notifications cannot build scoped binary packs and fall back to cursor-only
+  `server-wakeup` recovery.
+- Rejected run `2026-05-22T14-36-14-730Z`: `250` clients, convergence
+  `2031.04ms`, visible p95 `2030.24ms`, requests `250`, binary applies `0`,
+  pull-required `250` with reason `server-wakeup`.
+
+Decision:
+
+- Retain the TypeScript/Hono binary external notification helper and benchmark
+  harness update. This removes the duplicate cursor-only external-write HTTP
+  recovery at `25` and `125` clients and keeps online propagation on the binary
+  fast path.
+- Retain the reconnect jitter cap as a correctness fix for the option, but do
+  not claim it solves the `250`-client reconnect tail. The retained and rejected
+  runs show the remaining tail is in reconnect/subscription metadata recovery
+  after process restart, not binary apply cost.
+- Next WP-32 work should persist or reconstruct realtime subscription metadata
+  across sync-service restarts, then evaluate bounded replay/recovery fanout.
+  Rust remains out of the server app path unless byte-preserving protocol
+  encode/validate becomes the measured bottleneck.
