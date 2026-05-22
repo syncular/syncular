@@ -13,9 +13,9 @@ import {
   type SyncularV2ClientEventType,
   type SyncularV2ConflictResolution,
   type SyncularV2ConflictSummary,
+  type SyncularV2DiagnosticSnapshot,
   type SyncularV2PresenceEntry,
   type SyncularV2PresenceSink,
-  type SyncularV2DiagnosticSnapshot,
   type SyncularV2SubscriptionSpec,
   type SyncularV2SyncResult,
 } from '@syncular/client';

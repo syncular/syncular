@@ -3,17 +3,17 @@ import { gzipSync } from 'node:zlib';
 import { SYNCULAR_ERROR_DEFINITIONS } from '../src/error-responses';
 import {
   type BinarySnapshotTable,
-  createSnapshotManifest,
   createScopedSnapshotArtifactManifest,
+  createSnapshotManifest,
   decodeBinarySnapshotTable,
   decodeSnapshotRows,
   encodeBinarySnapshotTable,
   encodeSnapshotRows,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
   SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
+  SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-  SYNC_SNAPSHOT_CHUNK_COMPRESSION,
 } from '../src/snapshot-chunks';
 import {
   encodeBinarySyncPack,
