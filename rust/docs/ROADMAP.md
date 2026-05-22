@@ -175,7 +175,14 @@ read-only review:
     subscription scope shrink to clear only revoked scope rows; permission
     change now converges in one sync attempt at `38.95ms`, keeps the retained
     project visible at `500` rows throughout, and halves requests/bytes versus
-    the previous two-sync full-clear/reload path.
+    the previous two-sync full-clear/reload path. Slice 10 adds worker
+    realtime reconnect catch-up, reconnect/recovery jitter knobs, and a
+    worker-realtime reconnect benchmark lane. This fixes missed-change
+    correctness on websocket reconnect and improves the `125`-client reconnect
+    path versus direct HTTP, but the `250`-client external-write storm still
+    hits an approximately `2s` cursor-only HTTP recovery cliff; next work should
+    target binary payloads for external notifications or server/relay-side
+    recovery fanout.
 - `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table

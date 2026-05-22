@@ -39,6 +39,8 @@ export type SyncularWorkerRealtimeOptions = {
   initialReconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
   reconnectBackoffFactor?: number;
+  reconnectJitterRatio?: number;
+  pullRecoveryJitterMs?: number;
   heartbeatTimeoutMs?: number;
 };
 

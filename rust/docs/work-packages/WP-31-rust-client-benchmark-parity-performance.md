@@ -642,6 +642,37 @@ Decision:
   revoked rows are cleared, retained rows remain queryable, and a later sync is
   not required to repair local state.
 
+## Slice 10 Reconnect Storm Realtime Recovery Evaluation
+
+Retained product and benchmark changes on 2026-05-22:
+
+- Worker realtime now runs a catch-up pull after websocket reconnect so changes
+  committed while disconnected are recovered.
+- Realtime reconnect and cursor-only HTTP recovery pulls can be jittered.
+- Realtime wakeups queued during an active pull are skipped when the active pull
+  already advanced past the wakeup cursor.
+- The external Rust benchmark now has a `worker-realtime` reconnect mode in
+  addition to the direct HTTP `syncOnce()` lane.
+
+Targeted external result:
+
+| Mode | Run ID | Scale | Key result |
+| --- | --- | ---: | --- |
+| HTTP direct | `2026-05-22T13-17-27-970Z` | `110` | convergence `257.72ms`, first `syncOnce` p95 `238.78ms` |
+| HTTP direct | `2026-05-22T13-17-27-970Z` | `125` | convergence `2030.60ms`, first `syncOnce` p95 `2012.99ms` |
+| Worker realtime | `2026-05-22T13-26-23-521Z` | `125` | convergence `216.12ms`, visible p95 `214.28ms`, requests `250` |
+| Worker realtime | `2026-05-22T13-38-54-572Z` | `250` | convergence `2035.74ms`, visible p95 `2034.99ms`, requests `484` |
+
+Decision:
+
+- Retain reconnect catch-up as a correctness fix.
+- Retain the worker-realtime benchmark lane because it measures the product
+  reconnect path that apps should use.
+- Do not mark the `250`-client cliff fixed. The remaining blocker is
+  cursor-only external-write wakeups causing herd HTTP recovery in the
+  Bun/Docker worker harness. Next work should focus on binary payloads for
+  external notifications or server/relay-side fanout recovery.
+
 ## Next Action
 
 The unsupported benchmark rows are now covered by native Rust client behavior.
@@ -652,7 +683,9 @@ The next optimization slices should be evidence-gated and scoped:
 - Keep online-propagation on binary-pack regression watch; only tune direct
   websocket payload caps if future runs report non-null `payloadBytes` and
   `payload-too-large`.
-- Decompose the `250`-client first-pull reconnect cliff before product changes.
+- For reconnect storm, evaluate binary payload support for external row-change
+  notifications or server/relay-side recovery fanout before more client-side
+  retry tuning.
 - If blob retry latency still matters, evaluate an explicit manual
   `retryNow`/online-event path instead of lowering automatic blob retry delay
   below `100ms`.

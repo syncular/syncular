@@ -81,6 +81,7 @@ export interface SyncularWorkerRealtimeControllerOptions {
   ) => void;
   setTimeout?: typeof setTimeout;
   clearTimeout?: typeof clearTimeout;
+  random?: () => number;
 }
 
 export class SyncularWorkerRealtimeController {
@@ -90,11 +91,14 @@ export class SyncularWorkerRealtimeController {
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   #heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
   #reconnectAttempts = 0;
+  #connectedOnce = false;
   #stopped = true;
   #syncInFlight: Promise<void> | undefined;
-  #syncAgain = false;
+  #syncAgainMessage: SyncularRealtimeSyncMessage | undefined;
+  #syncJitterTimers = new Set<ReturnType<typeof setTimeout>>();
   readonly #setTimeout: typeof setTimeout;
   readonly #clearTimeout: typeof clearTimeout;
+  readonly #random: () => number;
 
   constructor(
     private readonly controllerOptions: SyncularWorkerRealtimeControllerOptions
@@ -105,6 +109,7 @@ export class SyncularWorkerRealtimeController {
     this.#clearTimeout =
       controllerOptions.clearTimeout ??
       (globalThis.clearTimeout.bind(globalThis) as typeof clearTimeout);
+    this.#random = controllerOptions.random ?? Math.random;
   }
 
   start(options: SyncularWorkerRealtimeOptions): void {
@@ -118,13 +123,16 @@ export class SyncularWorkerRealtimeController {
     this.#options = options;
     this.#stopped = false;
     this.#reconnectAttempts = 0;
+    this.#connectedOnce = false;
     this.#connect();
   }
 
   stop(): void {
     this.#stopped = true;
-    this.#syncAgain = false;
+    this.#syncAgainMessage = undefined;
     this.#syncInFlight = undefined;
+    this.#clearSyncJitterTimers();
+    this.#connectedOnce = false;
     this.#clearReconnectTimer();
     this.#clearHeartbeatTimer();
     this.#closeSocket();
@@ -188,9 +196,17 @@ export class SyncularWorkerRealtimeController {
 
     socket.onopen = () => {
       if (socket !== this.#socket) return;
+      const shouldCatchUp = this.#connectedOnce;
+      this.#connectedOnce = true;
       this.#reconnectAttempts = 0;
       this.#setState('connected');
       this.#resetHeartbeatTimer();
+      if (shouldCatchUp) {
+        this.#scheduleSync({
+          reason: 'reconnect',
+          requiresPull: true,
+        });
+      }
     };
     socket.onmessage = (event) => {
       if (socket !== this.#socket) return;
@@ -272,7 +288,7 @@ export class SyncularWorkerRealtimeController {
           payloadBytes: syncMessage.payloadBytes ?? null,
         },
       });
-      this.#scheduleSync(syncMessage);
+      this.#scheduleRealtimeWakeupSync(syncMessage);
     }
   }
 
@@ -289,13 +305,18 @@ export class SyncularWorkerRealtimeController {
     const initial = this.#options?.initialReconnectDelayMs ?? 1_000;
     const max = this.#options?.maxReconnectDelayMs ?? 30_000;
     const factor = this.#options?.reconnectBackoffFactor ?? 2;
-    const delay = Math.min(initial * factor ** this.#reconnectAttempts, max);
+    const baseDelay = Math.min(initial * factor ** this.#reconnectAttempts, max);
+    const jitterRatio = Math.max(0, this.#options?.reconnectJitterRatio ?? 0);
+    const jitter = baseDelay * jitterRatio * this.#random();
+    const delay = baseDelay + jitter;
     this.#diagnostic({
       level: 'info',
       code: 'realtime.reconnect_scheduled',
       message: 'Syncular realtime reconnect scheduled',
       details: {
         attempt: this.#reconnectAttempts + 1,
+        baseDelayMs: baseDelay,
+        jitterMs: jitter,
         delayMs: delay,
       },
     });
@@ -306,16 +327,45 @@ export class SyncularWorkerRealtimeController {
   #scheduleSync(message?: SyncularRealtimeSyncMessage): void {
     if (this.#stopped) return;
     if (this.#syncInFlight) {
-      this.#syncAgain = true;
+      this.#syncAgainMessage = mergeRealtimeSyncMessages(
+        this.#syncAgainMessage,
+        message
+      );
       return;
     }
     this.#syncInFlight = this.#runSync(message);
   }
 
+  #scheduleRealtimeWakeupSync(message: SyncularRealtimeSyncMessage): void {
+    const maxJitter = Math.max(0, this.#options?.pullRecoveryJitterMs ?? 0);
+    if (maxJitter <= 0 || !realtimeMessageRequiresPull(message)) {
+      this.#scheduleSync(message);
+      return;
+    }
+    const delay = maxJitter * this.#random();
+    this.#diagnostic({
+      level: 'debug',
+      code: 'realtime.pull_recovery_jitter_scheduled',
+      message: 'Syncular realtime HTTP pull recovery delayed by jitter',
+      details: {
+        delayMs: delay,
+        maxJitterMs: maxJitter,
+        reason: message.reason ?? null,
+        cursor: message.cursor ?? null,
+      },
+    });
+    const timer = this.#setTimeout(() => {
+      this.#syncJitterTimers.delete(timer);
+      this.#scheduleSync(message);
+    }, delay);
+    this.#syncJitterTimers.add(timer);
+  }
+
   async #runSync(message?: SyncularRealtimeSyncMessage): Promise<void> {
     const socket = this.#socket;
+    let result: SyncularSyncResult | undefined;
     try {
-      const result = await this.#syncForMessage(message);
+      result = await this.#syncForMessage(message);
       if (this.#stopped) return;
       this.#ackRealtimeCursor(socket, message, result);
       this.controllerOptions.postEvent({
@@ -352,9 +402,14 @@ export class SyncularWorkerRealtimeController {
       // Realtime is best-effort. Explicit sync methods still surface errors.
     } finally {
       this.#syncInFlight = undefined;
-      if (this.#syncAgain && !this.#stopped) {
-        this.#syncAgain = false;
-        this.#scheduleSync();
+      const nextMessage = this.#syncAgainMessage;
+      this.#syncAgainMessage = undefined;
+      if (
+        nextMessage &&
+        !this.#stopped &&
+        !syncResultCoversRealtimeMessage(result, nextMessage)
+      ) {
+        this.#scheduleSync(nextMessage);
       }
     }
   }
@@ -482,6 +537,13 @@ export class SyncularWorkerRealtimeController {
     this.#heartbeatTimer = undefined;
   }
 
+  #clearSyncJitterTimers(): void {
+    for (const timer of this.#syncJitterTimers) {
+      this.#clearTimeout(timer);
+    }
+    this.#syncJitterTimers.clear();
+  }
+
   #resetHeartbeatTimer(): void {
     this.#clearHeartbeatTimer();
     const heartbeatTimeoutMs = this.#options?.heartbeatTimeoutMs ?? 60_000;
@@ -531,6 +593,46 @@ function realtimeMessageRequiresPull(
   message: SyncularRealtimeSyncMessage
 ): boolean {
   return message.requiresPull === true || (message.droppedCount ?? 0) > 0;
+}
+
+function mergeRealtimeSyncMessages(
+  current: SyncularRealtimeSyncMessage | undefined,
+  next: SyncularRealtimeSyncMessage | undefined
+): SyncularRealtimeSyncMessage {
+  if (!current) return next ?? {};
+  if (!next) return current;
+  const cursor =
+    current.cursor === undefined
+      ? next.cursor
+      : next.cursor === undefined
+        ? current.cursor
+        : Math.max(current.cursor, next.cursor);
+  return {
+    cursor,
+    reason: next.reason ?? current.reason,
+    requiresPull: current.requiresPull === true || next.requiresPull === true,
+    droppedCount: Math.max(current.droppedCount ?? 0, next.droppedCount ?? 0),
+    payloadBytes: next.payloadBytes ?? current.payloadBytes,
+    syncPackBytes: next.syncPackBytes ?? current.syncPackBytes,
+  };
+}
+
+function syncResultCoversRealtimeMessage(
+  result: SyncularSyncResult | undefined,
+  message: SyncularRealtimeSyncMessage
+): boolean {
+  if (!result || message.cursor === undefined) return false;
+  return syncResultCursor(result) >= message.cursor;
+}
+
+function syncResultCursor(result: SyncularSyncResult): number {
+  return result.subscriptions.reduce(
+    (cursor, subscription) =>
+      Number.isFinite(subscription.nextCursor)
+        ? Math.max(cursor, subscription.nextCursor)
+        : cursor,
+    -1
+  );
 }
 
 export function resolveSyncularRealtimeUrl(

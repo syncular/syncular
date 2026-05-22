@@ -191,6 +191,8 @@ export interface SyncularRealtimeOptions {
   initialReconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
   reconnectBackoffFactor?: number;
+  reconnectJitterRatio?: number;
+  pullRecoveryJitterMs?: number;
   heartbeatTimeoutMs?: number;
 }
 

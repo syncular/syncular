@@ -6381,3 +6381,84 @@ Decision:
   until a follow-up sync.
 - This is a scoped-access correctness fix, not a benchmark-only optimization:
   revoked rows are cleared while retained rows remain locally queryable.
+
+## 2026-05-22 - WP-31 Reconnect Storm Realtime Recovery Evaluation
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added worker realtime reconnect correctness: after a websocket reconnect, the
+  worker schedules a catch-up pull so writes missed while disconnected are not
+  silently skipped.
+- Added configurable realtime reconnect jitter and HTTP pull-recovery jitter so
+  large client fleets can spread recovery pulls when websocket messages are
+  cursor-only.
+- Coalesced queued realtime wakeups when an in-flight pull already advanced
+  past the wakeup cursor.
+- Added an external benchmark lane selected with
+  `SYNCULAR_RUST_RECONNECT_MODE=worker-realtime`.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client
+bun test src/worker-realtime.test.ts
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd packages/client build
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_RECONNECT_CLIENT_COUNTS=110,125,140 \
+  bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_RECONNECT_MODE=worker-realtime \
+SYNCULAR_RUST_RECONNECT_CLIENT_COUNTS=25,125,250 \
+  bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+Result:
+
+| Mode | Run ID | Scale | Result |
+| --- | --- | ---: | --- |
+| HTTP direct | `2026-05-22T13-17-27-970Z` | `110` | convergence `257.72ms`, first `syncOnce` p95 `238.78ms`, requests `110` |
+| HTTP direct | `2026-05-22T13-17-27-970Z` | `125` | convergence `2030.60ms`, first `syncOnce` p95 `2012.99ms`, requests `125` |
+| HTTP direct | `2026-05-22T13-15-52-627Z` | `150` | convergence `2049.96ms`, first `syncOnce` p95 `2021.59ms`, requests `150` |
+| Worker realtime | `2026-05-22T13-25-40-903Z` | `25` | convergence `90.53ms`, visible p95 `90.11ms`, requests `50`, reconnect catch-up pulls `25` |
+| Worker realtime | `2026-05-22T13-26-23-521Z` | `125` | convergence `216.12ms`, visible p95 `214.28ms`, requests `250`, reconnect catch-up pulls `125` |
+| Worker realtime | `2026-05-22T13-38-54-572Z` | `250` | convergence `2035.74ms`, visible p95 `2034.99ms`, requests `484`, reconnect catch-up pulls `250` |
+
+Interpretation:
+
+- The HTTP direct reconnect cliff starts between `110` and `125` concurrent
+  first pulls. The time is almost entirely `pullRequestMs`; local apply and
+  extra sync loops are not the cause.
+- Worker realtime is the right product shape for reconnect correctness. It
+  fixes the missing reconnect catch-up behavior and gives a faster `125`-client
+  result than the direct HTTP lane.
+- The benchmark server's external-write path emits cursor-only
+  `server-wakeup` realtime events, not binary sync-packs. That forces HTTP
+  recovery even for worker realtime clients.
+- The `250` worker-client run still hits the same approximately `2s` platform
+  cliff. Jitter and wakeup coalescing reduced some duplicate requests, but did
+  not remove the measured tail in this Bun/Docker worker harness.
+
+Decision:
+
+- Retain the reconnect catch-up pull. It is a correctness fix: reconnecting
+  workers must recover writes missed while the websocket was down.
+- Retain the jitter/coalescing options and the benchmark lane as diagnostic
+  tools, but do not claim the `250`-client storm is solved.
+- Next product work should either make external row-change notifications carry
+  enough payload for binary websocket packs, or add a server/relay-side recovery
+  fanout design that avoids hundreds of clients performing identical HTTP
+  recovery pulls at once.
