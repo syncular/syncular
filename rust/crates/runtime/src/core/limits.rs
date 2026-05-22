@@ -16,6 +16,8 @@ pub const DEFAULT_PULL_LIMIT_COMMITS: i64 = 1000;
 pub const DEFAULT_PULL_LIMIT_SNAPSHOT_ROWS: i64 = 50_000;
 pub const DEFAULT_PULL_MAX_SNAPSHOT_PAGES: i64 = 10;
 pub const DEFAULT_OUTBOX_PUSH_BATCH_LIMIT: i64 = 20;
+pub const DEFAULT_ADAPTIVE_OUTBOX_PUSH_BATCH_LIMIT: i64 = 100;
+pub const DEFAULT_ADAPTIVE_OUTBOX_PUSH_THRESHOLD: i64 = 100;
 pub const MAX_OUTBOX_PUSH_BATCH_LIMIT: i64 = 1000;
 pub const DEFAULT_MAX_UNRESOLVED_OUTBOX_COMMITS: usize = 10_000;
 pub const DEFAULT_BLOB_UPLOAD_BATCH_LIMIT: i64 = 10;
@@ -61,6 +63,8 @@ pub struct RuntimeLimits {
     pub pull_limit_snapshot_rows: i64,
     pub pull_max_snapshot_pages: i64,
     pub outbox_push_batch_limit: i64,
+    pub adaptive_outbox_push_batch_limit: i64,
+    pub adaptive_outbox_push_threshold: i64,
     pub max_unresolved_outbox_commits: usize,
     pub max_sync_retries: i32,
     pub sync_sending_timeout_ms: i64,
@@ -107,6 +111,8 @@ pub fn runtime_default_limits() -> RuntimeLimits {
         pull_limit_snapshot_rows: DEFAULT_PULL_LIMIT_SNAPSHOT_ROWS,
         pull_max_snapshot_pages: DEFAULT_PULL_MAX_SNAPSHOT_PAGES,
         outbox_push_batch_limit: DEFAULT_OUTBOX_PUSH_BATCH_LIMIT,
+        adaptive_outbox_push_batch_limit: DEFAULT_ADAPTIVE_OUTBOX_PUSH_BATCH_LIMIT,
+        adaptive_outbox_push_threshold: DEFAULT_ADAPTIVE_OUTBOX_PUSH_THRESHOLD,
         max_unresolved_outbox_commits: DEFAULT_MAX_UNRESOLVED_OUTBOX_COMMITS,
         max_sync_retries: MAX_SYNC_RETRIES,
         sync_sending_timeout_ms: SYNC_SENDING_TIMEOUT_MS,

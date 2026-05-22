@@ -213,7 +213,7 @@ Status legend:
 | --- | --- | --- | --- |
 | Local SQLite replica | Rust-owned SQLite for native/browser; Diesel-backed Rust SDK; browser-owned SQLite/WASM path | Single-writer/read-executor model polish; explicit SQLite pragma baseline everywhere | SQLite is the local replica, not a raw synced write escape hatch |
 | Typed reads | Rust Diesel; browser Kysely path; early Swift/Kotlin DSLs | Better Swift/Kotlin ergonomics; shared query-builder semantics | Do not replace query building with predefined ORM-style table methods |
-| Mutations/outbox | Generated safe mutations, queued native worker APIs, conflict base-version machinery, bounded Rust web outbox push batch config | Cleaner conflict ergonomics and generated mutation coverage across all bindings | Synced writes never bypass mutation/outbox semantics |
+| Mutations/outbox | Generated safe mutations, queued native worker APIs, conflict base-version machinery, bounded/adaptive Rust web outbox push batching | Cleaner conflict ergonomics and generated mutation coverage across all bindings | Synced writes never bypass mutation/outbox semantics |
 | Scoped sync | Dynamic subscriptions, scope revocation clearing, auth/client ownership smokes | Subscription indexes, fanout optimization, stronger conformance | Optimize for arbitrary per-user scope mixes, not whole partitions |
 | Bootstrap/snapshots | Binary snapshot chunks, manifests, chunk hash validation | Adaptive readiness states, resumable manifests, direct generated apply | Snapshot completeness and verification must be scoped honestly |
 | Incremental sync | Push/pull, binary sync packs, persisted cursors, retry metadata | Binary v2, protocol crate extraction, stronger retry wakeups | Cursor advancement only after valid apply/verification |

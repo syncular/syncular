@@ -96,6 +96,8 @@ pub trait AsyncWebStore {
         limit: usize,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<OutboxCommit>>> + 'a>>;
 
+    fn pending_outbox_count<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<usize>> + 'a>>;
+
     fn sending_outbox<'a>(
         &'a mut self,
         limit: usize,
@@ -820,6 +822,21 @@ impl AsyncWebStore for WebMemoryStore {
                 .take(limit)
                 .cloned()
                 .collect())
+        })
+    }
+
+    fn pending_outbox_count<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<usize>> + 'a>> {
+        Box::pin(async move {
+            let now = now_ms();
+            Ok(self
+                .outbox
+                .iter()
+                .filter(|commit| {
+                    commit.status == "pending"
+                        && commit.attempt_count < MAX_SYNC_RETRIES
+                        && commit.next_attempt_at <= now
+                })
+                .count())
         })
     }
 

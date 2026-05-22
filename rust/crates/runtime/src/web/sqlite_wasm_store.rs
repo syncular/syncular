@@ -118,7 +118,7 @@ struct RustOwnedSqliteClientConfig {
     project_id: Option<String>,
     #[serde(default, deserialize_with = "deserialize_pull_options")]
     pull: WebSyncPullOptions,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_push_options")]
     push: WebSyncPushOptions,
     file_name: Option<String>,
     storage: Option<RustOwnedSqliteStorage>,
@@ -135,6 +135,15 @@ where
     D: Deserializer<'de>,
 {
     Ok(Option::<WebSyncPullOptions>::deserialize(deserializer)?.unwrap_or_default())
+}
+
+fn deserialize_push_options<'de, D>(
+    deserializer: D,
+) -> std::result::Result<WebSyncPushOptions, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Ok(Option::<WebSyncPushOptions>::deserialize(deserializer)?.unwrap_or_default())
 }
 
 #[derive(Debug, Clone, Copy, Deserialize)]
@@ -5053,6 +5062,18 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
                 max_retries = MAX_SYNC_RETRIES,
                 limit = limit.max(1)
             ))
+        })
+    }
+
+    fn pending_outbox_count<'a>(&'a mut self) -> Pin<Box<dyn Future<Output = Result<usize>> + 'a>> {
+        Box::pin(async move {
+            let now = now_ms();
+            let count = self.query_count(&format!(
+                "SELECT COUNT(*) AS count FROM sync_outbox_commits \
+                 WHERE status = 'pending' AND attempt_count < {max_retries} AND next_attempt_at <= {now}",
+                max_retries = MAX_SYNC_RETRIES
+            ))?;
+            Ok(usize::try_from(count).unwrap_or(usize::MAX))
         })
     }
 

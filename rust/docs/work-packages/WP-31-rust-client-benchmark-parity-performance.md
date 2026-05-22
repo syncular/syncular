@@ -673,16 +673,59 @@ Decision:
   Bun/Docker worker harness. Next work should focus on binary payloads for
   external notifications or server/relay-side fanout recovery.
 
+## Slice 11 Adaptive Outbox Batch Default
+
+Retained product/runtime and benchmark metadata changes on 2026-05-22:
+
+- Default Rust web-client outbox pushes keep the fixed `20`-commit batch for
+  due queues of `100` commits or less.
+- When the due pending outbox exceeds `100`, the client switches to a stateful
+  adaptive drain that sends up to `100` commits per push until the large queue
+  is drained.
+- Explicit `config.push.outboxBatchLimit` remains a fixed override and disables
+  the adaptive default.
+- The web store exposes a due-pending outbox count so the adaptive decision does
+  not deserialize operation JSON just to probe queue size.
+- The benchmark adapter now reports `outboxPushBatchMode`,
+  `outboxPushBatchLimit`, `adaptiveOutboxBatchLimit`, and
+  `adaptiveOutboxBatchThreshold`.
+
+Verification:
+
+- `bun --cwd rust/bindings/javascript build:wasm`: passed.
+- `bun --cwd packages/client test src/__tests__/sync-hono.wasm.test.ts -t "outbox push batch"`:
+  passed.
+- `bun --cwd packages/client build`: passed.
+- `bun run typecheck` in `offline-sync-bench`: still blocked by the existing
+  stack-app package export mismatch against published `@syncular/server`
+  packages; the reported errors are limited to
+  `stacks/syncular/syncular-app/src/index.ts`.
+
+Same-session fixed-20 control:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-22T21-13-24-530Z/syncular-rust/large-offline-queue.json`
+
+Accepted adaptive run:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-22T21-15-52-240Z/syncular-rust/large-offline-queue.json`
+
+| Queue | Fixed `20` convergence | Adaptive convergence | Fixed requests / attempts | Adaptive requests / attempts | Decision |
+| ---: | ---: | ---: | ---: | ---: | --- |
+| `100` | `272.17ms` | `270.55ms` | `10` / `5` | `10` / `5` | Preserves small-queue behavior |
+| `500` | `1307.71ms` | `779.54ms` | `50` / `25` | `10` / `5` | Faster with `80%` fewer requests |
+| `1000` | `2486.82ms` | `1887.19ms` | `100` / `50` | `20` / `10` | Faster with `80%` fewer requests |
+
+Decision:
+
+- Retain the adaptive default. It removes most of the large-queue request loop
+  without taking the measured `100`-write case off the old `20`-commit path.
+- Keep explicit fixed batch overrides. A known benchmark-heavy client can still
+  choose `outboxBatchLimit: 100`; that remains useful when the app knows its
+  workload is a large replay lane.
+
 ## Next Action
 
 The unsupported benchmark rows are now covered by native Rust client behavior.
 The next optimization slices should be evidence-gated and scoped:
 
-- Evaluate adaptive Rust outbox batching beyond the fixed
-  `config.push.outboxBatchLimit` knob. The accepted benchmark shows `100` is
-  better than the default `20` for the `1000`-write fixture, but larger batches
-  are slower, so any default change needs payload/request-size measurement and
-  rollback evidence.
 - Add a browser-worker durable storage lane before accepting process-restart
   outbox/blob durability in this benchmark.
 - Keep online-propagation on binary-pack regression watch; only tune direct
