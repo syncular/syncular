@@ -263,6 +263,19 @@ current Rust-first path no longer needs them.
 - Removed the old JavaScript-hosted browser store bridge (`web-store`,
   `WebHostStore`, and `SyncularWasmClient`). Browser WASM now exposes only the
   Rust-owned SQLite runtime surface.
+- Removed native realtime lifecycle `start` / `stop` aliases from the Rust
+  native facade, C FFI, and BoltFFI Swift/Kotlin/Java bindings. Host code now
+  uses the explicit `start_realtime_worker` / `stop_realtime_worker` API.
+- Gates:
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade`:
+    passed, `38` tests.
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_header`:
+    passed, `2` tests.
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_binding_scaffold --features native,boltffi-bindings,crdt-yjs,demo-todo-native-fixture`:
+    passed, `4` tests.
+  - `bun run rust:conformance:native`: passed, covering Swift/Kotlin generated
+    clients, BoltFFI host wrappers, lifecycle smokes, JVM native packaging, and
+    native server sync.
 - While running the broad runtime gate, fixed stale Rust classifier mappings for
   auth-lease server errors so the runtime matches the shared core error taxonomy
   fixture.

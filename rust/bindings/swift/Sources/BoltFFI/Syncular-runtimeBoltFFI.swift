@@ -280,20 +280,8 @@ public final class SyncularBoltClient {
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
     }
 
-    public func start() throws -> Bool {
-        let buf = boltffi_syncular_bolt_client_start(handle)
-        defer { boltffi_free_buf(buf) }
-        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
-    }
-
     public func stopRealtimeWorker() throws -> Bool {
         let buf = boltffi_syncular_bolt_client_stop_realtime_worker(handle)
-        defer { boltffi_free_buf(buf) }
-        return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
-    }
-
-    public func stop() throws -> Bool {
-        let buf = boltffi_syncular_bolt_client_stop(handle)
         defer { boltffi_free_buf(buf) }
         return try boltffiDecodeOwnedBuf(buf.ptr, Int(buf.len)) { reader in try { let tag = reader.readU8(); if tag == 0 { return reader.readBool() } else { throw FfiError(message: reader.readString()) } }() }
     }

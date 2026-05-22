@@ -97,7 +97,9 @@ read-only review:
     JavaScript-hosted browser store bridge and `web-store` feature were removed
     in favor of the Rust-owned SQLite browser runtime. The
     `@syncular/client-expo` alias package was removed so React Native stays the
-    single native TypeScript bridge package.
+    single native TypeScript bridge package. Native realtime lifecycle aliases
+    were also removed so host bindings expose only the explicit realtime worker
+    start/stop methods.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,

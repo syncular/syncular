@@ -988,14 +988,6 @@ impl NativeSyncularClient {
         self.enqueue_sync_now()
     }
 
-    pub fn start(&mut self) -> Result<()> {
-        self.start_realtime_worker()
-    }
-
-    pub fn stop(&mut self) -> Result<()> {
-        self.stop_realtime_worker()
-    }
-
     pub fn shutdown(&mut self) -> Result<()> {
         self.close()
     }
@@ -1808,7 +1800,7 @@ impl NativeSyncularClientBuilder {
             client.set_subscriptions(subscriptions)?;
         }
         if self.realtime {
-            client.start()?;
+            client.start_realtime_worker()?;
         }
         if self.initial_websocket_sync {
             client.trigger_sync_websocket()?;

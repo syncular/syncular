@@ -1021,32 +1021,12 @@ boltffi_input_cleanup:
     if (_boltffi_input_error) return NULL;
     return boltffi_buf_to_jbytearray(env, _buf);
 }
-JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1start(JNIEnv *env, jclass cls, jlong handle) {
-    if (handle == 0) return NULL;
-    bool _boltffi_input_error = false;
-    FfiBuf_u8 _buf = {0};
-    if (_boltffi_input_error) goto boltffi_input_cleanup;
-    _buf = boltffi_syncular_bolt_client_start((void*)handle);
-boltffi_input_cleanup:
-    if (_boltffi_input_error) return NULL;
-    return boltffi_buf_to_jbytearray(env, _buf);
-}
 JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1stop_1realtime_1worker(JNIEnv *env, jclass cls, jlong handle) {
     if (handle == 0) return NULL;
     bool _boltffi_input_error = false;
     FfiBuf_u8 _buf = {0};
     if (_boltffi_input_error) goto boltffi_input_cleanup;
     _buf = boltffi_syncular_bolt_client_stop_realtime_worker((void*)handle);
-boltffi_input_cleanup:
-    if (_boltffi_input_error) return NULL;
-    return boltffi_buf_to_jbytearray(env, _buf);
-}
-JNIEXPORT jbyteArray JNICALL Java_dev_syncular_client_Native_boltffi_1syncular_1bolt_1client_1stop(JNIEnv *env, jclass cls, jlong handle) {
-    if (handle == 0) return NULL;
-    bool _boltffi_input_error = false;
-    FfiBuf_u8 _buf = {0};
-    if (_boltffi_input_error) goto boltffi_input_cleanup;
-    _buf = boltffi_syncular_bolt_client_stop((void*)handle);
 boltffi_input_cleanup:
     if (_boltffi_input_error) return NULL;
     return boltffi_buf_to_jbytearray(env, _buf);

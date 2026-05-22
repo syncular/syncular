@@ -946,9 +946,7 @@ final class BoltFFIResult<Ok, Err> {
     static native byte[] boltffi_syncular_bolt_client_resume_from_background(long handle);
     static native byte[] boltffi_syncular_bolt_client_sync_worker_running(long handle);
     static native byte[] boltffi_syncular_bolt_client_start_realtime_worker(long handle);
-    static native byte[] boltffi_syncular_bolt_client_start(long handle);
     static native byte[] boltffi_syncular_bolt_client_stop_realtime_worker(long handle);
-    static native byte[] boltffi_syncular_bolt_client_stop(long handle);
     static native byte[] boltffi_syncular_bolt_client_join_presence(long handle, byte[] scopeKey, ByteBuffer metadataJson);
     static native byte[] boltffi_syncular_bolt_client_leave_presence(long handle, byte[] scopeKey);
     static native byte[] boltffi_syncular_bolt_client_update_presence_metadata(long handle, byte[] scopeKey, byte[] metadataJson);

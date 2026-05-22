@@ -216,32 +216,13 @@ fn native_facade_can_disable_auto_sync_after_local_write() -> Result<()> {
 }
 
 #[test]
-fn native_facade_lifecycle_aliases_control_realtime_worker() -> Result<()> {
-    let path = temp_db_path("syncular-native-lifecycle-aliases");
-    let mut client = open_demo_native_with_options(
-        test_config(&path, "native-lifecycle-aliases"),
-        NativeClientOptions {
-            auto_sync_local_writes: false,
-        },
-    )?;
-
-    client.start()?;
-    client.start()?;
-    client.stop()?;
-    client.stop()?;
-    client.shutdown()?;
-    let _ = std::fs::remove_file(path);
-    Ok(())
-}
-
-#[test]
 fn native_facade_builder_starts_realtime_by_default() -> Result<()> {
     let path = temp_db_path("syncular-native-builder-realtime");
     let mut client = NativeSyncularClient::builder(test_config(&path, "native-builder-realtime"))
         .auto_sync_local_writes(false)
         .open()?;
 
-    client.stop()?;
+    client.stop_realtime_worker()?;
     client.shutdown()?;
     let _ = std::fs::remove_file(path);
     Ok(())

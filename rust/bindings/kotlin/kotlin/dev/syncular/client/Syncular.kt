@@ -878,26 +878,8 @@ class SyncularBoltClient private constructor(internal val handle: Long) : AutoCl
 
 
     @Throws(FfiException::class)
-    fun start(): Boolean {
-        val buf = Native.boltffi_syncular_bolt_client_start(handle)
-            ?: throw FfiException(-1, "Null buffer returned")
-        val reader = WireReader(buf)
-        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
-    }
-
-
-    @Throws(FfiException::class)
     fun stopRealtimeWorker(): Boolean {
         val buf = Native.boltffi_syncular_bolt_client_stop_realtime_worker(handle)
-            ?: throw FfiException(-1, "Null buffer returned")
-        val reader = WireReader(buf)
-        return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
-    }
-
-
-    @Throws(FfiException::class)
-    fun stop(): Boolean {
-        val buf = Native.boltffi_syncular_bolt_client_stop(handle)
             ?: throw FfiException(-1, "Null buffer returned")
         val reader = WireReader(buf)
         return reader.readResult({ reader.readBool() }, { reader.readString() }).getOrThrow()
@@ -1796,9 +1778,7 @@ private object Native {
     @JvmStatic external fun boltffi_syncular_bolt_client_resume_from_background(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_sync_worker_running(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_start_realtime_worker(handle: Long): ByteArray?
-    @JvmStatic external fun boltffi_syncular_bolt_client_start(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_stop_realtime_worker(handle: Long): ByteArray?
-    @JvmStatic external fun boltffi_syncular_bolt_client_stop(handle: Long): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_join_presence(handle: Long, scope_key: ByteArray, metadata_json: ByteBuffer): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_leave_presence(handle: Long, scope_key: ByteArray): ByteArray?
     @JvmStatic external fun boltffi_syncular_bolt_client_update_presence_metadata(handle: Long, scope_key: ByteArray, metadata_json: ByteArray): ByteArray?
