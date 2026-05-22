@@ -1876,7 +1876,10 @@ impl SyncularRustOwnedSqliteClient {
     }
 
     #[wasm_bindgen(js_name = processBlobUploadQueueJson)]
-    pub async fn process_blob_upload_queue_json(&mut self) -> std::result::Result<String, JsValue> {
+    pub async fn process_blob_upload_queue_json(
+        &mut self,
+        retry_now: Option<bool>,
+    ) -> std::result::Result<String, JsValue> {
         #[cfg(not(feature = "web-blobs"))]
         {
             return Err(web_blobs_feature_disabled()).map_err(error_to_js);
@@ -1887,7 +1890,7 @@ impl SyncularRustOwnedSqliteClient {
             let result = self
                 .inner
                 .store_mut()
-                .process_blob_upload_queue(&transport)
+                .process_blob_upload_queue(&transport, retry_now.unwrap_or(false))
                 .await?;
             Ok(serde_json::to_string(&result)?)
         }
@@ -2301,9 +2304,10 @@ impl SyncularRustOwnedSqlite {
     async fn process_blob_upload_queue<T: AsyncBlobTransport>(
         &self,
         transport: &T,
+        retry_now: bool,
     ) -> Result<BlobUploadQueueResult> {
         self.requeue_stale_blob_uploads()?;
-        let pending = self.pending_blob_uploads(DEFAULT_BLOB_UPLOAD_BATCH_LIMIT)?;
+        let pending = self.pending_blob_uploads(DEFAULT_BLOB_UPLOAD_BATCH_LIMIT, retry_now)?;
         let mut result = BlobUploadQueueResult {
             uploaded: 0,
             failed: 0,
@@ -2366,13 +2370,18 @@ impl SyncularRustOwnedSqlite {
     }
 
     #[cfg(feature = "web-blobs")]
-    fn pending_blob_uploads(&self, limit: i64) -> Result<Vec<PendingBlobUpload>> {
+    fn pending_blob_uploads(&self, limit: i64, retry_now: bool) -> Result<Vec<PendingBlobUpload>> {
         let now = now_ms();
+        let retry_predicate = if retry_now {
+            "1 = 1".to_string()
+        } else {
+            format!("next_attempt_at <= {now}")
+        };
         self.query_rows(
             &format!(
                 "SELECT hash, size, mime_type, body, encrypted, key_id, attempt_count \
                  FROM sync_blob_outbox \
-                 WHERE status = 'pending' AND attempt_count < {max_retries} AND next_attempt_at <= {now} \
+                 WHERE status = 'pending' AND attempt_count < {max_retries} AND ({retry_predicate}) \
                  ORDER BY created_at ASC LIMIT {limit}",
                 max_retries = MAX_BLOB_UPLOAD_RETRIES
             ),

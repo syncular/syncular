@@ -27,6 +27,7 @@ import type {
   SyncularBlobEncryptionConfig,
   SyncularBlobLimits,
   SyncularBlobStoreOptions,
+  SyncularBlobUploadQueueProcessOptions,
   SyncularBlobUploadQueueStats,
   SyncularBootstrapState,
   SyncularBootstrapStatus,
@@ -665,12 +666,14 @@ export class SyncularRustClient {
     return local;
   }
 
-  async processBlobUploadQueue(): Promise<{
+  async processBlobUploadQueue(
+    options?: SyncularBlobUploadQueueProcessOptions
+  ): Promise<{
     uploaded: number;
     failed: number;
   }> {
     const result = parseJson<{ uploaded: number; failed: number }>(
-      await this.raw.processBlobUploadQueueJson()
+      await this.raw.processBlobUploadQueueJson(options?.retryNow === true)
     );
     if (this.#hasDiagnosticListeners()) {
       this.#emitDiagnostic({

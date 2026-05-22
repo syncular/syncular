@@ -6795,3 +6795,54 @@ Decision:
 
 - No runtime change. The binary realtime path remains healthy and does not show
   payload-size fallback pressure in this guard run.
+
+## 2026-05-22 - WP-31 Blob RetryNow Recovery
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added explicit `processBlobUploadQueue({ retryNow: true })` support through
+  the Rust WASM client and TypeScript client surfaces.
+- `retryNow` ignores delayed `next_attempt_at` rows for that explicit manual
+  processing call only; the automatic blob retry schedule keeps the `100ms`
+  base delay.
+- Updated the external `syncular-rust` `blob-flow` retry lane to drain the
+  induced failed upload with `retryNow=true` and report
+  `retry_recovery_retry_now`.
+
+Verification:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --lib
+bun --cwd rust/bindings/javascript build:wasm
+cd packages/client && bun test src/__tests__/blob-hono.wasm.test.ts && bun run build
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench && bun run typecheck
+```
+
+`bun run typecheck` in `offline-sync-bench` still fails on the known
+`stacks/syncular/syncular-app/src/index.ts` package-export mismatch against the
+published `@syncular/server` packages; it did not report errors in
+`src/adapters/syncular-rust.ts` before those stack-app errors.
+
+External benchmark:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+  bun run bench:run -- --stack syncular-rust --scenario blob-flow
+```
+
+| Mode | Run ID | Retry recovery | Queue attempts | Request count |
+| --- | --- | ---: | ---: | ---: |
+| Default delayed retry baseline | `2026-05-22T21-45-25-153Z` | `115.64ms` | `2` | `11` |
+| Explicit `retryNow` | `2026-05-22T21-52-54-730Z` | `13.15ms` | `1` | `11` |
+
+Decision:
+
+- Retain. The explicit retry path removes the benchmark-visible wait for
+  online/manual recovery without making unattended automatic retry loops more
+  aggressive.

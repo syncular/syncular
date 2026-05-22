@@ -2287,10 +2287,17 @@ where
     pub fn process_blob_upload_queue(
         &mut self,
     ) -> Result<crate::diesel_sqlite::BlobUploadQueueResult> {
+        self.process_blob_upload_queue_with_options(false)
+    }
+
+    pub fn process_blob_upload_queue_with_options(
+        &mut self,
+        retry_now: bool,
+    ) -> Result<crate::diesel_sqlite::BlobUploadQueueResult> {
         self.store.requeue_stale_blob_uploads()?;
         let pending = self
             .store
-            .pending_blob_uploads(DEFAULT_BLOB_UPLOAD_BATCH_LIMIT)?;
+            .pending_blob_uploads(DEFAULT_BLOB_UPLOAD_BATCH_LIMIT, retry_now)?;
         let mut result = crate::diesel_sqlite::BlobUploadQueueResult {
             uploaded: 0,
             failed: 0,

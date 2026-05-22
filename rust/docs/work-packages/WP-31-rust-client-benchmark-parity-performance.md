@@ -793,6 +793,46 @@ Decision:
 - Keep direct websocket payload caps unchanged unless future runs report
   non-null payload bytes with `payload-too-large` or binary apply failures.
 
+## Slice 14 Blob RetryNow Recovery
+
+Retained product/runtime and benchmark-adapter changes on 2026-05-22:
+
+- Added `processBlobUploadQueue({ retryNow: true })` to the Rust browser client,
+  worker bridge, database blob helper, and WASM binding.
+- `retryNow` bypasses `next_attempt_at` only for the explicit processing call;
+  automatic blob retry scheduling still uses the `100ms` base backoff and keeps
+  the retry storm guard.
+- The external `blob-flow` retry lane now drains the induced failed upload with
+  `retryNow=true` and records `retry_recovery_retry_now: 1`.
+
+Verification:
+
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --lib`:
+  passed.
+- `bun --cwd rust/bindings/javascript build:wasm`: passed; WASM size remains
+  below budget at raw `2.33 MiB` / gzip `1.03 MiB`.
+- `bun test src/__tests__/blob-hono.wasm.test.ts` in `packages/client`:
+  passed.
+- `bun run build` in `packages/client`: passed.
+- `bun run typecheck` in `offline-sync-bench`: still blocked by the existing
+  stack-app package export mismatch against published `@syncular/server`
+  packages; no new `src/adapters/syncular-rust.ts` errors were reported before
+  those stack-app errors.
+
+Targeted external result:
+
+| Mode | Run ID | Retry recovery | Queue attempts | Notes |
+| --- | --- | ---: | ---: | --- |
+| Default delayed retry baseline | `2026-05-22T21-45-25-153Z` | `115.64ms` | `2` | first retry call observed pending delayed row |
+| Explicit `retryNow` | `2026-05-22T21-52-54-730Z` | `13.15ms` | `1` | same induced failed PUT, bypasses only manual retry delay |
+
+Decision:
+
+- Retain. This removes the remaining benchmark-visible blob retry wait for
+  callers that know connectivity has returned, while preserving conservative
+  automatic backoff for unattended retry loops.
+- Do not lower the default blob retry base below `100ms` from this evidence.
+
 ## Next Action
 
 The unsupported benchmark rows are now covered by native Rust client behavior.
@@ -800,9 +840,6 @@ The next optimization slices should be evidence-gated and scoped:
 
 - Add a full browser-worker OPFS/process-restart lane if we need stronger
   durability evidence than the IndexedDB-compatible close/reopen probe.
-- If blob retry latency still matters, evaluate an explicit manual
-  `retryNow`/online-event path instead of lowering automatic blob retry delay
-  below `100ms`.
 
 The `250`-client reconnect cliff is no longer a WP-31 client tuning item. It is
 handed off to

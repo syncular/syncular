@@ -47,7 +47,7 @@ use crate::store::{DemoTaskStore, Task};
 use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
-use diesel::sql_types::{BigInt, Binary, Integer, Nullable, Text};
+use diesel::sql_types::{BigInt, Binary, Bool, Integer, Nullable, Text};
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -1250,18 +1250,23 @@ impl DieselSqliteStore {
         Ok(())
     }
 
-    pub fn pending_blob_uploads(&mut self, limit: i64) -> Result<Vec<PendingBlobUploadRow>> {
+    pub fn pending_blob_uploads(
+        &mut self,
+        limit: i64,
+        retry_now: bool,
+    ) -> Result<Vec<PendingBlobUploadRow>> {
         let now = now_ms();
         Ok(sql_query(
             r#"
             select hash, size, mime_type, body, encrypted, key_id, attempt_count
             from sync_blob_outbox
-            where status = 'pending' and attempt_count < ?1 and next_attempt_at <= ?2
+            where status = 'pending' and attempt_count < ?1 and (?2 or next_attempt_at <= ?3)
             order by created_at asc
-            limit ?3
+            limit ?4
             "#,
         )
         .bind::<Integer, _>(MAX_BLOB_UPLOAD_RETRIES)
+        .bind::<Bool, _>(retry_now)
         .bind::<BigInt, _>(now)
         .bind::<BigInt, _>(limit)
         .load::<PendingBlobUploadRow>(&mut self.conn)?)

@@ -46,7 +46,7 @@ export class SyncularRustOwnedSqliteClient {
     materializeCrdtFieldJson(request_json: string): string;
     materializeYjsRowJson(args_json: string): string;
     openCrdtFieldJson(request_json: string): string;
-    processBlobUploadQueueJson(): Promise<string>;
+    processBlobUploadQueueJson(retry_now?: boolean | null): Promise<string>;
     pruneBlobCache(max_bytes: bigint): bigint;
     recoverSyncPushErrorJson(error_message: string): void;
     repairLocalHealthJson(request_json: string): Promise<string>;

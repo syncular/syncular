@@ -417,8 +417,8 @@ export function createSyncularBlobClient(
       for (const ref of refs) assertRetrieveWithinLimit(ref);
       await Promise.all(refs.map((ref) => client.retrieveBlob(ref)));
     },
-    processUploadQueue() {
-      return client.processBlobUploadQueue();
+    processUploadQueue(options) {
+      return client.processBlobUploadQueue(options);
     },
     getUploadQueueStats() {
       return client.blobUploadQueueStats();

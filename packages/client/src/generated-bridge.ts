@@ -7,6 +7,7 @@ import type {
   SyncularAuthLeaseRecord,
   SyncularBlobEncryptionConfig,
   SyncularBlobStoreOptions,
+  SyncularBlobUploadQueueProcessOptions,
   SyncularBuildYjsTextUpdateArgs,
   SyncularClientConfig,
   SyncularConflictResolution,
@@ -281,6 +282,7 @@ export type SyncularGeneratedWorkerRequest =
       id: number;
       protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'processBlobUploadQueue';
+      options?: SyncularBlobUploadQueueProcessOptions;
     }
   | {
       id: number;
@@ -674,7 +676,7 @@ export async function dispatchGeneratedSyncularWorkerRequest(
     case 'isBlobLocal':
       return context.requireClient().isBlobLocal(request.hash);
     case 'processBlobUploadQueue':
-      return context.requireClient().processBlobUploadQueue();
+      return context.requireClient().processBlobUploadQueue(request.options);
     case 'blobUploadQueueStats':
       return context.requireClient().blobUploadQueueStats();
     case 'blobCacheStats':
