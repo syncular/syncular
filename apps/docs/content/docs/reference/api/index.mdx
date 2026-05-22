@@ -35,7 +35,7 @@ For human workflows, use [Operate](/docs/operate). For product-facing history UX
 | `POST` | `/sync` | Combined sync (`push` and/or `pull`) |
 | `GET` | `/sync/audit/commits` | List commit audit history (auth/partition scoped) |
 | `GET` | `/sync/audit/commits/{commitSeq}` | Get one commit with operation-level changes |
-| `GET` | `/sync/realtime` | WebSocket "wake-up" connection (not part of OpenAPI) |
+| `GET` | `/sync/realtime` | WebSocket realtime connection for verified deltas and pull-required wake-ups (not part of OpenAPI) |
 | `GET` | `/sync/snapshot-chunks/{chunkId}` | Download snapshot chunks for large bootstraps |
 | `POST` | `/sync/blobs/upload` | Initiate a blob upload (optional feature) |
 | `POST` | `/sync/blobs/{hash}/complete` | Mark a blob upload complete |
@@ -121,4 +121,7 @@ bun generate:openapi
 
 This will update the `openapi.json` file based on the current route definitions.
 
-`GET /sync/realtime` is intentionally not part of the OpenAPI document because it is a WebSocket wake-up channel rather than a JSON HTTP endpoint.
+`GET /sync/realtime` is intentionally not part of the OpenAPI document because
+it is a WebSocket channel rather than a JSON HTTP endpoint. Rust-first clients
+use it for verified realtime sync-pack deltas when possible and explicit
+pull-required wake-ups when HTTP recovery is needed.
