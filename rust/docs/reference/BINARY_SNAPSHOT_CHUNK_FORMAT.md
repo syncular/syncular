@@ -13,22 +13,12 @@ app bootstraps.
 - Keep chunks independently verifiable with the existing chunk SHA-256 and gzip envelope.
 - Keep the production hot path binary and schema-driven.
 
-## Negotiation
+## Selection
 
-Clients advertise supported encodings on pull requests:
-
-```json
-{
-  "snapshotEncodings": ["binary-table-v1"]
-}
-```
-
-Server selection rules:
-
-1. If `binary-table-v1` is present or no encoding is specified, the server uses
-   binary chunks.
-2. If no requested encoding is supported, fail the pull request instead of
-   silently falling back to a format the client did not advertise.
+There is no request-time snapshot encoding negotiation in the current protocol.
+Server snapshot chunk refs always use `binary-table-v1`; clients that cannot
+decode that format should fail clearly instead of requesting an alternate
+product path.
 
 ## Envelope
 

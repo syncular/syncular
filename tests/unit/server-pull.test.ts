@@ -224,7 +224,6 @@ describe('pull', () => {
       request: {
         clientId: 'c1',
         limitCommits: 10,
-        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         subscriptions: [
           {
             id: 's1',
@@ -278,7 +277,6 @@ describe('pull', () => {
       request: {
         clientId: 'c2',
         limitCommits: 10,
-        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         subscriptions: [
           {
             id: 's1',
@@ -344,7 +342,6 @@ describe('pull', () => {
           limitCommits: 10,
           limitSnapshotRows: 2,
           maxSnapshotPages: 3,
-          snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
           subscriptions: [
             {
               id: 's1',
@@ -421,7 +418,6 @@ describe('pull', () => {
           limitCommits: 10,
           limitSnapshotRows: 60_000,
           maxSnapshotPages: 1,
-          snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
           subscriptions: [
             {
               id: 's1',
@@ -465,7 +461,6 @@ describe('pull', () => {
       request: {
         clientId: 'c1',
         limitCommits: 10,
-        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         subscriptions: [
           {
             id: 's1',
@@ -540,7 +535,6 @@ describe('pull', () => {
       request: {
         clientId: 'c1',
         limitCommits: 10,
-        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         subscriptions: [
           {
             id: 's1',
@@ -600,7 +594,6 @@ describe('pull', () => {
         request: {
           clientId,
           limitCommits: 10,
-          snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
           subscriptions: [
             {
               id: 's1',

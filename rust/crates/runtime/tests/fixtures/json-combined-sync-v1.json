@@ -2,9 +2,6 @@
   "name": "json-combined-sync-v1",
   "request": {
     "clientId": "fixture-client-1",
-    "syncPackEncodings": [
-      "binary-sync-pack-v1"
-    ],
     "push": {
       "commits": [
         {
@@ -38,12 +35,6 @@
       "limitSnapshotRows": 1000,
       "maxSnapshotPages": 4,
       "dedupeRows": true,
-      "snapshotEncodings": [
-        "binary-table-v1"
-      ],
-      "syncPackEncodings": [
-        "binary-sync-pack-v1"
-      ],
       "subscriptions": [
         {
           "id": "sub-tasks",

@@ -3703,9 +3703,7 @@ export function createSyncRoutes<
             maxPullMaxSnapshotPages
           ),
           dedupeRows: body.pull.dedupeRows === true,
-          snapshotEncodings: body.pull.snapshotEncodings,
           snapshotArtifacts: body.pull.snapshotArtifacts,
-          syncPackEncodings: body.pull.syncPackEncodings,
           subscriptions: body.pull.subscriptions.map((sub) => ({
             id: sub.id,
             table: sub.table,

@@ -15,7 +15,6 @@ fn decodes_json_combined_sync_fixture() {
     let request: CombinedRequest =
         serde_json::from_value(fixture["request"].clone()).expect("fixture request");
     assert_eq!(request.client_id, "fixture-client-1");
-    assert_eq!(request.sync_pack_encodings[0], "binary-sync-pack-v1");
 
     let push = request.push.expect("push request");
     assert_eq!(push.commits.len(), 1);
@@ -42,8 +41,6 @@ fn decodes_json_combined_sync_fixture() {
     assert_eq!(pull.limit_snapshot_rows, 1000);
     assert_eq!(pull.max_snapshot_pages, 4);
     assert_eq!(pull.dedupe_rows, Some(true));
-    assert_eq!(pull.snapshot_encodings[0], "binary-table-v1");
-    assert_eq!(pull.sync_pack_encodings[0], "binary-sync-pack-v1");
     assert_eq!(pull.subscriptions.len(), 1);
     assert_eq!(pull.subscriptions[0].id, "sub-tasks");
     assert_eq!(pull.subscriptions[0].table, "tasks");

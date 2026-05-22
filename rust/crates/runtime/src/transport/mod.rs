@@ -1255,7 +1255,6 @@ mod tests {
         ));
         let request = CombinedRequest {
             client_id: "native-trace-client".to_string(),
-            sync_pack_encodings: Vec::new(),
             push: None,
             pull: None,
         };

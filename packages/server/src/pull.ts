@@ -15,7 +15,6 @@ import {
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING,
-  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   type SyncBootstrapState,
   type SyncChange,
   type SyncCommit,
@@ -27,7 +26,6 @@ import {
   type SyncSnapshot,
   type SyncSnapshotArtifactCompression,
   type SyncSnapshotArtifactsRequest,
-  type SyncSnapshotChunkEncoding,
   type SyncSnapshotChunkRef,
   sha256Hex,
   snapshotScopeDigestFromCacheKey,
@@ -127,18 +125,6 @@ async function createChunkedSnapshotManifest(args: {
     isLastPage: args.isLastPage,
     chunks: args.chunks.map(toResponseChunkRef),
   });
-}
-
-function resolveSnapshotChunkEncoding(
-  requested: readonly SyncSnapshotChunkEncoding[] | undefined
-): SyncSnapshotChunkEncoding {
-  if (!requested || requested.length === 0) return SYNC_SNAPSHOT_CHUNK_ENCODING;
-  if (requested.includes(SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1)) {
-    return SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1;
-  }
-  throw new Error(
-    `Unsupported snapshot chunk encodings requested: ${requested.join(', ')}`
-  );
 }
 
 interface SnapshotArtifactSelection {
@@ -739,9 +725,7 @@ export async function pull<
           50
         );
         const dedupeRows = request.dedupeRows === true;
-        const snapshotChunkEncoding = resolveSnapshotChunkEncoding(
-          request.snapshotEncodings
-        );
+        const snapshotChunkEncoding = SYNC_SNAPSHOT_CHUNK_ENCODING;
         const snapshotArtifactSelection = resolveSnapshotArtifactSelection(
           request.snapshotArtifacts
         );

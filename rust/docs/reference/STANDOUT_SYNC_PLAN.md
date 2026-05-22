@@ -96,20 +96,21 @@ of jumping straight into new public APIs.
 - 2026-05-19: Added `json-row-frame-v1` snapshot fixture coverage and promoted
   the native row-frame decoder into `binary_snapshot.rs`, so fixture tests use
   the same Rust decoder path as native snapshot chunk transport.
-- 2026-05-19: Aligned Rust `CombinedRequest` with the TypeScript root-level
-  `syncPackEncodings` field, regenerated the shared JSON fixture with that
-  field, and kept Rust clients advertising the current `binary-sync-pack-v1`
-  path explicitly.
-- 2026-05-19: Updated the TypeScript testkit combined-request builder to carry
-  root-level `syncPackEncodings`, with schema-backed coverage. This lets
-  runtime and route tests request binary sync packs through the normal builder
-  instead of hand-shaped bodies.
+- 2026-05-19: Aligned Rust `CombinedRequest` with the TypeScript protocol
+  fixture coverage while the binary sync-pack transition was still
+  negotiation-backed. This was later narrowed again when binary sync-packs
+  became the only combined response path.
+- 2026-05-19: Updated the TypeScript testkit combined-request builder during
+  the binary sync-pack transition. The later Rust-first cleanup removed the
+  request-time encoding selector so builders now produce the current protocol
+  shape directly.
 - 2026-05-19: Patched Rust testkit commit response constructors to populate the
   optional `commitDigest`/`commitChainRoot` fields with explicit `None` values,
   so the runtime test suite compiles against the verifiable-log protocol model.
 - 2026-05-19: Replaced protocol encoding string literals in the fixture
   generator with exported core constants, and switched the focused Hono binary
-  sync-pack route test to root-level `syncPackEncodings` negotiation.
+  sync-pack route test to the transition-era binary negotiation path. The
+  follow-up cleanup removed request-time sync-pack negotiation entirely.
 - 2026-05-19: Fixed binary sync-pack fixture metadata so `wireVersion` is
   derived from the encoded header, and made the generated v10 fixture cover
   `commitDigest`/`commitChainRoot` roundtrips in both TypeScript and Rust.

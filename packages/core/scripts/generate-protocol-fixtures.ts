@@ -60,7 +60,6 @@ function jsonCombinedSyncFixture() {
     name: 'json-combined-sync-v1',
     request: {
       clientId: 'fixture-client-1',
-      syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
       push: {
         commits: [
           {
@@ -94,8 +93,6 @@ function jsonCombinedSyncFixture() {
         limitSnapshotRows: 1000,
         maxSnapshotPages: 4,
         dedupeRows: true,
-        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
-        syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
         subscriptions: [
           {
             id: 'sub-tasks',
@@ -475,7 +472,6 @@ async function relayProtocolBoundaryFixture() {
   const combined = {
     request: {
       clientId,
-      syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
       push: {
         commits: [
           {
@@ -503,7 +499,6 @@ async function relayProtocolBoundaryFixture() {
         limitSnapshotRows: 2000,
         maxSnapshotPages: 2,
         dedupeRows: true,
-        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         snapshotArtifacts: {
           schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
@@ -513,7 +508,6 @@ async function relayProtocolBoundaryFixture() {
           ],
           featureSet: ['blobs', 'field-e2ee'],
         },
-        syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
         subscriptions: [
           {
             id: subscriptionId,

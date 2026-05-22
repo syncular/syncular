@@ -10,7 +10,6 @@ use serde_json::Value;
 
 pub fn validate_combined_request(request: &CombinedRequest) -> Result<()> {
     ensure_non_empty("clientId", &request.client_id)?;
-    validate_sync_pack_encodings(&request.sync_pack_encodings)?;
     if let Some(push) = &request.push {
         validate_push_batch_request(push)?;
     }
@@ -201,10 +200,6 @@ fn validate_pull_request(pull: &PullRequest) -> Result<()> {
         return Err(ProtocolError::message(
             "pull request maxSnapshotPages must be positive",
         ));
-    }
-    validate_sync_pack_encodings(&pull.sync_pack_encodings)?;
-    for encoding in &pull.snapshot_encodings {
-        validate_snapshot_encoding(encoding)?;
     }
     if let Some(artifacts) = &pull.snapshot_artifacts {
         ensure_non_empty("snapshotArtifacts schemaVersion", &artifacts.schema_version)?;
@@ -440,26 +435,6 @@ fn validate_realtime_sync_data(value: &Value) -> Result<()> {
     Ok(())
 }
 
-fn validate_sync_pack_encodings(encodings: &[String]) -> Result<()> {
-    for encoding in encodings {
-        if encoding != SYNC_PACK_ENCODING_BINARY_V1 {
-            return Err(ProtocolError::message(format!(
-                "unsupported sync pack encoding: {encoding}"
-            )));
-        }
-    }
-    Ok(())
-}
-
-fn validate_snapshot_encoding(encoding: &str) -> Result<()> {
-    if encoding != crate::SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 {
-        return Err(ProtocolError::message(format!(
-            "unsupported snapshot encoding: {encoding}"
-        )));
-    }
-    Ok(())
-}
-
 fn validate_request_scopes(scopes: &ScopeValues) -> Result<()> {
     for (key, value) in scopes {
         ensure_non_empty("scope key", key)?;
@@ -652,7 +627,6 @@ mod tests {
         };
         let combined = CombinedRequest {
             client_id: "rust-relay-client-1".to_string(),
-            sync_pack_encodings: vec![crate::SYNC_PACK_ENCODING_BINARY_V1.to_string()],
             push: Some(PushBatchRequest {
                 commits: vec![commit.clone()],
             }),
@@ -700,13 +674,14 @@ mod tests {
     fn rejects_invalid_relay_protocol_shapes() {
         let request = CombinedRequest {
             client_id: "relay-client".to_string(),
-            sync_pack_encodings: vec!["legacy-json".to_string()],
             push: None,
             pull: None,
         };
         let error = validate_combined_request(&request).expect_err("invalid request");
         assert!(
-            error.to_string().contains("unsupported sync pack encoding"),
+            error
+                .to_string()
+                .contains("combined request must include push or pull"),
             "{error}"
         );
     }

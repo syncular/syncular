@@ -160,20 +160,8 @@ pub struct PullRequest {
     pub max_snapshot_pages: i64,
     #[serde(rename = "dedupeRows", skip_serializing_if = "Option::is_none")]
     pub dedupe_rows: Option<bool>,
-    #[serde(
-        rename = "snapshotEncodings",
-        default,
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub snapshot_encodings: Vec<String>,
     #[serde(rename = "snapshotArtifacts", skip_serializing_if = "Option::is_none")]
     pub snapshot_artifacts: Option<SnapshotArtifactsRequest>,
-    #[serde(
-        rename = "syncPackEncodings",
-        default,
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub sync_pack_encodings: Vec<String>,
     pub subscriptions: Vec<SubscriptionRequest>,
 }
 
@@ -181,12 +169,6 @@ pub struct PullRequest {
 pub struct CombinedRequest {
     #[serde(rename = "clientId")]
     pub client_id: String,
-    #[serde(
-        rename = "syncPackEncodings",
-        default,
-        skip_serializing_if = "Vec::is_empty"
-    )]
-    pub sync_pack_encodings: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub push: Option<PushBatchRequest>,
     #[serde(skip_serializing_if = "Option::is_none")]

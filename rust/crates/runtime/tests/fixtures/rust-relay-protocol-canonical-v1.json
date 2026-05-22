@@ -3,9 +3,6 @@
   "generatedBy": "rust/crates/protocol/src/validation.rs canonical serialization test",
   "combinedRequest": {
     "clientId": "rust-relay-client-1",
-    "syncPackEncodings": [
-      "binary-sync-pack-v1"
-    ],
     "push": {
       "commits": [
         {

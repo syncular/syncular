@@ -19,32 +19,16 @@ import {
 } from '../snapshot-chunks';
 
 describe('snapshot chunk protocol', () => {
-  it('accepts the current binary snapshot encoding on pull requests', () => {
+  it('uses binary snapshot chunk refs for transport metadata', () => {
     const parsed = SyncPullRequestSchema.parse({
       clientId: 'client-1',
       limitCommits: 50,
       limitSnapshotRows: 1000,
       maxSnapshotPages: 4,
-      snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
       subscriptions: [],
     });
 
-    expect(parsed.snapshotEncodings).toEqual([
-      SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-    ]);
-  });
-
-  it('rejects the removed JSON row-frame snapshot encoding', () => {
-    expect(() =>
-      SyncPullRequestSchema.parse({
-        clientId: 'client-1',
-        limitCommits: 50,
-        limitSnapshotRows: 1000,
-        maxSnapshotPages: 4,
-        snapshotEncodings: ['json-row-frame-v1'],
-        subscriptions: [],
-      })
-    ).toThrow();
+    expect(parsed.subscriptions).toEqual([]);
   });
 
   it('accepts scoped snapshot artifact capabilities on pull requests', () => {

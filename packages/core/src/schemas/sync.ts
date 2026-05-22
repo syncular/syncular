@@ -15,7 +15,6 @@ import {
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODINGS,
 } from '../snapshot-chunks';
-import { SYNC_PACK_ENCODINGS } from '../sync-packs';
 
 // ============================================================================
 // Operation Types
@@ -288,7 +287,6 @@ export type SyncSubscriptionRequest = z.infer<
 export const SyncSnapshotChunkEncodingSchema = z.enum(
   SYNC_SNAPSHOT_CHUNK_ENCODINGS
 );
-export const SyncPackEncodingSchema = z.enum(SYNC_PACK_ENCODINGS);
 export const SyncScopedSnapshotArtifactKindSchema = z.literal(
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1
 );
@@ -314,9 +312,7 @@ export const SyncPullRequestSchema = z.object({
   limitSnapshotRows: z.number().int().min(1).optional(),
   maxSnapshotPages: z.number().int().min(1).optional(),
   dedupeRows: z.boolean().optional(),
-  snapshotEncodings: z.array(SyncSnapshotChunkEncodingSchema).optional(),
   snapshotArtifacts: SyncSnapshotArtifactsRequestSchema.optional(),
-  syncPackEncodings: z.array(SyncPackEncodingSchema).optional(),
   subscriptions: z.array(SyncSubscriptionRequestSchema),
 });
 
@@ -504,7 +500,6 @@ export type SyncPullResponse = z.infer<typeof SyncPullResponseSchema>;
 
 export const SyncCombinedRequestSchema = z.object({
   clientId: z.string().min(1),
-  syncPackEncodings: z.array(SyncPackEncodingSchema).optional(),
   push: SyncPushBatchRequestSchema.omit({ clientId: true }).optional(),
   pull: SyncPullRequestSchema.omit({ clientId: true }).optional(),
 });

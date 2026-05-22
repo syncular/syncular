@@ -17,8 +17,7 @@ use crate::protocol::{
     BootstrapState, CombinedRequest, CombinedResponse, PullRequest, PullResponse, PushBatchRequest,
     PushCommitRequest, ScopeValues, SnapshotArtifactsRequest, SubscriptionRequest, SyncChange,
     SyncCommit, SyncOperation, VerifiedCommitRoot, SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
-    SNAPSHOT_CHUNK_COMPRESSION_GZIP, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-    SYNC_PACK_ENCODING_BINARY_V1,
+    SNAPSHOT_CHUNK_COMPRESSION_GZIP,
 };
 use crate::store::{next_retry_at, now_ms, ConflictSummary, OutboxCommit, MAX_SYNC_RETRIES};
 use crate::transport::web::{AsyncSyncTransport, WebSyncTransport, WebSyncTransportConfig};
@@ -741,7 +740,6 @@ where
         let total_started_at = timing_now_ms();
         let request = CombinedRequest {
             client_id: self.config.client_id.clone(),
-            sync_pack_encodings: self.sync_pack_encodings(),
             push: None,
             pull: Some(self.build_pull_request().await?),
         };
@@ -1455,7 +1453,6 @@ where
 
         let request = CombinedRequest {
             client_id: self.config.client_id.clone(),
-            sync_pack_encodings: self.sync_pack_encodings(),
             push: self.build_push_request(&pending)?,
             pull: None,
         };
@@ -1766,7 +1763,6 @@ where
             limit_snapshot_rows: self.config.pull.limit_snapshot_rows,
             max_snapshot_pages,
             dedupe_rows: self.config.pull.dedupe_rows,
-            snapshot_encodings: vec![SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string()],
             snapshot_artifacts: request_sqlite_snapshot_artifacts.then(|| {
                 SnapshotArtifactsRequest {
                     schema_version: self.schema_version().to_string(),
@@ -1775,13 +1771,8 @@ where
                     feature_set: Vec::new(),
                 }
             }),
-            sync_pack_encodings: vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()],
             subscriptions,
         })
-    }
-
-    fn sync_pack_encodings(&self) -> Vec<String> {
-        vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()]
     }
 
     fn should_request_sqlite_snapshot_artifacts(&self) -> bool {

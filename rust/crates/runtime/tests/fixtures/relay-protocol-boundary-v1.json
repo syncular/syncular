@@ -4,9 +4,6 @@
   "combined": {
     "request": {
       "clientId": "relay-client-1",
-      "syncPackEncodings": [
-        "binary-sync-pack-v1"
-      ],
       "push": {
         "commits": [
           {
@@ -46,9 +43,6 @@
         "limitSnapshotRows": 2000,
         "maxSnapshotPages": 2,
         "dedupeRows": true,
-        "snapshotEncodings": [
-          "binary-table-v1"
-        ],
         "snapshotArtifacts": {
           "schemaVersion": "7",
           "artifactKinds": [
@@ -63,9 +57,6 @@
             "field-e2ee"
           ]
         },
-        "syncPackEncodings": [
-          "binary-sync-pack-v1"
-        ],
         "subscriptions": [
           {
             "id": "relay-sub-tasks",
