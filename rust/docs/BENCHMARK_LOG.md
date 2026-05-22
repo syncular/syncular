@@ -5855,3 +5855,42 @@ Rationale:
   runtime, not a deliberately scoped protocol-only relay/server validation
   surface. Using it for the call-boundary probe would measure the wrong
   integration shape.
+
+## 2026-05-22 - WP-09 Windows JVM Package Evidence
+
+Work package: [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
+
+Command:
+
+```bash
+bash rust/scripts/package-native-bindings.sh --java-windows-x86_64
+```
+
+Evidence source:
+
+- GitHub Checks workflow run `26260787975` on branch `feat/rust-client`, commit
+  `3cecf58010a3013f1afd07a451fc09d3dcea5c22`.
+- Job `rust-windows-jvm-package`, job id `77293580195`, passed on
+  `windows-latest`:
+  <https://github.com/syncular/syncular/actions/runs/26260787975/job/77293580195>.
+- The package step completed in `143.2s`. The linker emitted `LNK4098` as a
+  warning only; the compile, verification, and upload steps completed
+  successfully.
+
+Result:
+
+| Artifact Field | Value |
+| --- | --- |
+| Workflow status | `success` |
+| Artifact name | `syncular-jvm-windows-26260787975` |
+| Artifact path | `.context/native-packages/java/native/windows-x86_64/syncular_runtime_jni.dll` |
+| Artifact id | `7150140731` |
+| Artifact size | `2,617,849` bytes |
+| Artifact zip SHA-256 | `e1e658cf39779b8c52d138f18012a4ea95d8d9ed60a1277f8b590c920ef36b22` |
+
+Decision:
+
+- WP-09 is accepted for the current native packaging foundation.
+- The Windows native/JVM packaging blocker is cleared for the current package
+  shape. Broader platform release validation should be driven by concrete
+  app-shell or publication requirements.

@@ -878,7 +878,6 @@ read-only review:
 
 ## Blocked / External
 
-- Windows native/JVM packaging needs a real Windows host or runner.
 - Full iOS/macOS/Android lifecycle validation needs real app-shell coverage
   beyond command-line smokes.
 - CI jobs are intentionally skipped until GitHub-side work is requested.
