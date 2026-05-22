@@ -154,7 +154,6 @@ Most packages are published under the `@syncular` scope on npm. The umbrella pac
 | `@syncular/react` | React hooks and provider for the Rust-owned client |
 | `@syncular/client-tauri` | Tauri JS/React bridge facade over a Rust Syncular host |
 | `@syncular/client-react-native` | React Native/Nitro bridge facade over a native Syncular host |
-| `@syncular/client-expo` | Expo-friendly aliases for the React Native bridge facade |
 | `@syncular/transport-http` | HTTP push/pull transport |
 | `@syncular/console` | Embeddable console UI for commits, clients, events, and operations |
 | `@syncular/testkit` | Server fixtures, protocol request builders, realtime helpers, and fault injection |

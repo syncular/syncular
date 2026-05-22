@@ -270,3 +270,5 @@ current Rust-first path no longer needs them.
 - While running the broad runtime gate, tightened the native facade lifecycle
   test to tolerate startup diagnostic events before the initial sync-completed
   event.
+- Removed the `@syncular/client-expo` alias package. Apps should use the
+  canonical `@syncular/client-react-native` bridge rather than package aliases.

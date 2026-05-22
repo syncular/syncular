@@ -131,12 +131,11 @@ discoverability, conflict, blob, or subscription ergonomics gaps.
 
 - `bun test packages/client/src/react.test.ts packages/client/src/generated-app-conformance.test.ts`
 - `bun test packages/client/src/bridge-client.test.ts`
-- `bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts packages/client/src/bridge-client.test.ts`
+- `bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client/src/bridge-client.test.ts`
 - `bun run client:test`
 - `bun run --cwd packages/testkit tsgo`
 - `bun run --cwd packages/client-tauri tsgo`
 - `bun run --cwd packages/client-react-native tsgo`
-- `bun run --cwd packages/client-expo tsgo`
 - `bun run --cwd packages/client tsgo`
 - `bun run tsgo`
 - `bun run docs:build`

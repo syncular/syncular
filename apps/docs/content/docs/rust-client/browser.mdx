@@ -62,7 +62,7 @@ requested, and shuts everything down through `destroy()`/`close()`. Realtime is
 treated as a wakeup path: websocket reconnects trigger HTTP catchup sync, and
 interval polling stays opt-in through `lifecycle.pollIntervalMs`.
 
-## Tauri, React Native, and Expo
+## Tauri And React Native
 
 Desktop and mobile JS shells use separate bridge packages. They return the same
 ergonomic client shape as the browser preset, but execute SQL, mutations,
@@ -71,7 +71,6 @@ sync, presence, and events through a platform host:
 ```ts
 import { createSyncularTauriClient } from '@syncular/client-tauri';
 import { createSyncularNativeClient } from '@syncular/client-react-native';
-import { createSyncularExpoClient } from '@syncular/client-expo';
 ```
 
 React usage stays the same. Create a platform client, then pass it to the
