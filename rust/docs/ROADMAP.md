@@ -853,13 +853,15 @@ read-only review:
     and binary realtime frames. TypeScript schema/codec tests and Rust protocol
     tests validate the same fixtures without changing relay runtime behavior.
 - `[~]` [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
-  - First retained slice adds a repeatable relay protocol-boundary evaluator
-    over the WP-27 fixture. The current TypeScript baseline is small on this
-    fixture: combined response parse+schema p95 is `17.17us`, binary sync-pack
-    decode+schema p95 is `22.83us`, and validating schema-backed fixture
-    protocol objects p95 is `46.25us`. No Rust relay production path is
-    retained yet; the next step is app-path relay push/forward/pull/realtime
-    baselines before any Rust call-boundary prototype.
+  - Retained evaluation now has both a repeatable protocol-boundary baseline
+    over the WP-27 fixture and an in-memory relay app-path baseline. Current
+    local p95s: combined response parse+schema `16.42us`, binary sync-pack
+    decode+schema `22.58us`, schema-backed fixture validation `47.46us`, local
+    relay push `701.46us`, forward once `108.63us`, main pull/apply `379.96us`,
+    local incremental pull `305.67us`, and realtime wakeup to 100 mock
+    connections `33.92us`. No Rust relay production path is retained yet; the
+    next step is brainstorming from the evidence or measuring Rust call-boundary
+    overhead, not starting a relay rewrite.
 
 ## Blocked / External
 

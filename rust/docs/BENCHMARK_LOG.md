@@ -5754,15 +5754,15 @@ Local result, 2,000 iterations:
 
 | Metric | p50 | p95 | Avg |
 | --- | ---: | ---: | ---: |
-| JSON parse combined request | `2.33us` | `3.83us` | `2.71us` |
-| JSON parse combined response | `4.25us` | `6.13us` | `4.79us` |
-| TypeScript schema combined request | `6.33us` | `13.04us` | `8.27us` |
-| TypeScript schema combined response | `11.04us` | `17.29us` | `12.69us` |
-| HTTP-style parse+schema request | `7.21us` | `13.92us` | `8.95us` |
-| HTTP-style parse+schema response | `11.29us` | `17.17us` | `12.68us` |
-| Binary sync-pack decode | `5.63us` | `12.00us` | `6.96us` |
-| Binary sync-pack decode+schema | `12.71us` | `22.83us` | `14.90us` |
-| Validate schema-backed fixture protocol objects | `31.67us` | `46.25us` | `36.54us` |
+| JSON parse combined request | `2.42us` | `3.96us` | `2.85us` |
+| JSON parse combined response | `4.21us` | `6.21us` | `4.79us` |
+| TypeScript schema combined request | `6.25us` | `13.08us` | `8.78us` |
+| TypeScript schema combined response | `11.75us` | `18.50us` | `13.62us` |
+| HTTP-style parse+schema request | `7.13us` | `12.33us` | `8.91us` |
+| HTTP-style parse+schema response | `11.00us` | `16.42us` | `12.15us` |
+| Binary sync-pack decode | `5.79us` | `11.96us` | `7.16us` |
+| Binary sync-pack decode+schema | `12.88us` | `22.58us` | `18.10us` |
+| Validate schema-backed fixture protocol objects | `32.75us` | `47.46us` | `37.52us` |
 
 Malformed diagnostics:
 
@@ -5782,3 +5782,53 @@ Decision:
   prototype a Rust call boundary after those baselines show either protocol
   validation heat or correctness/drift value that TypeScript schemas do not
   already provide.
+
+## 2026-05-22 - WP-28 Relay App-Path Baseline
+
+Work package: [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
+
+Change:
+
+- Added a repeatable in-memory relay app-path evaluator.
+- The evaluator uses Bun SQLite, `server-dialect-sqlite`, a minimal `tasks`
+  handler collection, `relayPushCommit`, `ForwardEngine.forwardOnce`,
+  `PullEngine.pullOnce`, `relayPull`, and `RelayRealtime`.
+- Forward and pull transports are deterministic in-process controls; network
+  latency is intentionally excluded.
+
+Command:
+
+```bash
+bun run --cwd packages/relay evaluate:relay-paths
+```
+
+Local result, 100 measured iterations, 10 warmup iterations:
+
+| Metric | p50 | p95 | Avg |
+| --- | ---: | ---: | ---: |
+| Local client push into relay | `243.83us` | `701.46us` | `385.47us` |
+| Relay forward once to main | `70.04us` | `108.63us` | `76.47us` |
+| Relay pull from main and local apply | `213.04us` | `379.96us` | `256.16us` |
+| Local client incremental pull from relay | `157.96us` | `305.67us` | `179.28us` |
+| Realtime wakeup to 100 mock connections | `18.08us` | `33.92us` | `20.45us` |
+
+Counters:
+
+- Local push commits: `100`.
+- Forwarded commits: `100`.
+- Main pull/apply commits: `100`.
+- Local pull responses: `100`.
+- Realtime messages: `10,000`.
+
+Decision:
+
+- Keep WP-28 in evaluation. The relay app paths are dominated by DB/app
+  semantics in this local control; schema-backed protocol validation
+  (`47.46us` p95 in the earlier WP-28 baseline) is not currently the largest
+  measured cost.
+- A Rust protocol validator alone is unlikely to be retained for relay
+  performance unless it avoids existing JSON/copy work or adds correctness
+  value that TypeScript schemas do not provide.
+- Next useful step is brainstorming from the evidence or measuring Rust
+  call-boundary overhead as a control. Do not start a Rust relay/server rewrite
+  from these numbers.
