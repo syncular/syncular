@@ -104,7 +104,6 @@ Initial audit inputs:
 - `COMPATIBILITY_REGISTER.md` still has active cleanup candidates:
   - `json-v1` sync-pack path (`Temporary`);
   - `json-row-frame-v1` snapshot chunks (`Temporary`);
-  - migration legacy checksum algorithms (`Decision needed`);
   - console message-auth handshake fallback (`Decision needed`);
   - service-worker `postMessage` fallback (`Decision needed`);
   - external chunk storage inline/database fallback (`Decision needed`);
@@ -163,8 +162,8 @@ Initial audit inputs:
 ## Next Action
 
 Continue Slice 1: close the remaining compatibility register items one by one.
-Next candidates are the migration checksum, console auth, service-worker, and
-external chunk storage fallback decisions.
+Next candidates are the console auth, service-worker, and external chunk
+storage fallback decisions.
 
 ## Progress
 
@@ -202,4 +201,17 @@ external chunk storage fallback decisions.
     findings; this slice did not touch relay work.
   - `rg` cleanup checks found no active references to deleted wa-sqlite /
     transport-ws packages or deleted umbrella subpaths outside this WP and the
+    compatibility register.
+- Removed the legacy migration source-checksum algorithm and the tracking-table
+  upgrade branch that added `checksum_algorithm` with a `legacy_source_v1`
+  default. Migration state now only supports generated `sql_trace_v1`
+  checksums or disabled checksums.
+- Gates:
+  - `bunx biome check packages/migrations/src/checksum.ts packages/migrations/src/runner.ts packages/migrations/src/tracking.ts packages/migrations/src/types.ts tests/unit/migrations.test.ts`: passed.
+  - `bun --cwd packages/migrations tsgo`: passed.
+  - `bun test tests/unit/migrations.test.ts tests/typegen/generate.test.ts`:
+    passed, `44` tests.
+  - `bunx knip --workspace packages/migrations --workspace packages/typegen`:
+    passed.
+  - `rg` found no remaining legacy checksum symbols outside this WP and the
     compatibility register.

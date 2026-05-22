@@ -23,14 +23,13 @@ import {
   type DefinedMigrations,
   defineMigrations,
   getAppliedMigrations,
-  getLegacyMigrationChecksum,
   getSchemaVersion,
   type RunMigrationsOptions,
   type RunMigrationsToVersionOptions,
   runMigrations,
   runMigrationsToVersion,
 } from '@syncular/migrations';
-import { type Kysely, sql } from 'kysely';
+import type { Kysely } from 'kysely';
 import { createMigrationChecksums } from '../../packages/typegen/src/checksums';
 
 interface TestDb {
@@ -468,54 +467,6 @@ describe('migrations', () => {
       await expect(
         runMigrationsWithSqliteChecksums({ db, migrations: migrations2 })
       ).rejects.toThrow(/has changed since it was applied/);
-    });
-
-    it('upgrades legacy tracking rows and validates them with the legacy algorithm', async () => {
-      const migrations = defineMigrations<TestDb>({
-        v1: {
-          up: async (db) => {
-            await db.schema
-              .createTable('items')
-              .addColumn('id', 'text', (col) => col.primaryKey())
-              .addColumn('name', 'text')
-              .execute();
-          },
-          down: async (_db) => {},
-        },
-      });
-
-      await sql`
-        create table sync_migration_state (
-          version integer primary key,
-          name text not null,
-          applied_at text not null,
-          checksum text not null
-        )
-      `.execute(db);
-
-      await sql`
-        insert into sync_migration_state (version, name, applied_at, checksum)
-        values (
-          1,
-          'v1',
-          ${new Date().toISOString()},
-          ${getLegacyMigrationChecksum(migrations.migrations[0]!)}
-        )
-      `.execute(db);
-
-      const result = await runMigrationsWithSqliteChecksums({ db, migrations });
-
-      expect(result.applied).toEqual([]);
-      const appliedRows = await getAppliedMigrations(
-        db,
-        'sync_migration_state'
-      );
-      expect(appliedRows).toEqual([
-        expect.objectContaining({
-          version: 1,
-          checksum_algorithm: 'legacy_source_v1',
-        }),
-      ]);
     });
 
     it('resets on checksum mismatch when onChecksumMismatch is "reset"', async () => {
