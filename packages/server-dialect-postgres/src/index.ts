@@ -1173,6 +1173,44 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       'CREATE INDEX idx_sync_realtime_events_partition_client_created_at ON sync_realtime_events(partition_id, client_id, created_at DESC)'
     );
 
+    await sql`
+      CREATE TABLE IF NOT EXISTS sync_client_diagnostic_snapshots (
+        snapshot_id BIGSERIAL PRIMARY KEY,
+        partition_id TEXT NOT NULL DEFAULT 'default',
+        client_id TEXT NOT NULL,
+        actor_id TEXT,
+        runtime_kind TEXT,
+        runtime_version TEXT,
+        schema_version INTEGER,
+        reported_at TIMESTAMPTZ NOT NULL,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        lifecycle_phase TEXT,
+        connection_state TEXT,
+        freshness_state TEXT NOT NULL,
+        health_max_severity TEXT,
+        diagnostic_codes_summary JSONB,
+        queue_summary JSONB,
+        timing_summary JSONB,
+        redaction_summary JSONB,
+        snapshot_json JSONB NOT NULL
+      )
+    `.execute(db);
+    await this.ensureIndex(
+      db,
+      'idx_sync_client_diagnostic_snapshots_received_at',
+      'CREATE INDEX idx_sync_client_diagnostic_snapshots_received_at ON sync_client_diagnostic_snapshots(received_at DESC)'
+    );
+    await this.ensureIndex(
+      db,
+      'idx_sync_client_diagnostic_snapshots_latest',
+      'CREATE INDEX idx_sync_client_diagnostic_snapshots_latest ON sync_client_diagnostic_snapshots(partition_id, client_id, received_at DESC)'
+    );
+    await this.ensureIndex(
+      db,
+      'idx_sync_client_diagnostic_snapshots_health',
+      'CREATE INDEX idx_sync_client_diagnostic_snapshots_health ON sync_client_diagnostic_snapshots(partition_id, health_max_severity, received_at DESC)'
+    );
+
     // API Keys table
     await sql`
       CREATE TABLE IF NOT EXISTS sync_api_keys (

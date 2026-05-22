@@ -125,6 +125,8 @@ const queryKeys = {
   clients: (params?: ListParams) => ['console', 'clients', params] as const,
   clientDiagnostics: (params?: ClientDiagnosticsParams) =>
     ['console', 'client-diagnostics', params] as const,
+  clientDiagnosticHistory: (params?: ClientDiagnosticsParams) =>
+    ['console', 'client-diagnostics', 'history', params] as const,
   eventDetail: (
     id?: string | number,
     partitionId?: string,
@@ -517,6 +519,32 @@ export function useClientDiagnostics(
     },
     errorMessage: 'Failed to fetch client diagnostics',
     enabled: options.enabled,
+    refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
+  });
+}
+
+export function useClientDiagnosticHistory(
+  clientId: string | undefined,
+  params: ClientDiagnosticsParams = {},
+  options: RefetchableQueryOptions = {}
+) {
+  const instanceId = useEffectiveInstanceId(params.instanceId);
+
+  return useConsoleJsonQuery<PaginatedResponse<ConsoleClientDiagnosticRecord>>({
+    queryKey: queryKeys.clientDiagnosticHistory({
+      ...params,
+      clientId,
+      instanceId,
+    }),
+    path: `/console/client-diagnostics/${encodeURIComponent(clientId ?? '')}/history`,
+    query: {
+      limit: params.limit,
+      offset: params.offset,
+      partitionId: params.partitionId,
+      instanceId,
+    },
+    errorMessage: 'Failed to fetch client diagnostic history',
+    enabled: Boolean(clientId) && options.enabled !== false,
     refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
   });
 }

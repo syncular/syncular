@@ -305,6 +305,27 @@ export type ConsoleDebugExportResponse = z.infer<
 // Client Schemas
 // ============================================================================
 
+export const ConsoleClientDiagnosticHealthSeveritySchema = z.enum([
+  'debug',
+  'info',
+  'warn',
+  'error',
+]);
+
+export type ConsoleClientDiagnosticHealthSeverity = z.infer<
+  typeof ConsoleClientDiagnosticHealthSeveritySchema
+>;
+
+export const ConsoleClientDiagnosticFreshnessStateSchema = z.enum([
+  'active',
+  'idle',
+  'stale',
+]);
+
+export type ConsoleClientDiagnosticFreshnessState = z.infer<
+  typeof ConsoleClientDiagnosticFreshnessStateSchema
+>;
+
 export const ConsoleClientSchema = z.object({
   clientId: z.string(),
   actorId: z.string(),
@@ -315,6 +336,11 @@ export const ConsoleClientSchema = z.object({
   realtimeConnectionCount: z.number().int().nonnegative(),
   isRealtimeConnected: z.boolean(),
   activityState: z.enum(['active', 'idle', 'stale']),
+  diagnosticFreshnessState:
+    ConsoleClientDiagnosticFreshnessStateSchema.nullable(),
+  diagnosticHealthMaxSeverity:
+    ConsoleClientDiagnosticHealthSeveritySchema.nullable(),
+  diagnosticReceivedAt: z.string().nullable(),
   lastRequestAt: z.string().nullable(),
   lastRequestType: z.enum(['sync', 'push', 'pull']).nullable(),
   lastRequestOutcome: z.string().nullable(),
@@ -429,6 +455,16 @@ export type ConsoleClientDiagnosticEvent = z.infer<
   typeof ConsoleClientDiagnosticEventSchema
 >;
 
+export const ConsoleClientDiagnosticCodeSummarySchema = z.object({
+  code: z.string(),
+  count: z.number().int().nonnegative(),
+  maxLevel: ConsoleClientDiagnosticHealthSeveritySchema,
+});
+
+export type ConsoleClientDiagnosticCodeSummary = z.infer<
+  typeof ConsoleClientDiagnosticCodeSummarySchema
+>;
+
 export const ConsoleClientDiagnosticSnapshotSchema = z
   .object({
     generatedAt: z.number().optional(),
@@ -469,6 +505,12 @@ export const ConsoleClientDiagnosticRecordSchema = z.object({
   partitionId: z.string(),
   reportedAt: z.string(),
   receivedAt: z.string(),
+  freshnessState: ConsoleClientDiagnosticFreshnessStateSchema,
+  healthMaxSeverity: ConsoleClientDiagnosticHealthSeveritySchema.nullable(),
+  diagnosticCodesSummary: z.array(ConsoleClientDiagnosticCodeSummarySchema),
+  queueSummary: z.record(z.string(), z.unknown()).nullable(),
+  timingSummary: z.record(z.string(), z.unknown()).nullable(),
+  redactionSummary: z.record(z.string(), z.unknown()),
   runtime: ConsoleClientDiagnosticRuntimeSchema.nullable(),
   connection: ConsoleClientDiagnosticConnectionSchema.nullable(),
   lifecycle: ConsoleClientDiagnosticLifecycleSchema.nullable(),
