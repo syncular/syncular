@@ -71,6 +71,7 @@ exception.
 | Arbitrary conflict-resolution strings | `Removed` | `packages/client/src/types.ts` | The browser TypeScript API now accepts only `keep-local`, `keep-server`, and `dismiss`, matching the runtime contract instead of preserving an open-ended string escape hatch |
 | JavaScript-hosted browser store bridge | `Removed` | `rust/crates/runtime/src/web/host_store.rs`, `rust/crates/runtime/src/web/wasm.rs`, `web-store` Cargo features | Product browser runtime is Rust-owned SQLite. The old wasm `SyncularWasmClient` host-store bridge was removed instead of retained as test-only scaffolding |
 | `@syncular/client-expo` alias package | `Removed` | `packages/client-expo` | Expo-only aliases over `@syncular/client-react-native` were removed. React Native is the canonical TypeScript bridge package for native hosts |
+| Native realtime `start` / `stop` aliases | `Removed` | `NativeSyncularClient`, C FFI, BoltFFI Swift/Kotlin/Java bindings | Native hosts now use explicit `start_realtime_worker` / `stop_realtime_worker` names so lifecycle control is not confused with sync-worker startup or full client shutdown |
 
 ## Items That Are Not Compatibility Debt
 
