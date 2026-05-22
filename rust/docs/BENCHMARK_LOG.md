@@ -5832,3 +5832,26 @@ Decision:
 - Next useful step is brainstorming from the evidence or measuring Rust
   call-boundary overhead as a control. Do not start a Rust relay/server rewrite
   from these numbers.
+
+## 2026-05-22 - WP-28 Final Relay Rust Decision
+
+Work package: [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
+
+Decision:
+
+- Closed WP-28 with Rust protocol validation kept in fixtures/dev tooling only.
+- No production Rust validation path is retained in relay/server.
+- No new Rust relay/server component WP is created from this evidence.
+- Relay app semantics stay TypeScript/Kysely-owned unless a future product
+  decision and new measurements say otherwise.
+
+Rationale:
+
+- The current TypeScript protocol checks are measurable but small on the WP-27
+  fixture.
+- The measured relay paths are dominated by DB/app semantics rather than
+  protocol validation.
+- The available JavaScript-facing Rust binding is the full browser client WASM
+  runtime, not a deliberately scoped protocol-only relay/server validation
+  surface. Using it for the call-boundary probe would measure the wrong
+  integration shape.
