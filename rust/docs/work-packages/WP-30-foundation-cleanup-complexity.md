@@ -258,6 +258,8 @@ current Rust-first path no longer needs them.
 - Removed the old `accept-server` conflict-resolution spelling from the
   TypeScript public type and Rust serde alias. `keep-server` is the canonical
   value.
+- Tightened the browser conflict-resolution type to the three runtime-supported
+  values: `keep-local`, `keep-server`, and `dismiss`.
 - Removed the old JavaScript-hosted browser store bridge (`web-store`,
   `WebHostStore`, and `SyncularWasmClient`). Browser WASM now exposes only the
   Rust-owned SQLite runtime surface.

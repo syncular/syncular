@@ -7,6 +7,7 @@ import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   SyncularV2AppSchema,
   SyncularV2ChangedRow,
+  SyncularV2ConflictResolution,
   SyncularV2LiveQueryDependencyHint,
   SyncularV2LiveQueryDiagnostics,
   SyncularV2RowsChangedEvent,
@@ -104,7 +105,10 @@ export interface RawSyncularRustOwnedSqlite {
   insertConflictJson(outboxJson: string, resultJson: string): Promise<void>;
   conflictSummariesJson(): Promise<string>;
   retryConflictKeepLocal(id: string): Promise<string>;
-  resolveConflict(id: string, resolution: string): Promise<void>;
+  resolveConflict(
+    id: string,
+    resolution: SyncularV2ConflictResolution
+  ): Promise<void>;
   subscriptionStateJson(subscriptionId: string): Promise<string>;
   upsertSubscriptionStateJson(stateJson: string): Promise<void>;
   deleteSubscriptionState(subscriptionId: string): Promise<void>;
@@ -271,7 +275,10 @@ export class SyncularRustOwnedSqlite
     return this.raw.retryConflictKeepLocal(id);
   }
 
-  resolveConflict(id: string, resolution: string): Promise<void> {
+  resolveConflict(
+    id: string,
+    resolution: SyncularV2ConflictResolution
+  ): Promise<void> {
     return this.raw.resolveConflict(id, resolution);
   }
 

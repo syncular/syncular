@@ -41,6 +41,7 @@ import type {
   SyncularV2ClientEventMap,
   SyncularV2ClientEventSink,
   SyncularV2ClientEventType,
+  SyncularV2ConflictResolution,
   SyncularV2ConflictStats,
   SyncularV2ConflictSummary,
   SyncularV2ConnectionState,
@@ -683,7 +684,10 @@ export class SyncularV2WorkerClient implements SyncularV2Client {
     });
   }
 
-  async resolveConflict(id: string, resolution: string): Promise<void> {
+  async resolveConflict(
+    id: string,
+    resolution: SyncularV2ConflictResolution
+  ): Promise<void> {
     await this.#requestAndDrain({
       type: 'resolveConflict',
       conflictId: id,
