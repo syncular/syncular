@@ -343,3 +343,17 @@ JSON path, then run protocol/runtime/conformance gates before committing.
   - `bunx biome check packages/client/src/worker-realtime.ts packages/client/src/__tests__/realtime-hono.wasm.test.ts`:
     passed.
   - `bun --cwd packages/client test`: passed, `110` tests.
+- Removed JSON row-frame snapshot chunk decode from Rust runtime transports and
+  runtime protocol re-exports. Native/browser runtime clients already request
+  `binary-table-v1` only; JSON row-frame remains only in server/core/protocol
+  fixture scope until the larger server-default protocol decision is made.
+- Gates:
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture http_sync_reuses_trace_context_for_snapshot_chunks`:
+    passed, `1` targeted test.
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`:
+    passed, `42` tests.
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`:
+    passed, `4` tests.
+  - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang bun --cwd rust/bindings/javascript build:wasm:dev`:
+    passed.
+  - `bun --cwd packages/client test`: passed, `110` tests.

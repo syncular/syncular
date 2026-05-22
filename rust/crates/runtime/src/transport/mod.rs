@@ -1,8 +1,8 @@
 #[cfg(feature = "native")]
 use crate::app_schema::default_app_schema;
-use crate::binary_snapshot::SnapshotChunkRows;
 #[cfg(feature = "native")]
-use crate::binary_snapshot::{decode_binary_snapshot_rows, decode_snapshot_row_frames};
+use crate::binary_snapshot::decode_binary_snapshot_rows;
+use crate::binary_snapshot::SnapshotChunkRows;
 #[cfg(feature = "native")]
 use crate::binary_sync_pack::{decode_binary_sync_pack, is_binary_sync_pack_content_type};
 use crate::error::{ErrorKind, Result, SyncularError};
@@ -1129,9 +1129,6 @@ fn decode_snapshot_chunk_rows(chunk: &SnapshotChunkRef, bytes: &[u8]) -> Result<
     syncular_protocol::validate_snapshot_chunk_format(chunk)?;
 
     match chunk.encoding.as_str() {
-        SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 => {
-            decode_snapshot_row_frames(bytes).map(SnapshotChunkRows::Json)
-        }
         SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 => {
             decode_binary_snapshot_rows(bytes).map(SnapshotChunkRows::Binary)
         }
@@ -1208,12 +1205,12 @@ mod tests {
         let address = listener.local_addr().expect("sync trace server address");
         let (headers_tx, headers_rx) = mpsc::channel::<(BTreeMap<String, String>, String)>();
 
-        let compressed_chunk = gzip_bytes(b"not-json-row-frame");
+        let compressed_chunk = gzip_bytes(b"not-binary-table");
         let chunk = SnapshotChunkRef {
             id: "trace-chunk".to_string(),
             byte_length: compressed_chunk.len() as i64,
             sha256: hex::encode(Sha256::digest(&compressed_chunk)),
-            encoding: SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1.to_string(),
+            encoding: SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string(),
             compression: SNAPSHOT_CHUNK_COMPRESSION_GZIP.to_string(),
         };
         let server_chunk = compressed_chunk.clone();
