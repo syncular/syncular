@@ -248,3 +248,10 @@ current Rust-first path no longer needs them.
   binary clients`, older binary sync-pack wire decoding) out of Current Items
   and into Recently Removed so the register's active section only contains live
   decisions.
+- Removed the unused `SyncularRustOwnedSqliteClientConfig` browser low-level
+  store alias and renamed the low-level executor/live-query helper types to the
+  canonical `SyncularRustOwned*` naming.
+- Gates:
+  - `bunx biome check packages/client/src/rust-store.ts`: passed.
+  - `bun --cwd packages/client tsgo`: passed.
+  - `bun --cwd packages/client test`: passed, `110` tests.

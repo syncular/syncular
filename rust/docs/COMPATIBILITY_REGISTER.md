@@ -67,6 +67,7 @@ exception.
 | `syncular/server-dialect-neon` umbrella alias | `Removed` | `packages/syncular/src/server-dialect-neon.ts`, `packages/syncular/package.json`, docs | Neon support is exposed through `@syncular/server-dialect-postgres` / `syncular/server-dialect-postgres`; the extra alias only preserved an unnecessary old import path |
 | Migration legacy source checksum algorithm | `Removed` | `packages/migrations/src/checksum.ts`, `packages/migrations/src/tracking.ts`, migration tests | Migration tracking now only accepts generated SQL-trace checksums or disabled checksums. Old tracking-table upgrade support was removed under the disruptive Rust-first cleanup policy |
 | Service-worker legacy single-commit wake parsing | `Removed` | `packages/server-service-worker/src/index.ts`, service-worker tests | Wake resolution now reads current batched `push.commits` request/response shapes only. Legacy single `push.operations` / `push.status` handling was removed instead of carried as an old protocol branch |
+| Browser low-level Rust store type aliases | `Removed` | `packages/client/src/rust-store.ts` | Removed the unused `SyncularRustOwnedSqliteClientConfig` alias and renamed the executor/live-query helper types to the canonical `SyncularRustOwned*` names |
 
 ## Items That Are Not Compatibility Debt
 

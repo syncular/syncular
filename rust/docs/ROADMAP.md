@@ -90,7 +90,8 @@ read-only review:
     Service-worker `postMessage` wake delivery was also accepted as a tested
     platform fallback, while legacy single-commit wake parsing was removed.
     Database-inline snapshot chunk bodies are now documented as an accepted
-    storage mode; missing external chunk bodies fail closed.
+    storage mode; missing external chunk bodies fail closed. Public API alias
+    cleanup started with low-level browser Rust store type aliases.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,
