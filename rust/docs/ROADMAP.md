@@ -87,6 +87,8 @@ read-only review:
     tracking now only supports generated `sql_trace_v1` checksums or disabled
     checksums. Console WebSocket first-message auth was reclassified as an
     accepted browser platform capability rather than cleanup debt.
+    Service-worker `postMessage` wake delivery was also accepted as a tested
+    platform fallback, while legacy single-commit wake parsing was removed.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,
