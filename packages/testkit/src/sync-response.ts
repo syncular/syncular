@@ -4,8 +4,6 @@ import {
   type SyncPullResponse,
 } from '@syncular/core';
 
-export type SyncChangeRecord = SyncChange;
-
 export type SyncSubscriptionRecord = Pick<
   SyncPullResponse['subscriptions'][number],
   'id' | 'commits'
@@ -14,7 +12,7 @@ export type SyncSubscriptionRecord = Pick<
 export function subscriptionChanges(
   subscriptions: SyncSubscriptionRecord[] | undefined,
   subscriptionId: string
-): SyncChangeRecord[] {
+): SyncChange[] {
   const subscription = subscriptions?.find(
     (item) => item.id === subscriptionId
   );
@@ -29,13 +27,13 @@ export function findSubscriptionChange(
   subscriptions: SyncSubscriptionRecord[] | undefined,
   subscriptionId: string,
   rowId: string
-): SyncChangeRecord | undefined {
+): SyncChange | undefined {
   const changes = subscriptionChanges(subscriptions, subscriptionId);
   return changes.find((change) => change.row_id === rowId);
 }
 
 export function subscriptionChangeRow(
-  change: SyncChangeRecord | undefined
+  change: SyncChange | undefined
 ): Record<string, unknown> | undefined {
   if (!change) {
     return undefined;
