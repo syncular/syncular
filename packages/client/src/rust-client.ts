@@ -91,7 +91,7 @@ import {
   type SyncularWasmGlue,
 } from './wasm-runtime';
 
-export interface CreateSyncularRustClientOptions {
+interface CreateSyncularRustClientOptions {
   module?: SyncularWasmGlue | Promise<SyncularWasmGlue>;
   wasmGlueUrl?: string | URL;
   wasmUrl?: string | URL | Request;
