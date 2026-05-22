@@ -104,8 +104,6 @@ Initial audit inputs:
 - `COMPATIBILITY_REGISTER.md` still has active cleanup candidates:
   - `json-v1` sync-pack path (`Temporary`);
   - `json-row-frame-v1` snapshot chunks (`Temporary`);
-  - external chunk storage inline/database fallback (`Decision needed`);
-  - realtime wake-up-only docs (`Remove/update`).
 - The first package-surface cleanup slice adopted and verified the dirty-tree
   deletions of `packages/dialect-wa-sqlite`, `packages/transport-ws`,
   `packages/syncular/src/dialect-wa-sqlite.ts`,
@@ -160,7 +158,9 @@ Initial audit inputs:
 ## Next Action
 
 Continue Slice 1: close the remaining compatibility register items one by one.
-Next candidate is the external chunk storage fallback decision.
+Next candidates are the temporary JSON protocol/snapshot paths, but those
+should only move under WP-02/WP-03/WP-30 if protocol/conformance gates prove the
+current Rust-first path no longer needs them.
 
 ## Progress
 
@@ -234,3 +234,13 @@ Next candidate is the external chunk storage fallback decision.
   - `bun --cwd packages/server-service-worker tsgo`: passed.
   - `bun test packages/server-service-worker/src/index.test.ts`: passed, `10`
     tests.
+- Reclassified database-inline snapshot chunk bodies as an accepted explicit
+  storage mode, not an external-storage fallback. External chunk reads already
+  fail closed when the external body is missing; tests now describe that
+  contract directly instead of calling it an inline fallback.
+- Gates:
+  - `bunx biome check tests/unit/external-chunk-storage-integration.test.ts rust/docs/COMPATIBILITY_REGISTER.md rust/docs/work-packages/WP-30-foundation-cleanup-complexity.md rust/docs/ROADMAP.md`: passed for the checked TypeScript file; Markdown paths are ignored by Biome in this repo.
+  - `bun --cwd packages/server tsgo && bun --cwd packages/server-hono tsgo`:
+    passed.
+  - `bun test tests/unit/external-chunk-storage-integration.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts`:
+    passed, `17` tests.
