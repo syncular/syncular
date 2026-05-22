@@ -181,6 +181,13 @@ bun run bench:run -- --stack syncular-rust --scenario large-offline-queue
 bun run bench:run -- --stack syncular-rust --scenario blob-flow
 ```
 
+Stronger browser-worker OPFS durability verification:
+
+```sh
+SYNCULAR_RUST_BROWSER_DURABLE_REOPEN=1 \
+  bun run bench:run -- --stack syncular-rust --scenario offline-replay
+```
+
 Full comparison before accepting the WP:
 
 ```sh
@@ -833,13 +840,57 @@ Decision:
   automatic backoff for unattended retry loops.
 - Do not lower the default blob retry base below `100ms` from this evidence.
 
+## Slice 15 Browser Worker OPFS Process-Restart Durability
+
+Retained external benchmark-adapter change on 2026-05-22:
+
+- Added opt-in `SYNCULAR_RUST_BROWSER_DURABLE_REOPEN=1` for the Rust
+  `offline-replay` scenario.
+- The lane bundles the current workspace `packages/client/src/worker-client.ts`
+  and `worker-entry.ts`, serves the current Rust WASM artifact, drives a real
+  headless Chrome worker client, and uses `storage: 'opfsSahPool'`.
+- The benchmark restarts the browser process between bootstrap, offline
+  queueing, and replay while reusing the same Chrome profile and SQLite file.
+- The Syncular benchmark server CORS allowlist now accepts localhost benchmark
+  origins plus the benchmark auth/timing headers required by the browser Rust
+  transport.
+- Browser CDP network/log capture is retained in the harness so future browser
+  failures record actionable CORS/network diagnostics in the result notes.
+
+Verification:
+
+- `bun --cwd rust/bindings/javascript build:wasm`: passed; WASM size remains
+  below budget at raw `2.33 MiB` / gzip `1.03 MiB`.
+- `SYNCULAR_RUST_BROWSER_DURABLE_REOPEN=1 bun run bench:run -- --stack syncular-rust --scenario offline-replay`:
+  passed.
+- `bunx biome check --write src/adapters/syncular-rust.ts stacks/syncular/syncular-app/src/index.ts`
+  in `offline-sync-bench`: passed.
+- `bunx tsc --noEmit --pretty false` in `offline-sync-bench`: still blocked by
+  the existing stack-app package export mismatch against published
+  `@syncular/server` packages; no new Rust adapter type errors were reported
+  before those stack-app errors.
+
+Targeted external result:
+
+| Scenario | Run ID | Key result |
+| --- | --- | --- |
+| `offline-replay` browser OPFS process restart | `2026-05-22T22-15-40-625Z` | storage `opfsSahPool`, storage fallback `null`; browser process restart `1`; reopened outbox `10` unresolved / `10` pending; reopened matching titles `10`; replay convergence `110.2ms`; final outbox `10` acked, `0` unresolved; success rate `1.0`; requests `2`; bytes `7879`; bootstrap `50.5ms`; queue `33ms` |
+
+Decision:
+
+- Retain. This closes the remaining Rust-client durability evidence gap with a
+  real browser worker and OPFS storage, not the lower-cost Bun
+  IndexedDB-compatible reopen probe.
+- Keep the default comparison lane memory-backed so existing historical
+  benchmark rows remain comparable. Use
+  `SYNCULAR_RUST_BROWSER_DURABLE_REOPEN=1` when validating browser/process
+  restart durability.
+
 ## Next Action
 
-The unsupported benchmark rows are now covered by native Rust client behavior.
-The next optimization slices should be evidence-gated and scoped:
-
-- Add a full browser-worker OPFS/process-restart lane if we need stronger
-  durability evidence than the IndexedDB-compatible close/reopen probe.
+The unsupported benchmark rows are now covered by native Rust client behavior,
+including an opt-in browser-worker OPFS/process-restart durability lane. No
+additional WP-31 client-side parity slice is currently identified.
 
 The `250`-client reconnect cliff is no longer a WP-31 client tuning item. It is
 handed off to

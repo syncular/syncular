@@ -199,9 +199,12 @@ read-only review:
     explicit blob upload `retryNow` processing for manual or online-triggered
     recovery without lowering the automatic `100ms` blob retry backoff; the
     `blob-flow` retry lane improves from `115.64ms` over `2` queue attempts to
-    `13.15ms` over `1` attempt. Remaining WP-31 client-side follow-up is a full
-    browser-worker OPFS/process-restart harness if stronger durability evidence
-    is needed.
+    `13.15ms` over `1` attempt. Slice 15 adds the stronger browser durability
+    lane: real Chrome worker, `opfsSahPool`, browser process restarts between
+    bootstrap/offline queue/replay, reopened outbox `10/10` pending, final
+    outbox `10/10` acked, and no storage fallback. No additional WP-31
+    client-side parity slice is currently identified; the remaining `250`
+    client reconnect cliff is tracked in WP-32.
 - `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table
