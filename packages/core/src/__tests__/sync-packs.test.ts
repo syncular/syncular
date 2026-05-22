@@ -21,29 +21,21 @@ import {
   encodeBinarySyncPack,
   isBinarySyncPackContentType,
   isSyncPackEncoding,
-  prefersBinarySyncPack,
   SYNC_PACK_CONTENT_TYPE,
   SYNC_PACK_ENCODING_BINARY_V1,
-  SYNC_PACK_ENCODING_JSON_V1,
 } from '../sync-packs';
 
 describe('sync pack protocol negotiation', () => {
-  it('accepts advertised JSON and binary pack encodings on pull requests', () => {
+  it('accepts the current binary pack encoding on pull requests', () => {
     const parsed = SyncPullRequestSchema.parse({
       clientId: 'client-1',
       limitCommits: 50,
       limitSnapshotRows: 1000,
-      syncPackEncodings: [
-        SYNC_PACK_ENCODING_BINARY_V1,
-        SYNC_PACK_ENCODING_JSON_V1,
-      ],
+      syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
       subscriptions: [],
     });
 
-    expect(parsed.syncPackEncodings).toEqual([
-      SYNC_PACK_ENCODING_BINARY_V1,
-      SYNC_PACK_ENCODING_JSON_V1,
-    ]);
+    expect(parsed.syncPackEncodings).toEqual([SYNC_PACK_ENCODING_BINARY_V1]);
     expect(isSyncPackEncoding(parsed.syncPackEncodings[0])).toBe(true);
   });
 
@@ -64,10 +56,16 @@ describe('sync pack protocol negotiation', () => {
     ).toBe(true);
   });
 
-  it('defaults unspecified sync-pack negotiation to binary', () => {
-    expect(prefersBinarySyncPack(undefined)).toBe(true);
-    expect(prefersBinarySyncPack([])).toBe(true);
-    expect(prefersBinarySyncPack([SYNC_PACK_ENCODING_JSON_V1])).toBe(false);
+  it('rejects the removed JSON sync-pack encoding', () => {
+    expect(() =>
+      SyncPullRequestSchema.parse({
+        clientId: 'client-1',
+        limitCommits: 50,
+        limitSnapshotRows: 1000,
+        syncPackEncodings: ['json-v1'],
+        subscriptions: [],
+      })
+    ).toThrow();
   });
 });
 

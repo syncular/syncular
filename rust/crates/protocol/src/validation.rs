@@ -5,7 +5,6 @@ use crate::{
     PushBatchRequest, PushBatchResponse, PushCommitRequest, PushCommitResponse,
     RealtimePresenceRequest, RealtimePushRequest, RealtimeServerMessage, Result, ScopeValues,
     SnapshotChunkRef, SyncChange, SyncOperation, SyncSnapshot, SYNC_PACK_ENCODING_BINARY_V1,
-    SYNC_PACK_ENCODING_JSON_V1,
 };
 use serde_json::Value;
 
@@ -443,13 +442,10 @@ fn validate_realtime_sync_data(value: &Value) -> Result<()> {
 
 fn validate_sync_pack_encodings(encodings: &[String]) -> Result<()> {
     for encoding in encodings {
-        match encoding.as_str() {
-            SYNC_PACK_ENCODING_JSON_V1 | SYNC_PACK_ENCODING_BINARY_V1 => {}
-            _ => {
-                return Err(ProtocolError::message(format!(
-                    "unsupported sync pack encoding: {encoding}"
-                )))
-            }
+        if encoding != SYNC_PACK_ENCODING_BINARY_V1 {
+            return Err(ProtocolError::message(format!(
+                "unsupported sync pack encoding: {encoding}"
+            )));
         }
     }
     Ok(())

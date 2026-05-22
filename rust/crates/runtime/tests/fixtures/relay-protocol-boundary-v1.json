@@ -5,8 +5,7 @@
     "request": {
       "clientId": "relay-client-1",
       "syncPackEncodings": [
-        "binary-sync-pack-v1",
-        "json-v1"
+        "binary-sync-pack-v1"
       ],
       "push": {
         "commits": [
@@ -66,8 +65,7 @@
           ]
         },
         "syncPackEncodings": [
-          "binary-sync-pack-v1",
-          "json-v1"
+          "binary-sync-pack-v1"
         ],
         "subscriptions": [
           {

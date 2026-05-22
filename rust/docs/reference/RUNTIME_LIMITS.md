@@ -62,7 +62,6 @@ routes: ... })` and return `runtime.limit_exceeded` envelopes when exceeded.
 | Limit | Default | Meaning |
 | --- | ---: | --- |
 | `maxSyncRequestJsonBytes` | 4194304 | Maximum JSON body accepted by combined `POST /` sync requests |
-| `maxSyncResponseJsonBytes` | 16777216 | Maximum JSON body emitted by combined `POST /` sync responses |
 | `maxSyncBinaryPackBytes` | 16777216 | Maximum binary sync-pack body emitted by combined `POST /` sync responses |
 | `maxSnapshotChunkResponseBytes` | 67108864 | Maximum snapshot chunk body emitted by `GET /snapshot-chunks/:chunkId` |
 | `maxSnapshotArtifactResponseBytes` | 268435456 | Maximum scoped snapshot artifact body emitted by `GET /snapshot-artifacts/:artifactId` |

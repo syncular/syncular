@@ -18,7 +18,6 @@ fn decodes_json_combined_sync_fixture() {
         serde_json::from_value(fixture["request"].clone()).expect("fixture request");
     assert_eq!(request.client_id, "fixture-client-1");
     assert_eq!(request.sync_pack_encodings[0], "binary-sync-pack-v1");
-    assert_eq!(request.sync_pack_encodings[1], "json-v1");
 
     let push = request.push.expect("push request");
     assert_eq!(push.commits.len(), 1);

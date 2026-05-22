@@ -40,12 +40,8 @@ import {
   decodeBinarySnapshotTable,
 } from './snapshot-chunks';
 
-export const SYNC_PACK_ENCODING_JSON_V1 = 'json-v1';
 export const SYNC_PACK_ENCODING_BINARY_V1 = 'binary-sync-pack-v1';
-export const SYNC_PACK_ENCODINGS = [
-  SYNC_PACK_ENCODING_JSON_V1,
-  SYNC_PACK_ENCODING_BINARY_V1,
-] as const;
+export const SYNC_PACK_ENCODINGS = [SYNC_PACK_ENCODING_BINARY_V1] as const;
 export type SyncPackEncoding = (typeof SYNC_PACK_ENCODINGS)[number];
 
 export const SYNC_PACK_CONTENT_TYPE = 'application/vnd.syncular.sync-pack.v1';
@@ -89,16 +85,6 @@ export function isSyncPackEncoding(value: unknown): value is SyncPackEncoding {
 
 export function isBinarySyncPackContentType(value: string | null): boolean {
   return value?.split(';', 1)[0]?.trim() === SYNC_PACK_CONTENT_TYPE;
-}
-
-export function prefersBinarySyncPack(
-  encodings: readonly SyncPackEncoding[] | undefined
-): boolean {
-  return (
-    !encodings ||
-    encodings.length === 0 ||
-    encodings.includes(SYNC_PACK_ENCODING_BINARY_V1)
-  );
 }
 
 export function encodeBinarySyncPack(

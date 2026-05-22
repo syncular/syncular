@@ -18,7 +18,6 @@ import {
   ErrorResponseSchema,
   encodeBinarySyncPack,
   logSyncEvent,
-  prefersBinarySyncPack,
   type ScopeValues,
   ScopeValuesSchema,
   type StoredScopes,
@@ -252,11 +251,6 @@ export interface SyncRoutesConfigWithRateLimit {
    * Default: 4 MiB.
    */
   maxSyncRequestJsonBytes?: number;
-  /**
-   * Maximum JSON response body emitted by POST /.
-   * Default: 16 MiB.
-   */
-  maxSyncResponseJsonBytes?: number;
   /**
    * Maximum binary sync-pack response body emitted by POST /.
    * Default: 16 MiB.
@@ -597,7 +591,6 @@ type AuditDebugExportEvent = z.infer<typeof auditDebugExportEventSchema>;
 
 const DEFAULT_REQUEST_PAYLOAD_SNAPSHOT_MAX_BYTES = 128 * 1024;
 const DEFAULT_MAX_SYNC_REQUEST_JSON_BYTES = 4 * 1024 * 1024;
-const DEFAULT_MAX_SYNC_RESPONSE_JSON_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_SYNC_BINARY_PACK_BYTES = 16 * 1024 * 1024;
 const DEFAULT_MAX_SNAPSHOT_CHUNK_RESPONSE_BYTES = 64 * 1024 * 1024;
 const DEFAULT_MAX_SNAPSHOT_ARTIFACT_RESPONSE_BYTES = 256 * 1024 * 1024;
@@ -928,10 +921,6 @@ async function readRequestBodyBytesWithLimit(
     offset += chunk.length;
   }
   return merged;
-}
-
-function byteLengthUtf8(value: string): number {
-  return new TextEncoder().encode(value).length;
 }
 
 function responseBodyOverLimit(
@@ -1402,10 +1391,6 @@ export function createSyncRoutes<
   const maxSyncRequestJsonBytes = readPositiveInteger(
     config.maxSyncRequestJsonBytes,
     DEFAULT_MAX_SYNC_REQUEST_JSON_BYTES
-  );
-  const maxSyncResponseJsonBytes = readPositiveInteger(
-    config.maxSyncResponseJsonBytes,
-    DEFAULT_MAX_SYNC_RESPONSE_JSON_BYTES
   );
   const maxSyncBinaryPackBytes = readPositiveInteger(
     config.maxSyncBinaryPackBytes,
@@ -3605,12 +3590,6 @@ export function createSyncRoutes<
         | undefined;
       const exposeBenchPullTimings =
         c.req.header('x-syncular-bench-timings') === '1';
-      const requestedSyncPackEncodings =
-        body.syncPackEncodings ?? body.pull?.syncPackEncodings;
-      const shouldEncodeBinarySyncPack = prefersBinarySyncPack(
-        requestedSyncPackEncodings
-      );
-
       // --- Push phase ---
       if (body.push) {
         const pushBodies = body.push.commits ?? [];
@@ -3931,51 +3910,19 @@ export function createSyncRoutes<
         });
       };
 
-      if (shouldEncodeBinarySyncPack) {
-        const encoded = encodeBinarySyncPack(combinedResponse, {
-          changeRowEncoders: binarySyncPackChangeRowEncoders,
-        });
-        const limitResponse = responseBodyOverLimit(c, {
-          limit: 'maxSyncBinaryPackBytes',
-          observed: encoded.byteLength,
-          max: maxSyncBinaryPackBytes,
-        });
-        if (limitResponse) {
-          recordResponseLimitFailure({
-            limit: 'maxSyncBinaryPackBytes',
-            observed: encoded.byteLength,
-            max: maxSyncBinaryPackBytes,
-          });
-          return limitResponse;
-        }
-        if (finalizePullSuccess) {
-          await finalizePullSuccess();
-        }
-        triggerAutoMaintenance({
-          actorId: auth.actorId,
-          clientId,
-          partitionId,
-        });
-        const body = encoded.buffer.slice(
-          encoded.byteOffset,
-          encoded.byteOffset + encoded.byteLength
-        ) as ArrayBuffer;
-        c.header('content-type', SYNC_PACK_CONTENT_TYPE);
-        return c.body(body, 200);
-      }
-
-      const jsonResponse = JSON.stringify(combinedResponse);
-      const jsonResponseBytes = byteLengthUtf8(jsonResponse);
+      const encoded = encodeBinarySyncPack(combinedResponse, {
+        changeRowEncoders: binarySyncPackChangeRowEncoders,
+      });
       const limitResponse = responseBodyOverLimit(c, {
-        limit: 'maxSyncResponseJsonBytes',
-        observed: jsonResponseBytes,
-        max: maxSyncResponseJsonBytes,
+        limit: 'maxSyncBinaryPackBytes',
+        observed: encoded.byteLength,
+        max: maxSyncBinaryPackBytes,
       });
       if (limitResponse) {
         recordResponseLimitFailure({
-          limit: 'maxSyncResponseJsonBytes',
-          observed: jsonResponseBytes,
-          max: maxSyncResponseJsonBytes,
+          limit: 'maxSyncBinaryPackBytes',
+          observed: encoded.byteLength,
+          max: maxSyncBinaryPackBytes,
         });
         return limitResponse;
       }
@@ -3988,8 +3935,12 @@ export function createSyncRoutes<
         partitionId,
       });
 
-      c.header('content-type', 'application/json');
-      return c.body(jsonResponse, 200);
+      const responseBody = encoded.buffer.slice(
+        encoded.byteOffset,
+        encoded.byteOffset + encoded.byteLength
+      ) as ArrayBuffer;
+      c.header('content-type', SYNC_PACK_CONTENT_TYPE);
+      return c.body(responseBody, 200);
     }
   );
 
