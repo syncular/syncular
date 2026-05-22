@@ -1,6 +1,6 @@
 # WP-29 Rust Client Console Workbench
 
-Status: `[~] planning baseline; implementation not started`
+Status: `[~] Slice 1 persistence retained; browser smoke still pending`
 
 ## Goal
 
@@ -433,10 +433,39 @@ API additions should be typed and redacted:
   - tests for diagnostics ingestion/listing and demo wiring;
   - Playwright verification that `/fleet/demo-left` renders Rust runtime
     diagnostics without browser console warnings or errors.
+- Slice 1 now has a retained persisted diagnostic-history foundation:
+  - SQLite and Postgres console schema creation includes
+    `sync_client_diagnostic_snapshots` with partition/client/latest, received-at,
+    and health/freshness indexes;
+  - `POST /console/client-diagnostics` writes normalized, size-bounded,
+    sensitive-key-guarded redacted records to the console table instead of an
+    in-memory map;
+  - `GET /console/client-diagnostics` returns latest snapshots from storage,
+    `GET /console/client-diagnostics/:clientId/history` pages retained history,
+    and `GET /console/clients` includes diagnostic freshness, health severity,
+    and received-at summaries for Fleet;
+  - ClientDetails now reads retained history and shows freshness, health, code
+    summaries, and snapshot history without adding any repair controls.
+- Gates passed for the retained Slice 1 foundation:
+  - `bun test packages/server-hono/src/__tests__/console-routes.test.ts`
+  - `bun test packages/server-hono/src/__tests__/console-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts`
+  - `bun test packages/server-dialect-sqlite/src/index.test.ts`
+  - `bun test packages/server-hono/src/__tests__/openapi.test.ts packages/console/src/__tests__/api.test.ts`
+  - `bun --cwd packages/server-hono tsgo`
+  - `bun --cwd packages/console tsgo`
+  - `bun --cwd packages/ui tsgo`
+  - `bun --cwd apps/demo tsgo`
+  - `bun --cwd packages/server-dialect-sqlite tsgo`
+  - `bun --cwd packages/server-dialect-postgres tsgo`
+  - `bunx biome check` on the touched server, dialect, console, and UI files
+  - `git diff --check`
+- Browser smoke is the remaining local verification gap for this slice. An
+  isolated demo was started on `5174/4102`, but the in-app browser profile was
+  already locked by another process and standalone Playwright is not installed
+  in this workspace, so `/fleet` and `/fleet/:clientId` still need a browser
+  smoke before Slice 1 is marked accepted.
 - Remaining evidence gaps:
-  - diagnostic snapshots are latest/in-memory for the demo path, not persisted
-    retained history;
-  - Fleet does not yet summarize stale age, health severity, or code families;
+  - browser UX verification for the retained history UI is still pending;
   - Stream filters are not URL-first and attempts are not a first-class unit;
   - RowInvestigation does not yet include client-local health/support evidence;
   - local repair/reset/support-bundle APIs are not presented as a guided console
@@ -446,17 +475,13 @@ API additions should be typed and redacted:
 
 ## Next Action
 
-Start with Slice 1: persisted diagnostic snapshot history.
+Finish Slice 1 by running the browser smoke once an isolated browser is
+available: open `/fleet`, one `/fleet/:clientId`, and confirm retained runtime
+history renders without console errors or layout overlap.
 
-The first implementation batch should:
-
-1. Add a redacted, size-bounded persisted snapshot store behind the console API.
-2. Keep the local demo prefill path, but make it write through the retained
-   ingestion path.
-3. Add freshness/staleness and max health severity to Fleet.
-4. Add snapshot history to ClientDetails without expanding repair actions yet.
-5. Prove retention, redaction, latest snapshot, and stale-client behavior with
-   server route tests and a Playwright smoke.
+After that, move to Slice 2 only if Slice 1 browser evidence is accepted:
+attempt correlation should add explicit missing-data markers rather than
+guessing causality from time windows.
 
 Do not begin remote client repair execution in this slice. The console first
 needs durable evidence and stable links before it should grow higher-risk

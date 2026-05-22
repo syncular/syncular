@@ -76,6 +76,9 @@ function mapToSyncNode(
     actorId: string;
     connectionMode: 'polling' | 'realtime';
     activityState: 'active' | 'idle' | 'stale';
+    diagnosticFreshnessState: 'active' | 'idle' | 'stale' | null;
+    diagnosticHealthMaxSeverity: 'debug' | 'info' | 'warn' | 'error' | null;
+    diagnosticReceivedAt: string | null;
     effectiveScopes: Record<string, unknown>;
     updatedAt: string;
   },
@@ -97,6 +100,11 @@ function mapToSyncNode(
     dialect: inferDialect(client.clientId),
     scopes: Object.keys(client.effectiveScopes ?? {}),
     lastSeen: formatTime(client.updatedAt, timeFormat),
+    runtimeFreshness: client.diagnosticFreshnessState,
+    runtimeHealth: client.diagnosticHealthMaxSeverity,
+    runtimeLastSeen: client.diagnosticReceivedAt
+      ? formatTime(client.diagnosticReceivedAt, timeFormat)
+      : null,
   };
 }
 

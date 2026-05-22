@@ -96,10 +96,15 @@ export type ConsoleRowHistoryResponse =
 export type ConsoleRowInvestigationResponse =
   JsonSuccessResponse<'getConsoleRowInvestigationByTableByRowId'>;
 
-export type ConsoleClient = PaginatedItem<'getConsoleClients'> &
-  GatewayClientFields;
-
 export type ConsoleClientDiagnosticLevel = 'debug' | 'info' | 'warn' | 'error';
+export type ConsoleClientDiagnosticFreshnessState = 'active' | 'idle' | 'stale';
+
+export type ConsoleClient = PaginatedItem<'getConsoleClients'> &
+  GatewayClientFields & {
+    diagnosticFreshnessState: ConsoleClientDiagnosticFreshnessState | null;
+    diagnosticHealthMaxSeverity: ConsoleClientDiagnosticLevel | null;
+    diagnosticReceivedAt: string | null;
+  };
 
 export interface ConsoleClientDiagnosticRuntime {
   packageName?: string;
@@ -161,6 +166,16 @@ export interface ConsoleClientDiagnosticRecord {
   partitionId: string;
   reportedAt: string;
   receivedAt: string;
+  freshnessState: ConsoleClientDiagnosticFreshnessState;
+  healthMaxSeverity: ConsoleClientDiagnosticLevel | null;
+  diagnosticCodesSummary: Array<{
+    code: string;
+    count: number;
+    maxLevel: ConsoleClientDiagnosticLevel;
+  }>;
+  queueSummary: Record<string, unknown> | null;
+  timingSummary: Record<string, unknown> | null;
+  redactionSummary: Record<string, unknown>;
   runtime: ConsoleClientDiagnosticRuntime | null;
   connection: Record<string, unknown> | null;
   lifecycle: Record<string, unknown> | null;

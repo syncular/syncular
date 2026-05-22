@@ -71,13 +71,15 @@ read-only review:
 ## Now
 
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
-  - Fresh console planning is active. The console should become a Rust-client
-    evidence workbench that answers fleet health, client-local state, row
-    investigation, sync-attempt, support-bundle, and safe recovery questions
-    without reviving legacy JS-client compatibility paths or storing sensitive
-    payloads by default. First implementation slice: persisted redacted client
-    diagnostic snapshot history with freshness, retention, Fleet summaries, and
-    ClientDetails history.
+  - Slice 1 persistence is retained but not fully accepted until browser smoke
+    evidence is added. Console diagnostics now persist normalized,
+    size-bounded, sensitive-key-guarded Rust client snapshots in
+    `sync_client_diagnostic_snapshots`; latest/list/history routes read from
+    storage; Fleet receives diagnostic freshness/health summaries; and
+    ClientDetails shows retained snapshot history. Targeted route, dialect,
+    OpenAPI, TypeScript, Biome, and diff checks passed. Remaining Slice 1 gap:
+    run `/fleet` and `/fleet/:clientId` browser verification once an isolated
+    browser is available.
 - `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table

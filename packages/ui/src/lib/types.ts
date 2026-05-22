@@ -10,6 +10,9 @@ export type SyncClientNode = {
   dialect: string;
   scopes: string[];
   lastSeen: string;
+  runtimeFreshness?: 'active' | 'idle' | 'stale' | null;
+  runtimeHealth?: 'debug' | 'info' | 'warn' | 'error' | null;
+  runtimeLastSeen?: string | null;
 };
 
 export type CommitStreamEntry = {

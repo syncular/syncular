@@ -34,6 +34,13 @@ const statusBadgeVariant = {
   offline: 'offline',
 } as const;
 
+const runtimeHealthVariant = {
+  debug: 'ghost',
+  info: 'healthy',
+  warn: 'syncing',
+  error: 'destructive',
+} as const;
+
 const FleetTable = forwardRef<HTMLDivElement, FleetTableProps>(
   ({ className, clients, headSeq, onEvict, onInspect, ...props }, ref) => {
     return (
@@ -43,6 +50,7 @@ const FleetTable = forwardRef<HTMLDivElement, FleetTableProps>(
             <TableRow>
               <TableHead className="w-[160px]">Client</TableHead>
               <TableHead className="w-[70px]">Status</TableHead>
+              <TableHead className="w-[105px]">Runtime</TableHead>
               <TableHead className="w-[60px]">Type</TableHead>
               <TableHead className="w-[80px]">Cursor</TableHead>
               <TableHead className="w-[110px]">Lag</TableHead>
@@ -85,6 +93,24 @@ const FleetTable = forwardRef<HTMLDivElement, FleetTableProps>(
                     <Badge variant={statusBadgeVariant[client.status]}>
                       {client.status}
                     </Badge>
+                  </TableCell>
+                  <TableCell className="w-[105px]">
+                    {client.runtimeHealth ? (
+                      <div className="flex flex-col gap-1">
+                        <Badge
+                          variant={runtimeHealthVariant[client.runtimeHealth]}
+                        >
+                          {client.runtimeHealth}
+                        </Badge>
+                        <span className="font-mono text-[9px] text-neutral-600">
+                          {client.runtimeFreshness ?? 'stale'}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="font-mono text-[10px] text-neutral-600">
+                        --
+                      </span>
+                    )}
                   </TableCell>
                   <TableCell className="w-[60px]">
                     <span className="font-mono text-[10px] text-neutral-400">

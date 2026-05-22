@@ -15,6 +15,7 @@ import { Link } from '@tanstack/react-router';
 import { Activity, Database, RefreshCw } from 'lucide-react';
 import { useMemo } from 'react';
 import {
+  useClientDiagnosticHistory,
   useClientDiagnostics,
   useClients,
   usePartitionContext,
@@ -177,6 +178,19 @@ export function ClientDetails({ clientId }: ClientDetailsProps) {
     },
     { refetchIntervalMs: refreshIntervalMs }
   );
+  const {
+    data: diagnosticHistoryData,
+    isLoading: diagnosticHistoryLoading,
+    refetch: refetchDiagnosticHistory,
+  } = useClientDiagnosticHistory(
+    clientId,
+    {
+      limit: 8,
+      offset: 0,
+      partitionId,
+    },
+    { refetchIntervalMs: refreshIntervalMs }
+  );
 
   const client = useMemo(
     () =>
@@ -191,12 +205,14 @@ export function ClientDetails({ clientId }: ClientDetailsProps) {
   const scopeKeys = formatScopes(client?.effectiveScopes);
   const recentItems = timeline?.items ?? [];
   const diagnostics = diagnosticData?.items[0] ?? null;
+  const diagnosticHistory = diagnosticHistoryData?.items ?? [];
 
   const refetchAll = () => {
     void refetchStats();
     void refetchClients();
     void refetchTimeline();
     void refetchDiagnostics();
+    void refetchDiagnosticHistory();
   };
 
   if (clientsLoading || statsLoading) {
@@ -319,6 +335,8 @@ export function ClientDetails({ clientId }: ClientDetailsProps) {
 
       <ClientRuntimeDiagnostics
         diagnostics={diagnostics}
+        history={diagnosticHistory}
+        historyLoading={diagnosticHistoryLoading}
         isLoading={diagnosticsLoading}
       />
 
@@ -436,9 +454,13 @@ export function ClientDetails({ clientId }: ClientDetailsProps) {
 
 function ClientRuntimeDiagnostics({
   diagnostics,
+  history,
+  historyLoading,
   isLoading,
 }: {
   diagnostics: ConsoleClientDiagnosticRecord | null;
+  history: ConsoleClientDiagnosticRecord[];
+  historyLoading: boolean;
   isLoading: boolean;
 }) {
   if (isLoading && !diagnostics) {
@@ -489,6 +511,21 @@ function ClientRuntimeDiagnostics({
         description={`Reported ${formatDateTime(diagnostics.reportedAt)}; received ${formatDateTime(diagnostics.receivedAt)}.`}
       >
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Metric
+            label="Freshness"
+            value={diagnostics.freshnessState}
+            detail={formatDateTime(diagnostics.receivedAt)}
+            intent={diagnostics.freshnessState === 'stale'}
+          />
+          <Metric
+            label="Health"
+            value={diagnostics.healthMaxSeverity ?? '--'}
+            detail={
+              diagnostics.diagnosticCodesSummary[0]?.code ??
+              'no diagnostic codes'
+            }
+            intent={diagnostics.healthMaxSeverity === 'error'}
+          />
           <Metric
             label="Lifecycle"
             value={stringField(lifecycle, 'phase')}
@@ -719,6 +756,85 @@ function ClientRuntimeDiagnostics({
                   <TableCell className="flex-1">
                     <span className="font-mono text-[10px] text-neutral-300">
                       {event.message}
+                    </span>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        )}
+      </PanelShell>
+
+      <PanelShell
+        title="Snapshot History"
+        description="Retained redacted Rust runtime snapshots for this client."
+        actions={
+          historyLoading ? (
+            <span className="inline-flex items-center gap-1 font-mono text-[10px] text-neutral-500">
+              <Spinner size="sm" />
+              Loading
+            </span>
+          ) : null
+        }
+      >
+        {history.length === 0 ? (
+          <EmptyState message="No retained snapshots" />
+        ) : (
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead className="w-[170px]">Received</TableHead>
+                <TableHead className="w-[90px]">Freshness</TableHead>
+                <TableHead className="w-[90px]">Health</TableHead>
+                <TableHead className="flex-1">Codes</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {history.map((snapshot) => (
+                <TableRow key={`${snapshot.clientId}:${snapshot.receivedAt}`}>
+                  <TableCell className="w-[170px]">
+                    <span className="font-mono text-[10px] text-neutral-400">
+                      {formatDateTime(snapshot.receivedAt)}
+                    </span>
+                  </TableCell>
+                  <TableCell className="w-[90px]">
+                    <Badge
+                      variant={
+                        snapshot.freshnessState === 'active'
+                          ? 'healthy'
+                          : snapshot.freshnessState === 'idle'
+                            ? 'syncing'
+                            : 'offline'
+                      }
+                    >
+                      {snapshot.freshnessState}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="w-[90px]">
+                    {snapshot.healthMaxSeverity ? (
+                      <Badge
+                        variant={
+                          snapshot.healthMaxSeverity === 'error'
+                            ? 'destructive'
+                            : snapshot.healthMaxSeverity === 'warn'
+                              ? 'syncing'
+                              : 'ghost'
+                        }
+                      >
+                        {snapshot.healthMaxSeverity}
+                      </Badge>
+                    ) : (
+                      <span className="font-mono text-[10px] text-neutral-600">
+                        --
+                      </span>
+                    )}
+                  </TableCell>
+                  <TableCell className="flex-1">
+                    <span className="font-mono text-[10px] text-neutral-400">
+                      {snapshot.diagnosticCodesSummary
+                        .slice(0, 3)
+                        .map((entry) => `${entry.code} x${entry.count}`)
+                        .join(', ') || '--'}
                     </span>
                   </TableCell>
                 </TableRow>
