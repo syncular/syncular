@@ -32,6 +32,7 @@ interface SyncularRealtimeSyncMessage {
   reason?: string | null;
   requiresPull?: boolean;
   droppedCount?: number;
+  payloadBytes?: number;
   syncPackBytes?: Uint8Array;
 }
 
@@ -268,6 +269,7 @@ export class SyncularWorkerRealtimeController {
           reason: syncMessage.reason ?? null,
           requiresPull: syncMessage.requiresPull === true,
           droppedCount: syncMessage.droppedCount ?? 0,
+          payloadBytes: syncMessage.payloadBytes ?? null,
         },
       });
       this.#scheduleSync(syncMessage);
@@ -408,6 +410,7 @@ export class SyncularWorkerRealtimeController {
           cursor: message.cursor ?? null,
           reason: message.reason ?? null,
           droppedCount: message.droppedCount ?? 0,
+          payloadBytes: message.payloadBytes ?? null,
         },
       });
       return client.syncPull({ syncAttempt });
@@ -461,6 +464,7 @@ export class SyncularWorkerRealtimeController {
         cursor: message?.cursor ?? null,
         reason: message?.syncPackBytes ? 'binary-apply-failed' : null,
         droppedCount: message?.droppedCount ?? 0,
+        payloadBytes: message?.payloadBytes ?? null,
       },
     });
     return client.syncPull({ syncAttempt });
@@ -604,11 +608,17 @@ function readSyncularRealtimeSyncMessage(
     Number.isSafeInteger(record.droppedCount)
       ? record.droppedCount
       : undefined;
+  const payloadBytes =
+    typeof record.payloadBytes === 'number' &&
+    Number.isSafeInteger(record.payloadBytes)
+      ? record.payloadBytes
+      : undefined;
   return {
     cursor,
     reason,
     requiresPull,
     droppedCount,
+    payloadBytes,
   };
 }
 

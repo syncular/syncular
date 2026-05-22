@@ -10,6 +10,7 @@ use crate::crdt_yjs::YJS_PAYLOAD_KEY;
 use crate::encrypted_crdt::{is_encrypted_crdt_system_table, EncryptedCrdt};
 use crate::encryption::{BlobEncryption, FieldEncryption, FieldEncryptionContext};
 use crate::error::{ErrorKind, Result, SyncularError};
+use crate::limits::{DEFAULT_OUTBOX_PUSH_BATCH_LIMIT, MAX_OUTBOX_PUSH_BATCH_LIMIT};
 use crate::protocol::{
     validate_mutation_json_input_size, validate_pull_commit_integrity_metadata,
     validate_pull_snapshot_manifests, validate_realtime_sync_pack_bytes,
@@ -40,6 +41,8 @@ pub struct WebSyncularClientConfig {
     pub project_id: Option<String>,
     #[serde(default)]
     pub pull: WebSyncPullOptions,
+    #[serde(default)]
+    pub push: WebSyncPushOptions,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -84,8 +87,27 @@ impl Default for WebSyncPullOptions {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebSyncPushOptions {
+    #[serde(default = "default_outbox_push_batch_limit")]
+    pub outbox_batch_limit: i64,
+}
+
+impl Default for WebSyncPushOptions {
+    fn default() -> Self {
+        Self {
+            outbox_batch_limit: default_outbox_push_batch_limit(),
+        }
+    }
+}
+
 fn default_limit_commits() -> i64 {
     1000
+}
+
+fn default_outbox_push_batch_limit() -> i64 {
+    DEFAULT_OUTBOX_PUSH_BATCH_LIMIT
 }
 
 fn default_limit_snapshot_rows() -> i64 {
@@ -1154,9 +1176,22 @@ where
                 if let Some(previous_state) = &previous_state {
                     if scopes_changed {
                         let scope_clear_started_at = timing_now_ms();
-                        self.store
-                            .clear_table_for_scopes(&previous_state.table, &previous_state.scopes)
-                            .await?;
+                        if previous_state.table == table {
+                            self.store
+                                .clear_table_for_scopes_except(
+                                    &previous_state.table,
+                                    &previous_state.scopes,
+                                    &sub.scopes,
+                                )
+                                .await?;
+                        } else {
+                            self.store
+                                .clear_table_for_scopes(
+                                    &previous_state.table,
+                                    &previous_state.scopes,
+                                )
+                                .await?;
+                        }
                         result.timings.scope_clear_ms += elapsed_ms_since(scope_clear_started_at);
                         add_changed_table(&mut result.changed_tables, &previous_state.table);
                         self.store.delete_verified_root(&sub.id).await?;
@@ -1540,7 +1575,10 @@ where
         &mut self,
         error_message: &str,
     ) -> Result<()> {
-        let sending = self.store.sending_outbox(20).await?;
+        let sending = self
+            .store
+            .sending_outbox(self.outbox_push_batch_limit()?)
+            .await?;
         let error = SyncularError::message(ErrorKind::Transport, error_message);
         self.schedule_outbox_retry_inner(&sending, &error, true)
             .await
@@ -1786,7 +1824,10 @@ where
     async fn prepare_push(&mut self) -> Result<Vec<OutboxCommit>> {
         let schema_version = self.schema_version();
         self.store.requeue_stale_outbox().await?;
-        let pending = self.store.pending_outbox(20).await?;
+        let pending = self
+            .store
+            .pending_outbox(self.outbox_push_batch_limit()?)
+            .await?;
         for commit in &pending {
             validate_outbox_schema_version(commit, schema_version)?;
         }
@@ -1794,6 +1835,20 @@ where
             self.store.mark_outbox_sending(&commit.id).await?;
         }
         Ok(pending)
+    }
+
+    fn outbox_push_batch_limit(&self) -> Result<usize> {
+        let limit = self.config.push.outbox_batch_limit;
+        if !(1..=MAX_OUTBOX_PUSH_BATCH_LIMIT).contains(&limit) {
+            return Err(SyncularError::config(format!(
+                "push.outboxBatchLimit must be between 1 and {MAX_OUTBOX_PUSH_BATCH_LIMIT}; got {limit}"
+            )));
+        }
+        usize::try_from(limit).map_err(|_| {
+            SyncularError::config(format!(
+                "push.outboxBatchLimit cannot be represented: {limit}"
+            ))
+        })
     }
 
     fn build_push_request(&self, pending: &[OutboxCommit]) -> Result<Option<PushBatchRequest>> {
@@ -2782,6 +2837,7 @@ mod tests {
             actor_id: "user-rust".to_string(),
             project_id: Some("p0".to_string()),
             pull: WebSyncPullOptions::default(),
+            push: WebSyncPushOptions::default(),
         }
     }
 

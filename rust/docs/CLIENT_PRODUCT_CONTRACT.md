@@ -37,6 +37,8 @@ Implications:
 - Bootstrap, incremental pull, snapshots, realtime deltas, conflicts,
   verification, and read models must work for arbitrary scope sets.
 - Revoked scopes must clear local synced rows and derived state.
+- Scope shrink must clear revoked rows without deleting rows still covered by a
+  retained scope.
 - Scope changes are normal runtime events, not edge cases.
 - Server-side indexes and fanout should optimize scope membership and
   subscription delivery, not only partition-wide commit scans.
@@ -154,6 +156,11 @@ Implications:
 - HTTP pull remains the recovery/checkpoint path.
 - Reconnect, overflow, auth refresh, and schema mismatch must produce explicit
   resync/recovery behavior.
+- Server-side direct WebSocket sync-pack size caps are explicit configuration.
+  When no binary delta is produced, diagnostics must distinguish that from an
+  oversized payload so HTTP recovery is not mistaken for the fast path.
+- Server handlers normalize driver-returned version columns before realtime
+  binary encoding; Postgres `bigint` strings must not break the delta fast path.
 - Apps should not manually babysit websocket reconnect loops.
 
 ### CRDT Fields Are Generic Runtime Primitives
@@ -202,7 +209,7 @@ Status legend:
 | --- | --- | --- | --- |
 | Local SQLite replica | Rust-owned SQLite for native/browser; Diesel-backed Rust SDK; browser-owned SQLite/WASM path | Single-writer/read-executor model polish; explicit SQLite pragma baseline everywhere | SQLite is the local replica, not a raw synced write escape hatch |
 | Typed reads | Rust Diesel; browser Kysely path; early Swift/Kotlin DSLs | Better Swift/Kotlin ergonomics; shared query-builder semantics | Do not replace query building with predefined ORM-style table methods |
-| Mutations/outbox | Generated safe mutations, queued native worker APIs, conflict base-version machinery | Cleaner conflict ergonomics and generated mutation coverage across all bindings | Synced writes never bypass mutation/outbox semantics |
+| Mutations/outbox | Generated safe mutations, queued native worker APIs, conflict base-version machinery, bounded Rust web outbox push batch config | Cleaner conflict ergonomics and generated mutation coverage across all bindings | Synced writes never bypass mutation/outbox semantics |
 | Scoped sync | Dynamic subscriptions, scope revocation clearing, auth/client ownership smokes | Subscription indexes, fanout optimization, stronger conformance | Optimize for arbitrary per-user scope mixes, not whole partitions |
 | Bootstrap/snapshots | Binary snapshot chunks, manifests, chunk hash validation | Adaptive readiness states, resumable manifests, direct generated apply | Snapshot completeness and verification must be scoped honestly |
 | Incremental sync | Push/pull, binary sync packs, persisted cursors, retry metadata | Binary v2, protocol crate extraction, stronger retry wakeups | Cursor advancement only after valid apply/verification |
@@ -210,7 +217,7 @@ Status legend:
 | Verification/audit | Server commit roots, delivered stream verification, persisted verified roots | Lower-overhead root metadata, protocol kernel, stronger proofs later | Clients verify what they are allowed to receive, not hidden data |
 | Live queries/events | Native event stream/callbacks, typed live query helpers, row/field metadata | Query-level observation and broader browser/native parity | Events must be precise enough to avoid app-side table guessing |
 | Conflicts | Persistence, keep-local/server-win/dismiss paths, generated base versions | Nicer public conflict API and more cross-binding tests | Conflict resolution is part of sync, not app-side ad hoc repair |
-| Blobs | Native blob upload/reference sync/retrieval, queued upload processing, cache pruning APIs, browser/native blob upload lifecycle stats | Queued blob worker conformance expansion | Blob refs participate in auth, retry, sync, and encryption semantics |
+| Blobs | Native blob upload/reference sync/retrieval, queued upload processing, blob-specific retry backoff, cache pruning APIs, browser/native blob upload lifecycle stats | Queued blob worker conformance expansion | Blob refs participate in auth, retry, sync, and encryption semantics |
 | E2EE | Field-level encryption config, generated helpers, server envelope behavior | Broader conflict/blob/CRDT encrypted coverage | Server may store envelopes; unauthorized readers must not see plaintext |
 | CRDT fields | Generic Yrs-backed field primitive, encrypted update logs, checkpoints, materialization | Stream polish, state-vector hints, compaction diagnostics | No editor framework in core; no accidental blank materialization |
 | Testkit | Rust testkit helpers, transports, event waiters, stateful server direction | App-ready stateful server and full conformance matrix | Apps should test real Syncular behavior instead of broad mocking |

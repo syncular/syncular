@@ -355,6 +355,16 @@ pub trait AsyncWebStore {
         scopes: &'a ScopeValues,
     ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>>;
 
+    fn clear_table_for_scopes_except<'a>(
+        &'a mut self,
+        table: &'a str,
+        scopes: &'a ScopeValues,
+        retained_scopes: &'a ScopeValues,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        let _ = retained_scopes;
+        self.clear_table_for_scopes(table, scopes)
+    }
+
     fn clear_synced_rows_for_scopes<'a>(
         &'a mut self,
         _table: &'a str,
@@ -505,6 +515,17 @@ impl WebMemoryStore {
 }
 
 impl AsyncWebStore for WebMemoryStore {
+    fn app_schema(&self) -> AppSchema {
+        #[cfg(all(test, feature = "demo-todo-fixture"))]
+        {
+            crate::fixtures::todo::app_schema()
+        }
+        #[cfg(not(all(test, feature = "demo-todo-fixture")))]
+        {
+            default_app_schema()
+        }
+    }
+
     fn subscription_states<'a>(
         &'a mut self,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<SubscriptionState>>> + 'a>> {
@@ -1177,6 +1198,28 @@ impl AsyncWebStore for WebMemoryStore {
         })
     }
 
+    fn clear_table_for_scopes_except<'a>(
+        &'a mut self,
+        table: &'a str,
+        scopes: &'a ScopeValues,
+        retained_scopes: &'a ScopeValues,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            let app_schema = self.app_schema();
+            let metadata = app_schema.table_metadata(table).ok_or_else(|| {
+                SyncularError::config(format!("unknown generated app table: {table}"))
+            })?;
+            let Some(rows) = self.rows.get_mut(table) else {
+                return Ok(());
+            };
+            rows.retain(|_, row| {
+                !row_matches_scope_values(row, metadata, scopes)
+                    || row_matches_scope_values(row, metadata, retained_scopes)
+            });
+            Ok(())
+        })
+    }
+
     fn clear_synced_rows_for_scopes<'a>(
         &'a mut self,
         table: &'a str,
@@ -1417,6 +1460,28 @@ mod tests {
             scopes: ScopeValues::new(),
         }))?;
         assert_eq!(store.row_count("tasks"), 0);
+
+        Ok(())
+    }
+
+    #[test]
+    fn memory_store_clears_scope_difference_without_removing_retained_rows() -> Result<()> {
+        let mut store = WebMemoryStore::new();
+
+        block_on(store.upsert_row("tasks", task_row("revoked-task", "p0")))?;
+        block_on(store.upsert_row("tasks", task_row("retained-task", "p1")))?;
+
+        let mut old_scopes = ScopeValues::new();
+        old_scopes.insert("user_id".to_string(), json!("user-rust"));
+        old_scopes.insert("project_id".to_string(), json!(["p0", "p1"]));
+        let mut retained_scopes = ScopeValues::new();
+        retained_scopes.insert("user_id".to_string(), json!("user-rust"));
+        retained_scopes.insert("project_id".to_string(), json!("p1"));
+
+        block_on(store.clear_table_for_scopes_except("tasks", &old_scopes, &retained_scopes))?;
+        let rows: Value = serde_json::from_str(&block_on(store.list_table_json("tasks"))?)?;
+        assert_eq!(rows.as_array().map(Vec::len), Some(1));
+        assert_eq!(rows[0]["id"], "retained-task");
 
         Ok(())
     }

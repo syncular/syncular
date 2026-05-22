@@ -16,6 +16,7 @@ export interface SyncularClientConfig {
   actorId: string;
   projectId?: string | null;
   pull?: SyncularPullOptions;
+  push?: SyncularPushOptions;
   fileName?: string;
   storage?: SyncularStorage;
   clearOnInit?: boolean;
@@ -38,6 +39,14 @@ export interface SyncularPullOptions {
   collectChangedRows?: boolean;
   maxSnapshotChangedRows?: number | null;
   collectServerTimings?: boolean;
+}
+
+export interface SyncularPushOptions {
+  /**
+   * Maximum pending outbox commits to send in one push request.
+   * Defaults to the runtime limit of 20 and must remain bounded.
+   */
+  outboxBatchLimit?: number;
 }
 
 export interface SyncularTransportStats {

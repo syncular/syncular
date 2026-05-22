@@ -43,8 +43,8 @@ use crate::protocol::*;
 #[cfg(feature = "native")]
 use crate::store::MAX_BLOB_UPLOAD_RETRIES;
 use crate::store::{
-    next_retry_at, now_ms, OutboxCommit, SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx,
-    VerifiedRoot, MAX_SYNC_RETRIES,
+    next_blob_upload_retry_at, next_retry_at, now_ms, OutboxCommit, SubscriptionState,
+    SyncStateStore, SyncStore, SyncStoreTx, VerifiedRoot, MAX_SYNC_RETRIES,
 };
 #[cfg(feature = "demo-todo-fixture")]
 use crate::store::{DemoTaskStore, Task};
@@ -2321,7 +2321,7 @@ where
                         if failed {
                             0
                         } else {
-                            next_retry_at(now, next_attempt_count)
+                            next_blob_upload_retry_at(now, next_attempt_count)
                         },
                     )?;
                     if failed {

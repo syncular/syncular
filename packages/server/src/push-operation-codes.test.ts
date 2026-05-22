@@ -23,6 +23,23 @@ interface ClientDb {
   tasks: TasksTable;
 }
 
+interface StringVersionTasksTable {
+  id: string;
+  user_id: string;
+  title: string;
+  server_version: string;
+}
+
+interface StringVersionTestDb extends SyncCoreDb {
+  string_tasks: StringVersionTasksTable;
+}
+
+interface StringVersionClientDb {
+  string_tasks: Omit<StringVersionTasksTable, 'server_version'> & {
+    server_version: number;
+  };
+}
+
 const dialect = createSqliteServerDialect();
 
 describe('push operation result error codes', () => {
@@ -455,6 +472,89 @@ describe('push operation result error codes', () => {
           server_version: 1,
         },
       ],
+    });
+  });
+
+  it('normalizes driver string versions before emitting realtime changes', async () => {
+    await db.schema
+      .createTable('string_tasks')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('user_id', 'text', (col) => col.notNull())
+      .addColumn('title', 'text', (col) => col.notNull())
+      .addColumn('server_version', 'text', (col) =>
+        col.notNull().defaultTo('0')
+      )
+      .execute();
+
+    const stringDb =
+      db as unknown as ReturnType<
+        typeof createBunSqliteDialect<StringVersionTestDb>
+      >;
+    const stringHandlers =
+      createServerHandlerCollection<StringVersionTestDb>([
+        createServerHandler<
+          StringVersionTestDb,
+          StringVersionClientDb,
+          'string_tasks'
+        >({
+          table: 'string_tasks',
+          scopes: ['user:{user_id}'],
+          resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+        }),
+      ]);
+
+    const inserted = await pushCommit({
+      db: stringDb,
+      dialect,
+      handlers: stringHandlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'client-string-version',
+        clientCommitId: 'commit-string-version-insert',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'string_tasks',
+            row_id: 'task-string-version',
+            op: 'upsert',
+            payload: { title: 'string version', user_id: 'u1' },
+            base_version: null,
+          },
+        ],
+      },
+    });
+
+    expect(inserted.emittedChanges).toHaveLength(1);
+    expect(inserted.emittedChanges[0]?.row_version).toBe(1);
+    expect(inserted.emittedChanges[0]?.row_json).toMatchObject({
+      server_version: 1,
+    });
+
+    const conflict = await pushCommit({
+      db: stringDb,
+      dialect,
+      handlers: stringHandlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'client-string-version',
+        clientCommitId: 'commit-string-version-conflict',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'string_tasks',
+            row_id: 'task-string-version',
+            op: 'upsert',
+            payload: { title: 'stale title' },
+            base_version: 0,
+          },
+        ],
+      },
+    });
+
+    expect(conflict.response.results[0]).toMatchObject({
+      status: 'conflict',
+      server_version: 1,
+      server_row: { server_version: 1 },
     });
   });
 });

@@ -35,6 +35,7 @@ import type {
 } from 'kysely';
 import { sql } from 'kysely';
 import { rowScopesAllowed } from '../helpers/scope-authorization';
+import { coerceNumber } from '../dialect/helpers';
 import type { SyncCoreDb } from '../schema';
 import type {
   ApplyOperationResult,
@@ -74,6 +75,37 @@ function isMissingColumnReferenceError(message: string): boolean {
     normalized.includes('no such column') ||
     (normalized.includes('column') && normalized.includes('does not exist'))
   );
+}
+
+function readSafeVersionColumn(
+  row: Record<string, unknown>,
+  versionColumn: string,
+  defaultValue: number
+): number {
+  const value = row[versionColumn];
+  if (value === null || value === undefined) return defaultValue;
+  const version = coerceNumber(value);
+  if (version === null || !Number.isSafeInteger(version)) {
+    throw new Error(`Version column "${versionColumn}" must be a safe integer`);
+  }
+  return version;
+}
+
+function normalizeOutboundVersionColumn<Row>(
+  row: Row,
+  versionColumn: string,
+  version: number
+): Row {
+  if (row === null || typeof row !== 'object' || Array.isArray(row)) {
+    return row;
+  }
+  if (!Object.prototype.hasOwnProperty.call(row, versionColumn)) {
+    return row;
+  }
+  return {
+    ...(row as Record<string, unknown>),
+    [versionColumn]: version,
+  } as Row;
 }
 
 /**
@@ -736,8 +768,11 @@ export function createServerHandler<
               return rejectionResult(opIndex, conflictScopeAuth);
             }
 
-            const existingVersion =
-              (conflictRow[versionColumn] as number | undefined) ?? 0;
+            const existingVersion = readSafeVersionColumn(
+              conflictRow,
+              versionColumn,
+              0
+            );
             return {
               result: {
                 opIndex,
@@ -745,8 +780,12 @@ export function createServerHandler<
                 message: `Version conflict: server=${existingVersion}, base=${expectedVersion}`,
                 code: 'sync.version_conflict',
                 server_version: existingVersion,
-                server_row: applyOutboundTransform(
-                  conflictRow as Selectable<ServerDB[TableName]>
+                server_row: normalizeOutboundVersionColumn(
+                  applyOutboundTransform(
+                    conflictRow as Selectable<ServerDB[TableName]>
+                  ),
+                  versionColumn,
+                  existingVersion
                 ),
               },
               emittedChanges: [],
@@ -839,14 +878,16 @@ export function createServerHandler<
     }
 
     const updatedRow = updated;
-    const rowVersion = (updatedRow[versionColumn] as number) ?? 1;
+    const rowVersion = readSafeVersionColumn(updatedRow, versionColumn, 1);
 
     // Extract scopes from updated row
     const scopes = extractScopesImpl(updatedRow);
 
     // Transform outbound for emitted change
-    const rowJson = applyOutboundTransform(
-      updated as Selectable<ServerDB[TableName]>
+    const rowJson = normalizeOutboundVersionColumn(
+      applyOutboundTransform(updated as Selectable<ServerDB[TableName]>),
+      versionColumn,
+      rowVersion
     );
 
     const emitted: EmittedChange = {
@@ -982,10 +1023,12 @@ export function createServerHandler<
           return runSequentialFallback();
         }
 
-        const rowVersion = (updated[versionColumn] as number) ?? 1;
+        const rowVersion = readSafeVersionColumn(updated, versionColumn, 1);
         const scopes = extractScopesImpl(updated);
-        const rowJson = applyOutboundTransform(
-          updated as Selectable<ServerDB[TableName]>
+        const rowJson = normalizeOutboundVersionColumn(
+          applyOutboundTransform(updated as Selectable<ServerDB[TableName]>),
+          versionColumn,
+          rowVersion
         );
 
         results.push({

@@ -134,6 +134,48 @@ read-only review:
     OpenAPI, TypeScript, Biome, and diff checks passed. Remaining Slice 1 gap:
     run `/fleet` and `/fleet/:clientId` browser verification once an isolated
     browser is available.
+- `[~]` [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+  - Created from the 2026-05-22 external `offline-sync-bench` Rust-client run.
+    The work first fixes benchmark measurement gaps, then adds real Rust-client
+    parity for offline replay, large offline queue, and blob flow, and only then
+    optimizes proven slow paths. Slice 1 measurement correction is retained in
+    the external benchmark adapter: online visibility is now measured before
+    writer cleanup; initial realtime diagnostics showed `15/15` online events
+    used pull-required recovery; dashboard query plans prove
+    temp B-tree aggregation over task rows; permission revocation takes two sync
+    attempts and temporarily clears all task rows; reconnect storm now reports
+    per-client first-pull timings and shows the `250`-client cliff is first HTTP
+    pull latency, not extra sync loops. Slice 2 adds native Rust outbox coverage
+    to the external adapter: `offline-replay` now completes `10/10` queued
+    writes in `50.17ms`, and `large-offline-queue` completes `1000/1000` queued
+    writes in `2169ms` with `50` sync attempts. Remaining caveat: the Bun
+    benchmark harness uses Rust memory storage, so process-restart durability
+    still needs a browser-worker OPFS/IndexedDB lane. Slice 3 adds native Rust
+    blob-flow coverage: a `512KiB` blob uploads in `26.04ms`, metadata reaches a
+    second Rust client in `25.58ms`, cache-clear re-download takes `16.61ms`,
+    and interrupted queued upload recovery drains successfully after the Rust
+    retry backoff. Slice 4 adds bounded `config.push.outboxBatchLimit` for the
+    Rust web client, leaving the default at `20`; in the `1000`-write queue
+    benchmark, a configured limit of `100` reduced convergence from `2169ms` to
+    `1573.21ms` and HTTP requests from `100` to `20`, while larger limits were
+    slower. Slice 5 adds an explicit generated `countBy` dashboard read model:
+    deep dashboard p50 is now `0.03ms` versus raw SQL p50 `62.36ms` in the same
+    run, so the original slow row was a missing read-model/query-shape issue,
+    not a general Rust local SQLite/runtime problem. Slice 6 corrects the
+    realtime fallback diagnosis and adds payload-byte diagnostics; debug
+    telemetry then showed the server was attempting binary websocket packs but
+    failing to encode driver string `bigint` versions as safe integers. Slice 7
+    normalizes handler version columns before emitted changes/conflict rows
+    reach the binary pack encoder. The fixed online run
+    `2026-05-22T12-49-11-883Z` applies `15/15` realtime binary sync-packs, needs
+    `0` pull recoveries, and improves reader visibility to p50 `8.94ms` / p95
+    `16.25ms`. Slice 8 splits blob upload retry timing from sync/outbox retry:
+    blob retry recovery improves from `1033.88ms` to `116.36ms` while sync
+    commit retry keeps the conservative `1000ms` base. Slice 9 changes Rust web
+    subscription scope shrink to clear only revoked scope rows; permission
+    change now converges in one sync attempt at `38.95ms`, keeps the retained
+    project visible at `500` rows throughout, and halves requests/bytes versus
+    the previous two-sync full-clear/reload path.
 - `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table

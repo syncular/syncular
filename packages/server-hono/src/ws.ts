@@ -59,16 +59,20 @@ export type WebSocketSyncReason =
   | 'resync-required'
   | 'server-wakeup';
 
+export const DEFAULT_WS_SYNC_PACK_MAX_BYTES = 64 * 1024;
+
 export interface WebSocketSyncMetadata {
   reason?: WebSocketSyncReason;
   requiresPull?: boolean;
   droppedCount?: number;
+  payloadBytes?: number;
 }
 
 interface WebSocketReplayRecord {
   scopeKeys: string[];
   cursor: number;
   syncPack?: Uint8Array;
+  payloadBytes?: number;
   syncPackForConnection?: (
     connection: WebSocketConnection
   ) => Uint8Array | undefined;
@@ -252,6 +256,9 @@ export function createWebSocketConnection(
       if (metadata?.droppedCount !== undefined) {
         payload.droppedCount = metadata.droppedCount;
       }
+      if (metadata?.payloadBytes !== undefined) {
+        payload.payloadBytes = metadata.payloadBytes;
+      }
       const ok = safeSend(ws, JSON.stringify({ event: 'sync', data: payload }));
       if (!ok) closed = true;
     },
@@ -335,6 +342,7 @@ export function createWebSocketConnection(
 export class WebSocketConnectionManager {
   private readonly registry: RealtimeConnectionRegistry<WebSocketConnection>;
   private readonly replayWindowSize: number;
+  private readonly maxSyncPackBytes: number;
   private readonly replayRecords: WebSocketReplayRecord[] = [];
   private readonly subscriptionsByOwnerKey = new Map<
     string,
@@ -374,12 +382,16 @@ export class WebSocketConnectionManager {
   constructor(options?: {
     heartbeatIntervalMs?: number;
     maxInFlightSyncsPerConnection?: number;
+    maxSyncPackBytes?: number;
     replayWindowSize?: number;
     onPresenceChange?: WebSocketConnectionManager['onPresenceChange'];
   }) {
     this.onPresenceChange = options?.onPresenceChange;
     this.maxInFlightSyncsPerConnection =
       options?.maxInFlightSyncsPerConnection ?? 64;
+    this.maxSyncPackBytes = normalizeMaxSyncPackBytes(
+      options?.maxSyncPackBytes
+    );
     this.replayWindowSize = normalizeReplayWindowSize(
       options?.replayWindowSize
     );
@@ -865,12 +877,6 @@ export class WebSocketConnectionManager {
   // =========================================================================
 
   /**
-   * Maximum encoded sync-pack size sent directly over a websocket frame.
-   * Larger payloads fall back to explicit HTTP pull recovery.
-   */
-  private static readonly WS_SYNC_PACK_MAX_BYTES = 64 * 1024;
-
-  /**
    * Notify clients that new data is available for the given scopes.
    * Dedupes connections that match multiple scopes.
    */
@@ -886,15 +892,14 @@ export class WebSocketConnectionManager {
     }
   ): void {
     const websocketSyncPack =
-      opts?.syncPack &&
-      opts.syncPack.byteLength <=
-        WebSocketConnectionManager.WS_SYNC_PACK_MAX_BYTES
+      opts?.syncPack && opts.syncPack.byteLength <= this.maxSyncPackBytes
         ? opts.syncPack
         : undefined;
     const replayRecord: WebSocketReplayRecord = {
       scopeKeys: [...scopeKeys],
       cursor,
       syncPack: websocketSyncPack,
+      payloadBytes: opts?.syncPack?.byteLength,
       syncPackForConnection: opts?.syncPackForConnection,
       hasSharedPayload:
         opts?.syncPack !== undefined ||
@@ -1088,8 +1093,7 @@ export class WebSocketConnectionManager {
       record.syncPackForConnection?.(connection) ?? record.syncPack;
     if (
       connectionSyncPack &&
-      connectionSyncPack.byteLength <=
-        WebSocketConnectionManager.WS_SYNC_PACK_MAX_BYTES &&
+      connectionSyncPack.byteLength <= this.maxSyncPackBytes &&
       connection.syncPackEncoding === 'binary-sync-pack-v1'
     ) {
       this.markSyncSent(connection, record.cursor);
@@ -1100,12 +1104,19 @@ export class WebSocketConnectionManager {
     this.markSyncSent(connection, record.cursor);
     connection.sendSync(record.cursor, {
       reason:
-        connectionSyncPack || record.hasSharedPayload
+        connectionSyncPack || record.payloadBytes !== undefined
           ? 'payload-too-large'
           : 'server-wakeup',
       requiresPull: true,
+      payloadBytes: connectionSyncPack?.byteLength ?? record.payloadBytes,
     });
   }
+}
+
+function normalizeMaxSyncPackBytes(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_WS_SYNC_PACK_MAX_BYTES;
+  if (!Number.isFinite(value)) return DEFAULT_WS_SYNC_PACK_MAX_BYTES;
+  return Math.max(0, Math.floor(value));
 }
 
 function normalizeReplayWindowSize(value: number | undefined): number {

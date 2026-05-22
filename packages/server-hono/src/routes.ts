@@ -144,6 +144,12 @@ export interface SyncWebSocketConfig {
    */
   maxMessageBytes?: number;
   /**
+   * Maximum encoded sync-pack size sent directly over a websocket frame.
+   * Larger payloads fall back to explicit HTTP pull recovery.
+   * Default: 64 KiB.
+   */
+  maxSyncPackBytes?: number;
+  /**
    * Maximum inbound websocket messages allowed per connection within one window.
    * Default: 120 messages.
    * Set to 0 or a negative value to disable rate limiting.
@@ -1865,6 +1871,7 @@ export function createSyncRoutes<
         heartbeatIntervalMs: websocketConfig.heartbeatIntervalMs ?? 30_000,
         maxInFlightSyncsPerConnection:
           websocketConfig.maxInFlightSyncsPerConnection ?? 64,
+        maxSyncPackBytes: websocketConfig.maxSyncPackBytes,
         replayWindowSize: websocketConfig.replayWindowSize ?? 64,
       }))
     : null;
@@ -2406,7 +2413,22 @@ export function createSyncRoutes<
     const subscriptions = args.manager.getConnectionSubscriptions(
       args.ownerKey
     );
-    if (subscriptions.length === 0 || args.emittedCommits.length === 0) {
+    if (subscriptions.length === 0) {
+      logSyncEvent({
+        event: 'sync.realtime.binary_pack_unavailable',
+        userId: args.ctx.auth.actorId,
+        clientId: args.ctx.clientId,
+        reason: 'no_subscriptions',
+      });
+      return undefined;
+    }
+    if (args.emittedCommits.length === 0) {
+      logSyncEvent({
+        event: 'sync.realtime.binary_pack_unavailable',
+        userId: args.ctx.auth.actorId,
+        clientId: args.ctx.clientId,
+        reason: 'no_emitted_commits',
+      });
       return undefined;
     }
 
@@ -2452,6 +2474,14 @@ export function createSyncRoutes<
     }
 
     if (responses.length === 0) {
+      logSyncEvent({
+        event: 'sync.realtime.binary_pack_unavailable',
+        userId: args.ctx.auth.actorId,
+        clientId: args.ctx.clientId,
+        reason: 'no_matching_subscription_commits',
+        subscriptionCount: subscriptions.length,
+        emittedCommitCount: args.emittedCommits.length,
+      });
       return undefined;
     }
 

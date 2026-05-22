@@ -18,6 +18,72 @@ Decision:
 Notes:
 ```
 
+## 2026-05-22 - WP-31 External Measurement Correction Slice
+
+Commit: uncommitted local measurement slice
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change measured:
+
+- Updated the external `offline-sync-bench` Rust adapter to use the current
+  Rust-first client exports.
+- Corrected `online-propagation` to record reader visibility before writer
+  cleanup.
+- Added realtime diagnostic counts/reasons, reconnect per-client timing
+  distributions, deep-query `EXPLAIN QUERY PLAN`, and permission-change timing
+  buckets.
+
+Commands:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd rust/bindings/javascript build:wasm
+bun --cwd packages/client build
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist
+export SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json
+
+bun run bench:run -- --stack syncular-rust --scenario online-propagation
+bun run bench:run -- --stack syncular-rust --scenario deep-relationship-query
+bun run bench:run -- --stack syncular-rust --scenario permission-change
+bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+Results:
+
+| Scenario | Run ID | Key result |
+| --- | --- | --- |
+| `online-propagation` | `2026-05-22T11-50-14-875Z` | reader visibility p50 `20.06ms`, p95 `30.19ms`; writer cleanup avg `8.29ms`; `15/15` realtime events used pull-required recovery, reason `payload-too-large`; binary applies `0` |
+| `deep-relationship-query` | `2026-05-22T11-48-02-172Z` | dashboard p50 `69.67ms`, p95 `72.74ms`; detail join p50 `0.48ms`; plan uses `idx_tasks_project_owner_completed_updated_at` but temp B-trees for group/order |
+| `permission-change` | `2026-05-22T11-48-21-282Z` | convergence `54.24ms`; revoke request `11.02ms`; two sync attempts; first shows `0` rows, second `500` rows |
+| `reconnect-storm` | `2026-05-22T11-48-35-255Z` | `25` client p95 visible `94.64ms`; `100` p95 `223.59ms`; `250` p95 `2067.20ms`; all scales had `0` extra sync loops |
+
+Decision:
+
+- Retain the measurement changes in the external benchmark adapter.
+- Do not treat the original online p95 as pure reader visibility; it included
+  writer cleanup.
+- Dashboard read-model work is justified by query-plan evidence.
+- Online propagation needs a realtime `payload-too-large` investigation before
+  claiming binary sync-pack fast-path performance.
+- Permission-change optimization should target the two-sync-attempt/full-clear
+  behavior, not count-query overhead.
+- Reconnect optimization should target concurrent first HTTP pull latency,
+  especially at `250` clients.
+
+Notes:
+
+- `bun run typecheck` in `offline-sync-bench` remains blocked by existing stack
+  app type errors against published Syncular package declarations. A filtered
+  check reported no `syncular-rust` adapter errors.
+
 ## 2026-05-21 - External Local Base Contract Guard Not Accepted As New Baseline
 
 Commit: `eaba97a3` (`Expose generated local base schema`)
@@ -5894,3 +5960,424 @@ Decision:
 - The Windows native/JVM packaging blocker is cleared for the current package
   shape. Broader platform release validation should be driven by concrete
   app-shell or publication requirements.
+
+## 2026-05-22 - WP-31 Rust Outbox Benchmark Parity Slice
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Implemented `offline-replay` and `large-offline-queue` for
+  `syncular-rust` in the external `offline-sync-bench` adapter.
+- The scenarios use the real Rust WASM `applyMutation` path, native
+  `sync_outbox_commits`, `syncOnce()` replay, conflict summaries, and transport
+  counters.
+- Added queued/final outbox status counts and per-attempt pushed-commit timing
+  metadata.
+
+Commands:
+
+```bash
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+bun run bench:run -- --stack syncular-rust --scenario offline-replay
+```
+
+```bash
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+bun run bench:run -- --stack syncular-rust --scenario large-offline-queue
+```
+
+Results:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `offline-replay` | `2026-05-22T12-08-40-268Z` | `10` queued writes, `50.17ms` reconnect convergence, `1` sync attempt, `10/10` commits acked, `0` conflicts |
+| `large-offline-queue` | `2026-05-22T12-00-07-729Z` | `100` writes in `260.91ms`, `500` in `1165.86ms`, `1000` in `2169ms`; all scales had `1.0` success rate and `0` conflicts |
+
+Decision:
+
+- Retain the benchmark-adapter changes. The previous unsupported rows were an
+  adapter gap for Rust task mutations, not a missing Rust outbox capability.
+- Do not call process-restart durability accepted yet. The Bun benchmark process
+  cannot open Rust `indexedDb` storage and `opfsSahPool` requires a dedicated
+  worker, so this slice verifies active-session native outbox replay with memory
+  storage.
+- The next performance lever is the Rust web-client outbox push batch limit:
+  the `1000`-write queue required exactly `50` sync attempts because each
+  attempt pushes `20` commits.
+
+## 2026-05-22 - WP-31 Rust Blob Benchmark Parity Slice
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Implemented `blob-flow` for `syncular-rust` in the external
+  `offline-sync-bench` adapter.
+- Added the benchmark `task_blob_entries` app table to the Rust adapter schema
+  and local base table setup.
+- The scenario uses native Rust WASM blob store/retrieve/cache/upload-queue APIs
+  plus real metadata sync through `task_blob_entries`.
+
+Command:
+
+```bash
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+bun run bench:run -- --stack syncular-rust --scenario blob-flow
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `blob-flow` | `2026-05-22T12-07-31-563Z` | `512KiB` upload `26.04ms`, metadata visible on reader `25.58ms`, re-download after cache clear `16.61ms`, `11` requests, `1,315,932` transferred bytes, retry upload queue drained from `1` pending to `0` |
+| `blob-flow` support-label refresh | `2026-05-22T12-55-26-622Z` | latest public-results row carries `native` support metadata; `512KiB` upload `32.69ms`, metadata visible `29.58ms`, re-download after cache clear `14.00ms`, retry recovery `1033.88ms` |
+
+Decision:
+
+- Retain the adapter change. The previous unsupported blob row was a schema and
+  adapter coverage gap, not a missing Rust blob capability.
+- Keep SQLite storage-byte overhead as `n/a` for the Rust lane until a
+  browser-worker durable storage benchmark exists.
+- Track the retry backoff behavior as performance evidence: after the induced
+  PUT failure, Rust queue recovery took `1043ms` and `11` processing attempts
+  before the retry became due and uploaded.
+
+## 2026-05-22 - WP-31 Rust Outbox Push Batch Config Slice
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added bounded Rust web client `config.push.outboxBatchLimit`.
+- Default remains `20` commits per push request.
+- Runtime validation accepts `1..=1000`.
+- Rust web sync error recovery now requeues the configured sending batch size.
+- The external benchmark adapter can opt in via
+  `SYNCULAR_RUST_OUTBOX_PUSH_BATCH_LIMIT`.
+
+Verification:
+
+```bash
+bun --cwd rust/bindings/javascript build:wasm
+bun --cwd packages/client build
+bun --cwd packages/client test src/__tests__/sync-hono.wasm.test.ts -t "honors configured Rust outbox push batch limits"
+```
+
+Result:
+
+- WASM build passed.
+- Client build passed.
+- Focused Hono/WASM test passed and pushed `25` commits in a single
+  configured `syncPush()`.
+
+External large queue comparison for `1000` queued writes:
+
+| Batch limit | Run ID | Convergence | Sync attempts | Requests |
+| ---: | --- | ---: | ---: | ---: |
+| `20` default | `2026-05-22T12-00-07-729Z` | `2169ms` | `50` | `100` |
+| `50` | `2026-05-22T12-16-25-773Z` | `1895.08ms` | `20` | `40` |
+| `100` | `2026-05-22T12-15-00-294Z` | `1573.21ms` | `10` | `20` |
+| `150` | `2026-05-22T12-16-53-468Z` | `1743.7ms` | `7` | `14` |
+| `250` | `2026-05-22T12-15-57-788Z` | `1756.52ms` | `4` | `8` |
+
+Decision:
+
+- Retain the bounded config. It improves heavy offline replay without changing
+  default behavior for normal clients.
+- Do not raise the default from `20` yet. The benchmark shows larger push
+  batches have nonlinear server/client cost; `100` is best in this fixture, but
+  smaller queues can be neutral or slower.
+- Keep the external benchmark opt-in explicit so comparison runs can report the
+  configured batch limit.
+
+## 2026-05-22 - WP-31 Generated Dashboard Read Model Slice
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added the explicit external benchmark read model
+  `taskCountsByProjectCompletion` to `syncular.codegen.json`.
+- Regenerated the external benchmark `syncular.schema.json` and Rust generated
+  schema so `localDerivedSchema` installs
+  `syncular_rust_task_counts_by_project_completion`.
+- Changed the Rust deep dashboard benchmark to use keyed joins against that
+  generated read model while retaining the old raw dashboard SQL as
+  `dashboard_raw_sql_query_*`.
+
+Verification:
+
+```bash
+cargo run --manifest-path /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/Cargo.toml \
+  -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app/generated/rust \
+  --check
+```
+
+```bash
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+bun run bench:run -- --stack syncular-rust --scenario deep-relationship-query
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `deep-relationship-query` | `2026-05-22T12-24-55-017Z` | dashboard read model p50 `0.03ms`, p95 `0.07ms`; raw dashboard SQL in the same run p50 `62.36ms`, p95 `63.03ms`; detail join p50 `0.34ms`, p95 `0.77ms` |
+
+Decision:
+
+- Retain the generated read model. It is explicit app/codegen intent and fixes
+  the measured slow dashboard aggregate without adding hidden runtime caching.
+- The original deep dashboard issue is a missing read-model/query-shape problem,
+  not evidence that the Rust local SQLite path is generally slow.
+- Keep future dashboard aggregate work on explicit generated read-model rails;
+  do not infer local aggregate caches inside the runtime.
+
+## 2026-05-22 - WP-31 Realtime Wakeup Reason Instrumentation Slice
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added explicit Hono `websocket.maxSyncPackBytes` configuration for direct
+  outbound websocket binary sync-pack delivery. Default remains `64KiB`.
+- Added realtime sync wakeup `payloadBytes` metadata and Rust worker diagnostic
+  propagation so benchmarks can distinguish oversized binary payloads from
+  cursor-only wakeups.
+- Corrected Hono fallback reason selection: actual oversized payloads remain
+  `payload-too-large`; missing per-connection binary payloads now report
+  `server-wakeup`.
+- Added external benchmark env plumbing
+  `SYNCULAR_BENCH_WS_SYNC_PACK_MAX_BYTES` and Rust adapter payload-byte
+  summaries.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/server-hono
+bun test src/__tests__/ws-connection-manager.test.ts
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client
+bun test src/worker-realtime.test.ts
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd packages/server-hono build
+bun --cwd packages/client build
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d syncular
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+bun run bench:run -- --stack syncular-rust --scenario online-propagation
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `online-propagation` | `2026-05-22T12-36-38-122Z` | reader visibility p50 `18.45ms`, p95 `24.53ms`; `15/15` reader realtime events required HTTP pull recovery; reason `server-wakeup`; payload bytes `null`; binary applies `0` |
+
+Decision:
+
+- Retain the diagnostic/reason fix and the explicit cap configuration. It does
+  not change the default cap, but it prevents the benchmark from mislabeling
+  missing realtime deltas as oversized payloads.
+- Do not tune `maxSyncPackBytes` for this benchmark yet. The measured wakeups
+  have no payload bytes, so the cap is not the active blocker.
+- Next online-propagation work should make active/recent pull subscription state
+  available to realtime delta construction for the Rust worker path, then rerun
+  the benchmark to verify binary apply counts and latency.
+
+## 2026-05-22 - WP-31 Realtime Binary Pack Safe Version Slice
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Used debug-enabled external benchmark telemetry to identify
+  `sync.realtime.binary_pack_encode_failed` with
+  `int64 value must be a safe integer`.
+- Fixed `createServerHandler` so driver-returned string/`bigint` version
+  columns are normalized to safe JS integers before emitted changes and
+  conflict rows reach direct websocket binary sync-pack encoding.
+- Added a server regression test that uses a text version column to mimic
+  driver string versions in emitted changes and conflict payloads.
+- Normalized the external benchmark `external-write` notification version before
+  calling `notifyExternalRowChanges`.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/server
+bun test src/push-operation-codes.test.ts
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd packages/server build
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run typecheck
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_DEBUG_REALTIME=1 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build --force-recreate -d syncular
+
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+  bun run bench:run -- --stack syncular-rust --scenario online-propagation
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `online-propagation` | `2026-05-22T12-49-11-883Z` | reader visibility p50 `8.94ms`, p95 `16.25ms`; `15/15` binary sync-packs applied; pull-required `0`; binary apply failed `0`; request count `30` |
+
+Before/after:
+
+| Run | Reader p50 | Reader p95 | Binary applies | Pull-required | Requests |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `2026-05-22T12-36-38-122Z` | `18.45ms` | `24.53ms` | `0` | `15` | `45` |
+| `2026-05-22T12-49-11-883Z` | `8.94ms` | `16.25ms` | `15` | `0` | `30` |
+
+Decision:
+
+- Retain the normalization. The measured online issue was unsafe version typing
+  in the direct realtime binary pack path, not missing subscriptions and not the
+  websocket payload cap.
+- Keep the Slice 6 diagnostics and cap config: they made the root cause visible
+  and remain useful for distinguishing future oversized-payload recoveries.
+
+## 2026-05-22 - WP-31 Blob Upload Retry Backoff Split
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Split blob upload retry timing from the shared sync/outbox retry backoff.
+- Sync commit retries keep the existing `1000ms` exponential base.
+- Blob upload retries now use a blob-specific `100ms` exponential base, capped
+  at `5000ms`.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust
+cargo fmt
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd rust/bindings/javascript build:wasm
+bun --cwd packages/client test src/__tests__/blob-hono.wasm.test.ts
+bun --cwd packages/client build
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+  bun run bench:run -- --stack syncular-rust --scenario blob-flow
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `blob-flow` | `2026-05-22T13-01-24-673Z` | `512KiB` upload `24.45ms`, metadata visible `31.76ms`, re-download after cache clear `15.69ms`, retry recovery `116.36ms` over `2` attempts, support `native` |
+
+Before/after:
+
+| Run | Retry recovery | Attempts | Upload | Metadata visible |
+| --- | ---: | ---: | ---: | ---: |
+| `2026-05-22T12-55-26-622Z` | `1033.88ms` | `11` | `32.69ms` | `29.58ms` |
+| `2026-05-22T13-01-24-673Z` | `116.36ms` | `2` | `24.45ms` | `31.76ms` |
+
+Decision:
+
+- Retain the split. It removes the shared sync backoff as the dominant cost in
+  blob retry recovery while preserving conservative outbox retry timing.
+- Keep the remaining JS-vs-Rust retry gap visible. A lower or immediate blob
+  retry loop should be evaluated separately, preferably as an explicit
+  online-event/manual retry path rather than a blanket automatic retry change.
+
+## 2026-05-22 - WP-31 Permission Scope-Difference Clear
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added a Rust web-store `clear_table_for_scopes_except` operation.
+- Changed active subscription scope updates so same-table scope shrink clears
+  only rows in the revoked part of the previous scope set.
+- Retained-scope rows are no longer deleted after applying the retained-scope
+  snapshot, avoiding the second sync that previously repaired local state.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features web-client memory_store_clears_scope_difference_without_removing_retained_rows --lib
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust
+cargo fmt
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd rust/bindings/javascript build:wasm
+bun --cwd packages/client build
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+  bun run bench:run -- --stack syncular-rust --scenario permission-change
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `permission-change` | `2026-05-22T13-10-37-130Z` | convergence `38.95ms`; revoke request `9.98ms`; `1` sync attempt; retained rows stayed at `500`; revoked rows `0`; requests `2`; bytes `4842` |
+
+Before/after:
+
+| Run | Convergence | Sync attempts | Intermediate visible rows | Requests | Bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `2026-05-22T11-48-21-282Z` | `54.24ms` | `2` | `0` then `500` | `4` | `9687` |
+| `2026-05-22T13-10-37-130Z` | `38.95ms` | `1` | `500` | `2` | `4842` |
+
+Decision:
+
+- Retain the fix. It improves permission-change convergence by `28.2%` and
+  removes a correctness artifact where retained authorized rows disappeared
+  until a follow-up sync.
+- This is a scoped-access correctness fix, not a benchmark-only optimization:
+  revoked rows are cleared while retained rows remain locally queryable.

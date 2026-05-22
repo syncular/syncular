@@ -56,9 +56,10 @@ use crate::protocol::{
 };
 use crate::runtime_schema::{runtime_schema_version, RUNTIME_SYSTEM_SCHEMA_SQL};
 use crate::store::{
-    next_retry_at, AppSchemaState, AuthLeaseRecord, BlobHealthSummary, ConflictSummary,
-    CrdtHealthSummary, OutboxCommit, OutboxSummary, ScopedRowsHealthSummary, ScopedRowsTableHealth,
-    SubscriptionState, VerifiedRoot, MAX_SYNC_RETRIES, SYNC_SENDING_TIMEOUT_MS,
+    next_blob_upload_retry_at, next_retry_at, AppSchemaState, AuthLeaseRecord, BlobHealthSummary,
+    ConflictSummary, CrdtHealthSummary, OutboxCommit, OutboxSummary, ScopedRowsHealthSummary,
+    ScopedRowsTableHealth, SubscriptionState, VerifiedRoot, MAX_SYNC_RETRIES,
+    SYNC_SENDING_TIMEOUT_MS,
 };
 #[cfg(feature = "web-blobs")]
 use crate::store::{BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES};
@@ -66,7 +67,9 @@ use crate::store::{BLOB_UPLOAD_STALE_TIMEOUT_MS, MAX_BLOB_UPLOAD_RETRIES};
 use crate::transport::web::AsyncBlobTransport;
 use crate::transport::web::{WebSyncTransport, WebSyncTransportConfig};
 use crate::transport::SyncAuthHeaders;
-use crate::web_client::{WebSyncPullOptions, WebSyncularClient, WebSyncularClientConfig};
+use crate::web_client::{
+    WebSyncPullOptions, WebSyncPushOptions, WebSyncularClient, WebSyncularClientConfig,
+};
 use crate::web_store::{
     AsyncWebStore, WebSnapshotArtifactApplyMode, WebStoreApplyTimings, WebSubscriptionState,
     WebVerifiedRoot,
@@ -115,6 +118,8 @@ struct RustOwnedSqliteClientConfig {
     project_id: Option<String>,
     #[serde(default, deserialize_with = "deserialize_pull_options")]
     pull: WebSyncPullOptions,
+    #[serde(default)]
+    push: WebSyncPushOptions,
     file_name: Option<String>,
     storage: Option<RustOwnedSqliteStorage>,
     clear_on_init: Option<bool>,
@@ -871,6 +876,7 @@ impl SyncularRustOwnedSqliteClient {
             actor_id: config.actor_id,
             project_id: config.project_id,
             pull: config.pull,
+            push: config.push,
         };
         let transport = WebSyncTransport::new(WebSyncTransportConfig {
             base_url: inner_config.base_url.clone(),
@@ -2320,7 +2326,7 @@ impl SyncularRustOwnedSqlite {
                         if failed {
                             0
                         } else {
-                            next_retry_at(now, next_attempt_count)
+                            next_blob_upload_retry_at(now, next_attempt_count)
                         },
                     )?;
                     if failed {
@@ -5851,6 +5857,29 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
             self.exec(&format!(
                 "DELETE FROM {table} WHERE {}",
                 filters.join(" AND ")
+            ))
+        })
+    }
+
+    fn clear_table_for_scopes_except<'a>(
+        &'a mut self,
+        table: &'a str,
+        scopes: &'a ScopeValues,
+        retained_scopes: &'a ScopeValues,
+    ) -> Pin<Box<dyn Future<Output = Result<()>> + 'a>> {
+        Box::pin(async move {
+            self.begin_apply_write_transaction_if_needed()?;
+            if is_encrypted_crdt_system_table(table) {
+                return self.clear_encrypted_crdt_system_table_for_scopes(table, scopes);
+            }
+            let metadata = self.app_schema.table_metadata(table).ok_or_else(|| {
+                SyncularError::config(format!("unknown generated app table: {table}"))
+            })?;
+            validate_table_name(table)?;
+            let clear_clause = scope_clause(metadata, scopes)?;
+            let retained_clause = scope_clause(metadata, retained_scopes)?;
+            self.exec(&format!(
+                "DELETE FROM {table} WHERE {clear_clause} AND NOT {retained_clause}"
             ))
         })
     }
