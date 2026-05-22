@@ -295,6 +295,10 @@ fresh scan rather than continuing to chase the deleted JSON paths:
   canonical `SyncularNetworkStatusSource` type directly.
 - Removed the testkit `SyncChangeRecord` alias so sync-response helpers return
   the canonical `SyncChange` type from `@syncular/core`.
+- Removed low-level Rust/WASM helper modules from the browser package root
+  export surface. `@syncular/client` now exposes the canonical
+  client/database API plus runtime artifact helpers; internal worker/runtime
+  modules keep using the Rust-specific helpers by relative import.
 - Gates:
   - `bunx biome check packages/client/src/client.ts packages/client/src/client.test.ts`:
     passed.
@@ -304,6 +308,14 @@ fresh scan rather than continuing to chase the deleted JSON paths:
   - `bun --cwd packages/client test`: passed, `110` tests.
   - `bun --cwd packages/testkit tsgo`: passed.
   - `bunx knip --workspace packages/testkit`: passed.
+- Browser root export cleanup gates:
+  - `bunx biome check packages/client/src/index.ts packages/client/src/public-api.test.ts rust/docs/COMPATIBILITY_REGISTER.md rust/docs/ROADMAP.md`:
+    passed.
+  - `bun --cwd packages/client tsgo`: passed.
+  - `bun --cwd packages/client-react tsgo`: passed.
+  - `bun --cwd packages/testkit tsgo`: passed.
+  - `bun test packages/client/src/public-api.test.ts`: passed, `7` tests.
+  - `bun --cwd packages/client test`: passed, `114` tests.
 - Native alias gates:
   - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade`:
     passed, `38` tests.

@@ -104,9 +104,11 @@ read-only review:
     worker response aliases were removed from the worker protocol surface.
     Browser lifecycle options now use the canonical network status source type
     directly, and testkit sync-response helpers now return the canonical core
-    `SyncChange` type. Runtime/native/browser host JSON CRDT request parsing
-    now accepts only generated camelCase fields, and the old websocket timing
-    alias was removed so transport stats read the current server field names.
+    `SyncChange` type. The browser package root no longer exports low-level
+    Rust/WASM helper modules; callers get the canonical client/database API and
+    runtime artifact helpers. Runtime/native/browser host JSON CRDT request
+    parsing now accepts only generated camelCase fields, and the old websocket
+    timing alias was removed so transport stats read the current server field names.
     Browser realtime diagnostics now name binary apply failure directly instead
     of calling HTTP pull recovery a fallback. Rust native/browser transports no
     longer decode JSON row-frame snapshot chunks; runtime clients request

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import * as clientApi from './index';
 import {
   createSyncularClient,
   createSyncularCommandHistory,
@@ -50,6 +51,12 @@ describe('@syncular/client public API', () => {
   it('exports generated command-history helpers', () => {
     expect(typeof createSyncularCommandHistory).toBe('function');
     expect(typeof SyncularCommandHistoryError).toBe('function');
+  });
+
+  it('does not expose low-level Rust helper modules from the package root', () => {
+    expect('openSyncularRustClient' in clientApi).toBe(false);
+    expect('createSyncularRustOwnedSqlite' in clientApi).toBe(false);
+    expect('loadSyncularWasmGlue' in clientApi).toBe(false);
   });
 
   it('defaults generated app storage to OPFS SAH', () => {
