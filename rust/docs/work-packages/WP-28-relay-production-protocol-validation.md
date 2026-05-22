@@ -1,6 +1,6 @@
 # WP-28 Relay Rust Evaluation And Protocol Validation
 
-Status: `[ ]` planned, depends on WP-27
+Status: `[~]` in progress, depends on WP-27
 
 ## Goal
 
@@ -109,6 +109,7 @@ instrumentation point before deciding.
 ## Required Gates
 
 - WP-27 gates.
+- `bun run --cwd packages/relay evaluate:rust-boundary`
 - `bun test packages/relay`
 - `bun run --cwd packages/relay tsgo`
 - Server/Hono realtime tests if relay websocket handling is touched.
@@ -135,6 +136,28 @@ instrumentation point before deciding.
   Rust edge/proxy product.
 - WP-02 accepted `syncular-protocol` as the shared Rust protocol owner.
 - WP-11 deferred Rust server/proxy work until there is a concrete target.
+- First evaluation slice added
+  `packages/relay/scripts/evaluate-rust-boundary.ts` and
+  `packages/relay/src/evaluation/rust-boundary.ts`. This is a repeatable
+  TypeScript relay/protocol baseline over the WP-27 relay fixture; it does not
+  wire Rust into relay production behavior.
+- Local result on 2026-05-22:
+  - combined request JSON: `1,368` bytes;
+  - combined response JSON: `2,978` bytes;
+  - binary sync pack: `2,349` bytes, wire version `14`;
+  - JSON parse p95: request `3.83us`, response `6.13us`;
+  - TypeScript schema p95: request `13.04us`, response `17.29us`;
+  - HTTP-style parse+schema p95: request `13.92us`, response `17.17us`;
+  - binary sync-pack decode p95: `12.00us`;
+  - binary sync-pack decode+schema p95: `22.83us`;
+  - validating schema-backed fixture protocol objects p95: `46.25us`.
+- Malformed probe coverage rejects empty client IDs, non-true combined
+  responses, invalid blob hashes, and stale binary sync-pack wire versions with
+  sanitized path/code/message diagnostics.
+- Initial read: protocol validation is measurable but currently cheap on this
+  fixture. A production Rust validation boundary only makes sense if it avoids
+  extra JSON materialization/copies or proves stronger drift/correctness value
+  than the existing TypeScript schemas.
 
 ## Candidate Follow-Ups
 
@@ -149,6 +172,9 @@ instrumentation point before deciding.
 
 ## Next Action
 
-After WP-27, baseline the existing relay/server paths and choose the first
-candidate boundary to evaluate. Do not create additional Rust relay/server WPs
-until this evaluation records evidence and a concrete follow-up target.
+Add app-path relay baselines for local push, forward, pull/apply, local pull,
+and realtime wakeups using the existing relay tests/engines. Then compare one
+Rust call-boundary prototype only if the baseline shows protocol validation is
+hot enough, or if Rust catches protocol drift the current schemas miss. Do not
+create additional Rust relay/server WPs until this evaluation records evidence
+and a concrete follow-up target.
