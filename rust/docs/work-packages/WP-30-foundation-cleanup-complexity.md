@@ -299,6 +299,10 @@ fresh scan rather than continuing to chase the deleted JSON paths:
   export surface. `@syncular/client` now exposes the canonical
   client/database API plus runtime artifact helpers; internal worker/runtime
   modules keep using the Rust-specific helpers by relative import.
+- Removed the legacy transport per-call `onAuthError` callback from
+  `SyncTransportOptions` and the HTTP transport retry resolver. `authLifecycle`
+  is now the single auth refresh contract for sync and snapshot chunk
+  transport.
 - Gates:
   - `bunx biome check packages/client/src/client.ts packages/client/src/client.test.ts`:
     passed.
@@ -316,6 +320,14 @@ fresh scan rather than continuing to chase the deleted JSON paths:
   - `bun --cwd packages/testkit tsgo`: passed.
   - `bun test packages/client/src/public-api.test.ts`: passed, `7` tests.
   - `bun --cwd packages/client test`: passed, `114` tests.
+- Transport auth cleanup gates:
+  - `rg -n "onAuthError|legacyCount" packages/transport-http packages/core apps/docs packages/client rust/docs`: no matches.
+  - `bunx biome check packages/core/src/types.ts packages/transport-http/src/transport-client.ts packages/transport-http/src/__tests__/transport-options.test.ts`: passed.
+  - `bun --cwd packages/core tsgo`: passed.
+  - `bun --cwd packages/transport-http tsgo`: passed.
+  - `bun --cwd packages/client tsgo`: passed.
+  - `bun test packages/transport-http/src/__tests__/transport-options.test.ts`:
+    passed, `13` tests.
 - Native alias gates:
   - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade`:
     passed, `38` tests.

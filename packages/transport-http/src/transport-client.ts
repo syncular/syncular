@@ -115,10 +115,6 @@ function createAuthRetryResolver(
   };
 
   return async (context, options) => {
-    if (options?.onAuthError) {
-      return Boolean(await options.onAuthError());
-    }
-
     const lifecycle = options?.authLifecycle ?? defaultAuthLifecycle;
     if (!lifecycle) return false;
 
