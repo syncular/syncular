@@ -1586,7 +1586,7 @@ mod bootstrap_phase_tests {
 #[serde(rename_all = "kebab-case")]
 pub enum ConflictResolution {
     KeepLocal,
-    #[serde(rename = "keep-server", alias = "accept-server")]
+    #[serde(rename = "keep-server")]
     AcceptServer,
     Dismiss,
 }

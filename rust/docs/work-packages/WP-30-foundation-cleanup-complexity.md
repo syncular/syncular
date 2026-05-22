@@ -255,3 +255,6 @@ current Rust-first path no longer needs them.
   - `bunx biome check packages/client/src/rust-store.ts`: passed.
   - `bun --cwd packages/client tsgo`: passed.
   - `bun --cwd packages/client test`: passed, `110` tests.
+- Removed the old `accept-server` conflict-resolution spelling from the
+  TypeScript public type and Rust serde alias. `keep-server` is the canonical
+  value.

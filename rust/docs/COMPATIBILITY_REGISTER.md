@@ -68,6 +68,7 @@ exception.
 | Migration legacy source checksum algorithm | `Removed` | `packages/migrations/src/checksum.ts`, `packages/migrations/src/tracking.ts`, migration tests | Migration tracking now only accepts generated SQL-trace checksums or disabled checksums. Old tracking-table upgrade support was removed under the disruptive Rust-first cleanup policy |
 | Service-worker legacy single-commit wake parsing | `Removed` | `packages/server-service-worker/src/index.ts`, service-worker tests | Wake resolution now reads current batched `push.commits` request/response shapes only. Legacy single `push.operations` / `push.status` handling was removed instead of carried as an old protocol branch |
 | Browser low-level Rust store type aliases | `Removed` | `packages/client/src/rust-store.ts` | Removed the unused `SyncularRustOwnedSqliteClientConfig` alias and renamed the executor/live-query helper types to the canonical `SyncularRustOwned*` names |
+| `accept-server` conflict-resolution alias | `Removed` | `packages/client/src/types.ts`, `rust/crates/runtime/src/core/client.rs` | `keep-server` is the canonical conflict-resolution spelling. The old `accept-server` spelling was removed instead of kept as a compatibility alias |
 
 ## Items That Are Not Compatibility Debt
 

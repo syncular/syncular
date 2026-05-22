@@ -931,9 +931,8 @@ Current notes:
   `resolveConflict(..., "keep-server")` clears the persisted conflict via the
   public API without enqueuing a local retry.
 - Canonical conflict resolution naming now matches the pre-Rust Syncular API:
-  Rust `accept_server()` stores `keep-server`, `accept-server` is only a
-  compatibility serde alias, and the shared fixture also covers `dismiss`
-  without retrying local changes.
+  Rust `accept_server()` stores `keep-server`, and the shared fixture also
+  covers `dismiss` without retrying local changes.
 - Browser Hono/WASM realtime coverage now includes websocket reconnect after
   auth/header changes. The shared fixture pins the initial and refreshed
   websocket tokens, and the worker is proven to resolve fresh realtime params
