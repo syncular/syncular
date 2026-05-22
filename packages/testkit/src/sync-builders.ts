@@ -119,7 +119,6 @@ export function createSyncPullRequest(
 
 export interface CreateSyncCombinedRequestOptions {
   clientId: string;
-  syncPackEncodings?: SyncCombinedRequest['syncPackEncodings'];
   push?: Omit<SyncPushBatchRequest, 'clientId'>;
   pull?: Omit<SyncPullRequest, 'clientId'>;
 }
@@ -129,9 +128,6 @@ export function createSyncCombinedRequest(
 ): SyncCombinedRequest {
   return {
     clientId: options.clientId,
-    ...(options.syncPackEncodings
-      ? { syncPackEncodings: options.syncPackEncodings }
-      : {}),
     ...(options.push ? { push: options.push } : {}),
     ...(options.pull ? { pull: options.pull } : {}),
   };

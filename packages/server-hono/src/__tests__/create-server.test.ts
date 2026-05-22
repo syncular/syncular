@@ -3,7 +3,6 @@ import {
   createDatabase,
   decodeBinarySyncPack,
   isBinarySyncPackContentType,
-  SYNC_PACK_ENCODING_BINARY_V1,
 } from '@syncular/core';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
@@ -208,7 +207,6 @@ describe('createSyncServer console configuration', () => {
     userId: string;
     subscriptionUserId: string;
     requestId?: string;
-    syncPackEncodings?: string[];
   }): Request {
     return new Request('http://localhost/sync', {
       method: 'POST',
@@ -219,13 +217,7 @@ describe('createSyncServer console configuration', () => {
       },
       body: JSON.stringify({
         clientId: args.clientId,
-        ...(args.syncPackEncodings
-          ? { syncPackEncodings: args.syncPackEncodings }
-          : {}),
         pull: {
-          ...(args.syncPackEncodings
-            ? { syncPackEncodings: args.syncPackEncodings }
-            : {}),
           limitCommits: 10,
           subscriptions: [
             {
@@ -245,7 +237,6 @@ describe('createSyncServer console configuration', () => {
     clientId: string;
     userId: string;
     requestId?: string;
-    syncPackEncodings?: string[];
   }): Request {
     return new Request('http://localhost/sync', {
       method: 'POST',
@@ -256,13 +247,7 @@ describe('createSyncServer console configuration', () => {
       },
       body: JSON.stringify({
         clientId: args.clientId,
-        ...(args.syncPackEncodings
-          ? { syncPackEncodings: args.syncPackEncodings }
-          : {}),
         pull: {
-          ...(args.syncPackEncodings
-            ? { syncPackEncodings: args.syncPackEncodings }
-            : {}),
           limitCommits: 10,
           subscriptions: [],
         },
@@ -566,7 +551,6 @@ describe('createSyncServer console configuration', () => {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({
         clientId: 'client-binary-limit',
-        syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
         pull: {
           limitCommits: 10,
           subscriptions: [],

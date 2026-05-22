@@ -420,7 +420,6 @@ fn app_test_http_server_records_http_and_realtime_auth_headers() {
     transport
         .post_sync(&CombinedRequest {
             client_id: "app-server-auth-client".to_string(),
-            sync_pack_encodings: Vec::new(),
             push: None,
             pull: None,
         })
@@ -471,7 +470,6 @@ fn app_test_http_server_enforces_configured_authorization() {
     .expect("stateful auth HTTP server");
     let request = || CombinedRequest {
         client_id: "app-server-required-auth".to_string(),
-        sync_pack_encodings: Vec::new(),
         push: None,
         pull: None,
     };
@@ -2192,7 +2190,6 @@ fn auth_lease_testkit_rejects_tampered_tokens() {
 fn default_response_acknowledges_pushes() {
     let request = syncular_runtime::protocol::CombinedRequest {
         client_id: "client".to_string(),
-        sync_pack_encodings: Vec::new(),
         push: Some(syncular_runtime::protocol::PushBatchRequest {
             commits: vec![syncular_runtime::protocol::PushCommitRequest {
                 client_commit_id: "commit-1".to_string(),

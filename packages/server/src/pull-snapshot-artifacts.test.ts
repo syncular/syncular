@@ -3,7 +3,6 @@ import {
   createDatabase,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
 import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
@@ -126,7 +125,6 @@ describe('pull scoped snapshot artifacts', () => {
         limitCommits: 1000,
         limitSnapshotRows: 50_000,
         maxSnapshotPages: 1,
-        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         snapshotArtifacts: {
           schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
@@ -242,7 +240,6 @@ describe('pull scoped snapshot artifacts', () => {
         limitCommits: 1000,
         limitSnapshotRows: 1,
         maxSnapshotPages: 2,
-        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         snapshotArtifacts: {
           schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
@@ -339,7 +336,6 @@ describe('pull scoped snapshot artifacts', () => {
         limitCommits: 1000,
         limitSnapshotRows: 50_000,
         maxSnapshotPages: 1,
-        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         snapshotArtifacts: {
           schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],

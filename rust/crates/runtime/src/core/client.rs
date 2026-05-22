@@ -2017,7 +2017,6 @@ where
         let pending = self.prepare_sync()?;
         let request = CombinedRequest {
             client_id: self.config.client_id.clone(),
-            sync_pack_encodings: self.sync_pack_encodings(),
             push: self.build_push_request(&pending)?,
             pull: Some(self.build_pull_request()?),
         };
@@ -2071,7 +2070,6 @@ where
 
         let request = CombinedRequest {
             client_id: self.config.client_id.clone(),
-            sync_pack_encodings: self.sync_pack_encodings(),
             push: None,
             pull: Some(self.build_pull_request()?),
         };
@@ -2540,16 +2538,10 @@ where
                 limit_snapshot_rows: DEFAULT_PULL_LIMIT_SNAPSHOT_ROWS,
                 max_snapshot_pages: DEFAULT_PULL_MAX_SNAPSHOT_PAGES,
                 dedupe_rows: None,
-                snapshot_encodings: vec![SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1.to_string()],
                 snapshot_artifacts,
-                sync_pack_encodings: vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()],
                 subscriptions,
             })
         })
-    }
-
-    fn sync_pack_encodings(&self) -> Vec<String> {
-        vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()]
     }
 
     fn build_push_request(&self, pending: &[OutboxCommit]) -> Result<Option<PushBatchRequest>> {
@@ -2736,7 +2728,6 @@ where
 
             let request = CombinedRequest {
                 client_id: self.config.client_id.clone(),
-                sync_pack_encodings: self.sync_pack_encodings(),
                 push: None,
                 pull: Some(self.build_pull_request()?),
             };

@@ -41,8 +41,6 @@ import {
 } from './snapshot-chunks';
 
 export const SYNC_PACK_ENCODING_BINARY_V1 = 'binary-sync-pack-v1';
-export const SYNC_PACK_ENCODINGS = [SYNC_PACK_ENCODING_BINARY_V1] as const;
-export type SyncPackEncoding = (typeof SYNC_PACK_ENCODINGS)[number];
 
 export const SYNC_PACK_CONTENT_TYPE = 'application/vnd.syncular.sync-pack.v1';
 
@@ -74,13 +72,6 @@ interface BinaryChangeRowRef {
 interface PendingBinaryChangeRowRef extends BinaryChangeRowRef {
   changeIndex: number;
   table: string;
-}
-
-export function isSyncPackEncoding(value: unknown): value is SyncPackEncoding {
-  return (
-    typeof value === 'string' &&
-    (SYNC_PACK_ENCODINGS as readonly string[]).includes(value)
-  );
 }
 
 export function isBinarySyncPackContentType(value: string | null): boolean {

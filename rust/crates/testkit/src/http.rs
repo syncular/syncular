@@ -12,7 +12,7 @@ use serde_json::{json, Value};
 use syncular_runtime::error::Result;
 use syncular_runtime::protocol::{
     AuthLeaseProvenance, CombinedRequest, CombinedResponse, PushBatchRequest, PushCommitRequest,
-    SyncOperation, SYNC_PACK_ENCODING_BINARY_V1,
+    SyncOperation,
 };
 use syncular_runtime::transport::{SyncAuthHeaders, SyncTransport};
 use tungstenite::{http::StatusCode, Message};
@@ -724,7 +724,6 @@ fn handle_ws_push_message(server: &AppTestServer, client_id: &str, message: &str
     let request_id = message.request_id;
     let request = CombinedRequest {
         client_id: client_id.to_string(),
-        sync_pack_encodings: vec![SYNC_PACK_ENCODING_BINARY_V1.to_string()],
         push: Some(PushBatchRequest {
             commits: vec![PushCommitRequest {
                 client_commit_id: message.client_commit_id,

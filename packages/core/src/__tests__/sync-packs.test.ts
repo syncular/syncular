@@ -4,10 +4,6 @@ import type {
   SyncSnapshotChunkRef,
 } from '../schemas/sync';
 import {
-  SyncCombinedRequestSchema,
-  SyncPullRequestSchema,
-} from '../schemas/sync';
-import {
   createScopedSnapshotArtifactManifest,
   createSnapshotManifest,
   encodeBinarySnapshotTable,
@@ -20,52 +16,14 @@ import {
   decodeBinarySyncPack,
   encodeBinarySyncPack,
   isBinarySyncPackContentType,
-  isSyncPackEncoding,
   SYNC_PACK_CONTENT_TYPE,
-  SYNC_PACK_ENCODING_BINARY_V1,
 } from '../sync-packs';
 
-describe('sync pack protocol negotiation', () => {
-  it('accepts the current binary pack encoding on pull requests', () => {
-    const parsed = SyncPullRequestSchema.parse({
-      clientId: 'client-1',
-      limitCommits: 50,
-      limitSnapshotRows: 1000,
-      syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
-      subscriptions: [],
-    });
-
-    expect(parsed.syncPackEncodings).toEqual([SYNC_PACK_ENCODING_BINARY_V1]);
-    expect(isSyncPackEncoding(parsed.syncPackEncodings[0])).toBe(true);
-  });
-
-  it('accepts root-level pack negotiation for combined push/pull responses', () => {
-    const parsed = SyncCombinedRequestSchema.parse({
-      clientId: 'client-1',
-      syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
-      pull: {
-        limitCommits: 50,
-        limitSnapshotRows: 1000,
-        subscriptions: [],
-      },
-    });
-
-    expect(parsed.syncPackEncodings).toEqual([SYNC_PACK_ENCODING_BINARY_V1]);
+describe('sync pack content type', () => {
+  it('recognizes binary sync-pack responses', () => {
     expect(
       isBinarySyncPackContentType(`${SYNC_PACK_CONTENT_TYPE}; charset=binary`)
     ).toBe(true);
-  });
-
-  it('rejects the removed JSON sync-pack encoding', () => {
-    expect(() =>
-      SyncPullRequestSchema.parse({
-        clientId: 'client-1',
-        limitCommits: 50,
-        limitSnapshotRows: 1000,
-        syncPackEncodings: ['json-v1'],
-        subscriptions: [],
-      })
-    ).toThrow();
   });
 });
 
