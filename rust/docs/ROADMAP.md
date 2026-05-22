@@ -100,7 +100,8 @@ read-only review:
     single native TypeScript bridge package. Native realtime lifecycle aliases
     were also removed so host bindings expose only the explicit realtime worker
     start/stop methods. Unused browser client event type aliases were removed
-    in favor of the canonical runtime event type names.
+    in favor of the canonical runtime event type names, and unused browser
+    worker response aliases were removed from the worker protocol surface.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,
