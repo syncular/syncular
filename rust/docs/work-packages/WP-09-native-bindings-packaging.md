@@ -1,6 +1,6 @@
 # WP-09 Native Bindings And Packaging
 
-Status: `[!]` blocked on Windows runner evidence
+Status: `[x]` accepted for the current native packaging foundation
 
 ## Goal
 
@@ -47,16 +47,16 @@ around foreground recovery, background budgets, queued blob work, compaction,
 live-query refresh, CRDT writes, and shutdown.
 
 Native packaging scripts produce Apple, Android AAR/local Maven, current-host
-JVM, Linux x86_64 JVM, and host-only Windows JVM package shapes. No local macOS
-work remains for the current acceptance criteria; Windows validation remains a
-real Windows runner/host lane and cannot be completed from this workspace.
+JVM, Linux x86_64 JVM, and Windows JVM package shapes. No local macOS work
+remains for the current acceptance criteria, and the Windows JVM packaging lane
+has now passed on a real GitHub `windows-latest` runner.
 
 ## Next Action
 
-Run the existing `rust-windows-jvm-package` GitHub workflow job, or run
-`bun run rust:native:package:java:windows` on a Windows host/runner, and record
-the DLL output evidence. Until then, treat WP-09 as externally blocked, not
-locally in progress.
+WP-09 is accepted for the current native packaging foundation. Future native
+packaging work should be driven by concrete release/app-shell needs, such as
+full app lifecycle validation on physical devices, signed release publication,
+or additional host/architecture targets.
 
 ## Progress
 
@@ -89,7 +89,10 @@ locally in progress.
   while keeping shell verification paths unchanged.
 - Gate: `bun run rust:native:package:java:linux` passed again after the overlay
   path normalization change.
-- Blocker: Windows JVM packaging still needs the existing
-  `rust-windows-jvm-package` GitHub job or a real Windows host/runner to run
-  `bun run rust:native:package:java:windows` and prove
-  `.context/native-packages/java/native/windows-x86_64/syncular_runtime_jni.dll`.
+- Gate: GitHub workflow run `26260787975`, job
+  `rust-windows-jvm-package`, passed on `windows-latest`. It ran
+  `bash rust/scripts/package-native-bindings.sh --java-windows-x86_64`,
+  verified `.context/native-packages/java/native/windows-x86_64/syncular_runtime_jni.dll`,
+  and uploaded artifact `syncular-jvm-windows-26260787975` (`2,617,849`
+  bytes, artifact id `7150140731`, SHA-256 zip digest
+  `e1e658cf39779b8c52d138f18012a4ea95d8d9ed60a1277f8b590c920ef36b22`).
