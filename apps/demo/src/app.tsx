@@ -1,3 +1,4 @@
+import { isSyncularV2OfflineError } from '@syncular/client';
 import { CheckCircle2, Circle, Plus, RefreshCw, Trash2 } from 'lucide-react';
 import type { Dispatch, FormEvent, SetStateAction } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -9,7 +10,7 @@ import {
   selectTasks,
 } from './client/syncular';
 
-type ClientStatus = 'opening' | 'ready' | 'syncing' | 'error';
+type ClientStatus = 'opening' | 'ready' | 'syncing' | 'offline' | 'error';
 
 interface ClientState {
   handle: DemoClientHandle | null;
@@ -30,11 +31,21 @@ const initialClientState: ClientState = {
 export function App() {
   const [left, setLeft] = useState<ClientState>(initialClientState);
   const [right, setRight] = useState<ClientState>(initialClientState);
+  const leftRef = useRef(left);
+  const rightRef = useRef(right);
 
   const completedCount = useMemo(
     () => left.tasks.filter((task) => task.completed).length,
     [left.tasks]
   );
+
+  useEffect(() => {
+    leftRef.current = left;
+  }, [left]);
+
+  useEffect(() => {
+    rightRef.current = right;
+  }, [right]);
 
   useEffect(() => {
     const cleanups: Array<() => void | Promise<void>> = [];
@@ -51,6 +62,20 @@ export function App() {
           return;
         }
 
+        const applyLifecycle = () => {
+          const nextStatus = statusFromHandle(handle);
+          setClient((state) => ({
+            ...state,
+            status: nextStatus,
+            error: nextStatus === 'offline' ? null : state.error,
+          }));
+        };
+
+        const stopLifecycle = handle.database.client.addEventListener(
+          'lifecycleChanged',
+          applyLifecycle
+        );
+
         const live = await handle.database.live(selectTasks(handle.database), {
           tables: ['tasks'],
           onChange: (rows) => {
@@ -63,14 +88,16 @@ export function App() {
         });
 
         cleanups.push(() => {
+          stopLifecycle();
           live.unsubscribe();
           return handle.close();
         });
 
+        const status = statusFromHandle(handle);
         setClient((state) => ({
           ...state,
           handle,
-          status: 'ready',
+          status,
           error: null,
           lastSyncAt: Date.now(),
         }));
@@ -87,6 +114,22 @@ export function App() {
       await open('left', setLeft);
       await open('right', setRight);
     })();
+
+    const markOffline = () => {
+      setLeft(markClientOffline);
+      setRight(markClientOffline);
+    };
+    const syncOnline = () => {
+      void syncAfterOnline(leftRef.current, setLeft);
+      void syncAfterOnline(rightRef.current, setRight);
+    };
+
+    window.addEventListener('offline', markOffline);
+    window.addEventListener('online', syncOnline);
+    cleanups.push(() => {
+      window.removeEventListener('offline', markOffline);
+      window.removeEventListener('online', syncOnline);
+    });
 
     return () => {
       disposed = true;
@@ -160,7 +203,7 @@ function ClientPane({
         user_id: 'demo-user',
         project_id: null,
       });
-      await handle.syncNow();
+      await syncNowIfOnline(handle);
     });
   };
 
@@ -191,6 +234,11 @@ function ClientPane({
       </form>
 
       {state.error ? <p className="error-line">{state.error}</p> : null}
+      {state.status === 'offline' ? (
+        <p className="offline-line">
+          Offline. Local changes will sync when online.
+        </p>
+      ) : null}
 
       <div className="task-list" data-testid={`${accent}-tasks`}>
         {state.tasks.length === 0 ? (
@@ -233,7 +281,7 @@ function TaskRow({
         },
         { baseVersion: task.server_version }
       );
-      await client.syncNow();
+      await syncNowIfOnline(client);
     });
   };
 
@@ -243,7 +291,7 @@ function TaskRow({
       await client.database.mutations.tasks.delete(task.id, {
         baseVersion: task.server_version,
       });
-      await client.syncNow();
+      await syncNowIfOnline(client);
     });
   };
 
@@ -278,9 +326,11 @@ function StatusBadge({ state }: { state: ClientState }) {
       ? 'Opening'
       : state.status === 'syncing'
         ? 'Syncing'
-        : state.status === 'error'
-          ? 'Error'
-          : 'Ready';
+        : state.status === 'offline'
+          ? 'Offline'
+          : state.status === 'error'
+            ? 'Error'
+            : 'Ready';
 
   return (
     <div className={`status-badge ${state.status}`}>
@@ -302,13 +352,22 @@ async function runClientAction(
   }));
   try {
     await action(handle);
+    const status = statusFromHandle(handle);
     setState((state) => ({
       ...state,
-      status: 'ready',
+      status,
       lastSyncAt: Date.now(),
       error: null,
     }));
   } catch (err) {
+    if (isOfflineCondition(err)) {
+      setState((state) => ({
+        ...state,
+        status: 'offline',
+        error: null,
+      }));
+      return;
+    }
     setState((state) => ({
       ...state,
       status: 'error',
@@ -331,4 +390,53 @@ function normalizeTask(row: Record<string, unknown>): DemoTask {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function statusFromHandle(handle: DemoClientHandle): ClientStatus {
+  if (!browserIsOnline()) return 'offline';
+  const lifecycle = handle.database.client.lifecycleState();
+  if (
+    lifecycle.phase === 'syncing' ||
+    lifecycle.phase === 'recovering' ||
+    lifecycle.phase === 'connecting'
+  ) {
+    return 'syncing';
+  }
+  if (lifecycle.phase === 'offline') return 'offline';
+  if (lifecycle.requiresAction) return 'error';
+  return 'ready';
+}
+
+function markClientOffline(state: ClientState): ClientState {
+  if (!state.handle) return state;
+  return {
+    ...state,
+    status: 'offline',
+    error: null,
+  };
+}
+
+async function syncAfterOnline(
+  state: ClientState,
+  setState: Dispatch<SetStateAction<ClientState>>
+): Promise<void> {
+  const handle = state.handle;
+  if (!handle) return;
+  await runClientAction(setState, handle, async (client) => {
+    await client.startRealtime();
+    await client.syncNow();
+  });
+}
+
+async function syncNowIfOnline(handle: DemoClientHandle): Promise<void> {
+  if (!browserIsOnline()) return;
+  await handle.syncNow();
+}
+
+function isOfflineCondition(error: unknown): boolean {
+  return !browserIsOnline() || isSyncularV2OfflineError(error);
+}
+
+function browserIsOnline(): boolean {
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
 }

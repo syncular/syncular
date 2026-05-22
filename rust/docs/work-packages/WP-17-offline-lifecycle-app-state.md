@@ -154,6 +154,13 @@ Closed. Next Rust-first work package is
   lifecycle smokes now model a host maintenance policy: restricted background
   state does not enqueue upload/compaction work, while foreground policy
   explicitly queues blob upload processing and storage compaction.
+- Browser lifecycle management now treats known browser offline state and
+  retryable `sync.offline` failures as normal lifecycle conditions during
+  startup. Managed clients can start while offline, retry sync when the browser
+  comes online, and keep realtime startup best-effort instead of surfacing
+  offline as a fatal app error. The local demo now renders `Offline`, suppresses
+  retryable offline error banners, keeps local mutations queued, and triggers a
+  sync when online returns.
 
 ## Latest Evidence
 
@@ -188,3 +195,7 @@ Closed. Next Rust-first work package is
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `bun run rust:conformance:native`
 - `git diff --check`
+- `bun test packages/client/src/client.test.ts packages/client/src/errors.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bun --cwd apps/demo tsgo`
+- `bun test packages/client/src/__tests__/sync-hono.wasm.test.ts -t "reports lifecycle state through offline queued mutation and reconnect recovery"`

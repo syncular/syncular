@@ -1,4 +1,7 @@
-import { getSyncularV2RuntimeArtifact } from '@syncular/client';
+import {
+  getSyncularV2RuntimeArtifact,
+  isSyncularV2OfflineError,
+} from '@syncular/client';
 import {
   createSyncularAppDatabase,
   type SyncularAppDatabase,
@@ -21,6 +24,7 @@ export type DemoTask = Pick<
 export interface DemoClientHandle {
   name: DemoClientName;
   database: SyncularAppDatabase;
+  startRealtime(): Promise<void>;
   syncNow(): Promise<void>;
   close(): Promise<void>;
 }
@@ -48,6 +52,7 @@ function startConsoleDiagnosticPublishing(
 
   const publish = async () => {
     if (closed) return;
+    if (!browserIsOnline()) return;
     try {
       const [snapshot, lifecycle] = await Promise.all([
         database.client.diagnosticSnapshot(),
@@ -118,20 +123,25 @@ export async function openDemoClient(
     runtimeArtifacts: [getSyncularV2RuntimeArtifact('full')],
     subscriptions: [taskSubscription({ actorId })],
     sync: {
-      autoSyncAfterMutation: true,
-      mutationSyncDebounceMs: 25,
+      autoSyncAfterMutation: false,
       rowsChangedDebounceMs: 25,
     },
   });
+
+  const startRealtime = async () => {
+    await database.client.startRealtime({
+      params: { token: demoToken },
+      initialReconnectDelayMs: 500,
+      maxReconnectDelayMs: 5_000,
+    });
+  };
 
   const syncNow = async () => {
     await database.client.syncOnce();
   };
 
-  await syncNow();
-  await database.client.startRealtime({
-    params: { token: demoToken },
-  });
+  if (browserIsOnline()) await ignoreOffline(syncNow());
+  if (browserIsOnline()) await ignoreOffline(startRealtime());
   const stopConsoleDiagnostics = startConsoleDiagnosticPublishing(
     `demo-${name}`,
     database
@@ -140,12 +150,25 @@ export async function openDemoClient(
   return {
     name,
     database,
+    startRealtime,
     syncNow,
     close: async () => {
       stopConsoleDiagnostics();
       await database.close();
     },
   };
+}
+
+async function ignoreOffline(promise: Promise<void>): Promise<void> {
+  try {
+    await promise;
+  } catch (error) {
+    if (!isSyncularV2OfflineError(error) && browserIsOnline()) throw error;
+  }
+}
+
+function browserIsOnline(): boolean {
+  return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 
 export function selectTasks(database: SyncularAppDatabase) {

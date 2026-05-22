@@ -1,5 +1,6 @@
 import type { BlobRef, SyncAuthLeaseIssueRequest } from '@syncular/core';
 import { createSyncularV2Database, type SyncularV2Database } from './database';
+import { isSyncularV2OfflineError } from './errors';
 import type { MutationsApi } from './mutations';
 import type {
   CreateSyncularV2DatabaseOptions,
@@ -32,6 +33,13 @@ export interface SyncularV2ClientLifecycleOptions {
   realtime?: boolean | SyncularV2RealtimeOptions;
   syncOnRealtimeConnect?: boolean;
   pollIntervalMs?: number | false;
+  network?: SyncularV2ClientNetworkStatusSource | false;
+}
+
+export interface SyncularV2ClientNetworkStatusSource {
+  isOnline(): boolean | undefined;
+  addEventListener?(type: 'online' | 'offline', listener: () => void): void;
+  removeEventListener?(type: 'online' | 'offline', listener: () => void): void;
 }
 
 export interface CreateSyncularV2ClientOptions
@@ -173,6 +181,7 @@ export async function createSyncularClient<DB>(
     initialSync: lifecycle?.initialSync,
     syncOnRealtimeConnect: lifecycle?.syncOnRealtimeConnect,
     pollIntervalMs: lifecycle?.pollIntervalMs,
+    network: lifecycle?.network,
   });
   const closeDatabase = database.close.bind(database);
   let closed = false;
@@ -254,9 +263,12 @@ export class SyncularV2ClientLifecycle {
   #started = false;
   #pollTimer: ReturnType<typeof setInterval> | undefined;
   #unsubscribeDiagnostics: (() => void) | undefined;
+  #unsubscribeNetwork: (() => void) | undefined;
   #syncInFlight: Promise<SyncularV2SyncResult> | undefined;
   #syncAgain = false;
   #hasConnectedRealtime = false;
+  #realtimeStarted = false;
+  readonly #network: SyncularV2ClientNetworkStatusSource | undefined;
 
   constructor(
     private readonly client: LifecycleClient,
@@ -266,26 +278,34 @@ export class SyncularV2ClientLifecycle {
       initialSync?: boolean;
       syncOnRealtimeConnect?: boolean;
       pollIntervalMs?: number | false;
+      network?: SyncularV2ClientNetworkStatusSource | false;
     } = {}
-  ) {}
+  ) {
+    this.#network =
+      options.network === false
+        ? undefined
+        : (options.network ?? browserNetworkStatusSource());
+  }
 
   async start(): Promise<void> {
     if (this.#started) return;
     this.#started = true;
     this.#hasConnectedRealtime =
       this.client.connectionState().realtime === 'connected';
+    this.#realtimeStarted = this.#hasConnectedRealtime;
     this.#unsubscribeDiagnostics = this.client.addDiagnosticListener((event) =>
       this.#handleDiagnostic(event)
     );
+    this.#unsubscribeNetwork = this.#subscribeNetworkEvents();
     try {
       if (this.options.subscriptions) {
         await this.client.setSubscriptions(this.options.subscriptions);
       }
-      if (this.options.initialSync !== false) {
-        await this.sync();
+      if (this.options.initialSync !== false && this.#isOnline()) {
+        await this.#syncForLifecycle();
       }
-      if (this.options.realtime !== false) {
-        await this.client.startRealtime(this.options.realtime);
+      if (this.options.realtime !== false && this.#isOnline()) {
+        await this.#startRealtimeForLifecycle();
       }
       this.#startPolling();
     } catch (error) {
@@ -300,10 +320,13 @@ export class SyncularV2ClientLifecycle {
     this.#stopPolling();
     this.#unsubscribeDiagnostics?.();
     this.#unsubscribeDiagnostics = undefined;
+    this.#unsubscribeNetwork?.();
+    this.#unsubscribeNetwork = undefined;
     this.#syncAgain = false;
     if (this.options.realtime !== false) {
       await this.client.stopRealtime();
     }
+    this.#realtimeStarted = false;
   }
 
   async sync(): Promise<SyncularV2SyncResult> {
@@ -347,11 +370,57 @@ export class SyncularV2ClientLifecycle {
     void this.sync().catch(() => undefined);
   }
 
+  #subscribeNetworkEvents(): (() => void) | undefined {
+    const network = this.#network;
+    if (!network?.addEventListener || !network.removeEventListener) return;
+    const handleOnline = () => {
+      if (!this.#started) return;
+      void this.#resumeOnline().catch(() => undefined);
+    };
+    network.addEventListener('online', handleOnline);
+    return () => {
+      network.removeEventListener?.('online', handleOnline);
+    };
+  }
+
+  async #resumeOnline(): Promise<void> {
+    if (!this.#started || !this.#isOnline()) return;
+    if (this.options.initialSync !== false) {
+      await this.#syncForLifecycle();
+    }
+    if (this.options.realtime !== false && !this.#realtimeStarted) {
+      await this.#startRealtimeForLifecycle();
+    }
+  }
+
+  async #syncForLifecycle(): Promise<void> {
+    try {
+      await this.sync();
+    } catch (error) {
+      if (!isSyncularV2OfflineError(error)) throw error;
+    }
+  }
+
+  async #startRealtimeForLifecycle(): Promise<void> {
+    try {
+      await this.client.startRealtime(this.options.realtime);
+      this.#realtimeStarted = true;
+    } catch (error) {
+      this.#realtimeStarted = false;
+      if (!isSyncularV2OfflineError(error)) throw error;
+    }
+  }
+
+  #isOnline(): boolean {
+    return this.#network?.isOnline() !== false;
+  }
+
   #startPolling(): void {
     const interval = this.options.pollIntervalMs;
     if (interval === false || interval === undefined || interval <= 0) return;
     this.#pollTimer = setInterval(() => {
-      void this.sync().catch(() => undefined);
+      if (!this.#isOnline()) return;
+      void this.#syncForLifecycle();
     }, interval);
   }
 
@@ -360,4 +429,35 @@ export class SyncularV2ClientLifecycle {
     clearInterval(this.#pollTimer);
     this.#pollTimer = undefined;
   }
+}
+
+function browserNetworkStatusSource():
+  | SyncularV2ClientNetworkStatusSource
+  | undefined {
+  const target = globalThis as unknown as {
+    navigator?: { onLine?: boolean };
+    addEventListener?: (
+      type: string,
+      listener: EventListenerOrEventListenerObject
+    ) => void;
+    removeEventListener?: (
+      type: string,
+      listener: EventListenerOrEventListenerObject
+    ) => void;
+  };
+  if (
+    typeof target.navigator?.onLine !== 'boolean' &&
+    (!target.addEventListener || !target.removeEventListener)
+  ) {
+    return undefined;
+  }
+  return {
+    isOnline: () => target.navigator?.onLine,
+    addEventListener: target.addEventListener
+      ? (type, listener) => target.addEventListener?.(type, listener)
+      : undefined,
+    removeEventListener: target.removeEventListener
+      ? (type, listener) => target.removeEventListener?.(type, listener)
+      : undefined,
+  };
 }
