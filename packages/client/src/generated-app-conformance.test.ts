@@ -403,6 +403,11 @@ describe('generated app conformance', () => {
     });
     expect(update.clientCommitId).toBe('commit-history-1');
     expect(await commandHistory.history.canUndo()).toBe(true);
+    state.rows.set('tasks:task-history', {
+      ...state.rows.get('tasks:task-history')!,
+      server_version: 12,
+      title_yjs_state: 'server-ack-state',
+    });
 
     const undo = await commandHistory.history.undoLast();
     expect(undo).toEqual({
@@ -411,6 +416,7 @@ describe('generated app conformance', () => {
       clientCommitId: 'commit-history-2',
     });
     expect(state.rows.get('tasks:task-history')?.completed).toBe(0);
+    expect(state.rows.get('tasks:task-history')?.server_version).toBe(12);
 
     const redo = await commandHistory.history.redoLast();
     expect(redo).toEqual({
@@ -519,7 +525,7 @@ describe('generated app conformance', () => {
       tableConfig: syncularGeneratedTableConfig,
       mutations: baseMutationApi,
       leasedMutations: baseMutationApi,
-      idFactory: () => 'cmd-unsafe-1',
+      idFactory: () => `cmd-unsafe-${state.historyRows.length + 1}`,
       nowMs: () => 2500 + state.nowTick++,
     });
     const mutations = commandHistory.wrapMutations(
@@ -540,6 +546,16 @@ describe('generated app conformance', () => {
       commandId: 'cmd-unsafe-1',
     } satisfies Partial<SyncularV2CommandHistoryError>);
     expect(state.appliedOperations).toHaveLength(1);
+
+    await mutations.tasks.update('task-unsafe-history', {
+      title: 'Unsafe CRDT title change',
+    });
+
+    await expect(commandHistory.history.undoLast()).rejects.toMatchObject({
+      code: 'sync.command_history_unsafe_field',
+      commandId: 'cmd-unsafe-2',
+    } satisfies Partial<SyncularV2CommandHistoryError>);
+    expect(state.appliedOperations).toHaveLength(2);
   });
 
   it('replays command history for insert, hard delete, soft delete, and grouped commits', async () => {
@@ -598,6 +614,20 @@ describe('generated app conformance', () => {
       baseMutationApi,
       'mutations'
     ) as unknown as SyncularAppMutations;
+
+    await mutations.tasks.insert({
+      id: 'task-history-insert-crdt',
+      title: 'Task with CRDT title to insert',
+      completed: 0,
+      user_id: 'user-rust',
+      project_id: 'project-rust',
+    });
+    await commandHistory.history.undoLast();
+    expect(state.rows.has('tasks:task-history-insert-crdt')).toBe(false);
+    await commandHistory.history.redoLast();
+    expect(state.rows.get('tasks:task-history-insert-crdt')?.title).toBe(
+      'Task with CRDT title to insert'
+    );
 
     await mutations.projects.insert({
       id: 'project-history-insert',

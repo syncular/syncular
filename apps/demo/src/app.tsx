@@ -1,5 +1,13 @@
 import { isSyncularV2OfflineError } from '@syncular/client';
-import { CheckCircle2, Circle, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import {
+  CheckCircle2,
+  Circle,
+  Plus,
+  Redo2,
+  RefreshCw,
+  Trash2,
+  Undo2,
+} from 'lucide-react';
 import type { Dispatch, FormEvent, SetStateAction } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -18,6 +26,8 @@ interface ClientState {
   status: ClientStatus;
   error: string | null;
   lastSyncAt: number | null;
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 const initialClientState: ClientState = {
@@ -26,6 +36,8 @@ const initialClientState: ClientState = {
   status: 'opening',
   error: null,
   lastSyncAt: null,
+  canUndo: false,
+  canRedo: false,
 };
 
 export function App() {
@@ -94,12 +106,14 @@ export function App() {
         });
 
         const status = statusFromHandle(handle);
+        const commandState = await readCommandState(handle);
         setClient((state) => ({
           ...state,
           handle,
           status,
           error: null,
           lastSyncAt: Date.now(),
+          ...commandState,
         }));
       } catch (err) {
         setClient((state) => ({
@@ -207,6 +221,22 @@ function ClientPane({
     });
   };
 
+  const undo = async () => {
+    if (!state.handle || !state.canUndo) return;
+    await runClientAction(setState, state.handle, async (handle) => {
+      await handle.database.commandHistory.undoLast();
+      await syncNowIfOnline(handle);
+    });
+  };
+
+  const redo = async () => {
+    if (!state.handle || !state.canRedo) return;
+    await runClientAction(setState, state.handle, async (handle) => {
+      await handle.database.commandHistory.redoLast();
+      await syncNowIfOnline(handle);
+    });
+  };
+
   return (
     <article className={`client-pane ${accent}`}>
       <header className="client-header">
@@ -214,7 +244,29 @@ function ClientPane({
           <p className="pane-kicker">{label}</p>
           <h2>{accent === 'left' ? 'Planner' : 'Reviewer'}</h2>
         </div>
-        <StatusBadge state={state} />
+        <div className="pane-actions">
+          <button
+            className="history-button"
+            type="button"
+            aria-label={`${label} undo last command`}
+            title="Undo"
+            onClick={undo}
+            disabled={!state.handle || !state.canUndo}
+          >
+            <Undo2 size={17} />
+          </button>
+          <button
+            className="history-button"
+            type="button"
+            aria-label={`${label} redo last command`}
+            title="Redo"
+            onClick={redo}
+            disabled={!state.handle || !state.canRedo}
+          >
+            <Redo2 size={17} />
+          </button>
+          <StatusBadge state={state} />
+        </div>
       </header>
 
       <form className="add-row" onSubmit={addTask}>
@@ -353,18 +405,22 @@ async function runClientAction(
   try {
     await action(handle);
     const status = statusFromHandle(handle);
+    const commandState = await readCommandState(handle);
     setState((state) => ({
       ...state,
       status,
       lastSyncAt: Date.now(),
       error: null,
+      ...commandState,
     }));
   } catch (err) {
     if (isOfflineCondition(err)) {
+      const commandState = await readCommandState(handle);
       setState((state) => ({
         ...state,
         status: 'offline',
         error: null,
+        ...commandState,
       }));
       return;
     }
@@ -374,6 +430,16 @@ async function runClientAction(
       error: errorMessage(err),
     }));
   }
+}
+
+async function readCommandState(
+  handle: DemoClientHandle
+): Promise<Pick<ClientState, 'canUndo' | 'canRedo'>> {
+  const [canUndo, canRedo] = await Promise.all([
+    handle.database.commandHistory.canUndo(),
+    handle.database.commandHistory.canRedo(),
+  ]);
+  return { canUndo, canRedo };
 }
 
 function normalizeTask(row: Record<string, unknown>): DemoTask {
