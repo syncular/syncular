@@ -70,6 +70,12 @@ read-only review:
 
 ## Now
 
+- `[~]` [`WP-30 Foundation Cleanup And Complexity Reduction`](work-packages/WP-30-foundation-cleanup-complexity.md)
+  - New cross-cutting cleanup WP for polishing, removing unnecessary code,
+    deleting stale aliases/backwards-compatibility paths, and reducing
+    foundation complexity before more surface is added. Start with the
+    compatibility-register closure pass and keep every cleanup slice small,
+    gated, and independently revertible.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,

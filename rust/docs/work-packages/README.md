@@ -50,3 +50,4 @@ to this shape.
 27. [`WP-27 Rust Relay Protocol Boundary`](WP-27-rust-relay-protocol-boundary.md)
 28. [`WP-28 Relay Rust Evaluation And Protocol Validation`](WP-28-relay-production-protocol-validation.md)
 29. [`WP-29 Rust Client Console Workbench`](WP-29-rust-client-console-workbench.md)
+30. [`WP-30 Foundation Cleanup And Complexity Reduction`](WP-30-foundation-cleanup-complexity.md)
