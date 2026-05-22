@@ -180,9 +180,12 @@ read-only review:
     worker-realtime reconnect benchmark lane. This fixes missed-change
     correctness on websocket reconnect and improves the `125`-client reconnect
     path versus direct HTTP, but the `250`-client external-write storm still
-    hits an approximately `2s` cursor-only HTTP recovery cliff; next work should
-    target binary payloads for external notifications or server/relay-side
-    recovery fanout.
+    hits an approximately `2s` cursor-only HTTP recovery cliff. That cliff is
+    handed off to WP-32 because it needs server/realtime payload or recovery
+    fanout design, not more client retry tuning. Remaining WP-31 client-side
+    follow-ups are adaptive outbox batching, browser-worker durable storage
+    benchmarking, online binary-pack regression watch, and optional explicit
+    blob `retryNow`/online-event retry evaluation.
 - `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table
@@ -980,6 +983,17 @@ read-only review:
     relay/server component WP is retained from this evidence; relay app
     semantics stay TypeScript/Kysely-owned unless a future product decision and
     new measurements say otherwise.
+- `[ ]` [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](work-packages/WP-32-realtime-recovery-fanout-external-notifications.md)
+  - Created from WP-31 reconnect-storm evidence, not from WP-28 protocol
+    validation. Worker realtime reconnect is now correct and fast at `125`
+    clients (`216.12ms`), but the `250`-client external-write lane still hits
+    about `2s` because cursor-only `server-wakeup` frames force hundreds of
+    similar HTTP recovery pulls. WP-32 starts with measurement, then evaluates
+    binary external-notification payloads, bounded recovery replay, and
+    server-side recovery coalescing. Rust may be considered only for a
+    byte-preserving protocol helper after the TypeScript/Hono server shape is
+    measured; table handlers, scope resolution, mutation apply, relay storage,
+    and other app semantics remain TypeScript/Kysely-owned.
 
 ## Blocked / External
 

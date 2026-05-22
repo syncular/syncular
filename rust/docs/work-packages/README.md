@@ -52,3 +52,4 @@ to this shape.
 29. [`WP-29 Rust Client Console Workbench`](WP-29-rust-client-console-workbench.md)
 30. [`WP-30 Foundation Cleanup And Complexity Reduction`](WP-30-foundation-cleanup-complexity.md)
 31. [`WP-31 Rust Client Benchmark Parity And Performance Triage`](WP-31-rust-client-benchmark-parity-performance.md)
+32. [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](WP-32-realtime-recovery-fanout-external-notifications.md)

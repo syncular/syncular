@@ -248,3 +248,9 @@ This decision is based on three points:
 WP-28 is closed. Reopen relay/server Rust planning only with new evidence from
 load tests, a product need for byte-preserving edge verification/proxying, or a
 scoped protocol-only binding proposal.
+
+Follow-up note: WP-32 was created from later WP-31 reconnect-storm load
+evidence. It does not reverse the WP-28 decision: the next investigation starts
+with TypeScript/Hono realtime payload and recovery fanout measurement, and Rust
+is only a candidate for byte-preserving protocol work if the measurements
+justify that boundary.
