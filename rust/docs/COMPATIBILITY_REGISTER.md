@@ -45,7 +45,6 @@ exception.
 | Console message-auth handshake fallback | `Decision needed` | `packages/server-hono/src/console/routes.ts` | Console auth convenience/path fallback | Could normalize fallback auth paths outside Rust-first discipline | Decide separately as console/operator compatibility, not client protocol compatibility |
 | Service-worker postMessage fallback | `Decision needed` | `packages/server-service-worker/src/index.ts` | Browser/service-worker capability fallback | Could be valid platform fallback or stale bridge | Keep only if documented as environment fallback and covered by runtime tests |
 | External chunk storage inline/database fallback | `Decision needed` | Snapshot chunk storage tests and server storage paths | Allows reading chunk bytes from DB/metadata path when external storage path is unavailable | May blur current snapshot storage contract | Keep only if it is explicit storage-adapter behavior, not protocol fallback |
-| Realtime wake-up-only docs | `Remove/update` | Pre-Rust docs under `apps/docs/content/docs/build/realtime.mdx`, concepts docs | Describes old JS runtime behavior | Conflicts with Rust-first websocket delta direction | Update Rust docs to state delta fast path; old docs should be archived or labeled legacy |
 
 ## Recently Removed
 
@@ -63,6 +62,7 @@ exception.
 | Browser TypeScript constructor aliases | `Removed` | `@syncular/client` public exports and generated app TypeScript output | Generated apps and browser callers now import `createSyncularV2Database` / `SyncularV2Database` and `createSyncularClient` directly instead of `createSyncularRustSqliteDatabase`, `SyncularRustSqliteDatabase`, or `createSyncularV2Client` aliases |
 | JS/wa-sqlite host-store benchmark path | `Removed` | `tests/runtime/apps/browser/entry.ts`, `tests/runtime/scripts/browser-wasm-vs-js-benchmark.ts`, `tests/perf` | The TS client benchmark depended on the deleted product runtime and was removed with the legacy client |
 | Offline-auth `lastActor` fallback | `Removed` | `plugins/offline-auth/client` | The old client plugin package was deleted with the TS client surface. Reintroduce only as a Rust lifecycle/auth feature with explicit lease semantics |
+| Realtime wake-up-only docs | `Removed` | `apps/docs/content/docs/concepts/architecture.mdx`, API/server realtime docs | Rust-first realtime docs now describe websocket sync-pack deltas as the fast path and HTTP pull as recovery/checkpoint, instead of claiming websocket only wakes HTTP pull |
 
 ## Items That Are Not Compatibility Debt
 

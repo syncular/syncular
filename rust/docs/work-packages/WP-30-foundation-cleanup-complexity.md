@@ -163,7 +163,17 @@ Initial audit inputs:
 
 ## Next Action
 
-Start with Slice 1: close the compatibility register items one by one. The
-first code slice should be small and obvious, preferably the already-marked
-`Remove/update` realtime wake-up-only docs or the legacy package removals
-already visible in the dirty worktree, after confirming ownership and gates.
+Continue Slice 1: close the remaining compatibility register items one by one.
+Next likely candidates are the legacy package removals already visible in the
+dirty worktree or a decision pass over migration checksum / console auth /
+service-worker / external chunk storage fallbacks.
+
+## Progress
+
+- Created WP-30 and made it the active cleanup track in the roadmap.
+- Closed the `Realtime wake-up-only docs` compatibility-register item. Current
+  docs now describe WebSocket realtime as a verified sync-pack delta fast path
+  with HTTP pull as the recovery/checkpoint path, instead of claiming websocket
+  carries no data.
+- Gate: `bun run docs:build` passed. `bunx biome check <changed md/mdx>` was
+  attempted, but Biome ignores these Markdown/MDX paths in this repo.

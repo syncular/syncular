@@ -75,7 +75,9 @@ read-only review:
     deleting stale aliases/backwards-compatibility paths, and reducing
     foundation complexity before more surface is added. Start with the
     compatibility-register closure pass and keep every cleanup slice small,
-    gated, and independently revertible.
+    gated, and independently revertible. First slice closed the stale realtime
+    wake-up-only docs item by updating docs to describe websocket sync-pack
+    deltas as the fast path and HTTP pull as recovery/checkpoint.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,
