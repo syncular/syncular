@@ -459,7 +459,6 @@ struct NativeEncryptedCrdtRequest {
 #[serde(rename_all = "camelCase")]
 struct NativeCrdtFieldRequest {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
 }
@@ -468,10 +467,8 @@ struct NativeCrdtFieldRequest {
 #[serde(rename_all = "camelCase")]
 struct NativeCrdtFieldTextRequest {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
-    #[serde(alias = "next_text")]
     next_text: String,
 }
 
@@ -479,7 +476,6 @@ struct NativeCrdtFieldTextRequest {
 #[serde(rename_all = "camelCase")]
 struct NativeCrdtFieldYjsUpdateRequest {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
     update: YjsUpdateEnvelope,
@@ -489,10 +485,9 @@ struct NativeCrdtFieldYjsUpdateRequest {
 #[serde(rename_all = "camelCase")]
 struct NativeCrdtFieldCompactionRequest {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
-    #[serde(default, alias = "min_uncheckpointed_updates")]
+    #[serde(default)]
     min_uncheckpointed_updates: Option<i64>,
 }
 
@@ -500,7 +495,6 @@ struct NativeCrdtFieldCompactionRequest {
 #[serde(rename_all = "camelCase")]
 struct NativeCrdtFieldLogRequest {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
     #[serde(default)]

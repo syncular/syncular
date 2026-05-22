@@ -290,7 +290,6 @@ pub struct CrdtFieldCompactionReceipt {
 struct EncryptedCrdtUpdateJsonRequest {
     table: String,
     field: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     #[serde(default)]
     next_text: Option<String>,
@@ -304,7 +303,6 @@ struct EncryptedCrdtUpdateJsonRequest {
 struct EncryptedCrdtCheckpointJsonRequest {
     table: String,
     field: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     #[serde(default)]
     min_uncheckpointed_updates: Option<i64>,

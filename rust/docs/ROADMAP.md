@@ -104,7 +104,9 @@ read-only review:
     worker response aliases were removed from the worker protocol surface.
     Browser lifecycle options now use the canonical network status source type
     directly, and testkit sync-response helpers now return the canonical core
-    `SyncChange` type.
+    `SyncChange` type. Runtime/native/browser host JSON CRDT request parsing
+    now accepts only generated camelCase fields, and the old websocket timing
+    alias was removed so transport stats read the current server field names.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,

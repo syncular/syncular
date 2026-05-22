@@ -80,7 +80,7 @@ pub struct WebTransportStats {
 struct WebServerBootstrapTimings {
     snapshot_query_ms: f64,
     row_frame_encode_ms: f64,
-    #[serde(default, alias = "snapshotBinaryEncodeMs")]
+    #[serde(default)]
     binary_encode_ms: f64,
     chunk_cache_lookup_ms: f64,
     #[serde(default)]
