@@ -3,7 +3,9 @@ import { gunzipSync } from 'node:zlib';
 import {
   codecs,
   createDatabase,
+  decodeBinarySnapshotTable,
   decodeSnapshotRows,
+  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   type SyncPullRequest,
 } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
@@ -64,12 +66,17 @@ interface ClientDb {
 }
 
 function decodeSnapshotRowsGzip(
-  bytes: Uint8Array | ReadableStream<Uint8Array>
+  bytes: Uint8Array | ReadableStream<Uint8Array>,
+  encoding: string
 ): unknown[] {
   if (!(bytes instanceof Uint8Array)) {
     throw new Error('Expected Uint8Array snapshot body in this test');
   }
-  return decodeSnapshotRows(gunzipSync(bytes));
+  const decoded = gunzipSync(bytes);
+  if (encoding === SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1) {
+    return decodeBinarySnapshotTable(decoded).rows;
+  }
+  return decodeSnapshotRows(decoded);
 }
 
 async function readSnapshotRows(
@@ -90,7 +97,7 @@ async function readSnapshotRows(
     throw new Error('Expected stored snapshot chunk');
   }
 
-  return decodeSnapshotRowsGzip(chunk.body);
+  return decodeSnapshotRowsGzip(chunk.body, chunkRef.encoding);
 }
 
 describe('createServerHandler', () => {
