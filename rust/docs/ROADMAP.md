@@ -77,7 +77,12 @@ read-only review:
     compatibility-register closure pass and keep every cleanup slice small,
     gated, and independently revertible. First slice closed the stale realtime
     wake-up-only docs item by updating docs to describe websocket sync-pack
-    deltas as the fast path and HTTP pull as recovery/checkpoint.
+    deltas as the fast path and HTTP pull as recovery/checkpoint. Current slice
+    removes the legacy wa-sqlite browser dialect package, TypeScript
+    transport-ws package, and unnecessary umbrella aliases
+    `syncular/dialect-wa-sqlite`, `syncular/transport-ws`, and
+    `syncular/server-dialect-neon`; targeted package/doc gates passed, while
+    full `knip` is still blocked by unrelated WP-27+ relay findings.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,

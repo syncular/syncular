@@ -4296,7 +4296,7 @@ export function createSyncRoutes<
   );
 
   // -------------------------------------------------------------------------
-  // GET /realtime (optional WebSocket wake-ups)
+  // GET /realtime (optional WebSocket deltas and recovery wake-ups)
   // -------------------------------------------------------------------------
 
   if (wsConnectionManager && websocketConfig?.enabled) {

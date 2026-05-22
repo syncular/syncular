@@ -1,6 +1,6 @@
 # WP-30 Foundation Cleanup And Complexity Reduction
 
-Status: `[~] audit and first cleanup slices ready`
+Status: `[~] package-surface cleanup in progress`
 
 ## Goal
 
@@ -109,12 +109,11 @@ Initial audit inputs:
   - service-worker `postMessage` fallback (`Decision needed`);
   - external chunk storage inline/database fallback (`Decision needed`);
   - realtime wake-up-only docs (`Remove/update`).
-- The working tree already contains cleanup-looking changes around
-  `packages/dialect-wa-sqlite`, `packages/transport-ws`,
+- The first package-surface cleanup slice adopted and verified the dirty-tree
+  deletions of `packages/dialect-wa-sqlite`, `packages/transport-ws`,
   `packages/syncular/src/dialect-wa-sqlite.ts`,
   `packages/syncular/src/server-dialect-neon.ts`, and
-  `packages/syncular/src/transport-ws.ts`. Treat these as an active local
-  workstream from another session unless deliberately adopted and verified.
+  `packages/syncular/src/transport-ws.ts`.
 - `rg` shows many `SyncularV2*` names remain. These are not automatically
   compatibility debt because the current runtime still uses v2 naming in public
   protocol/package contracts. Rename only if a scoped API decision says the
@@ -164,9 +163,8 @@ Initial audit inputs:
 ## Next Action
 
 Continue Slice 1: close the remaining compatibility register items one by one.
-Next likely candidates are the legacy package removals already visible in the
-dirty worktree or a decision pass over migration checksum / console auth /
-service-worker / external chunk storage fallbacks.
+Next candidates are the migration checksum, console auth, service-worker, and
+external chunk storage fallback decisions.
 
 ## Progress
 
@@ -177,3 +175,31 @@ service-worker / external chunk storage fallbacks.
   carries no data.
 - Gate: `bun run docs:build` passed. `bunx biome check <changed md/mdx>` was
   attempted, but Biome ignores these Markdown/MDX paths in this repo.
+- Removed the old browser wa-sqlite dialect package, old TypeScript websocket
+  transport package, and umbrella subpaths:
+  `syncular/dialect-wa-sqlite`, `syncular/transport-ws`, and
+  `syncular/server-dialect-neon`.
+- Kept the umbrella root import narrow: `syncular` re-exports
+  `@syncular/core`; runtime-specific helpers stay on explicit `syncular/*`
+  subpaths instead of broad root re-exports.
+- Updated docs, package READMEs, package manifests, lockfile, and package-table
+  guidance to point browser users at the Rust-owned `@syncular/client` and
+  Neon users at `server-dialect-postgres`.
+- Gates:
+  - `bun install --lockfile-only`: passed.
+  - `bunx biome check <changed ts/json/md/mdx>`: passed for checked TS/JSON
+    files; Markdown/MDX paths are ignored by Biome in this repo.
+  - `bun --cwd packages/syncular tsgo`: passed.
+  - `bun --cwd packages/ui tsgo`: passed.
+  - `bun --cwd packages/client tsgo`: passed.
+  - `bun --cwd packages/client-tauri tsgo`: passed.
+  - `bun --cwd packages/client-react-native tsgo`: passed.
+  - `bun --cwd packages/server-hono tsgo`: passed.
+  - `bun --cwd packages/client test`: passed, `110` tests.
+  - `bun run docs:build`: passed.
+  - Targeted `bunx knip --workspace ...`: passed for changed workspaces.
+  - Full `bun run knip`: blocked by pre-existing WP-27+ relay unused-export
+    findings; this slice did not touch relay work.
+  - `rg` cleanup checks found no active references to deleted wa-sqlite /
+    transport-ws packages or deleted umbrella subpaths outside this WP and the
+    compatibility register.

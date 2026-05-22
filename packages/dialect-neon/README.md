@@ -6,7 +6,7 @@ Useful for stateless serverless and edge environments.
 
 This package is the Kysely runtime dialect. When you are running a Syncular
 server on Neon-backed Postgres, pair it with `createNeonServerDialect()` from
-`@syncular/server-dialect-postgres` (or `syncular/server-dialect-neon`).
+`@syncular/server-dialect-postgres`.
 
 ## Install
 

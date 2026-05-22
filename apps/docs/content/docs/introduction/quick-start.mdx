@@ -52,12 +52,12 @@ sequenceDiagram
   Server->>Server: Validate handler and apply row
   Server->>Server: Write sync_commits + sync_changes
   Server-->>Client: Ack with commitSeq
-  Server-->>Others: Optional wake-up signal
+  Server-->>Others: Realtime delta or pull-required wake-up
   Others->>Server: POST /api/sync (pull)
   Server-->>Others: Return commits since cursor
   Others->>Others: Apply rows to local SQLite
 `}
-  caption="Local writes happen first. Syncular persists the change, pushes it when possible, and other clients pick it up on their next pull."
+  caption="Local writes happen first. Syncular persists the change, pushes it when possible, and other clients receive it through realtime deltas or the next pull."
 />
 
 **Bootstrap:** The first time a subscription syncs, the server returns a snapshot, then switches to incremental commits. For scale/performance details see [Bootstrap Deep Dive](/docs/concepts/first-sync).

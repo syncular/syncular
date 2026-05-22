@@ -49,7 +49,7 @@ These routes are relative to where you mount them.
 |---|---|---|
 | Sync route | `/api/sync` | Combined push/pull entrypoint |
 | Snapshot chunks | `/api/sync/snapshot-chunks/:chunkId` | Download paged bootstrap chunks |
-| Realtime | `/api/sync/realtime` | WebSocket wake-up channel |
+| Realtime | `/api/sync/realtime` | WebSocket verified deltas and pull-required wake-ups |
 | Blob routes | `/api/sync/blobs/*` | Binary upload/download flow |
 | Console routes | `/api/console/*` | Operator dashboards, forensics, and maintenance |
 

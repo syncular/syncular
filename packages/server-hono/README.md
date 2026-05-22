@@ -1,6 +1,6 @@
 # @syncular/server-hono
 
-Hono adapter for `@syncular/server`. Provides push/pull routes, WebSocket wake-ups and presence, blob routes, console API routes, and OpenAPI support.
+Hono adapter for `@syncular/server`. Provides push/pull routes, WebSocket realtime and presence, blob routes, console API routes, and OpenAPI support.
 
 ## Install
 

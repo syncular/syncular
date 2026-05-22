@@ -366,7 +366,7 @@ When the WebSocket connection drops, the client automatically falls back to poll
 
 ### Multi-instance broadcasting
 
-When running multiple server instances behind a load balancer, WebSocket wake-ups only reach the instance that received the push. Use a realtime broadcaster to distribute events:
+When running multiple server instances behind a load balancer, WebSocket realtime events only reach the instance that received the push. Use a realtime broadcaster to distribute events:
 
 ```typescript
 sync: {
@@ -391,7 +391,7 @@ For product catalogs, reference data, or other large read-heavy datasets:
 
 For real-time collaborative apps with frequent writes:
 
-1. **Enable realtime WebSocket** for instant wake-ups
+1. **Enable realtime WebSocket** for verified deltas and pull-required wake-ups
 2. **Keep `limitCommits` moderate** (50-100) for frequent small pulls
 3. **Enable compaction** with a short `fullHistoryHours` (6-24h)
 4. **Use optimistic concurrency** (`base_version`) to detect conflicts early
@@ -470,4 +470,4 @@ const outbox = useOutboxStats();
 
 - [Deployment](/docs/operate/deployment) - Deploy to production
 - [Schema Migrations](/docs/build/migrations) - Evolve your schema
-- [Realtime](/docs/build/realtime) - Configure WebSocket wake-ups
+- [Realtime](/docs/build/realtime) - Configure WebSocket realtime

@@ -1,7 +1,7 @@
 import type { SyncAuthLeaseCapabilities } from '@syncular/core';
 import { type BlobRef, createDatabase } from '@syncular/core';
 import type { Kysely } from 'kysely';
-import { createYjsServerPushPlugin } from '../../../../../../plugins/yjs/server/src';
+import { createYjsServerPushPlugin } from '../../../../../plugins/yjs/server/src';
 import {
   createSyncularAppDatabase,
   type SyncularAppDatabase,

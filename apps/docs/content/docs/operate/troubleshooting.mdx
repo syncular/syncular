@@ -94,7 +94,7 @@ Checklist:
 - Ensure the write is actually pushed (check outbox and sync status).
 - Ensure the server emitted changes for the correct scopes.
 - Ensure the other client has a subscription that matches those scopes.
-- If realtime is enabled, remember: WebSocket is a wake-up signal only — data still arrives via pull.
+- If realtime is enabled, check whether the server sent a verified delta or a pull-required wake-up. Pull-required events still recover through HTTP pull.
 
 In React, inspect:
 

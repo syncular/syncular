@@ -42,6 +42,7 @@
   },
   "dependencies": {
     "@syncular/client": "workspace:*",
+    "@syncular/core": "workspace:*",
     "@syncular/react": "workspace:*"
   },
   "peerDependencies": {
