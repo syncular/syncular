@@ -767,6 +767,32 @@ Decision:
   item, but this slice is enough to stop describing Rust outbox replay as
   active-session-only when `SYNCULAR_RUST_DURABLE_REOPEN=1` is used.
 
+## Slice 13 Online Binary-Pack Regression Watch
+
+Watch-only benchmark run on 2026-05-22:
+
+- Ran the current `online-propagation` scenario after the outbox batching and
+  durable-reopen benchmark slices.
+- No runtime change was made from this run.
+
+Verification:
+
+- `bun run bench:run -- --stack syncular-rust --scenario online-propagation`:
+  passed.
+
+Targeted external result:
+
+| Scenario | Run ID | Key result |
+| --- | --- | --- |
+| `online-propagation` | `2026-05-22T21-42-33-235Z` | reader visibility p50 `9.84ms`, p95 `21.73ms`; binary sync-pack applies `15/15`; pull-required recoveries `0`; binary apply p95 `2ms`; request count `30` |
+
+Decision:
+
+- No action. The binary realtime path is still active for this benchmark shape,
+  and the run does not report payload-size pressure or fallback recovery.
+- Keep direct websocket payload caps unchanged unless future runs report
+  non-null payload bytes with `payload-too-large` or binary apply failures.
+
 ## Next Action
 
 The unsupported benchmark rows are now covered by native Rust client behavior.
@@ -774,9 +800,6 @@ The next optimization slices should be evidence-gated and scoped:
 
 - Add a full browser-worker OPFS/process-restart lane if we need stronger
   durability evidence than the IndexedDB-compatible close/reopen probe.
-- Keep online-propagation on binary-pack regression watch; only tune direct
-  websocket payload caps if future runs report non-null `payloadBytes` and
-  `payload-too-large`.
 - If blob retry latency still matters, evaluate an explicit manual
   `retryNow`/online-event path instead of lowering automatic blob retry delay
   below `100ms`.

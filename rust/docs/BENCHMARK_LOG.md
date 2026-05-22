@@ -6767,3 +6767,31 @@ Decision:
 - Do not overclaim process-restart or browser OPFS durability from this slice.
   A full browser-worker OPFS/process-restart harness remains the stronger
   follow-up if product decisions need that exact evidence.
+
+## 2026-05-22 - WP-31 Online Binary-Pack Regression Watch
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change: watch-only run, no product/runtime change
+
+Verification:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+  bun run bench:run -- --stack syncular-rust --scenario online-propagation
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `online-propagation` | `2026-05-22T21-42-33-235Z` | reader visibility p50 `9.84ms`, p95 `21.73ms`; binary sync-pack applies `15/15`; pull-required recoveries `0`; binary apply p95 `2ms`; request count `30` |
+
+Decision:
+
+- No runtime change. The binary realtime path remains healthy and does not show
+  payload-size fallback pressure in this guard run.
