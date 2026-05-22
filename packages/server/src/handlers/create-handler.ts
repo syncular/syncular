@@ -34,8 +34,8 @@ import type {
   UpdateResult,
 } from 'kysely';
 import { sql } from 'kysely';
-import { rowScopesAllowed } from '../helpers/scope-authorization';
 import { coerceNumber } from '../dialect/helpers';
+import { rowScopesAllowed } from '../helpers/scope-authorization';
 import type { SyncCoreDb } from '../schema';
 import type {
   ApplyOperationResult,
@@ -99,7 +99,7 @@ function normalizeOutboundVersionColumn<Row>(
   if (row === null || typeof row !== 'object' || Array.isArray(row)) {
     return row;
   }
-  if (!Object.prototype.hasOwnProperty.call(row, versionColumn)) {
+  if (!Object.hasOwn(row, versionColumn)) {
     return row;
   }
   return {
