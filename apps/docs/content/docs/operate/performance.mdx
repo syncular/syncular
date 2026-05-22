@@ -30,7 +30,7 @@ Syncular is designed to handle datasets ranging from small personal apps to larg
 
 When a client subscribes to a scope for the first time (or after pruned history), it receives a **bootstrap snapshot** -- a full dump of the current data for that scope. For large datasets, embedding this in a single pull response would be slow and memory-intensive.
 
-Syncular uses **snapshot chunks**: the server encodes rows with `json-row-frame-v1`, compresses the payload with gzip, caches it, and returns chunk references in the pull response. The client then downloads chunks separately via `GET /sync/snapshot-chunks/:chunkId`.
+Syncular uses **snapshot chunks**: the server encodes rows with `binary-table-v1`, compresses the payload with gzip, caches it, and returns chunk references in the pull response. The client then downloads chunks separately via `GET /sync/snapshot-chunks/:chunkId`.
 
 The built-in HTTP transport automatically sends the subscription scope values back on chunk fetches via `X-Syncular-Snapshot-Scopes`. If you fetch chunk URLs manually, include that header with the same scope values from the pull response; chunk IDs are not treated as standalone bearer tokens.
 

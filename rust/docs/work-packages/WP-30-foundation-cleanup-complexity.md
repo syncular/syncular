@@ -481,3 +481,12 @@ fresh scan rather than continuing to chase the deleted JSON paths:
   - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang bun --cwd rust/bindings/javascript build:wasm:dev`:
     passed.
   - `git diff --check`: passed.
+- Updated product docs that still described snapshot chunks as
+  `json-row-frame-v1` + gzip. Glossary, performance, and troubleshooting docs
+  now describe the current `binary-table-v1` + gzip snapshot chunk format.
+- Gates:
+  - `rg -n "json-row-frame-v1|row-frame" apps/docs packages`: no matches.
+  - `bun --cwd apps/docs types:check`: passed.
+  - `bun --cwd apps/docs build`: passed.
+  - `bunx biome check <changed mdx>`: attempted; Biome ignores MDX files in
+    this repo, so no files were processed.

@@ -53,7 +53,7 @@ After [Bootstrap](#bootstrap), the client receives only [Commits](#commit) since
 
 ### Snapshot Chunk
 
-A compressed (`json-row-frame-v1` + gzip) bundle of one or more snapshot pages sent during [Bootstrap](#bootstrap). Chunks are cached on the server with a TTL and can be stored in external storage (S3, etc.) for large datasets.
+A compressed (`binary-table-v1` + gzip) bundle of one or more snapshot pages sent during [Bootstrap](#bootstrap). Chunks are cached on the server with a TTL and can be stored in external storage (S3, etc.) for large datasets.
 
 ---
 
