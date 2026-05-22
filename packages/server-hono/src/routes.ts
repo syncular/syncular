@@ -30,7 +30,6 @@ import {
   SyncAuthLeaseIssueRequestSchema,
   type SyncAuthLeaseIssueResponse,
   SyncAuthLeaseIssueResponseSchema,
-  type SyncChange,
   SyncCombinedRequestSchema,
   type SyncCombinedResponse,
   SyncCombinedResponseSchema,
@@ -60,7 +59,6 @@ import {
   coerceNumber,
   createServerHandlerCollection,
   createSyncRealtimeShardKey,
-  createWireSubscriptionIntegrity,
   InvalidSubscriptionScopeError,
   issueAuthLease,
   maybeCompactChanges,
@@ -96,6 +94,7 @@ import {
   DEFAULT_SYNC_RATE_LIMITS,
   type SyncRateLimitConfig,
 } from './rate-limit';
+import { notifyWebSocketConnectionsWithSyncPacks } from './realtime-sync-packs';
 import { syncValidator as zValidator } from './validation';
 import {
   isWebSocketOriginAllowed,
@@ -2334,21 +2333,36 @@ export function createSyncRoutes<
     }
 
     const combinedScopeKeys = Array.from(scopeKeys);
-    const syncPacksByOwnerKey = wsConnectionManager
-      ? await buildRealtimeSyncPacksForConnections({
-          ctx,
-          manager: wsConnectionManager,
-          scopeKeys: combinedScopeKeys,
-          latestCommitSeq,
-          emittedCommits,
-        })
-      : new Map<string, Uint8Array | undefined>();
-
     if (wsConnectionManager) {
-      wsConnectionManager.notifyScopeKeys(combinedScopeKeys, latestCommitSeq, {
+      await notifyWebSocketConnectionsWithSyncPacks({
+        manager: wsConnectionManager,
+        partitionId: ctx.partitionId,
+        scopeKeys: combinedScopeKeys,
+        cursor: latestCommitSeq,
+        commits: emittedCommits,
+        changeRowEncoders: binarySyncPackChangeRowEncoders,
         excludeClientIds: [ctx.clientId],
-        syncPackForConnection: (connection) =>
-          syncPacksByOwnerKey.get(connection.ownerKey),
+        onPackUnavailable: (event) => {
+          logSyncEvent({
+            event: 'sync.realtime.binary_pack_unavailable',
+            userId: ctx.auth.actorId,
+            clientId: ctx.clientId,
+            reason: event.reason,
+            subscriptionCount: event.subscriptionCount,
+            emittedCommitCount: event.emittedCommitCount,
+          });
+        },
+        onPackEncodeFailed: (event) => {
+          logAsyncFailureOnce('sync.realtime.binary_pack_encode_failed', {
+            event: 'sync.realtime.binary_pack_encode_failed',
+            userId: ctx.auth.actorId,
+            clientId: ctx.clientId,
+            error:
+              event.error instanceof Error
+                ? event.error.message
+                : String(event.error),
+          });
+        },
       });
     }
 
@@ -2373,178 +2387,6 @@ export function createSyncRoutes<
           });
         });
     }
-  }
-
-  async function buildRealtimeSyncPacksForConnections(args: {
-    ctx: PushExecutionContext;
-    manager: WebSocketConnectionManager;
-    scopeKeys: string[];
-    latestCommitSeq: number;
-    emittedCommits: SyncCommit[];
-  }): Promise<Map<string, Uint8Array | undefined>> {
-    const syncPacksByOwnerKey = new Map<string, Uint8Array | undefined>();
-    const ownerKeys = new Set<string>();
-    for (const connection of args.manager.getConnectionsForScopeKeys(
-      args.scopeKeys,
-      { excludeClientIds: [args.ctx.clientId] }
-    )) {
-      ownerKeys.add(connection.ownerKey);
-    }
-
-    await Promise.all(
-      Array.from(ownerKeys).map(async (ownerKey) => {
-        syncPacksByOwnerKey.set(
-          ownerKey,
-          await buildRealtimeSyncPackForOwner({ ...args, ownerKey })
-        );
-      })
-    );
-
-    return syncPacksByOwnerKey;
-  }
-
-  async function buildRealtimeSyncPackForOwner(args: {
-    ctx: PushExecutionContext;
-    manager: WebSocketConnectionManager;
-    ownerKey: string;
-    latestCommitSeq: number;
-    emittedCommits: SyncCommit[];
-  }): Promise<Uint8Array | undefined> {
-    const subscriptions = args.manager.getConnectionSubscriptions(
-      args.ownerKey
-    );
-    if (subscriptions.length === 0) {
-      logSyncEvent({
-        event: 'sync.realtime.binary_pack_unavailable',
-        userId: args.ctx.auth.actorId,
-        clientId: args.ctx.clientId,
-        reason: 'no_subscriptions',
-      });
-      return undefined;
-    }
-    if (args.emittedCommits.length === 0) {
-      logSyncEvent({
-        event: 'sync.realtime.binary_pack_unavailable',
-        userId: args.ctx.auth.actorId,
-        clientId: args.ctx.clientId,
-        reason: 'no_emitted_commits',
-      });
-      return undefined;
-    }
-
-    const responses: SyncPullSubscriptionResponse[] = [];
-    const rootUpdates: Array<{
-      subscriptionId: string;
-      cursor: number;
-      verifiedRoot: string;
-    }> = [];
-    for (const subscription of subscriptions) {
-      const commits = selectRealtimeCommitsForSubscription(
-        args.ctx.partitionId,
-        args.emittedCommits,
-        subscription
-      );
-      if (commits.length === 0) continue;
-
-      const integrity = await createWireSubscriptionIntegrity({
-        partitionId: args.ctx.partitionId,
-        subscriptionId: subscription.id,
-        previousRoot: subscription.verifiedRoot,
-        commits,
-      });
-      const nextCursor = Math.max(args.latestCommitSeq, subscription.cursor);
-      if (integrity) {
-        rootUpdates.push({
-          subscriptionId: subscription.id,
-          cursor: nextCursor,
-          verifiedRoot: integrity.commitChainRoot,
-        });
-      }
-
-      responses.push({
-        id: subscription.id,
-        status: 'active',
-        scopes: subscription.scopes,
-        bootstrap: false,
-        bootstrapState: null,
-        nextCursor,
-        ...(integrity ? { integrity } : {}),
-        commits,
-      });
-    }
-
-    if (responses.length === 0) {
-      logSyncEvent({
-        event: 'sync.realtime.binary_pack_unavailable',
-        userId: args.ctx.auth.actorId,
-        clientId: args.ctx.clientId,
-        reason: 'no_matching_subscription_commits',
-        subscriptionCount: subscriptions.length,
-        emittedCommitCount: args.emittedCommits.length,
-      });
-      return undefined;
-    }
-
-    try {
-      const bytes = encodeBinarySyncPack(
-        {
-          ok: true as const,
-          pull: {
-            ok: true as const,
-            subscriptions: responses,
-          },
-        },
-        {
-          changeRowEncoders: binarySyncPackChangeRowEncoders,
-        }
-      );
-      args.manager.updateConnectionSubscriptionRoots(
-        args.ownerKey,
-        rootUpdates
-      );
-      return bytes;
-    } catch (error) {
-      logAsyncFailureOnce('sync.realtime.binary_pack_encode_failed', {
-        event: 'sync.realtime.binary_pack_encode_failed',
-        userId: args.ctx.auth.actorId,
-        clientId: args.ctx.clientId,
-        error: error instanceof Error ? error.message : String(error),
-      });
-      return undefined;
-    }
-  }
-
-  function selectRealtimeCommitsForSubscription(
-    partitionId: string,
-    commits: readonly SyncCommit[],
-    subscription: WebSocketRealtimeSubscription
-  ): SyncCommit[] {
-    const scopeKeys = new Set(subscription.scopeKeys);
-    if (scopeKeys.size === 0) return [];
-
-    const selected: SyncCommit[] = [];
-    for (const commit of commits) {
-      const changes = commit.changes.filter((change) =>
-        changeMatchesRealtimeSubscription(partitionId, change, scopeKeys)
-      );
-      if (changes.length === 0) continue;
-      selected.push({ ...commit, changes });
-    }
-    return selected;
-  }
-
-  function changeMatchesRealtimeSubscription(
-    partitionId: string,
-    change: SyncChange,
-    scopeKeys: Set<string>
-  ): boolean {
-    for (const scopeKey of applyPartitionToScopeKeys(
-      partitionId,
-      scopeValuesToScopeKeys(change.scopes)
-    )) {
-      if (scopeKeys.has(scopeKey)) return true;
-    }
-    return false;
   }
 
   function buildRealtimeSubscriptionsForPull(args: {

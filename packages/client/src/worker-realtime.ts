@@ -311,7 +311,7 @@ export class SyncularWorkerRealtimeController {
     );
     const jitterRatio = Math.max(0, this.#options?.reconnectJitterRatio ?? 0);
     const jitter = baseDelay * jitterRatio * this.#random();
-    const delay = baseDelay + jitter;
+    const delay = Math.min(baseDelay + jitter, max);
     this.#diagnostic({
       level: 'info',
       code: 'realtime.reconnect_scheduled',

@@ -1,6 +1,6 @@
 # WP-32 Realtime Recovery Fanout And External Notification Payloads
 
-Status: `[ ]` planned, depends on WP-04, WP-28, WP-31
+Status: `[~]` in progress, depends on WP-04, WP-28, WP-31
 
 ## Goal
 
@@ -171,15 +171,56 @@ SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indiana
   - relay app semantics remain TypeScript/Kysely-owned;
   - new Rust relay/server production work needs concrete load evidence and a
     scoped binary/protocol target.
+- Slice 1 retained a TypeScript/Hono helper for payload-rich external row-change
+  notifications:
+  - shared normal push and external notification binary pack construction in
+    `@syncular/server-hono`;
+  - external benchmark `/benchmark/external-write` now builds a scoped binary
+    sync-pack from the synthetic external `SyncCommit`;
+  - client reconnect jitter is capped at `maxReconnectDelayMs`, which is the
+    expected meaning of the option and prevents jitter from exceeding the
+    configured ceiling.
+- Slice 1 current same-machine external evidence:
+  - baseline before the helper, run `2026-05-22T14-17-01-204Z`:
+    `25` clients converged in `129.34ms` with `50` requests and `0` binary
+    applies; `125` clients converged in `2009.92ms` with `250` requests and
+    `0` binary applies;
+  - retained helper, run `2026-05-22T14-43-40-460Z`: `25` clients converged in
+    `39.91ms` with visible p95 `39.73ms`, `25` requests, and `25/25` binary
+    applies; `125` clients converged in `89.14ms` with visible p95 `86.33ms`,
+    `125` requests, and `125/125` binary applies;
+  - retained helper at `250` clients remains unstable in this Bun/Docker worker
+    harness: run `2026-05-22T14-41-55-010Z` applied `250/250` binary packs and
+    kept requests at `250`, but visible p95 was still `2026.47ms`;
+    an earlier capped-delay run `2026-05-22T14-30-05-705Z` had visible p95
+    `249.78ms` but p99 `2044.39ms`, so the tail is not solved.
+- Rejected client-only experiment:
+  - gating reconnect catch-up on `hello.requiresSync` removed the immediate
+    reconnect pull, but after a sync-service restart the server has lost
+    in-memory subscription roots; external notifications then cannot build
+    binary packs and fall back to cursor-only `server-wakeup` frames;
+  - run `2026-05-22T14-36-14-730Z` regressed to `0/250` binary applies,
+    `250` pull-required `server-wakeup` recoveries, and visible p95
+    `2030.24ms`;
+  - keep the immediate reconnect catch-up pull for correctness and to
+    repopulate realtime subscription metadata after process restart.
+- Online propagation regression guard stayed healthy after the helper:
+  - run `2026-05-22T14-45-03-883Z`: reader visibility p50 `9.34ms`, p95
+    `12.28ms`, `15/15` binary applies, `0` pull recoveries.
 
 ## Next Action
 
-Start with measurement, not implementation:
+The next slice should target the remaining `250`-client tail without client-only
+retry tuning:
 
-1. Re-run the accepted WP-31 worker realtime reconnect baseline on the current
-   branch server.
-2. Add server/realtime timing buckets for cursor-only external notifications
-   and recovery pulls.
-3. Prototype the smallest TypeScript/Hono binary external-notification or
-   coalesced-recovery candidate.
-4. Keep or reject based on `25`/`125`/`250` external benchmark evidence.
+1. Persist or reconstruct enough realtime subscription metadata across
+   sync-service restarts to build binary reconnect/external packs before each
+   client performs an HTTP pull.
+2. Add timing buckets for reconnect establishment and pack availability reasons
+   (`no_subscriptions`, missing roots, encode failure, payload too large) so the
+   `250` tail can be split into connection timing, subscription metadata, and
+   HTTP pull recovery.
+3. Evaluate a bounded replay/recovery artifact keyed by compatible
+   subscription shape. Keep TypeScript/Kysely app semantics in place; consider
+   Rust only for byte-preserving protocol encode/validate if the timing buckets
+   show binary protocol work is the hot path.

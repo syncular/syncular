@@ -983,17 +983,21 @@ read-only review:
     relay/server component WP is retained from this evidence; relay app
     semantics stay TypeScript/Kysely-owned unless a future product decision and
     new measurements say otherwise.
-- `[ ]` [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](work-packages/WP-32-realtime-recovery-fanout-external-notifications.md)
+- `[~]` [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](work-packages/WP-32-realtime-recovery-fanout-external-notifications.md)
   - Created from WP-31 reconnect-storm evidence, not from WP-28 protocol
-    validation. Worker realtime reconnect is now correct and fast at `125`
-    clients (`216.12ms`), but the `250`-client external-write lane still hits
-    about `2s` because cursor-only `server-wakeup` frames force hundreds of
-    similar HTTP recovery pulls. WP-32 starts with measurement, then evaluates
-    binary external-notification payloads, bounded recovery replay, and
-    server-side recovery coalescing. Rust may be considered only for a
-    byte-preserving protocol helper after the TypeScript/Hono server shape is
-    measured; table handlers, scope resolution, mutation apply, relay storage,
-    and other app semantics remain TypeScript/Kysely-owned.
+    validation. Slice 1 retained TypeScript/Hono binary sync-pack construction
+    for known external row-change commits and capped reconnect jitter at the
+    configured maximum. Same-machine reconnect runs now apply binary external
+    packs at `25/25` and `125/125`, dropping those lanes to `39.91ms` and
+    `89.14ms` convergence with one reconnect pull per client; online propagation
+    stays on `15/15` binary applies with p95 `12.28ms`. The `250`-client lane
+    still has an unstable approximately `2s` tail, and a client-only
+    hello-gated reconnect experiment was rejected because process restart loses
+    in-memory subscription roots and forces cursor-only `server-wakeup`
+    recovery. Next WP-32 slices should persist/reconstruct realtime
+    subscription metadata or add bounded recovery replay/fanout. Rust remains
+    limited to a future byte-preserving protocol helper if timing buckets prove
+    it is useful; app semantics stay TypeScript/Kysely-owned.
 
 ## Blocked / External
 

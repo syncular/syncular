@@ -588,7 +588,7 @@ describe('Syncular worker realtime', () => {
     controller.start({
       heartbeatTimeoutMs: 0,
       initialReconnectDelayMs: 100,
-      maxReconnectDelayMs: 100,
+      maxReconnectDelayMs: 200,
       reconnectJitterRatio: 0.5,
     });
 
@@ -600,6 +600,50 @@ describe('Syncular worker realtime', () => {
         baseDelayMs: 100,
         jitterMs: 25,
         delayMs: 125,
+      },
+    });
+  });
+
+  it('caps jittered reconnect delay at the configured maximum', () => {
+    const client = new FakeRealtimeClient();
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    let scheduledDelay: number | undefined;
+    const controller = new SyncularWorkerRealtimeController({
+      getClient: () => client,
+      getConfig: () => ({
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client-1',
+      }),
+      getLocationOrigin: () => 'https://app.example',
+      createWebSocket: () => {
+        throw new Error('socket unavailable');
+      },
+      postEvent: () => {},
+      postDiagnostic: (event) =>
+        diagnostics.push({ ...event, at: event.at ?? Date.now() }),
+      random: () => 1,
+      setTimeout: ((handler, timeout) => {
+        scheduledDelay = Number(timeout);
+        return setTimeout(handler, 1);
+      }) as typeof setTimeout,
+    });
+
+    controller.start({
+      heartbeatTimeoutMs: 0,
+      initialReconnectDelayMs: 100,
+      maxReconnectDelayMs: 120,
+      reconnectJitterRatio: 10,
+    });
+
+    controller.stop();
+    expect(scheduledDelay).toBe(120);
+    expect(diagnostics[1]).toMatchObject({
+      code: 'realtime.reconnect_scheduled',
+      details: {
+        baseDelayMs: 100,
+        jitterMs: 1000,
+        delayMs: 120,
       },
     });
   });
