@@ -188,10 +188,15 @@ read-only review:
     large queue is exhausted. Same-session large-offline-queue control improved
     `500` writes from `1307.71ms` to `779.54ms` and `1000` writes from
     `2486.82ms` to `1887.19ms`, both with `80%` fewer requests; explicit
-    `outboxBatchLimit` remains a fixed override. Remaining WP-31 client-side
-    follow-ups are browser-worker durable storage benchmarking, online
-    binary-pack regression watch, and optional explicit blob
-    `retryNow`/online-event retry evaluation.
+    `outboxBatchLimit` remains a fixed override. Slice 12 adds an opt-in
+    `SYNCULAR_RUST_DURABLE_REOPEN=1` IndexedDB-compatible reopen probe: offline
+    replay keeps `10` pending outbox commits and `10` local title changes across
+    close/reopen before draining to `10` acked commits, and the `100`-write
+    large queue keeps `100` pending commits and local title changes across the
+    same reopen. Remaining WP-31 client-side follow-ups are a full
+    browser-worker OPFS/process-restart harness if needed, online binary-pack
+    regression watch, and optional explicit blob `retryNow`/online-event retry
+    evaluation.
 - `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table
