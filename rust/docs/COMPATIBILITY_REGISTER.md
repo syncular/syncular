@@ -78,6 +78,7 @@ exception.
 | Testkit sync change type alias | `Removed` | `packages/testkit/src/sync-response.ts` | Removed `SyncChangeRecord`; testkit helpers now return the canonical `SyncChange` type from `@syncular/core` |
 | Host JSON CRDT snake_case aliases | `Removed` | `rust/crates/runtime/src/core`, `rust/crates/runtime/src/native`, `rust/crates/runtime/src/web` | Native/browser host CRDT request JSON now accepts the generated camelCase shape only (`rowId`, `nextText`, `minUncheckpointedUpdates`, `serverPayload`, `stateColumn`, `containerKey`, `rowIdField`) instead of carrying duplicate snake_case aliases |
 | Old websocket bootstrap timing field alias | `Removed` | `rust/crates/runtime/src/transport/web.rs` | Runtime timing parsing now reads the current server `binaryEncodeMs` field directly instead of also accepting the old `snapshotBinaryEncodeMs` spelling |
+| Realtime binary fallback diagnostic wording | `Removed` | `packages/client/src/worker-realtime.ts`, realtime browser tests | Binary sync-pack apply failure is now reported as `realtime.binary_apply_failed` followed by HTTP pull recovery, not as a generic fallback branch |
 
 ## Items That Are Not Compatibility Debt
 

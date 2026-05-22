@@ -445,9 +445,9 @@ export class SyncularV2WorkerRealtimeController {
       } catch {
         this.#diagnostic({
           level: 'warn',
-          code: 'realtime.binary_fallback',
+          code: 'realtime.binary_apply_failed',
           message:
-            'Syncular v2 realtime binary sync-pack apply failed; falling back to pull',
+            'Syncular v2 realtime binary sync-pack apply failed; using HTTP pull recovery',
           details: {
             bytes: message.syncPackBytes.byteLength,
           },
@@ -462,7 +462,7 @@ export class SyncularV2WorkerRealtimeController {
       ...syncularV2DiagnosticAttemptFields(syncAttempt),
       details: {
         cursor: message?.cursor ?? null,
-        reason: message?.syncPackBytes ? 'binary-fallback' : null,
+        reason: message?.syncPackBytes ? 'binary-apply-failed' : null,
         droppedCount: message?.droppedCount ?? 0,
       },
     });

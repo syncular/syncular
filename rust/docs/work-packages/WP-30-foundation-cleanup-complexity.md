@@ -325,3 +325,12 @@ current Rust-first path no longer needs them.
   - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang bun --cwd rust/bindings/javascript build:wasm:dev`:
     passed.
   - `bun --cwd packages/client test`: passed, `110` tests.
+- Renamed the browser realtime binary-apply recovery diagnostic from
+  `realtime.binary_fallback` / `binary-fallback` to
+  `realtime.binary_apply_failed` / `binary-apply-failed`; the behavior is HTTP
+  pull recovery after a failed binary apply, not a protocol compatibility
+  fallback.
+- Gates:
+  - `bunx biome check packages/client/src/worker-realtime.ts packages/client/src/__tests__/realtime-hono.wasm.test.ts`:
+    passed.
+  - `bun --cwd packages/client test`: passed, `110` tests.
