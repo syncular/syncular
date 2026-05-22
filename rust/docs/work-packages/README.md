@@ -49,3 +49,4 @@ to this shape.
 26. [`WP-26 TypeScript Host Bindings And Platform Bridges`](WP-26-typescript-host-bindings-platform-bridges.md)
 27. [`WP-27 Rust Relay Protocol Boundary`](WP-27-rust-relay-protocol-boundary.md)
 28. [`WP-28 Relay Rust Evaluation And Protocol Validation`](WP-28-relay-production-protocol-validation.md)
+29. [`WP-29 Rust Client Console Workbench`](WP-29-rust-client-console-workbench.md)
