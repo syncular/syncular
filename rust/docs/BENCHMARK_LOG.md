@@ -84,6 +84,73 @@ Notes:
   app type errors against published Syncular package declarations. A filtered
   check reported no `syncular-rust` adapter errors.
 
+## 2026-05-22 - WP-31 Browser Worker OPFS Process-Restart Durability
+
+External benchmark commit: `c339ee1` (`Add Rust browser OPFS durability benchmark`)
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change measured:
+
+- Added an opt-in external benchmark lane for `syncular-rust` offline replay
+  that runs the current workspace Rust web client in a real headless Chrome
+  worker with `opfsSahPool` storage.
+- Restarted the browser process between bootstrap, offline queueing, and replay
+  while reusing the same Chrome profile/SQLite file.
+- Added benchmark-server CORS coverage for localhost browser origins and the
+  benchmark auth/timing headers used by the Rust browser transport.
+
+Command:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd rust/bindings/javascript build:wasm
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_RUST_BROWSER_DURABLE_REOPEN=1 \
+  bun run bench:run -- --stack syncular-rust --scenario offline-replay
+```
+
+Previous accepted:
+
+- IndexedDB-compatible Bun close/reopen probe
+  `2026-05-22T21-38-53-388Z`: reopened outbox `10` unresolved / `10`
+  pending, reopened matching titles `10`, replay convergence `64.01ms`, final
+  outbox `10` acked.
+
+Candidate:
+
+- Browser OPFS process-restart run `2026-05-22T22-15-40-625Z`: storage
+  `opfsSahPool`, storage fallback `null`, browser process restart `1`,
+  reopened outbox `10` unresolved / `10` pending, reopened matching titles
+  `10`, replay convergence `110.2ms`, final outbox `10` acked / `0` unresolved,
+  success rate `1.0`, requests `2`, bytes `7879`, bootstrap `50.5ms`, queue
+  `33ms`.
+
+Delta:
+
+- Stronger environment evidence: real Chrome worker plus OPFS survives browser
+  process restarts. The prior Bun probe remains faster but did not exercise the
+  browser worker or OPFS storage path.
+
+Decision:
+
+- Retain the opt-in browser durability lane and keep the default comparison
+  lane unchanged.
+- Use `SYNCULAR_RUST_BROWSER_DURABLE_REOPEN=1` for future browser/process
+  restart durability verification.
+
+Notes:
+
+- `bunx tsc --noEmit --pretty false` in `offline-sync-bench` remains blocked by
+  the existing stack-app package export mismatch against published
+  `@syncular/server` packages; no new Rust adapter type errors were reported
+  before those stack-app errors.
+
 ## 2026-05-21 - External Local Base Contract Guard Not Accepted As New Baseline
 
 Commit: `eaba97a3` (`Expose generated local base schema`)
