@@ -113,6 +113,9 @@ read-only review:
     `binary-table-v1`, while the remaining JSON row-frame decision is scoped to
     explicit server/core negotiation and fixtures. Unspecified server pulls now
     default to `binary-table-v1` snapshot chunks instead of JSON row frames.
+    Unspecified combined sync responses now default to `binary-sync-pack-v1`;
+    JSON sync-pack output remains only for explicit negotiation and protocol
+    fixture/debug coverage.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,
