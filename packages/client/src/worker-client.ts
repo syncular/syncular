@@ -32,6 +32,7 @@ import type {
   SyncularBlobCacheStats,
   SyncularBlobEncryptionConfig,
   SyncularBlobStoreOptions,
+  SyncularBlobUploadQueueProcessOptions,
   SyncularBlobUploadQueueStats,
   SyncularBootstrapStatus,
   SyncularBuildYjsTextUpdateArgs,
@@ -800,7 +801,9 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
     return local;
   }
 
-  async processBlobUploadQueue(): Promise<{
+  async processBlobUploadQueue(
+    options?: SyncularBlobUploadQueueProcessOptions
+  ): Promise<{
     uploaded: number;
     failed: number;
   }> {
@@ -814,7 +817,7 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
     const result = await this.#requestWithAuthRetry<{
       uploaded: number;
       failed: number;
-    }>({ type: 'processBlobUploadQueue' }, 'blobInitiateUpload');
+    }>({ type: 'processBlobUploadQueue', options }, 'blobInitiateUpload');
     if (observeBlobEvents) {
       const after = await this.#readBlobOutboxRows().catch(() => []);
       this.#emitBlobUploadEvents(before, after);

@@ -205,6 +205,39 @@ describe('Syncular Rust-owned SQLite blobs against Hono routes', () => {
     );
   });
 
+  it('can retry interrupted queued blob uploads immediately when requested', async () => {
+    const { client } = await openBlobHarness({
+      clientId: `${BLOB_SCENARIO.interruptedUploadClientId}-retry-now`,
+      failDirectUploadAttempts: 1,
+    });
+
+    await client.storeBlob(
+      new TextEncoder().encode(BLOB_SCENARIO.interruptedUploadText),
+      {
+        mimeType: BLOB_SCENARIO.textMimeType,
+      }
+    );
+
+    await expect(client.processBlobUploadQueue()).resolves.toEqual(
+      BLOB_SCENARIO.expectedProcessRetryableFailure
+    );
+    expect(await client.blobUploadQueueStats()).toEqual(
+      BLOB_SCENARIO.expectedUploadQueueBefore
+    );
+
+    await expect(client.processBlobUploadQueue()).resolves.toEqual({
+      uploaded: 0,
+      failed: 0,
+    });
+
+    await expect(
+      client.processBlobUploadQueue({ retryNow: true })
+    ).resolves.toEqual(BLOB_SCENARIO.expectedProcessUploaded);
+    expect(await client.blobUploadQueueStats()).toEqual(
+      BLOB_SCENARIO.expectedUploadQueueAfter
+    );
+  });
+
   it('rejects missing remote blobs without caching them locally', async () => {
     const { client } = await openBlobHarness({
       clientId: BLOB_SCENARIO.missingClientId,

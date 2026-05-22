@@ -195,10 +195,13 @@ read-only review:
     large queue keeps `100` pending commits and local title changes across the
     same reopen. Slice 13 records a watch-only online binary-pack guard:
     `15/15` reader realtime sync-packs applied through the binary path, with
-    `0` pull-required recoveries and p95 visibility `21.73ms`. Remaining WP-31
-    client-side follow-ups are a full browser-worker OPFS/process-restart
-    harness if needed and optional explicit blob `retryNow`/online-event retry
-    evaluation.
+    `0` pull-required recoveries and p95 visibility `21.73ms`. Slice 14 adds
+    explicit blob upload `retryNow` processing for manual or online-triggered
+    recovery without lowering the automatic `100ms` blob retry backoff; the
+    `blob-flow` retry lane improves from `115.64ms` over `2` queue attempts to
+    `13.15ms` over `1` attempt. Remaining WP-31 client-side follow-up is a full
+    browser-worker OPFS/process-restart harness if stronger durability evidence
+    is needed.
 - `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table

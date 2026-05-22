@@ -404,8 +404,8 @@ function createBridgeBlobs(bridge: SyncularBridge): SyncularBlobClientLike {
         uploading: 0,
         failed: 0,
       },
-    processUploadQueue: async () =>
-      bridge.blobs?.processUploadQueue?.() ?? { uploaded: 0, failed: 0 },
+    processUploadQueue: async (options) =>
+      bridge.blobs?.processUploadQueue?.(options) ?? { uploaded: 0, failed: 0 },
     retrieve:
       bridge.blobs?.retrieve ??
       (async () => {

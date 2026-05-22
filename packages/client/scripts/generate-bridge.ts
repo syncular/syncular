@@ -266,7 +266,8 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'processBlobUploadQueue',
-    dispatch: 'context.requireClient().processBlobUploadQueue()',
+    fields: ['options?: SyncularBlobUploadQueueProcessOptions;'],
+    dispatch: 'context.requireClient().processBlobUploadQueue(request.options)',
     abortable: true,
     diagnostic: true,
     diagnosticSource: 'blob',
@@ -428,23 +429,26 @@ function requestVariant(command: WorkerCommand): string {
     '  | {',
     '      id: number;',
     '      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;',
-    `      type: ${JSON.stringify(command.type)};`,
+    `      type: ${tsString(command.type)};`,
     ...fields.map((field) => `      ${field}`),
     '    }',
   ].join('\n');
 }
 
+function tsString(value: string): string {
+  return `'${value.replace(/\\/g, '\\\\').replace(/'/g, "\\'")}'`;
+}
+
 function stringArray(values: readonly string[]): string {
-  return `[${values.map((value) => JSON.stringify(value)).join(', ')}]`;
+  if (values.length === 0) return '[]';
+  return `[\n${values.map((value) => `  ${tsString(value)},`).join('\n')}\n]`;
 }
 
 function record(values: Record<string, string>): string {
   const entries = Object.entries(values);
   if (entries.length === 0) return '{}';
   return `{\n${entries
-    .map(
-      ([key, value]) => `  ${JSON.stringify(key)}: ${JSON.stringify(value)},`
-    )
+    .map(([key, value]) => `  ${key}: ${tsString(value)},`)
     .join('\n')}\n}`;
 }
 
@@ -470,11 +474,12 @@ import type { BlobRef, SyncOperation } from '@syncular/core';
 import type {
   SyncularApplyYjsEnvelopeToPayloadArgs,
   SyncularApplyYjsTextUpdatesArgs,
-  SyncularBuildYjsTextUpdateArgs,
   SyncularAuthHeaders,
   SyncularAuthLeaseRecord,
   SyncularBlobEncryptionConfig,
   SyncularBlobStoreOptions,
+  SyncularBlobUploadQueueProcessOptions,
+  SyncularBuildYjsTextUpdateArgs,
   SyncularClientConfig,
   SyncularConflictResolution,
   SyncularCrdtFieldCompactionRequest,
@@ -506,6 +511,8 @@ export type SyncularWorkerRealtimeOptions = {
   initialReconnectDelayMs?: number;
   maxReconnectDelayMs?: number;
   reconnectBackoffFactor?: number;
+  reconnectJitterRatio?: number;
+  pullRecoveryJitterMs?: number;
   heartbeatTimeoutMs?: number;
 };
 
@@ -572,7 +579,7 @@ export async function dispatchGeneratedSyncularWorkerRequest(
   switch (request.type) {
 ${dispatchable
   .map(
-    (command) => `    case ${JSON.stringify(command.type)}:
+    (command) => `    case ${tsString(command.type)}:
       return ${command.dispatch};`
   )
   .join('\n')}

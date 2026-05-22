@@ -223,6 +223,10 @@ export interface SyncularDatabaseSyncOptions {
   blobUploadDebounceMs?: number | false;
 }
 
+export interface SyncularBlobUploadQueueProcessOptions {
+  retryNow?: boolean;
+}
+
 export interface SyncularConsoleDiagnosticsOptions {
   enabled?: boolean;
   endpoint?: string;
@@ -1151,7 +1155,9 @@ export interface SyncularBlobs {
   retrieve(ref: BlobRef): Promise<Uint8Array>;
   isLocal(hash: string): Promise<boolean>;
   preload(refs: readonly BlobRef[]): Promise<void>;
-  processUploadQueue(): Promise<{ uploaded: number; failed: number }>;
+  processUploadQueue(
+    options?: SyncularBlobUploadQueueProcessOptions
+  ): Promise<{ uploaded: number; failed: number }>;
   getUploadQueueStats(): Promise<SyncularBlobUploadQueueStats>;
   getCacheStats(): Promise<SyncularBlobCacheStats>;
   pruneCache(maxBytes?: number): Promise<number>;
@@ -1217,7 +1223,9 @@ export interface SyncularRuntimeClient extends SyncularSqlClient {
   ): Promise<BlobRef>;
   retrieveBlob(ref: BlobRef): Promise<Uint8Array>;
   isBlobLocal(hash: string): Promise<boolean>;
-  processBlobUploadQueue(): Promise<{ uploaded: number; failed: number }>;
+  processBlobUploadQueue(
+    options?: SyncularBlobUploadQueueProcessOptions
+  ): Promise<{ uploaded: number; failed: number }>;
   blobUploadQueueStats(): Promise<SyncularBlobUploadQueueStats>;
   blobCacheStats(): Promise<SyncularBlobCacheStats>;
   pruneBlobCache(maxBytes?: number): Promise<number>;

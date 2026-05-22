@@ -6,6 +6,7 @@ import { browserSyncularNetworkStatusSource } from './network';
 import type {
   CreateSyncularDatabaseOptions,
   SyncularAuthLeaseRecord,
+  SyncularBlobUploadQueueProcessOptions,
   SyncularBlobUploadQueueStats,
   SyncularClientEventSink,
   SyncularClientEventType,
@@ -91,7 +92,9 @@ export interface SyncularClient<DB> extends SyncularManagedClient<DB> {
 
 export interface SyncularBlobClientLike {
   getUploadQueueStats(): Promise<SyncularBlobUploadQueueStats>;
-  processUploadQueue(): Promise<{ uploaded: number; failed: number }>;
+  processUploadQueue(
+    options?: SyncularBlobUploadQueueProcessOptions
+  ): Promise<{ uploaded: number; failed: number }>;
   retrieve(ref: BlobRef): Promise<Uint8Array>;
 }
 
