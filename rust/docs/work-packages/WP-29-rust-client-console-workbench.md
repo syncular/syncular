@@ -1,6 +1,6 @@
 # WP-29 Rust Client Console Workbench
 
-Status: `[~] Slice 1 persistence retained; browser smoke still pending`
+Status: `[x]` Slice 1 persistence accepted; future workbench workflows deferred
 
 ## Goal
 
@@ -459,29 +459,38 @@ API additions should be typed and redacted:
   - `bun --cwd packages/server-dialect-postgres tsgo`
   - `bunx biome check` on the touched server, dialect, console, and UI files
   - `git diff --check`
-- Browser smoke is the remaining local verification gap for this slice. An
-  isolated demo was started on `5174/4102`, but the in-app browser profile was
-  already locked by another process and standalone Playwright is not installed
-  in this workspace, so `/fleet` and `/fleet/:clientId` still need a browser
-  smoke before Slice 1 is marked accepted.
-- Remaining evidence gaps:
-  - browser UX verification for the retained history UI is still pending;
-  - Stream filters are not URL-first and attempts are not a first-class unit;
-  - RowInvestigation does not yet include client-local health/support evidence;
-  - local repair/reset/support-bundle APIs are not presented as a guided console
-    workflow;
-  - demo/testkit failure scenarios are not broad enough to validate the console
-    as an operator tool.
+- Browser smoke for Slice 1 passed on 2026-05-23:
+  - existing demo sync/console API: `http://127.0.0.1:4101`;
+  - console UI dev server: `http://127.0.0.1:3000`;
+  - configured console connection with server URL `http://127.0.0.1:4101` and
+    token `demo-console`;
+  - `/fleet` rendered `demo-left` and `demo-right`, runtime freshness/health
+    evidence, and no failed-load copy;
+  - `/fleet/demo-left` rendered Rust runtime details, `@syncular/client`,
+    `indexedDb` storage, recent diagnostic codes, snapshot history, and recent
+    client timeline evidence;
+  - independent page loads reported no browser warnings/errors and no
+    horizontal overflow at the tested desktop viewport.
+- Added a console dev/static SVG favicon link so the smoke does not carry a
+  browser-level favicon `404` warning.
+- Final closeout gates:
+  - `bun --cwd packages/console build:web`: passed;
+  - `bun --cwd packages/console tsgo`: passed;
+  - `bun test packages/console/src/__tests__/static-server.test.ts`: passed;
+  - `git diff --check`: passed;
+  - `bunx biome check` on touched HTML/SVG/Markdown paths was attempted, but
+    those paths are ignored by this repo's Biome config.
 
-## Next Action
+## Closeout
 
-Finish Slice 1 by running the browser smoke once an isolated browser is
-available: open `/fleet`, one `/fleet/:clientId`, and confirm retained runtime
-history renders without console errors or layout overlap.
+Slice 1 is accepted. The console now has persisted, redacted Rust runtime
+diagnostic history with Fleet and ClientDetails browser evidence.
 
-After that, move to Slice 2 only if Slice 1 browser evidence is accepted:
+Future workbench workflows should be separate evidence-gated work packages:
 attempt correlation should add explicit missing-data markers rather than
-guessing causality from time windows.
+guessing causality from time windows; RowInvestigation can later include
+client-local health/support evidence; and repair/reset/support-bundle workflows
+should stay out of this accepted slice.
 
 Do not begin remote client repair execution in this slice. The console first
 needs durable evidence and stable links before it should grow higher-risk
