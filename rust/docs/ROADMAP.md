@@ -427,17 +427,20 @@ read-only review:
     runtime CRDT field coverage for convergence, encrypted fields, compaction,
     and duplicate/reordered delivery; heavier browser-Hono and native lanes are
     available through the same runner.
-- `[!]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
+- `[x]` [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
   - Swift/Kotlin/JVM generated clients, BoltFFI host wrappers, native event
     streams, command-line lifecycle smokes, Hono server sync smokes, and real
     iOS/Android lifecycle app-shell fixtures exist. Root scripts now expose the
     app-shell lifecycle lanes directly (`rust:native:lifecycle:*`) and the
     conformance runner has an explicit `--native-app-shell` mode so these do
-    not stay hidden behind reference docs. No local macOS work remains for the
-    current acceptance criteria; Windows JVM packaging is blocked on a real
-    Windows host/runner lane. Latest local gates passed:
+    not stay hidden behind reference docs. The Windows JVM packaging lane now
+    passes on a real GitHub `windows-latest` runner, after the packaging script
+    learned to write Windows-native BoltFFI overlay paths under Git Bash.
+    Latest gates passed:
     `bun run rust:native:lifecycle:ios`, `bun run rust:conformance:native`,
-    and `bun run rust:native:lifecycle:android`.
+    `bun run rust:native:lifecycle:android`,
+    `bun run rust:native:package:java:linux`, and GitHub workflow run
+    `26260787975` job `rust-windows-jvm-package`.
 - `[x]` [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
   - The release full Rust-owned SQLite WASM size gate is green again after
     retaining the Rust release profile with LTO, one codegen unit, and
