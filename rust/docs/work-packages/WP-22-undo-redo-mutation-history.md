@@ -84,6 +84,18 @@ First browser/generated-client slice is implemented:
 - Browser generated-client coverage now includes `update -> undo -> redo`,
   insert undo/redo, hard-delete undo/redo, soft-delete undo/redo, and grouped
   multi-row commits. The update proof verifies three normal mutation intents.
+- The local demo app exposes per-client undo/redo controls backed by generated
+  `database.commandHistory`, then syncs the compensating command through the
+  same normal mutation/outbox path used by app writes.
+- Browser replay now allows row-lifecycle undo/redo for CRDT-backed rows, such
+  as inserting/deleting a task with a CRDT title, because the inverse is a
+  create/delete of the row rather than an attempt to merge field-level CRDT
+  state.
+- Browser stale-row comparison ignores server-ack metadata
+  (`server_version`) and CRDT state columns so a synced local write can still
+  be undone/redone when the user-visible row fields are unchanged.
+- Existing-row blob, encrypted, and CRDT logical/state field changes still
+  fail closed with stable `sync.command_history_unsafe_field`.
 
 Native/Rust parity foundation is implemented:
 
@@ -106,10 +118,12 @@ Native/Rust parity foundation is implemented:
   column.
 - Rust coverage proves undo-generated commits persist server push conflicts
   through the normal conflict table/path.
-- Current field-class decision: blob columns, encrypted fields, CRDT logical
-  fields, and CRDT state columns are not automatically inverted. Replay rejects
-  commands that changed those fields with
+- Current field-class decision: blob columns, encrypted fields, and existing-row
+  CRDT logical/state field changes are not automatically inverted. Replay
+  rejects commands that changed those fields with
   `sync.command_history_unsafe_field` before writing a compensating commit.
+  Row create/delete replay may include CRDT-backed row data when the whole row
+  lifecycle can be restored safely through normal generated mutations.
 - Native Diesel tracked commits record command history inside the same SQLite
   transaction as the mutation/outbox write. The trait keeps a non-atomic
   default for alternate clients, but the canonical native runtime path is
@@ -161,6 +175,15 @@ Testkit/docs:
 
 Gates:
 
+- `bunx biome check --write packages/client/src/command-history.ts packages/client/src/generated-app-conformance.test.ts apps/demo/src/app.tsx apps/demo/src/styles.css`
+- `bun test packages/client/src/generated-app-conformance.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bun --cwd apps/demo tsgo`
+- `bun --cwd packages/client test`
+- `bun --cwd apps/demo build`
+- Playwright demo smoke: add a task on Client A, observe it on Client B, undo
+  removes it from both panes, redo restores it to both panes, and no `.error-line`
+  is rendered.
 - `bun test rust/bindings/browser/src/generated-app-conformance.test.ts`
 - `bun run --cwd rust/bindings/browser test`
 - `bun run --cwd rust/bindings/browser tsgo`

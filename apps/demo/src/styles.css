@@ -111,6 +111,12 @@ h2 {
   margin-bottom: 18px;
 }
 
+.pane-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
 .status-badge {
   display: inline-flex;
   align-items: center;
@@ -172,7 +178,8 @@ h2 {
 }
 
 .add-row button,
-.icon-button {
+.icon-button,
+.history-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -184,7 +191,8 @@ h2 {
 }
 
 .add-row button:disabled,
-.icon-button:disabled {
+.icon-button:disabled,
+.history-button:disabled {
   cursor: not-allowed;
   opacity: 0.45;
 }
@@ -224,12 +232,20 @@ h2 {
   background: #e4efeb;
 }
 
+.history-button {
+  width: 32px;
+  height: 32px;
+  color: #30403b;
+  background: #edf3f0;
+}
+
 .icon-button.muted {
   color: #5d6763;
   background: transparent;
 }
 
 .icon-button:hover:not(:disabled),
+.history-button:hover:not(:disabled),
 .add-row button:hover:not(:disabled) {
   filter: brightness(0.94);
 }
