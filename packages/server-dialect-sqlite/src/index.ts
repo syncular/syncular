@@ -995,6 +995,45 @@ export class SqliteServerSyncDialect extends BaseServerSyncDialect<'sqlite'> {
       db
     );
 
+    await db.schema
+      .createTable('sync_client_diagnostic_snapshots')
+      .ifNotExists()
+      .addColumn('snapshot_id', 'integer', (col) =>
+        col.primaryKey().autoIncrement()
+      )
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('client_id', 'text', (col) => col.notNull())
+      .addColumn('actor_id', 'text')
+      .addColumn('runtime_kind', 'text')
+      .addColumn('runtime_version', 'text')
+      .addColumn('schema_version', 'integer')
+      .addColumn('reported_at', 'text', (col) => col.notNull())
+      .addColumn('received_at', 'text', (col) =>
+        col.notNull().defaultTo(nowIso)
+      )
+      .addColumn('lifecycle_phase', 'text')
+      .addColumn('connection_state', 'text')
+      .addColumn('freshness_state', 'text', (col) => col.notNull())
+      .addColumn('health_max_severity', 'text')
+      .addColumn('diagnostic_codes_summary', 'text')
+      .addColumn('queue_summary', 'text')
+      .addColumn('timing_summary', 'text')
+      .addColumn('redaction_summary', 'text')
+      .addColumn('snapshot_json', 'text', (col) => col.notNull())
+      .execute();
+    await sql`CREATE INDEX IF NOT EXISTS idx_sync_client_diagnostic_snapshots_received_at
+      ON sync_client_diagnostic_snapshots(received_at DESC)`.execute(db);
+    await sql`CREATE INDEX IF NOT EXISTS idx_sync_client_diagnostic_snapshots_latest
+      ON sync_client_diagnostic_snapshots(partition_id, client_id, received_at DESC)`.execute(
+      db
+    );
+    await sql`CREATE INDEX IF NOT EXISTS idx_sync_client_diagnostic_snapshots_health
+      ON sync_client_diagnostic_snapshots(partition_id, health_max_severity, received_at DESC)`.execute(
+      db
+    );
+
     // API Keys table
     await db.schema
       .createTable('sync_api_keys')

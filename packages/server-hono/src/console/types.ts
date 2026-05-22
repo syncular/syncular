@@ -91,6 +91,12 @@ export interface ConsoleMaintenanceOptions {
    * Default: 10000.
    */
   timelineScanMaxRows?: number;
+  /**
+   * Max retained redacted client diagnostic snapshots.
+   * Set to 0 to disable count-based pruning.
+   * Default: 500.
+   */
+  clientDiagnosticsMaxRows?: number;
 }
 
 export interface ConsoleBlobObject {

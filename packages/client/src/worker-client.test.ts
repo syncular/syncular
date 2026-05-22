@@ -9,6 +9,8 @@ import type {
   SyncularV2BootstrapStatus,
   SyncularV2DiagnosticEvent,
   SyncularV2LifecycleState,
+  SyncularV2NetworkStatusSource,
+  SyncularV2SyncResult,
 } from './types';
 import {
   createSyncularV2WorkerClient,
@@ -738,6 +740,97 @@ describe('Syncular v2 worker client', () => {
     expect(events.at(-1)).toMatchObject({
       phase: 'complete',
       bootstrap: { complete: true, progressPercent: 100 },
+      requiresAction: false,
+    });
+  });
+
+  it('keeps lifecycle phase stable for local worker requests', async () => {
+    const worker = new FakeWorker();
+    const network = new FakeNetworkStatus(true);
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+      network,
+    });
+
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'bootstrapChanged',
+      bootstrap: zeroBootstrapStatus(),
+    });
+    expect(client.lifecycleState()).toMatchObject({
+      phase: 'complete',
+      online: true,
+      pendingRequests: 0,
+    });
+
+    const query = client.executeSql('select 1');
+    expect(client.lifecycleState()).toMatchObject({
+      phase: 'complete',
+      pendingRequests: 1,
+    });
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: { rows: [{ value: 1 }] },
+    });
+    await query;
+
+    const sync = client.syncOnce();
+    await waitForMessages(worker, 2);
+    expect(client.lifecycleState()).toMatchObject({
+      phase: 'syncing',
+      pendingRequests: 1,
+    });
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        changedTables: [],
+        changedRows: [],
+        changedRowsTruncated: false,
+        subscriptions: [],
+        bootstrap: zeroBootstrapStatus(),
+        pushedCommits: 0,
+        timings: zeroSyncTimings(),
+      },
+    });
+    await waitForMessages(worker, 3);
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: [],
+    });
+    await sync;
+  });
+
+  it('surfaces browser offline state through lifecycle', () => {
+    const worker = new FakeWorker();
+    const network = new FakeNetworkStatus(true);
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+      network,
+    });
+
+    worker.emit({
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      type: 'bootstrapChanged',
+      bootstrap: zeroBootstrapStatus(),
+    });
+    expect(client.lifecycleState()).toMatchObject({
+      phase: 'complete',
+      online: true,
+    });
+
+    network.setOnline(false);
+
+    expect(client.lifecycleState()).toMatchObject({
+      phase: 'offline',
+      online: false,
       requiresAction: false,
     });
   });
@@ -1820,6 +1913,106 @@ describe('Syncular v2 worker client', () => {
     await expect(authPromise).resolves.toBeUndefined();
   });
 
+  it('does not restart active realtime while refreshing headers for sync', async () => {
+    const worker = new FakeWorker();
+    let authHeader = 'Bearer initial';
+    const client = new SyncularV2WorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 100,
+      getHeaders: () => ({ authorization: authHeader }),
+    });
+
+    const openPromise = client.open({
+      baseUrl: '/sync',
+      actorId: 'actor',
+      clientId: 'client',
+    });
+    await waitForMessages(worker, 1);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await waitForMessages(worker, 2);
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await openPromise;
+
+    const startPromise = client.startRealtime({
+      wsUrl: 'wss://example.test/sync/realtime',
+      params: { token: 'static' },
+    });
+    await waitForMessages(worker, 3);
+    worker.respond({
+      id: worker.messages[2]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await waitForMessages(worker, 4);
+    expect(worker.messages[3]).toMatchObject({ type: 'startRealtime' });
+    worker.respond({
+      id: worker.messages[3]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await startPromise;
+
+    authHeader = 'Bearer fresh';
+    const syncPromise = client.syncOnce();
+    await waitForMessages(worker, 5);
+    expect(worker.messages[4]).toMatchObject({
+      type: 'setAuthHeaders',
+      headers: { authorization: 'Bearer fresh' },
+    });
+    worker.respond({
+      id: worker.messages[4]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await waitForMessages(worker, 6);
+    expect(worker.messages[5]).toMatchObject({ type: 'syncOnce' });
+    worker.respond({
+      id: worker.messages[5]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        changedTables: [],
+        changedRows: [],
+        changedRowsTruncated: false,
+        subscriptions: [],
+        bootstrap: zeroBootstrapStatus(),
+        pushedCommits: 0,
+        timings: zeroSyncTimings(),
+      },
+    });
+    await waitForMessages(worker, 7);
+    worker.respond({
+      id: worker.messages[6]!.id,
+      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: [],
+    });
+    await syncPromise;
+
+    expect(worker.messages.map((message) => message.type)).toEqual([
+      'open',
+      'setAuthHeaders',
+      'setAuthHeaders',
+      'startRealtime',
+      'setAuthHeaders',
+      'syncOnce',
+      'drainLiveQueryEvents',
+    ]);
+  });
+
   it('resumes from background by restarting realtime and syncing', async () => {
     const worker = new FakeWorker();
     const client = new SyncularV2WorkerClient(worker.asWorker(), {
@@ -2469,6 +2662,37 @@ class FakeWorker {
   }
 }
 
+class FakeNetworkStatus implements SyncularV2NetworkStatusSource {
+  #online: boolean;
+  readonly #listeners = new Map<'online' | 'offline', Set<() => void>>([
+    ['online', new Set()],
+    ['offline', new Set()],
+  ]);
+
+  constructor(online: boolean) {
+    this.#online = online;
+  }
+
+  isOnline(): boolean {
+    return this.#online;
+  }
+
+  addEventListener(type: 'online' | 'offline', listener: () => void): void {
+    this.#listeners.get(type)?.add(listener);
+  }
+
+  removeEventListener(type: 'online' | 'offline', listener: () => void): void {
+    this.#listeners.get(type)?.delete(listener);
+  }
+
+  setOnline(online: boolean): void {
+    if (this.#online === online) return;
+    this.#online = online;
+    const type = online ? 'online' : 'offline';
+    for (const listener of this.#listeners.get(type) ?? []) listener();
+  }
+}
+
 async function waitForMessages(
   worker: FakeWorker,
   count: number
@@ -2505,6 +2729,35 @@ function zeroBootstrapStatus(): SyncularV2BootstrapStatus {
     subscriptions: [],
     phases: [],
   };
+}
+
+function zeroSyncTimings(): SyncularV2SyncResult['timings'] {
+  return {
+    totalMs: 0,
+    pushMs: 0,
+    pullMs: 0,
+    pullRequestMs: 0,
+    syncPackDecodeMs: 0,
+    pullTransformMs: 0,
+    integrityVerifyMs: 0,
+    snapshotFetchMs: 0,
+    pullApplyMs: 0,
+    scopeClearMs: 0,
+    snapshotRowApplyMs: 0,
+    snapshotArtifactApplyMs: 0,
+    snapshotArtifactCheckpointMs: 0,
+    snapshotArtifactCheckpointCount: 0,
+    snapshotChunkApplyMs: 0,
+    snapshotChunkMaterializeMs: 0,
+    commitApplyMs: 0,
+    subscriptionStateMs: 0,
+    notifyMs: 0,
+    ...({
+      snapshotChunkResetMs: 0,
+      snapshotChunkBindMs: 0,
+      snapshotChunkStepMs: 0,
+    } as object),
+  } as SyncularV2SyncResult['timings'];
 }
 
 function zeroTransportStats() {

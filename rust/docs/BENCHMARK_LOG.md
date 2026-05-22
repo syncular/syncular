@@ -5754,15 +5754,15 @@ Local result, 2,000 iterations:
 
 | Metric | p50 | p95 | Avg |
 | --- | ---: | ---: | ---: |
-| JSON parse combined request | `2.33us` | `3.83us` | `2.71us` |
-| JSON parse combined response | `4.25us` | `6.13us` | `4.79us` |
-| TypeScript schema combined request | `6.33us` | `13.04us` | `8.27us` |
-| TypeScript schema combined response | `11.04us` | `17.29us` | `12.69us` |
-| HTTP-style parse+schema request | `7.21us` | `13.92us` | `8.95us` |
-| HTTP-style parse+schema response | `11.29us` | `17.17us` | `12.68us` |
-| Binary sync-pack decode | `5.63us` | `12.00us` | `6.96us` |
-| Binary sync-pack decode+schema | `12.71us` | `22.83us` | `14.90us` |
-| Validate schema-backed fixture protocol objects | `31.67us` | `46.25us` | `36.54us` |
+| JSON parse combined request | `2.42us` | `3.96us` | `2.85us` |
+| JSON parse combined response | `4.21us` | `6.21us` | `4.79us` |
+| TypeScript schema combined request | `6.25us` | `13.08us` | `8.78us` |
+| TypeScript schema combined response | `11.75us` | `18.50us` | `13.62us` |
+| HTTP-style parse+schema request | `7.13us` | `12.33us` | `8.91us` |
+| HTTP-style parse+schema response | `11.00us` | `16.42us` | `12.15us` |
+| Binary sync-pack decode | `5.79us` | `11.96us` | `7.16us` |
+| Binary sync-pack decode+schema | `12.88us` | `22.58us` | `18.10us` |
+| Validate schema-backed fixture protocol objects | `32.75us` | `47.46us` | `37.52us` |
 
 Malformed diagnostics:
 
@@ -5782,3 +5782,115 @@ Decision:
   prototype a Rust call boundary after those baselines show either protocol
   validation heat or correctness/drift value that TypeScript schemas do not
   already provide.
+
+## 2026-05-22 - WP-28 Relay App-Path Baseline
+
+Work package: [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
+
+Change:
+
+- Added a repeatable in-memory relay app-path evaluator.
+- The evaluator uses Bun SQLite, `server-dialect-sqlite`, a minimal `tasks`
+  handler collection, `relayPushCommit`, `ForwardEngine.forwardOnce`,
+  `PullEngine.pullOnce`, `relayPull`, and `RelayRealtime`.
+- Forward and pull transports are deterministic in-process controls; network
+  latency is intentionally excluded.
+
+Command:
+
+```bash
+bun run --cwd packages/relay evaluate:relay-paths
+```
+
+Local result, 100 measured iterations, 10 warmup iterations:
+
+| Metric | p50 | p95 | Avg |
+| --- | ---: | ---: | ---: |
+| Local client push into relay | `243.83us` | `701.46us` | `385.47us` |
+| Relay forward once to main | `70.04us` | `108.63us` | `76.47us` |
+| Relay pull from main and local apply | `213.04us` | `379.96us` | `256.16us` |
+| Local client incremental pull from relay | `157.96us` | `305.67us` | `179.28us` |
+| Realtime wakeup to 100 mock connections | `18.08us` | `33.92us` | `20.45us` |
+
+Counters:
+
+- Local push commits: `100`.
+- Forwarded commits: `100`.
+- Main pull/apply commits: `100`.
+- Local pull responses: `100`.
+- Realtime messages: `10,000`.
+
+Decision:
+
+- Keep WP-28 in evaluation. The relay app paths are dominated by DB/app
+  semantics in this local control; schema-backed protocol validation
+  (`47.46us` p95 in the earlier WP-28 baseline) is not currently the largest
+  measured cost.
+- A Rust protocol validator alone is unlikely to be retained for relay
+  performance unless it avoids existing JSON/copy work or adds correctness
+  value that TypeScript schemas do not provide.
+- Next useful step is brainstorming from the evidence or measuring Rust
+  call-boundary overhead as a control. Do not start a Rust relay/server rewrite
+  from these numbers.
+
+## 2026-05-22 - WP-28 Final Relay Rust Decision
+
+Work package: [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
+
+Decision:
+
+- Closed WP-28 with Rust protocol validation kept in fixtures/dev tooling only.
+- No production Rust validation path is retained in relay/server.
+- No new Rust relay/server component WP is created from this evidence.
+- Relay app semantics stay TypeScript/Kysely-owned unless a future product
+  decision and new measurements say otherwise.
+
+Rationale:
+
+- The current TypeScript protocol checks are measurable but small on the WP-27
+  fixture.
+- The measured relay paths are dominated by DB/app semantics rather than
+  protocol validation.
+- The available JavaScript-facing Rust binding is the full browser client WASM
+  runtime, not a deliberately scoped protocol-only relay/server validation
+  surface. Using it for the call-boundary probe would measure the wrong
+  integration shape.
+
+## 2026-05-22 - WP-09 Windows JVM Package Evidence
+
+Work package: [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
+
+Command:
+
+```bash
+bash rust/scripts/package-native-bindings.sh --java-windows-x86_64
+```
+
+Evidence source:
+
+- GitHub Checks workflow run `26260787975` on branch `feat/rust-client`, commit
+  `3cecf58010a3013f1afd07a451fc09d3dcea5c22`.
+- Job `rust-windows-jvm-package`, job id `77293580195`, passed on
+  `windows-latest`:
+  <https://github.com/syncular/syncular/actions/runs/26260787975/job/77293580195>.
+- The package step completed in `143.2s`. The linker emitted `LNK4098` as a
+  warning only; the compile, verification, and upload steps completed
+  successfully.
+
+Result:
+
+| Artifact Field | Value |
+| --- | --- |
+| Workflow status | `success` |
+| Artifact name | `syncular-jvm-windows-26260787975` |
+| Artifact path | `.context/native-packages/java/native/windows-x86_64/syncular_runtime_jni.dll` |
+| Artifact id | `7150140731` |
+| Artifact size | `2,617,849` bytes |
+| Artifact zip SHA-256 | `e1e658cf39779b8c52d138f18012a4ea95d8d9ed60a1277f8b590c920ef36b22` |
+
+Decision:
+
+- WP-09 is accepted for the current native packaging foundation.
+- The Windows native/JVM packaging blocker is cleared for the current package
+  shape. Broader platform release validation should be driven by concrete
+  app-shell or publication requirements.

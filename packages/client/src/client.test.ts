@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'bun:test';
-import { SyncularV2ClientLifecycle } from './client';
+import {
+  SyncularV2ClientLifecycle,
+  type SyncularV2ClientNetworkStatusSource,
+} from './client';
 import type {
   SyncularV2DiagnosticEvent,
   SyncularV2DiagnosticSink,
@@ -77,6 +80,35 @@ describe('Syncular v2 browser client lifecycle', () => {
       'syncOnce',
     ]);
   });
+
+  it('starts offline and syncs when the browser comes online', async () => {
+    const client = new FakeLifecycleClient();
+    const network = new FakeNetworkStatus(false);
+    const lifecycle = new SyncularV2ClientLifecycle(client, { network });
+
+    await lifecycle.start();
+
+    expect(client.calls).toEqual([]);
+
+    network.setOnline(true);
+
+    await waitFor(
+      () => client.syncCount === 1 && client.calls.includes('startRealtime')
+    );
+    expect(client.calls).toEqual(['syncOnce', 'startRealtime']);
+  });
+
+  it('keeps lifecycle running when initial sync hits a retryable offline error', async () => {
+    const client = new FakeLifecycleClient();
+    client.syncError = new Error('browser fetch failed: offline');
+    const lifecycle = new SyncularV2ClientLifecycle(client, {
+      network: new FakeNetworkStatus(true),
+    });
+
+    await lifecycle.start();
+
+    expect(client.calls).toEqual(['syncOnce', 'startRealtime']);
+  });
 });
 
 function taskSubscription(actorId: string): SyncularV2SubscriptionSpec {
@@ -92,6 +124,7 @@ class FakeLifecycleClient {
   subscriptions: readonly SyncularV2SubscriptionSpec[] = [];
   realtimeOptions: boolean | Record<string, unknown> | undefined;
   syncCount = 0;
+  syncError: unknown = undefined;
   realtime: SyncularV2RealtimeConnectionState = 'disconnected';
   readonly #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
 
@@ -140,6 +173,7 @@ class FakeLifecycleClient {
   async syncOnce(): Promise<SyncularV2SyncResult> {
     this.calls.push('syncOnce');
     this.syncCount += 1;
+    if (this.syncError) throw this.syncError;
     return {
       changedTables: [],
       changedRows: [],
@@ -187,6 +221,37 @@ class FakeLifecycleClient {
       details: { resyncRequired: true },
     };
     for (const listener of this.#diagnosticListeners) listener(event);
+  }
+}
+
+class FakeNetworkStatus implements SyncularV2ClientNetworkStatusSource {
+  #online: boolean;
+  readonly #listeners = new Map<'online' | 'offline', Set<() => void>>([
+    ['online', new Set()],
+    ['offline', new Set()],
+  ]);
+
+  constructor(online: boolean) {
+    this.#online = online;
+  }
+
+  isOnline(): boolean {
+    return this.#online;
+  }
+
+  addEventListener(type: 'online' | 'offline', listener: () => void): void {
+    this.#listeners.get(type)?.add(listener);
+  }
+
+  removeEventListener(type: 'online' | 'offline', listener: () => void): void {
+    this.#listeners.get(type)?.delete(listener);
+  }
+
+  setOnline(online: boolean): void {
+    if (this.#online === online) return;
+    this.#online = online;
+    const type = online ? 'online' : 'offline';
+    for (const listener of this.#listeners.get(type) ?? []) listener();
   }
 }
 

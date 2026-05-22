@@ -306,8 +306,16 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
     expected: 'before' | 'after'
   ): Promise<void> {
     for (const entry of entries) {
+      const config = this.options.tableConfig[entry.table];
+      if (!config) {
+        throw new SyncularV2CommandHistoryError(
+          'sync.command_history_table_unsupported',
+          `Cannot replay undo history for unsupported table ${entry.table}`,
+          { commandId }
+        );
+      }
       const current = await this.readRow(entry.table, entry.rowId);
-      if (!sameSnapshot(current, entry[expected])) {
+      if (!sameReplaySnapshot(config, current, entry[expected])) {
         throw new SyncularV2CommandHistoryError(
           'sync.command_history_conflict',
           `Cannot ${expected === 'after' ? 'undo' : 'redo'} Syncular command ${commandId}; ${entry.table}.${entry.rowId} changed since the command was recorded`,
@@ -537,26 +545,63 @@ function sameSnapshot(left: RowSnapshot, right: RowSnapshot): boolean {
   return stableJson(left) === stableJson(right);
 }
 
+function sameReplaySnapshot(
+  config: SyncularV2TableConfigMap[string],
+  left: RowSnapshot,
+  right: RowSnapshot
+): boolean {
+  return (
+    stableJson(replayComparableSnapshot(config, left)) ===
+    stableJson(replayComparableSnapshot(config, right))
+  );
+}
+
+function replayComparableSnapshot(
+  config: SyncularV2TableConfigMap[string],
+  snapshot: RowSnapshot
+): RowSnapshot {
+  if (snapshot === null) return null;
+  const comparable = { ...snapshot };
+  if (config.serverVersionColumn) delete comparable[config.serverVersionColumn];
+  for (const field of config.crdtYjsFields ?? []) {
+    delete comparable[field.stateColumn];
+  }
+  return comparable;
+}
+
 function unsafeChangedFields(
   config: SyncularV2TableConfigMap[string],
   entry: CommandEntry
 ): string[] {
+  const rowLifecycleReplay = entry.before === null || entry.after === null;
   const unsafeFields = new Set<string>();
   for (const column of config.blobColumns ?? []) unsafeFields.add(column);
   for (const field of config.encryptedFields ?? [])
     unsafeFields.add(field.field);
-  for (const field of config.crdtYjsFields ?? []) {
-    unsafeFields.add(field.field);
-    unsafeFields.add(field.stateColumn);
+  if (!rowLifecycleReplay) {
+    for (const field of config.crdtYjsFields ?? []) {
+      unsafeFields.add(field.field);
+      unsafeFields.add(field.stateColumn);
+    }
   }
 
   const changed: string[] = [];
   for (const field of unsafeFields) {
     const before = entry.before?.[field];
     const after = entry.after?.[field];
-    if (stableJson(before) !== stableJson(after)) changed.push(field);
+    if (
+      stableJson(nullishToNull(before)) === stableJson(nullishToNull(after))
+    ) {
+      continue;
+    }
+    if (rowLifecycleReplay && before == null && after == null) continue;
+    changed.push(field);
   }
   return changed;
+}
+
+function nullishToNull(value: unknown): unknown {
+  return value == null ? null : value;
 }
 
 function stableJson(value: unknown): string {

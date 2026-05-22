@@ -1,3 +1,4 @@
+export * from './ClientDetails';
 export * from './Command';
 export * from './Config';
 export * from './Fleet';

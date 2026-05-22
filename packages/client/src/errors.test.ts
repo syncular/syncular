@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import { SyncularV2ClientError, toSyncularV2ClientError } from './errors';
+import {
+  isSyncularV2OfflineError,
+  SyncularV2ClientError,
+  toSyncularV2ClientError,
+} from './errors';
 
 describe('Syncular v2 browser errors', () => {
   it('classifies direct Rust schema errors', () => {
@@ -70,5 +74,16 @@ describe('Syncular v2 browser errors', () => {
       retryable: true,
       recommendedAction: 'retryLater',
     });
+    expect(isSyncularV2OfflineError(error)).toBe(true);
+  });
+
+  it('recognizes worker offline errors by envelope code', () => {
+    expect(
+      isSyncularV2OfflineError({
+        code: 'sync.offline',
+        category: 'offline',
+        message: 'browser fetch failed: offline',
+      })
+    ).toBe(true);
   });
 });

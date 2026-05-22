@@ -1,4 +1,13 @@
-import { CheckCircle2, Circle, Plus, RefreshCw, Trash2 } from 'lucide-react';
+import type { SyncularV2LifecycleState } from '@syncular/client';
+import {
+  CheckCircle2,
+  Circle,
+  Plus,
+  Redo2,
+  RefreshCw,
+  Trash2,
+  Undo2,
+} from 'lucide-react';
 import type { Dispatch, FormEvent, SetStateAction } from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -9,14 +18,15 @@ import {
   selectTasks,
 } from './client/syncular';
 
-type ClientStatus = 'opening' | 'ready' | 'syncing' | 'error';
+type ClientStatus = 'opening' | 'ready' | 'syncing' | 'offline' | 'error';
 
 interface ClientState {
   handle: DemoClientHandle | null;
   tasks: DemoTask[];
   status: ClientStatus;
   error: string | null;
-  lastSyncAt: number | null;
+  canUndo: boolean;
+  canRedo: boolean;
 }
 
 const initialClientState: ClientState = {
@@ -24,7 +34,8 @@ const initialClientState: ClientState = {
   tasks: [],
   status: 'opening',
   error: null,
-  lastSyncAt: null,
+  canUndo: false,
+  canRedo: false,
 };
 
 export function App() {
@@ -51,6 +62,22 @@ export function App() {
           return;
         }
 
+        const applyLifecycle = () => {
+          const nextStatus = statusFromLifecycle(
+            handle.database.client.lifecycleState()
+          );
+          setClient((state) => ({
+            ...state,
+            status: nextStatus,
+            error: nextStatus === 'offline' ? null : state.error,
+          }));
+        };
+
+        const stopLifecycle = handle.database.client.addEventListener(
+          'lifecycleChanged',
+          applyLifecycle
+        );
+
         const live = await handle.database.live(selectTasks(handle.database), {
           tables: ['tasks'],
           onChange: (rows) => {
@@ -63,16 +90,21 @@ export function App() {
         });
 
         cleanups.push(() => {
+          stopLifecycle();
           live.unsubscribe();
           return handle.close();
         });
 
+        const status = statusFromLifecycle(
+          handle.database.client.lifecycleState()
+        );
+        const commandState = await readCommandState(handle);
         setClient((state) => ({
           ...state,
           handle,
-          status: 'ready',
+          status,
           error: null,
-          lastSyncAt: Date.now(),
+          ...commandState,
         }));
       } catch (err) {
         setClient((state) => ({
@@ -160,7 +192,20 @@ function ClientPane({
         user_id: 'demo-user',
         project_id: null,
       });
-      await handle.syncNow();
+    });
+  };
+
+  const undo = async () => {
+    if (!state.handle || !state.canUndo) return;
+    await runClientAction(setState, state.handle, async (handle) => {
+      await handle.database.commandHistory.undoLast();
+    });
+  };
+
+  const redo = async () => {
+    if (!state.handle || !state.canRedo) return;
+    await runClientAction(setState, state.handle, async (handle) => {
+      await handle.database.commandHistory.redoLast();
     });
   };
 
@@ -171,7 +216,29 @@ function ClientPane({
           <p className="pane-kicker">{label}</p>
           <h2>{accent === 'left' ? 'Planner' : 'Reviewer'}</h2>
         </div>
-        <StatusBadge state={state} />
+        <div className="pane-actions">
+          <button
+            className="history-button"
+            type="button"
+            aria-label={`${label} undo last command`}
+            title="Undo"
+            onClick={undo}
+            disabled={!state.handle || !state.canUndo}
+          >
+            <Undo2 size={17} />
+          </button>
+          <button
+            className="history-button"
+            type="button"
+            aria-label={`${label} redo last command`}
+            title="Redo"
+            onClick={redo}
+            disabled={!state.handle || !state.canRedo}
+          >
+            <Redo2 size={17} />
+          </button>
+          <StatusBadge state={state} />
+        </div>
       </header>
 
       <form className="add-row" onSubmit={addTask}>
@@ -191,6 +258,11 @@ function ClientPane({
       </form>
 
       {state.error ? <p className="error-line">{state.error}</p> : null}
+      {state.status === 'offline' ? (
+        <p className="offline-line">
+          Offline. Local changes will sync when online.
+        </p>
+      ) : null}
 
       <div className="task-list" data-testid={`${accent}-tasks`}>
         {state.tasks.length === 0 ? (
@@ -233,7 +305,6 @@ function TaskRow({
         },
         { baseVersion: task.server_version }
       );
-      await client.syncNow();
     });
   };
 
@@ -243,7 +314,6 @@ function TaskRow({
       await client.database.mutations.tasks.delete(task.id, {
         baseVersion: task.server_version,
       });
-      await client.syncNow();
     });
   };
 
@@ -278,9 +348,11 @@ function StatusBadge({ state }: { state: ClientState }) {
       ? 'Opening'
       : state.status === 'syncing'
         ? 'Syncing'
-        : state.status === 'error'
-          ? 'Error'
-          : 'Ready';
+        : state.status === 'offline'
+          ? 'Offline'
+          : state.status === 'error'
+            ? 'Error'
+            : 'Ready';
 
   return (
     <div className={`status-badge ${state.status}`}>
@@ -297,16 +369,17 @@ async function runClientAction(
 ) {
   setState((state) => ({
     ...state,
-    status: 'syncing',
     error: null,
   }));
   try {
     await action(handle);
+    const status = statusFromLifecycle(handle.database.client.lifecycleState());
+    const commandState = await readCommandState(handle);
     setState((state) => ({
       ...state,
-      status: 'ready',
-      lastSyncAt: Date.now(),
+      status,
       error: null,
+      ...commandState,
     }));
   } catch (err) {
     setState((state) => ({
@@ -315,6 +388,16 @@ async function runClientAction(
       error: errorMessage(err),
     }));
   }
+}
+
+async function readCommandState(
+  handle: DemoClientHandle
+): Promise<Pick<ClientState, 'canUndo' | 'canRedo'>> {
+  const [canUndo, canRedo] = await Promise.all([
+    handle.database.commandHistory.canUndo(),
+    handle.database.commandHistory.canRedo(),
+  ]);
+  return { canUndo, canRedo };
 }
 
 function normalizeTask(row: Record<string, unknown>): DemoTask {
@@ -331,4 +414,19 @@ function normalizeTask(row: Record<string, unknown>): DemoTask {
 
 function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+function statusFromLifecycle(
+  lifecycle: SyncularV2LifecycleState
+): ClientStatus {
+  if (
+    lifecycle.phase === 'syncing' ||
+    lifecycle.phase === 'recovering' ||
+    lifecycle.phase === 'connecting'
+  ) {
+    return 'syncing';
+  }
+  if (lifecycle.phase === 'offline') return 'offline';
+  if (lifecycle.requiresAction) return 'error';
+  return 'ready';
 }

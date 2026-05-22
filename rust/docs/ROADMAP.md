@@ -70,6 +70,24 @@ read-only review:
 
 ## Now
 
+- `[~]` [`WP-30 Foundation Cleanup And Complexity Reduction`](work-packages/WP-30-foundation-cleanup-complexity.md)
+  - New cross-cutting cleanup WP for polishing, removing unnecessary code,
+    deleting stale aliases/backwards-compatibility paths, and reducing
+    foundation complexity before more surface is added. Start with the
+    compatibility-register closure pass and keep every cleanup slice small,
+    gated, and independently revertible. First slice closed the stale realtime
+    wake-up-only docs item by updating docs to describe websocket sync-pack
+    deltas as the fast path and HTTP pull as recovery/checkpoint.
+- `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
+  - Slice 1 persistence is retained but not fully accepted until browser smoke
+    evidence is added. Console diagnostics now persist normalized,
+    size-bounded, sensitive-key-guarded Rust client snapshots in
+    `sync_client_diagnostic_snapshots`; latest/list/history routes read from
+    storage; Fleet receives diagnostic freshness/health summaries; and
+    ClientDetails shows retained snapshot history. Targeted route, dialect,
+    OpenAPI, TypeScript, Biome, and diff checks passed. Remaining Slice 1 gap:
+    run `/fleet` and `/fleet/:clientId` browser verification once an isolated
+    browser is available.
 - `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table
@@ -855,18 +873,21 @@ read-only review:
     chunks/artifacts, blob refs, auth lease provenance, realtime JSON messages,
     and binary realtime frames. TypeScript schema/codec tests and Rust protocol
     tests validate the same fixtures without changing relay runtime behavior.
-- `[~]` [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
-  - First retained slice adds a repeatable relay protocol-boundary evaluator
-    over the WP-27 fixture. The current TypeScript baseline is small on this
-    fixture: combined response parse+schema p95 is `17.17us`, binary sync-pack
-    decode+schema p95 is `22.83us`, and validating schema-backed fixture
-    protocol objects p95 is `46.25us`. No Rust relay production path is
-    retained yet; the next step is app-path relay push/forward/pull/realtime
-    baselines before any Rust call-boundary prototype.
+- `[x]` [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
+  - Retained evaluation now has both a repeatable protocol-boundary baseline
+    over the WP-27 fixture and an in-memory relay app-path baseline. Current
+    local p95s: combined response parse+schema `16.42us`, binary sync-pack
+    decode+schema `22.58us`, schema-backed fixture validation `47.46us`, local
+    relay push `701.46us`, forward once `108.63us`, main pull/apply `379.96us`,
+    local incremental pull `305.67us`, and realtime wakeup to 100 mock
+    connections `33.92us`. Final decision: keep Rust protocol checks in
+    fixtures/dev tooling only. No Rust relay production path or follow-up Rust
+    relay/server component WP is retained from this evidence; relay app
+    semantics stay TypeScript/Kysely-owned unless a future product decision and
+    new measurements say otherwise.
 
 ## Blocked / External
 
-- Windows native/JVM packaging needs a real Windows host or runner.
 - Full iOS/macOS/Android lifecycle validation needs real app-shell coverage
   beyond command-line smokes.
 - CI jobs are intentionally skipped until GitHub-side work is requested.

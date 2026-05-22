@@ -1,6 +1,6 @@
 'use client';
 
-import { UserX } from 'lucide-react';
+import { Search, UserX } from 'lucide-react';
 import { type ComponentPropsWithoutRef, forwardRef } from 'react';
 import { cn } from '../lib/cn';
 import type { SyncClientNode } from '../lib/types';
@@ -17,6 +17,7 @@ import {
 export type FleetTableProps = ComponentPropsWithoutRef<'div'> & {
   clients: SyncClientNode[];
   headSeq: number;
+  onInspect?: (clientId: string) => void;
   onEvict?: (clientId: string) => void;
 };
 
@@ -33,8 +34,15 @@ const statusBadgeVariant = {
   offline: 'offline',
 } as const;
 
+const runtimeHealthVariant = {
+  debug: 'ghost',
+  info: 'healthy',
+  warn: 'syncing',
+  error: 'destructive',
+} as const;
+
 const FleetTable = forwardRef<HTMLDivElement, FleetTableProps>(
-  ({ className, clients, headSeq, onEvict, ...props }, ref) => {
+  ({ className, clients, headSeq, onEvict, onInspect, ...props }, ref) => {
     return (
       <div ref={ref} className={cn('w-full', className)} {...props}>
         <Table>
@@ -42,11 +50,13 @@ const FleetTable = forwardRef<HTMLDivElement, FleetTableProps>(
             <TableRow>
               <TableHead className="w-[160px]">Client</TableHead>
               <TableHead className="w-[70px]">Status</TableHead>
+              <TableHead className="w-[105px]">Runtime</TableHead>
               <TableHead className="w-[60px]">Type</TableHead>
               <TableHead className="w-[80px]">Cursor</TableHead>
               <TableHead className="w-[110px]">Lag</TableHead>
               <TableHead className="w-[60px]">Dialect</TableHead>
-              <TableHead className="flex-1">Mode</TableHead>
+              <TableHead className="w-[90px]">Mode</TableHead>
+              <TableHead className="flex-1">Actions</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
@@ -84,6 +94,24 @@ const FleetTable = forwardRef<HTMLDivElement, FleetTableProps>(
                       {client.status}
                     </Badge>
                   </TableCell>
+                  <TableCell className="w-[105px]">
+                    {client.runtimeHealth ? (
+                      <div className="flex flex-col gap-1">
+                        <Badge
+                          variant={runtimeHealthVariant[client.runtimeHealth]}
+                        >
+                          {client.runtimeHealth}
+                        </Badge>
+                        <span className="font-mono text-[9px] text-neutral-600">
+                          {client.runtimeFreshness ?? 'stale'}
+                        </span>
+                      </div>
+                    ) : (
+                      <span className="font-mono text-[10px] text-neutral-600">
+                        --
+                      </span>
+                    )}
+                  </TableCell>
                   <TableCell className="w-[60px]">
                     <span className="font-mono text-[10px] text-neutral-400">
                       {client.type}
@@ -115,24 +143,39 @@ const FleetTable = forwardRef<HTMLDivElement, FleetTableProps>(
                       {client.dialect}
                     </span>
                   </TableCell>
-                  <TableCell className="flex-1">
+                  <TableCell className="w-[90px]">
                     <Badge
                       variant={client.mode === 'realtime' ? 'flow' : 'ghost'}
                     >
                       {client.mode}
                     </Badge>
                   </TableCell>
-                  {onEvict && (
-                    <button
-                      type="button"
-                      title="Evict client"
-                      onClick={() => onEvict(client.id)}
-                      className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-neutral-600 hover:text-offline hover:bg-offline/10 cursor-pointer transition-colors opacity-0 group-hover:opacity-100"
-                    >
-                      <UserX size={10} />
-                      evict
-                    </button>
-                  )}
+                  <TableCell className="flex-1">
+                    <div className="flex items-center gap-1">
+                      {onInspect ? (
+                        <button
+                          type="button"
+                          title="Inspect client"
+                          onClick={() => onInspect(client.id)}
+                          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-neutral-500 hover:text-flow hover:bg-flow/10 cursor-pointer transition-colors"
+                        >
+                          <Search size={10} />
+                          inspect
+                        </button>
+                      ) : null}
+                      {onEvict ? (
+                        <button
+                          type="button"
+                          title="Evict client"
+                          onClick={() => onEvict(client.id)}
+                          className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[9px] text-neutral-600 hover:text-offline hover:bg-offline/10 cursor-pointer transition-colors"
+                        >
+                          <UserX size={10} />
+                          evict
+                        </button>
+                      ) : null}
+                    </div>
+                  </TableCell>
                 </TableRow>
               );
             })}

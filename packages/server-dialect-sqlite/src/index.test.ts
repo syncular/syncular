@@ -124,6 +124,14 @@ describe('SqliteServerSyncDialect.ensureConsoleSchema', () => {
         AND name = 'sync_realtime_events'
     `.execute(db);
     expect(realtimeTables.rows).toHaveLength(1);
+
+    const diagnosticTables = await sql<{ name: string }>`
+      SELECT name
+      FROM sqlite_master
+      WHERE type = 'table'
+        AND name = 'sync_client_diagnostic_snapshots'
+    `.execute(db);
+    expect(diagnosticTables.rows).toHaveLength(1);
   });
 
   it('adds investigation columns when upgrading an existing sync_request_events table', async () => {
@@ -284,5 +292,52 @@ describe('SqliteServerSyncDialect.ensureConsoleSchema', () => {
       WHERE event_type = ${'pull_required'}
     `.execute(db);
     expect(realtimeInserted.rows[0]?.count ?? 0).toBe(1);
+
+    await sql`
+      INSERT INTO sync_client_diagnostic_snapshots (
+        partition_id,
+        client_id,
+        actor_id,
+        runtime_kind,
+        runtime_version,
+        schema_version,
+        reported_at,
+        received_at,
+        lifecycle_phase,
+        connection_state,
+        freshness_state,
+        health_max_severity,
+        diagnostic_codes_summary,
+        queue_summary,
+        timing_summary,
+        redaction_summary,
+        snapshot_json
+      ) VALUES (
+        ${'default'},
+        ${'client-1'},
+        ${'actor-1'},
+        ${'syncular-runtime'},
+        ${'0.0.0'},
+        ${3},
+        ${'2026-02-12T00:00:00.000Z'},
+        ${'2026-02-12T00:00:01.000Z'},
+        ${'complete'},
+        ${'connected'},
+        ${'active'},
+        ${'info'},
+        ${'[]'},
+        ${'{}'},
+        ${'{}'},
+        ${'{"sensitiveKeys":"rejected"}'},
+        ${'{"clientId":"client-1"}'}
+      )
+    `.execute(db);
+
+    const diagnosticInserted = await sql<{ count: number }>`
+      SELECT COUNT(*) as count
+      FROM sync_client_diagnostic_snapshots
+      WHERE client_id = ${'client-1'}
+    `.execute(db);
+    expect(diagnosticInserted.rows[0]?.count ?? 0).toBe(1);
   });
 });
