@@ -1,11 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import {
-  SyncularV2ClientLifecycle,
-  type SyncularV2ClientNetworkStatusSource,
-} from './client';
+import { SyncularV2ClientLifecycle } from './client';
 import type {
   SyncularV2DiagnosticEvent,
   SyncularV2DiagnosticSink,
+  SyncularV2NetworkStatusSource,
   SyncularV2RealtimeConnectionState,
   SyncularV2SubscriptionSpec,
   SyncularV2SyncResult,
@@ -224,7 +222,7 @@ class FakeLifecycleClient {
   }
 }
 
-class FakeNetworkStatus implements SyncularV2ClientNetworkStatusSource {
+class FakeNetworkStatus implements SyncularV2NetworkStatusSource {
   #online: boolean;
   readonly #listeners = new Map<'online' | 'offline', Set<() => void>>([
     ['online', new Set()],
