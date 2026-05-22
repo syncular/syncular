@@ -258,3 +258,15 @@ current Rust-first path no longer needs them.
 - Removed the old `accept-server` conflict-resolution spelling from the
   TypeScript public type and Rust serde alias. `keep-server` is the canonical
   value.
+- Removed the old JavaScript-hosted browser store bridge (`web-store`,
+  `WebHostStore`, and `SyncularWasmClient`). Browser WASM now exposes only the
+  Rust-owned SQLite runtime surface.
+- While running the broad runtime gate, fixed stale Rust classifier mappings for
+  auth-lease server errors so the runtime matches the shared core error taxonomy
+  fixture.
+- While running the broad runtime gate, updated the checked-in C header for
+  native FFI exports that already existed in Rust but were missing from the
+  header artifact.
+- While running the broad runtime gate, tightened the native facade lifecycle
+  test to tolerate startup diagnostic events before the initial sync-completed
+  event.

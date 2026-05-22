@@ -2709,9 +2709,15 @@ fn native_facade_builder_applies_lifecycle_options() -> Result<()> {
         .shutdown_on_drop(true)
         .open()?;
 
-    let event = client
-        .next_event_timeout(Duration::from_secs(5))
-        .expect("builder initial sync result event");
+    let event = loop {
+        let event = client
+            .next_event_timeout(Duration::from_secs(5))
+            .expect("builder initial sync result event");
+        if event.kind == NativeEventKind::SyncCompleted {
+            break event;
+        }
+        assert_eq!(event.kind, NativeEventKind::Diagnostic);
+    };
     assert_eq!(event.kind, NativeEventKind::SyncCompleted);
     let requests = server.wait_for_requests(1, Duration::from_secs(1));
     assert_eq!(
