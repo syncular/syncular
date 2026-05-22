@@ -2,7 +2,7 @@
 
 Framework-agnostic server sync engine for Syncular: commit log, push/pull, scopes/subscriptions, snapshots, blobs, pruning/compaction, and proxy support.
 
-Typically used with `@syncular/server-hono` for HTTP routes, WebSocket wake-ups, and the admin console API.
+Typically used with `@syncular/server-hono` for HTTP routes, WebSocket realtime, and the admin console API.
 
 ## Install
 
@@ -22,4 +22,3 @@ npm install @syncular/server
 - Issues: https://github.com/syncular/syncular/issues
 
 > Status: Alpha. APIs and storage layouts may change between releases.
-

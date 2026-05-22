@@ -146,25 +146,11 @@
         "default": "./dist/server-dialect-postgres.js"
       }
     },
-    "./server-dialect-neon": {
-      "bun": "./src/server-dialect-neon.ts",
-      "import": {
-        "types": "./dist/server-dialect-neon.d.ts",
-        "default": "./dist/server-dialect-neon.js"
-      }
-    },
     "./transport-http": {
       "bun": "./src/transport-http.ts",
       "import": {
         "types": "./dist/transport-http.d.ts",
         "default": "./dist/transport-http.js"
-      }
-    },
-    "./transport-ws": {
-      "bun": "./src/transport-ws.ts",
-      "import": {
-        "types": "./dist/transport-ws.d.ts",
-        "default": "./dist/transport-ws.js"
       }
     },
     "./relay": {
@@ -258,13 +244,6 @@
         "default": "./dist/dialect-d1.js"
       }
     },
-    "./dialect-wa-sqlite": {
-      "bun": "./src/dialect-wa-sqlite.ts",
-      "import": {
-        "types": "./dist/dialect-wa-sqlite.d.ts",
-        "default": "./dist/dialect-wa-sqlite.js"
-      }
-    },
     "./dialect-expo-sqlite": {
       "bun": "./src/dialect-expo-sqlite.ts",
       "import": {
@@ -298,7 +277,6 @@
     "@syncular/dialect-pglite": "workspace:*",
     "@syncular/dialect-react-native-nitro-sqlite": "workspace:*",
     "@syncular/dialect-sqlite3": "workspace:*",
-    "@syncular/dialect-wa-sqlite": "workspace:*",
     "@syncular/migrations": "workspace:*",
     "@syncular/observability-sentry": "workspace:*",
     "@syncular/react": "workspace:*",
@@ -313,7 +291,6 @@
     "@syncular/server-storage-filesystem": "workspace:*",
     "@syncular/server-storage-s3": "workspace:*",
     "@syncular/transport-http": "workspace:*",
-    "@syncular/transport-ws": "workspace:*",
     "@syncular/typegen": "workspace:*",
     "@syncular/ui": "workspace:*"
   },

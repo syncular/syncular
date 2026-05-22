@@ -93,15 +93,15 @@ flowchart TB
 
   Outbox -->|push over HTTP| Handlers
   Log -->|pull over HTTP| Incoming
-  Log -. optional wake-up .-> UI
+  Log -. optional realtime .-> UI
 `}
-  caption="Queries stay local. Network traffic only happens on push and pull, with optional realtime wake-ups to trigger the next pull."
+  caption="Queries stay local. HTTP push/pull remains the recovery path, and realtime WebSocket can carry verified deltas or pull-required wake-ups."
 />
 
 1. **User makes a change** — written to local SQLite instantly, queued in the outbox
 2. **Outbox pushes to server** — server validates, applies, writes to commit log
 3. **Other clients pull** — fetch new commits since their last position, apply to local DB
-4. **WebSocket wake-ups** — optional real-time notifications trigger immediate pulls
+4. **WebSocket realtime** — optional verified deltas apply immediately; pull-required wake-ups trigger HTTP recovery
 
 ## Why Syncular?
 
@@ -145,7 +145,7 @@ subscriptions: [
 | **Commit-log sync** | Append-only log. Incremental pulls. Easy to debug and reason about. |
 | **Scope-based auth** | Every change tagged with who can see it. Auditable and composable. |
 | **Conflict detection** | Optimistic concurrency with version numbers. Handle conflicts your way. |
-| **Real-time** | WebSocket wake-ups for instant updates. Data always flows over HTTP. |
+| **Real-time** | WebSocket realtime for verified deltas plus HTTP pull recovery when needed. |
 | **Self-hosted** | Run on your infrastructure. Apache 2.0 licensed. No vendor lock-in. |
 | **Encryption** | Optional E2E field encryption plugin with key sharing. |
 

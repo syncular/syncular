@@ -182,10 +182,9 @@ See [Table Handlers](/docs/build/table-handlers).
 
 ### Transport
 
-The network layer that moves data between client and server. Implements `pull()`, `push()`, and snapshot-chunk fetch (`fetchSnapshotChunk()` with optional `fetchSnapshotChunkStream()` for streaming). Syncular ships two transports:
+The network layer that moves data between client and server. Implements `pull()`, `push()`, and snapshot-chunk fetch (`fetchSnapshotChunk()` with optional `fetchSnapshotChunkStream()` for streaming).
 
 - **HTTP** (`@syncular/transport-http`) -- Uses `fetch` for pull/push and snapshot chunk download (bytes or stream). Supports typed API client generation.
-- **WebSocket** (`@syncular/transport-ws`) -- Adds realtime wake-ups and [Presence](#presence) on top of HTTP pull/push.
 
 ```typescript
 import { createHttpTransport } from '@syncular/transport-http';

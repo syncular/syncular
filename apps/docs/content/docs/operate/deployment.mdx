@@ -253,7 +253,7 @@ For WebSocket support on fly.io, ensure your app handles the upgrade correctly. 
 
 ### Scaling with fly.io
 
-For multi-instance deployments, configure a realtime broadcaster so WebSocket wake-ups reach all instances:
+For multi-instance deployments, configure a realtime broadcaster so WebSocket delta and pull-required events reach all instances:
 
 ```typescript
 import { createSyncRoutes } from '@syncular/server-hono';
@@ -389,4 +389,4 @@ Before going live, verify the following:
 
 - [Server Setup](/docs/build/server-setup) - Configure sync routes and handlers
 - [Performance & Scaling](/docs/operate/performance) - Optimize for large datasets
-- [Realtime](/docs/build/realtime) - Configure WebSocket wake-ups
+- [Realtime](/docs/build/realtime) - Configure WebSocket realtime

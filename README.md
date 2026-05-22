@@ -47,8 +47,8 @@ The fastest way to evaluate Syncular is to install dependencies and run the Rust
 git clone https://github.com/syncular/syncular.git
 cd syncular
 bun install
-bun run rust:browser:test
-bun run rust:browser:tsgo
+bun run client:test
+bun run client:tsgo
 ```
 
 Building your own app instead?
@@ -66,8 +66,7 @@ npm install @syncular/client @syncular/react kysely
 ```
 
 If your server runtime is Neon-backed, pair `@syncular/dialect-neon` with
-`createNeonServerDialect()` from `@syncular/server-dialect-postgres` (or
-`syncular/server-dialect-neon` when using the umbrella package).
+`createNeonServerDialect()` from `@syncular/server-dialect-postgres`.
 
 If startup-critical data should bootstrap before large background tables, assign
 `bootstrapPhase` on client subscriptions. Lower phases bootstrap first, while
@@ -87,7 +86,7 @@ See the [Quick Start guide](https://syncular.dev/docs/introduction/quick-start) 
 │  Writes → Outbox (durable, survives restart)         │
 └──────────────────┬───────────────────────────────────┘
                    │  push / pull (HTTP)
-                   │  wake-up signal (WebSocket only)
+                   │  realtime deltas / recovery wake-ups (WebSocket)
                    ▼
 ┌──────────────────────────────────────────────────────┐
 │  SERVER  (Node · Bun · Cloudflare Workers …)         │
@@ -99,7 +98,7 @@ See the [Quick Start guide](https://syncular.dev/docs/introduction/quick-start) 
 1. **Local write** — the app writes to local SQL immediately and queues the commit in the outbox
 2. **Push** — the server validates the write, resolves scopes, applies domain logic, and appends to the commit log
 3. **Pull** — clients fetch snapshots or commits since their cursor, filtered to the intersection of requested and allowed scopes
-4. **Realtime** — WebSocket sends a wake-up signal; clients still pull data over HTTP
+4. **Realtime** — WebSocket carries verified sync-pack deltas when safe; pull-required wake-ups use HTTP recovery
 
 That separation is intentional: your server schema models the domain, your client schema models local UX, and table handlers plus `resolveScopes` are where the mapping lives.
 
@@ -107,7 +106,7 @@ That separation is intentional: your server schema models the domain, your clien
 
 New sync systems should be met with skepticism. Syncular is tested across multiple layers so you can validate behavior before trusting it in an app.
 
-- **Rust browser gates** — `bun run rust:browser:test`, `bun run rust:browser:tsgo`, and `bun run rust:browser:build:wasm` cover the canonical browser client package
+- **Rust browser gates** — `bun run client:test`, `bun run client:tsgo`, and `bun run javascript-bindings:build:wasm` cover the canonical browser client package
 - **Rust conformance** — `bun run rust:conformance:fast` covers the shared client/server protocol scenarios
 - **Server and package tests** — `bun test` covers remaining TypeScript server, core, dialect, migration, and typegen packages
 
@@ -115,7 +114,7 @@ Start here:
 
 ```bash
 bun test
-bun run rust:browser:test
+bun run client:test
 bun run rust:conformance:fast
 ```
 
@@ -157,7 +156,6 @@ Most packages are published under the `@syncular` scope on npm. The umbrella pac
 | `@syncular/client-react-native` | React Native/Nitro bridge facade over a native Syncular host |
 | `@syncular/client-expo` | Expo-friendly aliases for the React Native bridge facade |
 | `@syncular/transport-http` | HTTP push/pull transport |
-| `@syncular/transport-ws` | WebSocket wake-up and presence transport |
 | `@syncular/console` | Embeddable console UI for commits, clients, events, and operations |
 | `@syncular/testkit` | Server fixtures, protocol request builders, realtime helpers, and fault injection |
 | `@syncular/migrations` | Versioned migrations with checksum tracking |

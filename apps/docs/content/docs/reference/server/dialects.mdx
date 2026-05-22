@@ -31,7 +31,7 @@ const dialect = createNeonServerDialect();
 If you prefer umbrella imports:
 
 ```typescript
-import { createNeonServerDialect } from 'syncular/server-dialect-neon';
+import { createNeonServerDialect } from 'syncular/server-dialect-postgres';
 
 const dialect = createNeonServerDialect();
 ```
@@ -58,7 +58,6 @@ These packages provide the `dialect` adapter. Use `createDatabase` from `@syncul
 | `@syncular/dialect-bun-sqlite` | Bun | `createDatabase({ dialect: createBunSqliteDialect({ path: './data.db' }), family: 'sqlite' })` |
 | `@syncular/dialect-libsql` | Node.js / Edge | `createDatabase({ dialect: createLibsqlDialect({ url: 'libsql://...', authToken: '...' }), family: 'sqlite' })` |
 | `@syncular/dialect-d1` | Cloudflare Workers | `createDatabase({ dialect: createD1Dialect(env.DB), family: 'sqlite' })` |
-| `@syncular/dialect-wa-sqlite` | Browser | `createDatabase({ dialect: createWaSqliteDialect({ fileName: 'app.db' }), family: 'sqlite' })` |
 
 ### Postgres-compatible (use with `server-dialect-postgres`)
 

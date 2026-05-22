@@ -10,16 +10,13 @@
   "playwright": true,
   "typescript": true,
   "ignore": [
-    ".context/**",
     "**/generated/**",
     "types/**"
   ],
   "ignoreDependencies": [
-    "happy-dom",
     "tailwindcss"
   ],
   "ignoreBinaries": [
-    "act",
     "k6",
     "maestro",
     "version"
@@ -30,6 +27,24 @@
     ],
     "plugins/blob/server-storage-s3/src/index.ts": [
       "types"
+    ],
+    "apps/console/build.ts": [
+      "files"
+    ],
+    "apps/demo/scripts/dev.ts": [
+      "files"
+    ],
+    "apps/demo/src/server/sync-server.ts": [
+      "files"
+    ],
+    "apps/demo/package.json": [
+      "dependencies"
+    ],
+    "packages/console/build-static.ts": [
+      "files"
+    ],
+    "rust/examples/todo-app/package.json": [
+      "dependencies"
     ],
     "packages/server-hono/src/websocket-origin.ts": [
       "exports"
@@ -59,6 +74,10 @@
       "types"
     ],
     "packages/client/src/worker-realtime.ts": [
+      "types",
+      "exports"
+    ],
+    "packages/client/src/generated-bridge.ts": [
       "types"
     ],
     "packages/client-crdt-adapters/src/webview-host-facade.ts": [
@@ -66,6 +85,9 @@
     ],
     "packages/client-crdt-adapters/src/yjs-document-field-adapter.ts": [
       "exports"
+    ],
+    "packages/console/src/lib/types.ts": [
+      "types"
     ]
   },
   "workspaces": {
@@ -77,6 +99,7 @@
     "packages/core": {
       "includeEntryExports": false,
       "entry": [
+        "scripts/*.ts",
         "src/**/*.test.ts"
       ]
     },
@@ -121,9 +144,6 @@
       "includeEntryExports": false
     },
     "packages/transport-http": {
-      "includeEntryExports": false
-    },
-    "packages/transport-ws": {
       "includeEntryExports": false
     },
     "packages/relay": {
@@ -194,9 +214,6 @@
     "packages/dialect-d1": {
       "includeEntryExports": false
     },
-    "packages/dialect-wa-sqlite": {
-      "includeEntryExports": false
-    },
     "packages/dialect-expo-sqlite": {
       "includeEntryExports": false
     },
@@ -217,9 +234,6 @@
       "entry": [
         "conformance/**/*.ts",
         "native-smokes/**/*.ts"
-      ],
-      "ignoreDependencies": [
-        "@syncular/client"
       ]
     },
     "packages/ui": {
@@ -228,6 +242,11 @@
     "apps/console": {
       "entry": [
         "src/main.tsx!"
+      ]
+    },
+    "apps/demo": {
+      "entry": [
+        "src/server/sync-server.ts"
       ]
     },
     "apps/docs": {

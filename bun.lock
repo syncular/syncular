@@ -108,7 +108,6 @@
         "kysely-generic-sqlite": "^1.2.1",
       },
       "devDependencies": {
-        "@happy-dom/global-registrator": "^20.8.9",
         "@syncular/config": "workspace:*",
         "hono": "^4.12.15",
       },
@@ -168,6 +167,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@syncular/client": "workspace:*",
+        "@syncular/core": "workspace:*",
         "@syncular/react": "workspace:*",
       },
       "devDependencies": {
@@ -186,6 +186,7 @@
       "version": "0.0.0",
       "dependencies": {
         "@syncular/client": "workspace:*",
+        "@syncular/core": "workspace:*",
         "@syncular/react": "workspace:*",
       },
       "devDependencies": {
@@ -393,22 +394,6 @@
         "kysely": "^0.28.0",
       },
     },
-    "packages/dialect-wa-sqlite": {
-      "name": "@syncular/dialect-wa-sqlite",
-      "version": "0.0.0",
-      "dependencies": {
-        "@subframe7536/sqlite-wasm": "^0.5.8",
-        "kysely-generic-sqlite": "^1.2.1",
-        "kysely-wasqlite-worker": "^1.2.1",
-      },
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
-        "kysely": "*",
-      },
-      "peerDependencies": {
-        "kysely": "^0.28.0",
-      },
-    },
     "packages/migrations": {
       "name": "@syncular/migrations",
       "version": "0.0.0",
@@ -565,7 +550,6 @@
         "@syncular/dialect-pglite": "workspace:*",
         "@syncular/dialect-react-native-nitro-sqlite": "workspace:*",
         "@syncular/dialect-sqlite3": "workspace:*",
-        "@syncular/dialect-wa-sqlite": "workspace:*",
         "@syncular/migrations": "workspace:*",
         "@syncular/observability-sentry": "workspace:*",
         "@syncular/react": "workspace:*",
@@ -580,7 +564,6 @@
         "@syncular/server-storage-filesystem": "workspace:*",
         "@syncular/server-storage-s3": "workspace:*",
         "@syncular/transport-http": "workspace:*",
-        "@syncular/transport-ws": "workspace:*",
         "@syncular/typegen": "workspace:*",
         "@syncular/ui": "workspace:*",
       },
@@ -618,17 +601,6 @@
       "devDependencies": {
         "@syncular/config": "workspace:*",
         "openapi-typescript": "^7.13.0",
-      },
-    },
-    "packages/transport-ws": {
-      "name": "@syncular/transport-ws",
-      "version": "0.0.0",
-      "dependencies": {
-        "@syncular/core": "workspace:*",
-        "@syncular/transport-http": "workspace:*",
-      },
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
       },
     },
     "packages/typegen": {
@@ -1946,8 +1918,6 @@
 
     "@standard-schema/utils": ["@standard-schema/utils@0.3.0", "", {}, "sha512-e7Mew686owMaPJVNNLs55PUvgz371nKgwsc4vxE49zsODpJEnxgxRo2y/OKrqueavXgZNMDVj3DdHFlaSAeU8g=="],
 
-    "@subframe7536/sqlite-wasm": ["@subframe7536/sqlite-wasm@0.5.8", "", {}, "sha512-5JsbXYmTq3lKuH3edyXBme0SOGYSDLkunapgNGnTOQtYL/DcHqh2aVoSh8ad9+3RYd1m5X0xKFiS+sO6BXDTDA=="],
-
     "@swc/helpers": ["@swc/helpers@0.5.15", "", { "dependencies": { "tslib": "^2.8.0" } }, "sha512-JQ5TuMi45Owi4/BIMAJBoSQoOJu12oOk/gADqlcUL9JEdHB8vyjUSsxqeNXnmXHjYKMi2WcYtezGEEhqUI/E2g=="],
 
     "@syncular/client": ["@syncular/client@workspace:packages/client"],
@@ -1992,8 +1962,6 @@
 
     "@syncular/dialect-sqlite3": ["@syncular/dialect-sqlite3@workspace:packages/dialect-sqlite3"],
 
-    "@syncular/dialect-wa-sqlite": ["@syncular/dialect-wa-sqlite@workspace:packages/dialect-wa-sqlite"],
-
     "@syncular/example-todo-rust": ["@syncular/example-todo-rust@workspace:rust/examples/todo-app"],
 
     "@syncular/migrations": ["@syncular/migrations@workspace:packages/migrations"],
@@ -2035,8 +2003,6 @@
     "@syncular/tests-unit": ["@syncular/tests-unit@workspace:tests/unit"],
 
     "@syncular/transport-http": ["@syncular/transport-http@workspace:packages/transport-http"],
-
-    "@syncular/transport-ws": ["@syncular/transport-ws@workspace:packages/transport-ws"],
 
     "@syncular/typegen": ["@syncular/typegen@workspace:packages/typegen"],
 
@@ -3084,8 +3050,6 @@
 
     "kysely-pglite-dialect": ["kysely-pglite-dialect@1.3.1", "", { "peerDependencies": { "@electric-sql/pglite": "^0.2.0 || ^0.3.0 || ^0.4.0", "kysely": ">=0.23.0" } }, "sha512-QwB87FWSM63JsHouhTil3MNLcP9ajguDv+fFUokVEXEBdjxbtoXZd4iJEZtmdmyGshCFWrE565Ua6fdAfNRxJw=="],
 
-    "kysely-wasqlite-worker": ["kysely-wasqlite-worker@1.2.1", "", { "dependencies": { "kysely-generic-sqlite": "1.2.1", "zen-mitt": "^3.1.0" }, "peerDependencies": { "@subframe7536/sqlite-wasm": ">=0.5.0", "kysely": ">=0.26" } }, "sha512-9tXz4RldOXXFrfSTGQ5hLRX8hxbA8LskW04CMJ1unkcDz64JeuqueVDSo2pcNaq/9YcmRnGv3L7nVgca7Jm5Zg=="],
-
     "lan-network": ["lan-network@0.2.0", "", { "bin": { "lan-network": "dist/lan-network-cli.js" } }, "sha512-EZgbsXMrGS+oK+Ta12mCjzBFse+SIewGdwrSTr5g+MSymnjpox2x05ceI20PQejJOFvOgzcXrfDk/SdY7dSCtw=="],
 
     "langium": ["langium@4.2.1", "", { "dependencies": { "chevrotain": "~11.1.1", "chevrotain-allstar": "~0.3.1", "vscode-languageserver": "~9.0.1", "vscode-languageserver-textdocument": "~1.0.11", "vscode-uri": "~3.1.0" } }, "sha512-zu9QWmjpzJcomzdJQAHgDVhLGq5bLosVak1KVa40NzQHXfqr4eAHupvnPOVXEoLkg6Ocefvf/93d//SB7du4YQ=="],
@@ -4023,8 +3987,6 @@
     "youch": ["youch@4.1.0-beta.10", "", { "dependencies": { "@poppinss/colors": "^4.1.5", "@poppinss/dumper": "^0.6.4", "@speed-highlight/core": "^1.2.7", "cookie": "^1.0.2", "youch-core": "^0.3.3" } }, "sha512-rLfVLB4FgQneDr0dv1oddCVZmKjcJ6yX6mS4pU82Mq/Dt9a3cLZQ62pDBL4AUO+uVrCvtWz3ZFUL2HFAFJ/BXQ=="],
 
     "youch-core": ["youch-core@0.3.3", "", { "dependencies": { "@poppinss/exception": "^1.2.2", "error-stack-parser-es": "^1.0.5" } }, "sha512-ho7XuGjLaJ2hWHoK8yFnsUGy2Y5uDpqSTq1FkHLK4/oqKtyUU1AFbOOxY4IpC9f0fTLjwYbslUz0Po5BpD1wrA=="],
-
-    "zen-mitt": ["zen-mitt@3.1.0", "", {}, "sha512-I0KUcnQb9rnx1/Cu9xtlJPj2e2r+yb3putg2Tjx9mjY2pVTnAzH4N/KwnIpnG+RQCz3VPj33NftGis4ug5s/2g=="],
 
     "zod": ["zod@4.3.6", "", {}, "sha512-rftlrkhHZOcjDwkGlnUtZZkvaPHCsDATp4pGpuOOMDaTdDDXF91wuVDJoWoPsKX/3YPQ5fHuF3STjcYyKr+Qhg=="],
 
