@@ -85,7 +85,8 @@ read-only review:
     full `knip` is still blocked by unrelated WP-27+ relay findings. The
     migration legacy source-checksum upgrade branch is also removed; migration
     tracking now only supports generated `sql_trace_v1` checksums or disabled
-    checksums.
+    checksums. Console WebSocket first-message auth was reclassified as an
+    accepted browser platform capability rather than cleanup debt.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,

@@ -104,7 +104,6 @@ Initial audit inputs:
 - `COMPATIBILITY_REGISTER.md` still has active cleanup candidates:
   - `json-v1` sync-pack path (`Temporary`);
   - `json-row-frame-v1` snapshot chunks (`Temporary`);
-  - console message-auth handshake fallback (`Decision needed`);
   - service-worker `postMessage` fallback (`Decision needed`);
   - external chunk storage inline/database fallback (`Decision needed`);
   - realtime wake-up-only docs (`Remove/update`).
@@ -162,8 +161,8 @@ Initial audit inputs:
 ## Next Action
 
 Continue Slice 1: close the remaining compatibility register items one by one.
-Next candidates are the console auth, service-worker, and external chunk
-storage fallback decisions.
+Next candidates are the service-worker and external chunk storage fallback
+decisions.
 
 ## Progress
 
@@ -215,3 +214,13 @@ storage fallback decisions.
     passed.
   - `rg` found no remaining legacy checksum symbols outside this WP and the
     compatibility register.
+- Reclassified Console WebSocket first-message auth as an accepted platform
+  capability, not old-client compatibility: browser WebSocket cannot set custom
+  `Authorization` headers, and putting bearer tokens in query strings would be
+  worse. Updated the misleading server route comment from "fallback" to
+  explicit browser WebSocket auth behavior.
+- Gates:
+  - `bunx biome check packages/server-hono/src/console/routes.ts rust/docs/COMPATIBILITY_REGISTER.md rust/docs/work-packages/WP-30-foundation-cleanup-complexity.md rust/docs/ROADMAP.md`: passed for the checked TypeScript file; Markdown paths are ignored by Biome in this repo.
+  - `bun --cwd packages/server-hono tsgo`: passed.
+  - `bun test packages/server-hono/src/__tests__/console-gateway-live-routes.test.ts packages/server-hono/src/__tests__/console-routes.test.ts`:
+    passed, `39` tests.
