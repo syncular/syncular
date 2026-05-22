@@ -53,9 +53,10 @@ real Windows runner/host lane and cannot be completed from this workspace.
 
 ## Next Action
 
-Run `bun run rust:native:package:java:windows` on a Windows host/runner and
-record the DLL output evidence. Until then, treat WP-09 as externally blocked,
-not locally in progress.
+Run the existing `rust-windows-jvm-package` GitHub workflow job, or run
+`bun run rust:native:package:java:windows` on a Windows host/runner, and record
+the DLL output evidence. Until then, treat WP-09 as externally blocked, not
+locally in progress.
 
 ## Progress
 
@@ -78,6 +79,10 @@ not locally in progress.
   It built the `aarch64-linux-android` Rust runtime, linked
   `libsyncular_runtime.so`, and ran `1` connected instrumentation test with a
   successful Gradle build.
-- Blocker: Windows JVM packaging still needs a real Windows host/runner to run
+- Gate: `bun run rust:native:package:java:linux` passed locally after WP-13 was
+  accepted, proving the current packaging script still emits the Linux x86_64
+  JVM native library from this macOS workspace.
+- Blocker: Windows JVM packaging still needs the existing
+  `rust-windows-jvm-package` GitHub job or a real Windows host/runner to run
   `bun run rust:native:package:java:windows` and prove
   `.context/native-packages/java/native/windows-x86_64/syncular_runtime_jni.dll`.
