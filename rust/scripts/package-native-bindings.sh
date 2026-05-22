@@ -139,40 +139,64 @@ jvm_host_targets_contain() {
   return 1
 }
 
+boltffi_output_path() {
+  local path="$1"
+  case "$(uname -s)" in
+    MINGW*|MSYS*|CYGWIN*)
+      if command -v cygpath >/dev/null 2>&1; then
+        cygpath -m "${path}"
+        return
+      fi
+      ;;
+  esac
+  printf '%s' "${path}"
+}
+
 write_overlay() {
   local jvm_targets
+  local apple_output apple_swift_output apple_header_output
+  local android_output android_kotlin_output android_header_output android_pack_output
+  local java_output
   jvm_targets="$(toml_string_array_from_csv "${JVM_HOST_TARGETS}")"
+  apple_output="$(boltffi_output_path "${OUT_ROOT}/apple")"
+  apple_swift_output="$(boltffi_output_path "${OUT_ROOT}/apple/Sources/BoltFFI")"
+  apple_header_output="$(boltffi_output_path "${OUT_ROOT}/apple/include")"
+  android_output="$(boltffi_output_path "${OUT_ROOT}/android")"
+  android_kotlin_output="$(boltffi_output_path "${OUT_ROOT}/android/kotlin")"
+  android_header_output="$(boltffi_output_path "${OUT_ROOT}/android/include")"
+  android_pack_output="$(boltffi_output_path "${OUT_ROOT}/android/jniLibs")"
+  java_output="$(boltffi_output_path "${OUT_ROOT}/java")"
 
   cat >"${OVERLAY_PATH}" <<EOF
 [targets.apple]
-output = "${OUT_ROOT}/apple"
+output = "${apple_output}"
 
 [targets.apple.swift]
-output = "${OUT_ROOT}/apple/Sources/BoltFFI"
+output = "${apple_swift_output}"
 
 [targets.apple.header]
-output = "${OUT_ROOT}/apple/include"
+output = "${apple_header_output}"
 
 [targets.apple.xcframework]
-output = "${OUT_ROOT}/apple"
+output = "${apple_output}"
 
 [targets.apple.spm]
-output = "${OUT_ROOT}/apple"
+output = "${apple_output}"
 
 [targets.android]
-output = "${OUT_ROOT}/android"
+output = "${android_output}"
 
 [targets.android.kotlin]
-output = "${OUT_ROOT}/android/kotlin"
+output = "${android_kotlin_output}"
 
 [targets.android.header]
-output = "${OUT_ROOT}/android/include"
+output = "${android_header_output}"
 
 [targets.android.pack]
-output = "${OUT_ROOT}/android/jniLibs"
+output = "${android_pack_output}"
 
 [targets.java.jvm]
-output = "${OUT_ROOT}/java"
+output = "${java_output}"
 host_targets = ${jvm_targets}
 EOF
 }

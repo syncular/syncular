@@ -82,6 +82,13 @@ locally in progress.
 - Gate: `bun run rust:native:package:java:linux` passed locally after WP-13 was
   accepted, proving the current packaging script still emits the Linux x86_64
   JVM native library from this macOS workspace.
+- Windows workflow run `26260376180` proved the Rust runtime library and JNI
+  DLL compile on `windows-latest`, but failed during post-pack verification
+  because the BoltFFI overlay used MSYS-style output paths from Git Bash. The
+  packaging script now writes Windows-native overlay paths through `cygpath`
+  while keeping shell verification paths unchanged.
+- Gate: `bun run rust:native:package:java:linux` passed again after the overlay
+  path normalization change.
 - Blocker: Windows JVM packaging still needs the existing
   `rust-windows-jvm-package` GitHub job or a real Windows host/runner to run
   `bun run rust:native:package:java:windows` and prove
