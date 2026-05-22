@@ -167,7 +167,7 @@ describe('Syncular Rust-owned SQLite blobs against Hono routes', () => {
       BLOB_SCENARIO.expectedUploadQueueBefore
     );
 
-    await waitForRetryBackoff(2_100);
+    await waitForRetryBackoff(250);
     await expect(client.processBlobUploadQueue()).resolves.toEqual(
       BLOB_SCENARIO.expectedProcessPermanentFailure
     );
@@ -348,6 +348,6 @@ function createBlobAdapter(
   });
 }
 
-function waitForRetryBackoff(delayMs = 1_100): Promise<void> {
+function waitForRetryBackoff(delayMs = 150): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, delayMs));
 }

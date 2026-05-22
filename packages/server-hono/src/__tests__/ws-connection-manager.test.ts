@@ -165,7 +165,11 @@ describe('WebSocketConnectionManager (scopes)', () => {
       {
         clientId: 'json',
         kind: 'wake',
-        metadata: { reason: 'payload-too-large', requiresPull: true },
+        metadata: {
+          reason: 'payload-too-large',
+          requiresPull: true,
+          payloadBytes: 4,
+        },
       },
     ]);
   });
@@ -282,7 +286,7 @@ describe('WebSocketConnectionManager (scopes)', () => {
       {
         clientId: 'json',
         kind: 'wake',
-        value: { reason: 'payload-too-large', requiresPull: true },
+        value: { reason: 'server-wakeup', requiresPull: true },
       },
     ]);
   });
@@ -308,9 +312,35 @@ describe('WebSocketConnectionManager (scopes)', () => {
     expect(seen).toEqual([
       {
         cursor: 123,
-        metadata: { reason: 'payload-too-large', requiresPull: true },
+        metadata: {
+          reason: 'payload-too-large',
+          requiresPull: true,
+          payloadBytes: 80 * 1024,
+        },
       },
     ]);
+  });
+
+  it('allows the direct binary sync-pack cap to be configured', () => {
+    const mgr = new WebSocketConnectionManager({
+      heartbeatIntervalMs: 0,
+      maxSyncPackBytes: 128 * 1024,
+    });
+    const seen: Array<{ kind: 'wake' | 'binary'; bytes?: number }> = [];
+    const binary = createConn({
+      actorId: 'u1',
+      clientId: 'binary',
+      syncPackEncoding: 'binary-sync-pack-v1',
+      onSync: () => seen.push({ kind: 'wake' }),
+      onSyncPack: (bytes) => seen.push({ kind: 'binary', bytes: bytes.length }),
+    });
+
+    mgr.register(binary, ['s']);
+    mgr.notifyScopeKeys(['s'], 123, {
+      syncPack: new Uint8Array(80 * 1024),
+    });
+
+    expect(seen).toEqual([{ kind: 'binary', bytes: 80 * 1024 }]);
   });
 
   it('sends resync-required frames while a connection is over its in-flight limit', () => {

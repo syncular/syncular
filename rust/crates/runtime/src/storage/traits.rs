@@ -29,6 +29,8 @@ pub const APP_SCHEMA_ID: &str = "syncular-app";
 
 const RETRY_BASE_DELAY_MS: i64 = 1_000;
 const RETRY_MAX_DELAY_MS: i64 = 30_000;
+const BLOB_UPLOAD_RETRY_BASE_DELAY_MS: i64 = 100;
+const BLOB_UPLOAD_RETRY_MAX_DELAY_MS: i64 = 5_000;
 
 pub fn retry_backoff_delay_ms(attempt_count: i32) -> i64 {
     let exponent = attempt_count.saturating_sub(1).min(12) as u32;
@@ -39,6 +41,17 @@ pub fn retry_backoff_delay_ms(attempt_count: i32) -> i64 {
 
 pub fn next_retry_at(now: i64, attempt_count: i32) -> i64 {
     now.saturating_add(retry_backoff_delay_ms(attempt_count))
+}
+
+pub fn blob_upload_retry_backoff_delay_ms(attempt_count: i32) -> i64 {
+    let exponent = attempt_count.saturating_sub(1).min(12) as u32;
+    BLOB_UPLOAD_RETRY_BASE_DELAY_MS
+        .saturating_mul(2_i64.saturating_pow(exponent))
+        .min(BLOB_UPLOAD_RETRY_MAX_DELAY_MS)
+}
+
+pub fn next_blob_upload_retry_at(now: i64, attempt_count: i32) -> i64 {
+    now.saturating_add(blob_upload_retry_backoff_delay_ms(attempt_count))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

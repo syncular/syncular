@@ -39,6 +39,7 @@ import type {
   SyncularAuthHeaders,
   SyncularClientConfig,
   SyncularPullOptions,
+  SyncularPushOptions,
   SyncularRuntimeClient,
 } from '../../types';
 
@@ -95,6 +96,7 @@ export interface HonoWorkerClientOptions {
   authLifecycle?: CreateSyncularDatabaseOptions['authLifecycle'];
   appSchema?: SyncularClientConfig['appSchema'];
   pull?: SyncularPullOptions;
+  push?: SyncularPushOptions;
   diagnostics?: CreateSyncularDatabaseOptions['diagnostics'];
   sync?: CreateSyncularDatabaseOptions['sync'];
   fileName?: string;
@@ -344,6 +346,7 @@ export async function createHonoSyncHarness(
           clearOnInit: true,
           appSchema: clientOptions.appSchema,
           pull: clientOptions.pull,
+          push: clientOptions.push,
         },
       });
       clients.push(database);

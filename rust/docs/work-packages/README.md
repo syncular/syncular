@@ -51,3 +51,4 @@ to this shape.
 28. [`WP-28 Relay Rust Evaluation And Protocol Validation`](WP-28-relay-production-protocol-validation.md)
 29. [`WP-29 Rust Client Console Workbench`](WP-29-rust-client-console-workbench.md)
 30. [`WP-30 Foundation Cleanup And Complexity Reduction`](WP-30-foundation-cleanup-complexity.md)
+31. [`WP-31 Rust Client Benchmark Parity And Performance Triage`](WP-31-rust-client-benchmark-parity-performance.md)
