@@ -412,9 +412,9 @@ offline writes.
 
 ## Platform Bridges
 
-`@syncular/client-tauri`, `@syncular/client-react-native`, and
-`@syncular/client-expo` expose TypeScript host bindings over a native Rust
-runtime. They are bridge adapters, not separate JavaScript sync clients:
+`@syncular/client-tauri` and `@syncular/client-react-native` expose TypeScript
+host bindings over a native Rust runtime. They are bridge adapters, not separate
+JavaScript sync clients:
 
 ```ts
 import { createSyncularTauriClient } from '@syncular/client-tauri';

@@ -69,6 +69,7 @@ exception.
 | Browser low-level Rust store type aliases | `Removed` | `packages/client/src/rust-store.ts` | Removed the unused `SyncularRustOwnedSqliteClientConfig` alias and renamed the executor/live-query helper types to the canonical `SyncularRustOwned*` names |
 | `accept-server` conflict-resolution alias | `Removed` | `packages/client/src/types.ts`, `rust/crates/runtime/src/core/client.rs` | `keep-server` is the canonical conflict-resolution spelling. The old `accept-server` spelling was removed instead of kept as a compatibility alias |
 | JavaScript-hosted browser store bridge | `Removed` | `rust/crates/runtime/src/web/host_store.rs`, `rust/crates/runtime/src/web/wasm.rs`, `web-store` Cargo features | Product browser runtime is Rust-owned SQLite. The old wasm `SyncularWasmClient` host-store bridge was removed instead of retained as test-only scaffolding |
+| `@syncular/client-expo` alias package | `Removed` | `packages/client-expo` | Expo-only aliases over `@syncular/client-react-native` were removed. React Native is the canonical TypeScript bridge package for native hosts |
 
 ## Items That Are Not Compatibility Debt
 

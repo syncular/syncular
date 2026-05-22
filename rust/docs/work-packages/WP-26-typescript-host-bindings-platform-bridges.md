@@ -10,7 +10,7 @@ client product path.
 
 The TypeScript packages should be thin, ergonomic bindings over the canonical
 Rust runtime and generated app contracts. They should expose the same Syncular
-semantics across browser, React, Tauri, React Native, and Expo without
+semantics across browser, React, Tauri, and React Native without
 reimplementing sync, outbox, conflict, blob, CRDT, auth, or lifecycle logic in
 JavaScript.
 
@@ -21,7 +21,6 @@ JavaScript.
 - Platform bridge packages:
   - `@syncular/client-tauri`
   - `@syncular/client-react-native`
-  - `@syncular/client-expo`
 - Shared bridge contract and testkit fixtures in `@syncular/testkit`.
 - Generated TypeScript app client output and docs where host APIs are surfaced.
 - Interface-impact tracking for feature work packages that change app-facing
@@ -45,7 +44,7 @@ Examples:
 
 - WP-22 owns command-history meaning, replay safety, conflict behavior, and
   unsafe-field rejection. WP-26 tracks whether browser TS, React, Tauri, React
-  Native, Expo, testkit, and docs expose that canonical command-history shape.
+  Native, testkit, and docs expose that canonical command-history shape.
 - WP-11 owns offline auth leases and leased mutation authorization semantics.
   WP-26 tracks whether TypeScript host bindings expose `issueAuthLease`,
   `leasedMutations`, lifecycle errors, and bridge contracts consistently.
@@ -59,8 +58,7 @@ Examples:
 - Every feature WP that changes app-facing APIs has an `Interface Impact`
   section or an explicit deferral note.
 - The TypeScript host-binding surface has a single semantic shape across
-  browser, React, Tauri, React Native, and Expo where the platform can support
-  it.
+  browser, React, Tauri, and React Native where the platform can support it.
 - Platform bridge packages are covered by Syncular-owned testkit harnesses, not
   package-local mocks that can drift from the runtime contract.
 - TypeScript bindings do not expose raw synced writes, old JS fallback paths, or
@@ -76,10 +74,9 @@ Examples:
   - `bun run client:test`
   - `bun run client:tsgo`
 - Platform bridge tests and typechecks:
-  - `bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts packages/client/src/bridge-client.test.ts`
+  - `bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client/src/bridge-client.test.ts`
   - `bun --cwd packages/client-tauri tsgo`
   - `bun --cwd packages/client-react-native tsgo`
-  - `bun --cwd packages/client-expo tsgo`
   - `bun --cwd packages/testkit tsgo`
 - Generated client checks when generated TypeScript output changes:
   - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
@@ -166,15 +163,15 @@ or keep old naming assumptions.
   - Browser README now shows auth lease issue, leased mutations,
     `resumeFromBackground()`, platform bridge usage, and explicit bridge
     live-query/command-history capability constraints.
-  - Tauri, React Native, and Expo bridge packages now have focused READMEs for
-    the current Rust-backed host-binding surface.
+  - Tauri and React Native bridge packages now have focused READMEs for the
+    current Rust-backed host-binding surface.
 - Diagnostic bridge parity slice:
   - `SyncularClientLike` now includes `diagnosticSnapshot()` so React and
     platform bridge clients can consume the same redacted runtime snapshot shape
     as the direct Rust browser client.
-  - `SyncularBridge`, Tauri, React Native, Expo, and the shared testkit bridge
-    harness project diagnostic snapshots through host calls instead of
-    rebuilding diagnostic state in TypeScript.
+  - `SyncularBridge`, Tauri, React Native, and the shared testkit bridge harness
+    project diagnostic snapshots through host calls instead of rebuilding
+    diagnostic state in TypeScript.
   - The testkit bridge returns a redacted synthetic snapshot suitable for app
     tests that assert support/diagnostic wiring without mocking Syncular
     internals.
@@ -182,11 +179,10 @@ or keep old naming assumptions.
 Latest evidence:
 
 ```bash
-bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client-expo/src/index.test.ts packages/client/src/bridge-client.test.ts
+bun test packages/client-tauri/src/index.test.ts packages/client-react-native/src/index.test.ts packages/client/src/bridge-client.test.ts
 bun test packages/client-react/src/index.test.ts
 bun --cwd packages/client-tauri tsgo
 bun --cwd packages/client-react-native tsgo
-bun --cwd packages/client-expo tsgo
 bun --cwd packages/testkit tsgo
 bun --cwd packages/client-react tsgo
 bun run --cwd packages/client tsgo
@@ -227,7 +223,6 @@ paths.
    - `packages/client/src/react.ts`
    - `packages/client-tauri/src/index.ts`
    - `packages/client-react-native/src/index.ts`
-   - `packages/client-expo/src/index.ts`
    - `packages/testkit/src/client-bridge.ts`
 3. Add or update bridge testkit coverage for missing canonical surfaces before
    changing public docs.
