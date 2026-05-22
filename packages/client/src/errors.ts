@@ -167,6 +167,23 @@ export function classifySyncularV2Error(
   return null;
 }
 
+export function isSyncularV2OfflineError(error: unknown): boolean {
+  if (error instanceof SyncularV2ClientError) {
+    return error.code === 'sync.offline' || error.category === 'offline';
+  }
+  if (error && typeof error === 'object') {
+    const record = error as Record<string, unknown>;
+    if (record.code === 'sync.offline' || record.category === 'offline') {
+      return true;
+    }
+  }
+  const classification = classifySyncularV2Error(error);
+  return (
+    classification?.code === 'sync.offline' ||
+    classification?.category === 'offline'
+  );
+}
+
 export function syncularV2ErrorStatus(error: unknown): 401 | 403 | undefined {
   const details =
     error instanceof SyncularV2ClientError ? error.details : undefined;
