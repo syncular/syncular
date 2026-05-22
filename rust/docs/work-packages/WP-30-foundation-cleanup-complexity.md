@@ -1,6 +1,6 @@
 # WP-30 Foundation Cleanup And Complexity Reduction
 
-Status: `[~] package-surface cleanup in progress`
+Status: `[~] package-surface cleanup mostly complete; protocol cleanup remains`
 
 ## Goal
 
@@ -157,10 +157,19 @@ Initial audit inputs:
 
 ## Next Action
 
-Continue Slice 1: close the remaining compatibility register items one by one.
-Next candidates are the temporary JSON protocol/snapshot paths, but those
-should only move under WP-02/WP-03/WP-30 if protocol/conformance gates prove the
-current Rust-first path no longer needs them.
+Package/API alias cleanup is mostly exhausted. Remaining quick-scan hits are
+accepted platform fallbacks, numeric defaults, CTE alias test wording, or
+canonical public contract names.
+
+The remaining compatibility-register cleanup is protocol-level:
+
+- `json-v1` sync-pack path;
+- `json-row-frame-v1` snapshot chunks.
+
+Do not remove either as a micro-cleanup. Treat the next slice as a protocol
+decision batch: identify which runtime/server/test paths still require each JSON
+format, decide whether binary/artifact paths are complete enough to delete the
+JSON path, then run protocol/runtime/conformance gates before committing.
 
 ## Progress
 
