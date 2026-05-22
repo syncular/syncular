@@ -1,6 +1,6 @@
 # WP-30 Foundation Cleanup And Complexity Reduction
 
-Status: `[~] protocol cleanup complete; package-surface scan remains`
+Status: `[x]` accepted
 
 ## Goal
 
@@ -155,21 +155,25 @@ Initial audit inputs:
    - Record accepted deletions and size/perf deltas in `BENCHMARK_LOG.md` when
      runtime/browser-facing.
 
-## Next Action
+## Closeout
 
-Package/API alias cleanup is mostly exhausted. Remaining quick-scan hits are
-accepted platform fallbacks, numeric defaults, CTE alias test wording, or
-canonical public contract names.
+Package/API alias cleanup is exhausted for the current Rust-first foundation.
+Remaining quick-scan hits are accepted platform fallbacks, numeric defaults,
+CTE alias test wording, or canonical public contract names.
 
-The protocol compatibility cleanup pass is complete. Next cleanup should be a
-fresh scan rather than continuing to chase the deleted JSON paths:
+The protocol compatibility cleanup pass is complete. Fresh closeout scan on
+2026-05-23:
 
-- run targeted `rg` scans for old package/import names, aliases, and fallback
-  wording;
-- run package-surface `knip` where WP-27+ relay findings do not block the
-  slice;
-- decide whether any accepted platform fallback needs stronger diagnostics or
-  can stay as-is.
+- `rg -n "json-row-frame-v1|json-v1|syncPackEncodings|snapshotEncodings|dialect-wa-sqlite|transport-ws|server-dialect-neon|accept-server|web-store|legacy_source_v1" packages apps rust/bindings rust/examples tests config ...`:
+  clean after regenerating OpenAPI artifacts.
+- `bunx knip --workspace packages/console --workspace packages/server-hono --workspace packages/client --workspace packages/syncular --workspace packages/testkit --workspace packages/migrations --workspace packages/ui --workspace rust/bindings/javascript`:
+  passed.
+- `bun run knip`: still blocked only by the known WP-27/WP-28 relay evaluation
+  unused-export findings in `packages/relay/src/evaluation/*`, which are
+  outside this cleanup WP.
+
+Future cleanup should start from a new scan and a new work package or reopen
+decision, not from the deleted protocol/package paths closed here.
 
 ## Progress
 

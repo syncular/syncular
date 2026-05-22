@@ -1,6 +1,6 @@
 # WP-32 Realtime Recovery Fanout And External Notification Payloads
 
-Status: `[~]` in progress, depends on WP-04, WP-28, WP-31
+Status: `[x]` accepted, depends on WP-04, WP-28, WP-31
 
 ## Goal
 
@@ -240,10 +240,10 @@ SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indiana
   - online propagation guard `2026-05-22T16-28-24-669Z`: reader visibility p50
     `9.32ms`, p95 `16.97ms`, `15/15` binary applies, and `0` pull recoveries.
 
-## Next Action
+## Closeout
 
-WP-32's original reconnect/external-notification goal is complete enough to
-close this WP once the retained changes are committed.
+WP-32's original reconnect/external-notification goal is complete and the
+retained changes have been committed.
 
 Follow-up work should stay separate and evidence-driven:
 

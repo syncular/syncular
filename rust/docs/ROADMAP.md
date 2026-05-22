@@ -70,7 +70,7 @@ read-only review:
 
 ## Now
 
-- `[~]` [`WP-30 Foundation Cleanup And Complexity Reduction`](work-packages/WP-30-foundation-cleanup-complexity.md)
+- `[x]` [`WP-30 Foundation Cleanup And Complexity Reduction`](work-packages/WP-30-foundation-cleanup-complexity.md)
   - New cross-cutting cleanup WP for polishing, removing unnecessary code,
     deleting stale aliases/backwards-compatibility paths, and reducing
     foundation complexity before more surface is added. Start with the
@@ -123,18 +123,24 @@ read-only review:
     response branch were removed, so combined sync responses are binary-only.
     The now-redundant `syncPackEncodings` and `snapshotEncodings` request
     fields were also removed from TS/Rust protocol shapes, request builders,
-    testkit helpers, and protocol fixtures.
-- `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
-  - Slice 1 persistence is retained but not fully accepted until browser smoke
-    evidence is added. Console diagnostics now persist normalized,
+    testkit helpers, and protocol fixtures. Final fresh scan found no active
+    old protocol/package names after OpenAPI regeneration; targeted `knip`
+    passed for relevant package surfaces, while full `knip` remains blocked
+    only by the known out-of-scope relay evaluation unused exports.
+- `[x]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
+  - Slice 1 persistence is accepted. Console diagnostics now persist normalized,
     size-bounded, sensitive-key-guarded Rust client snapshots in
     `sync_client_diagnostic_snapshots`; latest/list/history routes read from
     storage; Fleet receives diagnostic freshness/health summaries; and
-    ClientDetails shows retained snapshot history. Targeted route, dialect,
-    OpenAPI, TypeScript, Biome, and diff checks passed. Remaining Slice 1 gap:
-    run `/fleet` and `/fleet/:clientId` browser verification once an isolated
-    browser is available.
-- `[~]` [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+    ClientDetails shows retained snapshot history. Browser smoke on
+    `2026-05-23` verified `/fleet` and `/fleet/demo-left` against the demo
+    console API: runtime health/freshness, `@syncular/client`, `indexedDb`,
+    recent diagnostic codes, snapshot history, and recent timeline evidence
+    render without browser warnings/errors or horizontal overflow. A console
+    dev/static SVG favicon link was added to prevent favicon `404` noise in
+    local smoke runs. Further attempt-correlation, row-investigation, and
+    guided repair workflows are deferred to separate future work.
+- `[x]` [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
   - Created from the 2026-05-22 external `offline-sync-bench` Rust-client run.
     The work first fixes benchmark measurement gaps, then adds real Rust-client
     parity for offline replay, large offline queue, and blob flow, and only then

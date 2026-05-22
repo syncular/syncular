@@ -1,6 +1,6 @@
 # WP-31 Rust Client Benchmark Parity And Performance Triage
 
-Status: `[~]` in progress, depends on WP-04, WP-06, WP-17, WP-24
+Status: `[x]` accepted, depends on WP-04, WP-06, WP-17, WP-24
 
 ## Goal
 
@@ -886,7 +886,7 @@ Decision:
   `SYNCULAR_RUST_BROWSER_DURABLE_REOPEN=1` when validating browser/process
   restart durability.
 
-## Next Action
+## Closeout
 
 The unsupported benchmark rows are now covered by native Rust client behavior,
 including an opt-in browser-worker OPFS/process-restart durability lane. No
