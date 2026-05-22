@@ -95,78 +95,6 @@ describe('createHttpTransport SyncTransportOptions', () => {
     expect(capturedSignal).toBe(controller.signal);
   });
 
-  it('retries sync once after 401 when onAuthError returns true', async () => {
-    let requestCount = 0;
-    let authErrorCount = 0;
-
-    const transport = createHttpTransport({
-      baseUrl: 'http://localhost',
-      fetch: async () => {
-        requestCount += 1;
-        if (requestCount === 1) {
-          return new Response(JSON.stringify({ error: 'UNAUTHENTICATED' }), {
-            status: 401,
-            headers: { 'content-type': 'application/json' },
-          });
-        }
-
-        return new Response(
-          JSON.stringify({ ok: true, pull: { ok: true, subscriptions: [] } }),
-          {
-            status: 200,
-            headers: { 'content-type': 'application/json' },
-          }
-        );
-      },
-    });
-
-    const response = await transport.sync(
-      {
-        clientId: 'client-1',
-        pull: { limitCommits: 10, subscriptions: [] },
-      },
-      {
-        onAuthError: async () => {
-          authErrorCount += 1;
-          return true;
-        },
-      }
-    );
-
-    expect(response.ok).toBe(true);
-    expect(requestCount).toBe(2);
-    expect(authErrorCount).toBe(1);
-  });
-
-  it('does not retry when onAuthError returns false', async () => {
-    let requestCount = 0;
-
-    const transport = createHttpTransport({
-      baseUrl: 'http://localhost',
-      fetch: async () => {
-        requestCount += 1;
-        return new Response(JSON.stringify({ error: 'FORBIDDEN' }), {
-          status: 403,
-          headers: { 'content-type': 'application/json' },
-        });
-      },
-    });
-
-    await expect(
-      transport.sync(
-        {
-          clientId: 'client-1',
-          pull: { limitCommits: 10, subscriptions: [] },
-        },
-        {
-          onAuthError: async () => false,
-        }
-      )
-    ).rejects.toMatchObject({ status: 403 });
-
-    expect(requestCount).toBe(1);
-  });
-
   it('retries sync on transient network errors before succeeding', async () => {
     let requestCount = 0;
 
@@ -222,14 +150,20 @@ describe('createHttpTransport SyncTransportOptions', () => {
     expect(requestCount).toBe(1);
   });
 
-  it('retries snapshot chunk fetch on auth error and preserves signal', async () => {
+  it('retries snapshot chunk fetch via shared auth lifecycle and preserves signal', async () => {
     const controller = new AbortController();
     let requestCount = 0;
-    let authErrorCount = 0;
+    let refreshCount = 0;
     const seenSignals: Array<AbortSignal | null> = [];
 
     const transport = createHttpTransport({
       baseUrl: 'http://localhost',
+      authLifecycle: {
+        refreshToken: async () => {
+          refreshCount += 1;
+          return true;
+        },
+      },
       fetch: async (input, init) => {
         const requestSignal = input instanceof Request ? input.signal : null;
         seenSignals.push(init?.signal ?? requestSignal);
@@ -251,68 +185,14 @@ describe('createHttpTransport SyncTransportOptions', () => {
 
     const bytes = await transport.fetchSnapshotChunk(
       { chunkId: 'chunk-1' },
-      {
-        signal: controller.signal,
-        onAuthError: async () => {
-          authErrorCount += 1;
-          return true;
-        },
-      }
+      { signal: controller.signal }
     );
 
     expect(Array.from(bytes)).toEqual([1, 2, 3]);
     expect(requestCount).toBe(2);
-    expect(authErrorCount).toBe(1);
+    expect(refreshCount).toBe(1);
     expect(seenSignals[0]).toBe(controller.signal);
     expect(seenSignals[1]).toBe(controller.signal);
-  });
-
-  it('streams snapshot chunk fetch with auth retry support', async () => {
-    let requestCount = 0;
-    let authErrorCount = 0;
-
-    const transport = createHttpTransport({
-      baseUrl: 'http://localhost',
-      fetch: async () => {
-        requestCount += 1;
-        if (requestCount === 1) {
-          return new Response(JSON.stringify({ error: 'UNAUTHENTICATED' }), {
-            status: 401,
-            headers: { 'content-type': 'application/json' },
-          });
-        }
-
-        return new Response(new Uint8Array([9, 8, 7]), {
-          status: 200,
-          headers: { 'content-type': 'application/octet-stream' },
-        });
-      },
-    });
-
-    const stream = await transport.fetchSnapshotChunkStream?.(
-      { chunkId: 'chunk-2' },
-      {
-        onAuthError: async () => {
-          authErrorCount += 1;
-          return true;
-        },
-      }
-    );
-
-    expect(stream).toBeDefined();
-    const reader = stream!.getReader();
-    const collected: number[] = [];
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      if (!value) continue;
-      collected.push(...value);
-    }
-    reader.releaseLock();
-
-    expect(collected).toEqual([9, 8, 7]);
-    expect(requestCount).toBe(2);
-    expect(authErrorCount).toBe(1);
   });
 
   it('preserves base path for streamed snapshot chunk fetches', async () => {
@@ -536,44 +416,6 @@ describe('createHttpTransport SyncTransportOptions', () => {
     expect(second.ok).toBe(true);
     expect(refreshCount).toBe(1);
     expect(requestCount).toBe(4);
-  });
-
-  it('prioritizes per-call onAuthError over shared auth lifecycle', async () => {
-    let legacyCount = 0;
-    let refreshCount = 0;
-
-    const transport = createHttpTransport({
-      baseUrl: 'http://localhost',
-      authLifecycle: {
-        refreshToken: async () => {
-          refreshCount += 1;
-          return true;
-        },
-      },
-      fetch: async () =>
-        new Response(JSON.stringify({ error: 'UNAUTHENTICATED' }), {
-          status: 401,
-          headers: { 'content-type': 'application/json' },
-        }),
-    });
-
-    await expect(
-      transport.sync(
-        {
-          clientId: 'client-1',
-          pull: { limitCommits: 10, subscriptions: [] },
-        },
-        {
-          onAuthError: async () => {
-            legacyCount += 1;
-            return false;
-          },
-        }
-      )
-    ).rejects.toMatchObject({ status: 401 });
-
-    expect(legacyCount).toBe(1);
-    expect(refreshCount).toBe(0);
   });
 
   it('retries streamed snapshot chunk fetch via shared auth lifecycle', async () => {
