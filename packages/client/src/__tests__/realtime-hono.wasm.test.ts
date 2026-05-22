@@ -256,7 +256,7 @@ describe('Syncular v2 worker realtime against Hono websocket routes', () => {
       diagnostics.push(event);
     });
 
-    const largeTitle = 'Large websocket fallback '.repeat(4096);
+    const largeTitle = 'Large websocket pull recovery '.repeat(4096);
     const clientB = await openClient({
       baseUrl,
       clientId: 'large-delta-client-b',

@@ -107,6 +107,8 @@ read-only review:
     `SyncChange` type. Runtime/native/browser host JSON CRDT request parsing
     now accepts only generated camelCase fields, and the old websocket timing
     alias was removed so transport stats read the current server field names.
+    Browser realtime diagnostics now name binary apply failure directly instead
+    of calling HTTP pull recovery a fallback.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,
