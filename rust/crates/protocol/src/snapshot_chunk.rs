@@ -1,7 +1,4 @@
-use crate::{
-    ProtocolError, Result, SnapshotChunkRef, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-    SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-};
+use crate::{ProtocolError, Result, SnapshotChunkRef, SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1};
 
 pub const SNAPSHOT_CHUNK_COMPRESSION_GZIP: &str = "gzip";
 
@@ -12,14 +9,13 @@ pub fn validate_snapshot_chunk_format(chunk: &SnapshotChunkRef) -> Result<()> {
             chunk.compression
         )));
     }
-    match chunk.encoding.as_str() {
-        SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 | SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 => {
-            Ok(())
-        }
-        encoding => Err(ProtocolError::message(format!(
-            "unsupported snapshot chunk encoding: {encoding}"
-        ))),
+    if chunk.encoding != SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 {
+        return Err(ProtocolError::message(format!(
+            "unsupported snapshot chunk encoding: {}",
+            chunk.encoding
+        )));
     }
+    Ok(())
 }
 
 pub fn validate_snapshot_chunk_hash_hex(chunk: &SnapshotChunkRef, actual_hash: &str) -> Result<()> {

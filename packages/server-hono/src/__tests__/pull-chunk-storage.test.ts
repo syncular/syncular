@@ -5,7 +5,6 @@ import {
   createDatabase,
   decodeBinarySnapshotTable,
   decodeBinarySyncPack,
-  decodeSnapshotRows,
   getSyncTelemetry,
   isBinarySyncPackContentType,
   SYNC_PACK_ENCODING_BINARY_V1,
@@ -96,7 +95,7 @@ function decodeSnapshotChunkRows(
   if (encoding === SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1) {
     return decodeBinarySnapshotTable(decoded).rows;
   }
-  return decodeSnapshotRows(decoded) as Record<string, unknown>[];
+  throw new Error(`Unexpected snapshot encoding: ${encoding}`);
 }
 
 async function readCombinedResponse(response: Response) {

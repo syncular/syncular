@@ -114,7 +114,7 @@ export interface SyncSnapshotChunksTable {
   next_row_cursor?: string | null;
   /** 1 when this chunk reaches the end of the table snapshot */
   is_last_page?: number;
-  /** Row encoding (e.g. 'json-row-frame-v1') */
+  /** Row encoding (e.g. 'binary-table-v1') */
   encoding: string;
   /** Compression algorithm (e.g. 'gzip') */
   compression: string;

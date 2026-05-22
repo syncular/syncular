@@ -307,36 +307,6 @@ pub fn decode_binary_snapshot_table(bytes: &[u8]) -> Result<DecodedBinarySnapsho
     })
 }
 
-pub fn decode_snapshot_row_frames(bytes: &[u8]) -> Result<Vec<Value>> {
-    if bytes.len() < 4 || &bytes[0..4] != b"SRF1" {
-        return Err(ProtocolError::message(
-            "unexpected snapshot chunk frame header",
-        ));
-    }
-
-    let mut offset = 4usize;
-    let mut rows = Vec::with_capacity(estimated_snapshot_row_count(bytes.len()));
-    while offset < bytes.len() {
-        if offset + 4 > bytes.len() {
-            return Err(ProtocolError::message("snapshot frame ended mid-header"));
-        }
-        let len = u32::from_be_bytes(bytes[offset..offset + 4].try_into().unwrap()) as usize;
-        offset += 4;
-        if offset + len > bytes.len() {
-            return Err(ProtocolError::message("snapshot frame ended mid-body"));
-        }
-        let row: Value = serde_json::from_slice(&bytes[offset..offset + len])?;
-        rows.push(row);
-        offset += len;
-    }
-
-    Ok(rows)
-}
-
-fn estimated_snapshot_row_count(byte_len: usize) -> usize {
-    (byte_len / 160).clamp(1, 20_000)
-}
-
 pub fn decode_binary_snapshot_rows(bytes: &[u8]) -> Result<DecodedBinarySnapshotRows> {
     let mut reader = BinarySnapshotReader::new(bytes);
     let (table, columns, row_count, _) = read_binary_snapshot_header(&mut reader)?;

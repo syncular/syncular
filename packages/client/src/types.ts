@@ -45,7 +45,6 @@ export interface SyncularV2TransportStats {
   requestBytes: number;
   responseBytes: number;
   snapshotChunkCount: number;
-  snapshotChunkJsonCount: number;
   snapshotChunkBinaryCount: number;
   snapshotChunkRowCount: number;
   snapshotChunkFetchMs: number;

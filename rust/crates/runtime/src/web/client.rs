@@ -2670,7 +2670,7 @@ mod tests {
                     id: "missing-chunk".to_string(),
                     byte_length: 1,
                     sha256: "0".repeat(64),
-                    encoding: "json-row-frame-v1".to_string(),
+                    encoding: "binary-table-v1".to_string(),
                     compression: "gzip".to_string(),
                 };
                 let manifest = snapshot_manifest_for_test(&chunk)?;

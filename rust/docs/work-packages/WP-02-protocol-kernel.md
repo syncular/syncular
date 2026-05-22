@@ -73,8 +73,7 @@ Second retained slice:
 
 Third retained slice:
 
-- `syncular-protocol` now owns binary snapshot table/row/payload decoding and
-  row-frame decoding.
+- `syncular-protocol` now owns binary snapshot table/row/payload decoding.
 - Runtime `binary_snapshot` is now a thin adapter that keeps
   `SnapshotChunkRows` and runtime-error SQLite visitor adapters.
 - Binary sync-pack row groups now call the protocol binary snapshot decoder

@@ -148,13 +148,6 @@ impl SnapshotChunkRows {
         self.row_count() == 0
     }
 
-    pub fn encoding_name(&self) -> &'static str {
-        match self {
-            Self::Json(_) => "json-row-frame-v1",
-            Self::Binary(_) | Self::BinaryPayload(_) => "binary-table-v1",
-        }
-    }
-
     pub fn into_value_rows(self) -> Vec<Value> {
         self.try_into_value_rows()
             .expect("binary snapshot payload decodes into JSON rows")
@@ -173,10 +166,6 @@ pub fn decode_binary_snapshot_table(bytes: &[u8]) -> Result<DecodedBinarySnapsho
     Ok(protocol_binary_snapshot::decode_binary_snapshot_table(
         bytes,
     )?)
-}
-
-pub fn decode_snapshot_row_frames(bytes: &[u8]) -> Result<Vec<Value>> {
-    Ok(protocol_binary_snapshot::decode_snapshot_row_frames(bytes)?)
 }
 
 pub fn decode_binary_snapshot_rows(bytes: &[u8]) -> Result<DecodedBinarySnapshotRows> {

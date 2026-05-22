@@ -21,9 +21,7 @@ import {
   type BinarySnapshotTable,
   type DecodedBinarySnapshotTable,
   decodeBinarySnapshotTable,
-  decodeSnapshotRows,
   encodeBinarySnapshotTable,
-  encodeSnapshotRows,
 } from '../snapshot-chunks';
 import { decodeBinarySyncPack, encodeBinarySyncPack } from '../sync-packs';
 
@@ -49,15 +47,6 @@ interface JsonCombinedSyncFixture {
   name: string;
   request: SyncCombinedRequest;
   response: SyncCombinedResponse;
-}
-
-interface JsonRowFrameFixture {
-  name: string;
-  generatedBy: string;
-  encoding: string;
-  wireVersion: number;
-  encodedHex: string;
-  decodedRows: unknown[];
 }
 
 interface RelayProtocolBoundaryFixture {
@@ -139,16 +128,6 @@ describe('cross-language protocol fixtures', () => {
     expect(fixture.wireVersion).toBe(1);
     expect(Buffer.from(encoded).toString('hex')).toBe(fixture.encodedHex);
     expect(decodeBinarySnapshotTable(encoded)).toEqual(fixture.decodedTable);
-  });
-
-  it('keeps the JSON row-frame fixture aligned with the TypeScript codec', () => {
-    const fixture = readJsonRowFrameFixture();
-    const encoded = encodeSnapshotRows(fixture.decodedRows);
-
-    expect(fixture.encoding).toBe('json-row-frame-v1');
-    expect(fixture.wireVersion).toBe(1);
-    expect(Buffer.from(encoded).toString('hex')).toBe(fixture.encodedHex);
-    expect(decodeSnapshotRows(encoded)).toEqual(fixture.decodedRows);
   });
 
   it('keeps the relay protocol boundary fixture aligned with TypeScript schemas', () => {
@@ -249,18 +228,6 @@ function readBinarySnapshotTableFixture(): BinarySnapshotTableFixture {
       'utf8'
     )
   ) as BinarySnapshotTableFixture;
-}
-
-function readJsonRowFrameFixture(): JsonRowFrameFixture {
-  return JSON.parse(
-    readFileSync(
-      new URL(
-        '../../../../rust/crates/runtime/tests/fixtures/json-row-frame-v1-tasks.json',
-        import.meta.url
-      ),
-      'utf8'
-    )
-  ) as JsonRowFrameFixture;
 }
 
 function readRelayProtocolBoundaryFixture(): RelayProtocolBoundaryFixture {
