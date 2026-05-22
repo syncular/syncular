@@ -5,10 +5,8 @@
 import {
   DISABLED_MIGRATION_CHECKSUM,
   DISABLED_MIGRATION_CHECKSUM_ALGORITHM,
-  getLegacyMigrationChecksum,
   getMigrationChecksumAlgorithm,
   getStoredDeterministicChecksum,
-  LEGACY_SOURCE_MIGRATION_CHECKSUM_ALGORITHM,
 } from './checksum';
 import { DEFAULT_MIGRATION_TRACKING_TABLE } from './naming';
 import {
@@ -66,10 +64,6 @@ async function getChecksumForAlgorithm<DB>(
 ): Promise<string> {
   if (algorithm === DISABLED_MIGRATION_CHECKSUM_ALGORITHM) {
     return DISABLED_MIGRATION_CHECKSUM;
-  }
-
-  if (algorithm === LEGACY_SOURCE_MIGRATION_CHECKSUM_ALGORITHM) {
-    return getLegacyMigrationChecksum(migration);
   }
 
   if (algorithm === 'sql_trace_v1') {

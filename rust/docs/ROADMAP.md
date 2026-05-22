@@ -82,7 +82,10 @@ read-only review:
     transport-ws package, and unnecessary umbrella aliases
     `syncular/dialect-wa-sqlite`, `syncular/transport-ws`, and
     `syncular/server-dialect-neon`; targeted package/doc gates passed, while
-    full `knip` is still blocked by unrelated WP-27+ relay findings.
+    full `knip` is still blocked by unrelated WP-27+ relay findings. The
+    migration legacy source-checksum upgrade branch is also removed; migration
+    tracking now only supports generated `sql_trace_v1` checksums or disabled
+    checksums.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,
