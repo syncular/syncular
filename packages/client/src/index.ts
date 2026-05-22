@@ -6,6 +6,7 @@ export * from './command-history';
 export * from './database';
 export * from './errors';
 export * from './mutations';
+export * from './network';
 export * from './runtime-contract';
 export * from './rust-client';
 export * from './rust-store';

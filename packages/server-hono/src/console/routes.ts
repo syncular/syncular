@@ -33,6 +33,7 @@ import {
   previewPruneSync,
   pruneSync,
   readSyncStats,
+  toDialectJsonValue,
 } from '@syncular/server';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
@@ -69,6 +70,13 @@ import {
   type ConsoleClearEventsResult,
   ConsoleClearEventsResultSchema,
   type ConsoleClient,
+  type ConsoleClientDiagnosticCodeSummary,
+  type ConsoleClientDiagnosticFreshnessState,
+  type ConsoleClientDiagnosticHealthSeverity,
+  type ConsoleClientDiagnosticIngest,
+  ConsoleClientDiagnosticIngestSchema,
+  type ConsoleClientDiagnosticRecord,
+  ConsoleClientDiagnosticRecordSchema,
   ConsoleClientSchema,
   type ConsoleCommitDetail,
   ConsoleCommitDetailSchema,
@@ -474,6 +482,182 @@ function getClientActivityState(args: {
   return 'stale';
 }
 
+function getDiagnosticFreshnessState(
+  reportedAt: string,
+  receivedAt: string
+): ConsoleClientDiagnosticFreshnessState {
+  const reportedAtMs = parseDate(reportedAt);
+  const receivedAtMs = parseDate(receivedAt);
+  if (reportedAtMs === null || receivedAtMs === null) {
+    return 'stale';
+  }
+
+  const ageMs = Math.max(0, receivedAtMs - reportedAtMs);
+  if (ageMs <= 60_000) {
+    return 'active';
+  }
+  if (ageMs <= 5 * 60_000) {
+    return 'idle';
+  }
+  return 'stale';
+}
+
+const diagnosticSeverityRank: Record<
+  ConsoleClientDiagnosticHealthSeverity,
+  number
+> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+};
+
+function maxDiagnosticSeverity(
+  current: ConsoleClientDiagnosticHealthSeverity | null,
+  next: ConsoleClientDiagnosticHealthSeverity
+): ConsoleClientDiagnosticHealthSeverity {
+  if (!current) {
+    return next;
+  }
+  return diagnosticSeverityRank[next] > diagnosticSeverityRank[current]
+    ? next
+    : current;
+}
+
+function summarizeDiagnosticCodes(
+  diagnostics: ConsoleClientDiagnosticRecord['recentDiagnostics']
+): {
+  codes: ConsoleClientDiagnosticCodeSummary[];
+  healthMaxSeverity: ConsoleClientDiagnosticHealthSeverity | null;
+} {
+  const summary = new Map<
+    string,
+    { count: number; maxLevel: ConsoleClientDiagnosticHealthSeverity }
+  >();
+  let healthMaxSeverity: ConsoleClientDiagnosticHealthSeverity | null = null;
+
+  for (const event of diagnostics) {
+    const code = event.code.trim();
+    if (!code) {
+      continue;
+    }
+    const level = event.level;
+    healthMaxSeverity = maxDiagnosticSeverity(healthMaxSeverity, level);
+    const existing = summary.get(code);
+    if (!existing) {
+      summary.set(code, { count: 1, maxLevel: level });
+      continue;
+    }
+    existing.count += 1;
+    existing.maxLevel = maxDiagnosticSeverity(existing.maxLevel, level);
+  }
+
+  const codes = Array.from(summary.entries())
+    .map(([code, value]) => ({
+      code,
+      count: value.count,
+      maxLevel: value.maxLevel,
+    }))
+    .sort((a, b) => {
+      const severityDelta =
+        diagnosticSeverityRank[b.maxLevel] - diagnosticSeverityRank[a.maxLevel];
+      return severityDelta === 0 ? a.code.localeCompare(b.code) : severityDelta;
+    });
+
+  return { codes, healthMaxSeverity };
+}
+
+function buildQueueSummary(
+  record: Pick<
+    ConsoleClientDiagnosticRecord,
+    'blobUploadStats' | 'conflictStats' | 'outboxStats'
+  >
+): Record<string, unknown> | null {
+  const summary = {
+    outbox: record.outboxStats,
+    conflicts: record.conflictStats,
+    blobUploads: record.blobUploadStats,
+  };
+  return Object.values(summary).some((value) => value !== null)
+    ? summary
+    : null;
+}
+
+function buildTimingSummary(
+  timings: ConsoleClientDiagnosticRecord['recentSyncTimings']
+): Record<string, unknown> | null {
+  const latest = timings[timings.length - 1] ?? null;
+  if (!latest && timings.length === 0) {
+    return null;
+  }
+  return {
+    count: timings.length,
+    latest,
+  };
+}
+
+function normalizeDiagnosticFieldKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/gu, '');
+}
+
+function findSensitiveDiagnosticField(
+  value: unknown,
+  path = '$',
+  depth = 0
+): string | null {
+  if (depth > 12 || value === null || value === undefined) {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) {
+      const found = findSensitiveDiagnosticField(
+        value[index],
+        `${path}[${index}]`,
+        depth + 1
+      );
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  if (typeof value !== 'object') {
+    return null;
+  }
+
+  for (const [key, entry] of Object.entries(value)) {
+    if (
+      CLIENT_DIAGNOSTIC_SENSITIVE_KEYS.has(normalizeDiagnosticFieldKey(key))
+    ) {
+      return `${path}.${key}`;
+    }
+    const found = findSensitiveDiagnosticField(
+      entry,
+      `${path}.${key}`,
+      depth + 1
+    );
+    if (found) {
+      return found;
+    }
+  }
+
+  return null;
+}
+
+function jsonByteLength(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+}
+
+function readStringProperty(
+  value: Record<string, unknown> | null | undefined,
+  key: string
+): string | null {
+  const entry = value?.[key];
+  return typeof entry === 'string' && entry.length > 0 ? entry : null;
+}
+
 type TimeseriesInterval = 'minute' | 'hour' | 'day';
 type TimeseriesRange = '1h' | '6h' | '24h' | '7d' | '30d';
 
@@ -614,6 +798,13 @@ const rowHistoryParamSchema = z.object({
 const clientIdParamSchema = z.object({ id: z.string().min(1) });
 const eventIdParamSchema = z.object({ id: z.coerce.number().int() });
 const apiKeyIdParamSchema = z.object({ id: z.string().min(1) });
+const clientDiagnosticsQuerySchema =
+  ConsolePartitionedPaginationQuerySchema.extend({
+    clientId: z.string().min(1).optional(),
+  });
+const clientDiagnosticDetailQuerySchema = ConsolePartitionQuerySchema;
+const clientDiagnosticHistoryQuerySchema =
+  ConsolePartitionedPaginationQuerySchema;
 
 const eventsQuerySchema = ConsolePartitionedPaginationQuerySchema.extend({
   eventType: z.enum(['sync', 'push', 'pull']).optional(),
@@ -681,6 +872,21 @@ const DEFAULT_OPERATION_EVENTS_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_OPERATION_EVENTS_MAX_ROWS = 5_000;
 const DEFAULT_TIMELINE_SCAN_MAX_ROWS = 10_000;
 const DEFAULT_AUTO_EVENTS_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_CLIENT_DIAGNOSTICS_MAX_RECORDS = 500;
+const DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES = 64 * 1024;
+const CLIENT_DIAGNOSTIC_SENSITIVE_KEYS = new Set([
+  'accesstoken',
+  'apikey',
+  'authorization',
+  'authtoken',
+  'mnemonic',
+  'password',
+  'plaintext',
+  'privatekey',
+  'refreshtoken',
+  'secret',
+  'seedphrase',
+]);
 
 function readNonNegativeInteger(
   value: number | undefined,
@@ -693,6 +899,66 @@ function readNonNegativeInteger(
     return fallback;
   }
   return Math.floor(value);
+}
+
+function isoFromUnixMs(value: number | undefined, fallback: Date): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback.toISOString();
+  }
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return fallback.toISOString();
+  }
+  return date.toISOString();
+}
+
+function clientDiagnosticStoreKey(partitionId: string, clientId: string) {
+  return `${partitionId}\u0000${clientId}`;
+}
+
+function buildClientDiagnosticRecord(
+  payload: ConsoleClientDiagnosticIngest,
+  receivedAt: Date
+): ConsoleClientDiagnosticRecord {
+  const { snapshot } = payload;
+  const reportedAt = isoFromUnixMs(snapshot.generatedAt, receivedAt);
+  const receivedAtIso = receivedAt.toISOString();
+  const partialRecord = {
+    clientId: payload.clientId,
+    actorId: payload.actorId ?? null,
+    partitionId: payload.partitionId,
+    reportedAt,
+    receivedAt: receivedAtIso,
+    runtime: snapshot.runtime ?? null,
+    connection: snapshot.connection ?? null,
+    lifecycle: payload.lifecycle ?? null,
+    bootstrap: snapshot.bootstrap ?? null,
+    transportStats: snapshot.transportStats ?? null,
+    outboxStats: snapshot.outboxStats ?? null,
+    conflictStats: snapshot.conflictStats ?? null,
+    blobUploadStats: snapshot.blobUploadStats ?? null,
+    subscriptions: snapshot.subscriptions ?? [],
+    recentDiagnostics: snapshot.recentDiagnostics ?? [],
+    recentSyncTimings: snapshot.recentSyncTimings ?? [],
+  };
+  const diagnosticSummary = summarizeDiagnosticCodes(
+    partialRecord.recentDiagnostics
+  );
+  const queueSummary = buildQueueSummary(partialRecord);
+
+  return {
+    ...partialRecord,
+    freshnessState: getDiagnosticFreshnessState(reportedAt, receivedAtIso),
+    healthMaxSeverity: diagnosticSummary.healthMaxSeverity,
+    diagnosticCodesSummary: diagnosticSummary.codes,
+    queueSummary,
+    timingSummary: buildTimingSummary(partialRecord.recentSyncTimings),
+    redactionSummary: {
+      rawSnapshot: 'normalized_redacted_record',
+      sensitiveKeys: 'rejected',
+      payloadValues: 'client_redacted',
+    },
+  };
 }
 
 export function createConsoleRoutes<
@@ -794,13 +1060,37 @@ export function createConsoleRoutes<
     created_at: Generated<string>;
   }
 
+  interface SyncClientDiagnosticSnapshotsTable {
+    snapshot_id: Generated<number>;
+    partition_id: string;
+    client_id: string;
+    actor_id: string | null;
+    runtime_kind: string | null;
+    runtime_version: string | null;
+    schema_version: number | null;
+    reported_at: string;
+    received_at: Generated<string>;
+    lifecycle_phase: string | null;
+    connection_state: string | null;
+    freshness_state: string;
+    health_max_severity: string | null;
+    diagnostic_codes_summary: unknown | null;
+    queue_summary: unknown | null;
+    timing_summary: unknown | null;
+    redaction_summary: unknown | null;
+    snapshot_json: unknown;
+  }
+
   type SyncOperationEventRow = Selectable<SyncOperationEventsTable>;
+  type SyncClientDiagnosticSnapshotRow =
+    Selectable<SyncClientDiagnosticSnapshotsTable>;
 
   interface ConsoleDb extends SyncCoreDb {
     sync_request_events: SyncRequestEventsTable;
     sync_request_payloads: SyncRequestPayloadsTable;
     sync_operation_events: SyncOperationEventsTable;
     sync_realtime_events: SyncRealtimeEventsTable;
+    sync_client_diagnostic_snapshots: SyncClientDiagnosticSnapshotsTable;
     sync_api_keys: SyncApiKeysTable;
   }
 
@@ -836,6 +1126,10 @@ export function createConsoleRoutes<
   const autoEventsPruneIntervalMs = readNonNegativeInteger(
     options.maintenance?.autoPruneIntervalMs,
     DEFAULT_AUTO_EVENTS_PRUNE_INTERVAL_MS
+  );
+  const clientDiagnosticsMaxRecords = readNonNegativeInteger(
+    options.maintenance?.clientDiagnosticsMaxRows,
+    DEFAULT_CLIENT_DIAGNOSTICS_MAX_RECORDS
   );
   let lastEventsPruneRunAt = 0;
 
@@ -1367,6 +1661,146 @@ export function createConsoleRoutes<
             : JSON.stringify(event.resultPayload),
       })
       .execute();
+  };
+
+  const parseClientDiagnosticSnapshotRow = (
+    row: SyncClientDiagnosticSnapshotRow
+  ): ConsoleClientDiagnosticRecord | null => {
+    const parsed = parseJsonValue(row.snapshot_json);
+    const record = ConsoleClientDiagnosticRecordSchema.safeParse(parsed);
+    if (!record.success) {
+      return null;
+    }
+    return record.data;
+  };
+
+  const readClientDiagnosticRecords = async (args: {
+    clientId?: string;
+    clientIds?: string[];
+    latestOnly: boolean;
+    limit?: number;
+    offset?: number;
+    partitionId?: string;
+  }): Promise<{ items: ConsoleClientDiagnosticRecord[]; total: number }> => {
+    let query = db.selectFrom('sync_client_diagnostic_snapshots').selectAll();
+
+    if (args.partitionId) {
+      query = query.where('partition_id', '=', args.partitionId);
+    }
+    if (args.clientId) {
+      query = query.where('client_id', '=', args.clientId);
+    }
+    if (args.clientIds && args.clientIds.length > 0) {
+      query = query.where('client_id', 'in', args.clientIds);
+    }
+
+    const rows = await query
+      .orderBy('received_at', 'desc')
+      .orderBy('snapshot_id', 'desc')
+      .execute();
+    const items: ConsoleClientDiagnosticRecord[] = [];
+    const latestKeys = new Set<string>();
+
+    for (const row of rows) {
+      const record = parseClientDiagnosticSnapshotRow(row);
+      if (!record) {
+        continue;
+      }
+      if (args.latestOnly) {
+        const key = clientDiagnosticStoreKey(
+          record.partitionId,
+          record.clientId
+        );
+        if (latestKeys.has(key)) {
+          continue;
+        }
+        latestKeys.add(key);
+      }
+      items.push(record);
+    }
+
+    const offset = args.offset ?? 0;
+    const limit = args.limit ?? items.length;
+    return {
+      items: items.slice(offset, offset + limit),
+      total: items.length,
+    };
+  };
+
+  const writeClientDiagnosticRecord = async (
+    record: ConsoleClientDiagnosticRecord
+  ): Promise<void> => {
+    await db
+      .insertInto('sync_client_diagnostic_snapshots')
+      .values({
+        partition_id: record.partitionId,
+        client_id: record.clientId,
+        actor_id: record.actorId,
+        runtime_kind:
+          record.runtime?.rust?.crateName ??
+          record.runtime?.packageName ??
+          null,
+        runtime_version:
+          record.runtime?.rust?.crateVersion ??
+          record.runtime?.packageVersion ??
+          null,
+        schema_version: record.runtime?.rust?.schemaVersion ?? null,
+        reported_at: record.reportedAt,
+        received_at: record.receivedAt,
+        lifecycle_phase: readStringProperty(record.lifecycle, 'phase'),
+        connection_state:
+          readStringProperty(record.connection, 'realtime') ??
+          readStringProperty(record.lifecycle, 'realtime'),
+        freshness_state: record.freshnessState,
+        health_max_severity: record.healthMaxSeverity,
+        diagnostic_codes_summary: toDialectJsonValue(
+          options.dialect,
+          record.diagnosticCodesSummary
+        ),
+        queue_summary: toDialectJsonValue(options.dialect, record.queueSummary),
+        timing_summary: toDialectJsonValue(
+          options.dialect,
+          record.timingSummary
+        ),
+        redaction_summary: toDialectJsonValue(
+          options.dialect,
+          record.redactionSummary
+        ),
+        snapshot_json: toDialectJsonValue(options.dialect, record),
+      })
+      .execute();
+  };
+
+  const pruneClientDiagnosticRecordsByCount = async (): Promise<void> => {
+    if (clientDiagnosticsMaxRecords <= 0) {
+      return;
+    }
+
+    const countRow = await db
+      .selectFrom('sync_client_diagnostic_snapshots')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+    const total = coerceNumber(countRow?.total) ?? 0;
+    if (total <= clientDiagnosticsMaxRecords) {
+      return;
+    }
+
+    const cutoffRow = await db
+      .selectFrom('sync_client_diagnostic_snapshots')
+      .select(['snapshot_id'])
+      .orderBy('snapshot_id', 'desc')
+      .offset(clientDiagnosticsMaxRecords)
+      .limit(1)
+      .executeTakeFirst();
+    const cutoffSnapshotId = coerceNumber(cutoffRow?.snapshot_id);
+    if (cutoffSnapshotId === null) {
+      return;
+    }
+
+    await db
+      .deleteFrom('sync_client_diagnostic_snapshots')
+      .where('snapshot_id', '<=', cutoffSnapshotId)
+      .executeTakeFirst();
   };
 
   const shouldUseRawMetrics = async (
@@ -2896,6 +3330,10 @@ export function createConsoleRoutes<
           transportPath: 'direct' | 'relay';
         }
       >();
+      const latestDiagnosticsByClientId = new Map<
+        string,
+        ConsoleClientDiagnosticRecord
+      >();
 
       if (pagedClientIds.length > 0) {
         let recentEventsQuery = db
@@ -2936,12 +3374,24 @@ export function createConsoleRoutes<
             transportPath: row.transport_path === 'relay' ? 'relay' : 'direct',
           });
         }
+
+        const diagnosticRecords = await readClientDiagnosticRecords({
+          clientIds: pagedClientIds,
+          latestOnly: true,
+          partitionId,
+        });
+        for (const record of diagnosticRecords.items) {
+          if (!latestDiagnosticsByClientId.has(record.clientId)) {
+            latestDiagnosticsByClientId.set(record.clientId, record);
+          }
+        }
       }
 
       const items: ConsoleClient[] = rows.map((row) => {
         const clientId = row.client_id ?? '';
         const cursor = coerceNumber(row.cursor) ?? 0;
         const latestEvent = latestEventsByClientId.get(clientId);
+        const latestDiagnostic = latestDiagnosticsByClientId.get(clientId);
         const connectionCount =
           options.wsConnectionManager?.getConnectionCount(clientId) ?? 0;
         const connectionPath =
@@ -2962,6 +3412,10 @@ export function createConsoleRoutes<
             connectionCount,
             updatedAt: row.updated_at,
           }),
+          diagnosticFreshnessState: latestDiagnostic?.freshnessState ?? null,
+          diagnosticHealthMaxSeverity:
+            latestDiagnostic?.healthMaxSeverity ?? null,
+          diagnosticReceivedAt: latestDiagnostic?.receivedAt ?? null,
           lastRequestAt: latestEvent?.createdAt ?? null,
           lastRequestType: latestEvent?.eventType ?? null,
           lastRequestOutcome: latestEvent?.outcome ?? null,
@@ -2981,6 +3435,217 @@ export function createConsoleRoutes<
 
       c.header('X-Total-Count', String(total));
       return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /client-diagnostics
+  // -------------------------------------------------------------------------
+
+  routes.post(
+    '/client-diagnostics',
+    describeConsoleRoute({
+      summary: 'Ingest a redacted Rust client diagnostic snapshot',
+      responses: {
+        202: {
+          description: 'Accepted client diagnostic snapshot',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleClientDiagnosticRecordSchema),
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('json', ConsoleClientDiagnosticIngestSchema),
+    async (c) => {
+      const payload = c.req.valid('json');
+      const sensitiveField = findSensitiveDiagnosticField(payload);
+      if (sensitiveField) {
+        return consoleRouteError(c, 400, 'console.invalid_request', undefined, {
+          fieldPath: sensitiveField,
+          reason: 'client_diagnostic_sensitive_field',
+        });
+      }
+
+      const record = buildClientDiagnosticRecord(payload, new Date());
+      const recordBytes = jsonByteLength(record);
+      if (recordBytes > DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES) {
+        return consoleRouteError(c, 400, 'console.invalid_request', undefined, {
+          maxBytes: DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES,
+          actualBytes: recordBytes,
+          reason: 'client_diagnostic_snapshot_too_large',
+        });
+      }
+
+      await writeClientDiagnosticRecord(record);
+      await pruneClientDiagnosticRecordsByCount();
+      return c.json(record, 202);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /client-diagnostics
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/client-diagnostics',
+    describeConsoleRoute({
+      summary: 'List latest redacted Rust client diagnostic snapshots',
+      responses: {
+        200: {
+          description: 'Paginated client diagnostic snapshots',
+          content: {
+            'application/json': {
+              schema: resolver(
+                ConsolePaginatedResponseSchema(
+                  ConsoleClientDiagnosticRecordSchema
+                )
+              ),
+            },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('query', clientDiagnosticsQuerySchema),
+    async (c) => {
+      const { limit, offset, partitionId, clientId } = c.req.valid('query');
+      const records = await readClientDiagnosticRecords({
+        clientId,
+        latestOnly: true,
+        limit,
+        offset,
+        partitionId,
+      });
+
+      const response: ConsolePaginatedResponse<ConsoleClientDiagnosticRecord> =
+        {
+          items: records.items,
+          total: records.total,
+          offset,
+          limit,
+        };
+
+      c.header('X-Total-Count', String(records.total));
+      return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /client-diagnostics/:id/history
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/client-diagnostics/:id/history',
+    describeConsoleRoute({
+      summary: 'List retained redacted Rust client diagnostic snapshots',
+      responses: {
+        200: {
+          description: 'Paginated client diagnostic snapshot history',
+          content: {
+            'application/json': {
+              schema: resolver(
+                ConsolePaginatedResponseSchema(
+                  ConsoleClientDiagnosticRecordSchema
+                )
+              ),
+            },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('param', clientIdParamSchema),
+    zValidator('query', clientDiagnosticHistoryQuerySchema),
+    async (c) => {
+      const { id } = c.req.valid('param');
+      const { limit, offset, partitionId } = c.req.valid('query');
+      const records = await readClientDiagnosticRecords({
+        clientId: id,
+        latestOnly: false,
+        limit,
+        offset,
+        partitionId,
+      });
+
+      const response: ConsolePaginatedResponse<ConsoleClientDiagnosticRecord> =
+        {
+          items: records.items,
+          total: records.total,
+          offset,
+          limit,
+        };
+
+      c.header('X-Total-Count', String(records.total));
+      return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /client-diagnostics/:id
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/client-diagnostics/:id',
+    describeConsoleRoute({
+      summary: 'Get latest redacted Rust client diagnostic snapshot',
+      responses: {
+        200: {
+          description: 'Client diagnostic snapshot',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleClientDiagnosticRecordSchema),
+            },
+          },
+        },
+        404: {
+          description: 'Diagnostic snapshot not found',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('param', clientIdParamSchema),
+    zValidator('query', clientDiagnosticDetailQuerySchema),
+    async (c) => {
+      const { id } = c.req.valid('param');
+      const { partitionId } = c.req.valid('query');
+      const records = await readClientDiagnosticRecords({
+        clientId: id,
+        latestOnly: true,
+        limit: 1,
+        offset: 0,
+        partitionId,
+      });
+      const record = records.items[0] ?? null;
+      if (!record) {
+        return consoleNotFound(c, 'Client diagnostic snapshot not found.');
+      }
+      return c.json(record, 200);
     }
   );
 

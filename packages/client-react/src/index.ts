@@ -4,6 +4,7 @@ import {
   type MutationReceipt,
   type MutationsApi,
   type SyncularClientLike,
+  type SyncularClientStatus,
   type SyncularV2BlobUploadQueueStats,
   type SyncularV2ChangedRow,
   type SyncularV2ClientEventMap,
@@ -319,19 +320,27 @@ export function createSyncularReact<DB>() {
     return value.client;
   }
 
-  function useSyncConnection(): UseSyncConnectionResult {
+  function useSyncStatus(): SyncularClientStatus {
     const client = useClient();
-    const state = useSyncExternalStore(
+    const readStatus = useCallback(() => client.getStatus(), [client]);
+    const getSnapshot = useStableSnapshot(readStatus);
+    return useSyncExternalStore(
       useCallback(
         (notify) => client.on('lifecycleChanged', () => notify()),
         [client]
       ),
-      useCallback(() => client.getStatus().connection, [client]),
-      useCallback(() => client.getStatus().connection, [client])
+      getSnapshot,
+      getSnapshot
     );
+  }
+
+  function useSyncConnection(): UseSyncConnectionResult {
+    const client = useClient();
+    const status = useSyncStatus();
+    const state = status.connection;
     return {
       state,
-      isConnected: state.realtime === 'connected' && !state.closed,
+      isConnected: status.isConnected,
       isReconnecting: state.realtime === 'connecting',
       reconnect: client.start,
       disconnect: client.stop,
@@ -854,6 +863,7 @@ export function createSyncularReact<DB>() {
     useRowsChanged,
     useSyncConnection,
     useSyncContext,
+    useSyncStatus,
     useSyncQuery,
   };
 }
@@ -928,6 +938,17 @@ function useLatest<T>(value: T): { readonly current: T } {
 
 function stableStringListKey(values: readonly string[] | undefined): string {
   return values == null ? '' : values.join('\u0001');
+}
+
+function useStableSnapshot<T>(read: () => T): () => T {
+  const ref = useRef<{ value: T; json: string } | null>(null);
+  return useCallback(() => {
+    const value = read();
+    const json = JSON.stringify(value);
+    if (ref.current?.json === json) return ref.current.value;
+    ref.current = { value, json };
+    return value;
+  }, [read]);
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

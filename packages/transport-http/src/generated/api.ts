@@ -314,6 +314,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/console/client-diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List latest redacted Rust client diagnostic snapshots */
+        get: operations["getConsoleClientDiagnostics"];
+        put?: never;
+        /** Ingest a redacted Rust client diagnostic snapshot */
+        post: operations["postConsoleClientDiagnostics"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/console/client-diagnostics/{id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List retained redacted Rust client diagnostic snapshots */
+        get: operations["getConsoleClientDiagnosticsByIdHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/console/client-diagnostics/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get latest redacted Rust client diagnostic snapshot */
+        get: operations["getConsoleClientDiagnosticsById"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/console/handlers": {
         parameters: {
             query?: never;
@@ -2502,6 +2554,9 @@ export interface operations {
                             isRealtimeConnected: boolean;
                             /** @enum {string} */
                             activityState: "active" | "idle" | "stale";
+                            diagnosticFreshnessState: ("active" | "idle" | "stale") | null;
+                            diagnosticHealthMaxSeverity: ("debug" | "info" | "warn" | "error") | null;
+                            diagnosticReceivedAt: string | null;
                             lastRequestAt: string | null;
                             lastRequestType: ("sync" | "push" | "pull") | null;
                             lastRequestOutcome: string | null;
@@ -2518,6 +2573,929 @@ export interface operations {
             };
             /** @description Unauthenticated */
             401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleClientDiagnostics: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                partitionId?: string;
+                clientId?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paginated client diagnostic snapshots */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: {
+                            clientId: string;
+                            actorId: string | null;
+                            partitionId: string;
+                            reportedAt: string;
+                            receivedAt: string;
+                            /** @enum {string} */
+                            freshnessState: "active" | "idle" | "stale";
+                            healthMaxSeverity: ("debug" | "info" | "warn" | "error") | null;
+                            diagnosticCodesSummary: {
+                                code: string;
+                                count: number;
+                                /** @enum {string} */
+                                maxLevel: "debug" | "info" | "warn" | "error";
+                            }[];
+                            queueSummary: {
+                                [key: string]: unknown;
+                            } | null;
+                            timingSummary: {
+                                [key: string]: unknown;
+                            } | null;
+                            redactionSummary: {
+                                [key: string]: unknown;
+                            };
+                            runtime: ({
+                                packageName?: string;
+                                packageVersion?: string;
+                                workerProtocolVersion?: number;
+                                storage?: string;
+                                storageFallback?: {
+                                    from?: string;
+                                    to?: string;
+                                    reason?: string;
+                                } & {
+                                    [key: string]: unknown;
+                                };
+                                workerUrl?: string;
+                                wasmGlueUrl?: string;
+                                wasmUrl?: string;
+                                rust?: {
+                                    crateName?: string;
+                                    crateVersion?: string;
+                                    schemaVersion?: number;
+                                    features?: string[];
+                                } & {
+                                    [key: string]: unknown;
+                                };
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            connection: ({
+                                closed?: boolean;
+                                pendingRequests?: number;
+                                realtime?: string;
+                                storageFallback?: unknown;
+                                lastDiagnostic?: unknown;
+                                lastError?: unknown;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            lifecycle: ({
+                                phase?: string;
+                                realtime?: string;
+                                online?: boolean;
+                                requiresAction?: boolean;
+                                pendingRequests?: number;
+                                bootstrap?: unknown;
+                                outbox?: unknown;
+                                conflicts?: unknown;
+                                blobUploads?: unknown;
+                                lastDiagnostic?: unknown;
+                                lastError?: unknown;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            bootstrap: {
+                                [key: string]: unknown;
+                            } | null;
+                            transportStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            outboxStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            conflictStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            blobUploadStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            subscriptions: ({
+                                id: string;
+                                table: string;
+                                /** @default [] */
+                                scopeKeys: string[];
+                                /** @default 0 */
+                                scopeValueCount: number;
+                                /** @default [] */
+                                paramsKeys: string[];
+                                /** @default 0 */
+                                paramsValueCount: number;
+                                /** @default null */
+                                status: string | null;
+                                /** @default false */
+                                ready: boolean;
+                                phase?: string;
+                                /** @default 0 */
+                                progressPercent: number;
+                                /** @default null */
+                                cursor: (number | string) | null;
+                                /** @default 0 */
+                                bootstrapPhase: number;
+                                /** @default null */
+                                bootstrapState: unknown | null;
+                            } & {
+                                [key: string]: unknown;
+                            })[];
+                            recentDiagnostics: ({
+                                at: number;
+                                /**
+                                 * @default info
+                                 * @enum {string}
+                                 */
+                                level: "debug" | "info" | "warn" | "error";
+                                source: string;
+                                code: string;
+                                message: string;
+                                syncAttemptId?: string;
+                                traceId?: string;
+                                spanId?: string;
+                                clientId?: string;
+                                subscriptionId?: string;
+                                table?: string;
+                                rowId?: string;
+                                cursor?: (number | string) | null;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                            } & {
+                                [key: string]: unknown;
+                            })[];
+                            recentSyncTimings: {
+                                [key: string]: unknown;
+                            }[];
+                        }[];
+                        total: number;
+                        offset: number;
+                        limit: number;
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    postConsoleClientDiagnostics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    clientId: string;
+                    actorId?: string;
+                    /** @default default */
+                    partitionId?: string;
+                    lifecycle?: {
+                        phase?: string;
+                        realtime?: string;
+                        online?: boolean;
+                        requiresAction?: boolean;
+                        pendingRequests?: number;
+                        bootstrap?: unknown;
+                        outbox?: unknown;
+                        conflicts?: unknown;
+                        blobUploads?: unknown;
+                        lastDiagnostic?: unknown;
+                        lastError?: unknown;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                    snapshot: {
+                        generatedAt?: number;
+                        runtime?: {
+                            packageName?: string;
+                            packageVersion?: string;
+                            workerProtocolVersion?: number;
+                            storage?: string;
+                            storageFallback?: {
+                                from?: string;
+                                to?: string;
+                                reason?: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                            workerUrl?: string;
+                            wasmGlueUrl?: string;
+                            wasmUrl?: string;
+                            rust?: {
+                                crateName?: string;
+                                crateVersion?: string;
+                                schemaVersion?: number;
+                                features?: string[];
+                            } & {
+                                [key: string]: unknown;
+                            };
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        connection?: {
+                            closed?: boolean;
+                            pendingRequests?: number;
+                            realtime?: string;
+                            storageFallback?: unknown;
+                            lastDiagnostic?: unknown;
+                            lastError?: unknown;
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        /** @default [] */
+                        subscriptions?: ({
+                            id: string;
+                            table: string;
+                            /** @default [] */
+                            scopeKeys?: string[];
+                            /** @default 0 */
+                            scopeValueCount?: number;
+                            /** @default [] */
+                            paramsKeys?: string[];
+                            /** @default 0 */
+                            paramsValueCount?: number;
+                            /** @default null */
+                            status?: string | null;
+                            /** @default false */
+                            ready?: boolean;
+                            phase?: string;
+                            /** @default 0 */
+                            progressPercent?: number;
+                            /** @default null */
+                            cursor?: (number | string) | null;
+                            /** @default 0 */
+                            bootstrapPhase?: number;
+                            /** @default null */
+                            bootstrapState?: unknown | null;
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        /** @default [] */
+                        recentDiagnostics?: ({
+                            at: number;
+                            /**
+                             * @default info
+                             * @enum {string}
+                             */
+                            level: "debug" | "info" | "warn" | "error";
+                            source: string;
+                            code: string;
+                            message: string;
+                            syncAttemptId?: string;
+                            traceId?: string;
+                            spanId?: string;
+                            clientId?: string;
+                            subscriptionId?: string;
+                            table?: string;
+                            rowId?: string;
+                            cursor?: (number | string) | null;
+                            details?: {
+                                [key: string]: unknown;
+                            };
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        /** @default [] */
+                        recentSyncTimings?: {
+                            [key: string]: unknown;
+                        }[];
+                        bootstrap?: {
+                            [key: string]: unknown;
+                        };
+                        transportStats?: {
+                            [key: string]: unknown;
+                        };
+                        outboxStats?: {
+                            [key: string]: unknown;
+                        };
+                        conflictStats?: {
+                            [key: string]: unknown;
+                        };
+                        blobUploadStats?: {
+                            [key: string]: unknown;
+                        };
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description Accepted client diagnostic snapshot */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        clientId: string;
+                        actorId: string | null;
+                        partitionId: string;
+                        reportedAt: string;
+                        receivedAt: string;
+                        /** @enum {string} */
+                        freshnessState: "active" | "idle" | "stale";
+                        healthMaxSeverity: ("debug" | "info" | "warn" | "error") | null;
+                        diagnosticCodesSummary: {
+                            code: string;
+                            count: number;
+                            /** @enum {string} */
+                            maxLevel: "debug" | "info" | "warn" | "error";
+                        }[];
+                        queueSummary: {
+                            [key: string]: unknown;
+                        } | null;
+                        timingSummary: {
+                            [key: string]: unknown;
+                        } | null;
+                        redactionSummary: {
+                            [key: string]: unknown;
+                        };
+                        runtime: ({
+                            packageName?: string;
+                            packageVersion?: string;
+                            workerProtocolVersion?: number;
+                            storage?: string;
+                            storageFallback?: {
+                                from?: string;
+                                to?: string;
+                                reason?: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                            workerUrl?: string;
+                            wasmGlueUrl?: string;
+                            wasmUrl?: string;
+                            rust?: {
+                                crateName?: string;
+                                crateVersion?: string;
+                                schemaVersion?: number;
+                                features?: string[];
+                            } & {
+                                [key: string]: unknown;
+                            };
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
+                        connection: ({
+                            closed?: boolean;
+                            pendingRequests?: number;
+                            realtime?: string;
+                            storageFallback?: unknown;
+                            lastDiagnostic?: unknown;
+                            lastError?: unknown;
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
+                        lifecycle: ({
+                            phase?: string;
+                            realtime?: string;
+                            online?: boolean;
+                            requiresAction?: boolean;
+                            pendingRequests?: number;
+                            bootstrap?: unknown;
+                            outbox?: unknown;
+                            conflicts?: unknown;
+                            blobUploads?: unknown;
+                            lastDiagnostic?: unknown;
+                            lastError?: unknown;
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
+                        bootstrap: {
+                            [key: string]: unknown;
+                        } | null;
+                        transportStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        outboxStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        conflictStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        blobUploadStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        subscriptions: ({
+                            id: string;
+                            table: string;
+                            /** @default [] */
+                            scopeKeys: string[];
+                            /** @default 0 */
+                            scopeValueCount: number;
+                            /** @default [] */
+                            paramsKeys: string[];
+                            /** @default 0 */
+                            paramsValueCount: number;
+                            /** @default null */
+                            status: string | null;
+                            /** @default false */
+                            ready: boolean;
+                            phase?: string;
+                            /** @default 0 */
+                            progressPercent: number;
+                            /** @default null */
+                            cursor: (number | string) | null;
+                            /** @default 0 */
+                            bootstrapPhase: number;
+                            /** @default null */
+                            bootstrapState: unknown | null;
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        recentDiagnostics: ({
+                            at: number;
+                            /**
+                             * @default info
+                             * @enum {string}
+                             */
+                            level: "debug" | "info" | "warn" | "error";
+                            source: string;
+                            code: string;
+                            message: string;
+                            syncAttemptId?: string;
+                            traceId?: string;
+                            spanId?: string;
+                            clientId?: string;
+                            subscriptionId?: string;
+                            table?: string;
+                            rowId?: string;
+                            cursor?: (number | string) | null;
+                            details?: {
+                                [key: string]: unknown;
+                            };
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        recentSyncTimings: {
+                            [key: string]: unknown;
+                        }[];
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleClientDiagnosticsByIdHistory: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                partitionId?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paginated client diagnostic snapshot history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: {
+                            clientId: string;
+                            actorId: string | null;
+                            partitionId: string;
+                            reportedAt: string;
+                            receivedAt: string;
+                            /** @enum {string} */
+                            freshnessState: "active" | "idle" | "stale";
+                            healthMaxSeverity: ("debug" | "info" | "warn" | "error") | null;
+                            diagnosticCodesSummary: {
+                                code: string;
+                                count: number;
+                                /** @enum {string} */
+                                maxLevel: "debug" | "info" | "warn" | "error";
+                            }[];
+                            queueSummary: {
+                                [key: string]: unknown;
+                            } | null;
+                            timingSummary: {
+                                [key: string]: unknown;
+                            } | null;
+                            redactionSummary: {
+                                [key: string]: unknown;
+                            };
+                            runtime: ({
+                                packageName?: string;
+                                packageVersion?: string;
+                                workerProtocolVersion?: number;
+                                storage?: string;
+                                storageFallback?: {
+                                    from?: string;
+                                    to?: string;
+                                    reason?: string;
+                                } & {
+                                    [key: string]: unknown;
+                                };
+                                workerUrl?: string;
+                                wasmGlueUrl?: string;
+                                wasmUrl?: string;
+                                rust?: {
+                                    crateName?: string;
+                                    crateVersion?: string;
+                                    schemaVersion?: number;
+                                    features?: string[];
+                                } & {
+                                    [key: string]: unknown;
+                                };
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            connection: ({
+                                closed?: boolean;
+                                pendingRequests?: number;
+                                realtime?: string;
+                                storageFallback?: unknown;
+                                lastDiagnostic?: unknown;
+                                lastError?: unknown;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            lifecycle: ({
+                                phase?: string;
+                                realtime?: string;
+                                online?: boolean;
+                                requiresAction?: boolean;
+                                pendingRequests?: number;
+                                bootstrap?: unknown;
+                                outbox?: unknown;
+                                conflicts?: unknown;
+                                blobUploads?: unknown;
+                                lastDiagnostic?: unknown;
+                                lastError?: unknown;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            bootstrap: {
+                                [key: string]: unknown;
+                            } | null;
+                            transportStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            outboxStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            conflictStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            blobUploadStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            subscriptions: ({
+                                id: string;
+                                table: string;
+                                /** @default [] */
+                                scopeKeys: string[];
+                                /** @default 0 */
+                                scopeValueCount: number;
+                                /** @default [] */
+                                paramsKeys: string[];
+                                /** @default 0 */
+                                paramsValueCount: number;
+                                /** @default null */
+                                status: string | null;
+                                /** @default false */
+                                ready: boolean;
+                                phase?: string;
+                                /** @default 0 */
+                                progressPercent: number;
+                                /** @default null */
+                                cursor: (number | string) | null;
+                                /** @default 0 */
+                                bootstrapPhase: number;
+                                /** @default null */
+                                bootstrapState: unknown | null;
+                            } & {
+                                [key: string]: unknown;
+                            })[];
+                            recentDiagnostics: ({
+                                at: number;
+                                /**
+                                 * @default info
+                                 * @enum {string}
+                                 */
+                                level: "debug" | "info" | "warn" | "error";
+                                source: string;
+                                code: string;
+                                message: string;
+                                syncAttemptId?: string;
+                                traceId?: string;
+                                spanId?: string;
+                                clientId?: string;
+                                subscriptionId?: string;
+                                table?: string;
+                                rowId?: string;
+                                cursor?: (number | string) | null;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                            } & {
+                                [key: string]: unknown;
+                            })[];
+                            recentSyncTimings: {
+                                [key: string]: unknown;
+                            }[];
+                        }[];
+                        total: number;
+                        offset: number;
+                        limit: number;
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleClientDiagnosticsById: {
+        parameters: {
+            query?: {
+                partitionId?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Client diagnostic snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        clientId: string;
+                        actorId: string | null;
+                        partitionId: string;
+                        reportedAt: string;
+                        receivedAt: string;
+                        /** @enum {string} */
+                        freshnessState: "active" | "idle" | "stale";
+                        healthMaxSeverity: ("debug" | "info" | "warn" | "error") | null;
+                        diagnosticCodesSummary: {
+                            code: string;
+                            count: number;
+                            /** @enum {string} */
+                            maxLevel: "debug" | "info" | "warn" | "error";
+                        }[];
+                        queueSummary: {
+                            [key: string]: unknown;
+                        } | null;
+                        timingSummary: {
+                            [key: string]: unknown;
+                        } | null;
+                        redactionSummary: {
+                            [key: string]: unknown;
+                        };
+                        runtime: ({
+                            packageName?: string;
+                            packageVersion?: string;
+                            workerProtocolVersion?: number;
+                            storage?: string;
+                            storageFallback?: {
+                                from?: string;
+                                to?: string;
+                                reason?: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                            workerUrl?: string;
+                            wasmGlueUrl?: string;
+                            wasmUrl?: string;
+                            rust?: {
+                                crateName?: string;
+                                crateVersion?: string;
+                                schemaVersion?: number;
+                                features?: string[];
+                            } & {
+                                [key: string]: unknown;
+                            };
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
+                        connection: ({
+                            closed?: boolean;
+                            pendingRequests?: number;
+                            realtime?: string;
+                            storageFallback?: unknown;
+                            lastDiagnostic?: unknown;
+                            lastError?: unknown;
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
+                        lifecycle: ({
+                            phase?: string;
+                            realtime?: string;
+                            online?: boolean;
+                            requiresAction?: boolean;
+                            pendingRequests?: number;
+                            bootstrap?: unknown;
+                            outbox?: unknown;
+                            conflicts?: unknown;
+                            blobUploads?: unknown;
+                            lastDiagnostic?: unknown;
+                            lastError?: unknown;
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
+                        bootstrap: {
+                            [key: string]: unknown;
+                        } | null;
+                        transportStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        outboxStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        conflictStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        blobUploadStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        subscriptions: ({
+                            id: string;
+                            table: string;
+                            /** @default [] */
+                            scopeKeys: string[];
+                            /** @default 0 */
+                            scopeValueCount: number;
+                            /** @default [] */
+                            paramsKeys: string[];
+                            /** @default 0 */
+                            paramsValueCount: number;
+                            /** @default null */
+                            status: string | null;
+                            /** @default false */
+                            ready: boolean;
+                            phase?: string;
+                            /** @default 0 */
+                            progressPercent: number;
+                            /** @default null */
+                            cursor: (number | string) | null;
+                            /** @default 0 */
+                            bootstrapPhase: number;
+                            /** @default null */
+                            bootstrapState: unknown | null;
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        recentDiagnostics: ({
+                            at: number;
+                            /**
+                             * @default info
+                             * @enum {string}
+                             */
+                            level: "debug" | "info" | "warn" | "error";
+                            source: string;
+                            code: string;
+                            message: string;
+                            syncAttemptId?: string;
+                            traceId?: string;
+                            spanId?: string;
+                            clientId?: string;
+                            subscriptionId?: string;
+                            table?: string;
+                            rowId?: string;
+                            cursor?: (number | string) | null;
+                            details?: {
+                                [key: string]: unknown;
+                            };
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        recentSyncTimings: {
+                            [key: string]: unknown;
+                        }[];
+                    };
+                };
+            };
+            /** @description Diagnostic snapshot not found */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };

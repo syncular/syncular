@@ -154,9 +154,44 @@ Closed. Next Rust-first work package is
   lifecycle smokes now model a host maintenance policy: restricted background
   state does not enqueue upload/compaction work, while foreground policy
   explicitly queues blob upload processing and storage compaction.
+- Browser lifecycle management now treats known browser offline state and
+  retryable `sync.offline` failures as normal lifecycle conditions during
+  startup. Managed clients can start while offline, retry sync when the browser
+  comes online, and keep realtime startup best-effort instead of surfacing
+  offline as a fatal app error. The local demo now renders `Offline`, suppresses
+  retryable offline error banners, keeps local mutations queued, and triggers a
+  sync when online returns.
+- Browser worker lifecycle state now uses browser network status when available
+  and only reports the `syncing` phase for actual sync/push/pull requests.
+  Local SQLite reads, live-query drains, diagnostic snapshots, and command-state
+  reads no longer make app status flicker as though network sync is running.
+- `autoSyncAfterMutation` now gates itself on browser network state, keeps an
+  offline mutation queued instead of calling `syncOnce()` while offline, and
+  schedules the queued sync when the browser comes back online.
+- Sync auth-header refresh no longer restarts active realtime sockets during
+  ordinary sync attempts. Explicit auth-header updates and foreground resume
+  still restart realtime when the host requested that transition.
+- React hooks now expose `useSyncStatus()` so React apps can render the same
+  managed `getStatus()`/`lifecycleChanged` stream without building a separate
+  polling status model.
+- The local demo no longer calls `syncOnce()` or starts realtime manually after
+  app mutations. It opens the generated Rust app database, starts the Syncular
+  lifecycle controller, renders lifecycle state, and lets framework-managed
+  mutation auto-sync/reconnect handle local writes, undo/redo, offline queueing,
+  and online recovery.
 
 ## Latest Evidence
 
+- `bun --cwd packages/client test`
+- `bun --cwd packages/client tsgo`
+- `bun --cwd packages/client-react test`
+- `bun --cwd packages/client-react tsgo`
+- `bun --cwd apps/demo tsgo`
+- `bun --cwd apps/demo build`
+- Playwright demo smoke: idle status stayed `Ready|Ready`; Client A mutation
+  synced to Client B without demo sync calls; browser offline showed `Offline`
+  with no `.error-line`; an offline queued mutation synced to both clients after
+  returning online.
 - `bun test rust/bindings/browser/src/worker-client.test.ts -t "lifecycle"`
 - `bun test rust/bindings/browser/src/worker-client.test.ts -t "resumes from background"`
 - `bun test rust/bindings/browser/src/worker-client.test.ts -t "blob upload queue stats"`
@@ -188,3 +223,7 @@ Closed. Next Rust-first work package is
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `bun run rust:conformance:native`
 - `git diff --check`
+- `bun test packages/client/src/client.test.ts packages/client/src/errors.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bun --cwd apps/demo tsgo`
+- `bun test packages/client/src/__tests__/sync-hono.wasm.test.ts -t "reports lifecycle state through offline queued mutation and reconnect recovery"`

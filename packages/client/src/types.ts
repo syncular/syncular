@@ -188,9 +188,16 @@ export interface SyncularV2RealtimeOptions {
   heartbeatTimeoutMs?: number;
 }
 
+export interface SyncularV2NetworkStatusSource {
+  isOnline(): boolean | undefined;
+  addEventListener?(type: 'online' | 'offline', listener: () => void): void;
+  removeEventListener?(type: 'online' | 'offline', listener: () => void): void;
+}
+
 export interface SyncularV2DatabaseSyncOptions {
   autoSyncAfterMutation?: boolean;
   mutationSyncDebounceMs?: number | false;
+  network?: SyncularV2NetworkStatusSource | false;
   rowsChangedDebounceMs?: number | false;
   autoProcessBlobUploadsAfterStore?: boolean;
   blobUploadDebounceMs?: number | false;

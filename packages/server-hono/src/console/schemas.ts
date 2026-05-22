@@ -305,6 +305,27 @@ export type ConsoleDebugExportResponse = z.infer<
 // Client Schemas
 // ============================================================================
 
+export const ConsoleClientDiagnosticHealthSeveritySchema = z.enum([
+  'debug',
+  'info',
+  'warn',
+  'error',
+]);
+
+export type ConsoleClientDiagnosticHealthSeverity = z.infer<
+  typeof ConsoleClientDiagnosticHealthSeveritySchema
+>;
+
+export const ConsoleClientDiagnosticFreshnessStateSchema = z.enum([
+  'active',
+  'idle',
+  'stale',
+]);
+
+export type ConsoleClientDiagnosticFreshnessState = z.infer<
+  typeof ConsoleClientDiagnosticFreshnessStateSchema
+>;
+
 export const ConsoleClientSchema = z.object({
   clientId: z.string(),
   actorId: z.string(),
@@ -315,6 +336,11 @@ export const ConsoleClientSchema = z.object({
   realtimeConnectionCount: z.number().int().nonnegative(),
   isRealtimeConnected: z.boolean(),
   activityState: z.enum(['active', 'idle', 'stale']),
+  diagnosticFreshnessState:
+    ConsoleClientDiagnosticFreshnessStateSchema.nullable(),
+  diagnosticHealthMaxSeverity:
+    ConsoleClientDiagnosticHealthSeveritySchema.nullable(),
+  diagnosticReceivedAt: z.string().nullable(),
   lastRequestAt: z.string().nullable(),
   lastRequestType: z.enum(['sync', 'push', 'pull']).nullable(),
   lastRequestOutcome: z.string().nullable(),
@@ -323,6 +349,184 @@ export const ConsoleClientSchema = z.object({
 });
 
 export type ConsoleClient = z.infer<typeof ConsoleClientSchema>;
+
+export const ConsoleClientDiagnosticRuntimeSchema = z
+  .object({
+    packageName: z.string().optional(),
+    packageVersion: z.string().optional(),
+    workerProtocolVersion: z.number().int().optional(),
+    storage: z.string().optional(),
+    storageFallback: z
+      .object({
+        from: z.string().optional(),
+        to: z.string().optional(),
+        reason: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
+    workerUrl: z.string().optional(),
+    wasmGlueUrl: z.string().optional(),
+    wasmUrl: z.string().optional(),
+    rust: z
+      .object({
+        crateName: z.string().optional(),
+        crateVersion: z.string().optional(),
+        schemaVersion: z.number().int().optional(),
+        features: z.array(z.string()).optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+export type ConsoleClientDiagnosticRuntime = z.infer<
+  typeof ConsoleClientDiagnosticRuntimeSchema
+>;
+
+export const ConsoleClientDiagnosticConnectionSchema = z
+  .object({
+    closed: z.boolean().optional(),
+    pendingRequests: z.number().int().nonnegative().optional(),
+    realtime: z.string().optional(),
+    storageFallback: z.unknown().optional(),
+    lastDiagnostic: z.unknown().optional(),
+    lastError: z.unknown().optional(),
+  })
+  .passthrough();
+
+export const ConsoleClientDiagnosticLifecycleSchema = z
+  .object({
+    phase: z.string().optional(),
+    realtime: z.string().optional(),
+    online: z.boolean().optional(),
+    requiresAction: z.boolean().optional(),
+    pendingRequests: z.number().int().nonnegative().optional(),
+    bootstrap: z.unknown().optional(),
+    outbox: z.unknown().optional(),
+    conflicts: z.unknown().optional(),
+    blobUploads: z.unknown().optional(),
+    lastDiagnostic: z.unknown().optional(),
+    lastError: z.unknown().optional(),
+  })
+  .passthrough();
+
+export const ConsoleClientDiagnosticSubscriptionSchema = z
+  .object({
+    id: z.string(),
+    table: z.string(),
+    scopeKeys: z.array(z.string()).default([]),
+    scopeValueCount: z.number().int().nonnegative().default(0),
+    paramsKeys: z.array(z.string()).default([]),
+    paramsValueCount: z.number().int().nonnegative().default(0),
+    status: z.string().nullable().default(null),
+    ready: z.boolean().default(false),
+    phase: z.string().optional(),
+    progressPercent: z.number().default(0),
+    cursor: z.union([z.number().int(), z.string()]).nullable().default(null),
+    bootstrapPhase: z.number().int().default(0),
+    bootstrapState: z.unknown().nullable().default(null),
+  })
+  .passthrough();
+
+export type ConsoleClientDiagnosticSubscription = z.infer<
+  typeof ConsoleClientDiagnosticSubscriptionSchema
+>;
+
+export const ConsoleClientDiagnosticEventSchema = z
+  .object({
+    at: z.number(),
+    level: z.enum(['debug', 'info', 'warn', 'error']).catch('info'),
+    source: z.string(),
+    code: z.string(),
+    message: z.string(),
+    syncAttemptId: z.string().optional(),
+    traceId: z.string().optional(),
+    spanId: z.string().optional(),
+    clientId: z.string().optional(),
+    subscriptionId: z.string().optional(),
+    table: z.string().optional(),
+    rowId: z.string().optional(),
+    cursor: z.union([z.number(), z.string()]).nullable().optional(),
+    details: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
+export type ConsoleClientDiagnosticEvent = z.infer<
+  typeof ConsoleClientDiagnosticEventSchema
+>;
+
+export const ConsoleClientDiagnosticCodeSummarySchema = z.object({
+  code: z.string(),
+  count: z.number().int().nonnegative(),
+  maxLevel: ConsoleClientDiagnosticHealthSeveritySchema,
+});
+
+export type ConsoleClientDiagnosticCodeSummary = z.infer<
+  typeof ConsoleClientDiagnosticCodeSummarySchema
+>;
+
+export const ConsoleClientDiagnosticSnapshotSchema = z
+  .object({
+    generatedAt: z.number().optional(),
+    runtime: ConsoleClientDiagnosticRuntimeSchema.optional(),
+    connection: ConsoleClientDiagnosticConnectionSchema.optional(),
+    subscriptions: z
+      .array(ConsoleClientDiagnosticSubscriptionSchema)
+      .default([]),
+    recentDiagnostics: z.array(ConsoleClientDiagnosticEventSchema).default([]),
+    recentSyncTimings: z.array(z.record(z.string(), z.unknown())).default([]),
+    bootstrap: z.record(z.string(), z.unknown()).optional(),
+    transportStats: z.record(z.string(), z.unknown()).optional(),
+    outboxStats: z.record(z.string(), z.unknown()).optional(),
+    conflictStats: z.record(z.string(), z.unknown()).optional(),
+    blobUploadStats: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
+export type ConsoleClientDiagnosticSnapshot = z.infer<
+  typeof ConsoleClientDiagnosticSnapshotSchema
+>;
+
+export const ConsoleClientDiagnosticIngestSchema = z.object({
+  clientId: z.string().min(1),
+  actorId: z.string().min(1).optional(),
+  partitionId: z.string().min(1).default('default'),
+  lifecycle: ConsoleClientDiagnosticLifecycleSchema.optional(),
+  snapshot: ConsoleClientDiagnosticSnapshotSchema,
+});
+
+export type ConsoleClientDiagnosticIngest = z.infer<
+  typeof ConsoleClientDiagnosticIngestSchema
+>;
+
+export const ConsoleClientDiagnosticRecordSchema = z.object({
+  clientId: z.string(),
+  actorId: z.string().nullable(),
+  partitionId: z.string(),
+  reportedAt: z.string(),
+  receivedAt: z.string(),
+  freshnessState: ConsoleClientDiagnosticFreshnessStateSchema,
+  healthMaxSeverity: ConsoleClientDiagnosticHealthSeveritySchema.nullable(),
+  diagnosticCodesSummary: z.array(ConsoleClientDiagnosticCodeSummarySchema),
+  queueSummary: z.record(z.string(), z.unknown()).nullable(),
+  timingSummary: z.record(z.string(), z.unknown()).nullable(),
+  redactionSummary: z.record(z.string(), z.unknown()),
+  runtime: ConsoleClientDiagnosticRuntimeSchema.nullable(),
+  connection: ConsoleClientDiagnosticConnectionSchema.nullable(),
+  lifecycle: ConsoleClientDiagnosticLifecycleSchema.nullable(),
+  bootstrap: z.record(z.string(), z.unknown()).nullable(),
+  transportStats: z.record(z.string(), z.unknown()).nullable(),
+  outboxStats: z.record(z.string(), z.unknown()).nullable(),
+  conflictStats: z.record(z.string(), z.unknown()).nullable(),
+  blobUploadStats: z.record(z.string(), z.unknown()).nullable(),
+  subscriptions: z.array(ConsoleClientDiagnosticSubscriptionSchema),
+  recentDiagnostics: z.array(ConsoleClientDiagnosticEventSchema),
+  recentSyncTimings: z.array(z.record(z.string(), z.unknown())),
+});
+
+export type ConsoleClientDiagnosticRecord = z.infer<
+  typeof ConsoleClientDiagnosticRecordSchema
+>;
 
 // ============================================================================
 // Handler Schemas

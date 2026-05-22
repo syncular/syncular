@@ -22,12 +22,14 @@ import {
   type SyncularV2BlobLimitInput,
   syncularV2BlobInputSize,
 } from './blob-limits';
+import { isSyncularV2OfflineError } from './errors';
 import {
   createMutationsApi,
   type MutationsApi,
   type MutationsCommitFn,
   type MutationsTx,
 } from './mutations';
+import { browserSyncularV2NetworkStatusSource } from './network';
 import { assertSyncularV2ReadonlySql } from './sql-safety';
 import type {
   CreateSyncularV2DatabaseOptions,
@@ -40,6 +42,7 @@ import type {
   SyncularV2LiveQueryEvent,
   SyncularV2LiveQueryOptions,
   SyncularV2LiveQuerySubscription,
+  SyncularV2NetworkStatusSource,
   SyncularV2SqlClient,
   SyncularV2TableConfigMap,
   SyncularV2UnsafeSqlClient,
@@ -150,6 +153,10 @@ export async function createSyncularV2Database<DB>(
   const mutationSyncScheduler = createMutationSyncScheduler(client, {
     enabled: options.sync?.autoSyncAfterMutation ?? true,
     debounceMs: options.sync?.mutationSyncDebounceMs ?? 10,
+    network:
+      options.sync?.network === false
+        ? undefined
+        : (options.sync?.network ?? browserSyncularV2NetworkStatusSource()),
     isClosed: () => closed,
   });
   const blobUploadScheduler = createBlobUploadScheduler(client, {
@@ -211,18 +218,24 @@ function createMutationSyncScheduler(
   options: {
     enabled: boolean;
     debounceMs: number | false;
+    network: SyncularV2NetworkStatusSource | undefined;
     isClosed: () => boolean;
   }
 ): { schedule(): void; destroy(): void } {
   let timer: ReturnType<typeof setTimeout> | undefined;
   let inFlight: Promise<void> | undefined;
   let queued = false;
+  const isOnline = () => options.network?.isOnline() !== false;
   const clear = () => {
     if (timer) clearTimeout(timer);
     timer = undefined;
   };
   const run = async () => {
     if (options.isClosed()) return;
+    if (!isOnline()) {
+      queued = true;
+      return;
+    }
     if (inFlight) {
       queued = true;
       return;
@@ -230,10 +243,12 @@ function createMutationSyncScheduler(
     inFlight = client
       .syncOnce()
       .then(() => undefined)
-      .catch(() => undefined)
+      .catch((error) => {
+        if (!isOnline() || isSyncularV2OfflineError(error)) queued = true;
+      })
       .finally(() => {
         inFlight = undefined;
-        if (queued && !options.isClosed()) {
+        if (queued && !options.isClosed() && isOnline()) {
           queued = false;
           schedule();
         }
@@ -242,6 +257,11 @@ function createMutationSyncScheduler(
   };
   const schedule = () => {
     if (!options.enabled || options.isClosed()) return;
+    if (!isOnline()) {
+      queued = true;
+      clear();
+      return;
+    }
     if (inFlight) {
       queued = true;
       return;
@@ -253,11 +273,18 @@ function createMutationSyncScheduler(
     }
     timer = setTimeout(() => void run(), options.debounceMs);
   };
+  const handleOnline = () => {
+    if (!queued || options.isClosed()) return;
+    queued = false;
+    schedule();
+  };
+  options.network?.addEventListener?.('online', handleOnline);
   return {
     schedule,
     destroy() {
       clear();
       queued = false;
+      options.network?.removeEventListener?.('online', handleOnline);
     },
   };
 }

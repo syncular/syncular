@@ -305,6 +305,16 @@ scope values, app row payloads, or app-side correctness inference.
   limits and reports realtime deletion counts.
 - Generated OpenAPI types/docs for the row investigation endpoint so the
   console consumes it through the normal transport contract.
+- Added redacted Rust client diagnostic snapshot ingestion to the Hono console.
+  Console-enabled servers now accept the latest per-client runtime snapshot in
+  memory, bounded by record count, without persisting app row payloads or raw
+  scope values. The console Fleet page links to per-client drilldowns that join
+  server cursor/request evidence with Rust runtime, lifecycle, storage,
+  outbox/conflict/blob, bootstrap, transport, subscription, and diagnostic-code
+  panels.
+- The local demo app now publishes its Rust client `diagnosticSnapshot()` and
+  `lifecycleState()` to the console route, so `/fleet/:clientId` shows live
+  Rust-owned SQLite state for the demo instead of only server-observed cursors.
 - Gates:
   `bunx biome check packages/server-hono/src/routes.ts packages/server-hono/src/console/routes.ts packages/server-hono/src/console/schemas.ts packages/server-hono/src/__tests__/console-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts packages/server-dialect-postgres/src/index.ts packages/server-dialect-sqlite/src/index.ts packages/server-dialect-sqlite/src/index.test.ts packages/console/src/pages/RowInvestigation.tsx`,
   `bun test packages/server-hono/src/__tests__/console-routes.test.ts packages/server-hono/src/__tests__/create-server.test.ts`,
@@ -335,3 +345,10 @@ scope values, app row payloads, or app-side correctness inference.
   slice.
 - Gate: `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
   passed with `33` smoke tests after the diagnostic assertion slice.
+- Gates:
+  `bun test packages/server-hono/src/__tests__/console-routes.test.ts`,
+  `bun --cwd packages/server-hono tsgo`, `bun --cwd packages/console tsgo`,
+  `bun --cwd packages/ui tsgo`, and `bun --cwd apps/demo tsgo` passed after the
+  client-diagnostic console drilldown slice. Playwright verified
+  `http://localhost:3000/fleet/demo-left` renders live Rust runtime diagnostics
+  from the local demo with no console errors.

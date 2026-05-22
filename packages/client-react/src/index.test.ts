@@ -5,6 +5,7 @@ import type { CompiledQuery } from 'kysely';
 import { createElement, type ReactNode } from 'react';
 import type {
   SyncularClientLike,
+  SyncularClientStatus,
   SyncularV2BlobUploadQueueStats,
   SyncularV2BootstrapStatus,
   SyncularV2ClientEventMap,
@@ -304,6 +305,33 @@ describe('@syncular/react', () => {
     expect(result.current.outbox?.pending).toBe(2);
     expect(result.current.conflicts?.unresolved).toBe(1);
   });
+
+  it('exposes full Syncular status through useSyncStatus', () => {
+    const fake = new FakeManagedClient();
+    const { SyncProvider, useSyncStatus } = createSyncularReact<TestDb>();
+    const wrapper = createWrapper(SyncProvider, fake.client);
+
+    const { result } = renderHook(() => useSyncStatus(), { wrapper });
+
+    expect(result.current.lifecycle.phase).toBe('complete');
+    expect(result.current.isSyncing).toBe(false);
+
+    act(() => {
+      fake.setStatus({
+        lifecycle: {
+          phase: 'syncing',
+          realtime: 'connected',
+          online: true,
+          requiresAction: false,
+          pendingRequests: 1,
+        },
+        isSyncing: true,
+      });
+    });
+
+    expect(result.current.lifecycle.phase).toBe('syncing');
+    expect(result.current.isSyncing).toBe(true);
+  });
 });
 
 interface TestDb {
@@ -351,6 +379,23 @@ class FakeManagedClient {
   readonly #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
   readonly #liveListeners = new Map<string, (rows: TaskRow[]) => void>();
   readonly liveCalls: Array<{ tables?: readonly string[] }> = [];
+  status: SyncularClientStatus = {
+    lifecycle: {
+      phase: 'complete',
+      realtime: 'connected',
+      online: true,
+      requiresAction: false,
+      pendingRequests: 0,
+    },
+    connection: this.connectionState(),
+    outbox: null,
+    conflicts: null,
+    isConnected: true,
+    isSyncing: false,
+    hasPendingMutations: false,
+    hasConflicts: false,
+    requiresAction: false,
+  };
   #liveIndex = 1;
 
   readonly client = {
@@ -368,23 +413,7 @@ class FakeManagedClient {
       event: T,
       listener: SyncularV2ClientEventSink<T>
     ) => this.addEventListener(event, listener),
-    getStatus: () => ({
-      lifecycle: {
-        phase: 'idle',
-        sinceMs: 0,
-        lastSyncAt: null,
-        lastError: null,
-        requiresAction: false,
-      },
-      connection: this.connectionState(),
-      outbox: null,
-      conflicts: null,
-      isConnected: true,
-      isSyncing: false,
-      hasPendingMutations: false,
-      hasConflicts: false,
-      requiresAction: false,
-    }),
+    getStatus: () => this.status,
     setSubscriptions: async () => undefined,
     presence: {
       get: <TMetadata extends Record<string, unknown>>(scopeKey: string) =>
@@ -615,6 +644,22 @@ class FakeManagedClient {
     for (const listener of this.#eventListeners.get(event) ?? []) {
       listener(payload as never);
     }
+  }
+
+  setStatus(next: Partial<SyncularClientStatus>): void {
+    this.status = {
+      ...this.status,
+      ...next,
+      lifecycle: {
+        ...this.status.lifecycle,
+        ...next.lifecycle,
+      },
+      connection: {
+        ...this.status.connection,
+        ...next.connection,
+      },
+    };
+    this.emit('lifecycleChanged', this.status.lifecycle);
   }
 
   private joinPresence(

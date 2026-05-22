@@ -1,6 +1,6 @@
 # WP-28 Relay Rust Evaluation And Protocol Validation
 
-Status: `[~]` in progress, depends on WP-27
+Status: `[x]` accepted, depends on WP-27
 
 ## Goal
 
@@ -110,6 +110,7 @@ instrumentation point before deciding.
 
 - WP-27 gates.
 - `bun run --cwd packages/relay evaluate:rust-boundary`
+- `bun run --cwd packages/relay evaluate:relay-paths`
 - `bun test packages/relay`
 - `bun run --cwd packages/relay tsgo`
 - Server/Hono realtime tests if relay websocket handling is touched.
@@ -145,12 +146,12 @@ instrumentation point before deciding.
   - combined request JSON: `1,368` bytes;
   - combined response JSON: `2,978` bytes;
   - binary sync pack: `2,349` bytes, wire version `14`;
-  - JSON parse p95: request `3.83us`, response `6.13us`;
-  - TypeScript schema p95: request `13.04us`, response `17.29us`;
-  - HTTP-style parse+schema p95: request `13.92us`, response `17.17us`;
-  - binary sync-pack decode p95: `12.00us`;
-  - binary sync-pack decode+schema p95: `22.83us`;
-  - validating schema-backed fixture protocol objects p95: `46.25us`.
+  - JSON parse p95: request `3.96us`, response `6.21us`;
+  - TypeScript schema p95: request `13.08us`, response `18.50us`;
+  - HTTP-style parse+schema p95: request `12.33us`, response `16.42us`;
+  - binary sync-pack decode p95: `11.96us`;
+  - binary sync-pack decode+schema p95: `22.58us`;
+  - validating schema-backed fixture protocol objects p95: `47.46us`.
 - Malformed probe coverage rejects empty client IDs, non-true combined
   responses, invalid blob hashes, and stale binary sync-pack wire versions with
   sanitized path/code/message diagnostics.
@@ -158,23 +159,92 @@ instrumentation point before deciding.
   fixture. A production Rust validation boundary only makes sense if it avoids
   extra JSON materialization/copies or proves stronger drift/correctness value
   than the existing TypeScript schemas.
+- Second evaluation slice added
+  `packages/relay/scripts/evaluate-relay-paths.ts` and
+  `packages/relay/src/evaluation/relay-paths.ts`. It measures current
+  in-memory relay app paths with Bun SQLite, `server-dialect-sqlite`, the
+  relay push/pull wrappers, `ForwardEngine`, `PullEngine`, and `RelayRealtime`.
+- Local result on 2026-05-22, 100 measured iterations with 10 warmups:
+  - local client push into relay p95: `701.46us`;
+  - relay forward to main p95: `108.63us`;
+  - relay pull from main and local apply p95: `379.96us`;
+  - local client incremental pull from relay p95: `305.67us`;
+  - realtime wakeup to 100 open mock connections p95: `33.92us`.
+- Initial comparison: schema-backed protocol validation p95 (`47.46us`) is
+  smaller than the DB/app-semantics relay paths in this local control. Rust
+  protocol validation alone is therefore unlikely to be a relay performance win
+  unless it replaces existing work without adding JSON copies or catches drift
+  the TypeScript path misses. The app-heavy paths still look TypeScript/Kysely
+  owned.
+- Existing Rust JavaScript bindings are the full browser/client WASM runtime,
+  not a small relay-callable protocol validation package. Using that surface as
+  a relay/server boundary probe would measure full runtime startup/package
+  shape, not the byte-level protocol validation candidate this WP is evaluating.
+  A meaningful future probe would need a deliberately scoped protocol-only
+  wasm/native binding.
+
+## Interim Brainstorm
+
+The current evidence does not justify moving relay/server app semantics into
+Rust. `relayPushCommit`, `ForwardEngine`, `PullEngine`, `relayPull`, and
+Kysely-backed relay storage are doing authorization/handler/DB orchestration,
+not just protocol parsing. Moving those into Rust would duplicate server table
+handler semantics and raise deployment complexity before there is a measured
+target.
+
+Potentially sensible Rust shapes:
+
+- Keep `syncular-protocol` as a cross-language oracle in tests/dev tooling.
+  This already catches fixture drift without adding production boundary cost.
+- Measure a byte-level Rust validator only for bodies that can stay binary:
+  binary sync packs, binary snapshot chunks, artifact refs, blob hashes, and
+  realtime binary frames. This needs a no-op/call-boundary control first.
+- Consider a Rust edge/proxy only if the product need is byte-preserving
+  forwarding, request authentication/rate-limit policy, or binary verification
+  before forwarding. It should not become partial table-handler/server logic.
+
+Bad shapes from the current data:
+
+- Wrapping already-parsed TypeScript objects in Rust validation on relay hot
+  paths. It would likely pay JSON/object mapping cost around a cheap schema
+  check.
+- Moving `ForwardEngine`, `PullEngine`, sequence mapping, Kysely storage, or
+  server table handlers into Rust without a separate product decision that Rust
+  owns server-side mutation/apply semantics.
+- Creating more Rust relay/server WPs before a call-boundary measurement or a
+  concrete product need exists.
 
 ## Candidate Follow-Ups
 
-- Rust protocol validation retained inside the TypeScript relay path.
-- Rust protocol validation used only in fixtures/dev tooling.
-- Rust realtime fanout WP if realtime measurements show connection/fanout
-  pressure.
-- Rust edge proxy WP if deployment/auth/rate-limit/network offload is the
-  concrete product need.
+- Rust protocol validation remains in fixtures/dev tooling only.
+- A protocol-only wasm/native binding can be proposed later only if binary
+  validation becomes a real product need and the probe can keep bodies as bytes.
+- Rust realtime fanout WP only if connection/fanout load tests, not the local
+  100-connection control, show pressure.
+- Rust edge proxy WP only if deployment/auth/rate-limit/network offload is the
+  concrete product need and bodies can stay byte-preserving.
 - Rust server trait-model WP only if we explicitly decide Rust should own app
   mutation semantics.
 
+## Final Decision
+
+Keep Rust protocol checks in fixtures/dev tooling only for now. Do not retain a
+production Rust validation path in relay/server, do not create new Rust
+relay/server component WPs from this evaluation, and do not move relay app
+semantics into Rust.
+
+This decision is based on three points:
+
+- The current TypeScript protocol checks are measurable but small on the WP-27
+  fixture.
+- The measured relay paths are dominated by DB/app semantics rather than
+  protocol validation.
+- The repo does not currently have a small relay-callable Rust protocol binding;
+  the available JS/WASM binding is the full browser client runtime and would be
+  the wrong integration surface for this decision.
+
 ## Next Action
 
-Add app-path relay baselines for local push, forward, pull/apply, local pull,
-and realtime wakeups using the existing relay tests/engines. Then compare one
-Rust call-boundary prototype only if the baseline shows protocol validation is
-hot enough, or if Rust catches protocol drift the current schemas miss. Do not
-create additional Rust relay/server WPs until this evaluation records evidence
-and a concrete follow-up target.
+WP-28 is closed. Reopen relay/server Rust planning only with new evidence from
+load tests, a product need for byte-preserving edge verification/proxying, or a
+scoped protocol-only binding proposal.

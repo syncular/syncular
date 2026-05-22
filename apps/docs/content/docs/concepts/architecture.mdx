@@ -182,9 +182,14 @@ flowchart LR
 
 ---
 
-## Realtime Wake-ups
+## Realtime Deltas And Recovery Wake-ups
 
-By default the sync engine polls on an interval. When WebSocket transport is enabled, the server sends **wake-up signals** (not data) to trigger an immediate pull:
+When WebSocket transport is enabled, realtime is an event-driven fast path over
+the same server-authoritative sync model. A websocket frame may carry a bounded,
+verified sync-pack delta that the client can apply immediately. If the frame is
+too large, the client is behind, scopes changed, or recovery is required, the
+server sends an explicit pull-required wake-up and the client uses the normal
+HTTP pull path.
 
 <Mermaid
   chart={`
@@ -192,13 +197,19 @@ sequenceDiagram
   participant Server
   participant Client
 
-  Server-->>Client: WebSocket wake-up for a matching commit
-  Client->>Server: Trigger the normal HTTP pull immediately
-  Server-->>Client: Return commits and snapshots
+  Server-->>Client: WebSocket binary sync-pack delta
+  Client-->>Client: Verify and apply delta
+  Server-->>Client: Pull-required wake-up when recovery is needed
+  Client->>Server: HTTP pull for checkpoint/recovery
+  Server-->>Client: Return commits, snapshots, or artifacts
 `}
 />
 
-WebSocket carries only wake-up signals. All data transfer stays on the HTTP pull path. This keeps the data flow simple and the protocol easy to debug.
+WebSocket is not a second sync model. It is the steady-state delta path when
+the message can be verified and applied safely. HTTP pull remains the recovery
+and checkpoint path for reconnects, overflow, auth refresh, schema mismatch,
+large snapshots, artifact downloads, and any case where the client should not
+trust an inline realtime frame.
 
 ---
 

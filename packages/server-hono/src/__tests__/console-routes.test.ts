@@ -74,6 +74,27 @@ interface SyncRealtimeEventsTable {
   created_at: Generated<string>;
 }
 
+interface SyncClientDiagnosticSnapshotsTable {
+  snapshot_id: Generated<number>;
+  partition_id: string;
+  client_id: string;
+  actor_id: string | null;
+  runtime_kind: string | null;
+  runtime_version: string | null;
+  schema_version: number | null;
+  reported_at: string;
+  received_at: Generated<string>;
+  lifecycle_phase: string | null;
+  connection_state: string | null;
+  freshness_state: string;
+  health_max_severity: string | null;
+  diagnostic_codes_summary: unknown | null;
+  queue_summary: unknown | null;
+  timing_summary: unknown | null;
+  redaction_summary: unknown | null;
+  snapshot_json: unknown;
+}
+
 interface SyncApiKeysTable {
   key_id: string;
   key_hash: string;
@@ -93,6 +114,7 @@ interface TestDb extends SyncCoreDb {
   sync_request_payloads: SyncRequestPayloadsTable;
   sync_operation_events: SyncOperationEventsTable;
   sync_realtime_events: SyncRealtimeEventsTable;
+  sync_client_diagnostic_snapshots: SyncClientDiagnosticSnapshotsTable;
   sync_api_keys: SyncApiKeysTable;
 }
 
@@ -159,6 +181,39 @@ type ApiKeysResponse = {
     expiresAt: string | null;
     lastUsedAt: string | null;
     revokedAt: string | null;
+  }>;
+  total: number;
+  offset: number;
+  limit: number;
+};
+
+type ClientDiagnosticsResponse = {
+  items: Array<{
+    clientId: string;
+    actorId: string | null;
+    partitionId: string;
+    reportedAt: string;
+    receivedAt: string;
+    freshnessState: 'active' | 'idle' | 'stale';
+    healthMaxSeverity: 'debug' | 'info' | 'warn' | 'error' | null;
+    diagnosticCodesSummary: Array<{
+      code: string;
+      count: number;
+      maxLevel: 'debug' | 'info' | 'warn' | 'error';
+    }>;
+    runtime: {
+      packageName?: string;
+      rust?: { crateName?: string; schemaVersion?: number };
+    } | null;
+    lifecycle: Record<string, unknown> | null;
+    transportStats: Record<string, unknown> | null;
+    subscriptions: Array<{ id: string; table: string; scopeKeys: string[] }>;
+    recentDiagnostics: Array<{
+      level: 'debug' | 'info' | 'warn' | 'error';
+      source: string;
+      code: string;
+      syncAttemptId?: string;
+    }>;
   }>;
   total: number;
   offset: number;
@@ -298,6 +353,58 @@ describe('console timeline route filters', () => {
         headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
       }
     );
+  }
+
+  async function postClientDiagnostic(body: unknown): Promise<Response> {
+    return app.request('http://localhost/console/client-diagnostics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${CONSOLE_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function readClientDiagnostics(
+    query: Record<string, string | number | undefined> = {},
+    targetApp: Hono = app
+  ): Promise<ClientDiagnosticsResponse> {
+    const params = new URLSearchParams({ limit: '50', offset: '0' });
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+
+    const response = await targetApp.request(
+      `http://localhost/console/client-diagnostics?${params.toString()}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(response.status).toBe(200);
+    return (await response.json()) as ClientDiagnosticsResponse;
+  }
+
+  async function readClientDiagnosticHistory(
+    clientId: string,
+    query: Record<string, string | number | undefined> = {},
+    targetApp: Hono = app
+  ): Promise<ClientDiagnosticsResponse> {
+    const params = new URLSearchParams({ limit: '50', offset: '0' });
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+
+    const response = await targetApp.request(
+      `http://localhost/console/client-diagnostics/${clientId}/history?${params.toString()}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(response.status).toBe(200);
+    return (await response.json()) as ClientDiagnosticsResponse;
   }
 
   async function requestEvents(
@@ -1889,6 +1996,270 @@ describe('console timeline route filters', () => {
     expect(tenantOps.total).toBe(1);
     expect(tenantOps.items[0]?.partitionId).toBe('tenant-b');
     expect(tenantOps.items[0]?.operationType).toBe('notify_data_change');
+  });
+
+  it('ingests and lists redacted Rust client diagnostic snapshots', async () => {
+    const response = await postClientDiagnostic({
+      clientId: 'client-rust',
+      actorId: 'actor-rust',
+      partitionId: 'default',
+      lifecycle: {
+        phase: 'complete',
+        realtime: 'connected',
+        online: true,
+        requiresAction: false,
+        pendingRequests: 0,
+      },
+      snapshot: {
+        generatedAt: Date.now(),
+        runtime: {
+          packageName: '@syncular/client',
+          packageVersion: '0.0.0',
+          workerProtocolVersion: 2,
+          storage: 'indexedDb',
+          rust: {
+            crateName: 'syncular-runtime',
+            crateVersion: '0.0.0',
+            schemaVersion: 3,
+            features: ['web-owned-sqlite', 'realtime'],
+          },
+        },
+        connection: {
+          closed: false,
+          pendingRequests: 0,
+          realtime: 'connected',
+        },
+        subscriptions: [
+          {
+            id: 'tasks:owner',
+            table: 'tasks',
+            scopeKeys: ['user_id'],
+            scopeValueCount: 1,
+            paramsKeys: ['actorId'],
+            paramsValueCount: 1,
+            status: 'active',
+            ready: true,
+            phase: 'complete',
+            progressPercent: 100,
+            cursor: 2,
+            bootstrapPhase: 0,
+            bootstrapState: null,
+          },
+        ],
+        recentDiagnostics: [
+          {
+            at: baseTimeMs,
+            level: 'info',
+            source: 'sync',
+            code: 'sync.pull.applied',
+            message: 'pull applied',
+            syncAttemptId: 'attempt-1',
+          },
+        ],
+        recentSyncTimings: [{ totalMs: 12, pullApplyMs: 4 }],
+        transportStats: {
+          requestCount: 2,
+          responseBytes: 512,
+          snapshotArtifactCount: 1,
+        },
+      },
+    });
+
+    expect(response.status).toBe(202);
+    const accepted =
+      (await response.json()) as ClientDiagnosticsResponse['items'][number];
+    expect(accepted.clientId).toBe('client-rust');
+    expect(accepted.runtime?.rust?.crateName).toBe('syncular-runtime');
+    expect(accepted.subscriptions[0]?.scopeKeys).toEqual(['user_id']);
+    expect(accepted.recentDiagnostics[0]?.syncAttemptId).toBe('attempt-1');
+    expect(accepted.freshnessState).toBe('active');
+    expect(accepted.healthMaxSeverity).toBe('info');
+    expect(accepted.diagnosticCodesSummary).toEqual([
+      { code: 'sync.pull.applied', count: 1, maxLevel: 'info' },
+    ]);
+
+    const list = await readClientDiagnostics({ clientId: 'client-rust' });
+    expect(list.total).toBe(1);
+    expect(list.items[0]?.transportStats?.responseBytes).toBe(512);
+
+    const diagnosticRows = await db
+      .selectFrom('sync_client_diagnostic_snapshots')
+      .select([
+        'client_id',
+        'runtime_kind',
+        'schema_version',
+        'freshness_state',
+        'health_max_severity',
+      ])
+      .where('client_id', '=', 'client-rust')
+      .execute();
+    expect(diagnosticRows).toEqual([
+      {
+        client_id: 'client-rust',
+        runtime_kind: 'syncular-runtime',
+        schema_version: 3,
+        freshness_state: 'active',
+        health_max_severity: 'info',
+      },
+    ]);
+
+    const restartedApp = createTestApp();
+    const persistedList = await readClientDiagnostics(
+      { clientId: 'client-rust' },
+      restartedApp
+    );
+    expect(persistedList.total).toBe(1);
+    expect(persistedList.items[0]?.clientId).toBe('client-rust');
+
+    const detail = await app.request(
+      'http://localhost/console/client-diagnostics/client-rust',
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(detail.status).toBe(200);
+    const detailPayload =
+      (await detail.json()) as ClientDiagnosticsResponse['items'][number];
+    expect(detailPayload.lifecycle?.phase).toBe('complete');
+  });
+
+  it('retains diagnostic history and prunes oldest snapshots by count', async () => {
+    const retainedApp = createTestApp({
+      maintenance: { clientDiagnosticsMaxRows: 2 },
+    });
+
+    for (let index = 0; index < 3; index++) {
+      const response = await retainedApp.request(
+        'http://localhost/console/client-diagnostics',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${CONSOLE_TOKEN}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            clientId: 'client-history',
+            actorId: 'actor-history',
+            partitionId: 'default',
+            lifecycle: {
+              phase: index === 2 ? 'complete' : 'bootstrapping',
+              realtime: index === 2 ? 'connected' : 'connecting',
+              online: true,
+              requiresAction: false,
+              pendingRequests: 0,
+            },
+            snapshot: {
+              generatedAt: baseTimeMs + index * 60_000,
+              runtime: {
+                packageName: '@syncular/client',
+                packageVersion: `0.0.${index}`,
+                rust: {
+                  crateName: 'syncular-runtime',
+                  crateVersion: `0.0.${index}`,
+                  schemaVersion: 3,
+                },
+              },
+              connection: {
+                realtime: index === 2 ? 'connected' : 'connecting',
+                pendingRequests: 0,
+              },
+              subscriptions: [],
+              recentDiagnostics: [
+                {
+                  at: baseTimeMs + index * 60_000,
+                  level: index === 2 ? 'warn' : 'info',
+                  source: 'sync',
+                  code: index === 2 ? 'sync.recovered' : 'sync.started',
+                  message: 'redacted diagnostic event',
+                },
+              ],
+              recentSyncTimings: [{ totalMs: 10 + index }],
+            },
+          }),
+        }
+      );
+      expect(response.status).toBe(202);
+    }
+
+    const latest = await readClientDiagnostics(
+      { clientId: 'client-history' },
+      retainedApp
+    );
+    expect(latest.total).toBe(1);
+    expect(latest.items[0]?.runtime?.packageVersion).toBe('0.0.2');
+    expect(latest.items[0]?.healthMaxSeverity).toBe('warn');
+
+    const history = await readClientDiagnosticHistory(
+      'client-history',
+      {},
+      retainedApp
+    );
+    expect(history.total).toBe(2);
+    expect(history.items.map((item) => item.runtime?.packageVersion)).toEqual([
+      '0.0.2',
+      '0.0.1',
+    ]);
+
+    const rowCount = await db
+      .selectFrom('sync_client_diagnostic_snapshots')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('client_id', '=', 'client-history')
+      .executeTakeFirst();
+    expect(Number(rowCount?.total ?? 0)).toBe(2);
+  });
+
+  it('rejects oversized or sensitive client diagnostic snapshots', async () => {
+    const sensitiveResponse = await postClientDiagnostic({
+      clientId: 'client-sensitive',
+      actorId: 'actor-sensitive',
+      partitionId: 'default',
+      snapshot: {
+        generatedAt: baseTimeMs,
+        runtime: { packageName: '@syncular/client' },
+        connection: { realtime: 'connected' },
+        subscriptions: [],
+        recentDiagnostics: [
+          {
+            at: baseTimeMs,
+            level: 'error',
+            source: 'sync',
+            code: 'sync.auth.failed',
+            message: 'redacted auth failure',
+            details: { authToken: 'should-not-be-stored' },
+          },
+        ],
+      },
+    });
+    expect(sensitiveResponse.status).toBe(400);
+
+    const oversizedResponse = await postClientDiagnostic({
+      clientId: 'client-oversized',
+      actorId: 'actor-oversized',
+      partitionId: 'default',
+      snapshot: {
+        generatedAt: baseTimeMs,
+        runtime: { packageName: '@syncular/client' },
+        connection: { realtime: 'connected' },
+        subscriptions: [],
+        recentDiagnostics: [
+          {
+            at: baseTimeMs,
+            level: 'info',
+            source: 'sync',
+            code: 'sync.large',
+            message: 'x'.repeat(70_000),
+          },
+        ],
+      },
+    });
+    expect(oversizedResponse.status).toBe(400);
+
+    const rows = await db
+      .selectFrom('sync_client_diagnostic_snapshots')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('client_id', 'in', ['client-sensitive', 'client-oversized'])
+      .executeTakeFirst();
+    expect(Number(rows?.total ?? 0)).toBe(0);
   });
 
   it('guards detail endpoints and client eviction with partition filters', async () => {
