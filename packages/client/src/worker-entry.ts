@@ -1,52 +1,46 @@
-import { resolveSyncularV2ClientConfig } from './client-config';
-import { syncularV2DiagnosticAttemptFields } from './diagnostics';
+import { resolveSyncularClientConfig } from './client-config';
+import { syncularDiagnosticAttemptFields } from './diagnostics';
 import {
-  classifySyncularV2Error,
-  SyncularV2ClientError,
-  syncularV2ErrorDetails,
-  syncularV2ErrorMessage,
-  syncularV2ErrorStatus,
+  classifySyncularError,
+  SyncularClientError,
+  syncularErrorDetails,
+  syncularErrorMessage,
+  syncularErrorStatus,
 } from './errors';
 import {
-  dispatchGeneratedSyncularV2WorkerRequest,
-  generatedSyncularV2WorkerRequestDiagnosticSource,
-  isGeneratedSyncularV2AbortableWorkerRequestType,
-  isGeneratedSyncularV2DiagnosedSuccessWorkerRequestType,
+  dispatchGeneratedSyncularWorkerRequest,
+  generatedSyncularWorkerRequestDiagnosticSource,
+  isGeneratedSyncularAbortableWorkerRequestType,
+  isGeneratedSyncularDiagnosedSuccessWorkerRequestType,
 } from './generated-bridge';
-import { createSyncularV2RuntimeInfo } from './runtime-contract';
+import { createSyncularRuntimeInfo } from './runtime-contract';
+import { openSyncularRustClient, type SyncularRustClient } from './rust-client';
+import type { SyncularClientConfig, SyncularDiagnosticEvent } from './types';
 import {
-  openSyncularV2RustClient,
-  type SyncularV2RustClient,
-} from './rust-client';
-import type {
-  SyncularV2ClientConfig,
-  SyncularV2DiagnosticEvent,
-} from './types';
-import {
-  getSyncularV2RustRuntimeInfo,
-  getSyncularV2WasmGlueUrl,
-  getSyncularV2WasmUrl,
-  type SyncularV2WasmGlue,
+  getSyncularRustRuntimeInfo,
+  getSyncularWasmGlueUrl,
+  getSyncularWasmUrl,
+  type SyncularWasmGlue,
 } from './wasm-runtime';
 import type {
-  SyncularV2WorkerErrorPayload,
-  SyncularV2WorkerOutboundMessage,
-  SyncularV2WorkerRequest,
-  SyncularV2WorkerRuntimeArtifact,
+  SyncularWorkerErrorPayload,
+  SyncularWorkerOutboundMessage,
+  SyncularWorkerRequest,
+  SyncularWorkerRuntimeArtifact,
 } from './worker-protocol';
 import {
-  createSyncularV2WorkerErrorPayload,
-  SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+  createSyncularWorkerErrorPayload,
+  SYNCULAR_WORKER_PROTOCOL_VERSION,
 } from './worker-protocol';
-import { SyncularV2WorkerRealtimeController } from './worker-realtime';
+import { SyncularWorkerRealtimeController } from './worker-realtime';
 
-let client: SyncularV2RustClient | undefined;
-let openedConfig: SyncularV2ClientConfig | undefined;
-let openedRuntime: SyncularV2WorkerRuntimeArtifact | undefined;
+let client: SyncularRustClient | undefined;
+let openedConfig: SyncularClientConfig | undefined;
+let openedRuntime: SyncularWorkerRuntimeArtifact | undefined;
 let removeRowsChangedListener: (() => void) | undefined;
 const canceledRequests = new Set<number>();
 const abortControllers = new Map<number, AbortController>();
-const realtime = new SyncularV2WorkerRealtimeController({
+const realtime = new SyncularWorkerRealtimeController({
   getClient: requireClient,
   getConfig: () => openedConfig,
   getLocationOrigin: () =>
@@ -58,20 +52,20 @@ const realtime = new SyncularV2WorkerRealtimeController({
   postDiagnostic,
 });
 
-self.onmessage = (event: MessageEvent<SyncularV2WorkerRequest>) => {
+self.onmessage = (event: MessageEvent<SyncularWorkerRequest>) => {
   void handleRequest(event.data);
 };
 
-async function handleRequest(request: SyncularV2WorkerRequest): Promise<void> {
-  if (request.protocolVersion !== SYNCULAR_V2_WORKER_PROTOCOL_VERSION) {
+async function handleRequest(request: SyncularWorkerRequest): Promise<void> {
+  if (request.protocolVersion !== SYNCULAR_WORKER_PROTOCOL_VERSION) {
     post({
       id: request.id,
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: false,
-      error: createSyncularV2WorkerErrorPayload(
+      error: createSyncularWorkerErrorPayload(
         'worker.protocol_mismatch',
-        `Unsupported Syncular v2 worker protocol ${request.protocolVersion}`,
-        { details: { supported: SYNCULAR_V2_WORKER_PROTOCOL_VERSION } }
+        `Unsupported Syncular worker protocol ${request.protocolVersion}`,
+        { details: { supported: SYNCULAR_WORKER_PROTOCOL_VERSION } }
       ),
     });
     return;
@@ -86,7 +80,7 @@ async function handleRequest(request: SyncularV2WorkerRequest): Promise<void> {
         level: 'warn',
         source: 'worker',
         code: 'worker.request_aborted',
-        message: 'Syncular v2 worker request aborted',
+        message: 'Syncular worker request aborted',
         details: { requestId: request.requestId },
       });
     }
@@ -129,8 +123,8 @@ async function handleRequest(request: SyncularV2WorkerRequest): Promise<void> {
       source,
       code: diagnosticCode,
       message: resyncRequired
-        ? `Syncular v2 worker request ${request.type} requires full resync`
-        : `Syncular v2 worker request ${request.type} failed`,
+        ? `Syncular worker request ${request.type} requires full resync`
+        : `Syncular worker request ${request.type} failed`,
       details: {
         requestType: request.type,
         durationMs: Date.now() - startedAt,
@@ -160,8 +154,8 @@ async function handleRequest(request: SyncularV2WorkerRequest): Promise<void> {
   }
 }
 
-async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
-  return dispatchGeneratedSyncularV2WorkerRequest(
+async function dispatch(request: SyncularWorkerRequest): Promise<unknown> {
+  return dispatchGeneratedSyncularWorkerRequest(
     {
       requireClient,
       openClient,
@@ -185,9 +179,9 @@ async function dispatch(request: SyncularV2WorkerRequest): Promise<unknown> {
 }
 
 async function openClient(
-  request: Extract<SyncularV2WorkerRequest, { type: 'open' }>
+  request: Extract<SyncularWorkerRequest, { type: 'open' }>
 ): Promise<boolean> {
-  const config = resolveSyncularV2ClientConfig(request.config);
+  const config = resolveSyncularClientConfig(request.config);
   realtime.stop();
   detachRowsChangedListener();
   client?.close();
@@ -195,7 +189,7 @@ async function openClient(
   openedConfig = undefined;
   openedRuntime = undefined;
   const runtime = request.runtime;
-  client = await openSyncularV2RustClient({
+  client = await openSyncularRustClient({
     config,
     module: runtime?.wasmGlueUrl
       ? loadWorkerWasmGlue(runtime.wasmGlueUrl)
@@ -220,19 +214,19 @@ function closeClient(): boolean {
 }
 
 async function runtimeInfo(): Promise<
-  ReturnType<typeof createSyncularV2RuntimeInfo>
+  ReturnType<typeof createSyncularRuntimeInfo>
 > {
-  const wasmUrl = getSyncularV2WasmUrl();
+  const wasmUrl = getSyncularWasmUrl();
   const selectedWasmUrl = openedRuntime?.wasmUrl ?? wasmUrl;
   const selectedWasmGlueUrl =
-    openedRuntime?.wasmGlueUrl ?? getSyncularV2WasmGlueUrl();
-  return createSyncularV2RuntimeInfo({
+    openedRuntime?.wasmGlueUrl ?? getSyncularWasmGlueUrl();
+  return createSyncularRuntimeInfo({
     storage: openedConfig?.storage,
     workerUrl:
       typeof self.location?.href === 'string' ? self.location.href : '',
     wasmGlueUrl: selectedWasmGlueUrl,
     wasmUrl: selectedWasmUrl,
-    rust: await getSyncularV2RustRuntimeInfo(
+    rust: await getSyncularRustRuntimeInfo(
       openedRuntime?.wasmGlueUrl
         ? loadWorkerWasmGlue(openedRuntime.wasmGlueUrl)
         : undefined,
@@ -241,24 +235,24 @@ async function runtimeInfo(): Promise<
   });
 }
 
-function loadWorkerWasmGlue(wasmGlueUrl: string): Promise<SyncularV2WasmGlue> {
-  return import(/* @vite-ignore */ wasmGlueUrl) as Promise<SyncularV2WasmGlue>;
+function loadWorkerWasmGlue(wasmGlueUrl: string): Promise<SyncularWasmGlue> {
+  return import(/* @vite-ignore */ wasmGlueUrl) as Promise<SyncularWasmGlue>;
 }
 
-function requireClient(): SyncularV2RustClient {
+function requireClient(): SyncularRustClient {
   if (!client) {
-    throw createSyncularV2WorkerErrorPayload(
+    throw createSyncularWorkerErrorPayload(
       'worker.not_open',
-      'Syncular v2 worker client is not open'
+      'Syncular worker client is not open'
     );
   }
   return client;
 }
 
-function attachRowsChangedListener(nextClient: SyncularV2RustClient): void {
+function attachRowsChangedListener(nextClient: SyncularRustClient): void {
   removeRowsChangedListener = nextClient.addRowsChangedListener((event) => {
     post({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'rowsChanged',
       source: event.source,
       changedTables: event.changedTables,
@@ -273,12 +267,12 @@ function detachRowsChangedListener(): void {
   removeRowsChangedListener = undefined;
 }
 
-function post(message: SyncularV2WorkerOutboundMessage): void {
+function post(message: SyncularWorkerOutboundMessage): void {
   self.postMessage(message);
 }
 
 function createAbortController(
-  type: SyncularV2WorkerRequest['type']
+  type: SyncularWorkerRequest['type']
 ): AbortController | undefined {
   if (!isAbortableRequest(type) || typeof AbortController === 'undefined') {
     return undefined;
@@ -286,8 +280,8 @@ function createAbortController(
   return new AbortController();
 }
 
-function isAbortableRequest(type: SyncularV2WorkerRequest['type']): boolean {
-  return isGeneratedSyncularV2AbortableWorkerRequestType(type);
+function isAbortableRequest(type: SyncularWorkerRequest['type']): boolean {
+  return isGeneratedSyncularAbortableWorkerRequestType(type);
 }
 
 function clearClientAbortSignal(): void {
@@ -299,10 +293,10 @@ function clearClientAbortSignal(): void {
 }
 
 function postDiagnostic(
-  event: Omit<SyncularV2DiagnosticEvent, 'at'> & { at?: number }
+  event: Omit<SyncularDiagnosticEvent, 'at'> & { at?: number }
 ): void {
   self.postMessage({
-    protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+    protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
     type: 'diagnostic',
     event: {
       at: event.at ?? Date.now(),
@@ -324,7 +318,7 @@ function postDiagnostic(
 }
 
 function postRequestSuccessDiagnostic(
-  request: SyncularV2WorkerRequest,
+  request: SyncularWorkerRequest,
   value: unknown,
   durationMs: number
 ): void {
@@ -334,7 +328,7 @@ function postRequestSuccessDiagnostic(
     level: 'info',
     source: requestDiagnosticSource(request.type),
     code: `${requestDiagnosticSource(request.type)}.${request.type}.completed`,
-    message: `Syncular v2 worker request ${request.type} completed`,
+    message: `Syncular worker request ${request.type} completed`,
     ...requestSyncAttemptDiagnosticFields(request),
     details: {
       requestType: request.type,
@@ -352,7 +346,7 @@ function postRequestSuccessDiagnostic(
       level: 'warn',
       source: 'sync',
       code: 'sync.scope_revoked',
-      message: 'Syncular v2 subscription scope revoked',
+      message: 'Syncular subscription scope revoked',
       ...requestSyncAttemptDiagnosticFields(request),
       details: {
         requestType: request.type,
@@ -363,8 +357,8 @@ function postRequestSuccessDiagnostic(
 }
 
 function requestSyncAttemptDiagnosticFields(
-  request: SyncularV2WorkerRequest
-): Pick<SyncularV2DiagnosticEvent, 'syncAttemptId' | 'traceId' | 'spanId'> {
+  request: SyncularWorkerRequest
+): Pick<SyncularDiagnosticEvent, 'syncAttemptId' | 'traceId' | 'spanId'> {
   if (
     request.type !== 'syncPull' &&
     request.type !== 'syncPush' &&
@@ -372,31 +366,31 @@ function requestSyncAttemptDiagnosticFields(
   ) {
     return {};
   }
-  return syncularV2DiagnosticAttemptFields(request.syncAttempt);
+  return syncularDiagnosticAttemptFields(request.syncAttempt);
 }
 
 function isDiagnosedSuccessRequest(
-  type: SyncularV2WorkerRequest['type']
+  type: SyncularWorkerRequest['type']
 ): boolean {
-  return isGeneratedSyncularV2DiagnosedSuccessWorkerRequestType(type);
+  return isGeneratedSyncularDiagnosedSuccessWorkerRequestType(type);
 }
 
 function requestDiagnosticSource(
-  type: SyncularV2WorkerRequest['type']
-): SyncularV2DiagnosticEvent['source'] {
-  return generatedSyncularV2WorkerRequestDiagnosticSource(type);
+  type: SyncularWorkerRequest['type']
+): SyncularDiagnosticEvent['source'] {
+  return generatedSyncularWorkerRequestDiagnosticSource(type);
 }
 
 function requestDiagnosticLevel(
-  type: SyncularV2WorkerRequest['type'],
+  type: SyncularWorkerRequest['type'],
   error: unknown
-): SyncularV2DiagnosticEvent['level'] {
-  if (type === 'setAuthHeaders' || syncularV2ErrorStatus(error)) return 'warn';
+): SyncularDiagnosticEvent['level'] {
+  if (type === 'setAuthHeaders' || syncularErrorStatus(error)) return 'warn';
   return 'error';
 }
 
 function requestSuccessDetails(
-  request: SyncularV2WorkerRequest,
+  request: SyncularWorkerRequest,
   value: unknown
 ): Record<string, unknown> {
   switch (request.type) {
@@ -511,7 +505,7 @@ function syncScopeRevocationDetails(value: unknown): {
 }
 
 function diagnosticStatus(error: unknown): Record<string, unknown> {
-  const status = syncularV2ErrorStatus(error);
+  const status = syncularErrorStatus(error);
   return status ? { status } : {};
 }
 
@@ -522,16 +516,16 @@ function objectRecord(value: unknown): Record<string, unknown> {
 }
 
 function errorMessage(error: unknown): string {
-  return syncularV2ErrorMessage(error);
+  return syncularErrorMessage(error);
 }
 
 function errorRequiresFullRefresh(error: unknown): boolean {
   return errorMessage(error).includes('full snapshot resync required');
 }
 
-function encodeWorkerError(error: unknown): SyncularV2WorkerErrorPayload {
+function encodeWorkerError(error: unknown): SyncularWorkerErrorPayload {
   if (isWorkerErrorPayload(error) && !(error instanceof Error)) return error;
-  if (error instanceof SyncularV2ClientError) {
+  if (error instanceof SyncularClientError) {
     return {
       code: error.code,
       message: error.message,
@@ -544,22 +538,14 @@ function encodeWorkerError(error: unknown): SyncularV2WorkerErrorPayload {
     };
   }
   if (error instanceof Error) {
-    const details = syncularV2ErrorDetails(error);
-    const classification = classifySyncularV2Error(
-      error,
-      error.message,
-      details
-    );
+    const details = syncularErrorDetails(error);
+    const classification = classifySyncularError(error, error.message, details);
     if (!classification) {
-      return createSyncularV2WorkerErrorPayload(
-        'worker.failed',
-        error.message,
-        {
-          name: error.name,
-          stack: error.stack,
-          details,
-        }
-      );
+      return createSyncularWorkerErrorPayload('worker.failed', error.message, {
+        name: error.name,
+        stack: error.stack,
+        details,
+      });
     }
     return {
       code: classification.code,
@@ -573,9 +559,9 @@ function encodeWorkerError(error: unknown): SyncularV2WorkerErrorPayload {
     };
   }
   const message = String(error);
-  const classification = classifySyncularV2Error(error, message);
+  const classification = classifySyncularError(error, message);
   if (!classification) {
-    return createSyncularV2WorkerErrorPayload('worker.failed', message);
+    return createSyncularWorkerErrorPayload('worker.failed', message);
   }
   return {
     code: classification.code,
@@ -588,7 +574,7 @@ function encodeWorkerError(error: unknown): SyncularV2WorkerErrorPayload {
 
 function isWorkerErrorPayload(
   value: unknown
-): value is SyncularV2WorkerErrorPayload {
+): value is SyncularWorkerErrorPayload {
   return Boolean(
     value && typeof value === 'object' && 'code' in value && 'message' in value
   );

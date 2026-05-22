@@ -116,6 +116,9 @@ read-only review:
     Unspecified combined sync responses now default to `binary-sync-pack-v1`;
     explicit `json-v1` sync-pack negotiation and the Hono JSON combined
     response branch were removed, so combined sync responses are binary-only.
+    The now-redundant `syncPackEncodings` and `snapshotEncodings` request
+    fields were also removed from TS/Rust protocol shapes, request builders,
+    testkit helpers, and protocol fixtures.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,
@@ -583,7 +586,7 @@ read-only review:
     recovery-critical cases are auth-required, schema mismatch, and integrity
     rejection, and worker diagnostics use the same stable codes when
     classified. The browser package now shares the same classifier with the
-    direct Rust client sync path through `SyncularV2ClientError`. Core now owns
+    direct Rust client sync path through `SyncularClientError`. Core now owns
     the public error response taxonomy, and Hono sync/blob/rate-limit/auth
     routes emit stable JSON error envelopes that the browser classifier can
     consume from Rust transport failures. The native runtime now uses a shared

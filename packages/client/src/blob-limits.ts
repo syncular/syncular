@@ -1,68 +1,65 @@
 import { SYNCULAR_ERROR_DEFINITIONS } from '@syncular/core';
-import { SyncularV2ClientError } from './errors';
+import { SyncularClientError } from './errors';
 import type {
-  SyncularV2BlobLimits,
-  SyncularV2BlobStoreOptions,
-  SyncularV2DiagnosticEvent,
-  SyncularV2DiagnosticSink,
+  SyncularBlobLimits,
+  SyncularBlobStoreOptions,
+  SyncularDiagnosticEvent,
+  SyncularDiagnosticSink,
 } from './types';
 
-export const DEFAULT_SYNCULAR_V2_BROWSER_MAX_BLOB_PAYLOAD_BYTES =
-  64 * 1024 * 1024;
+export const DEFAULT_SYNCULAR_BROWSER_MAX_BLOB_PAYLOAD_BYTES = 64 * 1024 * 1024;
 
-export type SyncularV2BlobLimitOperation = 'store' | 'retrieve';
+export type SyncularBlobLimitOperation = 'store' | 'retrieve';
 
-export type SyncularV2BlobLimitInput = Blob | File | Uint8Array;
+export type SyncularBlobLimitInput = Blob | File | Uint8Array;
 
-export function resolveSyncularV2BlobLimits(
-  limits: SyncularV2BlobLimits | undefined
-): Required<SyncularV2BlobLimits> {
+export function resolveSyncularBlobLimits(
+  limits: SyncularBlobLimits | undefined
+): Required<SyncularBlobLimits> {
   return {
     maxPayloadBytes: normalizeLimit(
       limits?.maxPayloadBytes,
-      DEFAULT_SYNCULAR_V2_BROWSER_MAX_BLOB_PAYLOAD_BYTES
+      DEFAULT_SYNCULAR_BROWSER_MAX_BLOB_PAYLOAD_BYTES
     ),
   };
 }
 
-export function syncularV2BlobInputSize(
-  data: SyncularV2BlobLimitInput
-): number {
+export function syncularBlobInputSize(data: SyncularBlobLimitInput): number {
   if (data instanceof Uint8Array) return data.byteLength;
   const maybeSized = data as { size?: unknown };
   return typeof maybeSized.size === 'number' ? maybeSized.size : 0;
 }
 
-export function assertSyncularV2BlobPayloadLimit(args: {
-  operation: SyncularV2BlobLimitOperation;
+export function assertSyncularBlobPayloadLimit(args: {
+  operation: SyncularBlobLimitOperation;
   size: number;
-  limits: SyncularV2BlobLimits | undefined;
-  options?: SyncularV2BlobStoreOptions;
+  limits: SyncularBlobLimits | undefined;
+  options?: SyncularBlobStoreOptions;
   refHash?: string;
-  diagnostics?: SyncularV2DiagnosticSink;
+  diagnostics?: SyncularDiagnosticSink;
 }): void {
-  const limits = resolveSyncularV2BlobLimits(args.limits);
+  const limits = resolveSyncularBlobLimits(args.limits);
   if (args.size <= limits.maxPayloadBytes) return;
-  const error = createSyncularV2BlobTooLargeError({
+  const error = createSyncularBlobTooLargeError({
     operation: args.operation,
     size: args.size,
     maxPayloadBytes: limits.maxPayloadBytes,
     options: args.options,
     refHash: args.refHash,
   });
-  args.diagnostics?.(createSyncularV2BlobLimitDiagnostic(error));
+  args.diagnostics?.(createSyncularBlobLimitDiagnostic(error));
   throw error;
 }
 
-function createSyncularV2BlobTooLargeError(args: {
-  operation: SyncularV2BlobLimitOperation;
+function createSyncularBlobTooLargeError(args: {
+  operation: SyncularBlobLimitOperation;
   size: number;
   maxPayloadBytes: number;
-  options?: SyncularV2BlobStoreOptions;
+  options?: SyncularBlobStoreOptions;
   refHash?: string;
-}): SyncularV2ClientError {
+}): SyncularClientError {
   const definition = SYNCULAR_ERROR_DEFINITIONS['blob.too_large'];
-  return new SyncularV2ClientError({
+  return new SyncularClientError({
     code: 'blob.too_large',
     category: definition.category,
     retryable: definition.retryable,
@@ -81,9 +78,9 @@ function createSyncularV2BlobTooLargeError(args: {
   });
 }
 
-function createSyncularV2BlobLimitDiagnostic(
-  error: SyncularV2ClientError
-): SyncularV2DiagnosticEvent {
+function createSyncularBlobLimitDiagnostic(
+  error: SyncularClientError
+): SyncularDiagnosticEvent {
   return {
     at: Date.now(),
     level: 'warn',

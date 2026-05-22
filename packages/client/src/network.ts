@@ -1,7 +1,7 @@
-import type { SyncularV2NetworkStatusSource } from './types';
+import type { SyncularNetworkStatusSource } from './types';
 
-export function browserSyncularV2NetworkStatusSource():
-  | SyncularV2NetworkStatusSource
+export function browserSyncularNetworkStatusSource():
+  | SyncularNetworkStatusSource
   | undefined {
   const target = globalThis as unknown as {
     navigator?: { onLine?: boolean };

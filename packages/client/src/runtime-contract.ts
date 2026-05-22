@@ -1,39 +1,39 @@
 import {
-  SYNCULAR_V2_CLIENT_PACKAGE_NAME,
-  SYNCULAR_V2_CLIENT_PACKAGE_VERSION,
+  SYNCULAR_CLIENT_PACKAGE_NAME,
+  SYNCULAR_CLIENT_PACKAGE_VERSION,
 } from '@syncular/client-javascript-bindings';
 import type {
-  SyncularV2RuntimeInfo,
-  SyncularV2RustRuntimeInfo,
-  SyncularV2Storage,
+  SyncularRuntimeInfo,
+  SyncularRustRuntimeInfo,
+  SyncularStorage,
 } from './types';
-import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
+import { SYNCULAR_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
 export {
-  SYNCULAR_V2_CORE_RUNTIME_FEATURES,
-  SYNCULAR_V2_FULL_RUNTIME_FEATURES,
-  SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE,
-  SYNCULAR_V2_WASM_ARTIFACT_FILE,
-  SYNCULAR_V2_WASM_BINARY_FILE,
-  SYNCULAR_V2_WASM_GLUE_FILE,
-  SYNCULAR_V2_WASM_OUT_NAME,
+  SYNCULAR_CORE_RUNTIME_FEATURES,
+  SYNCULAR_FULL_RUNTIME_FEATURES,
+  SYNCULAR_WASM_ARTIFACT_CATALOG_FILE,
+  SYNCULAR_WASM_ARTIFACT_FILE,
+  SYNCULAR_WASM_BINARY_FILE,
+  SYNCULAR_WASM_GLUE_FILE,
+  SYNCULAR_WASM_OUT_NAME,
 } from '@syncular/client-javascript-bindings';
-export { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
+export { SYNCULAR_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
-export const SYNCULAR_V2_PACKAGE_NAME = SYNCULAR_V2_CLIENT_PACKAGE_NAME;
-export const SYNCULAR_V2_PACKAGE_VERSION = SYNCULAR_V2_CLIENT_PACKAGE_VERSION;
+export const SYNCULAR_PACKAGE_NAME = SYNCULAR_CLIENT_PACKAGE_NAME;
+export const SYNCULAR_PACKAGE_VERSION = SYNCULAR_CLIENT_PACKAGE_VERSION;
 
-export function createSyncularV2RuntimeInfo(options: {
-  storage?: SyncularV2Storage;
+export function createSyncularRuntimeInfo(options: {
+  storage?: SyncularStorage;
   workerUrl?: string | URL;
   wasmGlueUrl: string | URL;
   wasmUrl: string | URL | Request;
-  rust?: SyncularV2RustRuntimeInfo | null;
-}): SyncularV2RuntimeInfo {
+  rust?: SyncularRustRuntimeInfo | null;
+}): SyncularRuntimeInfo {
   return {
-    packageName: SYNCULAR_V2_PACKAGE_NAME,
-    packageVersion: SYNCULAR_V2_PACKAGE_VERSION,
-    workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+    packageName: SYNCULAR_PACKAGE_NAME,
+    packageVersion: SYNCULAR_PACKAGE_VERSION,
+    workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
     storage: options.storage,
     workerUrl: options.workerUrl == null ? undefined : href(options.workerUrl),
     wasmGlueUrl: href(options.wasmGlueUrl),

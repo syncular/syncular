@@ -3,17 +3,17 @@ import { type BlobRef, codecs } from '@syncular/core';
 import { createServerHandler, type SyncCoreDb } from '../../../server/src';
 import { createHttpServerFixture } from '../../../testkit/src/http-fixtures';
 import {
-  createSyncularV2Database,
-  type SyncularV2Database,
-  withSyncularV2SchemaWrites,
+  createSyncularDatabase,
+  type SyncularDatabase,
+  withSyncularSchemaWrites,
 } from '../database';
 import type {
-  SyncularV2AppSchema,
-  SyncularV2AuthLeaseRecord,
-  SyncularV2RuntimeArtifactCandidate,
-  SyncularV2SubscriptionSpec,
+  SyncularAppSchema,
+  SyncularAuthLeaseRecord,
+  SyncularRuntimeArtifactCandidate,
+  SyncularSubscriptionSpec,
 } from '../types';
-import { getSyncularV2RuntimeArtifact } from '../wasm-runtime';
+import { getSyncularRuntimeArtifact } from '../wasm-runtime';
 
 interface BasicTaskRow {
   id: string;
@@ -60,7 +60,7 @@ interface FileAssetClientDb {
   file_versions: FileVersionClientRow;
 }
 
-const basicAppSchema: SyncularV2AppSchema = {
+const basicAppSchema: SyncularAppSchema = {
   schemaVersion: 1,
   tables: [
     {
@@ -110,7 +110,7 @@ const basicAppSchema: SyncularV2AppSchema = {
   ],
 };
 
-const crdtAppSchema: SyncularV2AppSchema = {
+const crdtAppSchema: SyncularAppSchema = {
   schemaVersion: 1,
   tables: [
     {
@@ -129,7 +129,7 @@ const crdtAppSchema: SyncularV2AppSchema = {
   ],
 };
 
-const blobAppSchema: SyncularV2AppSchema = {
+const blobAppSchema: SyncularAppSchema = {
   schemaVersion: 1,
   tables: [
     {
@@ -148,7 +148,7 @@ const blobAppSchema: SyncularV2AppSchema = {
   ],
 };
 
-const fileVersionAppSchema: SyncularV2AppSchema = {
+const fileVersionAppSchema: SyncularAppSchema = {
   schemaVersion: 1,
   tables: [
     {
@@ -216,9 +216,9 @@ const fileVersionAppSchema: SyncularV2AppSchema = {
   ],
 };
 
-describe('Syncular v2 core WASM artifact', () => {
+describe('Syncular core WASM artifact', () => {
   it('opens a basic SQLite app schema without CRDT or E2EE', async () => {
-    const syncular = await createSyncularV2Database<BasicDb>({
+    const syncular = await createSyncularDatabase<BasicDb>({
       config: {
         baseUrl: 'http://127.0.0.1:1/sync',
         actorId: 'actor-core',
@@ -245,7 +245,7 @@ describe('Syncular v2 core WASM artifact', () => {
       expect(runtimeInfo.rust?.features).not.toContain('crdt-yjs');
       expect(runtimeInfo.wasmUrl).toContain('/dist/wasm-core/');
 
-      await withSyncularV2SchemaWrites(syncular, async (db) => {
+      await withSyncularSchemaWrites(syncular, async (db) => {
         await db.schema
           .createTable('basic_tasks')
           .ifNotExists()
@@ -378,7 +378,7 @@ describe('Syncular v2 core WASM artifact', () => {
         return authorization === token ? { actorId } : null;
       },
     });
-    const clients: SyncularV2Database<BasicDb>[] = [];
+    const clients: SyncularDatabase<BasicDb>[] = [];
 
     try {
       const writer = await openBasicCoreDatabase({
@@ -463,7 +463,7 @@ describe('Syncular v2 core WASM artifact', () => {
         return authorization === token ? { actorId } : null;
       },
     });
-    const clients: SyncularV2Database<FileAssetDb>[] = [];
+    const clients: SyncularDatabase<FileAssetDb>[] = [];
 
     try {
       const writer = await openFileAssetDatabase({
@@ -544,7 +544,7 @@ describe('Syncular v2 core WASM artifact', () => {
 
   it('rejects a CRDT schema against the core artifact', async () => {
     await expect(
-      createSyncularV2Database<BasicDb>({
+      createSyncularDatabase<BasicDb>({
         config: {
           baseUrl: 'http://127.0.0.1:1/sync',
           actorId: 'actor-core',
@@ -561,7 +561,7 @@ describe('Syncular v2 core WASM artifact', () => {
 
   it('rejects a blob schema against the core artifact', async () => {
     await expect(
-      createSyncularV2Database<BasicDb>({
+      createSyncularDatabase<BasicDb>({
         config: {
           baseUrl: 'http://127.0.0.1:1/sync',
           actorId: 'actor-core',
@@ -582,8 +582,8 @@ async function openBasicCoreDatabase(args: {
   actorId: string;
   clientId: string;
   token: string;
-}): Promise<SyncularV2Database<BasicDb>> {
-  const syncular = await createSyncularV2Database<BasicDb>({
+}): Promise<SyncularDatabase<BasicDb>> {
+  const syncular = await createSyncularDatabase<BasicDb>({
     config: {
       baseUrl: args.baseUrl,
       actorId: args.actorId,
@@ -616,9 +616,9 @@ async function openBasicCoreDatabase(args: {
 }
 
 async function installBasicClientSchema(
-  syncular: SyncularV2Database<BasicDb>
+  syncular: SyncularDatabase<BasicDb>
 ): Promise<void> {
-  await withSyncularV2SchemaWrites(syncular, async (db) => {
+  await withSyncularSchemaWrites(syncular, async (db) => {
     await db.schema
       .createTable('basic_tasks')
       .ifNotExists()
@@ -657,8 +657,8 @@ async function openFileAssetDatabase(args: {
   actorId: string;
   clientId: string;
   token: string;
-}): Promise<SyncularV2Database<FileAssetDb>> {
-  const syncular = await createSyncularV2Database<FileAssetDb>({
+}): Promise<SyncularDatabase<FileAssetDb>> {
+  const syncular = await createSyncularDatabase<FileAssetDb>({
     config: {
       baseUrl: args.baseUrl,
       actorId: args.actorId,
@@ -693,9 +693,9 @@ async function openFileAssetDatabase(args: {
 }
 
 async function installFileAssetClientSchema(
-  syncular: SyncularV2Database<FileAssetDb>
+  syncular: SyncularDatabase<FileAssetDb>
 ): Promise<void> {
-  await withSyncularV2SchemaWrites(syncular, async (db) => {
+  await withSyncularSchemaWrites(syncular, async (db) => {
     await db.schema
       .createTable('file_versions')
       .ifNotExists()
@@ -728,7 +728,7 @@ async function ensureFileAssetServerTables(
     .execute();
 }
 
-function fileVersionSubscription(ownerId: string): SyncularV2SubscriptionSpec {
+function fileVersionSubscription(ownerId: string): SyncularSubscriptionSpec {
   return {
     id: 'sub-file-versions',
     table: 'file_versions',
@@ -737,7 +737,7 @@ function fileVersionSubscription(ownerId: string): SyncularV2SubscriptionSpec {
   };
 }
 
-function basicTaskSubscription(actorId: string): SyncularV2SubscriptionSpec {
+function basicTaskSubscription(actorId: string): SyncularSubscriptionSpec {
   return {
     id: 'sub-basic-tasks',
     table: 'basic_tasks',
@@ -754,7 +754,7 @@ function authLease(args: {
   operations: string[];
   schemaVersion: number;
   expiresAtMs?: number;
-}): SyncularV2AuthLeaseRecord {
+}): SyncularAuthLeaseRecord {
   const now = Date.now();
   const expiresAtMs = args.expiresAtMs ?? now + 60_000;
   return {
@@ -799,6 +799,6 @@ function authLease(args: {
   };
 }
 
-function coreRuntimeArtifact(): SyncularV2RuntimeArtifactCandidate {
-  return getSyncularV2RuntimeArtifact('core');
+function coreRuntimeArtifact(): SyncularRuntimeArtifactCandidate {
+  return getSyncularRuntimeArtifact('core');
 }

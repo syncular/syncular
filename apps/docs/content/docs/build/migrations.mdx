@@ -11,7 +11,7 @@ As your application evolves, you need to add tables, rename columns, and change 
 
 - How schema versioning works in the push protocol
 - Server-side migration patterns (adding/removing tables, evolving schemas)
-- Client-side migration with `createSyncularV2Database`
+- Client-side migration with `createSyncularDatabase`
 - Generating TypeScript types from migrations with `@syncular/typegen`
 - Strategies for rolling deployments with mixed client versions
 
@@ -163,14 +163,14 @@ Syncular's client requires three internal tables for tracking sync state:
 - `sync_outbox_commits` -- outgoing mutation queue
 - `sync_conflicts` -- server-rejected operations pending resolution
 
-Use `createSyncularV2Database` from `@syncular/client` to create these tables. It is idempotent and safe to call on every app startup:
+Use `createSyncularDatabase` from `@syncular/client` to create these tables. It is idempotent and safe to call on every app startup:
 
 ```typescript
-import { createSyncularV2Database } from '@syncular/client';
+import { createSyncularDatabase } from '@syncular/client';
 
 async function initializeDatabase(db: Kysely<MyDb>) {
   // Create sync infrastructure tables
-  await createSyncularV2Database(db);
+  await createSyncularDatabase(db);
 
   // Create your application tables
   await db.schema
@@ -190,13 +190,13 @@ async function initializeDatabase(db: Kysely<MyDb>) {
 The recommended approach is to use `@syncular/migrations` for tracked, versioned client migrations with automatic checksum validation:
 
 ```typescript
-import { withSyncularV2SchemaWrites, createSyncularV2Database } from '@syncular/client';
+import { withSyncularSchemaWrites, createSyncularDatabase } from '@syncular/client';
 import { createMigrationTrackingTableName, runMigrations } from '@syncular/migrations';
 import { clientMigrations } from './client.migrations';
 import { migrationChecksums } from './client.migrations.checksums.generated';
 
 async function migrateClientDb(db: Kysely<MyDb>) {
-  await createSyncularV2Database(db);
+  await createSyncularDatabase(db);
   await runMigrations({
     db,
     migrations: clientMigrations,
@@ -205,8 +205,8 @@ async function migrateClientDb(db: Kysely<MyDb>) {
     onChecksumMismatch: 'reset',
     beforeReset: async (db) => {
       await db.schema.dropTable('notes').ifExists().execute();
-      await withSyncularV2SchemaWrites(db);
-      await createSyncularV2Database(db);
+      await withSyncularSchemaWrites(db);
+      await createSyncularDatabase(db);
     },
   });
 }
@@ -319,7 +319,7 @@ When adding support for a new synced table on the client:
 
 ```typescript
 async function initializeDatabase(db: Kysely<MyDb>) {
-  await createSyncularV2Database(db);
+  await createSyncularDatabase(db);
 
   // Existing tables
   await db.schema
@@ -363,18 +363,18 @@ try {
 
 ### Dropping the sync schema
 
-To fully reset sync state (e.g., when a user logs out), use `withSyncularV2SchemaWrites`:
+To fully reset sync state (e.g., when a user logs out), use `withSyncularSchemaWrites`:
 
 ```typescript
-import { withSyncularV2SchemaWrites } from '@syncular/client';
+import { withSyncularSchemaWrites } from '@syncular/client';
 
 async function resetSyncState(db: Kysely<MyDb>) {
-  await withSyncularV2SchemaWrites(db);
+  await withSyncularSchemaWrites(db);
   // Optionally drop application tables too
 }
 ```
 
-This removes `sync_conflicts`, `sync_outbox_commits`, and `sync_subscription_state`. The next app startup will recreate them fresh via `createSyncularV2Database`.
+This removes `sync_conflicts`, `sync_outbox_commits`, and `sync_subscription_state`. The next app startup will recreate them fresh via `createSyncularDatabase`.
 
 ### Scoped reset and repair from the engine
 
@@ -596,13 +596,13 @@ If a migration is too complex to handle incrementally, the recommended approach 
 For manual reset control (e.g., when a user logs out or you need to force a reset outside of migrations):
 
 ```typescript
-import { withSyncularV2SchemaWrites, createSyncularV2Database } from '@syncular/client';
+import { withSyncularSchemaWrites, createSyncularDatabase } from '@syncular/client';
 
 async function resetDatabase(db: Kysely<MyDb>) {
-  await withSyncularV2SchemaWrites(db);
+  await withSyncularSchemaWrites(db);
   await db.schema.dropTable('notes').ifExists().execute();
   await db.schema.dropTable('tags').ifExists().execute();
-  await createSyncularV2Database(db);
+  await createSyncularDatabase(db);
   // Re-run migrations to recreate tables
 }
 ```

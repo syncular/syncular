@@ -14,18 +14,18 @@ import {
   syncularGeneratedTableConfig,
   taskSubscription,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
-import { createSyncularV2Dialect } from '../database';
+import { createSyncularDialect } from '../database';
 import type {
-  SyncularV2AppSchema,
-  SyncularV2Client,
-  SyncularV2DiagnosticEvent,
-  SyncularV2LifecycleState,
-  SyncularV2LiveQueryDiagnostics,
-  SyncularV2LiveQueryEvent,
-  SyncularV2RowsChangedEvent,
-  SyncularV2UnsafeSqlClient,
+  SyncularAppSchema,
+  SyncularDiagnosticEvent,
+  SyncularLifecycleState,
+  SyncularLiveQueryDiagnostics,
+  SyncularLiveQueryEvent,
+  SyncularRowsChangedEvent,
+  SyncularRuntimeClient,
+  SyncularUnsafeSqlClient,
 } from '../types';
-import { SyncularV2WorkerError } from '../worker-client';
+import { SyncularWorkerError } from '../worker-client';
 import {
   createHonoSyncHarness,
   type HonoSyncHarness,
@@ -46,7 +46,7 @@ async function readCombinedResponse(
   return (await response.json()) as SyncCombinedResponse;
 }
 
-describe('Syncular v2 worker sync protocol against Hono routes', () => {
+describe('Syncular worker sync protocol against Hono routes', () => {
   const harnesses: HonoSyncHarness[] = [];
 
   afterEach(async () => {
@@ -117,7 +117,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     });
     harnesses.push(sync);
 
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const diagnostics: SyncularDiagnosticEvent[] = [];
     const client = await sync.openWorkerClient({
       clientId: scenario.clientId,
       actorId: ACTOR_A,
@@ -125,7 +125,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       diagnostics: (event) => diagnostics.push(event),
     });
     await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
-    const lifecycleEvents: SyncularV2LifecycleState[] = [];
+    const lifecycleEvents: SyncularLifecycleState[] = [];
     client.addEventListener('lifecycleChanged', (event) => {
       lifecycleEvents.push(event);
     });
@@ -134,13 +134,13 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       expect.objectContaining({ id: scenario.seedTask.id, user_id: ACTOR_A })
     );
 
-    const dialect = createSyncularV2Dialect(client, {
+    const dialect = createSyncularDialect(client, {
       appTables: syncularGeneratedAppSchema.tables.map((table) => table.name),
       tableConfig: syncularGeneratedTableConfig,
     });
     const db = new Kysely<SyncularAppDb>({ dialect });
     const liveEvents: Array<
-      SyncularV2LiveQueryEvent<{ id: string; title: string }>
+      SyncularLiveQueryEvent<{ id: string; title: string }>
     > = [];
 
     try {
@@ -258,7 +258,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       getHeaders: () => ({ authorization: TOKEN_A }),
       sync: { autoSyncAfterMutation: false },
     });
-    const lifecycleEvents: SyncularV2LifecycleState[] = [];
+    const lifecycleEvents: SyncularLifecycleState[] = [];
     database.client.addEventListener('lifecycleChanged', (event) => {
       lifecycleEvents.push(event);
     });
@@ -340,7 +340,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
     await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const diagnostics: SyncularDiagnosticEvent[] = [];
     const removeDiagnostics = client.addDiagnosticListener((event) => {
       diagnostics.push(event);
     });
@@ -385,7 +385,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       actorId: ACTOR_A,
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
-    const events: SyncularV2RowsChangedEvent[] = [];
+    const events: SyncularRowsChangedEvent[] = [];
     const remove = client.addRowsChangedListener((event) => events.push(event));
 
     await client.applyMutation(
@@ -498,7 +498,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       () => null,
       (err) => err
     );
-    expect(error).toBeInstanceOf(SyncularV2WorkerError);
+    expect(error).toBeInstanceOf(SyncularWorkerError);
     expect(error).toMatchObject({
       code: 'sync.auth_required',
       category: 'auth-required',
@@ -535,7 +535,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       actorId: ACTOR_A,
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const diagnostics: SyncularDiagnosticEvent[] = [];
     const removeDiagnostics = client.addDiagnosticListener((event) => {
       diagnostics.push(event);
     });
@@ -559,7 +559,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       () => null,
       (err) => err
     );
-    expect(error).toBeInstanceOf(SyncularV2WorkerError);
+    expect(error).toBeInstanceOf(SyncularWorkerError);
     expect(error).toMatchObject({
       code: 'sync.schema_mismatch',
       category: 'schema-mismatch',
@@ -665,7 +665,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       },
       localRow
     );
-    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    const unsafe = client as unknown as SyncularUnsafeSqlClient;
     await unsafe.executeUnsafeSql(
       'update sync_outbox_commits set schema_version = ?',
       [futureSchemaVersion]
@@ -690,7 +690,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
     await client.setSubscriptions([subscription]);
-    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    const unsafe = client as unknown as SyncularUnsafeSqlClient;
     await unsafe.executeUnsafeSql(
       'insert into sync_subscription_state (state_id, subscription_id, "table", scopes_json, params_json, cursor, bootstrap_state_json, status, created_at, updated_at) values (?, ?, ?, ?, ?, ?, null, ?, ?, ?)',
       [
@@ -783,7 +783,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
     await client.setSubscriptions([taskSubscription({ actorId: ACTOR_A })]);
-    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    const unsafe = client as unknown as SyncularUnsafeSqlClient;
     await unsafe.executeUnsafeSql(
       'insert into tasks (id, title, completed, user_id, project_id, server_version, image, title_yjs_state) values (?, ?, ?, ?, ?, ?, ?, ?)',
       ['health-owned-task', 'Owned', 0, ACTOR_A, null, 42, null, null]
@@ -862,7 +862,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
         bootstrapPhase: 1,
       },
     ]);
-    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    const unsafe = client as unknown as SyncularUnsafeSqlClient;
     await unsafe.executeUnsafeSql(
       'insert into tasks (id, title, completed, user_id, project_id, server_version, image, title_yjs_state) values (?, ?, ?, ?, ?, ?, ?, ?)',
       [
@@ -926,7 +926,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
     await client.setSubscriptions([subscription]);
-    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    const unsafe = client as unknown as SyncularUnsafeSqlClient;
     await unsafe.executeUnsafeSql(
       'insert into tasks (id, title, completed, user_id, project_id, server_version, image, title_yjs_state) values (?, ?, 0, ?, ?, ?, null, null)',
       ['reset-browser-synced', 'Synced row', ACTOR_A, null, 42]
@@ -1089,7 +1089,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       () => null,
       (err) => err
     );
-    expect(error).toBeInstanceOf(SyncularV2WorkerError);
+    expect(error).toBeInstanceOf(SyncularWorkerError);
     expect(error).toMatchObject({
       code: 'sync.integrity_rejected',
       category: 'integrity-rejected',
@@ -1210,7 +1210,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     });
     await expect(client.listTable('tasks')).resolves.toHaveLength(1);
 
-    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    const unsafe = client as unknown as SyncularUnsafeSqlClient;
     const checkpointRows = await unsafe.executeUnsafeSql<{
       bootstrap_state_json: string | null;
     }>(
@@ -1288,7 +1288,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
         server_version: scenario.task.serverVersion,
       }),
     ]);
-    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    const unsafe = client as unknown as SyncularUnsafeSqlClient;
     const cursorRows = await unsafe.executeUnsafeSql<{
       cursor: number;
     }>('select cursor from sync_subscription_state where subscription_id = ?', [
@@ -1750,7 +1750,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     expect(snapshot.rows).toHaveLength(scenario.expectedInitialRows);
 
     const events: Array<
-      SyncularV2LiveQueryEvent<{
+      SyncularLiveQueryEvent<{
         id: string;
         title: string;
         user_id: string;
@@ -1758,7 +1758,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     > = [];
     clientA.addLiveQueryListener(snapshot.id, (event) => {
       events.push(
-        event as SyncularV2LiveQueryEvent<{
+        event as SyncularLiveQueryEvent<{
           id: string;
           title: string;
           user_id: string;
@@ -1838,14 +1838,13 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
 
-    const dialect = createSyncularV2Dialect(clientA, {
+    const dialect = createSyncularDialect(clientA, {
       appTables: syncularGeneratedAppSchema.tables.map((table) => table.name),
       tableConfig: syncularGeneratedTableConfig,
     });
     const db = new Kysely<SyncularAppDb>({ dialect });
-    const events: Array<
-      SyncularV2LiveQueryEvent<{ id: string; title: string }>
-    > = [];
+    const events: Array<SyncularLiveQueryEvent<{ id: string; title: string }>> =
+      [];
 
     try {
       await dialect.live(
@@ -1907,14 +1906,13 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       getHeaders: () => ({ authorization: TOKEN_A }),
     });
 
-    const dialect = createSyncularV2Dialect(clientA, {
+    const dialect = createSyncularDialect(clientA, {
       appTables: syncularGeneratedAppSchema.tables.map((table) => table.name),
       tableConfig: syncularGeneratedTableConfig,
     });
     const db = new Kysely<SyncularAppDb>({ dialect });
-    const events: Array<
-      SyncularV2LiveQueryEvent<{ id: string; title: string }>
-    > = [];
+    const events: Array<SyncularLiveQueryEvent<{ id: string; title: string }>> =
+      [];
 
     try {
       await dialect.live(
@@ -1983,13 +1981,13 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     };
     await insertBlankTask(client, field.rowId);
 
-    const dialect = createSyncularV2Dialect(client, {
+    const dialect = createSyncularDialect(client, {
       appTables: syncularGeneratedAppSchema.tables.map((table) => table.name),
       tableConfig: syncularGeneratedTableConfig,
     });
     const db = new Kysely<SyncularAppDb>({ dialect });
     const events: Array<
-      SyncularV2LiveQueryEvent<{
+      SyncularLiveQueryEvent<{
         id: string;
         title: string;
         title_yjs_state: string | null;
@@ -2100,7 +2098,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     ]);
     expect(serverRows).toHaveLength(scenario.expectedServerRowCount);
 
-    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    const unsafe = client as unknown as SyncularUnsafeSqlClient;
     const outboxRows = await unsafe.executeUnsafeSql<{ status: string }>(
       'select status from sync_outbox_commits order by created_at'
     );
@@ -2160,13 +2158,13 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       localRow
     );
 
-    const dialect = createSyncularV2Dialect(client, {
+    const dialect = createSyncularDialect(client, {
       appTables: syncularGeneratedAppSchema.tables.map((table) => table.name),
       tableConfig: syncularGeneratedTableConfig,
     });
     const db = new Kysely<SyncularAppDb>({ dialect });
     const liveEvents: Array<
-      SyncularV2LiveQueryEvent<{ id: string; title: string }>
+      SyncularLiveQueryEvent<{ id: string; title: string }>
     > = [];
 
     try {
@@ -2586,7 +2584,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       scenario.conflict.expectedConflictCount
     );
 
-    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    const unsafe = client as unknown as SyncularUnsafeSqlClient;
     const conflictRows = await unsafe.executeUnsafeSql<{
       server_row_json: string;
     }>('select server_row_json from sync_conflicts');
@@ -2751,7 +2749,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     await expect(reader.blobs.isLocal(image.hash)).resolves.toBe(true);
 
     const blobEvents: Array<
-      SyncularV2LiveQueryEvent<{ id: string; image: unknown }>
+      SyncularLiveQueryEvent<{ id: string; image: unknown }>
     > = [];
     const live = await reader.dialect.live(
       reader.db
@@ -2995,7 +2993,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     const removeDiagnostics = reader.addDiagnosticListener((event) => {
       diagnostics.push(event);
     });
-    const unsafeReader = reader as unknown as SyncularV2UnsafeSqlClient;
+    const unsafeReader = reader as unknown as SyncularUnsafeSqlClient;
     await unsafeReader.executeUnsafeSql(
       'update tasks set title_yjs_state = null where id = ?',
       [field.rowId]
@@ -3089,7 +3087,7 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       })
     );
 
-    const unsafe = client as unknown as SyncularV2UnsafeSqlClient;
+    const unsafe = client as unknown as SyncularUnsafeSqlClient;
     const crdtRows = await unsafe.executeUnsafeSql<{
       ciphertext: string;
       server_seq: number | null;
@@ -3144,8 +3142,8 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
 });
 
 async function pushTaskAndPull(
-  source: SyncularV2Client,
-  target: SyncularV2Client,
+  source: SyncularRuntimeClient,
+  target: SyncularRuntimeClient,
   task: { id: string; title: string }
 ): Promise<void> {
   const localRow = {
@@ -3173,10 +3171,10 @@ async function pushTaskAndPull(
 }
 
 async function liveQueryDiagnostics(
-  client: SyncularV2Client
-): Promise<SyncularV2LiveQueryDiagnostics> {
-  const diagnostics = client as SyncularV2Client & {
-    liveQueryDiagnostics(): Promise<SyncularV2LiveQueryDiagnostics>;
+  client: SyncularRuntimeClient
+): Promise<SyncularLiveQueryDiagnostics> {
+  const diagnostics = client as SyncularRuntimeClient & {
+    liveQueryDiagnostics(): Promise<SyncularLiveQueryDiagnostics>;
   };
   return diagnostics.liveQueryDiagnostics();
 }
@@ -3217,9 +3215,9 @@ async function waitForSyncRequestEventByTrace(
 }
 
 async function waitForLifecycle(
-  events: readonly SyncularV2LifecycleState[],
-  predicate: (event: SyncularV2LifecycleState) => boolean
-): Promise<SyncularV2LifecycleState> {
+  events: readonly SyncularLifecycleState[],
+  predicate: (event: SyncularLifecycleState) => boolean
+): Promise<SyncularLifecycleState> {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index];
@@ -3235,7 +3233,7 @@ function waitForRetryBackoff(): Promise<void> {
 }
 
 async function insertBlankTask(
-  client: SyncularV2Client,
+  client: SyncularRuntimeClient,
   id: string
 ): Promise<void> {
   const localRow = {
@@ -3260,7 +3258,7 @@ async function insertBlankTask(
   );
 }
 
-function encryptedTitleCrdtAppSchema(): SyncularV2AppSchema {
+function encryptedTitleCrdtAppSchema(): SyncularAppSchema {
   return {
     ...syncularGeneratedAppSchema,
     tables: syncularGeneratedAppSchema.tables.map((table) =>

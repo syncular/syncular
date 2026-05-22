@@ -179,9 +179,59 @@ Closed. Next Rust-first work package is
   lifecycle controller, renders lifecycle state, and lets framework-managed
   mutation auto-sync/reconnect handle local writes, undo/redo, offline queueing,
   and online recovery.
+- The local demo now treats degraded local state as a review state instead of a
+  fatal app error, and its console diagnostic publisher no longer subscribes to
+  `lifecycleChanged` because diagnostic snapshots issue worker requests that
+  themselves produce lifecycle transitions. Demo diagnostics are deduped by
+  stable snapshot content, and the demo IndexedDB file prefix was bumped to
+  avoid carrying failed/conflict state from earlier local experiments.
+- Console diagnostic publishing is now managed by `@syncular/client` through
+  `consoleDiagnostics`, so apps opt in with a console URL/token or disable it
+  with `false`. The managed publisher is offline-aware, avoids lifecycle
+  self-recursion, dedupes unchanged snapshots, and compacts bulky diagnostic
+  arrays/details before posting so the console server's 64 KiB record limit is
+  respected.
+- The app-facing browser API and generated TypeScript output no longer use
+  `V2` names. Public callers now use `createSyncularDatabase`,
+  `SyncularDatabase`, `CreateSyncularDatabaseOptions`, `SyncularRuntimeClient`,
+  and unversioned runtime constants/helpers. The Rust wasm-bindgen helper
+  exports and WASM artifact filenames were rebuilt with unversioned names so
+  the demo and generated clients use the same surface.
 
 ## Latest Evidence
 
+- `bun --cwd rust/bindings/javascript build:wasm:dev`
+- `bun --cwd rust/bindings/javascript tsgo`
+- `bun --cwd packages/client tsgo`
+- `bun --cwd apps/demo tsgo`
+- `bun --cwd packages/client-react tsgo`
+- `bun test packages/client/src/console-diagnostics.test.ts packages/client/src/public-api.test.ts packages/client/src/generated-runtime.test.ts`
+- `bun test packages/client/src/client.test.ts packages/client/src/errors.test.ts`
+- `bun test packages/client-react/src/index.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+- `bunx biome check apps/demo/src/app.tsx apps/demo/src/client/syncular.ts apps/docs/content/docs/build/error-handling.mdx apps/docs/content/docs/build/migrations.mdx apps/docs/content/docs/operate/performance.mdx config/bundle-budget.json packages/client/src packages/client/scripts/generate-bridge.ts packages/client-react/src packages/client-crdt-adapters/src packages/client-tauri/src/index.ts packages/client-react-native/src/index.ts packages/testkit/src/client-bridge.ts rust/bindings/javascript/src/runtime-contract.ts rust/bindings/javascript/scripts/build-syncular-wasm.ts rust/bindings/javascript/scripts/size-syncular-wasm.ts rust/bindings/javascript/scripts/write-syncular-wasm-catalog.ts rust/examples/todo-app/generated/typescript/syncular.generated.ts`
+- `git diff --check`
+- Search for stale versioned public/runtime names returned no matches outside
+  lockfile/favicon noise.
+- Playwright demo smoke: after rebuilding dev WASM, both demo clients rendered
+  `Ready`; managed diagnostics posted for both clients with `202` responses and
+  about 6.2 KiB request bodies. Diagnostic runtime URLs now report
+  `syncular.js` and `syncular_bg.wasm`.
+- `bun test packages/client/src/console-diagnostics.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bun --cwd apps/demo tsgo`
+- `bunx biome check packages/client/src/console-diagnostics.ts packages/client/src/console-diagnostics.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/types.ts apps/demo/src/client/syncular.ts`
+- Playwright demo smoke: reload at `http://127.0.0.1:5173/` posted compact
+  managed diagnostics for `demo-left` and `demo-right`; both responses were
+  `202`, request bodies were about 6.2 KiB, bulky `changedRows` detail was not
+  sent, no console errors were emitted, and both clients rendered `Ready`.
+- `bun --cwd apps/demo tsgo`
+- `bunx biome check apps/demo/src/app.tsx apps/demo/src/client/syncular.ts apps/demo/src/styles.css`
+- Playwright demo smoke: reload produced two initial console diagnostic posts
+  for the two clients and no continuing request loop over six seconds; offline
+  mutation showed `Offline` without an error banner and synced to Client B after
+  returning online.
 - `bun --cwd packages/client test`
 - `bun --cwd packages/client tsgo`
 - `bun --cwd packages/client-react test`

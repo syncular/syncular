@@ -21,7 +21,7 @@ export interface MutationReceipt {
   clientCommitId: string;
 }
 
-export interface SyncularV2CommitMeta {
+export interface SyncularCommitMeta {
   operations: SyncOperation[];
   localMutations: Array<{
     table: string;

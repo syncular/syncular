@@ -1,29 +1,29 @@
 import { SYNCULAR_ERROR_DEFINITIONS } from '@syncular/core';
 import type {
-  SyncularV2ErrorCategory,
-  SyncularV2ErrorCode,
-  SyncularV2ErrorRecommendedAction,
+  SyncularErrorCategory,
+  SyncularErrorCode,
+  SyncularErrorRecommendedAction,
 } from './types';
 
-export interface SyncularV2ErrorEnvelope {
-  code: SyncularV2ErrorCode;
+export interface SyncularErrorEnvelope {
+  code: SyncularErrorCode;
   message: string;
-  category: SyncularV2ErrorCategory;
+  category: SyncularErrorCategory;
   retryable: boolean;
-  recommendedAction: SyncularV2ErrorRecommendedAction;
+  recommendedAction: SyncularErrorRecommendedAction;
   details?: Record<string, unknown>;
 }
 
-export class SyncularV2ClientError extends Error {
-  readonly code: SyncularV2ErrorCode;
-  readonly category: SyncularV2ErrorCategory;
+export class SyncularClientError extends Error {
+  readonly code: SyncularErrorCode;
+  readonly category: SyncularErrorCategory;
   readonly retryable: boolean;
-  readonly recommendedAction: SyncularV2ErrorRecommendedAction;
+  readonly recommendedAction: SyncularErrorRecommendedAction;
   readonly details: Record<string, unknown> | undefined;
 
-  constructor(envelope: SyncularV2ErrorEnvelope, options?: ErrorOptions) {
+  constructor(envelope: SyncularErrorEnvelope, options?: ErrorOptions) {
     super(envelope.message, options);
-    this.name = 'SyncularV2ClientError';
+    this.name = 'SyncularClientError';
     this.code = envelope.code;
     this.category = envelope.category;
     this.retryable = envelope.retryable;
@@ -32,15 +32,15 @@ export class SyncularV2ClientError extends Error {
   }
 }
 
-export function toSyncularV2ClientError(error: unknown): Error {
-  if (error instanceof SyncularV2ClientError) return error;
-  const message = syncularV2ErrorMessage(error);
-  const details = syncularV2ErrorDetails(error);
-  const classification = classifySyncularV2Error(error, message, details);
+export function toSyncularClientError(error: unknown): Error {
+  if (error instanceof SyncularClientError) return error;
+  const message = syncularErrorMessage(error);
+  const details = syncularErrorDetails(error);
+  const classification = classifySyncularError(error, message, details);
   if (!classification) {
     return error instanceof Error ? error : new Error(message);
   }
-  return new SyncularV2ClientError(
+  return new SyncularClientError(
     {
       ...classification,
       message,
@@ -50,14 +50,14 @@ export function toSyncularV2ClientError(error: unknown): Error {
   );
 }
 
-export function syncularV2ErrorMessage(error: unknown): string {
+export function syncularErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function syncularV2ErrorDetails(
+export function syncularErrorDetails(
   error: unknown
 ): Record<string, unknown> | undefined {
-  if (error instanceof SyncularV2ClientError) return error.details;
+  if (error instanceof SyncularClientError) return error.details;
   if (!(error instanceof Error)) return undefined;
   const serverError = syncularServerErrorFromMessage(error.message);
   const details: Record<string, unknown> = {
@@ -84,11 +84,11 @@ export function syncularV2ErrorDetails(
   return Object.keys(details).length > 0 ? details : undefined;
 }
 
-export function classifySyncularV2Error(
+export function classifySyncularError(
   error: unknown,
-  message = syncularV2ErrorMessage(error),
-  details: Record<string, unknown> | undefined = syncularV2ErrorDetails(error)
-): Omit<SyncularV2ErrorEnvelope, 'message' | 'details'> | null {
+  message = syncularErrorMessage(error),
+  details: Record<string, unknown> | undefined = syncularErrorDetails(error)
+): Omit<SyncularErrorEnvelope, 'message' | 'details'> | null {
   const serverError = syncularServerErrorFromMessage(message);
   if (serverError) {
     return {
@@ -167,8 +167,8 @@ export function classifySyncularV2Error(
   return null;
 }
 
-export function isSyncularV2OfflineError(error: unknown): boolean {
-  if (error instanceof SyncularV2ClientError) {
+export function isSyncularOfflineError(error: unknown): boolean {
+  if (error instanceof SyncularClientError) {
     return error.code === 'sync.offline' || error.category === 'offline';
   }
   if (error && typeof error === 'object') {
@@ -177,16 +177,16 @@ export function isSyncularV2OfflineError(error: unknown): boolean {
       return true;
     }
   }
-  const classification = classifySyncularV2Error(error);
+  const classification = classifySyncularError(error);
   return (
     classification?.code === 'sync.offline' ||
     classification?.category === 'offline'
   );
 }
 
-export function syncularV2ErrorStatus(error: unknown): 401 | 403 | undefined {
+export function syncularErrorStatus(error: unknown): 401 | 403 | undefined {
   const details =
-    error instanceof SyncularV2ClientError ? error.details : undefined;
+    error instanceof SyncularClientError ? error.details : undefined;
   if (
     details &&
     'status' in details &&
@@ -194,7 +194,7 @@ export function syncularV2ErrorStatus(error: unknown): 401 | 403 | undefined {
   ) {
     return details.status;
   }
-  return httpStatusFromMessage(syncularV2ErrorMessage(error))?.status;
+  return httpStatusFromMessage(syncularErrorMessage(error))?.status;
 }
 
 function httpStatusFromMessage(
@@ -223,7 +223,7 @@ function syncularDebugFromError(error: unknown): string | undefined {
 
 function syncularServerErrorFromMessage(
   message: string
-): Omit<SyncularV2ErrorEnvelope, 'message'> | null {
+): Omit<SyncularErrorEnvelope, 'message'> | null {
   const match = /\bHTTP \d{3}\b: (\{.*\})\s*$/s.exec(message);
   if (!match) return null;
 
@@ -249,10 +249,10 @@ function syncularServerErrorFromMessage(
       rawCode as keyof typeof SYNCULAR_ERROR_DEFINITIONS
     ];
   return {
-    code: rawCode as SyncularV2ErrorCode,
+    code: rawCode as SyncularErrorCode,
     category:
       typeof record.category === 'string'
-        ? (record.category as SyncularV2ErrorCategory)
+        ? (record.category as SyncularErrorCategory)
         : definition.category,
     retryable:
       typeof record.retryable === 'boolean'
@@ -260,7 +260,7 @@ function syncularServerErrorFromMessage(
         : definition.retryable,
     recommendedAction:
       typeof record.recommendedAction === 'string'
-        ? (record.recommendedAction as SyncularV2ErrorRecommendedAction)
+        ? (record.recommendedAction as SyncularErrorRecommendedAction)
         : definition.recommendedAction,
     ...(record.details && typeof record.details === 'object'
       ? { details: record.details as Record<string, unknown> }

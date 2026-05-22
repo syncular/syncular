@@ -4,7 +4,7 @@ import {
   syncularGeneratedSchemaVersion,
   taskSubscription,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
-import type { SyncularV2Client, SyncularV2LifecycleState } from '../types';
+import type { SyncularLifecycleState, SyncularRuntimeClient } from '../types';
 import {
   createHonoSyncHarness,
   type HonoSyncHarness,
@@ -14,7 +14,7 @@ const ACTOR_ID = 'user-auth';
 const STALE_TOKEN = 'Bearer stale-token';
 const FRESH_TOKEN = 'Bearer fresh-token';
 
-describe('Syncular v2 worker auth against Hono sync routes', () => {
+describe('Syncular worker auth against Hono sync routes', () => {
   const harnesses: HonoSyncHarness[] = [];
 
   afterEach(async () => {
@@ -54,7 +54,7 @@ describe('Syncular v2 worker auth against Hono sync routes', () => {
       clientId: 'client-rust-auth-resume',
       expectedStatus: 401,
     });
-    const lifecycleEvents: SyncularV2LifecycleState[] = [];
+    const lifecycleEvents: SyncularLifecycleState[] = [];
     harness.client.addEventListener('lifecycleChanged', (event) => {
       lifecycleEvents.push(event);
     });
@@ -268,7 +268,7 @@ interface AuthHarnessOptions {
 }
 
 interface AuthHarness {
-  client: SyncularV2Client;
+  client: SyncularRuntimeClient;
   edgeRejectedAuthHeaders: string[];
   expiredStatuses: number[];
   refreshCount(): number;
@@ -277,9 +277,9 @@ interface AuthHarness {
 }
 
 async function waitForLifecycle(
-  events: readonly SyncularV2LifecycleState[],
-  predicate: (event: SyncularV2LifecycleState) => boolean
-): Promise<SyncularV2LifecycleState> {
+  events: readonly SyncularLifecycleState[],
+  predicate: (event: SyncularLifecycleState) => boolean
+): Promise<SyncularLifecycleState> {
   for (let attempt = 0; attempt < 80; attempt += 1) {
     for (let index = events.length - 1; index >= 0; index -= 1) {
       const event = events[index];

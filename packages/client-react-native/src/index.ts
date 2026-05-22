@@ -1,23 +1,23 @@
 import {
   type CreateSyncularBridgeClientOptions,
   createSyncularBridgeClient,
+  type SyncularAuthLeaseRecord,
   type SyncularBridge,
   type SyncularBridgeMutationBatch,
   type SyncularBridgeQueryRequest,
   type SyncularBridgeQueryResult,
   type SyncularBridgeStatus,
+  type SyncularClientEventMap,
+  type SyncularClientEventSink,
+  type SyncularClientEventType,
   type SyncularClientLike,
-  type SyncularV2AuthLeaseRecord,
-  type SyncularV2ClientEventMap,
-  type SyncularV2ClientEventSink,
-  type SyncularV2ClientEventType,
-  type SyncularV2ConflictResolution,
-  type SyncularV2ConflictSummary,
-  type SyncularV2DiagnosticSnapshot,
-  type SyncularV2PresenceEntry,
-  type SyncularV2PresenceSink,
-  type SyncularV2SubscriptionSpec,
-  type SyncularV2SyncResult,
+  type SyncularConflictResolution,
+  type SyncularConflictSummary,
+  type SyncularDiagnosticSnapshot,
+  type SyncularPresenceEntry,
+  type SyncularPresenceSink,
+  type SyncularSubscriptionSpec,
+  type SyncularSyncResult,
 } from '@syncular/client';
 import type { SyncAuthLeaseIssueRequest } from '@syncular/core';
 import { createSyncularReact } from '@syncular/react';
@@ -34,42 +34,42 @@ export interface SyncularNativeModule {
   applyLeasedMutationsCommit?(
     batch: SyncularBridgeMutationBatch
   ): Promise<string> | string;
-  sync?(): Promise<SyncularV2SyncResult>;
-  resumeFromBackground?(): Promise<SyncularV2SyncResult>;
+  sync?(): Promise<SyncularSyncResult>;
+  resumeFromBackground?(): Promise<SyncularSyncResult>;
   start?(): Promise<void>;
   stop?(): Promise<void>;
   setSubscriptions?(
-    subscriptions: readonly SyncularV2SubscriptionSpec[]
+    subscriptions: readonly SyncularSubscriptionSpec[]
   ): Promise<void>;
   getStatus?(): SyncularBridgeStatus;
   issueAuthLease?(
     request: SyncAuthLeaseIssueRequest
-  ): Promise<SyncularV2AuthLeaseRecord>;
-  upsertAuthLease?(lease: SyncularV2AuthLeaseRecord): Promise<void>;
-  authLease?(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null>;
+  ): Promise<SyncularAuthLeaseRecord>;
+  upsertAuthLease?(lease: SyncularAuthLeaseRecord): Promise<void>;
+  authLease?(leaseId: string): Promise<SyncularAuthLeaseRecord | null>;
   activeAuthLeases?(
     actorId?: string | null,
     nowMs?: number
-  ): Promise<SyncularV2AuthLeaseRecord[]>;
-  diagnosticSnapshot?(): Promise<SyncularV2DiagnosticSnapshot>;
-  addListener?<T extends SyncularV2ClientEventType>(
+  ): Promise<SyncularAuthLeaseRecord[]>;
+  diagnosticSnapshot?(): Promise<SyncularDiagnosticSnapshot>;
+  addListener?<T extends SyncularClientEventType>(
     event: T,
-    listener: SyncularV2ClientEventSink<T>
+    listener: SyncularClientEventSink<T>
   ): SyncularNativeEventSubscription;
   getPresence?<TMetadata = Record<string, unknown>>(
     scopeKey: string
-  ): SyncularV2PresenceEntry<TMetadata>[];
+  ): SyncularPresenceEntry<TMetadata>[];
   joinPresence?(scopeKey: string, metadata?: Record<string, unknown>): void;
   leavePresence?(scopeKey: string): void;
   updatePresenceMetadata?(
     scopeKey: string,
     metadata: Record<string, unknown>
   ): void;
-  conflictSummaries?(): Promise<SyncularV2ConflictSummary[]>;
+  conflictSummaries?(): Promise<SyncularConflictSummary[]>;
   retryConflictKeepLocal?(id: string): Promise<string>;
   resolveConflict?(
     id: string,
-    resolution: SyncularV2ConflictResolution
+    resolution: SyncularConflictResolution
   ): Promise<void>;
 }
 
@@ -119,13 +119,13 @@ export function createSyncularNativeBridge(
       updateMetadata: (scopeKey, metadata) =>
         module.updatePresenceMetadata?.(scopeKey, metadata),
       onChange: <TMetadata = Record<string, unknown>>(
-        listener: SyncularV2PresenceSink<TMetadata>
+        listener: SyncularPresenceSink<TMetadata>
       ) =>
         removeable(
           module.addListener?.('presenceChanged', (event) =>
             listener(
-              event as SyncularV2ClientEventMap['presenceChanged'] as Parameters<
-                SyncularV2PresenceSink<TMetadata>
+              event as SyncularClientEventMap['presenceChanged'] as Parameters<
+                SyncularPresenceSink<TMetadata>
               >[0]
             )
           )

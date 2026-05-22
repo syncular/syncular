@@ -17,16 +17,16 @@ import {
   taskSubscription,
 } from '../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import {
-  createSyncularV2CommandHistory,
-  type SyncularV2CommandHistoryError,
+  createSyncularCommandHistory,
+  type SyncularCommandHistoryError,
 } from './command-history';
 import {
-  createSyncularV2Commit,
-  createSyncularV2Dialect,
-  createSyncularV2Mutations,
+  createSyncularCommit,
+  createSyncularDialect,
+  createSyncularMutations,
 } from './database';
-import { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './runtime-contract';
-import type { SyncularV2Client, SyncularV2LiveQueryEvent } from './types';
+import { SYNCULAR_WORKER_PROTOCOL_VERSION } from './runtime-contract';
+import type { SyncularLiveQueryEvent, SyncularRuntimeClient } from './types';
 
 const conformance = JSON.parse(
   readFileSync(
@@ -79,7 +79,7 @@ describe('generated app conformance', () => {
 
     const client = fakeClient();
     const db = new Kysely<SyncularAppDb>({
-      dialect: createSyncularV2Dialect(client, { appTables: ['tasks'] }),
+      dialect: createSyncularDialect(client, { appTables: ['tasks'] }),
     });
 
     const compiled = db
@@ -194,9 +194,9 @@ describe('generated app conformance', () => {
         capturedBatch = batch;
         return 'commit-yjs';
       },
-    } satisfies SyncularV2Client;
+    } satisfies SyncularRuntimeClient;
 
-    const commit = createSyncularV2Commit<SyncularAppDb>({
+    const commit = createSyncularCommit<SyncularAppDb>({
       client,
       tableConfig: syncularGeneratedTableConfig,
     });
@@ -230,9 +230,9 @@ describe('generated app conformance', () => {
         capturedBatch = batch;
         return 'commit-generated';
       },
-    } satisfies SyncularV2Client;
+    } satisfies SyncularRuntimeClient;
 
-    const mutations = createSyncularV2Mutations<SyncularAppDb>({
+    const mutations = createSyncularMutations<SyncularAppDb>({
       client,
       tableConfig: syncularGeneratedTableConfig,
     }) as unknown as SyncularAppMutations;
@@ -288,9 +288,9 @@ describe('generated app conformance', () => {
         leasedBatch = batch;
         return 'commit-leased';
       },
-    } satisfies SyncularV2Client;
+    } satisfies SyncularRuntimeClient;
 
-    const mutations = createSyncularV2Mutations<SyncularAppDb>({
+    const mutations = createSyncularMutations<SyncularAppDb>({
       client,
       requireAuthLease: true,
       tableConfig: syncularGeneratedTableConfig,
@@ -342,9 +342,9 @@ describe('generated app conformance', () => {
         capturedBatch = batch;
         return 'commit-generated-update';
       },
-    } satisfies SyncularV2Client;
+    } satisfies SyncularRuntimeClient;
 
-    const mutations = createSyncularV2Mutations<SyncularAppDb>({
+    const mutations = createSyncularMutations<SyncularAppDb>({
       client,
       tableConfig: syncularGeneratedTableConfig,
     }) as unknown as SyncularAppMutations;
@@ -381,11 +381,11 @@ describe('generated app conformance', () => {
       title_yjs_state: null,
     });
     const client = commandHistoryFakeClient(state);
-    const baseMutationApi = createSyncularV2Mutations<SyncularAppDb>({
+    const baseMutationApi = createSyncularMutations<SyncularAppDb>({
       client,
       tableConfig: syncularGeneratedTableConfig,
     });
-    const commandHistory = createSyncularV2CommandHistory<SyncularAppDb>({
+    const commandHistory = createSyncularCommandHistory<SyncularAppDb>({
       client,
       tableConfig: syncularGeneratedTableConfig,
       mutations: baseMutationApi,
@@ -472,11 +472,11 @@ describe('generated app conformance', () => {
       title_yjs_state: null,
     });
     const client = commandHistoryFakeClient(state);
-    const baseMutationApi = createSyncularV2Mutations<SyncularAppDb>({
+    const baseMutationApi = createSyncularMutations<SyncularAppDb>({
       client,
       tableConfig: syncularGeneratedTableConfig,
     });
-    const commandHistory = createSyncularV2CommandHistory<SyncularAppDb>({
+    const commandHistory = createSyncularCommandHistory<SyncularAppDb>({
       client,
       tableConfig: syncularGeneratedTableConfig,
       mutations: baseMutationApi,
@@ -500,7 +500,7 @@ describe('generated app conformance', () => {
     await expect(commandHistory.history.undoLast()).rejects.toMatchObject({
       code: 'sync.command_history_conflict',
       commandId: 'cmd-conflict-1',
-    } satisfies Partial<SyncularV2CommandHistoryError>);
+    } satisfies Partial<SyncularCommandHistoryError>);
   });
 
   it('rejects command-history replay for unsafe blob and CRDT field changes', async () => {
@@ -516,11 +516,11 @@ describe('generated app conformance', () => {
       title_yjs_state: null,
     });
     const client = commandHistoryFakeClient(state);
-    const baseMutationApi = createSyncularV2Mutations<SyncularAppDb>({
+    const baseMutationApi = createSyncularMutations<SyncularAppDb>({
       client,
       tableConfig: syncularGeneratedTableConfig,
     });
-    const commandHistory = createSyncularV2CommandHistory<SyncularAppDb>({
+    const commandHistory = createSyncularCommandHistory<SyncularAppDb>({
       client,
       tableConfig: syncularGeneratedTableConfig,
       mutations: baseMutationApi,
@@ -544,7 +544,7 @@ describe('generated app conformance', () => {
     await expect(commandHistory.history.undoLast()).rejects.toMatchObject({
       code: 'sync.command_history_unsafe_field',
       commandId: 'cmd-unsafe-1',
-    } satisfies Partial<SyncularV2CommandHistoryError>);
+    } satisfies Partial<SyncularCommandHistoryError>);
     expect(state.appliedOperations).toHaveLength(1);
 
     await mutations.tasks.update('task-unsafe-history', {
@@ -554,7 +554,7 @@ describe('generated app conformance', () => {
     await expect(commandHistory.history.undoLast()).rejects.toMatchObject({
       code: 'sync.command_history_unsafe_field',
       commandId: 'cmd-unsafe-2',
-    } satisfies Partial<SyncularV2CommandHistoryError>);
+    } satisfies Partial<SyncularCommandHistoryError>);
     expect(state.appliedOperations).toHaveLength(2);
   });
 
@@ -598,11 +598,11 @@ describe('generated app conformance', () => {
     });
 
     const client = commandHistoryFakeClient(state);
-    const baseMutationApi = createSyncularV2Mutations<SyncularAppDb>({
+    const baseMutationApi = createSyncularMutations<SyncularAppDb>({
       client,
       tableConfig: syncularGeneratedTableConfig,
     });
-    const commandHistory = createSyncularV2CommandHistory<SyncularAppDb>({
+    const commandHistory = createSyncularCommandHistory<SyncularAppDb>({
       client,
       tableConfig: syncularGeneratedTableConfig,
       mutations: baseMutationApi,
@@ -679,10 +679,10 @@ describe('generated app conformance', () => {
   });
 });
 
-function fakeClient(): SyncularV2Client {
+function fakeClient(): SyncularRuntimeClient {
   const listeners = new Map<
     string,
-    (event: SyncularV2LiveQueryEvent<Record<string, unknown>>) => void
+    (event: SyncularLiveQueryEvent<Record<string, unknown>>) => void
   >();
   return {
     async executeSql() {
@@ -801,7 +801,7 @@ function fakeClient(): SyncularV2Client {
       return {
         packageName: '@syncular/client',
         packageVersion: '0.0.0',
-        workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
         storage: 'memory',
         workerUrl: '',
         wasmGlueUrl: '',
@@ -845,7 +845,7 @@ function fakeClient(): SyncularV2Client {
     removeLiveQueryListener(queryId) {
       listeners.delete(queryId);
     },
-  } satisfies SyncularV2Client;
+  } satisfies SyncularRuntimeClient;
 }
 
 function createCommandHistoryFakeState() {
@@ -870,7 +870,7 @@ function createCommandHistoryFakeState() {
 
 function commandHistoryFakeClient(
   state: ReturnType<typeof createCommandHistoryFakeState>
-): SyncularV2Client & {
+): SyncularRuntimeClient & {
   executeUnsafeSql<
     Row extends Record<string, unknown> = Record<string, unknown>,
   >(

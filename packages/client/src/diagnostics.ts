@@ -1,35 +1,35 @@
 import type {
-  SyncularV2BootstrapStatus,
-  SyncularV2DiagnosticEvent,
-  SyncularV2DiagnosticSubscriptionSnapshot,
-  SyncularV2SubscriptionSpec,
-  SyncularV2SyncAttempt,
-  SyncularV2SyncTimings,
+  SyncularBootstrapStatus,
+  SyncularDiagnosticEvent,
+  SyncularDiagnosticSubscriptionSnapshot,
+  SyncularSubscriptionSpec,
+  SyncularSyncAttempt,
+  SyncularSyncTimings,
 } from './types';
 
-export const SYNCULAR_V2_DIAGNOSTIC_RING_LIMIT = 100;
-export const SYNCULAR_V2_SYNC_TIMINGS_RING_LIMIT = 20;
+export const SYNCULAR_DIAGNOSTIC_RING_LIMIT = 100;
+export const SYNCULAR_SYNC_TIMINGS_RING_LIMIT = 20;
 
-export function appendSyncularV2DiagnosticEvent(
-  events: SyncularV2DiagnosticEvent[],
-  event: SyncularV2DiagnosticEvent
+export function appendSyncularDiagnosticEvent(
+  events: SyncularDiagnosticEvent[],
+  event: SyncularDiagnosticEvent
 ): void {
   events.push(event);
-  trimRing(events, SYNCULAR_V2_DIAGNOSTIC_RING_LIMIT);
+  trimRing(events, SYNCULAR_DIAGNOSTIC_RING_LIMIT);
 }
 
-export function appendSyncularV2SyncTimings(
-  timings: SyncularV2SyncTimings[],
-  timing: SyncularV2SyncTimings
+export function appendSyncularSyncTimings(
+  timings: SyncularSyncTimings[],
+  timing: SyncularSyncTimings
 ): void {
   timings.push(timing);
-  trimRing(timings, SYNCULAR_V2_SYNC_TIMINGS_RING_LIMIT);
+  trimRing(timings, SYNCULAR_SYNC_TIMINGS_RING_LIMIT);
 }
 
-export function summarizeSyncularV2DiagnosticSubscriptions(
-  subscriptions: readonly SyncularV2SubscriptionSpec[],
-  bootstrap: SyncularV2BootstrapStatus | undefined
-): SyncularV2DiagnosticSubscriptionSnapshot[] {
+export function summarizeSyncularDiagnosticSubscriptions(
+  subscriptions: readonly SyncularSubscriptionSpec[],
+  bootstrap: SyncularBootstrapStatus | undefined
+): SyncularDiagnosticSubscriptionSnapshot[] {
   const bootstrapById = new Map(
     (bootstrap?.subscriptions ?? []).map((entry) => [entry.id, entry])
   );
@@ -54,7 +54,7 @@ export function summarizeSyncularV2DiagnosticSubscriptions(
   });
 }
 
-export function createSyncularV2SyncAttempt(): SyncularV2SyncAttempt {
+export function createSyncularSyncAttempt(): SyncularSyncAttempt {
   const traceId = randomHex(16);
   const spanId = randomHex(8);
   return {
@@ -65,8 +65,8 @@ export function createSyncularV2SyncAttempt(): SyncularV2SyncAttempt {
   };
 }
 
-export function syncularV2SyncAttemptHeaders(
-  attempt: SyncularV2SyncAttempt
+export function syncularSyncAttemptHeaders(
+  attempt: SyncularSyncAttempt
 ): Record<string, string> {
   return {
     traceparent: attempt.traceparent,
@@ -75,9 +75,9 @@ export function syncularV2SyncAttemptHeaders(
   };
 }
 
-export function syncularV2DiagnosticAttemptFields(
-  attempt: SyncularV2SyncAttempt | undefined
-): Pick<SyncularV2DiagnosticEvent, 'syncAttemptId' | 'traceId' | 'spanId'> {
+export function syncularDiagnosticAttemptFields(
+  attempt: SyncularSyncAttempt | undefined
+): Pick<SyncularDiagnosticEvent, 'syncAttemptId' | 'traceId' | 'spanId'> {
   return attempt
     ? {
         syncAttemptId: attempt.syncAttemptId,

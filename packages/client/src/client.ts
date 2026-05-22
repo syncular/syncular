@@ -1,61 +1,61 @@
 import type { BlobRef, SyncAuthLeaseIssueRequest } from '@syncular/core';
-import { createSyncularV2Database, type SyncularV2Database } from './database';
-import { isSyncularV2OfflineError } from './errors';
+import { createSyncularDatabase, type SyncularDatabase } from './database';
+import { isSyncularOfflineError } from './errors';
 import type { MutationsApi } from './mutations';
-import { browserSyncularV2NetworkStatusSource } from './network';
+import { browserSyncularNetworkStatusSource } from './network';
 import type {
-  CreateSyncularV2DatabaseOptions,
-  SyncularV2AuthLeaseRecord,
-  SyncularV2BlobUploadQueueStats,
-  SyncularV2Client,
-  SyncularV2ClientEventSink,
-  SyncularV2ClientEventType,
-  SyncularV2ConflictResolution,
-  SyncularV2ConflictStats,
-  SyncularV2ConflictSummary,
-  SyncularV2ConnectionState,
-  SyncularV2DiagnosticEvent,
-  SyncularV2DiagnosticSnapshot,
-  SyncularV2LifecycleState,
-  SyncularV2NetworkStatusSource,
-  SyncularV2OutboxStats,
-  SyncularV2PresenceEntry,
-  SyncularV2PresenceSink,
-  SyncularV2RealtimeConnectionState,
-  SyncularV2RealtimeOptions,
-  SyncularV2SubscriptionSpec,
-  SyncularV2SyncRequestOptions,
-  SyncularV2SyncResult,
+  CreateSyncularDatabaseOptions,
+  SyncularAuthLeaseRecord,
+  SyncularBlobUploadQueueStats,
+  SyncularClientEventSink,
+  SyncularClientEventType,
+  SyncularConflictResolution,
+  SyncularConflictStats,
+  SyncularConflictSummary,
+  SyncularConnectionState,
+  SyncularDiagnosticEvent,
+  SyncularDiagnosticSnapshot,
+  SyncularLifecycleState,
+  SyncularNetworkStatusSource,
+  SyncularOutboxStats,
+  SyncularPresenceEntry,
+  SyncularPresenceSink,
+  SyncularRealtimeConnectionState,
+  SyncularRealtimeOptions,
+  SyncularRuntimeClient,
+  SyncularSubscriptionSpec,
+  SyncularSyncRequestOptions,
+  SyncularSyncResult,
 } from './types';
 
-export interface SyncularV2ClientLifecycleOptions {
+export interface SyncularClientLifecycleOptions {
   autoStart?: boolean;
   initialSync?: boolean;
-  realtime?: boolean | SyncularV2RealtimeOptions;
+  realtime?: boolean | SyncularRealtimeOptions;
   syncOnRealtimeConnect?: boolean;
   pollIntervalMs?: number | false;
-  network?: SyncularV2NetworkStatusSource | false;
+  network?: SyncularNetworkStatusSource | false;
 }
 
-export interface CreateSyncularV2ClientOptions
-  extends Omit<CreateSyncularV2DatabaseOptions, 'realtime'> {
-  subscriptions?: readonly SyncularV2SubscriptionSpec[];
-  lifecycle?: SyncularV2ClientLifecycleOptions;
-  realtime?: boolean | SyncularV2RealtimeOptions;
+export interface CreateSyncularClientOptions
+  extends Omit<CreateSyncularDatabaseOptions, 'realtime'> {
+  subscriptions?: readonly SyncularSubscriptionSpec[];
+  lifecycle?: SyncularClientLifecycleOptions;
+  realtime?: boolean | SyncularRealtimeOptions;
 }
 
-export interface SyncularV2ManagedClient<DB> extends SyncularV2Database<DB> {
+export interface SyncularManagedClient<DB> extends SyncularDatabase<DB> {
   start(): Promise<void>;
   stop(): Promise<void>;
   destroy(): Promise<void>;
-  sync(): Promise<SyncularV2SyncResult>;
+  sync(): Promise<SyncularSyncResult>;
 }
 
 export interface SyncularClientStatus {
-  lifecycle: SyncularV2LifecycleState;
-  connection: SyncularV2ConnectionState;
-  outbox: SyncularV2OutboxStats | null;
-  conflicts: SyncularV2ConflictStats | null;
+  lifecycle: SyncularLifecycleState;
+  connection: SyncularConnectionState;
+  outbox: SyncularOutboxStats | null;
+  conflicts: SyncularConflictStats | null;
   isConnected: boolean;
   isSyncing: boolean;
   hasPendingMutations: boolean;
@@ -63,34 +63,34 @@ export interface SyncularClientStatus {
   requiresAction: boolean;
 }
 
-export interface SyncularClient<DB> extends SyncularV2ManagedClient<DB> {
-  on<T extends SyncularV2ClientEventType>(
+export interface SyncularClient<DB> extends SyncularManagedClient<DB> {
+  on<T extends SyncularClientEventType>(
     event: T,
-    listener: SyncularV2ClientEventSink<T>
+    listener: SyncularClientEventSink<T>
   ): () => void;
   getStatus(): SyncularClientStatus;
   setSubscriptions(
-    subscriptions: readonly SyncularV2SubscriptionSpec[]
+    subscriptions: readonly SyncularSubscriptionSpec[]
   ): Promise<void>;
   resumeFromBackground(
-    options?: SyncularV2SyncRequestOptions
-  ): Promise<SyncularV2SyncResult>;
+    options?: SyncularSyncRequestOptions
+  ): Promise<SyncularSyncResult>;
   issueAuthLease(
     request: SyncAuthLeaseIssueRequest
-  ): Promise<SyncularV2AuthLeaseRecord>;
-  upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void>;
-  authLease(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null>;
+  ): Promise<SyncularAuthLeaseRecord>;
+  upsertAuthLease(lease: SyncularAuthLeaseRecord): Promise<void>;
+  authLease(leaseId: string): Promise<SyncularAuthLeaseRecord | null>;
   activeAuthLeases(
     actorId?: string | null,
     nowMs?: number
-  ): Promise<SyncularV2AuthLeaseRecord[]>;
-  diagnosticSnapshot(): Promise<SyncularV2DiagnosticSnapshot>;
+  ): Promise<SyncularAuthLeaseRecord[]>;
+  diagnosticSnapshot(): Promise<SyncularDiagnosticSnapshot>;
   presence: SyncularPresenceClientLike;
   conflicts: SyncularConflictsClientLike;
 }
 
 export interface SyncularBlobClientLike {
-  getUploadQueueStats(): Promise<SyncularV2BlobUploadQueueStats>;
+  getUploadQueueStats(): Promise<SyncularBlobUploadQueueStats>;
   processUploadQueue(): Promise<{ uploaded: number; failed: number }>;
   retrieve(ref: BlobRef): Promise<Uint8Array>;
 }
@@ -98,58 +98,58 @@ export interface SyncularBlobClientLike {
 export interface SyncularPresenceClientLike {
   get<TMetadata = Record<string, unknown>>(
     scopeKey: string
-  ): SyncularV2PresenceEntry<TMetadata>[];
+  ): SyncularPresenceEntry<TMetadata>[];
   join(scopeKey: string, metadata?: Record<string, unknown>): void;
   leave(scopeKey: string): void;
   updateMetadata(scopeKey: string, metadata: Record<string, unknown>): void;
   onChange<TMetadata = Record<string, unknown>>(
-    listener: SyncularV2PresenceSink<TMetadata>
+    listener: SyncularPresenceSink<TMetadata>
   ): () => void;
 }
 
 export interface SyncularConflictsClientLike {
-  list(): Promise<SyncularV2ConflictSummary[]>;
+  list(): Promise<SyncularConflictSummary[]>;
   retryKeepLocal(id: string): Promise<string>;
-  resolve(id: string, resolution: SyncularV2ConflictResolution): Promise<void>;
+  resolve(id: string, resolution: SyncularConflictResolution): Promise<void>;
 }
 
 export interface SyncularClientLike<DB> {
-  db: SyncularV2Database<DB>['db'];
-  dialect?: SyncularV2Database<DB>['dialect'] | unknown;
+  db: SyncularDatabase<DB>['db'];
+  dialect?: SyncularDatabase<DB>['dialect'] | unknown;
   mutations: MutationsApi<DB, any>;
   leasedMutations: MutationsApi<DB, any>;
   blobs: SyncularBlobClientLike;
-  on<T extends SyncularV2ClientEventType>(
+  on<T extends SyncularClientEventType>(
     event: T,
-    listener: SyncularV2ClientEventSink<T>
+    listener: SyncularClientEventSink<T>
   ): () => void;
   getStatus(): SyncularClientStatus;
   setSubscriptions(
-    subscriptions: readonly SyncularV2SubscriptionSpec[]
+    subscriptions: readonly SyncularSubscriptionSpec[]
   ): Promise<void>;
   resumeFromBackground(
-    options?: SyncularV2SyncRequestOptions
-  ): Promise<SyncularV2SyncResult>;
+    options?: SyncularSyncRequestOptions
+  ): Promise<SyncularSyncResult>;
   issueAuthLease(
     request: SyncAuthLeaseIssueRequest
-  ): Promise<SyncularV2AuthLeaseRecord>;
-  upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void>;
-  authLease(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null>;
+  ): Promise<SyncularAuthLeaseRecord>;
+  upsertAuthLease(lease: SyncularAuthLeaseRecord): Promise<void>;
+  authLease(leaseId: string): Promise<SyncularAuthLeaseRecord | null>;
   activeAuthLeases(
     actorId?: string | null,
     nowMs?: number
-  ): Promise<SyncularV2AuthLeaseRecord[]>;
-  diagnosticSnapshot(): Promise<SyncularV2DiagnosticSnapshot>;
+  ): Promise<SyncularAuthLeaseRecord[]>;
+  diagnosticSnapshot(): Promise<SyncularDiagnosticSnapshot>;
   presence: SyncularPresenceClientLike;
   conflicts: SyncularConflictsClientLike;
   start(): Promise<void>;
   stop(): Promise<void>;
-  sync(): Promise<SyncularV2SyncResult>;
+  sync(): Promise<SyncularSyncResult>;
   destroy(): Promise<void>;
 }
 
 type LifecycleClient = Pick<
-  SyncularV2Client,
+  SyncularRuntimeClient,
   | 'addDiagnosticListener'
   | 'connectionState'
   | 'forceSubscriptionsBootstrap'
@@ -160,14 +160,14 @@ type LifecycleClient = Pick<
 >;
 
 export async function createSyncularClient<DB>(
-  options: CreateSyncularV2ClientOptions
+  options: CreateSyncularClientOptions
 ): Promise<SyncularClient<DB>> {
   const { lifecycle, realtime, subscriptions, ...databaseOptions } = options;
-  const database = await createSyncularV2Database<DB>({
+  const database = await createSyncularDatabase<DB>({
     ...databaseOptions,
     realtime: false,
   });
-  const controller = new SyncularV2ClientLifecycle(database.client, {
+  const controller = new SyncularClientLifecycle(database.client, {
     subscriptions,
     realtime: lifecycle?.realtime ?? realtime ?? true,
     initialSync: lifecycle?.initialSync,
@@ -231,7 +231,7 @@ export async function createSyncularClient<DB>(
 }
 
 function getSyncularClientStatus(
-  client: Pick<SyncularV2Client, 'connectionState' | 'lifecycleState'>
+  client: Pick<SyncularRuntimeClient, 'connectionState' | 'lifecycleState'>
 ): SyncularClientStatus {
   const lifecycle = client.lifecycleState();
   const connection = client.connectionState();
@@ -251,32 +251,32 @@ function getSyncularClientStatus(
   };
 }
 
-export class SyncularV2ClientLifecycle {
+export class SyncularClientLifecycle {
   #started = false;
   #pollTimer: ReturnType<typeof setInterval> | undefined;
   #unsubscribeDiagnostics: (() => void) | undefined;
   #unsubscribeNetwork: (() => void) | undefined;
-  #syncInFlight: Promise<SyncularV2SyncResult> | undefined;
+  #syncInFlight: Promise<SyncularSyncResult> | undefined;
   #syncAgain = false;
   #hasConnectedRealtime = false;
   #realtimeStarted = false;
-  readonly #network: SyncularV2NetworkStatusSource | undefined;
+  readonly #network: SyncularNetworkStatusSource | undefined;
 
   constructor(
     private readonly client: LifecycleClient,
     private readonly options: {
-      subscriptions?: readonly SyncularV2SubscriptionSpec[];
-      realtime?: boolean | SyncularV2RealtimeOptions;
+      subscriptions?: readonly SyncularSubscriptionSpec[];
+      realtime?: boolean | SyncularRealtimeOptions;
       initialSync?: boolean;
       syncOnRealtimeConnect?: boolean;
       pollIntervalMs?: number | false;
-      network?: SyncularV2NetworkStatusSource | false;
+      network?: SyncularNetworkStatusSource | false;
     } = {}
   ) {
     this.#network =
       options.network === false
         ? undefined
-        : (options.network ?? browserSyncularV2NetworkStatusSource());
+        : (options.network ?? browserSyncularNetworkStatusSource());
   }
 
   async start(): Promise<void> {
@@ -321,7 +321,7 @@ export class SyncularV2ClientLifecycle {
     this.#realtimeStarted = false;
   }
 
-  async sync(): Promise<SyncularV2SyncResult> {
+  async sync(): Promise<SyncularSyncResult> {
     if (this.#syncInFlight) {
       this.#syncAgain = true;
       return this.#syncInFlight;
@@ -336,7 +336,7 @@ export class SyncularV2ClientLifecycle {
     return this.#syncInFlight;
   }
 
-  #handleDiagnostic(event: SyncularV2DiagnosticEvent): void {
+  #handleDiagnostic(event: SyncularDiagnosticEvent): void {
     if (event.source === 'sync' && event.details?.resyncRequired === true) {
       void this.client
         .forceSubscriptionsBootstrap()
@@ -351,7 +351,7 @@ export class SyncularV2ClientLifecycle {
     ) {
       return;
     }
-    const state = event.details.state as SyncularV2RealtimeConnectionState;
+    const state = event.details.state as SyncularRealtimeConnectionState;
     if (state !== 'connected') return;
     const wasReconnect = this.#hasConnectedRealtime;
     this.#hasConnectedRealtime = true;
@@ -389,7 +389,7 @@ export class SyncularV2ClientLifecycle {
     try {
       await this.sync();
     } catch (error) {
-      if (!isSyncularV2OfflineError(error)) throw error;
+      if (!isSyncularOfflineError(error)) throw error;
     }
   }
 
@@ -399,7 +399,7 @@ export class SyncularV2ClientLifecycle {
       this.#realtimeStarted = true;
     } catch (error) {
       this.#realtimeStarted = false;
-      if (!isSyncularV2OfflineError(error)) throw error;
+      if (!isSyncularOfflineError(error)) throw error;
     }
   }
 

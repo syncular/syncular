@@ -23,23 +23,23 @@ import {
   type MutationsCommitFn,
   type MutationsTx,
 } from './mutations';
-import { assertSyncularV2ReadonlySql } from './sql-safety';
+import { assertSyncularReadonlySql } from './sql-safety';
 import type {
-  SyncularV2AuthLeaseRecord,
-  SyncularV2ClientEventSink,
-  SyncularV2ClientEventType,
-  SyncularV2ConflictResolution,
-  SyncularV2ConflictStats,
-  SyncularV2ConflictSummary,
-  SyncularV2ConnectionState,
-  SyncularV2DiagnosticSnapshot,
-  SyncularV2LifecycleState,
-  SyncularV2OutboxStats,
-  SyncularV2PresenceEntry,
-  SyncularV2PresenceSink,
-  SyncularV2SubscriptionSpec,
-  SyncularV2SyncRequestOptions,
-  SyncularV2SyncResult,
+  SyncularAuthLeaseRecord,
+  SyncularClientEventSink,
+  SyncularClientEventType,
+  SyncularConflictResolution,
+  SyncularConflictStats,
+  SyncularConflictSummary,
+  SyncularConnectionState,
+  SyncularDiagnosticSnapshot,
+  SyncularLifecycleState,
+  SyncularOutboxStats,
+  SyncularPresenceEntry,
+  SyncularPresenceSink,
+  SyncularSubscriptionSpec,
+  SyncularSyncRequestOptions,
+  SyncularSyncResult,
 } from './types';
 
 export interface SyncularBridgeQueryRequest {
@@ -60,28 +60,28 @@ export interface SyncularBridgeMutationBatch {
 }
 
 export interface SyncularBridgeStatus {
-  lifecycle?: SyncularV2LifecycleState;
-  connection?: SyncularV2ConnectionState;
-  outbox?: SyncularV2OutboxStats | null;
-  conflicts?: SyncularV2ConflictStats | null;
+  lifecycle?: SyncularLifecycleState;
+  connection?: SyncularConnectionState;
+  outbox?: SyncularOutboxStats | null;
+  conflicts?: SyncularConflictStats | null;
 }
 
 export interface SyncularBridgePresence {
   get<TMetadata = Record<string, unknown>>(
     scopeKey: string
-  ): SyncularV2PresenceEntry<TMetadata>[];
+  ): SyncularPresenceEntry<TMetadata>[];
   join(scopeKey: string, metadata?: Record<string, unknown>): void;
   leave(scopeKey: string): void;
   updateMetadata(scopeKey: string, metadata: Record<string, unknown>): void;
   onChange<TMetadata = Record<string, unknown>>(
-    listener: SyncularV2PresenceSink<TMetadata>
+    listener: SyncularPresenceSink<TMetadata>
   ): () => void;
 }
 
 export interface SyncularBridgeConflicts {
-  list(): Promise<SyncularV2ConflictSummary[]>;
+  list(): Promise<SyncularConflictSummary[]>;
   retryKeepLocal(id: string): Promise<string>;
-  resolve(id: string, resolution: SyncularV2ConflictResolution): Promise<void>;
+  resolve(id: string, resolution: SyncularConflictResolution): Promise<void>;
 }
 
 export interface SyncularBridge {
@@ -96,29 +96,29 @@ export interface SyncularBridge {
   applyLeasedMutationsCommit?(
     batch: SyncularBridgeMutationBatch
   ): Promise<string | MutationReceipt> | string | MutationReceipt;
-  sync?(): Promise<SyncularV2SyncResult>;
+  sync?(): Promise<SyncularSyncResult>;
   resumeFromBackground?(
-    options?: SyncularV2SyncRequestOptions
-  ): Promise<SyncularV2SyncResult>;
+    options?: SyncularSyncRequestOptions
+  ): Promise<SyncularSyncResult>;
   start?(): Promise<void>;
   stop?(): Promise<void>;
   setSubscriptions?(
-    subscriptions: readonly SyncularV2SubscriptionSpec[]
+    subscriptions: readonly SyncularSubscriptionSpec[]
   ): Promise<void>;
   getStatus?(): Promise<SyncularBridgeStatus> | SyncularBridgeStatus;
   issueAuthLease?(
     request: SyncAuthLeaseIssueRequest
-  ): Promise<SyncularV2AuthLeaseRecord>;
-  upsertAuthLease?(lease: SyncularV2AuthLeaseRecord): Promise<void>;
-  authLease?(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null>;
+  ): Promise<SyncularAuthLeaseRecord>;
+  upsertAuthLease?(lease: SyncularAuthLeaseRecord): Promise<void>;
+  authLease?(leaseId: string): Promise<SyncularAuthLeaseRecord | null>;
   activeAuthLeases?(
     actorId?: string | null,
     nowMs?: number
-  ): Promise<SyncularV2AuthLeaseRecord[]>;
-  diagnosticSnapshot?(): Promise<SyncularV2DiagnosticSnapshot>;
-  on?<T extends SyncularV2ClientEventType>(
+  ): Promise<SyncularAuthLeaseRecord[]>;
+  diagnosticSnapshot?(): Promise<SyncularDiagnosticSnapshot>;
+  on?<T extends SyncularClientEventType>(
     event: T,
-    listener: SyncularV2ClientEventSink<T>
+    listener: SyncularClientEventSink<T>
   ): () => void;
   presence?: SyncularBridgePresence;
   conflicts?: SyncularBridgeConflicts;
@@ -349,7 +349,7 @@ class SyncularBridgeConnection implements DatabaseConnection {
   constructor(private readonly bridge: SyncularBridge) {}
 
   async executeQuery<R>(compiledQuery: CompiledQuery): Promise<QueryResult<R>> {
-    assertSyncularV2ReadonlySql(compiledQuery.sql);
+    assertSyncularReadonlySql(compiledQuery.sql);
     const result = await this.bridge.executeSql<R & Record<string, unknown>>({
       sql: compiledQuery.sql,
       parameters: compiledQuery.parameters,

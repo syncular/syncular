@@ -1,15 +1,15 @@
 import { describe, expect, it } from 'bun:test';
 import type {
-  SyncularV2ChangedRow,
-  SyncularV2CrdtDocumentSnapshot,
-  SyncularV2CrdtFieldCompactionReceipt,
-  SyncularV2CrdtFieldDescriptor,
-  SyncularV2CrdtFieldMaterialization,
-  SyncularV2CrdtFieldRequest,
-  SyncularV2CrdtFieldWriteReceipt,
-  SyncularV2CrdtFieldYjsUpdateRequest,
-  SyncularV2CrdtUpdateLogEntry,
-  SyncularV2RowsChangedEvent,
+  SyncularChangedRow,
+  SyncularCrdtDocumentSnapshot,
+  SyncularCrdtFieldCompactionReceipt,
+  SyncularCrdtFieldDescriptor,
+  SyncularCrdtFieldMaterialization,
+  SyncularCrdtFieldRequest,
+  SyncularCrdtFieldWriteReceipt,
+  SyncularCrdtFieldYjsUpdateRequest,
+  SyncularCrdtUpdateLogEntry,
+  SyncularRowsChangedEvent,
 } from '@syncular/client';
 import * as Y from 'yjs';
 import {
@@ -28,8 +28,8 @@ import {
 } from './yjs-prosemirror-bridge';
 
 function compactionStatsFromSnapshot(
-  snapshot: SyncularV2CrdtDocumentSnapshot
-): SyncularV2CrdtFieldCompactionReceipt['before'] {
+  snapshot: SyncularCrdtDocumentSnapshot
+): SyncularCrdtFieldCompactionReceipt['before'] {
   return {
     pendingUpdates: snapshot.pendingUpdates,
     flushedUpdates: snapshot.flushedUpdates,
@@ -148,7 +148,7 @@ describe('createYjsProseMirrorBridge', () => {
         },
       },
     });
-    const materialization: SyncularV2CrdtFieldMaterialization = {
+    const materialization: SyncularCrdtFieldMaterialization = {
       value: {
         type: 'doc',
         content: [
@@ -246,7 +246,7 @@ describe('createYjsProseMirrorBridge', () => {
       table: 'tasks',
       rowId: 'task-restart',
       field: 'title',
-    } satisfies SyncularV2CrdtFieldRequest;
+    } satisfies SyncularCrdtFieldRequest;
     const store = createDurableYjsStore(field);
     const projections: Array<{
       projection: ReturnType<typeof prosemirrorJsonProjection>;
@@ -338,16 +338,16 @@ function appendXmlText(fragment: Y.XmlFragment, text: string): void {
 }
 
 interface DurableYjsStore {
-  field: SyncularV2CrdtFieldRequest;
+  field: SyncularCrdtFieldRequest;
   stateBase64: string | null;
   stateVectorBase64: string;
-  updateLog: SyncularV2CrdtUpdateLogEntry[];
+  updateLog: SyncularCrdtUpdateLogEntry[];
   updatedAt: number;
   compactedAt: number | null;
 }
 
 function createDurableYjsStore(
-  field: SyncularV2CrdtFieldRequest
+  field: SyncularCrdtFieldRequest
 ): DurableYjsStore {
   return {
     field,
@@ -366,7 +366,7 @@ function projectionRecorder(
   }>
 ) {
   return {
-    derive(materialization: SyncularV2CrdtFieldMaterialization) {
+    derive(materialization: SyncularCrdtFieldMaterialization) {
       return prosemirrorJsonProjection(materialization.value);
     },
     apply(
@@ -381,7 +381,7 @@ function projectionRecorder(
 class DurableYjsCrdtHost implements SyncularCrdtProjectionHost {
   readonly #store: DurableYjsStore;
   readonly #doc = new Y.Doc();
-  readonly #listeners = new Set<(event: SyncularV2RowsChangedEvent) => void>();
+  readonly #listeners = new Set<(event: SyncularRowsChangedEvent) => void>();
 
   constructor(store: DurableYjsStore) {
     this.#store = store;
@@ -391,8 +391,8 @@ class DurableYjsCrdtHost implements SyncularCrdtProjectionHost {
   }
 
   openCrdtField(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtFieldDescriptor> {
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtFieldDescriptor> {
     return Promise.resolve({
       ...request,
       stateColumn: `${request.field}_yjs_state`,
@@ -404,11 +404,11 @@ class DurableYjsCrdtHost implements SyncularCrdtProjectionHost {
   }
 
   async applyCrdtFieldYjsUpdate(
-    request: SyncularV2CrdtFieldYjsUpdateRequest
-  ): Promise<SyncularV2CrdtFieldWriteReceipt> {
+    request: SyncularCrdtFieldYjsUpdateRequest
+  ): Promise<SyncularCrdtFieldWriteReceipt> {
     Y.applyUpdate(this.#doc, base64ToBytes(request.update.updateBase64));
     this.#persistState();
-    const entry: SyncularV2CrdtUpdateLogEntry = {
+    const entry: SyncularCrdtUpdateLogEntry = {
       id: this.#store.updateLog.length + 1,
       documentKey: this.#documentKey(),
       updateId: request.update.updateId,
@@ -433,14 +433,14 @@ class DurableYjsCrdtHost implements SyncularCrdtProjectionHost {
   }
 
   enqueueCrdtFieldYjsUpdate(
-    request: SyncularV2CrdtFieldYjsUpdateRequest
+    request: SyncularCrdtFieldYjsUpdateRequest
   ): Promise<string> {
     return this.applyCrdtFieldYjsUpdate(request).then(
       (receipt) => receipt.clientCommitId
     );
   }
 
-  materializeCrdtField(): Promise<SyncularV2CrdtFieldMaterialization> {
+  materializeCrdtField(): Promise<SyncularCrdtFieldMaterialization> {
     return Promise.resolve({
       value: xmlFragmentToProseMirrorJson(
         this.#doc.getXmlFragment(this.#store.field.field)
@@ -450,7 +450,7 @@ class DurableYjsCrdtHost implements SyncularCrdtProjectionHost {
     });
   }
 
-  crdtDocumentSnapshot(): Promise<SyncularV2CrdtDocumentSnapshot> {
+  crdtDocumentSnapshot(): Promise<SyncularCrdtDocumentSnapshot> {
     const pendingUpdates = this.#store.updateLog.filter(
       (entry) => entry.status === 'pending'
     ).length;
@@ -477,8 +477,8 @@ class DurableYjsCrdtHost implements SyncularCrdtProjectionHost {
   }
 
   crdtUpdateLog(
-    request: SyncularV2CrdtFieldRequest & { limit?: number }
-  ): Promise<SyncularV2CrdtUpdateLogEntry[]> {
+    request: SyncularCrdtFieldRequest & { limit?: number }
+  ): Promise<SyncularCrdtUpdateLogEntry[]> {
     return Promise.resolve(this.#store.updateLog.slice(0, request.limit));
   }
 
@@ -488,7 +488,7 @@ class DurableYjsCrdtHost implements SyncularCrdtProjectionHost {
     });
   }
 
-  async compactCrdtField(): Promise<SyncularV2CrdtFieldCompactionReceipt> {
+  async compactCrdtField(): Promise<SyncularCrdtFieldCompactionReceipt> {
     const before = compactionStatsFromSnapshot(
       await this.crdtDocumentSnapshot()
     );
@@ -509,7 +509,7 @@ class DurableYjsCrdtHost implements SyncularCrdtProjectionHost {
   }
 
   addRowsChangedListener(
-    listener: (event: SyncularV2RowsChangedEvent) => void
+    listener: (event: SyncularRowsChangedEvent) => void
   ): () => void {
     this.#listeners.add(listener);
     return () => {
@@ -536,10 +536,10 @@ class DurableYjsCrdtHost implements SyncularCrdtProjectionHost {
   }
 
   #emitRowsChanged(
-    source: SyncularV2RowsChangedEvent['source'],
-    row: Pick<SyncularV2ChangedRow, 'operation' | 'commitId'>
+    source: SyncularRowsChangedEvent['source'],
+    row: Pick<SyncularChangedRow, 'operation' | 'commitId'>
   ): void {
-    const event: SyncularV2RowsChangedEvent = {
+    const event: SyncularRowsChangedEvent = {
       source,
       changedTables: [this.#store.field.table],
       changedRows: [

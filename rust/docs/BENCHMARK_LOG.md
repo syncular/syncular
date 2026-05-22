@@ -1673,7 +1673,7 @@ Rejected candidate:
 - For cleared binary snapshot inserts, attempted a columnar JSON import path
   using one `json_each()` array per column instead of binding every cell.
 - Candidate 500k browser gate failed to complete normally:
-  `Syncular v2 worker request close timed out after 30000ms`.
+  `Syncular worker request close timed out after 30000ms`.
 - Source was reverted and release WASM rebuilt.
 
 Restored repo-local result after revert:
@@ -5150,9 +5150,9 @@ Commands:
 git worktree add --detach .context/size-baseline-c03ed9a1 c03ed9a1
 bun run --cwd .context/size-baseline-c03ed9a1/rust/bindings/browser build:wasm
 bun run --cwd rust/bindings/browser build:wasm
-bun rust/bindings/browser/scripts/size-syncular-v2-wasm.ts --json
-bun rust/bindings/browser/scripts/size-syncular-v2-wasm.ts --json \
-  --wasm .context/size-baseline-c03ed9a1/rust/bindings/browser/dist/wasm/syncular_v2_bg.wasm
+bun rust/bindings/browser/scripts/size-syncular-wasm.ts --json
+bun rust/bindings/browser/scripts/size-syncular-wasm.ts --json \
+  --wasm .context/size-baseline-c03ed9a1/rust/bindings/browser/dist/wasm/syncular_bg.wasm
 ```
 
 Release WASM comparison:
@@ -5510,7 +5510,7 @@ Package-size gate:
 
 ```bash
 bun run --cwd rust/bindings/browser build:wasm
-bun rust/bindings/browser/scripts/size-syncular-v2-wasm.ts --json
+bun rust/bindings/browser/scripts/size-syncular-wasm.ts --json
 ```
 
 | Metric | Previous retained full | Fallback cleanup | Cleanup + `opt-level=z` |
@@ -5561,7 +5561,7 @@ bun run --cwd rust/bindings/browser build:wasm:variants
 Decision: ship both full optimization profiles in one package for now.
 `dist/wasm` remains the default size-optimized full artifact. `dist/wasm-perf`
 ships the same full feature set with release `opt-level=3` and is selected only
-when callers explicitly provide `getSyncularV2RuntimeArtifact('full-perf')` or
+when callers explicitly provide `getSyncularRuntimeArtifact('full-perf')` or
 that catalog entry. This keeps the default under 1 MiB while preserving the old
 runtime profile for consumers that prefer it.
 

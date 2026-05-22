@@ -3,34 +3,34 @@ import type {
   SyncOperation,
   SyncOperationResult,
 } from '@syncular/core';
-import { assertSyncularV2ReadonlySql } from './sql-safety';
+import { assertSyncularReadonlySql } from './sql-safety';
 import type {
-  SyncularV2AppSchema,
-  SyncularV2ChangedRow,
-  SyncularV2ConflictResolution,
-  SyncularV2LiveQueryDependencyHint,
-  SyncularV2LiveQueryDiagnostics,
-  SyncularV2RowsChangedEvent,
-  SyncularV2SqlResult,
-  SyncularV2Storage,
+  SyncularAppSchema,
+  SyncularChangedRow,
+  SyncularConflictResolution,
+  SyncularLiveQueryDependencyHint,
+  SyncularLiveQueryDiagnostics,
+  SyncularRowsChangedEvent,
+  SyncularSqlResult,
+  SyncularStorage,
 } from './types';
 import {
-  getSyncularV2WasmUrl,
-  loadSyncularV2WasmGlue,
-  type SyncularV2WasmGlue,
+  getSyncularWasmUrl,
+  loadSyncularWasmGlue,
+  type SyncularWasmGlue,
 } from './wasm-runtime';
 
 export interface SyncularRustOwnedSqliteConfig {
   fileName?: string;
-  storage?: SyncularV2Storage;
+  storage?: SyncularStorage;
   clearOnInit?: boolean;
   stateId?: string;
   schemaVersion?: number;
-  appSchema?: SyncularV2AppSchema;
+  appSchema?: SyncularAppSchema;
 }
 
 export interface CreateSyncularRustOwnedSqliteOptions {
-  module?: SyncularV2WasmGlue | Promise<SyncularV2WasmGlue>;
+  module?: SyncularWasmGlue | Promise<SyncularWasmGlue>;
   wasmUrl?: string | URL | Request;
   config?: SyncularRustOwnedSqliteConfig;
 }
@@ -107,7 +107,7 @@ export interface RawSyncularRustOwnedSqlite {
   retryConflictKeepLocal(id: string): Promise<string>;
   resolveConflict(
     id: string,
-    resolution: SyncularV2ConflictResolution
+    resolution: SyncularConflictResolution
   ): Promise<void>;
   subscriptionStateJson(subscriptionId: string): Promise<string>;
   upsertSubscriptionStateJson(stateJson: string): Promise<void>;
@@ -130,7 +130,7 @@ export interface SyncularRustOwnedSqliteExecutor {
   executeSql<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params?: readonly unknown[]
-  ): SyncularV2SqlResult<Row>;
+  ): SyncularSqlResult<Row>;
   subscribeQuery<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params: readonly unknown[],
@@ -155,15 +155,15 @@ export interface SyncularRustOwnedLiveQueryEvent<
 > {
   queryId: string;
   version: number;
-  changedRows: SyncularV2ChangedRow[];
+  changedRows: SyncularChangedRow[];
   rows: Row[];
 }
 
 export async function createSyncularRustOwnedSqlite(
   options: CreateSyncularRustOwnedSqliteOptions
 ): Promise<SyncularRustOwnedSqlite> {
-  const mod = await (options.module ?? loadSyncularV2WasmGlue());
-  await mod.default(options.wasmUrl ?? getSyncularV2WasmUrl());
+  const mod = await (options.module ?? loadSyncularWasmGlue());
+  await mod.default(options.wasmUrl ?? getSyncularWasmUrl());
   return new SyncularRustOwnedSqlite(
     await mod.openSyncularRustOwnedSqlite(options.config ?? {})
   );
@@ -177,22 +177,22 @@ export class SyncularRustOwnedSqlite
   executeSql<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params: readonly unknown[] = []
-  ): SyncularV2SqlResult<Row> {
-    assertSyncularV2ReadonlySql(sql);
+  ): SyncularSqlResult<Row> {
+    assertSyncularReadonlySql(sql);
     if (typeof this.raw.executeSqlValue === 'function') {
-      return this.raw.executeSqlValue(sql, params) as SyncularV2SqlResult<Row>;
+      return this.raw.executeSqlValue(sql, params) as SyncularSqlResult<Row>;
     }
     return parseJson(this.raw.executeSqlJson(sql, stringifyParams(params)));
   }
 
   executeUnsafeSql<
     Row extends Record<string, unknown> = Record<string, unknown>,
-  >(sql: string, params: readonly unknown[] = []): SyncularV2SqlResult<Row> {
+  >(sql: string, params: readonly unknown[] = []): SyncularSqlResult<Row> {
     if (typeof this.raw.executeUnsafeSqlValue === 'function') {
       return this.raw.executeUnsafeSqlValue(
         sql,
         params
-      ) as SyncularV2SqlResult<Row>;
+      ) as SyncularSqlResult<Row>;
     }
     return parseJson(
       this.raw.executeUnsafeSqlJson(sql, stringifyParams(params))
@@ -203,7 +203,7 @@ export class SyncularRustOwnedSqlite
     sql: string,
     params: readonly unknown[],
     tables: readonly string[],
-    hints: readonly SyncularV2LiveQueryDependencyHint[] = []
+    hints: readonly SyncularLiveQueryDependencyHint[] = []
   ): SyncularRustOwnedLiveQuerySnapshot<Row> {
     return parseJson(
       this.raw.subscribeQueryJson(
@@ -225,11 +225,11 @@ export class SyncularRustOwnedSqlite
     return parseJson(this.raw.drainLiveQueryEventsJson());
   }
 
-  liveQueryDiagnostics(): SyncularV2LiveQueryDiagnostics {
+  liveQueryDiagnostics(): SyncularLiveQueryDiagnostics {
     return parseJson(this.raw.liveQueryDiagnosticsJson());
   }
 
-  drainRowsChangedEvents(): SyncularV2RowsChangedEvent[] {
+  drainRowsChangedEvents(): SyncularRowsChangedEvent[] {
     return parseJson(this.raw.drainRowsChangedEventsJson());
   }
 
@@ -277,7 +277,7 @@ export class SyncularRustOwnedSqlite
 
   resolveConflict(
     id: string,
-    resolution: SyncularV2ConflictResolution
+    resolution: SyncularConflictResolution
   ): Promise<void> {
     return this.raw.resolveConflict(id, resolution);
   }

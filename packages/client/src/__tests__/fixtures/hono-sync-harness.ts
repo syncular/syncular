@@ -35,11 +35,11 @@ import {
   createNodeHonoServer,
 } from '../../../../testkit/src/hono-node-server';
 import type {
-  CreateSyncularV2DatabaseOptions,
-  SyncularV2AuthHeaders,
-  SyncularV2Client,
-  SyncularV2ClientConfig,
-  SyncularV2PullOptions,
+  CreateSyncularDatabaseOptions,
+  SyncularAuthHeaders,
+  SyncularClientConfig,
+  SyncularPullOptions,
+  SyncularRuntimeClient,
 } from '../../types';
 
 export interface HonoSyncActor {
@@ -82,19 +82,21 @@ export interface HonoSyncHarness {
   openWorkerDatabase(
     options: HonoWorkerClientOptions
   ): Promise<SyncularAppDatabase>;
-  openWorkerClient(options: HonoWorkerClientOptions): Promise<SyncularV2Client>;
+  openWorkerClient(
+    options: HonoWorkerClientOptions
+  ): Promise<SyncularRuntimeClient>;
   close(): Promise<void>;
 }
 
 export interface HonoWorkerClientOptions {
   clientId: string;
   actorId: string;
-  getHeaders: () => SyncularV2AuthHeaders | Promise<SyncularV2AuthHeaders>;
-  authLifecycle?: CreateSyncularV2DatabaseOptions['authLifecycle'];
-  appSchema?: SyncularV2ClientConfig['appSchema'];
-  pull?: SyncularV2PullOptions;
-  diagnostics?: CreateSyncularV2DatabaseOptions['diagnostics'];
-  sync?: CreateSyncularV2DatabaseOptions['sync'];
+  getHeaders: () => SyncularAuthHeaders | Promise<SyncularAuthHeaders>;
+  authLifecycle?: CreateSyncularDatabaseOptions['authLifecycle'];
+  appSchema?: SyncularClientConfig['appSchema'];
+  pull?: SyncularPullOptions;
+  diagnostics?: CreateSyncularDatabaseOptions['diagnostics'];
+  sync?: CreateSyncularDatabaseOptions['sync'];
   fileName?: string;
   requestTimeoutMs?: number;
 }

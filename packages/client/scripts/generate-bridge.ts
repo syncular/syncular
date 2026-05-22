@@ -15,8 +15,8 @@ const workerCommands: readonly WorkerCommand[] = [
   {
     type: 'open',
     fields: [
-      'config: SyncularV2ClientConfig;',
-      'runtime?: SyncularV2WorkerRuntimeArtifact;',
+      'config: SyncularClientConfig;',
+      'runtime?: SyncularWorkerRuntimeArtifact;',
     ],
     dispatch: 'context.openClient(request)',
     diagnostic: true,
@@ -24,35 +24,35 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'setAuthHeaders',
-    fields: ['headers: SyncularV2AuthHeaders;'],
+    fields: ['headers: SyncularAuthHeaders;'],
     dispatch: 'context.requireClient().setAuthHeaders(request.headers)',
     diagnostic: true,
     diagnosticSource: 'auth',
   },
   {
     type: 'setFieldEncryption',
-    fields: ['config: SyncularV2FieldEncryptionConfig | null;'],
+    fields: ['config: SyncularFieldEncryptionConfig | null;'],
     dispatch: 'context.requireClient().setFieldEncryption(request.config)',
     diagnostic: true,
     diagnosticSource: 'client',
   },
   {
     type: 'setEncryptedCrdt',
-    fields: ['config: SyncularV2EncryptedCrdtConfig | null;'],
+    fields: ['config: SyncularEncryptedCrdtConfig | null;'],
     dispatch: 'context.requireClient().setEncryptedCrdt(request.config)',
     diagnostic: true,
     diagnosticSource: 'client',
   },
   {
     type: 'setBlobEncryption',
-    fields: ['config: SyncularV2BlobEncryptionConfig | null;'],
+    fields: ['config: SyncularBlobEncryptionConfig | null;'],
     dispatch: 'context.requireClient().setBlobEncryption(request.config)',
     diagnostic: true,
     diagnosticSource: 'client',
   },
   {
     type: 'setSubscriptions',
-    fields: ['subscriptions: SyncularV2SubscriptionSpec[];'],
+    fields: ['subscriptions: SyncularSubscriptionSpec[];'],
     dispatch: 'context.requireClient().setSubscriptions(request.subscriptions)',
     diagnosticSource: 'sync',
   },
@@ -66,7 +66,7 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'upsertAuthLease',
-    fields: ['lease: SyncularV2AuthLeaseRecord;'],
+    fields: ['lease: SyncularAuthLeaseRecord;'],
     dispatch: 'context.requireClient().upsertAuthLease(request.lease)',
     operationalState: true,
   },
@@ -83,7 +83,7 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'startRealtime',
-    fields: ['options: SyncularV2WorkerRealtimeOptions;'],
+    fields: ['options: SyncularWorkerRealtimeOptions;'],
     dispatch: 'context.startRealtime(request.options)',
     diagnostic: true,
     diagnosticSource: 'realtime',
@@ -121,7 +121,7 @@ const workerCommands: readonly WorkerCommand[] = [
       'sql: string;',
       'params: unknown[];',
       'tables: string[];',
-      'hints?: SyncularV2LiveQueryDependencyHint[];',
+      'hints?: SyncularLiveQueryDependencyHint[];',
     ],
     dispatch:
       'context.requireClient().subscribeQuery(request.sql, request.params, request.tables, request.hints ?? [])',
@@ -182,7 +182,7 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'syncPull',
-    fields: ['syncAttempt?: SyncularV2SyncAttempt;'],
+    fields: ['syncAttempt?: SyncularSyncAttempt;'],
     dispatch:
       'context.requireClient().syncPull({ syncAttempt: request.syncAttempt })',
     abortable: true,
@@ -192,7 +192,7 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'syncPush',
-    fields: ['syncAttempt?: SyncularV2SyncAttempt;'],
+    fields: ['syncAttempt?: SyncularSyncAttempt;'],
     dispatch:
       'context.requireClient().syncPush({ syncAttempt: request.syncAttempt })',
     abortable: true,
@@ -202,7 +202,7 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'syncOnce',
-    fields: ['syncAttempt?: SyncularV2SyncAttempt;'],
+    fields: ['syncAttempt?: SyncularSyncAttempt;'],
     dispatch:
       'context.requireClient().syncOnce({ syncAttempt: request.syncAttempt })',
     abortable: true,
@@ -231,10 +231,7 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'resolveConflict',
-    fields: [
-      'conflictId: string;',
-      'resolution: SyncularV2ConflictResolution;',
-    ],
+    fields: ['conflictId: string;', 'resolution: SyncularConflictResolution;'],
     dispatch:
       'context.requireClient().resolveConflict(request.conflictId, request.resolution)',
     operationalState: true,
@@ -246,7 +243,7 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'storeBlob',
-    fields: ['data: Uint8Array;', 'options?: SyncularV2BlobStoreOptions;'],
+    fields: ['data: Uint8Array;', 'options?: SyncularBlobStoreOptions;'],
     dispatch:
       'context.requireClient().storeBlob(request.data, request.options)',
     abortable: true,
@@ -299,7 +296,7 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'compactStorage',
-    fields: ['options?: SyncularV2StorageCompactionOptions;'],
+    fields: ['options?: SyncularStorageCompactionOptions;'],
     dispatch: 'context.requireClient().compactStorage(request.options)',
     diagnostic: true,
     diagnosticSource: 'storage',
@@ -331,7 +328,7 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'repairLocalHealth',
-    fields: ['request: SyncularV2LocalHealthRepairRequest;'],
+    fields: ['request: SyncularLocalHealthRepairRequest;'],
     dispatch: 'context.requireClient().repairLocalHealth(request.request)',
     diagnostic: true,
     diagnosticSource: 'storage',
@@ -339,7 +336,7 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'resetLocalSyncState',
-    fields: ['request?: SyncularV2LocalSyncResetRequest;'],
+    fields: ['request?: SyncularLocalSyncResetRequest;'],
     dispatch: 'context.requireClient().resetLocalSyncState(request.request)',
     diagnostic: true,
     diagnosticSource: 'storage',
@@ -362,49 +359,49 @@ const workerCommands: readonly WorkerCommand[] = [
   },
   {
     type: 'openCrdtField',
-    fields: ['request: SyncularV2CrdtFieldRequest;'],
+    fields: ['request: SyncularCrdtFieldRequest;'],
     dispatch: 'context.requireClient().openCrdtField(request.request)',
   },
   {
     type: 'applyCrdtFieldText',
-    fields: ['request: SyncularV2CrdtFieldTextRequest;'],
+    fields: ['request: SyncularCrdtFieldTextRequest;'],
     dispatch: 'context.requireClient().applyCrdtFieldText(request.request)',
   },
   {
     type: 'applyCrdtFieldYjsUpdate',
-    fields: ['request: SyncularV2CrdtFieldYjsUpdateRequest;'],
+    fields: ['request: SyncularCrdtFieldYjsUpdateRequest;'],
     dispatch:
       'context.requireClient().applyCrdtFieldYjsUpdate(request.request)',
   },
   {
     type: 'materializeCrdtField',
-    fields: ['request: SyncularV2CrdtFieldRequest;'],
+    fields: ['request: SyncularCrdtFieldRequest;'],
     dispatch: 'context.requireClient().materializeCrdtField(request.request)',
   },
   {
     type: 'crdtDocumentSnapshot',
-    fields: ['request: SyncularV2CrdtFieldRequest;'],
+    fields: ['request: SyncularCrdtFieldRequest;'],
     dispatch: 'context.requireClient().crdtDocumentSnapshot(request.request)',
   },
   {
     type: 'crdtUpdateLog',
-    fields: ['request: SyncularV2CrdtFieldRequest & { limit?: number };'],
+    fields: ['request: SyncularCrdtFieldRequest & { limit?: number };'],
     dispatch: 'context.requireClient().crdtUpdateLog(request.request)',
   },
   {
     type: 'snapshotCrdtFieldStateVector',
-    fields: ['request: SyncularV2CrdtFieldRequest;'],
+    fields: ['request: SyncularCrdtFieldRequest;'],
     dispatch:
       'context.requireClient().snapshotCrdtFieldStateVector(request.request)',
   },
   {
     type: 'compactCrdtField',
-    fields: ['request: SyncularV2CrdtFieldCompactionRequest;'],
+    fields: ['request: SyncularCrdtFieldCompactionRequest;'],
     dispatch: 'context.requireClient().compactCrdtField(request.request)',
   },
   {
     type: 'encryptionHelper',
-    fields: ['method: SyncularV2EncryptionHelperMethod;', 'args?: unknown;'],
+    fields: ['method: SyncularEncryptionHelperMethod;', 'args?: unknown;'],
     dispatch:
       'context.requireClient().encryptionHelper(request.method, request.args)',
     diagnosticSource: 'client',
@@ -430,7 +427,7 @@ function requestVariant(command: WorkerCommand): string {
   return [
     '  | {',
     '      id: number;',
-    '      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;',
+    '      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;',
     `      type: ${JSON.stringify(command.type)};`,
     ...fields.map((field) => `      ${field}`),
     '    }',
@@ -474,36 +471,36 @@ import type {
   SyncularApplyYjsEnvelopeToPayloadArgs,
   SyncularApplyYjsTextUpdatesArgs,
   SyncularBuildYjsTextUpdateArgs,
-  SyncularV2AuthHeaders,
-  SyncularV2AuthLeaseRecord,
-  SyncularV2BlobEncryptionConfig,
-  SyncularV2BlobStoreOptions,
-  SyncularV2ClientConfig,
-  SyncularV2ConflictResolution,
-  SyncularV2CrdtFieldCompactionRequest,
-  SyncularV2CrdtFieldRequest,
-  SyncularV2CrdtFieldTextRequest,
-  SyncularV2CrdtFieldYjsUpdateRequest,
-  SyncularV2EncryptedCrdtConfig,
-  SyncularV2EncryptionHelperMethod,
-  SyncularV2FieldEncryptionConfig,
-  SyncularV2LiveQueryDependencyHint,
-  SyncularV2LocalHealthRepairRequest,
-  SyncularV2LocalSyncResetRequest,
-  SyncularV2StorageCompactionOptions,
-  SyncularV2SubscriptionSpec,
-  SyncularV2SyncAttempt,
+  SyncularAuthHeaders,
+  SyncularAuthLeaseRecord,
+  SyncularBlobEncryptionConfig,
+  SyncularBlobStoreOptions,
+  SyncularClientConfig,
+  SyncularConflictResolution,
+  SyncularCrdtFieldCompactionRequest,
+  SyncularCrdtFieldRequest,
+  SyncularCrdtFieldTextRequest,
+  SyncularCrdtFieldYjsUpdateRequest,
+  SyncularEncryptedCrdtConfig,
+  SyncularEncryptionHelperMethod,
+  SyncularFieldEncryptionConfig,
+  SyncularLiveQueryDependencyHint,
+  SyncularLocalHealthRepairRequest,
+  SyncularLocalSyncResetRequest,
+  SyncularStorageCompactionOptions,
+  SyncularSubscriptionSpec,
+  SyncularSyncAttempt,
 } from './types';
-import type { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
+import type { SYNCULAR_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
-export interface SyncularV2WorkerRuntimeArtifact {
+export interface SyncularWorkerRuntimeArtifact {
   name?: string;
   wasmGlueUrl?: string;
   wasmUrl?: string;
   features?: string[];
 }
 
-export type SyncularV2WorkerRealtimeOptions = {
+export type SyncularWorkerRealtimeOptions = {
   wsUrl?: string;
   params?: Record<string, string>;
   initialReconnectDelayMs?: number;
@@ -512,52 +509,52 @@ export type SyncularV2WorkerRealtimeOptions = {
   heartbeatTimeoutMs?: number;
 };
 
-export type SyncularV2GeneratedWorkerRequest =
+export type SyncularGeneratedWorkerRequest =
 ${workerCommands.map(requestVariant).join('\n')};
 
-export type SyncularV2GeneratedWorkerRequestInput =
-  SyncularV2GeneratedWorkerRequest extends infer Request
-    ? Request extends SyncularV2GeneratedWorkerRequest
+export type SyncularGeneratedWorkerRequestInput =
+  SyncularGeneratedWorkerRequest extends infer Request
+    ? Request extends SyncularGeneratedWorkerRequest
       ? Omit<Request, 'id' | 'protocolVersion'>
       : never
     : never;
 
-export type SyncularV2GeneratedWorkerRequestType =
-  SyncularV2GeneratedWorkerRequest['type'];
+export type SyncularGeneratedWorkerRequestType =
+  SyncularGeneratedWorkerRequest['type'];
 
 const ABORTABLE_WORKER_REQUEST_TYPES = new Set<string>(${stringArray(abortable)});
 const DIAGNOSED_SUCCESS_WORKER_REQUEST_TYPES = new Set<string>(${stringArray(diagnosed)});
 const OPERATIONAL_STATE_WORKER_REQUEST_TYPES = new Set<string>(${stringArray(operational)});
 const WORKER_REQUEST_DIAGNOSTIC_SOURCES: Record<string, 'auth' | 'blob' | 'client' | 'realtime' | 'storage' | 'sync' | 'worker'> = ${record(diagnosticSources)};
 
-export function isGeneratedSyncularV2AbortableWorkerRequestType(
-  type: SyncularV2GeneratedWorkerRequestType
+export function isGeneratedSyncularAbortableWorkerRequestType(
+  type: SyncularGeneratedWorkerRequestType
 ): boolean {
   return ABORTABLE_WORKER_REQUEST_TYPES.has(type);
 }
 
-export function isGeneratedSyncularV2DiagnosedSuccessWorkerRequestType(
-  type: SyncularV2GeneratedWorkerRequestType
+export function isGeneratedSyncularDiagnosedSuccessWorkerRequestType(
+  type: SyncularGeneratedWorkerRequestType
 ): boolean {
   return DIAGNOSED_SUCCESS_WORKER_REQUEST_TYPES.has(type);
 }
 
-export function isGeneratedSyncularV2OperationalStateWorkerRequestType(
-  type: SyncularV2GeneratedWorkerRequestType
+export function isGeneratedSyncularOperationalStateWorkerRequestType(
+  type: SyncularGeneratedWorkerRequestType
 ): boolean {
   return OPERATIONAL_STATE_WORKER_REQUEST_TYPES.has(type);
 }
 
-export function generatedSyncularV2WorkerRequestDiagnosticSource(
-  type: SyncularV2GeneratedWorkerRequestType
+export function generatedSyncularWorkerRequestDiagnosticSource(
+  type: SyncularGeneratedWorkerRequestType
 ): 'auth' | 'blob' | 'client' | 'realtime' | 'storage' | 'sync' | 'worker' {
   return WORKER_REQUEST_DIAGNOSTIC_SOURCES[type] ?? 'worker';
 }
 
-export interface SyncularV2GeneratedWorkerDispatchContext {
+export interface SyncularGeneratedWorkerDispatchContext {
   requireClient(): any;
-  openClient(request: Extract<SyncularV2GeneratedWorkerRequest, { type: 'open' }>): Promise<unknown>;
-  startRealtime(options: SyncularV2WorkerRealtimeOptions): unknown;
+  openClient(request: Extract<SyncularGeneratedWorkerRequest, { type: 'open' }>): Promise<unknown>;
+  startRealtime(options: SyncularWorkerRealtimeOptions): unknown;
   stopRealtime(): unknown;
   sendPresence(
     action: 'join' | 'leave' | 'update',
@@ -568,9 +565,9 @@ export interface SyncularV2GeneratedWorkerDispatchContext {
   closeClient(): unknown;
 }
 
-export async function dispatchGeneratedSyncularV2WorkerRequest(
-  context: SyncularV2GeneratedWorkerDispatchContext,
-  request: SyncularV2GeneratedWorkerRequest
+export async function dispatchGeneratedSyncularWorkerRequest(
+  context: SyncularGeneratedWorkerDispatchContext,
+  request: SyncularGeneratedWorkerRequest
 ): Promise<unknown> {
   switch (request.type) {
 ${dispatchable

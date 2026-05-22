@@ -72,7 +72,7 @@ public surfaces without stable taxonomy entries.
 
 - Browser worker error payloads now support stable public error `code`,
   `category`, `retryable`, and `recommendedAction` fields.
-- `SyncularV2WorkerError` exposes those fields directly for app code.
+- `SyncularWorkerError` exposes those fields directly for app code.
 - Runtime errors surfaced through the browser worker now classify representative
   recovery-critical failures:
   `sync.auth_required`, `sync.schema_mismatch`, and
@@ -83,7 +83,7 @@ public surfaces without stable taxonomy entries.
 - Browser/Hono WASM tests assert exact error envelopes for auth-required,
   server-required schema mismatch, and corrupted snapshot chunk integrity
   rejection.
-- The browser package now has a shared `SyncularV2ClientError` classifier used
+- The browser package now has a shared `SyncularClientError` classifier used
   by both the worker bridge and the direct Rust client sync path, so apps get
   the same stable envelope without being forced through the worker.
 - `@syncular/core` now owns the public error response taxonomy and JSON schema

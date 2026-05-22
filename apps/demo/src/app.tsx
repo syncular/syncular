@@ -1,4 +1,4 @@
-import type { SyncularV2LifecycleState } from '@syncular/client';
+import type { SyncularLifecycleState } from '@syncular/client';
 import {
   CheckCircle2,
   Circle,
@@ -18,7 +18,13 @@ import {
   selectTasks,
 } from './client/syncular';
 
-type ClientStatus = 'opening' | 'ready' | 'syncing' | 'offline' | 'error';
+type ClientStatus =
+  | 'opening'
+  | 'ready'
+  | 'syncing'
+  | 'offline'
+  | 'attention'
+  | 'error';
 
 interface ClientState {
   handle: DemoClientHandle | null;
@@ -263,6 +269,9 @@ function ClientPane({
           Offline. Local changes will sync when online.
         </p>
       ) : null}
+      {state.status === 'attention' ? (
+        <p className="attention-line">Local sync state needs review.</p>
+      ) : null}
 
       <div className="task-list" data-testid={`${accent}-tasks`}>
         {state.tasks.length === 0 ? (
@@ -350,9 +359,11 @@ function StatusBadge({ state }: { state: ClientState }) {
         ? 'Syncing'
         : state.status === 'offline'
           ? 'Offline'
-          : state.status === 'error'
-            ? 'Error'
-            : 'Ready';
+          : state.status === 'attention'
+            ? 'Review'
+            : state.status === 'error'
+              ? 'Error'
+              : 'Ready';
 
   return (
     <div className={`status-badge ${state.status}`}>
@@ -416,9 +427,7 @@ function errorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-function statusFromLifecycle(
-  lifecycle: SyncularV2LifecycleState
-): ClientStatus {
+function statusFromLifecycle(lifecycle: SyncularLifecycleState): ClientStatus {
   if (
     lifecycle.phase === 'syncing' ||
     lifecycle.phase === 'recovering' ||
@@ -427,6 +436,9 @@ function statusFromLifecycle(
     return 'syncing';
   }
   if (lifecycle.phase === 'offline') return 'offline';
-  if (lifecycle.requiresAction) return 'error';
+  if (lifecycle.phase === 'authRequired') return 'error';
+  if (lifecycle.requiresAction || lifecycle.phase === 'degraded') {
+    return 'attention';
+  }
   return 'ready';
 }

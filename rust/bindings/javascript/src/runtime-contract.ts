@@ -1,43 +1,42 @@
-export const SYNCULAR_V2_CLIENT_PACKAGE_NAME = '@syncular/client';
-export const SYNCULAR_V2_CLIENT_PACKAGE_VERSION = '0.0.0';
-export const SYNCULAR_V2_WASM_OUT_NAME = 'syncular_v2';
-export const SYNCULAR_V2_WASM_GLUE_FILE = `${SYNCULAR_V2_WASM_OUT_NAME}.js`;
-export const SYNCULAR_V2_WASM_BINARY_FILE = `${SYNCULAR_V2_WASM_OUT_NAME}_bg.wasm`;
-export const SYNCULAR_V2_WASM_ARTIFACT_FILE =
-  'syncular-v2-runtime-artifact.json';
-export const SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE =
-  'syncular-v2-runtime-artifacts.json';
-export const SYNCULAR_V2_FULL_RUNTIME_FEATURES = [
+export const SYNCULAR_CLIENT_PACKAGE_NAME = '@syncular/client';
+export const SYNCULAR_CLIENT_PACKAGE_VERSION = '0.0.0';
+export const SYNCULAR_WASM_OUT_NAME = 'syncular';
+export const SYNCULAR_WASM_GLUE_FILE = `${SYNCULAR_WASM_OUT_NAME}.js`;
+export const SYNCULAR_WASM_BINARY_FILE = `${SYNCULAR_WASM_OUT_NAME}_bg.wasm`;
+export const SYNCULAR_WASM_ARTIFACT_FILE = 'syncular-runtime-artifact.json';
+export const SYNCULAR_WASM_ARTIFACT_CATALOG_FILE =
+  'syncular-runtime-artifacts.json';
+export const SYNCULAR_FULL_RUNTIME_FEATURES = [
   'web-owned-sqlite-core',
   'web-owned-sqlite',
   'blobs',
   'crdt-yjs',
   'e2ee',
 ] as const;
-export const SYNCULAR_V2_CORE_RUNTIME_FEATURES = [
+export const SYNCULAR_CORE_RUNTIME_FEATURES = [
   'web-owned-sqlite-core',
 ] as const;
 
-export interface SyncularV2JavaScriptBindingRuntimeArtifact {
+export interface SyncularJavaScriptBindingRuntimeArtifact {
   wasmGlueUrl?: string | URL;
   wasmUrl?: string | URL | Request;
 }
 
-export interface SyncularV2JavaScriptBindingRuntimeArtifactCandidate
-  extends SyncularV2JavaScriptBindingRuntimeArtifact {
+export interface SyncularJavaScriptBindingRuntimeArtifactCandidate
+  extends SyncularJavaScriptBindingRuntimeArtifact {
   name?: string;
   features: readonly string[];
 }
 
-export interface SyncularV2JavaScriptBindingRuntimeArtifactCatalog {
+export interface SyncularJavaScriptBindingRuntimeArtifactCatalog {
   catalogVersion: 1;
   packageName: string;
   packageVersion: string;
   generatedAt?: string;
-  artifacts: readonly SyncularV2JavaScriptBindingRuntimeArtifactCatalogEntry[];
+  artifacts: readonly SyncularJavaScriptBindingRuntimeArtifactCatalogEntry[];
 }
 
-export interface SyncularV2JavaScriptBindingRuntimeArtifactCatalogEntry {
+export interface SyncularJavaScriptBindingRuntimeArtifactCatalogEntry {
   name: string;
   variant?: string;
   profile?: string;
@@ -49,32 +48,32 @@ export interface SyncularV2JavaScriptBindingRuntimeArtifactCatalogEntry {
   gzipBytes?: number;
 }
 
-export type SyncularV2WasmArtifactVariant = 'full' | 'full-perf' | 'core';
+export type SyncularWasmArtifactVariant = 'full' | 'full-perf' | 'core';
 
-export function getSyncularV2WasmGlueUrl(): URL {
-  return resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_GLUE_FILE);
+export function getSyncularWasmGlueUrl(): URL {
+  return resolveSyncularWasmAsset(SYNCULAR_WASM_GLUE_FILE);
 }
 
-export function getSyncularV2WasmUrl(): URL {
-  return resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_BINARY_FILE);
+export function getSyncularWasmUrl(): URL {
+  return resolveSyncularWasmAsset(SYNCULAR_WASM_BINARY_FILE);
 }
 
-export function getSyncularV2RuntimeArtifactCatalogUrl(): URL {
+export function getSyncularRuntimeArtifactCatalogUrl(): URL {
   const runtimeUrl = new URL(import.meta.url);
   const sourceRuntime = runtimeUrl.pathname.endsWith(
     '/src/runtime-contract.ts'
   );
   return new URL(
     sourceRuntime
-      ? `../dist/${SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE}`
-      : `./${SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE}`,
+      ? `../dist/${SYNCULAR_WASM_ARTIFACT_CATALOG_FILE}`
+      : `./${SYNCULAR_WASM_ARTIFACT_CATALOG_FILE}`,
     runtimeUrl
   );
 }
 
-export function getSyncularV2RuntimeArtifact(
-  variant: SyncularV2WasmArtifactVariant = 'full'
-): SyncularV2JavaScriptBindingRuntimeArtifactCandidate {
+export function getSyncularRuntimeArtifact(
+  variant: SyncularWasmArtifactVariant = 'full'
+): SyncularJavaScriptBindingRuntimeArtifactCandidate {
   const dir =
     variant === 'core'
       ? 'wasm-core'
@@ -83,29 +82,29 @@ export function getSyncularV2RuntimeArtifact(
         : 'wasm';
   const features =
     variant === 'core'
-      ? SYNCULAR_V2_CORE_RUNTIME_FEATURES
-      : SYNCULAR_V2_FULL_RUNTIME_FEATURES;
+      ? SYNCULAR_CORE_RUNTIME_FEATURES
+      : SYNCULAR_FULL_RUNTIME_FEATURES;
   return {
     name: variant,
     features,
-    wasmGlueUrl: resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_GLUE_FILE, dir),
-    wasmUrl: resolveSyncularV2WasmAsset(SYNCULAR_V2_WASM_BINARY_FILE, dir),
+    wasmGlueUrl: resolveSyncularWasmAsset(SYNCULAR_WASM_GLUE_FILE, dir),
+    wasmUrl: resolveSyncularWasmAsset(SYNCULAR_WASM_BINARY_FILE, dir),
   };
 }
 
-export function getSyncularV2PackagedRuntimeArtifacts(): readonly SyncularV2JavaScriptBindingRuntimeArtifactCandidate[] {
+export function getSyncularPackagedRuntimeArtifacts(): readonly SyncularJavaScriptBindingRuntimeArtifactCandidate[] {
   return [
-    getSyncularV2RuntimeArtifact('core'),
-    getSyncularV2RuntimeArtifact('full'),
-    getSyncularV2RuntimeArtifact('full-perf'),
+    getSyncularRuntimeArtifact('core'),
+    getSyncularRuntimeArtifact('full'),
+    getSyncularRuntimeArtifact('full-perf'),
   ];
 }
 
-export function resolveSyncularV2RuntimeArtifactCatalog(
-  catalog: SyncularV2JavaScriptBindingRuntimeArtifactCatalog,
+export function resolveSyncularRuntimeArtifactCatalog(
+  catalog: SyncularJavaScriptBindingRuntimeArtifactCatalog,
   options: { baseUrl?: string | URL } = {}
-): readonly SyncularV2JavaScriptBindingRuntimeArtifactCandidate[] {
-  const baseUrl = options.baseUrl ?? getSyncularV2RuntimeArtifactCatalogUrl();
+): readonly SyncularJavaScriptBindingRuntimeArtifactCandidate[] {
+  const baseUrl = options.baseUrl ?? getSyncularRuntimeArtifactCatalogUrl();
   return catalog.artifacts.map((artifact) => ({
     name: artifact.name,
     features: artifact.features,
@@ -114,12 +113,12 @@ export function resolveSyncularV2RuntimeArtifactCatalog(
   }));
 }
 
-export function selectSyncularV2RuntimeArtifact(
+export function selectSyncularRuntimeArtifact(
   requiredFeatures: readonly string[] = [],
-  artifacts: readonly SyncularV2JavaScriptBindingRuntimeArtifactCandidate[] = [
-    getSyncularV2RuntimeArtifact('full'),
+  artifacts: readonly SyncularJavaScriptBindingRuntimeArtifactCandidate[] = [
+    getSyncularRuntimeArtifact('full'),
   ]
-): SyncularV2JavaScriptBindingRuntimeArtifact {
+): SyncularJavaScriptBindingRuntimeArtifact {
   const required = new Set(requiredFeatures);
   for (const artifact of artifacts) {
     const available = new Set(artifact.features);
@@ -145,7 +144,7 @@ export function selectSyncularV2RuntimeArtifact(
   );
 }
 
-function resolveSyncularV2WasmAsset(fileName: string, dir = 'wasm'): URL {
+function resolveSyncularWasmAsset(fileName: string, dir = 'wasm'): URL {
   const runtimeUrl = new URL(import.meta.url);
   const sourceRuntime = runtimeUrl.pathname.endsWith(
     '/src/runtime-contract.ts'

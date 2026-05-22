@@ -3,106 +3,106 @@ import type {
   SyncAuthLeaseIssueRequest,
   SyncOperation,
 } from '@syncular/core';
-import { issueSyncularV2AuthLease } from './auth-leases';
-import { assertSyncularV2BlobPayloadLimit } from './blob-limits';
-import { resolveSyncularV2ClientConfig } from './client-config';
+import { issueSyncularAuthLease } from './auth-leases';
+import { assertSyncularBlobPayloadLimit } from './blob-limits';
+import { resolveSyncularClientConfig } from './client-config';
 import {
-  appendSyncularV2DiagnosticEvent,
-  appendSyncularV2SyncTimings,
-  createSyncularV2SyncAttempt,
-  summarizeSyncularV2DiagnosticSubscriptions,
-  syncularV2DiagnosticAttemptFields,
-  syncularV2SyncAttemptHeaders,
+  appendSyncularDiagnosticEvent,
+  appendSyncularSyncTimings,
+  createSyncularSyncAttempt,
+  summarizeSyncularDiagnosticSubscriptions,
+  syncularDiagnosticAttemptFields,
+  syncularSyncAttemptHeaders,
 } from './diagnostics';
-import { SyncularV2ClientError, toSyncularV2ClientError } from './errors';
-import { createSyncularV2RuntimeInfo } from './runtime-contract';
-import { assertSyncularV2ReadonlySql } from './sql-safety';
+import { SyncularClientError, toSyncularClientError } from './errors';
+import { createSyncularRuntimeInfo } from './runtime-contract';
+import { assertSyncularReadonlySql } from './sql-safety';
 import type {
   SyncularApplyYjsEnvelopeToPayloadArgs,
   SyncularApplyYjsTextUpdatesArgs,
   SyncularApplyYjsTextUpdatesResult,
+  SyncularAuthHeaders,
+  SyncularAuthLeaseRecord,
+  SyncularBlobCacheStats,
+  SyncularBlobEncryptionConfig,
+  SyncularBlobLimits,
+  SyncularBlobStoreOptions,
+  SyncularBlobUploadQueueStats,
+  SyncularBootstrapState,
+  SyncularBootstrapStatus,
+  SyncularBootstrapSubscriptionPhase,
   SyncularBuildYjsTextUpdateArgs,
   SyncularBuildYjsTextUpdateResult,
-  SyncularV2AuthHeaders,
-  SyncularV2AuthLeaseRecord,
-  SyncularV2BlobCacheStats,
-  SyncularV2BlobEncryptionConfig,
-  SyncularV2BlobLimits,
-  SyncularV2BlobStoreOptions,
-  SyncularV2BlobUploadQueueStats,
-  SyncularV2BootstrapState,
-  SyncularV2BootstrapStatus,
-  SyncularV2BootstrapSubscriptionPhase,
-  SyncularV2ChangedRow,
-  SyncularV2ClientConfig,
-  SyncularV2ConflictResolution,
-  SyncularV2ConflictSummary,
-  SyncularV2ConnectionState,
-  SyncularV2CrdtDocumentSnapshot,
-  SyncularV2CrdtFieldCompactionReceipt,
-  SyncularV2CrdtFieldCompactionRequest,
-  SyncularV2CrdtFieldDescriptor,
-  SyncularV2CrdtFieldMaterialization,
-  SyncularV2CrdtFieldRequest,
-  SyncularV2CrdtFieldTextRequest,
-  SyncularV2CrdtFieldWriteReceipt,
-  SyncularV2CrdtFieldYjsUpdateRequest,
-  SyncularV2CrdtUpdateLogEntry,
-  SyncularV2DiagnosticEvent,
-  SyncularV2DiagnosticSink,
-  SyncularV2DiagnosticSnapshot,
-  SyncularV2EncryptedCrdtConfig,
-  SyncularV2EncryptionHelperMethod,
-  SyncularV2FieldEncryptionConfig,
-  SyncularV2LifecycleState,
-  SyncularV2LiveQueryDependencyHint,
-  SyncularV2LiveQueryDiagnostics,
-  SyncularV2LiveQueryEvent,
-  SyncularV2LiveQuerySnapshot,
-  SyncularV2LocalHealthRepairReport,
-  SyncularV2LocalHealthRepairRequest,
-  SyncularV2LocalHealthReport,
-  SyncularV2LocalSupportBundle,
-  SyncularV2LocalSupportBundleImportReport,
-  SyncularV2LocalSyncResetReport,
-  SyncularV2LocalSyncResetRequest,
-  SyncularV2PullOptions,
-  SyncularV2RowsChangedEvent,
-  SyncularV2RowsChangedSink,
-  SyncularV2RuntimeArtifact,
-  SyncularV2RuntimeInfo,
-  SyncularV2SchemaState,
-  SyncularV2SqlResult,
-  SyncularV2StorageCompactionOptions,
-  SyncularV2StorageCompactionReport,
-  SyncularV2SubscriptionSpec,
-  SyncularV2SyncAttempt,
-  SyncularV2SyncRequestOptions,
-  SyncularV2SyncResult,
-  SyncularV2SyncTimings,
-  SyncularV2TransportStats,
+  SyncularChangedRow,
+  SyncularClientConfig,
+  SyncularConflictResolution,
+  SyncularConflictSummary,
+  SyncularConnectionState,
+  SyncularCrdtDocumentSnapshot,
+  SyncularCrdtFieldCompactionReceipt,
+  SyncularCrdtFieldCompactionRequest,
+  SyncularCrdtFieldDescriptor,
+  SyncularCrdtFieldMaterialization,
+  SyncularCrdtFieldRequest,
+  SyncularCrdtFieldTextRequest,
+  SyncularCrdtFieldWriteReceipt,
+  SyncularCrdtFieldYjsUpdateRequest,
+  SyncularCrdtUpdateLogEntry,
+  SyncularDiagnosticEvent,
+  SyncularDiagnosticSink,
+  SyncularDiagnosticSnapshot,
+  SyncularEncryptedCrdtConfig,
+  SyncularEncryptionHelperMethod,
+  SyncularFieldEncryptionConfig,
+  SyncularLifecycleState,
+  SyncularLiveQueryDependencyHint,
+  SyncularLiveQueryDiagnostics,
+  SyncularLiveQueryEvent,
+  SyncularLiveQuerySnapshot,
+  SyncularLocalHealthRepairReport,
+  SyncularLocalHealthRepairRequest,
+  SyncularLocalHealthReport,
+  SyncularLocalSupportBundle,
+  SyncularLocalSupportBundleImportReport,
+  SyncularLocalSyncResetReport,
+  SyncularLocalSyncResetRequest,
+  SyncularPullOptions,
+  SyncularRowsChangedEvent,
+  SyncularRowsChangedSink,
+  SyncularRuntimeArtifact,
+  SyncularRuntimeInfo,
+  SyncularSchemaState,
+  SyncularSqlResult,
+  SyncularStorageCompactionOptions,
+  SyncularStorageCompactionReport,
+  SyncularSubscriptionSpec,
+  SyncularSyncAttempt,
+  SyncularSyncRequestOptions,
+  SyncularSyncResult,
+  SyncularSyncTimings,
+  SyncularTransportStats,
 } from './types';
 import {
-  getSyncularV2WasmGlueUrl,
-  getSyncularV2WasmUrl,
-  loadSyncularV2WasmGlue,
-  readSyncularV2RustRuntimeInfo,
+  getSyncularWasmGlueUrl,
+  getSyncularWasmUrl,
+  loadSyncularWasmGlue,
+  readSyncularRustRuntimeInfo,
   type SyncularRustOwnedSqliteClient,
-  type SyncularV2WasmGlue,
+  type SyncularWasmGlue,
 } from './wasm-runtime';
 
-export interface CreateSyncularV2RustClientOptions {
-  module?: SyncularV2WasmGlue | Promise<SyncularV2WasmGlue>;
+export interface CreateSyncularRustClientOptions {
+  module?: SyncularWasmGlue | Promise<SyncularWasmGlue>;
   wasmGlueUrl?: string | URL;
   wasmUrl?: string | URL | Request;
-  runtime?: SyncularV2RuntimeArtifact;
-  config: SyncularV2ClientConfig;
-  blobLimits?: SyncularV2BlobLimits;
+  runtime?: SyncularRuntimeArtifact;
+  config: SyncularClientConfig;
+  blobLimits?: SyncularBlobLimits;
 }
 
 type RawSyncResult = {
   changed_tables?: string[];
-  changed_rows?: SyncularV2ChangedRow[];
+  changed_rows?: SyncularChangedRow[];
   changed_rows_truncated?: boolean;
   subscriptions?: Array<{
     id: string;
@@ -113,7 +113,7 @@ type RawSyncResult = {
     bootstrap_phase?: number;
     bootstrap_state?: RawBootstrapState | null;
     ready?: boolean;
-    phase?: SyncularV2BootstrapSubscriptionPhase;
+    phase?: SyncularBootstrapSubscriptionPhase;
     progress_percent?: number;
     snapshot_rows?: unknown[];
     commits?: unknown[];
@@ -170,7 +170,7 @@ type RawBootstrapStatus = {
     expected?: boolean;
     ready?: boolean;
     status?: string | null;
-    phase?: SyncularV2BootstrapSubscriptionPhase;
+    phase?: SyncularBootstrapSubscriptionPhase;
     progress_percent?: number;
     cursor?: number | null;
     bootstrap_state?: RawBootstrapState | null;
@@ -198,37 +198,37 @@ type RawConflictSummary = {
   resolution: string | null;
 };
 
-type SyncularV2BootstrapSubscriptionStatusEntry = {
+type SyncularBootstrapSubscriptionStatusEntry = {
   id: string;
   table: string;
   status: string | null;
   ready: boolean;
-  phase: SyncularV2BootstrapSubscriptionPhase;
+  phase: SyncularBootstrapSubscriptionPhase;
   progressPercent: number;
   cursor: number | null;
-  bootstrapState: SyncularV2BootstrapState | null;
+  bootstrapState: SyncularBootstrapState | null;
   bootstrapPhase: number;
 };
 
-export async function openSyncularV2RustClient(
-  options: CreateSyncularV2RustClientOptions
-): Promise<SyncularV2RustClient> {
+export async function openSyncularRustClient(
+  options: CreateSyncularRustClientOptions
+): Promise<SyncularRustClient> {
   const wasmGlueUrl =
     options.runtime?.wasmGlueUrl ??
     options.wasmGlueUrl ??
-    getSyncularV2WasmGlueUrl();
+    getSyncularWasmGlueUrl();
   const mod = await (options.module ??
     (options.runtime?.wasmGlueUrl || options.wasmGlueUrl
-      ? loadSyncularV2WasmGlueFromUrl(wasmGlueUrl)
-      : loadSyncularV2WasmGlue()));
+      ? loadSyncularWasmGlueFromUrl(wasmGlueUrl)
+      : loadSyncularWasmGlue()));
   const wasmUrl =
-    options.runtime?.wasmUrl ?? options.wasmUrl ?? getSyncularV2WasmUrl();
-  const config = resolveSyncularV2ClientConfig(options.config);
+    options.runtime?.wasmUrl ?? options.wasmUrl ?? getSyncularWasmUrl();
+  const config = resolveSyncularClientConfig(options.config);
   await mod.default(wasmUrl);
-  const rustRuntimeInfo = readSyncularV2RustRuntimeInfo(mod);
-  return new SyncularV2RustClient(
+  const rustRuntimeInfo = readSyncularRustRuntimeInfo(mod);
+  return new SyncularRustClient(
     await mod.openSyncularRustOwnedSqliteClient(config),
-    createSyncularV2RuntimeInfo({
+    createSyncularRuntimeInfo({
       storage: config.storage,
       wasmGlueUrl,
       wasmUrl,
@@ -240,35 +240,32 @@ export async function openSyncularV2RustClient(
   );
 }
 
-function loadSyncularV2WasmGlueFromUrl(
+function loadSyncularWasmGlueFromUrl(
   wasmGlueUrl: string | URL
-): Promise<SyncularV2WasmGlue> {
+): Promise<SyncularWasmGlue> {
   const href = wasmGlueUrl instanceof URL ? wasmGlueUrl.href : wasmGlueUrl;
-  return import(/* @vite-ignore */ href) as Promise<SyncularV2WasmGlue>;
+  return import(/* @vite-ignore */ href) as Promise<SyncularWasmGlue>;
 }
 
-export class SyncularV2RustClient {
-  #rowsChangedListeners = new Set<SyncularV2RowsChangedSink>();
-  #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
-  #recentDiagnostics: SyncularV2DiagnosticEvent[] = [];
-  #recentSyncTimings: SyncularV2SyncTimings[] = [];
-  #subscriptions: SyncularV2SubscriptionSpec[] = [];
-  #authHeaders: SyncularV2AuthHeaders = {};
-  #bootstrapById = new Map<
-    string,
-    SyncularV2BootstrapSubscriptionStatusEntry
-  >();
+export class SyncularRustClient {
+  #rowsChangedListeners = new Set<SyncularRowsChangedSink>();
+  #diagnosticListeners = new Set<SyncularDiagnosticSink>();
+  #recentDiagnostics: SyncularDiagnosticEvent[] = [];
+  #recentSyncTimings: SyncularSyncTimings[] = [];
+  #subscriptions: SyncularSubscriptionSpec[] = [];
+  #authHeaders: SyncularAuthHeaders = {};
+  #bootstrapById = new Map<string, SyncularBootstrapSubscriptionStatusEntry>();
   #closed = false;
 
   constructor(
     private readonly raw: SyncularRustOwnedSqliteClient,
-    private readonly runtime: SyncularV2RuntimeInfo,
-    private readonly config: SyncularV2ClientConfig,
-    private readonly pullOptions: SyncularV2PullOptions | undefined,
-    private readonly blobLimits: SyncularV2BlobLimits | undefined
+    private readonly runtime: SyncularRuntimeInfo,
+    private readonly config: SyncularClientConfig,
+    private readonly pullOptions: SyncularPullOptions | undefined,
+    private readonly blobLimits: SyncularBlobLimits | undefined
   ) {}
 
-  setSubscriptions(subscriptions: readonly SyncularV2SubscriptionSpec[]): void {
+  setSubscriptions(subscriptions: readonly SyncularSubscriptionSpec[]): void {
     this.#subscriptions = [...subscriptions];
     this.#bootstrapById.clear();
     this.raw.setSubscriptionsJson(JSON.stringify(subscriptions));
@@ -277,7 +274,7 @@ export class SyncularV2RustClient {
       level: 'info',
       source: 'client',
       code: 'client.subscriptions.updated',
-      message: 'Syncular v2 subscriptions updated',
+      message: 'Syncular subscriptions updated',
       details: { subscriptionCount: subscriptions.length },
     });
   }
@@ -298,15 +295,15 @@ export class SyncularV2RustClient {
     return count;
   }
 
-  setAuthHeaders(headers: SyncularV2AuthHeaders): void {
+  setAuthHeaders(headers: SyncularAuthHeaders): void {
     this.#authHeaders = { ...headers };
     this.raw.setAuthHeadersJson(JSON.stringify(this.#authHeaders));
   }
 
   async issueAuthLease(
     request: SyncAuthLeaseIssueRequest
-  ): Promise<SyncularV2AuthLeaseRecord> {
-    const lease = await issueSyncularV2AuthLease({
+  ): Promise<SyncularAuthLeaseRecord> {
+    const lease = await issueSyncularAuthLease({
       baseUrl: this.config.baseUrl,
       headers: this.#authHeaders,
       request,
@@ -317,7 +314,7 @@ export class SyncularV2RustClient {
       level: 'info',
       source: 'auth',
       code: 'auth_lease.issued',
-      message: 'Syncular v2 auth lease issued and stored',
+      message: 'Syncular auth lease issued and stored',
       details: {
         leaseId: lease.leaseId,
         expiresAtMs: lease.expiresAtMs,
@@ -327,12 +324,12 @@ export class SyncularV2RustClient {
     return lease;
   }
 
-  async upsertAuthLease(lease: SyncularV2AuthLeaseRecord): Promise<void> {
+  async upsertAuthLease(lease: SyncularAuthLeaseRecord): Promise<void> {
     this.raw.upsertAuthLeaseJson(JSON.stringify(lease));
   }
 
-  async authLease(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null> {
-    return parseJson<SyncularV2AuthLeaseRecord | null>(
+  async authLease(leaseId: string): Promise<SyncularAuthLeaseRecord | null> {
+    return parseJson<SyncularAuthLeaseRecord | null>(
       this.raw.authLeaseJson(leaseId)
     );
   }
@@ -340,13 +337,13 @@ export class SyncularV2RustClient {
   async activeAuthLeases(
     actorId?: string | null,
     nowMs = Date.now()
-  ): Promise<SyncularV2AuthLeaseRecord[]> {
-    return parseJson<SyncularV2AuthLeaseRecord[]>(
+  ): Promise<SyncularAuthLeaseRecord[]> {
+    return parseJson<SyncularAuthLeaseRecord[]>(
       this.raw.activeAuthLeasesJson(actorId ?? null, BigInt(Math.trunc(nowMs)))
     );
   }
 
-  setFieldEncryption(config: SyncularV2FieldEncryptionConfig | null): void {
+  setFieldEncryption(config: SyncularFieldEncryptionConfig | null): void {
     this.raw.setFieldEncryptionJson(
       config == null
         ? 'null'
@@ -354,7 +351,7 @@ export class SyncularV2RustClient {
     );
   }
 
-  setEncryptedCrdt(config: SyncularV2EncryptedCrdtConfig | null): void {
+  setEncryptedCrdt(config: SyncularEncryptedCrdtConfig | null): void {
     this.raw.setEncryptedCrdtJson(
       config == null
         ? 'null'
@@ -362,7 +359,7 @@ export class SyncularV2RustClient {
     );
   }
 
-  setBlobEncryption(config: SyncularV2BlobEncryptionConfig | null): void {
+  setBlobEncryption(config: SyncularBlobEncryptionConfig | null): void {
     this.raw.setBlobEncryptionJson(
       config == null
         ? 'null'
@@ -429,8 +426,8 @@ export class SyncularV2RustClient {
   }
 
   async syncPull(
-    options: SyncularV2SyncRequestOptions = {}
-  ): Promise<SyncularV2SyncResult> {
+    options: SyncularSyncRequestOptions = {}
+  ): Promise<SyncularSyncResult> {
     const result = await this.#runTracedSync(
       'syncPull',
       options.syncAttempt,
@@ -442,9 +439,7 @@ export class SyncularV2RustClient {
     return result;
   }
 
-  async applyRealtimeSyncPack(
-    bytes: Uint8Array
-  ): Promise<SyncularV2SyncResult> {
+  async applyRealtimeSyncPack(bytes: Uint8Array): Promise<SyncularSyncResult> {
     const result = this.#decorateSyncResult(
       parseSyncResult(await this.raw.applyRealtimeSyncPackBytes(bytes))
     );
@@ -454,8 +449,8 @@ export class SyncularV2RustClient {
   }
 
   async syncPush(
-    options: SyncularV2SyncRequestOptions = {}
-  ): Promise<SyncularV2SyncResult> {
+    options: SyncularSyncRequestOptions = {}
+  ): Promise<SyncularSyncResult> {
     try {
       const result = await this.#runTracedSync(
         'syncPush',
@@ -475,8 +470,8 @@ export class SyncularV2RustClient {
   }
 
   async syncOnce(
-    options: SyncularV2SyncRequestOptions = {}
-  ): Promise<SyncularV2SyncResult> {
+    options: SyncularSyncRequestOptions = {}
+  ): Promise<SyncularSyncResult> {
     try {
       const result = await this.#runTracedSync(
         'syncOnce',
@@ -496,12 +491,12 @@ export class SyncularV2RustClient {
   }
 
   resumeFromBackground(
-    options: SyncularV2SyncRequestOptions = {}
-  ): Promise<SyncularV2SyncResult> {
+    options: SyncularSyncRequestOptions = {}
+  ): Promise<SyncularSyncResult> {
     return this.syncOnce(options);
   }
 
-  transportStats(): SyncularV2TransportStats {
+  transportStats(): SyncularTransportStats {
     return parseJson(this.raw.transportStatsJson());
   }
 
@@ -509,7 +504,7 @@ export class SyncularV2RustClient {
     this.raw.resetTransportStats();
   }
 
-  async conflictSummaries(): Promise<SyncularV2ConflictSummary[]> {
+  async conflictSummaries(): Promise<SyncularConflictSummary[]> {
     return parseConflictSummaries(await this.raw.conflictSummariesJson());
   }
 
@@ -519,7 +514,7 @@ export class SyncularV2RustClient {
 
   resolveConflict(
     id: string,
-    resolution: SyncularV2ConflictResolution
+    resolution: SyncularConflictResolution
   ): Promise<void> {
     return this.raw.resolveConflict(id, resolution);
   }
@@ -527,26 +522,26 @@ export class SyncularV2RustClient {
   executeSql<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params: readonly unknown[] = []
-  ): SyncularV2SqlResult<Row> {
-    assertSyncularV2ReadonlySql(sql);
-    return this.raw.executeSqlValue(sql, params) as SyncularV2SqlResult<Row>;
+  ): SyncularSqlResult<Row> {
+    assertSyncularReadonlySql(sql);
+    return this.raw.executeSqlValue(sql, params) as SyncularSqlResult<Row>;
   }
 
   executeUnsafeSql<
     Row extends Record<string, unknown> = Record<string, unknown>,
-  >(sql: string, params: readonly unknown[] = []): SyncularV2SqlResult<Row> {
+  >(sql: string, params: readonly unknown[] = []): SyncularSqlResult<Row> {
     return this.raw.executeUnsafeSqlValue(
       sql,
       params
-    ) as SyncularV2SqlResult<Row>;
+    ) as SyncularSqlResult<Row>;
   }
 
   subscribeQuery<Row extends Record<string, unknown> = Record<string, unknown>>(
     sql: string,
     params: readonly unknown[],
     tables: readonly string[],
-    hints: readonly SyncularV2LiveQueryDependencyHint[] = []
-  ): SyncularV2LiveQuerySnapshot<Row> {
+    hints: readonly SyncularLiveQueryDependencyHint[] = []
+  ): SyncularLiveQuerySnapshot<Row> {
     return parseJson(
       this.raw.subscribeQueryJson(
         sql,
@@ -563,15 +558,15 @@ export class SyncularV2RustClient {
 
   drainLiveQueryEvents<
     Row extends Record<string, unknown> = Record<string, unknown>,
-  >(): Array<SyncularV2LiveQueryEvent<Row>> {
+  >(): Array<SyncularLiveQueryEvent<Row>> {
     return parseJson(this.raw.drainLiveQueryEventsJson());
   }
 
-  liveQueryDiagnostics(): SyncularV2LiveQueryDiagnostics {
+  liveQueryDiagnostics(): SyncularLiveQueryDiagnostics {
     return parseJson(this.raw.liveQueryDiagnosticsJson());
   }
 
-  addRowsChangedListener(listener: SyncularV2RowsChangedSink): () => void {
+  addRowsChangedListener(listener: SyncularRowsChangedSink): () => void {
     this.#rowsChangedListeners.add(listener);
     return () => {
       this.#rowsChangedListeners.delete(listener);
@@ -586,9 +581,9 @@ export class SyncularV2RustClient {
 
   async storeBlob(
     data: Uint8Array,
-    options: SyncularV2BlobStoreOptions = {}
+    options: SyncularBlobStoreOptions = {}
   ): Promise<BlobRef> {
-    assertSyncularV2BlobPayloadLimit({
+    assertSyncularBlobPayloadLimit({
       operation: 'store',
       size: data.byteLength,
       limits: this.blobLimits,
@@ -601,7 +596,7 @@ export class SyncularV2RustClient {
   }
 
   async retrieveBlob(ref: BlobRef): Promise<Uint8Array> {
-    assertSyncularV2BlobPayloadLimit({
+    assertSyncularBlobPayloadLimit({
       operation: 'retrieve',
       size: ref.size,
       limits: this.blobLimits,
@@ -690,11 +685,11 @@ export class SyncularV2RustClient {
     return result;
   }
 
-  blobUploadQueueStats(): SyncularV2BlobUploadQueueStats {
+  blobUploadQueueStats(): SyncularBlobUploadQueueStats {
     return parseJson(this.raw.blobUploadQueueStatsJson());
   }
 
-  blobCacheStats(): SyncularV2BlobCacheStats {
+  blobCacheStats(): SyncularBlobCacheStats {
     return parseJson(this.raw.blobCacheStatsJson());
   }
 
@@ -727,34 +722,34 @@ export class SyncularV2RustClient {
   }
 
   compactStorage(
-    options: SyncularV2StorageCompactionOptions = {}
-  ): SyncularV2StorageCompactionReport {
+    options: SyncularStorageCompactionOptions = {}
+  ): SyncularStorageCompactionReport {
     return parseJson(this.raw.compactStorageJson(JSON.stringify(options)));
   }
 
-  generatedSchemaState(): SyncularV2SchemaState {
+  generatedSchemaState(): SyncularSchemaState {
     return parseJson(this.raw.generatedSchemaStateJson());
   }
 
-  async localHealthCheck(): Promise<SyncularV2LocalHealthReport> {
+  async localHealthCheck(): Promise<SyncularLocalHealthReport> {
     return parseJson(await this.raw.localHealthCheckJson());
   }
 
-  async exportLocalSupportBundle(): Promise<SyncularV2LocalSupportBundle> {
+  async exportLocalSupportBundle(): Promise<SyncularLocalSupportBundle> {
     return parseJson(await this.raw.exportLocalSupportBundleJson());
   }
 
   async importLocalSupportBundle(
-    bundle: SyncularV2LocalSupportBundle | string
-  ): Promise<SyncularV2LocalSupportBundleImportReport> {
+    bundle: SyncularLocalSupportBundle | string
+  ): Promise<SyncularLocalSupportBundleImportReport> {
     const bundleJson =
       typeof bundle === 'string' ? bundle : JSON.stringify(bundle);
     return parseJson(await this.raw.importLocalSupportBundleJson(bundleJson));
   }
 
   async repairLocalHealth(
-    request: SyncularV2LocalHealthRepairRequest
-  ): Promise<SyncularV2LocalHealthRepairReport> {
+    request: SyncularLocalHealthRepairRequest
+  ): Promise<SyncularLocalHealthRepairReport> {
     const normalized = {
       action: request.action,
       subscriptionIds: [...(request.subscriptionIds ?? [])],
@@ -766,13 +761,13 @@ export class SyncularV2RustClient {
   }
 
   async resetLocalSyncState(
-    request: SyncularV2LocalSyncResetRequest = {}
-  ): Promise<SyncularV2LocalSyncResetReport> {
+    request: SyncularLocalSyncResetRequest = {}
+  ): Promise<SyncularLocalSyncResetReport> {
     const normalized = {
       subscriptionIds: [...(request.subscriptionIds ?? [])],
       clearSyncedRows: request.clearSyncedRows === true,
     };
-    const result = parseJson<SyncularV2LocalSyncResetReport>(
+    const result = parseJson<SyncularLocalSyncResetReport>(
       await this.raw.resetLocalSyncStateJson(JSON.stringify(normalized))
     );
     for (const id of normalized.subscriptionIds.length > 0
@@ -805,15 +800,15 @@ export class SyncularV2RustClient {
   }
 
   async openCrdtField(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtFieldDescriptor> {
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtFieldDescriptor> {
     return parseJson(this.raw.openCrdtFieldJson(JSON.stringify(request)));
   }
 
   async applyCrdtFieldText(
-    request: SyncularV2CrdtFieldTextRequest
-  ): Promise<SyncularV2CrdtFieldWriteReceipt> {
-    const receipt = parseJson<SyncularV2CrdtFieldWriteReceipt>(
+    request: SyncularCrdtFieldTextRequest
+  ): Promise<SyncularCrdtFieldWriteReceipt> {
+    const receipt = parseJson<SyncularCrdtFieldWriteReceipt>(
       this.raw.applyCrdtFieldTextJson(JSON.stringify(request))
     );
     this.#drainAndEmitRowsChanged();
@@ -821,9 +816,9 @@ export class SyncularV2RustClient {
   }
 
   async applyCrdtFieldYjsUpdate(
-    request: SyncularV2CrdtFieldYjsUpdateRequest
-  ): Promise<SyncularV2CrdtFieldWriteReceipt> {
-    const receipt = parseJson<SyncularV2CrdtFieldWriteReceipt>(
+    request: SyncularCrdtFieldYjsUpdateRequest
+  ): Promise<SyncularCrdtFieldWriteReceipt> {
+    const receipt = parseJson<SyncularCrdtFieldWriteReceipt>(
       this.raw.applyCrdtFieldYjsUpdateJson(JSON.stringify(request))
     );
     this.#drainAndEmitRowsChanged();
@@ -831,29 +826,29 @@ export class SyncularV2RustClient {
   }
 
   async materializeCrdtField(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtFieldMaterialization> {
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtFieldMaterialization> {
     return parseJson(
       this.raw.materializeCrdtFieldJson(JSON.stringify(request))
     );
   }
 
   async crdtDocumentSnapshot(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtDocumentSnapshot> {
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtDocumentSnapshot> {
     return parseJson(
       this.raw.crdtDocumentSnapshotJson(JSON.stringify(request))
     );
   }
 
   async crdtUpdateLog(
-    request: SyncularV2CrdtFieldRequest & { limit?: number }
-  ): Promise<SyncularV2CrdtUpdateLogEntry[]> {
+    request: SyncularCrdtFieldRequest & { limit?: number }
+  ): Promise<SyncularCrdtUpdateLogEntry[]> {
     return parseJson(this.raw.crdtUpdateLogJson(JSON.stringify(request)));
   }
 
   async snapshotCrdtFieldStateVector(
-    request: SyncularV2CrdtFieldRequest
+    request: SyncularCrdtFieldRequest
   ): Promise<{ stateVectorBase64: string }> {
     return parseJson(
       this.raw.snapshotCrdtFieldStateVectorJson(JSON.stringify(request))
@@ -861,9 +856,9 @@ export class SyncularV2RustClient {
   }
 
   async compactCrdtField(
-    request: SyncularV2CrdtFieldCompactionRequest
-  ): Promise<SyncularV2CrdtFieldCompactionReceipt> {
-    const receipt = parseJson<SyncularV2CrdtFieldCompactionReceipt>(
+    request: SyncularCrdtFieldCompactionRequest
+  ): Promise<SyncularCrdtFieldCompactionReceipt> {
+    const receipt = parseJson<SyncularCrdtFieldCompactionReceipt>(
       this.raw.compactCrdtFieldJson(JSON.stringify(request))
     );
     this.#drainAndEmitRowsChanged();
@@ -871,7 +866,7 @@ export class SyncularV2RustClient {
   }
 
   encryptionHelper<T = unknown>(
-    method: SyncularV2EncryptionHelperMethod,
+    method: SyncularEncryptionHelperMethod,
     args: unknown = {}
   ): T {
     return parseJson(
@@ -879,11 +874,11 @@ export class SyncularV2RustClient {
     );
   }
 
-  async runtimeInfo(): Promise<SyncularV2RuntimeInfo> {
+  async runtimeInfo(): Promise<SyncularRuntimeInfo> {
     return this.runtime;
   }
 
-  connectionState(): SyncularV2ConnectionState {
+  connectionState(): SyncularConnectionState {
     const lastDiagnostic =
       this.#recentDiagnostics[this.#recentDiagnostics.length - 1];
     return {
@@ -894,7 +889,7 @@ export class SyncularV2RustClient {
     };
   }
 
-  lifecycleState(): SyncularV2LifecycleState {
+  lifecycleState(): SyncularLifecycleState {
     const bootstrap = buildBootstrapStatus(
       this.#subscriptions,
       this.#bootstrapById,
@@ -923,7 +918,7 @@ export class SyncularV2RustClient {
     };
   }
 
-  async diagnosticSnapshot(): Promise<SyncularV2DiagnosticSnapshot> {
+  async diagnosticSnapshot(): Promise<SyncularDiagnosticSnapshot> {
     const bootstrap = buildBootstrapStatus(
       this.#subscriptions,
       this.#bootstrapById,
@@ -933,7 +928,7 @@ export class SyncularV2RustClient {
       generatedAt: Date.now(),
       runtime: this.runtime,
       connection: this.connectionState(),
-      subscriptions: summarizeSyncularV2DiagnosticSubscriptions(
+      subscriptions: summarizeSyncularDiagnosticSubscriptions(
         this.#subscriptions,
         bootstrap
       ),
@@ -944,14 +939,14 @@ export class SyncularV2RustClient {
     };
   }
 
-  addDiagnosticListener(listener: SyncularV2DiagnosticSink): () => void {
+  addDiagnosticListener(listener: SyncularDiagnosticSink): () => void {
     this.#diagnosticListeners.add(listener);
     return () => {
       this.#diagnosticListeners.delete(listener);
     };
   }
 
-  #decorateSyncResult(result: SyncularV2SyncResult): SyncularV2SyncResult {
+  #decorateSyncResult(result: SyncularSyncResult): SyncularSyncResult {
     for (const subscription of result.subscriptions) {
       this.#bootstrapById.set(subscription.id, {
         id: subscription.id,
@@ -977,7 +972,7 @@ export class SyncularV2RustClient {
 
   #emitRowsChanged(
     source: 'localWrite' | 'remotePull',
-    result: SyncularV2SyncResult
+    result: SyncularSyncResult
   ): void {
     if (
       this.#rowsChangedListeners.size === 0 ||
@@ -999,29 +994,29 @@ export class SyncularV2RustClient {
     }
   }
 
-  #captureSyncTimings(result: SyncularV2SyncResult): void {
-    appendSyncularV2SyncTimings(this.#recentSyncTimings, result.timings);
+  #captureSyncTimings(result: SyncularSyncResult): void {
+    appendSyncularSyncTimings(this.#recentSyncTimings, result.timings);
   }
 
   async #runTracedSync<T>(
     requestType: 'syncPull' | 'syncPush' | 'syncOnce',
-    providedAttempt: SyncularV2SyncAttempt | undefined,
+    providedAttempt: SyncularSyncAttempt | undefined,
     run: () => Promise<T>
   ): Promise<T> {
-    const syncAttempt = providedAttempt ?? createSyncularV2SyncAttempt();
+    const syncAttempt = providedAttempt ?? createSyncularSyncAttempt();
     const startedAt = Date.now();
     this.#emitDiagnostic({
       at: startedAt,
       level: 'debug',
       source: 'sync',
       code: `sync.${requestType}.started`,
-      message: `Syncular v2 ${requestType} started`,
-      ...syncularV2DiagnosticAttemptFields(syncAttempt),
+      message: `Syncular ${requestType} started`,
+      ...syncularDiagnosticAttemptFields(syncAttempt),
     });
     this.raw.setAuthHeadersJson(
       JSON.stringify({
         ...this.#authHeaders,
-        ...syncularV2SyncAttemptHeaders(syncAttempt),
+        ...syncularSyncAttemptHeaders(syncAttempt),
       })
     );
     try {
@@ -1031,27 +1026,25 @@ export class SyncularV2RustClient {
         level: 'info',
         source: 'sync',
         code: `sync.${requestType}.completed`,
-        message: `Syncular v2 ${requestType} completed`,
-        ...syncularV2DiagnosticAttemptFields(syncAttempt),
+        message: `Syncular ${requestType} completed`,
+        ...syncularDiagnosticAttemptFields(syncAttempt),
         details: { durationMs: Date.now() - startedAt },
       });
-      if (isSyncularV2SyncResult(result)) {
+      if (isSyncularSyncResult(result)) {
         this.#emitScopeRevokedDiagnostic(requestType, result, syncAttempt);
       }
       return result;
     } catch (error) {
-      const classifiedError = toSyncularV2ClientError(error);
+      const classifiedError = toSyncularClientError(error);
       const classified =
-        classifiedError instanceof SyncularV2ClientError
-          ? classifiedError
-          : null;
+        classifiedError instanceof SyncularClientError ? classifiedError : null;
       this.#emitDiagnostic({
         at: Date.now(),
         level: 'warn',
         source: 'sync',
         code: classified?.code ?? `sync.${requestType}.failed`,
-        message: `Syncular v2 ${requestType} failed`,
-        ...syncularV2DiagnosticAttemptFields(syncAttempt),
+        message: `Syncular ${requestType} failed`,
+        ...syncularDiagnosticAttemptFields(syncAttempt),
         details: {
           durationMs: Date.now() - startedAt,
           error:
@@ -1075,8 +1068,8 @@ export class SyncularV2RustClient {
     }
   }
 
-  #emitDiagnostic(event: SyncularV2DiagnosticEvent): void {
-    appendSyncularV2DiagnosticEvent(this.#recentDiagnostics, event);
+  #emitDiagnostic(event: SyncularDiagnosticEvent): void {
+    appendSyncularDiagnosticEvent(this.#recentDiagnostics, event);
     if (this.#diagnosticListeners.size === 0) return;
     for (const listener of this.#diagnosticListeners) {
       try {
@@ -1092,7 +1085,7 @@ export class SyncularV2RustClient {
   }
 
   #drainAndEmitRowsChanged(): void {
-    let events: SyncularV2RowsChangedEvent[];
+    let events: SyncularRowsChangedEvent[];
     try {
       events = parseJson(this.raw.drainRowsChangedEventsJson());
     } catch {
@@ -1120,8 +1113,8 @@ export class SyncularV2RustClient {
 
   #emitScopeRevokedDiagnostic(
     requestType: 'syncPull' | 'syncPush' | 'syncOnce',
-    result: SyncularV2SyncResult,
-    syncAttempt: SyncularV2SyncAttempt
+    result: SyncularSyncResult,
+    syncAttempt: SyncularSyncAttempt
   ): void {
     const revokedSubscriptionIds = result.subscriptions
       .filter((subscription) => subscription.status === 'revoked')
@@ -1133,8 +1126,8 @@ export class SyncularV2RustClient {
       level: 'warn',
       source: 'sync',
       code: 'sync.scope_revoked',
-      message: 'Syncular v2 subscription scope revoked',
-      ...syncularV2DiagnosticAttemptFields(syncAttempt),
+      message: 'Syncular subscription scope revoked',
+      ...syncularDiagnosticAttemptFields(syncAttempt),
       details: {
         requestType,
         revokedSubscriptionIds,
@@ -1144,7 +1137,7 @@ export class SyncularV2RustClient {
   }
 }
 
-function isSyncularV2SyncResult(value: unknown): value is SyncularV2SyncResult {
+function isSyncularSyncResult(value: unknown): value is SyncularSyncResult {
   return (
     value !== null &&
     typeof value === 'object' &&
@@ -1152,7 +1145,7 @@ function isSyncularV2SyncResult(value: unknown): value is SyncularV2SyncResult {
   );
 }
 
-function parseSyncResult(value: string): SyncularV2SyncResult {
+function parseSyncResult(value: string): SyncularSyncResult {
   const raw = parseJson<RawSyncResult>(value);
   return {
     changedTables: raw.changed_tables ?? [],
@@ -1206,7 +1199,7 @@ function parseSyncResult(value: string): SyncularV2SyncResult {
 
 function parseBootstrapState(
   state: RawBootstrapState | null | undefined
-): SyncularV2BootstrapStatus['subscriptions'][number]['bootstrapState'] {
+): SyncularBootstrapStatus['subscriptions'][number]['bootstrapState'] {
   if (!state) return null;
   return {
     asOfCommitSeq: state.asOfCommitSeq ?? 0,
@@ -1218,7 +1211,7 @@ function parseBootstrapState(
 
 function parseBootstrapStatus(
   raw: RawBootstrapStatus | null | undefined
-): SyncularV2BootstrapStatus {
+): SyncularBootstrapStatus {
   return {
     channelPhase: raw?.channel_phase ?? 'idle',
     progressPercent: raw?.progress_percent ?? 100,
@@ -1254,10 +1247,10 @@ function parseBootstrapStatus(
 }
 
 function buildBootstrapStatus(
-  configuredSubscriptions: readonly SyncularV2SubscriptionSpec[],
-  cachedById: ReadonlyMap<string, SyncularV2BootstrapSubscriptionStatusEntry>,
-  pullOptions: SyncularV2PullOptions | undefined
-): SyncularV2BootstrapStatus {
+  configuredSubscriptions: readonly SyncularSubscriptionSpec[],
+  cachedById: ReadonlyMap<string, SyncularBootstrapSubscriptionStatusEntry>,
+  pullOptions: SyncularPullOptions | undefined
+): SyncularBootstrapStatus {
   const criticalPhase = normalizeBootstrapPhase(
     pullOptions?.criticalBootstrapPhase
   );
@@ -1392,7 +1385,7 @@ function normalizeBootstrapPhase(value: number | null | undefined): number {
   return Number.isFinite(value) ? Math.max(0, Math.trunc(value!)) : 0;
 }
 
-function parseConflictSummaries(value: string): SyncularV2ConflictSummary[] {
+function parseConflictSummaries(value: string): SyncularConflictSummary[] {
   return parseJson<RawConflictSummary[]>(value).map((conflict) => ({
     id: conflict.id,
     clientCommitId: conflict.client_commit_id,
@@ -1419,8 +1412,8 @@ function stringifyParams(params: readonly unknown[]): string {
 }
 
 function normalizeFieldEncryptionConfig(
-  config: SyncularV2FieldEncryptionConfig
-): Omit<SyncularV2FieldEncryptionConfig, 'keys'> & {
+  config: SyncularFieldEncryptionConfig
+): Omit<SyncularFieldEncryptionConfig, 'keys'> & {
   keys: Record<string, string>;
 } {
   const keys: Record<string, string> = {};
@@ -1431,8 +1424,8 @@ function normalizeFieldEncryptionConfig(
 }
 
 function normalizeEncryptedCrdtConfig(
-  config: SyncularV2EncryptedCrdtConfig
-): Omit<SyncularV2EncryptedCrdtConfig, 'keys'> & {
+  config: SyncularEncryptedCrdtConfig
+): Omit<SyncularEncryptedCrdtConfig, 'keys'> & {
   keys: Record<string, string>;
 } {
   const keys: Record<string, string> = {};
@@ -1443,8 +1436,8 @@ function normalizeEncryptedCrdtConfig(
 }
 
 function normalizeBlobEncryptionConfig(
-  config: SyncularV2BlobEncryptionConfig
-): Omit<SyncularV2BlobEncryptionConfig, 'keys'> & {
+  config: SyncularBlobEncryptionConfig
+): Omit<SyncularBlobEncryptionConfig, 'keys'> & {
   keys: Record<string, string>;
 } {
   const keys: Record<string, string> = {};

@@ -105,7 +105,7 @@ discoverability, conflict, blob, or subscription ergonomics gaps.
   field helpers remain field-specific.
 - Browser React apps now use the Rust-backed ergonomic factory
   `createSyncularReact()`. The old lower-level React surface
-  (`createSyncularV2React`, `useLiveQuery`, callback-style `useMutation`, and
+  (`createSyncularReact`, `useLiveQuery`, callback-style `useMutation`, and
   direct client hooks) is removed from public docs and tests. The retained hooks
   cover typed Kysely reads, generated/table mutations, connection state, outbox
   and conflict counters, presence, and blobs.

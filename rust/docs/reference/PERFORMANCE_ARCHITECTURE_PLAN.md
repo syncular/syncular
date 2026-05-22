@@ -1312,28 +1312,23 @@ client. Overflow should close or resync the session deliberately.
 
 ### Phase 2: Binary Snapshot Design
 
-- Status: mostly implemented for the generic server/Rust transport path.
-- Added a small SRF1 decoder allocation reduction in the current JSON row-frame path while the binary format is being designed.
-- Added non-breaking snapshot encoding negotiation:
-  - pull requests can advertise `snapshotEncodings`
-  - chunk refs can represent `json-row-frame-v1` or `binary-table-v1`
-  - the server emits JSON row-frame chunks by default and binary chunks when
-    requested by Rust-capable clients
-  - generated HTTP OpenAPI/transport types now expose the widened encoding contract
+- Status: implemented for the generic server/Rust transport path.
+- The temporary JSON row-frame/SRF1 optimization work has been superseded by
+  the binary-only product path.
+- Removed request-time snapshot encoding negotiation:
+  - pull requests no longer advertise snapshot encodings
+  - chunk refs carry the current `binary-table-v1` encoding
+  - the server emits binary snapshot chunks only
+  - generated HTTP/OpenAPI/transport types expose the narrowed binary contract
 - Documented the proposed `binary-table-v1` wire format in `rust/docs/reference/BINARY_SNAPSHOT_CHUNK_FORMAT.md`.
 - Added tested core helpers for encoding/decoding `binary-table-v1` payloads. These lock down the table/column/value byte layout for the server encoder and Rust decoder work.
 - Added protocol negotiation fields.
 - Added server-side generic binary table inference/encoding for snapshot rows.
 - Added Rust native and browser transport decoding for `binary-table-v1`.
-- Rust clients now request only `binary-table-v1` snapshot chunks. We removed
-  the `json-row-frame-v1` fallback advertisement from the Rust runtime/browser
-  clients so protocol failures are explicit instead of silently taking the old
-  path.
-- Fixed the Hono combined sync route so browser worker pulls pass
-  `snapshotEncodings` through to the core server pull path instead of silently
-  falling back to JSON chunks.
-- Added browser transport counters for JSON chunk count, binary chunk count,
-  and decoded chunk row count.
+- Rust clients now accept only `binary-table-v1` snapshot chunks, with no
+  JSON row-frame decode or request negotiation branch.
+- Added browser transport counters for binary chunk count and decoded chunk row
+  count.
 - Added an explicit `snapshotBinaryColumns` server handler contract. Generated
   handlers can now provide stable table/column/type metadata so binary snapshot
   chunks skip per-chunk column/type inference and encode in generated column
@@ -2027,7 +2022,7 @@ client. Overflow should close or resync the session deliberately.
 ### Phase 4: Worker Default
 
 - Status: mostly implemented for browser benchmark/runtime paths.
-- Public browser database creation already uses the Syncular v2 worker client.
+- Public browser database creation already uses the Syncular worker client.
 - The browser local-mutation benchmark now treats the OPFS worker runtime as
   the default Rust browser metric. The old direct IndexedDB Rust-owned helper is
   skipped by default and can be included explicitly with

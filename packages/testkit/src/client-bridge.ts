@@ -1,25 +1,25 @@
 import { Database } from 'bun:sqlite';
 import type {
+  SyncularAuthLeaseRecord,
   SyncularBridge,
   SyncularBridgeMutationBatch,
   SyncularBridgeQueryRequest,
   SyncularBridgeQueryResult,
   SyncularBridgeStatus,
-  SyncularV2AuthLeaseRecord,
-  SyncularV2ClientEventMap,
-  SyncularV2ClientEventSink,
-  SyncularV2ClientEventType,
-  SyncularV2ConflictResolution,
-  SyncularV2ConflictStats,
-  SyncularV2ConflictSummary,
-  SyncularV2ConnectionState,
-  SyncularV2DiagnosticSnapshot,
-  SyncularV2LifecycleState,
-  SyncularV2PresenceChangeEvent,
-  SyncularV2PresenceEntry,
-  SyncularV2PresenceSink,
-  SyncularV2SubscriptionSpec,
-  SyncularV2SyncResult,
+  SyncularClientEventMap,
+  SyncularClientEventSink,
+  SyncularClientEventType,
+  SyncularConflictResolution,
+  SyncularConflictStats,
+  SyncularConflictSummary,
+  SyncularConnectionState,
+  SyncularDiagnosticSnapshot,
+  SyncularLifecycleState,
+  SyncularPresenceChangeEvent,
+  SyncularPresenceEntry,
+  SyncularPresenceSink,
+  SyncularSubscriptionSpec,
+  SyncularSyncResult,
 } from '@syncular/client';
 import type { SyncAuthLeaseIssueRequest, SyncOperation } from '@syncular/core';
 import type { AsyncDisposableResource } from './disposable';
@@ -54,42 +54,42 @@ export interface ClientBridgeNativeModule {
   applyLeasedMutationsCommit?(
     batch: SyncularBridgeMutationBatch
   ): Promise<string> | string;
-  sync?(): Promise<SyncularV2SyncResult>;
-  resumeFromBackground?(): Promise<SyncularV2SyncResult>;
+  sync?(): Promise<SyncularSyncResult>;
+  resumeFromBackground?(): Promise<SyncularSyncResult>;
   start?(): Promise<void>;
   stop?(): Promise<void>;
   setSubscriptions?(
-    subscriptions: readonly SyncularV2SubscriptionSpec[]
+    subscriptions: readonly SyncularSubscriptionSpec[]
   ): Promise<void>;
   getStatus?(): SyncularBridgeStatus;
   issueAuthLease?(
     request: SyncAuthLeaseIssueRequest
-  ): Promise<SyncularV2AuthLeaseRecord>;
-  upsertAuthLease?(lease: SyncularV2AuthLeaseRecord): Promise<void>;
-  authLease?(leaseId: string): Promise<SyncularV2AuthLeaseRecord | null>;
+  ): Promise<SyncularAuthLeaseRecord>;
+  upsertAuthLease?(lease: SyncularAuthLeaseRecord): Promise<void>;
+  authLease?(leaseId: string): Promise<SyncularAuthLeaseRecord | null>;
   activeAuthLeases?(
     actorId?: string | null,
     nowMs?: number
-  ): Promise<SyncularV2AuthLeaseRecord[]>;
-  diagnosticSnapshot?(): Promise<SyncularV2DiagnosticSnapshot>;
-  addListener?<T extends SyncularV2ClientEventType>(
+  ): Promise<SyncularAuthLeaseRecord[]>;
+  diagnosticSnapshot?(): Promise<SyncularDiagnosticSnapshot>;
+  addListener?<T extends SyncularClientEventType>(
     event: T,
-    listener: SyncularV2ClientEventSink<T>
+    listener: SyncularClientEventSink<T>
   ): ClientBridgeNativeEventSubscription;
   getPresence?<TMetadata = Record<string, unknown>>(
     scopeKey: string
-  ): SyncularV2PresenceEntry<TMetadata>[];
+  ): SyncularPresenceEntry<TMetadata>[];
   joinPresence?(scopeKey: string, metadata?: Record<string, unknown>): void;
   leavePresence?(scopeKey: string): void;
   updatePresenceMetadata?(
     scopeKey: string,
     metadata: Record<string, unknown>
   ): void;
-  conflictSummaries?(): Promise<SyncularV2ConflictSummary[]>;
+  conflictSummaries?(): Promise<SyncularConflictSummary[]>;
   retryConflictKeepLocal?(id: string): Promise<string>;
   resolveConflict?(
     id: string,
-    resolution: SyncularV2ConflictResolution
+    resolution: SyncularConflictResolution
   ): Promise<void>;
 }
 
@@ -122,22 +122,22 @@ export interface ClientBridgeHarness {
   leasedBatches(): SyncularBridgeMutationBatch[];
   operations(): SyncOperation[];
   syncCount(): number;
-  listenerCount(event: SyncularV2ClientEventType): number;
+  listenerCount(event: SyncularClientEventType): number;
   rows(table: string): Record<string, unknown>[];
   setRows(table: string, rows: readonly Record<string, unknown>[]): void;
   setStatus(status: SyncularBridgeStatus): void;
-  setConflicts(conflicts: readonly SyncularV2ConflictSummary[]): void;
-  authLease(leaseId: string): SyncularV2AuthLeaseRecord | null;
-  authLeases(): SyncularV2AuthLeaseRecord[];
-  diagnosticSnapshot(): SyncularV2DiagnosticSnapshot;
-  emit<T extends SyncularV2ClientEventType>(
+  setConflicts(conflicts: readonly SyncularConflictSummary[]): void;
+  authLease(leaseId: string): SyncularAuthLeaseRecord | null;
+  authLeases(): SyncularAuthLeaseRecord[];
+  diagnosticSnapshot(): SyncularDiagnosticSnapshot;
+  emit<T extends SyncularClientEventType>(
     event: T,
-    payload: SyncularV2ClientEventMap[T]
+    payload: SyncularClientEventMap[T]
   ): void;
-  emitRowsChanged(event: SyncularV2ClientEventMap['rowsChanged']): void;
+  emitRowsChanged(event: SyncularClientEventMap['rowsChanged']): void;
   presence<TMetadata = Record<string, unknown>>(
     scopeKey: string
-  ): SyncularV2PresenceEntry<TMetadata>[];
+  ): SyncularPresenceEntry<TMetadata>[];
   close(): void;
 }
 
@@ -158,18 +158,18 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
   readonly #leasedBatches: SyncularBridgeMutationBatch[] = [];
   readonly #invocations: ClientBridgeInvocation[] = [];
   readonly #listeners = new Map<
-    SyncularV2ClientEventType,
-    Set<SyncularV2ClientEventSink<SyncularV2ClientEventType>>
+    SyncularClientEventType,
+    Set<SyncularClientEventSink<SyncularClientEventType>>
   >();
   readonly #tauriListeners = new Map<
     string,
     Set<(event: { payload: unknown }) => void>
   >();
-  readonly #presenceListeners = new Set<SyncularV2PresenceSink>();
-  readonly #presence = new Map<string, SyncularV2PresenceEntry[]>();
-  #conflicts: SyncularV2ConflictSummary[] = [];
+  readonly #presenceListeners = new Set<SyncularPresenceSink>();
+  readonly #presence = new Map<string, SyncularPresenceEntry[]>();
+  #conflicts: SyncularConflictSummary[] = [];
   #status: SyncularBridgeStatus = {};
-  #authLeases = new Map<string, SyncularV2AuthLeaseRecord>();
+  #authLeases = new Map<string, SyncularAuthLeaseRecord>();
   #syncCount = 0;
   #commitIndex = 1;
   #leaseIndex = 1;
@@ -214,9 +214,9 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
       updateMetadata: (scopeKey, metadata) =>
         this.updatePresenceMetadata(scopeKey, metadata),
       onChange: (listener) => {
-        this.#presenceListeners.add(listener as SyncularV2PresenceSink);
+        this.#presenceListeners.add(listener as SyncularPresenceSink);
         return () =>
-          this.#presenceListeners.delete(listener as SyncularV2PresenceSink);
+          this.#presenceListeners.delete(listener as SyncularPresenceSink);
       },
     },
     conflicts: {
@@ -317,7 +317,7 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
     return this.#syncCount;
   }
 
-  listenerCount(event: SyncularV2ClientEventType): number {
+  listenerCount(event: SyncularClientEventType): number {
     return this.#listeners.get(event)?.size ?? 0;
   }
 
@@ -341,23 +341,23 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
     this.#status = status;
   }
 
-  setConflicts(conflicts: readonly SyncularV2ConflictSummary[]): void {
+  setConflicts(conflicts: readonly SyncularConflictSummary[]): void {
     this.#conflicts = [...conflicts];
     this.emit('conflictsChanged', conflictStats(this.#conflicts));
   }
 
-  authLease(leaseId: string): SyncularV2AuthLeaseRecord | null {
+  authLease(leaseId: string): SyncularAuthLeaseRecord | null {
     const lease = this.#authLeases.get(leaseId);
     return lease ? { ...lease } : null;
   }
 
-  authLeases(): SyncularV2AuthLeaseRecord[] {
+  authLeases(): SyncularAuthLeaseRecord[] {
     return [...this.#authLeases.values()].map((lease) => ({ ...lease }));
   }
 
-  emit<T extends SyncularV2ClientEventType>(
+  emit<T extends SyncularClientEventType>(
     event: T,
-    payload: SyncularV2ClientEventMap[T]
+    payload: SyncularClientEventMap[T]
   ): void {
     for (const listener of this.#listeners.get(event) ?? []) {
       listener(payload as never);
@@ -365,16 +365,16 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
     this.emitTauri(`syncular:${event}`, payload);
   }
 
-  emitRowsChanged(event: SyncularV2ClientEventMap['rowsChanged']): void {
+  emitRowsChanged(event: SyncularClientEventMap['rowsChanged']): void {
     this.emit('rowsChanged', event);
   }
 
   presence<TMetadata = Record<string, unknown>>(
     scopeKey: string
-  ): SyncularV2PresenceEntry<TMetadata>[] {
+  ): SyncularPresenceEntry<TMetadata>[] {
     return [
       ...(this.#presence.get(scopeKey) ?? []),
-    ] as SyncularV2PresenceEntry<TMetadata>[];
+    ] as SyncularPresenceEntry<TMetadata>[];
   }
 
   close(): void {
@@ -411,19 +411,19 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
     return { commitId, clientCommitId: commitId };
   }
 
-  private async sync(): Promise<SyncularV2SyncResult> {
+  private async sync(): Promise<SyncularSyncResult> {
     this.#syncCount += 1;
     return zeroSyncResult();
   }
 
-  private async resumeFromBackground(): Promise<SyncularV2SyncResult> {
+  private async resumeFromBackground(): Promise<SyncularSyncResult> {
     this.setConnection('connected');
     return this.sync();
   }
 
   private async issueAuthLease(
     request: SyncAuthLeaseIssueRequest
-  ): Promise<SyncularV2AuthLeaseRecord> {
+  ): Promise<SyncularAuthLeaseRecord> {
     const nowMs = Date.now();
     const leaseId = `bridge-lease-${this.#leaseIndex++}`;
     const expiresAtMs = nowMs + (request.ttlMs ?? 60_000);
@@ -447,7 +447,7 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
         allowEncryptedFields: true,
       },
     };
-    const lease: SyncularV2AuthLeaseRecord = {
+    const lease: SyncularAuthLeaseRecord = {
       leaseId,
       kid: 'syncular-testkit',
       actorId: this.#actorId,
@@ -495,10 +495,9 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
       case 'syncular_issue_auth_lease':
         return this.issueAuthLease(args?.request as SyncAuthLeaseIssueRequest);
       case 'syncular_upsert_auth_lease':
-        this.#authLeases.set(
-          (args?.lease as SyncularV2AuthLeaseRecord).leaseId,
-          { ...(args?.lease as SyncularV2AuthLeaseRecord) }
-        );
+        this.#authLeases.set((args?.lease as SyncularAuthLeaseRecord).leaseId, {
+          ...(args?.lease as SyncularAuthLeaseRecord),
+        });
         return undefined;
       case 'syncular_auth_lease':
         return this.authLease(String(args?.leaseId));
@@ -528,25 +527,23 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
       case 'syncular_resolve_conflict':
         return this.bridge.conflicts?.resolve(
           String(args?.id),
-          args?.resolution as SyncularV2ConflictResolution
+          args?.resolution as SyncularConflictResolution
         );
       default:
         throw new Error(`Unknown Syncular test bridge command: ${command}`);
     }
   }
 
-  private addEventListener<T extends SyncularV2ClientEventType>(
+  private addEventListener<T extends SyncularClientEventType>(
     event: T,
-    listener: SyncularV2ClientEventSink<T>
+    listener: SyncularClientEventSink<T>
   ): () => void {
     const listeners = this.#listeners.get(event) ?? new Set();
-    listeners.add(
-      listener as SyncularV2ClientEventSink<SyncularV2ClientEventType>
-    );
+    listeners.add(listener as SyncularClientEventSink<SyncularClientEventType>);
     this.#listeners.set(event, listeners);
     return () =>
       listeners.delete(
-        listener as SyncularV2ClientEventSink<SyncularV2ClientEventType>
+        listener as SyncularClientEventSink<SyncularClientEventType>
       );
   }
 
@@ -562,13 +559,13 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
     return { remove: unsubscribe };
   }
 
-  private setConnection(realtime: SyncularV2ConnectionState['realtime']): void {
-    const connection: SyncularV2ConnectionState = {
+  private setConnection(realtime: SyncularConnectionState['realtime']): void {
+    const connection: SyncularConnectionState = {
       closed: false,
       pendingRequests: 0,
       realtime,
     };
-    const lifecycle: SyncularV2LifecycleState = {
+    const lifecycle: SyncularLifecycleState = {
       phase: realtime === 'connected' ? 'complete' : 'offline',
       realtime,
       online: realtime === 'connected',
@@ -611,7 +608,7 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
   }
 
   private emitPresence(scopeKey: string): void {
-    const event: SyncularV2PresenceChangeEvent = {
+    const event: SyncularPresenceChangeEvent = {
       scopeKey,
       presence: this.presence(scopeKey),
     };
@@ -622,7 +619,7 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
   private activeAuthLeases(
     actorId?: string | null,
     nowMs = Date.now()
-  ): SyncularV2AuthLeaseRecord[] {
+  ): SyncularAuthLeaseRecord[] {
     return this.authLeases().filter(
       (lease) =>
         lease.status === 'active' &&
@@ -632,7 +629,7 @@ class InProcessClientBridgeHarness implements ClientBridgeHarness {
     );
   }
 
-  diagnosticSnapshot(): SyncularV2DiagnosticSnapshot {
+  diagnosticSnapshot(): SyncularDiagnosticSnapshot {
     const status = this.#status;
     return {
       generatedAt: Date.now(),
@@ -785,8 +782,8 @@ function encodeSqlValue(value: unknown): unknown {
 }
 
 function conflictStats(
-  conflicts: readonly SyncularV2ConflictSummary[]
-): SyncularV2ConflictStats {
+  conflicts: readonly SyncularConflictSummary[]
+): SyncularConflictStats {
   const resolved = conflicts.filter((conflict) => conflict.resolvedAt != null);
   return {
     unresolved: conflicts.length - resolved.length,
@@ -795,7 +792,7 @@ function conflictStats(
   };
 }
 
-function zeroSyncResult(): SyncularV2SyncResult {
+function zeroSyncResult(): SyncularSyncResult {
   return {
     changedTables: [],
     changedRows: [],

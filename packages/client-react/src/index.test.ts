@@ -4,19 +4,19 @@ import { act, renderHook, waitFor } from '@testing-library/react';
 import type { CompiledQuery } from 'kysely';
 import { createElement, type ReactNode } from 'react';
 import type {
+  SyncularBlobUploadQueueStats,
+  SyncularBootstrapStatus,
+  SyncularClientEventMap,
+  SyncularClientEventSink,
+  SyncularClientEventType,
   SyncularClientLike,
   SyncularClientStatus,
-  SyncularV2BlobUploadQueueStats,
-  SyncularV2BootstrapStatus,
-  SyncularV2ClientEventMap,
-  SyncularV2ClientEventSink,
-  SyncularV2ClientEventType,
-  SyncularV2ConnectionState,
-  SyncularV2DiagnosticSink,
-  SyncularV2PresenceChangeEvent,
-  SyncularV2PresenceEntry,
-  SyncularV2PresenceSink,
-  SyncularV2RowsChangedEvent,
+  SyncularConnectionState,
+  SyncularDiagnosticSink,
+  SyncularPresenceChangeEvent,
+  SyncularPresenceEntry,
+  SyncularPresenceSink,
+  SyncularRowsChangedEvent,
 } from './index';
 import { createSyncularReact } from './index';
 
@@ -371,12 +371,12 @@ class FakeManagedClient {
   nextQueryRows: TaskRow[] = [];
   syncCount = 0;
   readonly #eventListeners = new Map<
-    SyncularV2ClientEventType,
-    Set<SyncularV2ClientEventSink<SyncularV2ClientEventType>>
+    SyncularClientEventType,
+    Set<SyncularClientEventSink<SyncularClientEventType>>
   >();
-  readonly #presenceListeners = new Set<SyncularV2PresenceSink>();
-  readonly #presence = new Map<string, SyncularV2PresenceEntry[]>();
-  readonly #diagnosticListeners = new Set<SyncularV2DiagnosticSink>();
+  readonly #presenceListeners = new Set<SyncularPresenceSink>();
+  readonly #presence = new Map<string, SyncularPresenceEntry[]>();
+  readonly #diagnosticListeners = new Set<SyncularDiagnosticSink>();
   readonly #liveListeners = new Map<string, (rows: TaskRow[]) => void>();
   readonly liveCalls: Array<{ tables?: readonly string[] }> = [];
   status: SyncularClientStatus = {
@@ -409,9 +409,9 @@ class FakeManagedClient {
     dialect: {},
     mutations: this.createMutations(this.mutationCalls),
     leasedMutations: this.createMutations(this.leasedMutationCalls),
-    on: <T extends SyncularV2ClientEventType>(
+    on: <T extends SyncularClientEventType>(
       event: T,
-      listener: SyncularV2ClientEventSink<T>
+      listener: SyncularClientEventSink<T>
     ) => this.addEventListener(event, listener),
     getStatus: () => this.status,
     setSubscriptions: async () => undefined,
@@ -424,11 +424,11 @@ class FakeManagedClient {
       updateMetadata: (scopeKey: string, metadata: Record<string, unknown>) =>
         this.updatePresenceMetadata(scopeKey, metadata),
       onChange: <TMetadata extends Record<string, unknown>>(
-        listener: SyncularV2PresenceSink<TMetadata>
+        listener: SyncularPresenceSink<TMetadata>
       ) => {
-        this.#presenceListeners.add(listener as SyncularV2PresenceSink);
+        this.#presenceListeners.add(listener as SyncularPresenceSink);
         return () =>
-          this.#presenceListeners.delete(listener as SyncularV2PresenceSink);
+          this.#presenceListeners.delete(listener as SyncularPresenceSink);
       },
     },
     conflicts: {
@@ -442,14 +442,14 @@ class FakeManagedClient {
       retrieve: async () => new Uint8Array(),
     },
     client: {
-      addDiagnosticListener: (listener: SyncularV2DiagnosticSink) => {
+      addDiagnosticListener: (listener: SyncularDiagnosticSink) => {
         this.#diagnosticListeners.add(listener);
         return () => this.#diagnosticListeners.delete(listener);
       },
       connectionState: () => this.connectionState(),
-      addEventListener: <T extends SyncularV2ClientEventType>(
+      addEventListener: <T extends SyncularClientEventType>(
         event: T,
-        listener: SyncularV2ClientEventSink<T>
+        listener: SyncularClientEventSink<T>
       ) => this.addEventListener(event, listener),
       getPresence: <TMetadata extends Record<string, unknown>>(
         scopeKey: string
@@ -462,11 +462,11 @@ class FakeManagedClient {
         metadata: Record<string, unknown>
       ) => this.updatePresenceMetadata(scopeKey, metadata),
       addPresenceListener: <TMetadata extends Record<string, unknown>>(
-        listener: SyncularV2PresenceSink<TMetadata>
+        listener: SyncularPresenceSink<TMetadata>
       ) => {
-        this.#presenceListeners.add(listener as SyncularV2PresenceSink);
+        this.#presenceListeners.add(listener as SyncularPresenceSink);
         return () =>
-          this.#presenceListeners.delete(listener as SyncularV2PresenceSink);
+          this.#presenceListeners.delete(listener as SyncularPresenceSink);
       },
     },
     live: async (
@@ -528,7 +528,7 @@ class FakeManagedClient {
     },
   } as unknown as SyncularClientLike<TestDb>;
 
-  emitRowsChanged(event: SyncularV2RowsChangedEvent): void {
+  emitRowsChanged(event: SyncularRowsChangedEvent): void {
     this.emit('rowsChanged', event);
   }
 
@@ -619,27 +619,25 @@ class FakeManagedClient {
     );
   }
 
-  private addEventListener<T extends SyncularV2ClientEventType>(
+  private addEventListener<T extends SyncularClientEventType>(
     event: T,
-    listener: SyncularV2ClientEventSink<T>
+    listener: SyncularClientEventSink<T>
   ): () => void {
     let listeners = this.#eventListeners.get(event);
     if (!listeners) {
       listeners = new Set();
       this.#eventListeners.set(event, listeners);
     }
-    listeners.add(
-      listener as SyncularV2ClientEventSink<SyncularV2ClientEventType>
-    );
+    listeners.add(listener as SyncularClientEventSink<SyncularClientEventType>);
     return () =>
       listeners.delete(
-        listener as SyncularV2ClientEventSink<SyncularV2ClientEventType>
+        listener as SyncularClientEventSink<SyncularClientEventType>
       );
   }
 
-  emit<T extends SyncularV2ClientEventType>(
+  emit<T extends SyncularClientEventType>(
     event: T,
-    payload: SyncularV2ClientEventMap[T]
+    payload: SyncularClientEventMap[T]
   ): void {
     for (const listener of this.#eventListeners.get(event) ?? []) {
       listener(payload as never);
@@ -696,20 +694,20 @@ class FakeManagedClient {
 
   private getPresence<TMetadata extends Record<string, unknown>>(
     scopeKey: string
-  ): SyncularV2PresenceEntry<TMetadata>[] {
+  ): SyncularPresenceEntry<TMetadata>[] {
     return (this.#presence.get(scopeKey) ??
-      []) as SyncularV2PresenceEntry<TMetadata>[];
+      []) as SyncularPresenceEntry<TMetadata>[];
   }
 
   private emitPresence(scopeKey: string): void {
-    const event: SyncularV2PresenceChangeEvent = {
+    const event: SyncularPresenceChangeEvent = {
       scopeKey,
       presence: this.getPresence(scopeKey),
     };
     for (const listener of this.#presenceListeners) listener(event);
   }
 
-  private connectionState(): SyncularV2ConnectionState {
+  private connectionState(): SyncularConnectionState {
     return {
       closed: false,
       pendingRequests: 0,
@@ -717,7 +715,7 @@ class FakeManagedClient {
     };
   }
 
-  private blobStats(): SyncularV2BlobUploadQueueStats {
+  private blobStats(): SyncularBlobUploadQueueStats {
     return {
       pending: 0,
       uploading: 0,
@@ -726,7 +724,7 @@ class FakeManagedClient {
   }
 }
 
-function zeroBootstrapStatus(): SyncularV2BootstrapStatus {
+function zeroBootstrapStatus(): SyncularBootstrapStatus {
   return {
     channelPhase: 'idle',
     progressPercent: 100,

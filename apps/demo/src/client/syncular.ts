@@ -1,6 +1,6 @@
 import {
-  getSyncularV2RuntimeArtifact,
-  SyncularV2ClientLifecycle,
+  getSyncularRuntimeArtifact,
+  SyncularClientLifecycle,
 } from '@syncular/client';
 import {
   createSyncularAppDatabase,
@@ -35,70 +35,9 @@ const consoleBaseUrl =
   import.meta.env.VITE_SYNCULAR_CONSOLE_URL ?? 'http://127.0.0.1:4101/console';
 const consoleToken =
   import.meta.env.VITE_SYNCULAR_CONSOLE_TOKEN ?? 'demo-console';
-const demoDatabaseFilePrefix = 'syncular-demo-rust-v2';
-
-function consoleDiagnosticsUrl(): string {
-  return `${consoleBaseUrl.replace(/\/$/u, '')}/client-diagnostics`;
-}
-
-function startConsoleDiagnosticPublishing(
-  clientId: string,
-  database: SyncularAppDatabase
-): () => void {
-  let closed = false;
-  let publishQueued = false;
-
-  const publish = async () => {
-    if (closed) return;
-    if (!browserIsOnline()) return;
-    try {
-      const [snapshot, lifecycle] = await Promise.all([
-        database.client.diagnosticSnapshot(),
-        Promise.resolve(database.client.lifecycleState()),
-      ]);
-      await fetch(consoleDiagnosticsUrl(), {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${consoleToken}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          clientId,
-          actorId,
-          partitionId: 'default',
-          lifecycle,
-          snapshot,
-        }),
-      });
-    } catch {
-      // Diagnostic publishing must not affect the demo sync path.
-    }
-  };
-
-  const schedulePublish = () => {
-    if (closed || publishQueued) return;
-    publishQueued = true;
-    window.setTimeout(() => {
-      publishQueued = false;
-      void publish();
-    }, 100);
-  };
-
-  const stopListening = [
-    database.client.addDiagnosticListener(schedulePublish),
-    database.client.addEventListener('lifecycleChanged', schedulePublish),
-    database.client.addEventListener('bootstrapChanged', schedulePublish),
-    database.client.addEventListener('outboxChanged', schedulePublish),
-    database.client.addEventListener('conflictsChanged', schedulePublish),
-    database.client.addEventListener('blobUploadsChanged', schedulePublish),
-  ];
-  schedulePublish();
-
-  return () => {
-    closed = true;
-    for (const stop of stopListening) stop();
-  };
-}
+const consoleDiagnosticsEnabled =
+  import.meta.env.VITE_SYNCULAR_CONSOLE_DIAGNOSTICS !== 'false';
+const demoDatabaseFilePrefix = 'syncular-demo-rust-v3';
 
 export async function openDemoClient(
   name: DemoClientName
@@ -116,15 +55,23 @@ export async function openDemoClient(
     getHeaders: async () => ({
       authorization: `Bearer ${demoToken}`,
     }),
-    runtimeArtifacts: [getSyncularV2RuntimeArtifact('full')],
+    runtimeArtifacts: [getSyncularRuntimeArtifact('full')],
     subscriptions: [taskSubscription({ actorId })],
     sync: {
       rowsChangedDebounceMs: 25,
       mutationSyncDebounceMs: 25,
     },
+    consoleDiagnostics: consoleDiagnosticsEnabled
+      ? {
+          baseUrl: consoleBaseUrl,
+          token: consoleToken,
+          partitionId: 'default',
+          debounceMs: 100,
+        }
+      : false,
   });
 
-  const lifecycle = new SyncularV2ClientLifecycle(database.client, {
+  const lifecycle = new SyncularClientLifecycle(database.client, {
     realtime: {
       params: { token: demoToken },
       initialReconnectDelayMs: 500,
@@ -135,16 +82,11 @@ export async function openDemoClient(
 
   try {
     await lifecycle.start();
-    const stopConsoleDiagnostics = startConsoleDiagnosticPublishing(
-      `demo-${name}`,
-      database
-    );
 
     return {
       name,
       database,
       close: async () => {
-        stopConsoleDiagnostics();
         await lifecycle.stop();
         await database.close();
       },
@@ -153,10 +95,6 @@ export async function openDemoClient(
     await database.close();
     throw error;
   }
-}
-
-function browserIsOnline(): boolean {
-  return typeof navigator === 'undefined' || navigator.onLine !== false;
 }
 
 export function selectTasks(database: SyncularAppDatabase) {

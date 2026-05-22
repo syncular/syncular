@@ -151,6 +151,10 @@ h2 {
   background: #5f6f79;
 }
 
+.status-badge.attention .status-dot {
+  background: #b7791f;
+}
+
 .status-badge.error .status-dot {
   background: #c54646;
 }
@@ -252,6 +256,7 @@ h2 {
 
 .empty-state,
 .error-line,
+.attention-line,
 .offline-line {
   margin: 12px 0 0;
   padding: 12px;
@@ -267,6 +272,12 @@ h2 {
 .error-line {
   color: #8f2727;
   background: #fff1f1;
+  overflow-wrap: anywhere;
+}
+
+.attention-line {
+  color: #75520f;
+  background: #fff7e3;
   overflow-wrap: anywhere;
 }
 

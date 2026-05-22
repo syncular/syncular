@@ -3,37 +3,37 @@ import type { BlobRef, SyncOperation } from '@syncular/core';
 import type {
   SyncularApplyYjsEnvelopeToPayloadArgs,
   SyncularApplyYjsTextUpdatesArgs,
+  SyncularAuthHeaders,
+  SyncularAuthLeaseRecord,
+  SyncularBlobEncryptionConfig,
+  SyncularBlobStoreOptions,
   SyncularBuildYjsTextUpdateArgs,
-  SyncularV2AuthHeaders,
-  SyncularV2AuthLeaseRecord,
-  SyncularV2BlobEncryptionConfig,
-  SyncularV2BlobStoreOptions,
-  SyncularV2ClientConfig,
-  SyncularV2ConflictResolution,
-  SyncularV2CrdtFieldCompactionRequest,
-  SyncularV2CrdtFieldRequest,
-  SyncularV2CrdtFieldTextRequest,
-  SyncularV2CrdtFieldYjsUpdateRequest,
-  SyncularV2EncryptedCrdtConfig,
-  SyncularV2EncryptionHelperMethod,
-  SyncularV2FieldEncryptionConfig,
-  SyncularV2LiveQueryDependencyHint,
-  SyncularV2LocalHealthRepairRequest,
-  SyncularV2LocalSyncResetRequest,
-  SyncularV2StorageCompactionOptions,
-  SyncularV2SubscriptionSpec,
-  SyncularV2SyncAttempt,
+  SyncularClientConfig,
+  SyncularConflictResolution,
+  SyncularCrdtFieldCompactionRequest,
+  SyncularCrdtFieldRequest,
+  SyncularCrdtFieldTextRequest,
+  SyncularCrdtFieldYjsUpdateRequest,
+  SyncularEncryptedCrdtConfig,
+  SyncularEncryptionHelperMethod,
+  SyncularFieldEncryptionConfig,
+  SyncularLiveQueryDependencyHint,
+  SyncularLocalHealthRepairRequest,
+  SyncularLocalSyncResetRequest,
+  SyncularStorageCompactionOptions,
+  SyncularSubscriptionSpec,
+  SyncularSyncAttempt,
 } from './types';
-import type { SYNCULAR_V2_WORKER_PROTOCOL_VERSION } from './worker-protocol';
+import type { SYNCULAR_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
-export interface SyncularV2WorkerRuntimeArtifact {
+export interface SyncularWorkerRuntimeArtifact {
   name?: string;
   wasmGlueUrl?: string;
   wasmUrl?: string;
   features?: string[];
 }
 
-export type SyncularV2WorkerRealtimeOptions = {
+export type SyncularWorkerRealtimeOptions = {
   wsUrl?: string;
   params?: Record<string, string>;
   initialReconnectDelayMs?: number;
@@ -42,83 +42,83 @@ export type SyncularV2WorkerRealtimeOptions = {
   heartbeatTimeoutMs?: number;
 };
 
-export type SyncularV2GeneratedWorkerRequest =
+export type SyncularGeneratedWorkerRequest =
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'open';
-      config: SyncularV2ClientConfig;
-      runtime?: SyncularV2WorkerRuntimeArtifact;
+      config: SyncularClientConfig;
+      runtime?: SyncularWorkerRuntimeArtifact;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'setAuthHeaders';
-      headers: SyncularV2AuthHeaders;
+      headers: SyncularAuthHeaders;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'setFieldEncryption';
-      config: SyncularV2FieldEncryptionConfig | null;
+      config: SyncularFieldEncryptionConfig | null;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'setEncryptedCrdt';
-      config: SyncularV2EncryptedCrdtConfig | null;
+      config: SyncularEncryptedCrdtConfig | null;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'setBlobEncryption';
-      config: SyncularV2BlobEncryptionConfig | null;
+      config: SyncularBlobEncryptionConfig | null;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'setSubscriptions';
-      subscriptions: SyncularV2SubscriptionSpec[];
+      subscriptions: SyncularSubscriptionSpec[];
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'forceSubscriptionsBootstrap';
       subscriptionIds?: string[];
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'upsertAuthLease';
-      lease: SyncularV2AuthLeaseRecord;
+      lease: SyncularAuthLeaseRecord;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'authLease';
       leaseId: string;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'activeAuthLeases';
       actorId?: string | null;
       nowMs: number;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'startRealtime';
-      options: SyncularV2WorkerRealtimeOptions;
+      options: SyncularWorkerRealtimeOptions;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'stopRealtime';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'sendPresence';
       action: 'join' | 'leave' | 'update';
       scopeKey: string;
@@ -126,60 +126,60 @@ export type SyncularV2GeneratedWorkerRequest =
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'executeSql';
       sql: string;
       params: unknown[];
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'executeUnsafeSql';
       sql: string;
       params: unknown[];
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'subscribeQuery';
       sql: string;
       params: unknown[];
       tables: string[];
-      hints?: SyncularV2LiveQueryDependencyHint[];
+      hints?: SyncularLiveQueryDependencyHint[];
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'unsubscribeQuery';
       queryId: string;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'drainLiveQueryEvents';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'liveQueryDiagnostics';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'applyMutation';
       operation: SyncOperation;
       localRow?: unknown | null;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'applyLeasedMutation';
       operation: SyncOperation;
       localRow?: unknown | null;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'applyMutationsBatch';
       operations: Array<{
         operation: SyncOperation;
@@ -188,7 +188,7 @@ export type SyncularV2GeneratedWorkerRequest =
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'applyMutationsCommit';
       operations: Array<{
         operation: SyncOperation;
@@ -197,7 +197,7 @@ export type SyncularV2GeneratedWorkerRequest =
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'applyLeasedMutationsCommit';
       operations: Array<{
         operation: SyncOperation;
@@ -206,239 +206,239 @@ export type SyncularV2GeneratedWorkerRequest =
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'syncPull';
-      syncAttempt?: SyncularV2SyncAttempt;
+      syncAttempt?: SyncularSyncAttempt;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'syncPush';
-      syncAttempt?: SyncularV2SyncAttempt;
+      syncAttempt?: SyncularSyncAttempt;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'syncOnce';
-      syncAttempt?: SyncularV2SyncAttempt;
+      syncAttempt?: SyncularSyncAttempt;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'transportStats';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'resetTransportStats';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'conflictSummaries';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'retryConflictKeepLocal';
       conflictId: string;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'resolveConflict';
       conflictId: string;
-      resolution: SyncularV2ConflictResolution;
+      resolution: SyncularConflictResolution;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'listTable';
       table: string;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'storeBlob';
       data: Uint8Array;
-      options?: SyncularV2BlobStoreOptions;
+      options?: SyncularBlobStoreOptions;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'retrieveBlob';
       ref: BlobRef;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'isBlobLocal';
       hash: string;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'processBlobUploadQueue';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'blobUploadQueueStats';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'blobCacheStats';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'pruneBlobCache';
       maxBytes?: number;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'clearBlobCache';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'compactStorage';
-      options?: SyncularV2StorageCompactionOptions;
+      options?: SyncularStorageCompactionOptions;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'generatedSchemaState';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'localHealthCheck';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'exportLocalSupportBundle';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'importLocalSupportBundle';
       bundleJson: string;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'repairLocalHealth';
-      request: SyncularV2LocalHealthRepairRequest;
+      request: SyncularLocalHealthRepairRequest;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'resetLocalSyncState';
-      request?: SyncularV2LocalSyncResetRequest;
+      request?: SyncularLocalSyncResetRequest;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'buildYjsTextUpdate';
       args: SyncularBuildYjsTextUpdateArgs;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'applyYjsTextUpdates';
       args: SyncularApplyYjsTextUpdatesArgs;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'applyYjsEnvelopeToPayload';
       args: SyncularApplyYjsEnvelopeToPayloadArgs;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'openCrdtField';
-      request: SyncularV2CrdtFieldRequest;
+      request: SyncularCrdtFieldRequest;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'applyCrdtFieldText';
-      request: SyncularV2CrdtFieldTextRequest;
+      request: SyncularCrdtFieldTextRequest;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'applyCrdtFieldYjsUpdate';
-      request: SyncularV2CrdtFieldYjsUpdateRequest;
+      request: SyncularCrdtFieldYjsUpdateRequest;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'materializeCrdtField';
-      request: SyncularV2CrdtFieldRequest;
+      request: SyncularCrdtFieldRequest;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'crdtDocumentSnapshot';
-      request: SyncularV2CrdtFieldRequest;
+      request: SyncularCrdtFieldRequest;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'crdtUpdateLog';
-      request: SyncularV2CrdtFieldRequest & { limit?: number };
+      request: SyncularCrdtFieldRequest & { limit?: number };
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'snapshotCrdtFieldStateVector';
-      request: SyncularV2CrdtFieldRequest;
+      request: SyncularCrdtFieldRequest;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'compactCrdtField';
-      request: SyncularV2CrdtFieldCompactionRequest;
+      request: SyncularCrdtFieldCompactionRequest;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'encryptionHelper';
-      method: SyncularV2EncryptionHelperMethod;
+      method: SyncularEncryptionHelperMethod;
       args?: unknown;
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'runtimeInfo';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'close';
     }
   | {
       id: number;
-      protocolVersion: typeof SYNCULAR_V2_WORKER_PROTOCOL_VERSION;
+      protocolVersion: typeof SYNCULAR_WORKER_PROTOCOL_VERSION;
       type: 'cancel';
       requestId: number;
     };
 
-export type SyncularV2GeneratedWorkerRequestInput =
-  SyncularV2GeneratedWorkerRequest extends infer Request
-    ? Request extends SyncularV2GeneratedWorkerRequest
+export type SyncularGeneratedWorkerRequestInput =
+  SyncularGeneratedWorkerRequest extends infer Request
+    ? Request extends SyncularGeneratedWorkerRequest
       ? Omit<Request, 'id' | 'protocolVersion'>
       : never
     : never;
 
-export type SyncularV2GeneratedWorkerRequestType =
-  SyncularV2GeneratedWorkerRequest['type'];
+export type SyncularGeneratedWorkerRequestType =
+  SyncularGeneratedWorkerRequest['type'];
 
 const ABORTABLE_WORKER_REQUEST_TYPES = new Set<string>([
   'syncPull',
@@ -523,36 +523,36 @@ const WORKER_REQUEST_DIAGNOSTIC_SOURCES: Record<
   close: 'storage',
 };
 
-export function isGeneratedSyncularV2AbortableWorkerRequestType(
-  type: SyncularV2GeneratedWorkerRequestType
+export function isGeneratedSyncularAbortableWorkerRequestType(
+  type: SyncularGeneratedWorkerRequestType
 ): boolean {
   return ABORTABLE_WORKER_REQUEST_TYPES.has(type);
 }
 
-export function isGeneratedSyncularV2DiagnosedSuccessWorkerRequestType(
-  type: SyncularV2GeneratedWorkerRequestType
+export function isGeneratedSyncularDiagnosedSuccessWorkerRequestType(
+  type: SyncularGeneratedWorkerRequestType
 ): boolean {
   return DIAGNOSED_SUCCESS_WORKER_REQUEST_TYPES.has(type);
 }
 
-export function isGeneratedSyncularV2OperationalStateWorkerRequestType(
-  type: SyncularV2GeneratedWorkerRequestType
+export function isGeneratedSyncularOperationalStateWorkerRequestType(
+  type: SyncularGeneratedWorkerRequestType
 ): boolean {
   return OPERATIONAL_STATE_WORKER_REQUEST_TYPES.has(type);
 }
 
-export function generatedSyncularV2WorkerRequestDiagnosticSource(
-  type: SyncularV2GeneratedWorkerRequestType
+export function generatedSyncularWorkerRequestDiagnosticSource(
+  type: SyncularGeneratedWorkerRequestType
 ): 'auth' | 'blob' | 'client' | 'realtime' | 'storage' | 'sync' | 'worker' {
   return WORKER_REQUEST_DIAGNOSTIC_SOURCES[type] ?? 'worker';
 }
 
-export interface SyncularV2GeneratedWorkerDispatchContext {
+export interface SyncularGeneratedWorkerDispatchContext {
   requireClient(): any;
   openClient(
-    request: Extract<SyncularV2GeneratedWorkerRequest, { type: 'open' }>
+    request: Extract<SyncularGeneratedWorkerRequest, { type: 'open' }>
   ): Promise<unknown>;
-  startRealtime(options: SyncularV2WorkerRealtimeOptions): unknown;
+  startRealtime(options: SyncularWorkerRealtimeOptions): unknown;
   stopRealtime(): unknown;
   sendPresence(
     action: 'join' | 'leave' | 'update',
@@ -563,9 +563,9 @@ export interface SyncularV2GeneratedWorkerDispatchContext {
   closeClient(): unknown;
 }
 
-export async function dispatchGeneratedSyncularV2WorkerRequest(
-  context: SyncularV2GeneratedWorkerDispatchContext,
-  request: SyncularV2GeneratedWorkerRequest
+export async function dispatchGeneratedSyncularWorkerRequest(
+  context: SyncularGeneratedWorkerDispatchContext,
+  request: SyncularGeneratedWorkerRequest
 ): Promise<unknown> {
   switch (request.type) {
     case 'open':

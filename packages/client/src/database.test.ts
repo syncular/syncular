@@ -17,23 +17,23 @@ import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
 import { createServerHandler } from '../../server/src/handlers';
 import type { SyncCoreDb } from '../../server/src/schema';
 import {
-  createSyncularV2BlobClient,
-  createSyncularV2Commit,
-  createSyncularV2Dialect,
-  withSyncularV2SchemaWrites,
+  createSyncularBlobClient,
+  createSyncularCommit,
+  createSyncularDialect,
+  withSyncularSchemaWrites,
 } from './database';
 import type {
-  SyncularV2Client,
-  SyncularV2DiagnosticEvent,
-  SyncularV2LiveQueryDependencyHint,
+  SyncularDiagnosticEvent,
+  SyncularLiveQueryDependencyHint,
+  SyncularRuntimeClient,
 } from './types';
 
-describe('Syncular v2 mutations', () => {
+describe('Syncular mutations', () => {
   it('keeps BlobRef mutation payloads app-shaped while encoding local SQLite rows', async () => {
     const batches: Array<
       Array<{ operation: SyncOperation; localRow?: unknown | null }>
     > = [];
-    const commit = createSyncularV2Commit<SyncularAppDb>({
+    const commit = createSyncularCommit<SyncularAppDb>({
       client: {
         async applyMutation() {
           throw new Error('not used');
@@ -83,7 +83,7 @@ describe('Syncular v2 mutations', () => {
       idColumn: string;
       versionColumn: string;
     }> = [];
-    const commit = createSyncularV2Commit<SyncularAppDb>({
+    const commit = createSyncularCommit<SyncularAppDb>({
       client: {
         async applyMutation() {
           throw new Error('not used');
@@ -133,10 +133,10 @@ describe('Syncular v2 mutations', () => {
   });
 });
 
-describe('Syncular v2 blobs', () => {
+describe('Syncular blobs', () => {
   it('runs store hooks with the stored blob ref and options', async () => {
     const afterStores: unknown[] = [];
-    const blobs = createSyncularV2BlobClient(
+    const blobs = createSyncularBlobClient(
       {
         async storeBlob() {
           return {
@@ -185,7 +185,7 @@ describe('Syncular v2 blobs', () => {
 
   it('rejects oversized blob-like inputs before arrayBuffer conversion', async () => {
     let converted = false;
-    const diagnostics: SyncularV2DiagnosticEvent[] = [];
+    const diagnostics: SyncularDiagnosticEvent[] = [];
     const blobLike = {
       size: 3,
       async arrayBuffer() {
@@ -193,7 +193,7 @@ describe('Syncular v2 blobs', () => {
         return new ArrayBuffer(3);
       },
     } as unknown as Blob;
-    const blobs = createSyncularV2BlobClient(
+    const blobs = createSyncularBlobClient(
       {
         async storeBlob() {
           throw new Error('storeBlob should not be called');
@@ -244,7 +244,7 @@ describe('Syncular v2 blobs', () => {
   });
 });
 
-describe('generated Syncular v2 codecs', () => {
+describe('generated Syncular codecs', () => {
   it('let server handlers store BlobRef columns as SQLite text and emit app-shaped rows', async () => {
     const db = createDatabase<ServerDb>({
       dialect: createBunSqliteDialect({ path: ':memory:' }),
@@ -326,10 +326,10 @@ describe('generated Syncular v2 codecs', () => {
   });
 });
 
-describe('Syncular v2 live query dependencies', () => {
+describe('Syncular live query dependencies', () => {
   it('infers nested Kysely subquery dependencies from generated app tables', async () => {
     const probe = createLiveClientProbe();
-    const dialect = createSyncularV2Dialect(probe.client, {
+    const dialect = createSyncularDialect(probe.client, {
       appTables: ['tasks', 'comments'],
     });
     const db = new Kysely<LiveQueryDb>({ dialect });
@@ -358,7 +358,7 @@ describe('Syncular v2 live query dependencies', () => {
 
   it('filters CTE aliases while keeping their app-table dependencies', async () => {
     const probe = createLiveClientProbe();
-    const dialect = createSyncularV2Dialect(probe.client, {
+    const dialect = createSyncularDialect(probe.client, {
       appTables: ['tasks'],
     });
     const db = new Kysely<LiveQueryDb>({ dialect });
@@ -385,7 +385,7 @@ describe('Syncular v2 live query dependencies', () => {
 
   it('passes primary-key live query row hints to the Rust subscription', async () => {
     const probe = createLiveClientProbe();
-    const dialect = createSyncularV2Dialect(probe.client, {
+    const dialect = createSyncularDialect(probe.client, {
       appTables: ['tasks'],
       tableConfig: { tasks: { primaryKeyColumn: 'id' } },
     });
@@ -410,7 +410,7 @@ describe('Syncular v2 live query dependencies', () => {
 
   it('does not infer row hints through disjunctive predicates', async () => {
     const probe = createLiveClientProbe();
-    const dialect = createSyncularV2Dialect(probe.client, {
+    const dialect = createSyncularDialect(probe.client, {
       appTables: ['tasks'],
       tableConfig: { tasks: { primaryKeyColumn: 'id' } },
     });
@@ -435,7 +435,7 @@ describe('Syncular v2 live query dependencies', () => {
 
   it('rejects explicit live query tables outside the generated app schema', async () => {
     const probe = createLiveClientProbe();
-    const dialect = createSyncularV2Dialect(probe.client, {
+    const dialect = createSyncularDialect(probe.client, {
       appTables: ['tasks'],
     });
     const db = new Kysely<LiveQueryDb>({ dialect });
@@ -454,7 +454,7 @@ describe('Syncular v2 live query dependencies', () => {
 
   it('unsubscribes active Rust live queries when the dialect is destroyed', async () => {
     const probe = createLiveClientProbe();
-    const dialect = createSyncularV2Dialect(probe.client, {
+    const dialect = createSyncularDialect(probe.client, {
       appTables: ['tasks'],
     });
     const db = new Kysely<LiveQueryDb>({ dialect });
@@ -467,7 +467,7 @@ describe('Syncular v2 live query dependencies', () => {
   });
 });
 
-describe('generated Syncular v2 schema migrations', () => {
+describe('generated Syncular schema migrations', () => {
   it('advances older browser app schema metadata through generated app-only migrations', async () => {
     const db = new Kysely<SyncularAppDb>({
       dialect: createBunSqliteDialect({ path: ':memory:' }),
@@ -496,10 +496,10 @@ describe('generated Syncular v2 schema migrations', () => {
   });
 });
 
-describe('Syncular v2 SQL boundary', () => {
+describe('Syncular SQL boundary', () => {
   it('allows public Kysely reads', async () => {
     const probe = createSqlBoundaryProbe();
-    const dialect = createSyncularV2Dialect(probe.client, {
+    const dialect = createSyncularDialect(probe.client, {
       appTables: ['tasks'],
     });
     const db = new Kysely<LiveQueryDb>({ dialect });
@@ -523,7 +523,7 @@ describe('Syncular v2 SQL boundary', () => {
 
   it('rejects public Kysely writes before they reach the client', async () => {
     const probe = createSqlBoundaryProbe();
-    const dialect = createSyncularV2Dialect(probe.client, {
+    const dialect = createSyncularDialect(probe.client, {
       appTables: ['tasks'],
     });
     const db = new Kysely<LiveQueryDb>({ dialect });
@@ -558,7 +558,7 @@ describe('Syncular v2 SQL boundary', () => {
   it('allows generated schema setup through the internal schema-write helper', async () => {
     const probe = createSqlBoundaryProbe();
 
-    await withSyncularV2SchemaWrites({ client: probe.client }, async (db) => {
+    await withSyncularSchemaWrites({ client: probe.client }, async (db) => {
       await db.schema
         .createTable('schema_setup')
         .ifNotExists()
@@ -622,20 +622,20 @@ interface LiveQueryDb {
 }
 
 function createLiveClientProbe(): {
-  client: SyncularV2Client;
+  client: SyncularRuntimeClient;
   subscriptions: string[][];
-  hints: SyncularV2LiveQueryDependencyHint[][];
+  hints: SyncularLiveQueryDependencyHint[][];
   unsubscribed: string[];
 } {
   const subscriptions: string[][] = [];
-  const hints: SyncularV2LiveQueryDependencyHint[][] = [];
+  const hints: SyncularLiveQueryDependencyHint[][] = [];
   const unsubscribed: string[] = [];
   const client = {
     async subscribeQuery(
       _sql: string,
       _params: readonly unknown[],
       tables: readonly string[],
-      dependencyHints: readonly SyncularV2LiveQueryDependencyHint[] = []
+      dependencyHints: readonly SyncularLiveQueryDependencyHint[] = []
     ) {
       subscriptions.push([...tables]);
       hints.push(dependencyHints.map((hint) => ({ ...hint })));
@@ -650,12 +650,12 @@ function createLiveClientProbe(): {
       return [];
     },
     async close() {},
-  } as unknown as SyncularV2Client;
+  } as unknown as SyncularRuntimeClient;
   return { client, subscriptions, hints, unsubscribed };
 }
 
 function createSqlBoundaryProbe(): {
-  client: SyncularV2Client & {
+  client: SyncularRuntimeClient & {
     executeUnsafeSql(
       sql: string,
       params?: readonly unknown[]
@@ -685,7 +685,7 @@ function createSqlBoundaryProbe(): {
       return [];
     },
     async close() {},
-  } as unknown as SyncularV2Client & {
+  } as unknown as SyncularRuntimeClient & {
     executeUnsafeSql(
       sql: string,
       params?: readonly unknown[]

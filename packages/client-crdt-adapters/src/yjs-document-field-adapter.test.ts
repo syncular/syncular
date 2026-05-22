@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'bun:test';
 import type {
-  SyncularV2CrdtDocumentSnapshot,
-  SyncularV2CrdtFieldCompactionReceipt,
-  SyncularV2CrdtFieldDescriptor,
-  SyncularV2CrdtFieldMaterialization,
-  SyncularV2CrdtFieldRequest,
-  SyncularV2CrdtFieldWriteReceipt,
-  SyncularV2CrdtFieldYjsUpdateRequest,
-  SyncularV2CrdtUpdateLogEntry,
-  SyncularV2RowsChangedEvent,
+  SyncularCrdtDocumentSnapshot,
+  SyncularCrdtFieldCompactionReceipt,
+  SyncularCrdtFieldDescriptor,
+  SyncularCrdtFieldMaterialization,
+  SyncularCrdtFieldRequest,
+  SyncularCrdtFieldWriteReceipt,
+  SyncularCrdtFieldYjsUpdateRequest,
+  SyncularCrdtUpdateLogEntry,
+  SyncularRowsChangedEvent,
 } from '@syncular/client';
 import {
   base64ToBytes,
@@ -28,11 +28,11 @@ const field = {
   table: 'tasks',
   rowId: 'task-1',
   field: 'title',
-} satisfies SyncularV2CrdtFieldRequest;
+} satisfies SyncularCrdtFieldRequest;
 
 function compactionStatsFromSnapshot(
-  snapshot: SyncularV2CrdtDocumentSnapshot
-): SyncularV2CrdtFieldCompactionReceipt['before'] {
+  snapshot: SyncularCrdtDocumentSnapshot
+): SyncularCrdtFieldCompactionReceipt['before'] {
   return {
     pendingUpdates: snapshot.pendingUpdates,
     flushedUpdates: snapshot.flushedUpdates,
@@ -600,29 +600,29 @@ describe('createRichEditorCrdtAdapter', () => {
 });
 
 class FakeCrdtFieldHost implements SyncularCrdtProjectionHost {
-  readonly appliedUpdates: SyncularV2CrdtFieldYjsUpdateRequest[] = [];
-  readonly queuedUpdates: SyncularV2CrdtFieldYjsUpdateRequest[] = [];
+  readonly appliedUpdates: SyncularCrdtFieldYjsUpdateRequest[] = [];
+  readonly queuedUpdates: SyncularCrdtFieldYjsUpdateRequest[] = [];
   readonly enqueueCrdtFieldYjsUpdate?: (
-    request: SyncularV2CrdtFieldYjsUpdateRequest
+    request: SyncularCrdtFieldYjsUpdateRequest
   ) => Promise<string>;
   failNextWrite = false;
 
-  readonly #materialization: SyncularV2CrdtFieldMaterialization;
-  readonly #snapshot?: SyncularV2CrdtDocumentSnapshot;
-  readonly #updateLog: SyncularV2CrdtUpdateLogEntry[];
+  readonly #materialization: SyncularCrdtFieldMaterialization;
+  readonly #snapshot?: SyncularCrdtDocumentSnapshot;
+  readonly #updateLog: SyncularCrdtUpdateLogEntry[];
   readonly updateLogRequests: Array<
-    SyncularV2CrdtFieldRequest & { limit?: number }
+    SyncularCrdtFieldRequest & { limit?: number }
   > = [];
   readonly #rowsChangedListeners = new Set<
-    (event: SyncularV2RowsChangedEvent) => void
+    (event: SyncularRowsChangedEvent) => void
   >();
 
   constructor(
     options: {
       queued?: boolean;
-      materialization?: SyncularV2CrdtFieldMaterialization;
-      snapshot?: SyncularV2CrdtDocumentSnapshot;
-      updateLog?: SyncularV2CrdtUpdateLogEntry[];
+      materialization?: SyncularCrdtFieldMaterialization;
+      snapshot?: SyncularCrdtDocumentSnapshot;
+      updateLog?: SyncularCrdtUpdateLogEntry[];
     } = {}
   ) {
     if (options.queued) {
@@ -636,14 +636,14 @@ class FakeCrdtFieldHost implements SyncularCrdtProjectionHost {
       ({
         value: 'materialized',
         stateVectorBase64: 'state-vector',
-      } satisfies SyncularV2CrdtFieldMaterialization);
+      } satisfies SyncularCrdtFieldMaterialization);
     this.#snapshot = options.snapshot;
     this.#updateLog = options.updateLog ?? [];
   }
 
   openCrdtField(
-    request: SyncularV2CrdtFieldRequest
-  ): Promise<SyncularV2CrdtFieldDescriptor> {
+    request: SyncularCrdtFieldRequest
+  ): Promise<SyncularCrdtFieldDescriptor> {
     return Promise.resolve({
       ...request,
       stateColumn: `${request.field}_yjs_state`,
@@ -655,8 +655,8 @@ class FakeCrdtFieldHost implements SyncularCrdtProjectionHost {
   }
 
   async applyCrdtFieldYjsUpdate(
-    request: SyncularV2CrdtFieldYjsUpdateRequest
-  ): Promise<SyncularV2CrdtFieldWriteReceipt> {
+    request: SyncularCrdtFieldYjsUpdateRequest
+  ): Promise<SyncularCrdtFieldWriteReceipt> {
     this.appliedUpdates.push(request);
     if (this.failNextWrite) {
       this.failNextWrite = false;
@@ -668,11 +668,11 @@ class FakeCrdtFieldHost implements SyncularCrdtProjectionHost {
     };
   }
 
-  materializeCrdtField(): Promise<SyncularV2CrdtFieldMaterialization> {
+  materializeCrdtField(): Promise<SyncularCrdtFieldMaterialization> {
     return Promise.resolve(this.#materialization);
   }
 
-  crdtDocumentSnapshot(): Promise<SyncularV2CrdtDocumentSnapshot> {
+  crdtDocumentSnapshot(): Promise<SyncularCrdtDocumentSnapshot> {
     return Promise.resolve(
       this.#snapshot ?? {
         documentKey: 'tasks:task-1:title',
@@ -694,8 +694,8 @@ class FakeCrdtFieldHost implements SyncularCrdtProjectionHost {
   }
 
   crdtUpdateLog(
-    request: SyncularV2CrdtFieldRequest & { limit?: number }
-  ): Promise<SyncularV2CrdtUpdateLogEntry[]> {
+    request: SyncularCrdtFieldRequest & { limit?: number }
+  ): Promise<SyncularCrdtUpdateLogEntry[]> {
     this.updateLogRequests.push(request);
     return Promise.resolve(this.#updateLog.slice(0, request.limit));
   }
@@ -706,7 +706,7 @@ class FakeCrdtFieldHost implements SyncularCrdtProjectionHost {
     });
   }
 
-  async compactCrdtField(): Promise<SyncularV2CrdtFieldCompactionReceipt> {
+  async compactCrdtField(): Promise<SyncularCrdtFieldCompactionReceipt> {
     const stats = compactionStatsFromSnapshot(
       await this.crdtDocumentSnapshot()
     );
@@ -721,7 +721,7 @@ class FakeCrdtFieldHost implements SyncularCrdtProjectionHost {
   }
 
   addRowsChangedListener(
-    listener: (event: SyncularV2RowsChangedEvent) => void
+    listener: (event: SyncularRowsChangedEvent) => void
   ): () => void {
     this.#rowsChangedListeners.add(listener);
     return () => {
@@ -729,7 +729,7 @@ class FakeCrdtFieldHost implements SyncularCrdtProjectionHost {
     };
   }
 
-  emitRowsChanged(event: SyncularV2RowsChangedEvent): void {
+  emitRowsChanged(event: SyncularRowsChangedEvent): void {
     for (const listener of this.#rowsChangedListeners) listener(event);
   }
 }

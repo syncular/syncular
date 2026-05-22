@@ -1,6 +1,6 @@
 # @syncular/client
 
-Rust-owned SQLite browser client for Syncular v2.
+Rust-owned SQLite browser client for Syncular.
 
 This package is the TypeScript host binding over the Rust client. The browser
 runtime is a dedicated Worker that owns the Rust WASM module and SQLite handle.
@@ -631,26 +631,26 @@ prune old acked log entries without touching the canonical compact state.
 The generated JavaScript/WASM binding package under `rust/bindings/javascript`
 writes the full Rust WASM artifact to `dist/wasm`:
 
-- `syncular_v2.js`
-- `syncular_v2_bg.wasm`
-- `syncular-v2-runtime-artifact.json`
+- `syncular.js`
+- `syncular_bg.wasm`
+- `syncular-runtime-artifact.json`
 
 It also writes the core artifact to `dist/wasm-core` and the ordered catalog to
-`dist/syncular-v2-runtime-artifacts.json`.
+`dist/syncular-runtime-artifacts.json`.
 
 The default Worker resolves those assets relative to the package runtime.
 Generated app code can select from that catalog without changing the public
 query/mutation API:
 
 ```ts
-import { resolveSyncularV2RuntimeArtifactCatalog } from '@syncular/client';
+import { resolveSyncularRuntimeArtifactCatalog } from '@syncular/client';
 
-const catalogUrl = '/syncular/syncular-v2-runtime-artifacts.json';
+const catalogUrl = '/syncular/syncular-runtime-artifacts.json';
 const catalog = await fetch(catalogUrl).then((response) => response.json());
 
 await createSyncularAppDatabase({
   config,
-  runtimeArtifacts: resolveSyncularV2RuntimeArtifactCatalog(catalog, {
+  runtimeArtifacts: resolveSyncularRuntimeArtifactCatalog(catalog, {
     baseUrl: catalogUrl,
   }),
 });
@@ -672,10 +672,10 @@ SYNCULAR_WASM_GZIP_BUDGET_BYTES=1415578 \
 ```
 
 The check writes an attribution report to
-`.context/wasm-size/syncular-v2-wasm-size.txt` when run through
+`.context/wasm-size/syncular-wasm-size.txt` when run through
 `rust/bindings/javascript` `build:wasm` or `size:wasm:check`. Release builds
 also write a non-shipping optimized profile WASM to
-`.context/wasm-size/syncular_v2_bg.profile.wasm` before final custom section
+`.context/wasm-size/syncular_bg.profile.wasm` before final custom section
 stripping so attribution can keep symbol names when available.
 
 The current browser client is the canonical Rust-owned SQLite runtime wrapper
@@ -695,12 +695,12 @@ bun --cwd rust/bindings/javascript run catalog:wasm
 bun --cwd rust/bindings/javascript run size:wasm:core
 ```
 
-`build:wasm:core` writes `dist/wasm-core/syncular_v2.js` and
-`dist/wasm-core/syncular_v2_bg.wasm` with `web-owned-sqlite-core` only. That
+`build:wasm:core` writes `dist/wasm-core/syncular.js` and
+`dist/wasm-core/syncular_bg.wasm` with `web-owned-sqlite-core` only. That
 artifact does not include blob, CRDT/Yjs, or E2EE support. `catalog:wasm`
-combines `dist/wasm-core/syncular-v2-runtime-artifact.json` and
-`dist/wasm/syncular-v2-runtime-artifact.json` into the top-level
-`dist/syncular-v2-runtime-artifacts.json` catalog.
+combines `dist/wasm-core/syncular-runtime-artifact.json` and
+`dist/wasm/syncular-runtime-artifact.json` into the top-level
+`dist/syncular-runtime-artifacts.json` catalog.
 
 ## Package Scripts
 

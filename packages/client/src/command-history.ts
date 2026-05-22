@@ -8,9 +8,9 @@ import {
   type TableMutationsTx,
 } from './mutations';
 import type {
-  SyncularV2SqlClient,
-  SyncularV2TableConfigMap,
-  SyncularV2UnsafeSqlClient,
+  SyncularSqlClient,
+  SyncularTableConfigMap,
+  SyncularUnsafeSqlClient,
 } from './types';
 
 type AnyDb = Record<string, Record<string, unknown>>;
@@ -42,60 +42,60 @@ interface PendingCommandEntry {
   before: RowSnapshot;
 }
 
-export type SyncularV2CommandHistoryErrorCode =
+export type SyncularCommandHistoryErrorCode =
   | 'sync.command_history_empty'
   | 'sync.command_history_conflict'
   | 'sync.command_history_storage_unavailable'
   | 'sync.command_history_table_unsupported'
   | 'sync.command_history_unsafe_field';
 
-export class SyncularV2CommandHistoryError extends Error {
-  readonly code: SyncularV2CommandHistoryErrorCode;
+export class SyncularCommandHistoryError extends Error {
+  readonly code: SyncularCommandHistoryErrorCode;
   readonly commandId?: string;
 
   constructor(
-    code: SyncularV2CommandHistoryErrorCode,
+    code: SyncularCommandHistoryErrorCode,
     message: string,
     options: { commandId?: string } = {}
   ) {
     super(message);
-    this.name = 'SyncularV2CommandHistoryError';
+    this.name = 'SyncularCommandHistoryError';
     this.code = code;
     this.commandId = options.commandId;
   }
 }
 
-export interface SyncularV2CommandHistoryReceipt extends MutationReceipt {
+export interface SyncularCommandHistoryReceipt extends MutationReceipt {
   commandId: string;
 }
 
-export interface SyncularV2CommandHistory {
+export interface SyncularCommandHistory {
   canUndo(): Promise<boolean>;
   canRedo(): Promise<boolean>;
-  undoLast(): Promise<SyncularV2CommandHistoryReceipt>;
-  redoLast(): Promise<SyncularV2CommandHistoryReceipt>;
+  undoLast(): Promise<SyncularCommandHistoryReceipt>;
+  redoLast(): Promise<SyncularCommandHistoryReceipt>;
 }
 
-export interface SyncularV2CommandHistoryController<DB> {
-  history: SyncularV2CommandHistory;
+export interface SyncularCommandHistoryController<DB> {
+  history: SyncularCommandHistory;
   wrapMutations(
     mutations: MutationsApi<DB, undefined>,
     scope: MutationScope
   ): MutationsApi<DB, undefined>;
 }
 
-export interface CreateSyncularV2CommandHistoryOptions<DB> {
-  client: SyncularV2SqlClient & Partial<SyncularV2UnsafeSqlClient>;
-  tableConfig: SyncularV2TableConfigMap;
+export interface CreateSyncularCommandHistoryOptions<DB> {
+  client: SyncularSqlClient & Partial<SyncularUnsafeSqlClient>;
+  tableConfig: SyncularTableConfigMap;
   mutations: MutationsApi<DB, undefined>;
   leasedMutations: MutationsApi<DB, undefined>;
   nowMs?: () => number;
   idFactory?: () => string;
 }
 
-export function createSyncularV2CommandHistory<DB>(
-  options: CreateSyncularV2CommandHistoryOptions<DB>
-): SyncularV2CommandHistoryController<DB> {
+export function createSyncularCommandHistory<DB>(
+  options: CreateSyncularCommandHistoryOptions<DB>
+): SyncularCommandHistoryController<DB> {
   const store = new CommandHistoryStore(options);
   const history = new CommandHistory(options, store);
 
@@ -208,9 +208,9 @@ class PendingCommandRecorder<DB> {
   }
 }
 
-class CommandHistory<DB> implements SyncularV2CommandHistory {
+class CommandHistory<DB> implements SyncularCommandHistory {
   constructor(
-    private readonly options: CreateSyncularV2CommandHistoryOptions<DB>,
+    private readonly options: CreateSyncularCommandHistoryOptions<DB>,
     private readonly store: CommandHistoryStore<DB>
   ) {}
 
@@ -221,7 +221,7 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
   readRow(table: string, rowId: string): Promise<RowSnapshot> {
     const config = this.options.tableConfig[table];
     if (!config) {
-      throw new SyncularV2CommandHistoryError(
+      throw new SyncularCommandHistoryError(
         'sync.command_history_table_unsupported',
         `Cannot record undo history for unsupported table ${table}`
       );
@@ -252,11 +252,11 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
     return (await this.store.latest('undone')) !== null;
   }
 
-  async undoLast(): Promise<SyncularV2CommandHistoryReceipt> {
+  async undoLast(): Promise<SyncularCommandHistoryReceipt> {
     await this.ensureReady();
     const command = await this.store.latest('done');
     if (!command) {
-      throw new SyncularV2CommandHistoryError(
+      throw new SyncularCommandHistoryError(
         'sync.command_history_empty',
         'There is no Syncular command to undo'
       );
@@ -276,11 +276,11 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
     return { ...commit, commandId: command.id };
   }
 
-  async redoLast(): Promise<SyncularV2CommandHistoryReceipt> {
+  async redoLast(): Promise<SyncularCommandHistoryReceipt> {
     await this.ensureReady();
     const command = await this.store.latest('undone');
     if (!command) {
-      throw new SyncularV2CommandHistoryError(
+      throw new SyncularCommandHistoryError(
         'sync.command_history_empty',
         'There is no Syncular command to redo'
       );
@@ -308,7 +308,7 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
     for (const entry of entries) {
       const config = this.options.tableConfig[entry.table];
       if (!config) {
-        throw new SyncularV2CommandHistoryError(
+        throw new SyncularCommandHistoryError(
           'sync.command_history_table_unsupported',
           `Cannot replay undo history for unsupported table ${entry.table}`,
           { commandId }
@@ -316,7 +316,7 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
       }
       const current = await this.readRow(entry.table, entry.rowId);
       if (!sameReplaySnapshot(config, current, entry[expected])) {
-        throw new SyncularV2CommandHistoryError(
+        throw new SyncularCommandHistoryError(
           'sync.command_history_conflict',
           `Cannot ${expected === 'after' ? 'undo' : 'redo'} Syncular command ${commandId}; ${entry.table}.${entry.rowId} changed since the command was recorded`,
           { commandId }
@@ -332,7 +332,7 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
     for (const entry of entries) {
       const config = this.options.tableConfig[entry.table];
       if (!config) {
-        throw new SyncularV2CommandHistoryError(
+        throw new SyncularCommandHistoryError(
           'sync.command_history_table_unsupported',
           `Cannot replay undo history for unsupported table ${entry.table}`,
           { commandId }
@@ -340,7 +340,7 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
       }
       const unsafeFields = unsafeChangedFields(config, entry);
       if (unsafeFields.length > 0) {
-        throw new SyncularV2CommandHistoryError(
+        throw new SyncularCommandHistoryError(
           'sync.command_history_unsafe_field',
           `Cannot replay Syncular command ${commandId}; ${entry.table}.${entry.rowId} changed unsafe fields: ${unsafeFields.join(', ')}`,
           { commandId }
@@ -363,7 +363,7 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
           | TableMutationsTx<AnyDb, string>
           | undefined;
         if (!table) {
-          throw new SyncularV2CommandHistoryError(
+          throw new SyncularCommandHistoryError(
             'sync.command_history_table_unsupported',
             `Cannot apply undo history for unsupported table ${snapshot.table}`
           );
@@ -387,7 +387,7 @@ class CommandHistory<DB> implements SyncularV2CommandHistory {
   ): Record<string, unknown> {
     const config = this.options.tableConfig[table];
     if (!config) {
-      throw new SyncularV2CommandHistoryError(
+      throw new SyncularCommandHistoryError(
         'sync.command_history_table_unsupported',
         `Cannot apply undo history for unsupported table ${table}`
       );
@@ -406,7 +406,7 @@ class CommandHistoryStore<DB> {
   #ready: Promise<void> | undefined;
 
   constructor(
-    private readonly options: CreateSyncularV2CommandHistoryOptions<DB>
+    private readonly options: CreateSyncularCommandHistoryOptions<DB>
   ) {}
 
   ensureReady(): Promise<void> {
@@ -491,12 +491,12 @@ class CommandHistoryStore<DB> {
     );
   }
 
-  private unsafeClient(): SyncularV2UnsafeSqlClient {
+  private unsafeClient(): SyncularUnsafeSqlClient {
     const client = this.options.client;
     if (typeof client.executeUnsafeSql === 'function') {
-      return client as SyncularV2UnsafeSqlClient;
+      return client as SyncularUnsafeSqlClient;
     }
-    throw new SyncularV2CommandHistoryError(
+    throw new SyncularCommandHistoryError(
       'sync.command_history_storage_unavailable',
       'Syncular command history requires internal SQLite write access'
     );
@@ -508,7 +508,7 @@ class CommandHistoryStore<DB> {
 }
 
 async function readCurrentRow(
-  client: SyncularV2SqlClient,
+  client: SyncularSqlClient,
   table: string,
   idColumn: string,
   rowId: string
@@ -524,7 +524,7 @@ async function readCurrentRow(
 function decodeEntries(row: HistoryRow): CommandEntry[] {
   const entries = JSON.parse(row.entries_json) as CommandEntry[];
   if (!Array.isArray(entries)) {
-    throw new SyncularV2CommandHistoryError(
+    throw new SyncularCommandHistoryError(
       'sync.command_history_conflict',
       `Syncular command history row ${row.id} is malformed`,
       { commandId: row.id }
@@ -546,7 +546,7 @@ function sameSnapshot(left: RowSnapshot, right: RowSnapshot): boolean {
 }
 
 function sameReplaySnapshot(
-  config: SyncularV2TableConfigMap[string],
+  config: SyncularTableConfigMap[string],
   left: RowSnapshot,
   right: RowSnapshot
 ): boolean {
@@ -557,7 +557,7 @@ function sameReplaySnapshot(
 }
 
 function replayComparableSnapshot(
-  config: SyncularV2TableConfigMap[string],
+  config: SyncularTableConfigMap[string],
   snapshot: RowSnapshot
 ): RowSnapshot {
   if (snapshot === null) return null;
@@ -570,7 +570,7 @@ function replayComparableSnapshot(
 }
 
 function unsafeChangedFields(
-  config: SyncularV2TableConfigMap[string],
+  config: SyncularTableConfigMap[string],
   entry: CommandEntry
 ): string[] {
   const rowLifecycleReplay = entry.before === null || entry.after === null;

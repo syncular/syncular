@@ -11,14 +11,14 @@ import {
 import path from 'node:path';
 import { gzipSync } from 'node:zlib';
 import {
-  SYNCULAR_V2_CLIENT_PACKAGE_NAME,
-  SYNCULAR_V2_CLIENT_PACKAGE_VERSION,
-  SYNCULAR_V2_CORE_RUNTIME_FEATURES,
-  SYNCULAR_V2_FULL_RUNTIME_FEATURES,
-  SYNCULAR_V2_WASM_ARTIFACT_FILE,
-  SYNCULAR_V2_WASM_BINARY_FILE,
-  SYNCULAR_V2_WASM_GLUE_FILE,
-  SYNCULAR_V2_WASM_OUT_NAME,
+  SYNCULAR_CLIENT_PACKAGE_NAME,
+  SYNCULAR_CLIENT_PACKAGE_VERSION,
+  SYNCULAR_CORE_RUNTIME_FEATURES,
+  SYNCULAR_FULL_RUNTIME_FEATURES,
+  SYNCULAR_WASM_ARTIFACT_FILE,
+  SYNCULAR_WASM_BINARY_FILE,
+  SYNCULAR_WASM_GLUE_FILE,
+  SYNCULAR_WASM_OUT_NAME,
 } from '../src/runtime-contract';
 
 const packageRoot = path.resolve(import.meta.dir, '..');
@@ -27,10 +27,7 @@ const outDir = path.resolve(
   packageRoot,
   readArgValue('--out-dir') ?? 'dist/wasm'
 );
-const buildLockDir = path.join(
-  packageRoot,
-  'dist/.syncular-v2-wasm-build.lock'
-);
+const buildLockDir = path.join(packageRoot, 'dist/.syncular-wasm-build.lock');
 const sizeReportDir = path.join(repoRoot, '.context/wasm-size');
 const buildLockStaleMs = 10 * 60 * 1000;
 const dev = process.argv.includes('--dev');
@@ -49,14 +46,14 @@ const wasmClang =
 const clientPackageJson = JSON.parse(
   readFileSync(path.join(repoRoot, 'packages/client/package.json'), 'utf8')
 ) as { name?: string; version?: string };
-if (clientPackageJson.name !== SYNCULAR_V2_CLIENT_PACKAGE_NAME) {
+if (clientPackageJson.name !== SYNCULAR_CLIENT_PACKAGE_NAME) {
   throw new Error(
-    `runtime contract package name ${SYNCULAR_V2_CLIENT_PACKAGE_NAME} does not match packages/client/package.json ${clientPackageJson.name}`
+    `runtime contract package name ${SYNCULAR_CLIENT_PACKAGE_NAME} does not match packages/client/package.json ${clientPackageJson.name}`
   );
 }
-if (clientPackageJson.version !== SYNCULAR_V2_CLIENT_PACKAGE_VERSION) {
+if (clientPackageJson.version !== SYNCULAR_CLIENT_PACKAGE_VERSION) {
   throw new Error(
-    `runtime contract package version ${SYNCULAR_V2_CLIENT_PACKAGE_VERSION} does not match packages/client/package.json ${clientPackageJson.version}`
+    `runtime contract package version ${SYNCULAR_CLIENT_PACKAGE_VERSION} does not match packages/client/package.json ${clientPackageJson.version}`
   );
 }
 
@@ -81,7 +78,7 @@ const args = [
   '--out-dir',
   path.relative(path.join(repoRoot, 'rust/crates/runtime'), outDir),
   '--out-name',
-  SYNCULAR_V2_WASM_OUT_NAME,
+  SYNCULAR_WASM_OUT_NAME,
   ...(dev ? ['--dev'] : []),
   '--no-pack',
   '--',
@@ -104,7 +101,7 @@ const result = Bun.spawnSync(['wasm-pack', ...args], {
 });
 
 if (result.exitCode !== 0) {
-  console.error('[syncular-v2-wasm] wasm-pack failed');
+  console.error('[syncular-wasm] wasm-pack failed');
   console.error(result.stdout.toString());
   console.error(result.stderr.toString());
   process.exit(result.exitCode);
@@ -112,22 +109,19 @@ if (result.exitCode !== 0) {
 
 const profile = dev ? 'dev' : 'release';
 rmSync(path.join(outDir, '.gitignore'), { force: true });
-for (const fileName of [
-  SYNCULAR_V2_WASM_GLUE_FILE,
-  SYNCULAR_V2_WASM_BINARY_FILE,
-]) {
+for (const fileName of [SYNCULAR_WASM_GLUE_FILE, SYNCULAR_WASM_BINARY_FILE]) {
   const filePath = path.join(outDir, fileName);
   if (!existsSync(filePath)) {
-    throw new Error(`[syncular-v2-wasm] expected ${filePath} to exist`);
+    throw new Error(`[syncular-wasm] expected ${filePath} to exist`);
   }
 }
-const wasmPath = path.join(outDir, SYNCULAR_V2_WASM_BINARY_FILE);
+const wasmPath = path.join(outDir, SYNCULAR_WASM_BINARY_FILE);
 if (!dev) {
   optimizeWasmRelease(wasmPath);
   writeWasmProfileArtifact(wasmPath);
 }
 stripWasmCustomSections(wasmPath);
-writeFileSync(path.join(outDir, '.syncular-v2-wasm-profile'), `${profile}\n`);
+writeFileSync(path.join(outDir, '.syncular-wasm-profile'), `${profile}\n`);
 writeRuntimeArtifactManifest({
   artifactName,
   outDir,
@@ -137,7 +131,7 @@ writeRuntimeArtifactManifest({
   wasmPath,
 });
 console.log(
-  `[syncular-v2-wasm] built ${profile} ${wasmVariant} rust-owned SQLite artifact (${wasmFeatures}) in ${outDir}`
+  `[syncular-wasm] built ${profile} ${wasmVariant} rust-owned SQLite artifact (${wasmFeatures}) in ${outDir}`
 );
 
 async function acquireBuildLock(): Promise<() => void> {
@@ -183,7 +177,7 @@ async function acquireBuildLock(): Promise<() => void> {
   }
 
   throw new Error(
-    `[syncular-v2-wasm] timed out waiting for build lock at ${buildLockDir}`
+    `[syncular-wasm] timed out waiting for build lock at ${buildLockDir}`
   );
 }
 
@@ -213,14 +207,14 @@ function writeRuntimeArtifactManifest(options: {
     features: runtimeFeaturesForRustFeatures(options.wasmFeatures),
     rustFeatures: rustFeatureList(options.wasmFeatures),
     files: {
-      wasmGlue: SYNCULAR_V2_WASM_GLUE_FILE,
-      wasm: SYNCULAR_V2_WASM_BINARY_FILE,
+      wasmGlue: SYNCULAR_WASM_GLUE_FILE,
+      wasm: SYNCULAR_WASM_BINARY_FILE,
     },
     rawBytes: statSync(options.wasmPath).size,
     gzipBytes: gzipSync(wasm).byteLength,
   };
   writeFileSync(
-    path.join(options.outDir, SYNCULAR_V2_WASM_ARTIFACT_FILE),
+    path.join(options.outDir, SYNCULAR_WASM_ARTIFACT_FILE),
     `${JSON.stringify(manifest, null, 2)}\n`
   );
 }
@@ -230,10 +224,10 @@ function runtimeFeaturesForRustFeatures(
 ): readonly string[] {
   const rustFeatures = new Set(rustFeatureList(wasmFeaturesValue));
   if (rustFeatures.has('web-owned-sqlite')) {
-    return SYNCULAR_V2_FULL_RUNTIME_FEATURES;
+    return SYNCULAR_FULL_RUNTIME_FEATURES;
   }
 
-  const features = new Set<string>(SYNCULAR_V2_CORE_RUNTIME_FEATURES);
+  const features = new Set<string>(SYNCULAR_CORE_RUNTIME_FEATURES);
   if (rustFeatures.has('web-blobs')) features.add('blobs');
   if (rustFeatures.has('crdt-yjs')) features.add('crdt-yjs');
   if (rustFeatures.has('e2ee')) features.add('e2ee');
@@ -262,7 +256,7 @@ function optimizeWasmRelease(wasmPath: string): void {
   if (version.exitCode !== 0) {
     throw new Error(
       [
-        '[syncular-v2-wasm] release builds require wasm-opt for package size.',
+        '[syncular-wasm] release builds require wasm-opt for package size.',
         'Install Binaryen (`brew install binaryen`, `apt install binaryen`, or equivalent) and rerun build:wasm.',
       ].join(' ')
     );
@@ -287,7 +281,7 @@ function optimizeWasmRelease(wasmPath: string): void {
     }
   );
   if (result.exitCode !== 0) {
-    console.error('[syncular-v2-wasm] wasm-opt failed');
+    console.error('[syncular-wasm] wasm-opt failed');
     console.error(result.stdout.toString());
     console.error(result.stderr.toString());
     process.exit(result.exitCode);
@@ -301,7 +295,7 @@ function writeWasmProfileArtifact(wasmPath: string): void {
     wasmPath,
     path.join(
       sizeReportDir,
-      SYNCULAR_V2_WASM_BINARY_FILE.replace(/\.wasm$/, '.profile.wasm')
+      SYNCULAR_WASM_BINARY_FILE.replace(/\.wasm$/, '.profile.wasm')
     )
   );
 }
@@ -315,7 +309,7 @@ function stripWasmCustomSections(wasmPath: string): void {
     input[2] !== 0x73 ||
     input[3] !== 0x6d
   ) {
-    throw new Error(`[syncular-v2-wasm] invalid wasm binary: ${wasmPath}`);
+    throw new Error(`[syncular-wasm] invalid wasm binary: ${wasmPath}`);
   }
 
   const chunks: Uint8Array[] = [input.subarray(0, 8)];
@@ -328,7 +322,7 @@ function stripWasmCustomSections(wasmPath: string): void {
     const payloadStart = offset;
     const payloadEnd = payloadStart + size.value;
     if (payloadEnd > input.length) {
-      throw new Error(`[syncular-v2-wasm] corrupt wasm section in ${wasmPath}`);
+      throw new Error(`[syncular-wasm] corrupt wasm section in ${wasmPath}`);
     }
     if (id !== 0) {
       chunks.push(input.subarray(sectionStart, payloadEnd));
@@ -362,5 +356,5 @@ function readLebU32(
     shift += 7;
     if (shift > 35) break;
   }
-  throw new Error('[syncular-v2-wasm] invalid wasm section size');
+  throw new Error('[syncular-wasm] invalid wasm section size');
 }

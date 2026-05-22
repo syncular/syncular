@@ -1,10 +1,10 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import {
-  SYNCULAR_V2_CLIENT_PACKAGE_NAME,
-  SYNCULAR_V2_CLIENT_PACKAGE_VERSION,
-  SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE,
-  SYNCULAR_V2_WASM_ARTIFACT_FILE,
+  SYNCULAR_CLIENT_PACKAGE_NAME,
+  SYNCULAR_CLIENT_PACKAGE_VERSION,
+  SYNCULAR_WASM_ARTIFACT_CATALOG_FILE,
+  SYNCULAR_WASM_ARTIFACT_FILE,
 } from '../src/runtime-contract';
 
 interface RuntimeArtifactManifest {
@@ -24,7 +24,7 @@ interface RuntimeArtifactManifest {
 const packageRoot = path.resolve(import.meta.dir, '..');
 const outPath = path.resolve(
   packageRoot,
-  readArgValue('--out') ?? `dist/${SYNCULAR_V2_WASM_ARTIFACT_CATALOG_FILE}`
+  readArgValue('--out') ?? `dist/${SYNCULAR_WASM_ARTIFACT_CATALOG_FILE}`
 );
 const artifactDirs = readArgValues('--artifact').map((dir) =>
   path.resolve(packageRoot, dir)
@@ -38,8 +38,8 @@ if (artifactDirs.length === 0) {
 
 const catalog = {
   catalogVersion: 1,
-  packageName: SYNCULAR_V2_CLIENT_PACKAGE_NAME,
-  packageVersion: SYNCULAR_V2_CLIENT_PACKAGE_VERSION,
+  packageName: SYNCULAR_CLIENT_PACKAGE_NAME,
+  packageVersion: SYNCULAR_CLIENT_PACKAGE_VERSION,
   generatedAt: new Date().toISOString(),
   artifacts: artifactDirs.map(readArtifact),
 };
@@ -47,11 +47,11 @@ const catalog = {
 mkdirSync(path.dirname(outPath), { recursive: true });
 writeFileSync(outPath, `${JSON.stringify(catalog, null, 2)}\n`);
 console.log(
-  `[syncular-v2-wasm] wrote runtime artifact catalog with ${catalog.artifacts.length} artifacts to ${outPath}`
+  `[syncular-wasm] wrote runtime artifact catalog with ${catalog.artifacts.length} artifacts to ${outPath}`
 );
 
 function readArtifact(artifactDir: string) {
-  const manifestPath = path.join(artifactDir, SYNCULAR_V2_WASM_ARTIFACT_FILE);
+  const manifestPath = path.join(artifactDir, SYNCULAR_WASM_ARTIFACT_FILE);
   const manifest = JSON.parse(
     readFileSync(manifestPath, 'utf8')
   ) as RuntimeArtifactManifest;

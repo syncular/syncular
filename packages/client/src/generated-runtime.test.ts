@@ -5,15 +5,15 @@ import {
   syncularGeneratedSchemaVersion,
 } from '../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import {
-  SYNCULAR_V2_PACKAGE_NAME,
-  SYNCULAR_V2_PACKAGE_VERSION,
-  SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+  SYNCULAR_PACKAGE_NAME,
+  SYNCULAR_PACKAGE_VERSION,
+  SYNCULAR_WORKER_PROTOCOL_VERSION,
 } from './runtime-contract';
-import type { SyncularV2RuntimeInfo } from './types';
-import { resolveSyncularV2RuntimeArtifactCatalog } from './wasm-runtime';
+import type { SyncularRuntimeInfo } from './types';
+import { resolveSyncularRuntimeArtifactCatalog } from './wasm-runtime';
 
-describe('generated Syncular v2 runtime assertions', () => {
-  it('accepts the matching v2 runtime manifest', () => {
+describe('generated Syncular runtime assertions', () => {
+  it('accepts the matching runtime manifest', () => {
     expect(() => assertSyncularAppRuntimeInfo(runtimeInfo())).not.toThrow();
   });
 
@@ -21,7 +21,7 @@ describe('generated Syncular v2 runtime assertions', () => {
     expect(() =>
       assertSyncularAppRuntimeInfo(
         runtimeInfo({
-          workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION + 1,
+          workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION + 1,
         })
       )
     ).toThrow('Syncular worker protocol mismatch');
@@ -114,17 +114,17 @@ describe('generated Syncular v2 runtime assertions', () => {
   });
 
   it('resolves generated artifact catalogs relative to their catalog URL', () => {
-    const artifacts = resolveSyncularV2RuntimeArtifactCatalog(
+    const artifacts = resolveSyncularRuntimeArtifactCatalog(
       {
         catalogVersion: 1,
-        packageName: SYNCULAR_V2_PACKAGE_NAME,
-        packageVersion: SYNCULAR_V2_PACKAGE_VERSION,
+        packageName: SYNCULAR_PACKAGE_NAME,
+        packageVersion: SYNCULAR_PACKAGE_VERSION,
         artifacts: [
           {
             name: 'core',
             features: ['web-owned-sqlite-core'],
-            wasmGlueUrl: 'wasm-core/syncular_v2.js',
-            wasmUrl: 'wasm-core/syncular_v2_bg.wasm',
+            wasmGlueUrl: 'wasm-core/syncular.js',
+            wasmUrl: 'wasm-core/syncular_bg.wasm',
           },
           {
             name: 'full',
@@ -135,20 +135,20 @@ describe('generated Syncular v2 runtime assertions', () => {
               'crdt-yjs',
               'e2ee',
             ],
-            wasmGlueUrl: 'wasm/syncular_v2.js',
-            wasmUrl: 'wasm/syncular_v2_bg.wasm',
+            wasmGlueUrl: 'wasm/syncular.js',
+            wasmUrl: 'wasm/syncular_bg.wasm',
           },
         ],
       },
-      { baseUrl: '/syncular/syncular-v2-runtime-artifacts.json' }
+      { baseUrl: '/syncular/syncular-runtime-artifacts.json' }
     );
 
     expect(artifacts).toEqual([
       {
         name: 'core',
         features: ['web-owned-sqlite-core'],
-        wasmGlueUrl: '/syncular/wasm-core/syncular_v2.js',
-        wasmUrl: '/syncular/wasm-core/syncular_v2_bg.wasm',
+        wasmGlueUrl: '/syncular/wasm-core/syncular.js',
+        wasmUrl: '/syncular/wasm-core/syncular_bg.wasm',
       },
       {
         name: 'full',
@@ -159,30 +159,30 @@ describe('generated Syncular v2 runtime assertions', () => {
           'crdt-yjs',
           'e2ee',
         ],
-        wasmGlueUrl: '/syncular/wasm/syncular_v2.js',
-        wasmUrl: '/syncular/wasm/syncular_v2_bg.wasm',
+        wasmGlueUrl: '/syncular/wasm/syncular.js',
+        wasmUrl: '/syncular/wasm/syncular_bg.wasm',
       },
     ]);
   });
 });
 
 function runtimeInfo(
-  overrides: Partial<SyncularV2RuntimeInfo> = {}
-): SyncularV2RuntimeInfo {
+  overrides: Partial<SyncularRuntimeInfo> = {}
+): SyncularRuntimeInfo {
   return {
-    packageName: SYNCULAR_V2_PACKAGE_NAME,
-    packageVersion: SYNCULAR_V2_PACKAGE_VERSION,
-    workerProtocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+    packageName: SYNCULAR_PACKAGE_NAME,
+    packageVersion: SYNCULAR_PACKAGE_VERSION,
+    workerProtocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
     storage: 'opfsSahPool',
-    workerUrl: 'http://localhost/syncular-v2-worker.js',
-    wasmGlueUrl: 'http://localhost/wasm/syncular_v2.js',
-    wasmUrl: 'http://localhost/wasm/syncular_v2_bg.wasm',
+    workerUrl: 'http://localhost/syncular-worker.js',
+    wasmGlueUrl: 'http://localhost/wasm/syncular.js',
+    wasmUrl: 'http://localhost/wasm/syncular_bg.wasm',
     rust: baseRustRuntimeInfo(),
     ...overrides,
   };
 }
 
-function baseRustRuntimeInfo(): NonNullable<SyncularV2RuntimeInfo['rust']> {
+function baseRustRuntimeInfo(): NonNullable<SyncularRuntimeInfo['rust']> {
   return {
     crateName: 'syncular-runtime',
     crateVersion: '0.1.0',

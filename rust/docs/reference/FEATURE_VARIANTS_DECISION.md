@@ -57,7 +57,7 @@ no-E2EE builds. The canonical browser artifact still enables
 `web-owned-sqlite`, which enables `e2ee`.
 
 Measured release budgets are enforced in
-`rust/bindings/browser/scripts/size-syncular-v2-wasm.ts` and documented in
+`rust/bindings/browser/scripts/size-syncular-wasm.ts` and documented in
 `rust/bindings/browser/README.md`.
 
 Latest local optimized measurements:
@@ -77,8 +77,8 @@ place.
 
 Variant build metadata now exists. The package `build` runs
 `build:wasm:variants`, which writes
-`syncular-v2-runtime-artifact.json` next to `dist/wasm` and `dist/wasm-core`,
-then writes `dist/syncular-v2-runtime-artifacts.json` with ordered artifact
+`syncular-runtime-artifact.json` next to `dist/wasm` and `dist/wasm-core`,
+then writes `dist/syncular-runtime-artifacts.json` with ordered artifact
 URLs, Rust features, runtime features, and raw/gzip sizes.
 
 Direct Rust WebSocket transport is no longer a browser artifact boundary. The
@@ -189,7 +189,7 @@ artifact that satisfies those requirements.
 
 Do not publish separate wrapper packages. Local commands can build the core
 artifact into `dist/wasm-core` and a catalog into
-`dist/syncular-v2-runtime-artifacts.json` for app experiments. The
+`dist/syncular-runtime-artifacts.json` for app experiments. The
 `test:wasm:variants` suite covers a basic non-CRDT/non-E2EE Worker open, local
 mutation/query, Hono push/pull between two core WASM clients, and CRDT/blob
 schema rejection against the core artifact. Direct Rust websocket/realtime was

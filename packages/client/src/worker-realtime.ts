@@ -1,35 +1,33 @@
 import {
-  createSyncularV2SyncAttempt,
-  syncularV2DiagnosticAttemptFields,
+  createSyncularSyncAttempt,
+  syncularDiagnosticAttemptFields,
 } from './diagnostics';
 import type {
-  SyncularV2ClientConfig,
-  SyncularV2DiagnosticEvent,
-  SyncularV2LiveQueryEvent,
-  SyncularV2RealtimeConnectionState,
-  SyncularV2SyncRequestOptions,
-  SyncularV2SyncResult,
+  SyncularClientConfig,
+  SyncularDiagnosticEvent,
+  SyncularLiveQueryEvent,
+  SyncularRealtimeConnectionState,
+  SyncularSyncRequestOptions,
+  SyncularSyncResult,
 } from './types';
 import type {
-  SyncularV2WorkerEvent,
-  SyncularV2WorkerRealtimeOptions,
+  SyncularWorkerEvent,
+  SyncularWorkerRealtimeOptions,
 } from './worker-protocol';
 import {
-  createSyncularV2WorkerErrorPayload,
-  SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+  createSyncularWorkerErrorPayload,
+  SYNCULAR_WORKER_PROTOCOL_VERSION,
 } from './worker-protocol';
 
-export interface SyncularV2WorkerRealtimeClient {
-  syncPull(
-    options?: SyncularV2SyncRequestOptions
-  ): Promise<SyncularV2SyncResult>;
-  applyRealtimeSyncPack?(bytes: Uint8Array): Promise<SyncularV2SyncResult>;
+export interface SyncularWorkerRealtimeClient {
+  syncPull(options?: SyncularSyncRequestOptions): Promise<SyncularSyncResult>;
+  applyRealtimeSyncPack?(bytes: Uint8Array): Promise<SyncularSyncResult>;
   drainLiveQueryEvents<
     Row extends Record<string, unknown> = Record<string, unknown>,
-  >(): Array<SyncularV2LiveQueryEvent<Row>>;
+  >(): Array<SyncularLiveQueryEvent<Row>>;
 }
 
-interface SyncularV2RealtimeSyncMessage {
+interface SyncularRealtimeSyncMessage {
   cursor?: number;
   reason?: string | null;
   requiresPull?: boolean;
@@ -37,7 +35,7 @@ interface SyncularV2RealtimeSyncMessage {
   syncPackBytes?: Uint8Array;
 }
 
-interface SyncularV2RealtimeHelloMessage {
+interface SyncularRealtimeHelloMessage {
   protocolVersion?: number;
   sessionId?: string;
   shardKey?: string;
@@ -48,7 +46,7 @@ interface SyncularV2RealtimeHelloMessage {
   syncPackEncoding?: string | null;
 }
 
-interface SyncularV2RealtimePresenceMessage {
+interface SyncularRealtimePresenceMessage {
   action: 'join' | 'leave' | 'update' | 'snapshot';
   scopeKey: string;
   clientId?: string;
@@ -62,7 +60,7 @@ interface SyncularV2RealtimePresenceMessage {
   }>;
 }
 
-export interface SyncularV2WorkerRealtimeSocket {
+export interface SyncularWorkerRealtimeSocket {
   onopen: ((event: Event) => void) | null;
   onmessage: ((event: MessageEvent) => void) | null;
   onerror: ((event: Event) => void) | null;
@@ -71,23 +69,23 @@ export interface SyncularV2WorkerRealtimeSocket {
   close(): void;
 }
 
-export interface SyncularV2WorkerRealtimeControllerOptions {
-  getClient(): SyncularV2WorkerRealtimeClient;
-  getConfig(): SyncularV2ClientConfig | undefined;
+export interface SyncularWorkerRealtimeControllerOptions {
+  getClient(): SyncularWorkerRealtimeClient;
+  getConfig(): SyncularClientConfig | undefined;
   getLocationOrigin(): string;
-  createWebSocket(url: string): SyncularV2WorkerRealtimeSocket;
-  postEvent(event: SyncularV2WorkerEvent): void;
+  createWebSocket(url: string): SyncularWorkerRealtimeSocket;
+  postEvent(event: SyncularWorkerEvent): void;
   postDiagnostic?: (
-    event: Omit<SyncularV2DiagnosticEvent, 'at'> & { at?: number }
+    event: Omit<SyncularDiagnosticEvent, 'at'> & { at?: number }
   ) => void;
   setTimeout?: typeof setTimeout;
   clearTimeout?: typeof clearTimeout;
 }
 
-export class SyncularV2WorkerRealtimeController {
-  #socket: SyncularV2WorkerRealtimeSocket | undefined;
-  #state: SyncularV2RealtimeConnectionState = 'disconnected';
-  #options: SyncularV2WorkerRealtimeOptions | undefined;
+export class SyncularWorkerRealtimeController {
+  #socket: SyncularWorkerRealtimeSocket | undefined;
+  #state: SyncularRealtimeConnectionState = 'disconnected';
+  #options: SyncularWorkerRealtimeOptions | undefined;
   #reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   #heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
   #reconnectAttempts = 0;
@@ -98,7 +96,7 @@ export class SyncularV2WorkerRealtimeController {
   readonly #clearTimeout: typeof clearTimeout;
 
   constructor(
-    private readonly controllerOptions: SyncularV2WorkerRealtimeControllerOptions
+    private readonly controllerOptions: SyncularWorkerRealtimeControllerOptions
   ) {
     this.#setTimeout =
       controllerOptions.setTimeout ??
@@ -108,11 +106,11 @@ export class SyncularV2WorkerRealtimeController {
       (globalThis.clearTimeout.bind(globalThis) as typeof clearTimeout);
   }
 
-  start(options: SyncularV2WorkerRealtimeOptions): void {
+  start(options: SyncularWorkerRealtimeOptions): void {
     if (!this.controllerOptions.getConfig()) {
-      throw createSyncularV2WorkerErrorPayload(
+      throw createSyncularWorkerErrorPayload(
         'worker.not_open',
-        'Syncular v2 worker client is not open'
+        'Syncular worker client is not open'
       );
     }
     this.stop();
@@ -142,8 +140,7 @@ export class SyncularV2WorkerRealtimeController {
       this.#diagnostic({
         level: 'warn',
         code: 'realtime.presence_not_connected',
-        message:
-          'Syncular v2 realtime presence send skipped while disconnected',
+        message: 'Syncular realtime presence send skipped while disconnected',
         details: { action, scopeKey },
       });
       return;
@@ -167,10 +164,10 @@ export class SyncularV2WorkerRealtimeController {
     this.#clearHeartbeatTimer();
     this.#setState('connecting');
 
-    let socket: SyncularV2WorkerRealtimeSocket;
+    let socket: SyncularWorkerRealtimeSocket;
     try {
       socket = this.controllerOptions.createWebSocket(
-        resolveSyncularV2RealtimeUrl(
+        resolveSyncularRealtimeUrl(
           config,
           options,
           this.controllerOptions.getLocationOrigin()
@@ -180,7 +177,7 @@ export class SyncularV2WorkerRealtimeController {
       this.#diagnostic({
         level: 'warn',
         code: 'realtime.connect_failed',
-        message: 'Syncular v2 realtime websocket creation failed',
+        message: 'Syncular realtime websocket creation failed',
         details: { attempt: this.#reconnectAttempts + 1 },
       });
       this.#scheduleReconnect();
@@ -204,7 +201,7 @@ export class SyncularV2WorkerRealtimeController {
       this.#diagnostic({
         level: 'warn',
         code: 'realtime.socket_error',
-        message: 'Syncular v2 realtime websocket reported an error',
+        message: 'Syncular realtime websocket reported an error',
       });
       this.#reconnect();
     };
@@ -215,7 +212,7 @@ export class SyncularV2WorkerRealtimeController {
   }
 
   async #handleMessage(
-    socket: SyncularV2WorkerRealtimeSocket,
+    socket: SyncularWorkerRealtimeSocket,
     data: MessageEvent['data']
   ): Promise<void> {
     const bytes = await readRealtimeMessageBytes(data);
@@ -224,7 +221,7 @@ export class SyncularV2WorkerRealtimeController {
       this.#diagnostic({
         level: 'debug',
         code: 'realtime.sync_wakeup',
-        message: 'Syncular v2 realtime binary sync-pack received',
+        message: 'Syncular realtime binary sync-pack received',
         details: {
           bytes: bytes.byteLength,
         },
@@ -242,31 +239,31 @@ export class SyncularV2WorkerRealtimeController {
     } catch {
       return;
     }
-    const helloMessage = readSyncularV2RealtimeHelloMessage(message);
+    const helloMessage = readSyncularRealtimeHelloMessage(message);
     if (helloMessage) {
       this.#diagnostic({
         level: 'debug',
         code: 'realtime.hello',
-        message: 'Syncular v2 realtime session accepted',
+        message: 'Syncular realtime session accepted',
         details: { ...helloMessage },
       });
       return;
     }
-    const presenceMessage = readSyncularV2RealtimePresenceMessage(message);
+    const presenceMessage = readSyncularRealtimePresenceMessage(message);
     if (presenceMessage) {
       this.controllerOptions.postEvent({
-        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
         type: 'presenceEvent',
         ...presenceMessage,
       });
       return;
     }
-    const syncMessage = readSyncularV2RealtimeSyncMessage(message);
+    const syncMessage = readSyncularRealtimeSyncMessage(message);
     if (syncMessage) {
       this.#diagnostic({
         level: 'debug',
         code: 'realtime.sync_wakeup',
-        message: 'Syncular v2 realtime sync wakeup received',
+        message: 'Syncular realtime sync wakeup received',
         details: {
           reason: syncMessage.reason ?? null,
           requiresPull: syncMessage.requiresPull === true,
@@ -294,7 +291,7 @@ export class SyncularV2WorkerRealtimeController {
     this.#diagnostic({
       level: 'info',
       code: 'realtime.reconnect_scheduled',
-      message: 'Syncular v2 realtime reconnect scheduled',
+      message: 'Syncular realtime reconnect scheduled',
       details: {
         attempt: this.#reconnectAttempts + 1,
         delayMs: delay,
@@ -304,7 +301,7 @@ export class SyncularV2WorkerRealtimeController {
     this.#reconnectTimer = this.#setTimeout(() => this.#connect(), delay);
   }
 
-  #scheduleSync(message?: SyncularV2RealtimeSyncMessage): void {
+  #scheduleSync(message?: SyncularRealtimeSyncMessage): void {
     if (this.#stopped) return;
     if (this.#syncInFlight) {
       this.#syncAgain = true;
@@ -313,20 +310,20 @@ export class SyncularV2WorkerRealtimeController {
     this.#syncInFlight = this.#runSync(message);
   }
 
-  async #runSync(message?: SyncularV2RealtimeSyncMessage): Promise<void> {
+  async #runSync(message?: SyncularRealtimeSyncMessage): Promise<void> {
     const socket = this.#socket;
     try {
       const result = await this.#syncForMessage(message);
       if (this.#stopped) return;
       this.#ackRealtimeCursor(socket, message, result);
       this.controllerOptions.postEvent({
-        protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+        protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
         type: 'bootstrapChanged',
         bootstrap: result.bootstrap,
       });
       if (result.changedTables.length > 0 || result.changedRows.length > 0) {
         this.controllerOptions.postEvent({
-          protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+          protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
           type: 'rowsChanged',
           source: 'remotePull',
           changedTables: result.changedTables,
@@ -339,7 +336,7 @@ export class SyncularV2WorkerRealtimeController {
         .drainLiveQueryEvents<Record<string, unknown>>();
       if (events.length > 0) {
         this.controllerOptions.postEvent({
-          protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+          protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
           type: 'liveQueryEvents',
           events,
         });
@@ -348,7 +345,7 @@ export class SyncularV2WorkerRealtimeController {
       this.#diagnostic({
         level: 'warn',
         code: 'realtime.sync_pull_failed',
-        message: 'Syncular v2 realtime-triggered pull failed',
+        message: 'Syncular realtime-triggered pull failed',
       });
       // Realtime is best-effort. Explicit sync methods still surface errors.
     } finally {
@@ -361,9 +358,9 @@ export class SyncularV2WorkerRealtimeController {
   }
 
   #ackRealtimeCursor(
-    socket: SyncularV2WorkerRealtimeSocket | undefined,
-    message: SyncularV2RealtimeSyncMessage | undefined,
-    result: SyncularV2SyncResult
+    socket: SyncularWorkerRealtimeSocket | undefined,
+    message: SyncularRealtimeSyncMessage | undefined,
+    result: SyncularSyncResult
   ): void {
     if (!socket || socket !== this.#socket) return;
     const subscriptionCursor = result.subscriptions.reduce(
@@ -383,30 +380,30 @@ export class SyncularV2WorkerRealtimeController {
       this.#diagnostic({
         level: 'debug',
         code: 'realtime.ack_sent',
-        message: 'Syncular v2 realtime cursor ack sent',
+        message: 'Syncular realtime cursor ack sent',
         details: { cursor },
       });
     } catch {
       this.#diagnostic({
         level: 'warn',
         code: 'realtime.ack_failed',
-        message: 'Syncular v2 realtime cursor ack failed',
+        message: 'Syncular realtime cursor ack failed',
         details: { cursor },
       });
     }
   }
 
   async #syncForMessage(
-    message: SyncularV2RealtimeSyncMessage | undefined
-  ): Promise<SyncularV2SyncResult> {
+    message: SyncularRealtimeSyncMessage | undefined
+  ): Promise<SyncularSyncResult> {
     const client = this.controllerOptions.getClient();
     if (message && realtimeMessageRequiresPull(message)) {
-      const syncAttempt = createSyncularV2SyncAttempt();
+      const syncAttempt = createSyncularSyncAttempt();
       this.#diagnostic({
         level: 'debug',
         code: 'realtime.pull_required',
-        message: 'Syncular v2 realtime event requires HTTP pull recovery',
-        ...syncularV2DiagnosticAttemptFields(syncAttempt),
+        message: 'Syncular realtime event requires HTTP pull recovery',
+        ...syncularDiagnosticAttemptFields(syncAttempt),
         details: {
           cursor: message.cursor ?? null,
           reason: message.reason ?? null,
@@ -426,7 +423,7 @@ export class SyncularV2WorkerRealtimeController {
         this.#diagnostic({
           level: 'debug',
           code: 'realtime.binary_applied',
-          message: 'Syncular v2 realtime binary sync-pack applied',
+          message: 'Syncular realtime binary sync-pack applied',
           details: {
             bytes: message.syncPackBytes.byteLength,
             totalMs: result.timings.totalMs,
@@ -447,19 +444,19 @@ export class SyncularV2WorkerRealtimeController {
           level: 'warn',
           code: 'realtime.binary_apply_failed',
           message:
-            'Syncular v2 realtime binary sync-pack apply failed; using HTTP pull recovery',
+            'Syncular realtime binary sync-pack apply failed; using HTTP pull recovery',
           details: {
             bytes: message.syncPackBytes.byteLength,
           },
         });
       }
     }
-    const syncAttempt = createSyncularV2SyncAttempt();
+    const syncAttempt = createSyncularSyncAttempt();
     this.#diagnostic({
       level: 'debug',
       code: 'realtime.pull_required',
-      message: 'Syncular v2 realtime event requires HTTP pull recovery',
-      ...syncularV2DiagnosticAttemptFields(syncAttempt),
+      message: 'Syncular realtime event requires HTTP pull recovery',
+      ...syncularDiagnosticAttemptFields(syncAttempt),
       details: {
         cursor: message?.cursor ?? null,
         reason: message?.syncPackBytes ? 'binary-apply-failed' : null,
@@ -506,18 +503,18 @@ export class SyncularV2WorkerRealtimeController {
     }
   }
 
-  #setState(state: SyncularV2RealtimeConnectionState): void {
+  #setState(state: SyncularRealtimeConnectionState): void {
     if (this.#state === state) return;
     this.#state = state;
     this.controllerOptions.postEvent({
-      protocolVersion: SYNCULAR_V2_WORKER_PROTOCOL_VERSION,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'realtimeState',
       state,
     });
   }
 
   #diagnostic(
-    event: Omit<SyncularV2DiagnosticEvent, 'at' | 'source'> & { at?: number }
+    event: Omit<SyncularDiagnosticEvent, 'at' | 'source'> & { at?: number }
   ): void {
     this.controllerOptions.postDiagnostic?.({
       ...event,
@@ -527,14 +524,14 @@ export class SyncularV2WorkerRealtimeController {
 }
 
 function realtimeMessageRequiresPull(
-  message: SyncularV2RealtimeSyncMessage
+  message: SyncularRealtimeSyncMessage
 ): boolean {
   return message.requiresPull === true || (message.droppedCount ?? 0) > 0;
 }
 
-export function resolveSyncularV2RealtimeUrl(
-  config: SyncularV2ClientConfig,
-  options: SyncularV2WorkerRealtimeOptions,
+export function resolveSyncularRealtimeUrl(
+  config: SyncularClientConfig,
+  options: SyncularWorkerRealtimeOptions,
   locationOrigin: string
 ): string {
   const url = new URL(options.wsUrl ?? config.baseUrl, locationOrigin);
@@ -552,13 +549,13 @@ export function resolveSyncularV2RealtimeUrl(
   return url.toString();
 }
 
-export function isSyncularV2RealtimeSyncMessage(value: unknown): boolean {
-  return readSyncularV2RealtimeSyncMessage(value) !== null;
+export function isSyncularRealtimeSyncMessage(value: unknown): boolean {
+  return readSyncularRealtimeSyncMessage(value) !== null;
 }
 
-function readSyncularV2RealtimeHelloMessage(
+function readSyncularRealtimeHelloMessage(
   value: unknown
-): SyncularV2RealtimeHelloMessage | null {
+): SyncularRealtimeHelloMessage | null {
   if (!value || typeof value !== 'object') return null;
   if ((value as { event?: unknown }).event !== 'hello') return null;
   const data = (value as { data?: unknown }).data;
@@ -590,9 +587,9 @@ function readSyncularV2RealtimeHelloMessage(
   };
 }
 
-function readSyncularV2RealtimeSyncMessage(
+function readSyncularRealtimeSyncMessage(
   value: unknown
-): SyncularV2RealtimeSyncMessage | null {
+): SyncularRealtimeSyncMessage | null {
   if (!value || typeof value !== 'object') return null;
   if ((value as { event?: unknown }).event !== 'sync') return null;
   const data = (value as { data?: unknown }).data;
@@ -615,9 +612,9 @@ function readSyncularV2RealtimeSyncMessage(
   };
 }
 
-function readSyncularV2RealtimePresenceMessage(
+function readSyncularRealtimePresenceMessage(
   value: unknown
-): SyncularV2RealtimePresenceMessage | null {
+): SyncularRealtimePresenceMessage | null {
   if (!value || typeof value !== 'object') return null;
   if ((value as { event?: unknown }).event !== 'presence') return null;
   const data = (value as { data?: unknown }).data;
