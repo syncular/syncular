@@ -1198,8 +1198,8 @@ export function createConsoleRoutes<
     await next();
   });
 
-  // Route auth middleware. Keep /events/live exempt to preserve websocket
-  // message-based auth handshake fallback when no Authorization header is sent.
+  // Route auth middleware. Keep /events/live exempt so browser WebSocket
+  // clients can authenticate with the first message instead of a header.
   routes.use('*', async (c, next) => {
     if (c.req.method === 'OPTIONS' || c.req.path.endsWith('/events/live')) {
       await next();
