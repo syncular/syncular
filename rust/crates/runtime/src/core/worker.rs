@@ -3026,18 +3026,11 @@ fn crdt_field_failure_payload_json(operation: &'static str, request_json: &str) 
         Ok(Value::Object(request)) => {
             copy_crdt_request_field(&mut payload, &request, "table", "table");
             copy_crdt_request_field(&mut payload, &request, "rowId", "rowId");
-            copy_crdt_request_field(&mut payload, &request, "row_id", "rowId");
             copy_crdt_request_field(&mut payload, &request, "field", "field");
             copy_crdt_request_field(
                 &mut payload,
                 &request,
                 "minUncheckpointedUpdates",
-                "minUncheckpointedUpdates",
-            );
-            copy_crdt_request_field(
-                &mut payload,
-                &request,
-                "min_uncheckpointed_updates",
                 "minUncheckpointedUpdates",
             );
         }
@@ -3404,13 +3397,12 @@ struct PendingYjsBatch {
 #[serde(rename_all = "camelCase")]
 struct SaveYjsUpdate {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
     update: YjsUpdateEnvelope,
     #[serde(default)]
     materialized: Option<Value>,
-    #[serde(default, alias = "server_payload")]
+    #[serde(default)]
     server_payload: Option<Value>,
 }
 
@@ -3424,7 +3416,7 @@ fn validate_save_yjs_update_json(update_json: &str) -> Result<()> {
 #[serde(rename_all = "camelCase")]
 struct WorkerEncryptedCrdtRequest {
     table: String,
-    #[serde(default, alias = "row_id")]
+    #[serde(default)]
     row_id: Option<String>,
     #[serde(default)]
     field: Option<String>,
@@ -3435,10 +3427,8 @@ struct WorkerEncryptedCrdtRequest {
 #[serde(rename_all = "camelCase")]
 struct WorkerCrdtFieldTextRequest {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
-    #[serde(alias = "next_text")]
     next_text: String,
 }
 
@@ -3453,10 +3443,9 @@ fn validate_worker_crdt_field_text_request_json(request_json: &str) -> Result<()
 #[serde(rename_all = "camelCase")]
 struct WorkerCrdtFieldCompactionRequest {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
-    #[serde(default, alias = "min_uncheckpointed_updates")]
+    #[serde(default)]
     min_uncheckpointed_updates: Option<i64>,
 }
 

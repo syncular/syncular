@@ -308,3 +308,20 @@ current Rust-first path no longer needs them.
   event.
 - Removed the `@syncular/client-expo` alias package. Apps should use the
   canonical `@syncular/client-react-native` bridge rather than package aliases.
+- Removed host JSON CRDT snake_case aliases from runtime/native/browser request
+  parsing. Generated host APIs already emit the canonical camelCase fields
+  (`rowId`, `nextText`, `minUncheckpointedUpdates`, `serverPayload`,
+  `stateColumn`, `containerKey`, `rowIdField`), so the runtime now fails clearly
+  instead of accepting both shapes.
+- Removed the old websocket timing alias `snapshotBinaryEncodeMs`; runtime
+  transport parsing now reads the current server `binaryEncodeMs` field only.
+- Gates:
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade --features native,crdt-yjs,demo-todo-native-fixture`:
+    passed, `38` tests.
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field --features native,crdt-yjs,demo-todo-native-fixture`:
+    passed, `16` tests.
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_ffi --features native,crdt-yjs,demo-todo-native-fixture`:
+    passed, `10` tests.
+  - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang bun --cwd rust/bindings/javascript build:wasm:dev`:
+    passed.
+  - `bun --cwd packages/client test`: passed, `110` tests.

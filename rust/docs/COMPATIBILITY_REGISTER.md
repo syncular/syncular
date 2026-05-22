@@ -76,6 +76,8 @@ exception.
 | Browser worker response type aliases | `Removed` | `packages/client/src/worker-protocol.ts` | Removed unused `SyncularV2WorkerRuntimeInfoResponse` / `SyncularV2WorkerTransportStatsResponse` aliases; callers should use the canonical runtime info and transport stats types |
 | Browser lifecycle network type alias | `Removed` | `packages/client/src/client.ts` | Removed `SyncularV2ClientNetworkStatusSource`; lifecycle options now use the canonical `SyncularV2NetworkStatusSource` type directly |
 | Testkit sync change type alias | `Removed` | `packages/testkit/src/sync-response.ts` | Removed `SyncChangeRecord`; testkit helpers now return the canonical `SyncChange` type from `@syncular/core` |
+| Host JSON CRDT snake_case aliases | `Removed` | `rust/crates/runtime/src/core`, `rust/crates/runtime/src/native`, `rust/crates/runtime/src/web` | Native/browser host CRDT request JSON now accepts the generated camelCase shape only (`rowId`, `nextText`, `minUncheckpointedUpdates`, `serverPayload`, `stateColumn`, `containerKey`, `rowIdField`) instead of carrying duplicate snake_case aliases |
+| Old websocket bootstrap timing field alias | `Removed` | `rust/crates/runtime/src/transport/web.rs` | Runtime timing parsing now reads the current server `binaryEncodeMs` field directly instead of also accepting the old `snapshotBinaryEncodeMs` spelling |
 
 ## Items That Are Not Compatibility Debt
 

@@ -55,11 +55,10 @@ impl YjsFieldKind {
 pub struct YjsFieldRule {
     pub table: String,
     pub field: String,
-    #[serde(alias = "state_column")]
     pub state_column: String,
-    #[serde(default, alias = "container_key")]
+    #[serde(default)]
     pub container_key: Option<String>,
-    #[serde(default, alias = "row_id_field")]
+    #[serde(default)]
     pub row_id_field: Option<String>,
     #[serde(default)]
     pub kind: YjsFieldKind,

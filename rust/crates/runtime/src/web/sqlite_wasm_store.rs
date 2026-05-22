@@ -151,7 +151,6 @@ struct RustOwnedLocalOperationBatchEntry {
 #[serde(rename_all = "camelCase")]
 struct RustOwnedCrdtFieldRequest {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
 }
@@ -160,10 +159,8 @@ struct RustOwnedCrdtFieldRequest {
 #[serde(rename_all = "camelCase")]
 struct RustOwnedCrdtFieldTextRequest {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
-    #[serde(alias = "next_text")]
     next_text: String,
 }
 
@@ -171,7 +168,6 @@ struct RustOwnedCrdtFieldTextRequest {
 #[serde(rename_all = "camelCase")]
 struct RustOwnedCrdtFieldYjsUpdateRequest {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
     update: YjsUpdateEnvelope,
@@ -181,10 +177,9 @@ struct RustOwnedCrdtFieldYjsUpdateRequest {
 #[serde(rename_all = "camelCase")]
 struct RustOwnedCrdtFieldCompactionRequest {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
-    #[serde(default, alias = "min_uncheckpointed_updates")]
+    #[serde(default)]
     min_uncheckpointed_updates: Option<i64>,
 }
 
@@ -192,7 +187,6 @@ struct RustOwnedCrdtFieldCompactionRequest {
 #[serde(rename_all = "camelCase")]
 struct RustOwnedCrdtFieldLogRequest {
     table: String,
-    #[serde(alias = "row_id")]
     row_id: String,
     field: String,
     #[serde(default)]
