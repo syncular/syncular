@@ -299,6 +299,9 @@ fresh scan rather than continuing to chase the deleted JSON paths:
   export surface. `@syncular/client` now exposes the canonical
   client/database API plus runtime artifact helpers; internal worker/runtime
   modules keep using the Rust-specific helpers by relative import.
+- Deleted the now-unused direct Rust-owned SQLite wrapper from
+  `packages/client/src/rust-store.ts`. The supported browser product path is
+  the worker-backed managed client/database API.
 - Removed the legacy transport per-call `onAuthError` callback from
   `SyncTransportOptions` and the HTTP transport retry resolver. `authLifecycle`
   is now the single auth refresh contract for sync and snapshot chunk
@@ -320,6 +323,8 @@ fresh scan rather than continuing to chase the deleted JSON paths:
   - `bun --cwd packages/testkit tsgo`: passed.
   - `bun test packages/client/src/public-api.test.ts`: passed, `7` tests.
   - `bun --cwd packages/client test`: passed, `114` tests.
+  - `bunx knip --workspace packages/client`: passed after deleting the unused
+    direct Rust-owned SQLite wrapper.
 - Transport auth cleanup gates:
   - `rg -n "onAuthError|legacyCount" packages/transport-http packages/core apps/docs packages/client rust/docs`: no matches.
   - `bunx biome check packages/core/src/types.ts packages/transport-http/src/transport-client.ts packages/transport-http/src/__tests__/transport-options.test.ts`: passed.
