@@ -5720,3 +5720,65 @@ bun test packages tests/unit tests/dialects tests/typegen
 Result: passed, `703` tests. Surviving server tests now assert stable
 namespaced error codes and fail-closed external snapshot chunk reads instead of
 legacy uppercase/fallback expectations.
+
+## 2026-05-22 - WP-28 Relay Rust Boundary Evaluation Baseline
+
+Work package: [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
+
+Change:
+
+- Added a repeatable relay protocol-boundary evaluator for the WP-27 fixture.
+- This captures the current TypeScript JSON/schema/binary baseline before any
+  production Rust relay validation path exists.
+- No Rust relay runtime behavior was retained by this slice.
+
+Command:
+
+```bash
+bun run --cwd packages/relay evaluate:rust-boundary
+```
+
+Fixture payload sizes:
+
+| Payload | Bytes |
+| --- | ---: |
+| Combined request JSON | `1,368` |
+| Combined response JSON | `2,978` |
+| Binary sync pack | `2,349` |
+| Snapshot chunk | `214` |
+| Scoped snapshot artifact | `54` |
+| Blob body | `15` |
+| Realtime server sync message JSON | `156` |
+
+Local result, 2,000 iterations:
+
+| Metric | p50 | p95 | Avg |
+| --- | ---: | ---: | ---: |
+| JSON parse combined request | `2.33us` | `3.83us` | `2.71us` |
+| JSON parse combined response | `4.25us` | `6.13us` | `4.79us` |
+| TypeScript schema combined request | `6.33us` | `13.04us` | `8.27us` |
+| TypeScript schema combined response | `11.04us` | `17.29us` | `12.69us` |
+| HTTP-style parse+schema request | `7.21us` | `13.92us` | `8.95us` |
+| HTTP-style parse+schema response | `11.29us` | `17.17us` | `12.68us` |
+| Binary sync-pack decode | `5.63us` | `12.00us` | `6.96us` |
+| Binary sync-pack decode+schema | `12.71us` | `22.83us` | `14.90us` |
+| Validate schema-backed fixture protocol objects | `31.67us` | `46.25us` | `36.54us` |
+
+Malformed diagnostics:
+
+- Empty combined request `clientId`: rejected at `clientId` with `too_small`.
+- Non-true combined response `ok`: rejected at `ok` with `invalid_value`.
+- Invalid blob hash: rejected at `hash` with `invalid_format`.
+- Stale binary sync-pack version `0`: rejected with
+  `Unsupported binary sync pack version: 0`.
+
+Decision:
+
+- Keep WP-28 in progress. The current TypeScript protocol-boundary costs are
+  low on this fixture, so a production Rust validation boundary needs stronger
+  evidence than "Rust exists".
+- Next evidence should measure real relay app paths: local push, forward to
+  main, pull/apply from main, local client pull, and realtime wakeups. Only
+  prototype a Rust call boundary after those baselines show either protocol
+  validation heat or correctness/drift value that TypeScript schemas do not
+  already provide.

@@ -39,6 +39,7 @@
   "scripts": {
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
+    "evaluate:rust-boundary": "bun scripts/evaluate-rust-boundary.ts",
     "release": "bunx syncular-publish"
   },
   "dependencies": {
