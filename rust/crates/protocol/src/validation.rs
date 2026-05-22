@@ -452,13 +452,12 @@ fn validate_sync_pack_encodings(encodings: &[String]) -> Result<()> {
 }
 
 fn validate_snapshot_encoding(encoding: &str) -> Result<()> {
-    match encoding {
-        crate::SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1
-        | crate::SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 => Ok(()),
-        encoding => Err(ProtocolError::message(format!(
+    if encoding != crate::SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 {
+        return Err(ProtocolError::message(format!(
             "unsupported snapshot encoding: {encoding}"
-        ))),
+        )));
     }
+    Ok(())
 }
 
 fn validate_request_scopes(scopes: &ScopeValues) -> Result<()> {

@@ -9,8 +9,6 @@ import {
   createSnapshotManifest,
   distributionSyncMetric,
   encodeBinarySnapshotTable,
-  encodeSnapshotRowFrames,
-  encodeSnapshotRows,
   gzipBytes,
   randomId,
   type ScopeValues,
@@ -18,7 +16,6 @@ import {
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-  SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
   type SyncBootstrapState,
   type SyncChange,
   type SyncCommit,
@@ -75,18 +72,13 @@ import {
 import { resolveEffectiveScopesForSubscriptions } from './subscriptions/resolve';
 
 const defaultScopeCache = createMemoryScopeCache();
-const DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 512 * 1024;
-const MAX_ADAPTIVE_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 4 * 1024 * 1024;
-const DEFAULT_INLINE_SNAPSHOT_ROW_FRAME_BYTES = 256 * 1024;
 const DEFAULT_MAX_BINARY_SNAPSHOT_BUNDLE_ROWS = 50_000;
 const DEFAULT_SNAPSHOT_CHUNK_GZIP_LEVEL = 1;
-const EMPTY_SNAPSHOT_ROW_FRAMES = encodeSnapshotRows([]);
 const MAX_PULL_TRANSACTION_RETRIES = 2;
 const PULL_TRANSACTION_RETRY_DELAY_MS = 15;
 
 interface PullBootstrapTimings {
   snapshotQueryMs: number;
-  rowFrameEncodeMs: number;
   binaryEncodeMs: number;
   chunkCacheLookupMs: number;
   artifactCacheLookupMs: number;
@@ -144,9 +136,6 @@ function resolveSnapshotChunkEncoding(
   if (requested.includes(SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1)) {
     return SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1;
   }
-  if (requested.includes(SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1)) {
-    return SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1;
-  }
   throw new Error(
     `Unsupported snapshot chunk encodings requested: ${requested.join(', ')}`
   );
@@ -190,7 +179,6 @@ function resolveSnapshotArtifactSelection(
 function createPullBootstrapTimings(): PullBootstrapTimings {
   return {
     snapshotQueryMs: 0,
-    rowFrameEncodeMs: 0,
     binaryEncodeMs: 0,
     chunkCacheLookupMs: 0,
     artifactCacheLookupMs: 0,
@@ -253,32 +241,6 @@ async function encodeCompressedSnapshotChunkToStream(
     gzipMs: encoded.gzipMs,
     hashMs: encoded.hashMs,
   };
-}
-
-function resolveSnapshotBundleMaxBytes(args: {
-  configuredMaxBytes?: number;
-  pageRowCount: number;
-  pageRowFrameBytes: number;
-}): number {
-  if (
-    typeof args.configuredMaxBytes === 'number' &&
-    Number.isFinite(args.configuredMaxBytes) &&
-    args.configuredMaxBytes > 0
-  ) {
-    return Math.max(1, args.configuredMaxBytes);
-  }
-
-  if (args.pageRowCount <= 0 || args.pageRowFrameBytes <= 0) {
-    return DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES;
-  }
-
-  return Math.max(
-    DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES,
-    Math.min(
-      MAX_ADAPTIVE_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES,
-      args.pageRowFrameBytes
-    )
-  );
 }
 
 interface SnapshotColumnInference {
@@ -885,12 +847,6 @@ export async function pull<
                       args.handlers,
                       sub.table
                     ).map((handler) => handler.table);
-                    const preferInlineBootstrapSnapshot =
-                      cursor >= 0 ||
-                      sub.bootstrapState != null ||
-                      (latestExternalCommitForTable !== undefined &&
-                        latestExternalCommitForTable > cursor);
-
                     const initState: SyncBootstrapState = {
                       asOfCommitSeq: maxCommitSeq,
                       tables,
@@ -966,12 +922,9 @@ export async function pull<
                       pageCount: number;
                       cacheRowLimit: number | null;
                       ttlMs: number;
-                      payloadByteLength: number;
-                      payloadParts: Uint8Array[];
                       binaryColumns?: readonly BinarySnapshotColumn[];
                       binaryEncoder?: BinarySnapshotRowsEncoder;
                       binaryRows: unknown[];
-                      inlineRows: unknown[] | null;
                     }
 
                     const createSnapshotBundle = (
@@ -982,11 +935,6 @@ export async function pull<
                       binaryColumns?: readonly BinarySnapshotColumn[],
                       binaryEncoder?: BinarySnapshotRowsEncoder
                     ): SnapshotBundle => {
-                      const payloadParts =
-                        snapshotChunkEncoding ===
-                        SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1
-                          ? [EMPTY_SNAPSHOT_ROW_FRAMES]
-                          : [];
                       return {
                         table,
                         tableIndex,
@@ -997,15 +945,9 @@ export async function pull<
                         pageCount: 0,
                         cacheRowLimit: null,
                         ttlMs,
-                        payloadByteLength: payloadParts.reduce(
-                          (sum, part) => sum + part.length,
-                          0
-                        ),
-                        payloadParts,
                         binaryColumns,
                         binaryEncoder,
                         binaryRows: [],
-                        inlineRows: null,
                       };
                     };
 
@@ -1034,12 +976,6 @@ export async function pull<
                     const encodeSnapshotBundlePayload = (
                       bundle: SnapshotBundle
                     ): Uint8Array[] => {
-                      if (
-                        snapshotChunkEncoding ===
-                        SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1
-                      ) {
-                        return [...bundle.payloadParts];
-                      }
                       const encodeStartedAt = Date.now();
                       const payload = bundle.binaryEncoder
                         ? bundle.binaryEncoder(bundle.binaryRows)
@@ -1058,21 +994,6 @@ export async function pull<
                     const flushSnapshotBundle = async (
                       bundle: SnapshotBundle
                     ): Promise<void> => {
-                      if (bundle.inlineRows) {
-                        snapshots.push({
-                          table: bundle.table,
-                          rows: bundle.inlineRows,
-                          isFirstPage: bundle.isFirstPage,
-                          isLastPage: bundle.isLastPage,
-                          bootstrapStateAfter: snapshotBootstrapStateAfter({
-                            tableIndex: bundle.tableIndex,
-                            nextRowCursor: bundle.nextRowCursor,
-                            isLastPage: bundle.isLastPage,
-                          }),
-                        });
-                        return;
-                      }
-
                       const nowIso = new Date().toISOString();
                       const bundleRowLimit = Math.max(
                         1,
@@ -1306,11 +1227,7 @@ export async function pull<
                         }
                       }
 
-                      if (
-                        snapshotChunkEncoding ===
-                          SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 &&
-                        activeBundle.pageCount === 0
-                      ) {
+                      if (activeBundle.pageCount === 0) {
                         const pagesRemaining = Math.max(
                           1,
                           maxSnapshotPages - pageIndex
@@ -1404,91 +1321,13 @@ export async function pull<
 
                       const pageRows = page.rows ?? [];
                       activeBundle.nextRowCursor = page.nextCursor;
-                      const canInlineBootstrapSnapshot =
-                        snapshotChunkEncoding ===
-                          SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 &&
-                        preferInlineBootstrapSnapshot;
-                      let rowFrames: Uint8Array | null = null;
-                      if (
-                        snapshotChunkEncoding ===
-                        SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1
-                      ) {
-                        const rowFrameEncodeStartedAt = Date.now();
-                        rowFrames = encodeSnapshotRowFrames(pageRows);
-                        bootstrapTimings.rowFrameEncodeMs += Math.max(
-                          0,
-                          Date.now() - rowFrameEncodeStartedAt
-                        );
-                      }
-
-                      if (
-                        snapshotChunkEncoding ===
-                        SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1
-                      ) {
-                        if (!rowFrames) {
-                          throw new Error(
-                            'JSON snapshot chunk encoding produced no row frames'
-                          );
-                        }
-                        const bundleMaxBytes = resolveSnapshotBundleMaxBytes({
-                          configuredMaxBytes:
-                            tableHandler.snapshotBundleMaxBytes,
-                          pageRowCount: pageRows.length,
-                          pageRowFrameBytes: rowFrames.length,
-                        });
-                        if (
-                          activeBundle.pageCount > 0 &&
-                          activeBundle.payloadByteLength + rowFrames.length >
-                            bundleMaxBytes
-                        ) {
-                          await flushSnapshotBundle(activeBundle);
-                          activeBundle = createSnapshotBundle(
-                            nextTableName,
-                            nextState.tableIndex,
-                            nextState.rowCursor,
-                            tableHandler.snapshotChunkTtlMs ??
-                              24 * 60 * 60 * 1000,
-                            tableHandler.snapshotBinaryColumns,
-                            tableHandler.snapshotBinaryEncoder
-                          );
-                        }
-                      }
-
-                      if (
-                        canInlineBootstrapSnapshot &&
-                        activeBundle.pageCount === 0 &&
-                        page.nextCursor == null &&
-                        rowFrames != null &&
-                        rowFrames.length <=
-                          DEFAULT_INLINE_SNAPSHOT_ROW_FRAME_BYTES
-                      ) {
-                        activeBundle.inlineRows = pageRows;
-                      } else {
-                        activeBundle.inlineRows = null;
-                      }
-
-                      if (
-                        snapshotChunkEncoding ===
-                        SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1
-                      ) {
-                        if (!rowFrames) {
-                          throw new Error(
-                            'JSON snapshot chunk encoding produced no row frames'
-                          );
-                        }
-                        activeBundle.payloadParts.push(rowFrames);
-                        activeBundle.payloadByteLength += rowFrames.length;
-                      } else if (!activeBundle.inlineRows) {
-                        activeBundle.binaryRows.push(...pageRows);
-                      }
+                      activeBundle.binaryRows.push(...pageRows);
                       activeBundle.pageCount += 1;
 
                       if (page.nextCursor != null) {
                         const shouldFlushBinaryBundle =
-                          snapshotChunkEncoding ===
-                            SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1 &&
                           activeBundle.binaryRows.length >=
-                            DEFAULT_MAX_BINARY_SNAPSHOT_BUNDLE_ROWS;
+                          DEFAULT_MAX_BINARY_SNAPSHOT_BUNDLE_ROWS;
                         if (shouldFlushBinaryBundle) {
                           await flushSnapshotBundle(activeBundle);
                           activeBundle = null;
@@ -1903,7 +1742,6 @@ export async function pull<
             span.setAttribute('snapshot_page_count', stats.snapshotPageCount);
             span.setAttributes({
               bootstrap_snapshot_query_ms: bootstrapTimings.snapshotQueryMs,
-              bootstrap_row_frame_encode_ms: bootstrapTimings.rowFrameEncodeMs,
               bootstrap_snapshot_binary_encode_ms:
                 bootstrapTimings.binaryEncodeMs,
               bootstrap_chunk_cache_lookup_ms:

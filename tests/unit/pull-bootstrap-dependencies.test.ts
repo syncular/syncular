@@ -3,7 +3,6 @@ import { gunzipSync } from 'node:zlib';
 import {
   createDatabase,
   decodeBinarySnapshotTable,
-  decodeSnapshotRows,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   type SyncPullRequest,
 } from '@syncular/core';
@@ -53,7 +52,7 @@ interface ClientDb {
   catalog_items: CatalogItemsTable;
 }
 
-function decodeSnapshotRowsGzip(
+function decodeSnapshotChunkRowsGzip(
   bytes: Uint8Array | ReadableStream<Uint8Array>,
   encoding: string
 ): unknown[] {
@@ -64,7 +63,7 @@ function decodeSnapshotRowsGzip(
   if (encoding === SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1) {
     return decodeBinarySnapshotTable(decoded).rows;
   }
-  return decodeSnapshotRows(decoded);
+  throw new Error(`Unexpected snapshot encoding: ${encoding}`);
 }
 
 async function readSnapshotRows(
@@ -85,7 +84,7 @@ async function readSnapshotRows(
     throw new Error('Expected stored snapshot chunk');
   }
 
-  return decodeSnapshotRowsGzip(chunk.body, chunkRef.encoding);
+  return decodeSnapshotChunkRowsGzip(chunk.body, chunkRef.encoding);
 }
 
 describe('pull bootstrap behavior', () => {
@@ -382,7 +381,7 @@ describe('pull bootstrap behavior', () => {
       if (!chunk) throw new Error('Expected stored snapshot chunk');
 
       expect(
-        decodeSnapshotRowsGzip(
+        decodeSnapshotChunkRowsGzip(
           chunk.body,
           subscription.snapshots[0]!.chunks![0]!.encoding
         )

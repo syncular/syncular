@@ -55,7 +55,6 @@ export interface CreateHonoSyncHarnessOptions {
     request: Request;
     response: Response;
   }) => Promise<void> | void;
-  snapshotBundleMaxBytes?: number;
   precomputedTaskSnapshotArtifact?: {
     actorId: string;
     artifactId?: string;
@@ -168,7 +167,6 @@ export async function createHonoSyncHarness(
       table: 'tasks',
       scopes: ['user:{user_id}'],
       codecs: syncularGeneratedCodecs,
-      snapshotBundleMaxBytes: options.snapshotBundleMaxBytes,
       resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
     });
     const handlers = [

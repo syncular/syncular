@@ -2766,7 +2766,6 @@ function zeroTransportStats() {
     requestBytes: 0,
     responseBytes: 0,
     snapshotChunkCount: 0,
-    snapshotChunkJsonCount: 0,
     snapshotChunkBinaryCount: 0,
     snapshotChunkRowCount: 0,
     snapshotChunkFetchMs: 0,

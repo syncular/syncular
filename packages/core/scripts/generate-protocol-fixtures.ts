@@ -6,14 +6,11 @@ import {
   createScopedSnapshotArtifactManifest,
   createSnapshotManifest,
   decodeBinarySnapshotTable,
-  decodeSnapshotRows,
   encodeBinarySnapshotTable,
-  encodeSnapshotRows,
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
   SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-  SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
 } from '../src/snapshot-chunks';
 import {
   encodeBinarySyncPack,
@@ -35,7 +32,6 @@ writeFixture(
 );
 writeFixture('binary-snapshot-table-v1-tasks.json', binarySnapshotFixture());
 writeFixture('error-taxonomy-v1.json', errorTaxonomyFixture());
-writeFixture('json-row-frame-v1-tasks.json', jsonRowFrameFixture());
 writeFixture(
   'relay-protocol-boundary-v1.json',
   await relayProtocolBoundaryFixture()
@@ -98,10 +94,7 @@ function jsonCombinedSyncFixture() {
         limitSnapshotRows: 1000,
         maxSnapshotPages: 4,
         dedupeRows: true,
-        snapshotEncodings: [
-          SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-          SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-        ],
+        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         syncPackEncodings: [SYNC_PACK_ENCODING_BINARY_V1],
         subscriptions: [
           {
@@ -379,32 +372,6 @@ function binarySnapshotFixture() {
   };
 }
 
-function jsonRowFrameFixture() {
-  const rows = [
-    {
-      id: 'task-frame-1',
-      title: 'Frame one',
-      server_version: 51,
-      metadata: { source: SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1 },
-    },
-    {
-      id: 'task-frame-2',
-      title: 'Frame two',
-      server_version: 52,
-      metadata: null,
-    },
-  ];
-  const encoded = encodeSnapshotRows(rows);
-  return {
-    name: 'json-row-frame-v1-tasks',
-    generatedBy: 'packages/core/src/snapshot-chunks.ts encodeSnapshotRows',
-    encoding: SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-    wireVersion: 1,
-    encodedHex: Buffer.from(encoded).toString('hex'),
-    decodedRows: decodeSnapshotRows(encoded),
-  };
-}
-
 async function relayProtocolBoundaryFixture() {
   const actorId = 'relay-actor-1';
   const clientId = 'relay-client-1';
@@ -438,12 +405,23 @@ async function relayProtocolBoundaryFixture() {
       server_version: 51,
     },
   ];
-  const chunkBody = gzipSync(encodeSnapshotRows(chunkRows));
+  const chunkBody = gzipSync(
+    encodeBinarySnapshotTable({
+      table: 'tasks',
+      columns: [
+        { name: 'id', type: 'string' },
+        { name: 'title', type: 'string' },
+        { name: 'attachment', type: 'json' },
+        { name: 'server_version', type: 'integer' },
+      ],
+      rows: chunkRows,
+    })
+  );
   const chunk = {
     id: 'relay-chunk-1',
     byteLength: chunkBody.byteLength,
     sha256: await sha256Hex(chunkBody),
-    encoding: SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
+    encoding: SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
     compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   };
   const manifest = await createSnapshotManifest({
@@ -525,10 +503,7 @@ async function relayProtocolBoundaryFixture() {
         limitSnapshotRows: 2000,
         maxSnapshotPages: 2,
         dedupeRows: true,
-        snapshotEncodings: [
-          SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-          SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-        ],
+        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         snapshotArtifacts: {
           schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],

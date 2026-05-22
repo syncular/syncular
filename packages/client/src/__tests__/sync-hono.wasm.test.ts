@@ -995,7 +995,6 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     const scenario = syncConformance.snapshotChunk;
     const sync = await createHonoSyncHarness({
       actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
-      snapshotBundleMaxBytes: 1,
       seedTasks: [
         {
           id: scenario.browserServerTask.id,
@@ -1049,7 +1048,6 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     const scenario = syncConformance.snapshotChunk;
     const sync = await createHonoSyncHarness({
       actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
-      snapshotBundleMaxBytes: 1,
       seedTasks: [
         {
           id: scenario.browserServerTask.id,
@@ -1114,7 +1112,6 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     let failNextChunk = true;
     const sync = await createHonoSyncHarness({
       actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
-      snapshotBundleMaxBytes: 1,
       seedTasks: [
         {
           id: scenario.browserServerTask.id,
@@ -1305,7 +1302,6 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
   it('reports and applies binary snapshot chunks on the browser fast path', async () => {
     const sync = await createHonoSyncHarness({
       actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
-      snapshotBundleMaxBytes: 1,
       seedTasks: [
         {
           id: 'binary-browser-task-1',
@@ -1336,7 +1332,6 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
       resetTransportStats(): Promise<void>;
       transportStats(): Promise<{
         snapshotChunkBinaryCount: number;
-        snapshotChunkJsonCount: number;
         snapshotChunkRowCount: number;
       }>;
     };
@@ -1354,7 +1349,6 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
 
     const stats = await diagnostics.transportStats();
     expect(stats.snapshotChunkBinaryCount).toBeGreaterThan(0);
-    expect(stats.snapshotChunkJsonCount).toBe(0);
     expect(stats.snapshotChunkRowCount).toBe(2);
 
     const rows = await client.listTable('tasks');
@@ -1690,7 +1684,6 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
   it('hydrates snapshot rows into SQLite without returning them by default', async () => {
     const sync = await createHonoSyncHarness({
       actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
-      snapshotBundleMaxBytes: 1,
       seedTasks: [
         {
           id: 'default-snapshot-task-1',
@@ -2613,7 +2606,6 @@ describe('Syncular v2 worker sync protocol against Hono routes', () => {
     const scenario = syncConformance.e2ee;
     const sync = await createHonoSyncHarness({
       actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
-      snapshotBundleMaxBytes: 1,
     });
     harnesses.push(sync);
 

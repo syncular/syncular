@@ -50,7 +50,6 @@ pub struct WebTransportStats {
     pub request_bytes: u64,
     pub response_bytes: u64,
     pub snapshot_chunk_count: u64,
-    pub snapshot_chunk_json_count: u64,
     pub snapshot_chunk_binary_count: u64,
     pub snapshot_chunk_row_count: u64,
     pub snapshot_chunk_fetch_ms: f64,
@@ -64,7 +63,6 @@ pub struct WebTransportStats {
     pub snapshot_artifact_hash_ms: f64,
     pub sync_pack_decode_ms: f64,
     pub server_bootstrap_snapshot_query_ms: f64,
-    pub server_bootstrap_row_frame_encode_ms: f64,
     pub server_bootstrap_snapshot_binary_encode_ms: f64,
     pub server_bootstrap_chunk_cache_lookup_ms: f64,
     pub server_bootstrap_artifact_cache_lookup_ms: f64,
@@ -77,8 +75,6 @@ pub struct WebTransportStats {
 #[serde(rename_all = "camelCase")]
 struct WebServerBootstrapTimings {
     snapshot_query_ms: f64,
-    row_frame_encode_ms: f64,
-    #[serde(default)]
     binary_encode_ms: f64,
     chunk_cache_lookup_ms: f64,
     #[serde(default)]
@@ -578,12 +574,7 @@ fn record_snapshot_chunk_fetch(stats: &Rc<RefCell<WebTransportStats>>, elapsed_m
 
 fn record_snapshot_chunk_rows(stats: &Rc<RefCell<WebTransportStats>>, rows: &SnapshotChunkRows) {
     let mut stats = stats.borrow_mut();
-    match rows {
-        SnapshotChunkRows::Json(_) => stats.snapshot_chunk_json_count += 1,
-        SnapshotChunkRows::Binary(_) | SnapshotChunkRows::BinaryPayload(_) => {
-            stats.snapshot_chunk_binary_count += 1
-        }
-    }
+    stats.snapshot_chunk_binary_count += 1;
     stats.snapshot_chunk_row_count += rows.row_count() as u64;
 }
 
@@ -637,7 +628,6 @@ fn record_server_bootstrap_timings(
         .map_err(|err| SyncularError::protocol(err).context("decode server timing header"))?;
     let mut stats = stats.borrow_mut();
     stats.server_bootstrap_snapshot_query_ms += timings.snapshot_query_ms;
-    stats.server_bootstrap_row_frame_encode_ms += timings.row_frame_encode_ms;
     stats.server_bootstrap_snapshot_binary_encode_ms += timings.binary_encode_ms;
     stats.server_bootstrap_chunk_cache_lookup_ms += timings.chunk_cache_lookup_ms;
     stats.server_bootstrap_artifact_cache_lookup_ms += timings.artifact_cache_lookup_ms;

@@ -214,13 +214,6 @@ export interface ServerHandlerOptions<
   snapshotChunkTtlMs?: number;
 
   /**
-   * Maximum uncompressed row-frame bytes to group into a cached snapshot bundle.
-   * Larger values reduce chunk/request overhead for large bootstraps at the
-   * cost of higher transient memory and chunk sizes.
-   */
-  snapshotBundleMaxBytes?: number;
-
-  /**
    * Stable binary snapshot column metadata. Generators should provide this for
    * Rust/native clients so the server does not need to infer column order and
    * value types from every snapshot chunk at runtime.
@@ -293,11 +286,6 @@ export interface ServerTableHandler<
    * TTL for cached snapshot chunks (ms).
    */
   snapshotChunkTtlMs?: number;
-
-  /**
-   * Maximum uncompressed row-frame bytes to group into a cached snapshot bundle.
-   */
-  snapshotBundleMaxBytes?: number;
 
   /**
    * Stable binary snapshot column metadata used by binary bootstrap chunks.

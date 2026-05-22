@@ -1,7 +1,5 @@
 use serde_json::Value;
-use syncular_runtime::binary_snapshot::{
-    decode_binary_snapshot_table, decode_snapshot_row_frames, BinarySnapshotColumnType,
-};
+use syncular_runtime::binary_snapshot::{decode_binary_snapshot_table, BinarySnapshotColumnType};
 use syncular_runtime::binary_sync_pack::{
     decode_binary_sync_pack, is_binary_sync_pack_content_type, SYNC_PACK_CONTENT_TYPE,
 };
@@ -314,48 +312,6 @@ fn decodes_typescript_encoded_binary_snapshot_table_fixture() {
     assert!(decoded.rows[1].get("metadata").is_some_and(Value::is_null));
 }
 
-#[test]
-fn decodes_typescript_encoded_json_row_frame_fixture() {
-    let fixture = json_row_frame_fixture();
-    assert_eq!(fixture["encoding"].as_str(), Some("json-row-frame-v1"));
-    assert_eq!(fixture["wireVersion"].as_u64(), Some(1));
-
-    let encoded_hex = fixture["encodedHex"]
-        .as_str()
-        .expect("fixture encodedHex must be a string");
-    let encoded = hex::decode(encoded_hex).expect("fixture encodedHex must be valid hex");
-    let decoded = decode_snapshot_row_frames(&encoded).expect("decode fixture");
-
-    let expected = fixture["decodedRows"]
-        .as_array()
-        .expect("fixture decodedRows must be an array");
-    assert_eq!(decoded.len(), expected.len());
-    assert_eq!(
-        decoded[0].get("id").and_then(Value::as_str),
-        Some("task-frame-1")
-    );
-    assert_eq!(
-        decoded[0].get("title").and_then(Value::as_str),
-        Some("Frame one")
-    );
-    assert_eq!(
-        decoded[0].get("server_version").and_then(Value::as_i64),
-        Some(51)
-    );
-    assert_eq!(
-        decoded[0]
-            .get("metadata")
-            .and_then(|metadata| metadata.get("source"))
-            .and_then(Value::as_str),
-        Some("json-row-frame-v1")
-    );
-    assert_eq!(
-        decoded[1].get("id").and_then(Value::as_str),
-        Some("task-frame-2")
-    );
-    assert!(decoded[1].get("metadata").is_some_and(Value::is_null));
-}
-
 fn binary_sync_pack_fixture() -> Value {
     serde_json::from_str(include_str!(
         "fixtures/binary-sync-pack-v1-combined-response.json"
@@ -375,9 +331,4 @@ fn json_combined_sync_fixture() -> Value {
 fn binary_snapshot_table_fixture() -> Value {
     serde_json::from_str(include_str!("fixtures/binary-snapshot-table-v1-tasks.json"))
         .expect("binary snapshot table fixture JSON")
-}
-
-fn json_row_frame_fixture() -> Value {
-    serde_json::from_str(include_str!("fixtures/json-row-frame-v1-tasks.json"))
-        .expect("JSON row-frame fixture")
 }

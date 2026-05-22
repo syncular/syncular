@@ -2,7 +2,7 @@ import { describe, expect, it } from 'bun:test';
 import { createSnapshotChunkScopeCacheKey } from './snapshot-chunks';
 
 describe('snapshot chunk cache keys', () => {
-  it('includes schema, encoding, compression, gzip level, feature, partition, and scope semantics', async () => {
+  it('includes schema, compression, gzip level, feature, partition, and scope semantics', async () => {
     const base = {
       partitionId: 'workspace-1',
       scopes: { user_id: ['u2', 'u1'], project_id: 'p1' },
@@ -23,10 +23,6 @@ describe('snapshot chunk cache keys', () => {
       ...base,
       schemaVersion: 4,
     });
-    const encodingChanged = await createSnapshotChunkScopeCacheKey({
-      ...base,
-      encoding: 'json-row-frame-v1',
-    });
     const gzipChanged = await createSnapshotChunkScopeCacheKey({
       ...base,
       gzipLevel: 6,
@@ -36,7 +32,6 @@ describe('snapshot chunk cache keys', () => {
     expect(original.startsWith('snapshot-v2:')).toBe(true);
     expect(original).toContain(':scope:');
     expect(schemaChanged).not.toBe(original);
-    expect(encodingChanged).not.toBe(original);
     expect(gzipChanged).not.toBe(original);
   });
 });

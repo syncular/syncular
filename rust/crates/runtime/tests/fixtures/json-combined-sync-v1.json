@@ -39,8 +39,7 @@
       "maxSnapshotPages": 4,
       "dedupeRows": true,
       "snapshotEncodings": [
-        "binary-table-v1",
-        "json-row-frame-v1"
+        "binary-table-v1"
       ],
       "syncPackEncodings": [
         "binary-sync-pack-v1"

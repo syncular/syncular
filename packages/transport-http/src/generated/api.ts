@@ -1244,7 +1244,7 @@ export interface operations {
                                         byteLength: number;
                                         sha256: string;
                                         /** @enum {string} */
-                                        encoding: "json-row-frame-v1" | "binary-table-v1";
+                                        encoding: "binary-table-v1";
                                         /** @constant */
                                         compression: "gzip";
                                     }[];
@@ -1265,7 +1265,7 @@ export interface operations {
                                             byteLength: number;
                                             sha256: string;
                                             /** @enum {string} */
-                                            encoding: "json-row-frame-v1" | "binary-table-v1";
+                                            encoding: "binary-table-v1";
                                             /** @constant */
                                             compression: "gzip";
                                         }[];

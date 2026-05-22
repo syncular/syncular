@@ -1,8 +1,10 @@
 # Binary Snapshot Chunk Format
 
-This document defines the `binary-table-v1` snapshot chunk encoding for Rust-capable clients.
+This document defines the `binary-table-v1` snapshot chunk encoding for
+Rust-capable clients.
 
-`binary-table-v1` is the Rust-first snapshot chunk format. `json-row-frame-v1` remains useful for explicit debug/test paths, but it is not the target architecture for app bootstraps.
+`binary-table-v1` is the Rust-first and current-only snapshot chunk format for
+app bootstraps.
 
 ## Goals
 
@@ -17,21 +19,20 @@ Clients advertise supported encodings on pull requests:
 
 ```json
 {
-  "snapshotEncodings": ["binary-table-v1", "json-row-frame-v1"]
+  "snapshotEncodings": ["binary-table-v1"]
 }
 ```
 
 Server selection rules:
 
-1. If `binary-table-v1` is present, the current server prefers it for chunked
-   snapshots.
-2. If only `json-row-frame-v1` is present, the server may use JSON row frames
-   for debug/test clients.
-3. If no requested encoding is supported, fail the pull request instead of silently falling back to a format the client did not advertise.
+1. If `binary-table-v1` is present or no encoding is specified, the server uses
+   binary chunks.
+2. If no requested encoding is supported, fail the pull request instead of
+   silently falling back to a format the client did not advertise.
 
 ## Envelope
 
-`binary-table-v1` uses the same outer chunk contract as `json-row-frame-v1`:
+`binary-table-v1` uses this outer chunk contract:
 
 - `compression`: `gzip`
 - `sha256`: SHA-256 of the compressed chunk body

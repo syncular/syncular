@@ -1,6 +1,6 @@
 # WP-30 Foundation Cleanup And Complexity Reduction
 
-Status: `[~] package-surface cleanup mostly complete; protocol cleanup remains`
+Status: `[~] protocol cleanup complete; package-surface scan remains`
 
 ## Goal
 
@@ -101,8 +101,9 @@ Pick the smallest gate that proves each slice:
 
 Initial audit inputs:
 
-- `COMPATIBILITY_REGISTER.md` still has active cleanup candidates:
-  - `json-row-frame-v1` snapshot chunks (`Temporary`);
+- `COMPATIBILITY_REGISTER.md` no longer has active `Remove`, `Temporary`, or
+  `Decision needed` cleanup rows. Remaining current rows are accepted platform
+  capability/storage behaviors.
 - The first package-surface cleanup slice adopted and verified the dirty-tree
   deletions of `packages/dialect-wa-sqlite`, `packages/transport-ws`,
   `packages/syncular/src/dialect-wa-sqlite.ts`,
@@ -160,15 +161,15 @@ Package/API alias cleanup is mostly exhausted. Remaining quick-scan hits are
 accepted platform fallbacks, numeric defaults, CTE alias test wording, or
 canonical public contract names.
 
-The remaining compatibility-register cleanup is explicit snapshot format
-surface:
+The protocol compatibility cleanup pass is complete. Next cleanup should be a
+fresh scan rather than continuing to chase the deleted JSON paths:
 
-- explicit `json-row-frame-v1` snapshot chunk negotiation and fixtures.
-
-Do not remove either as a micro-cleanup. Treat the next slice as a protocol
-decision batch: identify which runtime/server/test paths still require each JSON
-format, decide whether binary/artifact paths are complete enough to delete the
-JSON path, then run protocol/runtime/conformance gates before committing.
+- run targeted `rg` scans for old package/import names, aliases, and fallback
+  wording;
+- run package-surface `knip` where WP-27+ relay findings do not block the
+  slice;
+- decide whether any accepted platform fallback needs stronger diagnostics or
+  can stay as-is.
 
 ## Progress
 
@@ -344,8 +345,8 @@ JSON path, then run protocol/runtime/conformance gates before committing.
   - `bun --cwd packages/client test`: passed, `110` tests.
 - Removed JSON row-frame snapshot chunk decode from Rust runtime transports and
   runtime protocol re-exports. Native/browser runtime clients already request
-  `binary-table-v1` only; JSON row-frame remains only in server/core/protocol
-  fixture scope until the larger server-default protocol decision is made.
+  `binary-table-v1` only; the follow-up slices below remove server/core
+  defaults and then the explicit JSON row-frame format entirely.
 - Gates:
   - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture http_sync_reuses_trace_context_for_snapshot_chunks`:
     passed, `1` targeted test.
@@ -357,10 +358,9 @@ JSON path, then run protocol/runtime/conformance gates before committing.
     passed.
   - `bun --cwd packages/client test`: passed, `110` tests.
 - Changed the server/core default snapshot chunk encoding from
-  `json-row-frame-v1` to `binary-table-v1`. Explicit JSON row-frame negotiation
-  and protocol fixtures still exist, but an unspecified pull now follows the
-  Rust-first binary chunk path. Server/Hono tests now decode chunk bodies using
-  the encoding advertised by the chunk ref instead of assuming row frames.
+  `json-row-frame-v1` to `binary-table-v1`. Server/Hono tests now decode chunk
+  bodies using the encoding advertised by the chunk ref instead of assuming row
+  frames. The follow-up slice below removes explicit JSON row-frame support.
 - Gates:
   - `bun test tests/unit/server-pull.test.ts tests/unit/create-server-handler.test.ts tests/unit/pull-bootstrap-dependencies.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts packages/core/src/__tests__/snapshot-chunks.test.ts`:
     passed, `61` tests.
@@ -399,3 +399,27 @@ JSON path, then run protocol/runtime/conformance gates before committing.
     passed, `20` tests.
   - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`:
     passed, `4` tests.
+- Removed explicit `json-row-frame-v1` snapshot chunk negotiation, encoder,
+  decoder, inline snapshot branch, protocol fixtures, handler
+  `snapshotBundleMaxBytes`, row-frame timing/stat fields, and the misleading
+  browser `snapshotChunkJsonCount` transport stat. Snapshot chunks are now
+  binary-table only; JSON HTTP/error/test value handling remains separate from
+  the snapshot chunk protocol.
+- Gates:
+  - `bun test packages/core/src/__tests__/snapshot-chunks.test.ts packages/core/src/__tests__/protocol-fixtures.test.ts tests/unit/server-pull.test.ts tests/unit/create-server-handler.test.ts tests/unit/pull-bootstrap-dependencies.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts tests/unit/snapshot-chunk-storage.test.ts tests/unit/external-chunk-storage-integration.test.ts packages/server/src/snapshot-chunks.test.ts packages/server/src/snapshot-chunks/db-metadata.test.ts packages/server/src/notify.test.ts`:
+    passed, `100` tests.
+  - `bunx biome check packages/core/src/snapshot-chunks.ts packages/core/src/__tests__/snapshot-chunks.test.ts packages/core/src/__tests__/protocol-fixtures.test.ts packages/core/scripts/generate-protocol-fixtures.ts packages/server/src/pull.ts packages/server/src/handlers/create-handler.ts packages/server/src/handlers/types.ts packages/server/src/notify.test.ts packages/server/src/snapshot-chunks.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts tests/unit/server-pull.test.ts tests/unit/create-server-handler.test.ts tests/unit/pull-bootstrap-dependencies.test.ts packages/client/src/__tests__/fixtures/hono-sync-harness.ts packages/client/src/__tests__/sync-hono.wasm.test.ts`:
+    passed.
+  - `bun --cwd packages/core tsgo && bun --cwd packages/server tsgo && bun --cwd packages/server-hono tsgo && bun --cwd packages/client tsgo`:
+    passed.
+  - `bun --cwd packages/client test`: passed, `110` tests.
+  - `bun --cwd packages/transport-http tsgo`: passed.
+  - `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang bun --cwd rust/bindings/javascript build:wasm:dev`:
+    passed.
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol && cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`:
+    passed, `20` protocol tests and `3` runtime fixture tests.
+  - `bun test tests/typegen/generate.test.ts tests/typegen/render.test.ts`:
+    blocked by pre-existing OpenAPI snapshot drift in the generated
+    `packages/transport-http/src/generated/api.ts` snapshot; this slice's
+    local diff in that file/snapshot is only the snapshot chunk encoding union
+    narrowing to `"binary-table-v1"`.

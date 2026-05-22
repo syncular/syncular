@@ -3,10 +3,8 @@ import { gunzipSync } from 'node:zlib';
 import {
   createDatabase,
   decodeBinarySnapshotTable,
-  decodeSnapshotRows,
   encodeBinarySnapshotTable,
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-  SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
   sha256Hex,
 } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
@@ -38,7 +36,7 @@ interface ClientDb {
   tasks: TasksTable;
 }
 
-function decodeSnapshotRowsGzip(
+function decodeSnapshotChunkRowsGzip(
   bytes: Uint8Array | ReadableStream<Uint8Array>,
   encoding: string
 ): unknown[] {
@@ -47,7 +45,7 @@ function decodeSnapshotRowsGzip(
   if (encoding === SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1) {
     return decodeBinarySnapshotTable(decoded).rows;
   }
-  return decodeSnapshotRows(decoded);
+  throw new Error(`Unexpected snapshot encoding: ${encoding}`);
 }
 
 function snapshotBodyBytes(
@@ -77,7 +75,7 @@ async function readSnapshotRows(
     throw new Error('Expected stored snapshot chunk');
   }
 
-  return decodeSnapshotRowsGzip(chunk.body, chunkRef.encoding);
+  return decodeSnapshotChunkRowsGzip(chunk.body, chunkRef.encoding);
 }
 
 describe('pull', () => {
@@ -226,10 +224,7 @@ describe('pull', () => {
       request: {
         clientId: 'c1',
         limitCommits: 10,
-        snapshotEncodings: [
-          SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-          SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-        ],
+        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         subscriptions: [
           {
             id: 's1',
@@ -269,7 +264,7 @@ describe('pull', () => {
     ]);
   });
 
-  it('keeps binary bootstrap snapshots chunked when resync could inline small JSON rows', async () => {
+  it('keeps bootstrap snapshots chunked when resync could otherwise inline small rows', async () => {
     const handlers = makeHandlers();
 
     await pushTask(handlers, 'task-1', 'First Task');
@@ -283,10 +278,7 @@ describe('pull', () => {
       request: {
         clientId: 'c2',
         limitCommits: 10,
-        snapshotEncodings: [
-          SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
-          SYNC_SNAPSHOT_CHUNK_ENCODING_JSON_ROW_FRAME_V1,
-        ],
+        snapshotEncodings: [SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1],
         subscriptions: [
           {
             id: 's1',

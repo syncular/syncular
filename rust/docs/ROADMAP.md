@@ -110,9 +110,9 @@ read-only review:
     Browser realtime diagnostics now name binary apply failure directly instead
     of calling HTTP pull recovery a fallback. Rust native/browser transports no
     longer decode JSON row-frame snapshot chunks; runtime clients request
-    `binary-table-v1`, while the remaining JSON row-frame decision is scoped to
-    explicit server/core negotiation and fixtures. Unspecified server pulls now
-    default to `binary-table-v1` snapshot chunks instead of JSON row frames.
+    `binary-table-v1`; explicit server/core JSON row-frame negotiation,
+    encoding, inline snapshot, fixture, and row-frame timing paths were removed.
+    Unspecified server pulls default to `binary-table-v1` snapshot chunks.
     Unspecified combined sync responses now default to `binary-sync-pack-v1`;
     explicit `json-v1` sync-pack negotiation and the Hono JSON combined
     response branch were removed, so combined sync responses are binary-only.
