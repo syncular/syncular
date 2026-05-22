@@ -75,6 +75,7 @@ exception.
 | Browser client event type aliases | `Removed` | `packages/client/src/client.ts` | Removed unused `SyncularClientEventType` / `SyncularClientEventMap` aliases; callers should use the canonical `SyncularV2ClientEventType` / `SyncularV2ClientEventMap` names from the runtime contract |
 | Browser worker response type aliases | `Removed` | `packages/client/src/worker-protocol.ts` | Removed unused `SyncularV2WorkerRuntimeInfoResponse` / `SyncularV2WorkerTransportStatsResponse` aliases; callers should use the canonical runtime info and transport stats types |
 | Browser lifecycle network type alias | `Removed` | `packages/client/src/client.ts` | Removed `SyncularV2ClientNetworkStatusSource`; lifecycle options now use the canonical `SyncularV2NetworkStatusSource` type directly |
+| Testkit sync change type alias | `Removed` | `packages/testkit/src/sync-response.ts` | Removed `SyncChangeRecord`; testkit helpers now return the canonical `SyncChange` type from `@syncular/core` |
 
 ## Items That Are Not Compatibility Debt
 

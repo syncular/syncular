@@ -276,12 +276,17 @@ current Rust-first path no longer needs them.
 - Removed the browser lifecycle network type alias
   (`SyncularV2ClientNetworkStatusSource`) so lifecycle options use the
   canonical `SyncularV2NetworkStatusSource` type directly.
+- Removed the testkit `SyncChangeRecord` alias so sync-response helpers return
+  the canonical `SyncChange` type from `@syncular/core`.
 - Gates:
   - `bunx biome check packages/client/src/client.ts packages/client/src/client.test.ts`:
     passed.
   - `bunx biome check packages/client/src/worker-protocol.ts`: passed.
+  - `bunx biome check packages/testkit/src/sync-response.ts`: passed.
   - `bun --cwd packages/client tsgo`: passed.
   - `bun --cwd packages/client test`: passed, `110` tests.
+  - `bun --cwd packages/testkit tsgo`: passed.
+  - `bunx knip --workspace packages/testkit`: passed.
 - Native alias gates:
   - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade`:
     passed, `38` tests.
