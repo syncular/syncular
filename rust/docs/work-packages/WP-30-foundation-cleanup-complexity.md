@@ -104,7 +104,6 @@ Initial audit inputs:
 - `COMPATIBILITY_REGISTER.md` still has active cleanup candidates:
   - `json-v1` sync-pack path (`Temporary`);
   - `json-row-frame-v1` snapshot chunks (`Temporary`);
-  - service-worker `postMessage` fallback (`Decision needed`);
   - external chunk storage inline/database fallback (`Decision needed`);
   - realtime wake-up-only docs (`Remove/update`).
 - The first package-surface cleanup slice adopted and verified the dirty-tree
@@ -161,8 +160,7 @@ Initial audit inputs:
 ## Next Action
 
 Continue Slice 1: close the remaining compatibility register items one by one.
-Next candidates are the service-worker and external chunk storage fallback
-decisions.
+Next candidate is the external chunk storage fallback decision.
 
 ## Progress
 
@@ -224,3 +222,15 @@ decisions.
   - `bun --cwd packages/server-hono tsgo`: passed.
   - `bun test packages/server-hono/src/__tests__/console-gateway-live-routes.test.ts packages/server-hono/src/__tests__/console-routes.test.ts`:
     passed, `39` tests.
+- Reclassified service-worker client `postMessage` wake delivery as an accepted
+  browser/service-worker platform fallback when `BroadcastChannel` is
+  unavailable or fails. Added explicit tests for both BroadcastChannel delivery
+  and client `postMessage` delivery.
+- Removed service-worker wake parsing for legacy single-commit
+  `push.operations` / `push.status` shapes; wake resolution now follows the
+  current batched `push.commits` request/response shape only.
+- Gates:
+  - `bunx biome check packages/server-service-worker/src/index.ts packages/server-service-worker/src/index.test.ts`: passed.
+  - `bun --cwd packages/server-service-worker tsgo`: passed.
+  - `bun test packages/server-service-worker/src/index.test.ts`: passed, `10`
+    tests.

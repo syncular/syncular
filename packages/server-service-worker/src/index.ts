@@ -264,8 +264,6 @@ async function getSyncPushContext(
     if (!isRecord(payload)) return null;
     if (!isRecord(payload.push)) return null;
     const push = payload.push;
-    const hasLegacyOperations =
-      Array.isArray(push.operations) && push.operations.length > 0;
     const hasBatchOperations =
       Array.isArray(push.commits) &&
       push.commits.some(
@@ -274,7 +272,7 @@ async function getSyncPushContext(
           Array.isArray(commit.operations) &&
           commit.operations.length > 0
       );
-    if (!hasLegacyOperations && !hasBatchOperations) return null;
+    if (!hasBatchOperations) return null;
 
     const sourceClientId =
       typeof payload.clientId === 'string' && payload.clientId.length > 0
@@ -315,14 +313,6 @@ async function getAppliedCommitCursor(
         return Math.max(...commitSeqs);
       }
       return undefined;
-    }
-
-    if (push.status !== 'applied' && push.status !== 'cached') {
-      return undefined;
-    }
-
-    if (typeof push.commitSeq === 'number') {
-      return push.commitSeq;
     }
 
     return undefined;
