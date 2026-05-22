@@ -92,11 +92,12 @@ read-only review:
     Database-inline snapshot chunk bodies are now documented as an accepted
     storage mode; missing external chunk bodies fail closed. Public API alias
     cleanup started with low-level browser Rust store type aliases and the old
-    `accept-server` conflict-resolution spelling. The old JavaScript-hosted
-    browser store bridge and `web-store` feature were removed in favor of the
-    Rust-owned SQLite browser runtime. The `@syncular/client-expo` alias package
-    was removed so React Native stays the single native TypeScript bridge
-    package.
+    `accept-server` conflict-resolution spelling, and the browser conflict
+    resolution type now only accepts the canonical runtime values. The old
+    JavaScript-hosted browser store bridge and `web-store` feature were removed
+    in favor of the Rust-owned SQLite browser runtime. The
+    `@syncular/client-expo` alias package was removed so React Native stays the
+    single native TypeScript bridge package.
 - `[~]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is retained but not fully accepted until browser smoke
     evidence is added. Console diagnostics now persist normalized,

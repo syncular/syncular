@@ -35,6 +35,7 @@ import type {
   SyncularV2BootstrapSubscriptionPhase,
   SyncularV2ChangedRow,
   SyncularV2ClientConfig,
+  SyncularV2ConflictResolution,
   SyncularV2ConflictSummary,
   SyncularV2ConnectionState,
   SyncularV2CrdtDocumentSnapshot,
@@ -516,7 +517,10 @@ export class SyncularV2RustClient {
     return this.raw.retryConflictKeepLocal(id);
   }
 
-  resolveConflict(id: string, resolution: string): Promise<void> {
+  resolveConflict(
+    id: string,
+    resolution: SyncularV2ConflictResolution
+  ): Promise<void> {
     return this.raw.resolveConflict(id, resolution);
   }
 
