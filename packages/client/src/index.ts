@@ -9,8 +9,15 @@ export * from './errors';
 export * from './mutations';
 export * from './network';
 export * from './runtime-contract';
-export * from './rust-client';
-export * from './rust-store';
 export * from './types';
-export * from './wasm-runtime';
+export type { SyncularWasmArtifactVariant } from './wasm-runtime';
+export {
+  getSyncularPackagedRuntimeArtifacts,
+  getSyncularRuntimeArtifact,
+  getSyncularRuntimeArtifactCatalogUrl,
+  getSyncularWasmGlueUrl,
+  getSyncularWasmUrl,
+  resolveSyncularRuntimeArtifactCatalog,
+  selectSyncularRuntimeArtifact,
+} from './wasm-runtime';
 export * from './worker-client';
