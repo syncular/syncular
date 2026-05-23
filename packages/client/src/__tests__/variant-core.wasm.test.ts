@@ -34,6 +34,29 @@ interface BasicClientDb {
   basic_tasks: BasicTaskRow;
 }
 
+interface VersionedTaskV1Row {
+  id: string;
+  title: string;
+  user_id: string;
+  server_version: number;
+}
+
+interface VersionedTaskV2ServerRow extends VersionedTaskV1Row {
+  image: string | null;
+}
+
+interface VersionedV1Db {
+  versioned_tasks: VersionedTaskV1Row;
+}
+
+interface VersionedServerDb extends SyncCoreDb {
+  versioned_tasks: VersionedTaskV2ServerRow;
+}
+
+interface VersionedClientDb {
+  versioned_tasks: VersionedTaskV1Row;
+}
+
 interface FileVersionServerRow {
   id: string;
   file_id: string;
@@ -163,6 +186,83 @@ const blobAppSchema: SyncularAppSchema = {
         },
       ],
       blobColumns: ['image'],
+    },
+  ],
+};
+
+const versionedTaskV1Columns = [
+  { name: 'id', type: 'string' },
+  { name: 'title', type: 'string' },
+  { name: 'user_id', type: 'string' },
+  { name: 'server_version', type: 'integer' },
+] as const;
+
+const versionedTaskV2Columns = [
+  ...versionedTaskV1Columns,
+  { name: 'image', type: 'string', nullable: true },
+] as const;
+
+const versionedV1AppSchema: SyncularAppSchema = {
+  schemaVersion: 1,
+  migrations: [
+    {
+      version: '0001',
+      schemaVersion: 1,
+      name: 'create_versioned_tasks',
+      upSql: `
+        CREATE TABLE IF NOT EXISTS versioned_tasks (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          server_version INTEGER NOT NULL DEFAULT 0
+        ) WITHOUT ROWID;
+      `,
+    },
+  ],
+  tables: [
+    {
+      name: 'versioned_tasks',
+      primaryKeyColumn: 'id',
+      serverVersionColumn: 'server_version',
+      softDeleteColumn: null,
+      subscriptionId: 'sub-versioned-tasks',
+      columns: [
+        {
+          name: 'id',
+          typeFamily: 'text',
+          notnullRequired: false,
+          primaryKey: true,
+        },
+        {
+          name: 'title',
+          typeFamily: 'text',
+          notnullRequired: true,
+          primaryKey: false,
+        },
+        {
+          name: 'user_id',
+          typeFamily: 'text',
+          notnullRequired: true,
+          primaryKey: false,
+        },
+        {
+          name: 'server_version',
+          typeFamily: 'integer',
+          notnullRequired: true,
+          primaryKey: false,
+        },
+      ],
+      blobColumns: [],
+      crdtYjsFields: [],
+      encryptedFields: [],
+      scopes: [
+        {
+          name: 'user_id',
+          column: 'user_id',
+          source: 'actorId',
+          required: true,
+        },
+      ],
     },
   ],
 };
@@ -513,6 +613,79 @@ describe('Syncular core WASM artifact', () => {
     }
   });
 
+  it('applies old-client bootstrap chunks without current-only columns', async () => {
+    const actorId = 'actor-versioned-old-client';
+    const token = 'token-versioned-old-client';
+    const server = await createHttpServerFixture<VersionedServerDb>({
+      serverDialect: 'sqlite',
+      createTables: ensureVersionedServerTables,
+      handlers: [
+        createServerHandler<
+          VersionedServerDb,
+          VersionedClientDb,
+          'versioned_tasks'
+        >({
+          table: 'versioned_tasks',
+          scopes: ['user:{user_id}'],
+          snapshotBinaryColumns: versionedTaskV2Columns,
+          snapshotBinaryColumnsForVersion: (schemaVersion) =>
+            schemaVersion === 1 ? versionedTaskV1Columns : undefined,
+          resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+        }),
+      ],
+      authenticate: async (c) => {
+        const authorization = c.req.header('authorization');
+        return authorization === token ? { actorId } : null;
+      },
+      sync: {
+        latestSchemaVersion: 2,
+      },
+    });
+    let oldClient: SyncularDatabase<VersionedV1Db> | null = null;
+
+    try {
+      await server.db
+        .insertInto('versioned_tasks')
+        .values({
+          id: 'versioned-task-1',
+          title: 'Visible to old client',
+          user_id: actorId,
+          server_version: 2,
+          image: 'current-only-image',
+        })
+        .execute();
+
+      oldClient = await openVersionedV1CoreDatabase({
+        baseUrl: `${server.baseUrl}/sync`,
+        actorId,
+        clientId: `client-versioned-v1-${Date.now()}`,
+        token,
+      });
+
+      const pullResult = await oldClient.client.syncPull();
+      expect(pullResult).toMatchObject({
+        changedTables: ['versioned_tasks'],
+        pushedCommits: 0,
+      });
+      await expect(
+        oldClient.db
+          .selectFrom('versioned_tasks')
+          .select(['id', 'title', 'user_id', 'server_version'])
+          .execute()
+      ).resolves.toEqual([
+        {
+          id: 'versioned-task-1',
+          title: 'Visible to old client',
+          user_id: actorId,
+          server_version: 2,
+        },
+      ]);
+    } finally {
+      await oldClient?.close();
+      await server.destroy();
+    }
+  });
+
   it('syncs file-version BlobRef rows through Hono and clears them on revocation', async () => {
     const actorId = 'actor-file-assets';
     const token = 'token-file-assets';
@@ -688,6 +861,43 @@ async function openBasicCoreDatabase(args: {
   }
 }
 
+async function openVersionedV1CoreDatabase(args: {
+  baseUrl: string;
+  actorId: string;
+  clientId: string;
+  token: string;
+}): Promise<SyncularDatabase<VersionedV1Db>> {
+  const syncular = await createSyncularDatabase<VersionedV1Db>({
+    config: {
+      baseUrl: args.baseUrl,
+      actorId: args.actorId,
+      clientId: args.clientId,
+      storage: 'memory',
+      clearOnInit: true,
+      appSchema: versionedV1AppSchema,
+    },
+    getHeaders: () => ({ authorization: args.token }),
+    appTables: ['versioned_tasks'],
+    tableConfig: {
+      versioned_tasks: {
+        primaryKeyColumn: 'id',
+        serverVersionColumn: 'server_version',
+      },
+    },
+    requiredRuntimeFeatures: ['web-owned-sqlite-core'],
+    runtimeArtifacts: [coreRuntimeArtifact()],
+  });
+  try {
+    await syncular.client.setSubscriptions([
+      versionedTaskSubscription(args.actorId),
+    ]);
+    return syncular;
+  } catch (error) {
+    await syncular.close();
+    throw error;
+  }
+}
+
 async function installBasicClientSchema(
   syncular: SyncularDatabase<BasicDb>
 ): Promise<void> {
@@ -715,6 +925,20 @@ async function ensureBasicServerTables(
     .addColumn('title', 'text', (col) => col.notNull())
     .addColumn('user_id', 'text', (col) => col.notNull())
     .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
+    .execute();
+}
+
+async function ensureVersionedServerTables(
+  db: import('kysely').Kysely<VersionedServerDb>
+): Promise<void> {
+  await db.schema
+    .createTable('versioned_tasks')
+    .ifNotExists()
+    .addColumn('id', 'text', (col) => col.primaryKey())
+    .addColumn('title', 'text', (col) => col.notNull())
+    .addColumn('user_id', 'text', (col) => col.notNull())
+    .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
+    .addColumn('image', 'text')
     .execute();
 }
 
@@ -814,6 +1038,15 @@ function basicTaskSubscription(actorId: string): SyncularSubscriptionSpec {
   return {
     id: 'sub-basic-tasks',
     table: 'basic_tasks',
+    scopes: { user_id: actorId },
+    params: {},
+  };
+}
+
+function versionedTaskSubscription(actorId: string): SyncularSubscriptionSpec {
+  return {
+    id: 'sub-versioned-tasks',
+    table: 'versioned_tasks',
     scopes: { user_id: actorId },
     params: {},
   };

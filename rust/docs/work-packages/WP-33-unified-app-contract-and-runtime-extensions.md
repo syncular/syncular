@@ -791,6 +791,26 @@ The contract should distinguish two local cases:
   app adds an `image` column in v2, to assert the generated server output
   includes versioned binary column and encoder helpers.
 
+### Batch 2/8 Browser Old-Client Bootstrap Slice
+
+- Added browser/WASM conformance coverage for an old generated client schema
+  applying a bootstrap snapshot from a newer server shape.
+- The test uses a synthetic `versioned_tasks` app where schema v2 adds a
+  current-only `image` column while the schema v1 client only has
+  `id`, `title`, `user_id`, and `server_version`.
+- The server advertises versioned binary snapshot columns and the schema v1
+  Rust-owned SQLite browser client pulls successfully without trying to apply
+  the current-only `image` field.
+- This proves the schema-versioned pull request, versioned binary metadata,
+  binary chunk encoder path, and browser local apply path work together for an
+  older client. It also guards against the easy regression where server binary
+  chunks are correctly versioned in metadata but still emitted or applied using
+  the current row shape.
+- Rebuilt both core and full browser WASM artifacts while testing. The variant
+  suite uses the core artifact for core-only tests and the full artifact for
+  the BlobRef case, so stale artifacts can produce false failures after
+  protocol shape changes.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -811,6 +831,7 @@ Gates run:
 - `bun test packages/server-hono/src/__tests__/create-server.test.ts`
 - `bun test packages/testkit/src/faults.test.ts`
 - `bun --cwd rust/bindings/javascript build:wasm:core`
+- `bun --cwd rust/bindings/javascript build:wasm`
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
 - `bun run --cwd packages/typegen tsgo`
 - `bun test packages/typegen/src/app-contract.test.ts`
