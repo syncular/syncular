@@ -83,6 +83,7 @@ struct TableInfo {
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 struct CodegenConfig {
     tables: BTreeMap<String, TableCodegenConfig>,
+    client_schema_support: Option<ClientSchemaSupportConfig>,
     local_read_models: Vec<LocalReadModelConfig>,
     schema_output_path: Option<PathBuf>,
     typescript_output_path: Option<PathBuf>,
@@ -93,6 +94,13 @@ struct CodegenConfig {
     native_kotlin_output_path: Option<PathBuf>,
     native_android_kotlin_output_path: Option<PathBuf>,
     native_android_kotlin_package: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, rename_all = "camelCase", deny_unknown_fields)]
+struct ClientSchemaSupportConfig {
+    min_supported: Option<i32>,
+    supported: Vec<i32>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -800,6 +808,8 @@ struct SchemaJsonDocument {
     contract_version: u32,
     app_schema_version: i32,
     client_schema_support: SchemaJsonClientSchemaSupport,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    historical_client_schemas: Vec<SchemaJsonHistoricalClientSchema>,
     migrations: Vec<SchemaJsonMigration>,
     tables: Vec<SchemaJsonTable>,
     #[serde(default)]
@@ -818,12 +828,80 @@ struct SchemaJsonClientSchemaSupport {
     supported: Vec<i32>,
 }
 
-fn current_only_client_schema_support(schema_version: i32) -> SchemaJsonClientSchemaSupport {
-    SchemaJsonClientSchemaSupport {
-        current: schema_version,
-        min_supported: schema_version,
-        supported: vec![schema_version],
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaJsonHistoricalClientSchema {
+    schema_version: i32,
+    tables: Vec<SchemaJsonTable>,
+}
+
+fn client_schema_support_from_config(
+    config: &CodegenConfig,
+    current_schema_version: i32,
+) -> Result<SchemaJsonClientSchemaSupport> {
+    let configured = config.client_schema_support.as_ref();
+    let mut supported = if let Some(configured_supported) = configured
+        .map(|config| config.supported.clone())
+        .filter(|supported| !supported.is_empty())
+    {
+        configured_supported
+    } else if let Some(min_supported) = configured.and_then(|config| config.min_supported) {
+        if min_supported > current_schema_version {
+            bail!(
+                "syncular.codegen.json clientSchemaSupport.minSupported {} exceeds current schema version {}",
+                min_supported,
+                current_schema_version
+            );
+        }
+        (min_supported..=current_schema_version).collect()
+    } else {
+        vec![current_schema_version]
+    };
+
+    supported.sort_unstable();
+    supported.dedup();
+
+    if supported.is_empty() {
+        bail!("syncular.codegen.json clientSchemaSupport.supported cannot be empty");
     }
+    for version in &supported {
+        if *version < 1 {
+            bail!(
+                "syncular.codegen.json clientSchemaSupport.supported contains invalid schema version {}; versions must be >= 1",
+                version
+            );
+        }
+        if *version > current_schema_version {
+            bail!(
+                "syncular.codegen.json clientSchemaSupport.supported contains future schema version {}; current is {}",
+                version,
+                current_schema_version
+            );
+        }
+    }
+    if !supported.contains(&current_schema_version) {
+        bail!(
+            "syncular.codegen.json clientSchemaSupport.supported must include current schema version {}",
+            current_schema_version
+        );
+    }
+
+    let min_supported = supported[0];
+    if let Some(configured_min) = configured.and_then(|config| config.min_supported) {
+        if configured_min != min_supported {
+            bail!(
+                "syncular.codegen.json clientSchemaSupport.minSupported {} does not match the lowest supported version {}",
+                configured_min,
+                min_supported
+            );
+        }
+    }
+
+    Ok(SchemaJsonClientSchemaSupport {
+        current: current_schema_version,
+        min_supported,
+        supported,
+    })
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -986,6 +1064,223 @@ fn migration_specs(migrations_dir: &Path) -> Result<Vec<SchemaJsonMigration>> {
         .collect()
 }
 
+fn schema_json_table_from_info(
+    table: &TableInfo,
+    table_config: &TableCodegenConfig,
+) -> Result<SchemaJsonTable> {
+    let primary_key = primary_key_column(table);
+    let column_names = table
+        .columns
+        .iter()
+        .map(|column| column.name.as_str())
+        .collect::<BTreeSet<_>>();
+    let server_version_column = table_config
+        .server_version_column
+        .as_deref()
+        .expect("validated table has server version column");
+    if !column_names.contains(server_version_column) {
+        bail!(
+            "supported client schema table {} is missing serverVersionColumn {}",
+            table.name,
+            server_version_column
+        );
+    }
+    let scopes = table_config
+        .scopes()
+        .into_iter()
+        .filter(|scope| column_names.contains(scope.column.as_str()))
+        .collect::<Vec<_>>();
+
+    let columns = table
+        .columns
+        .iter()
+        .map(|column| {
+            let scope = scope_for_column(column, table_config);
+            SchemaJsonColumn {
+                name: column.name.clone(),
+                sql_type: column.sql_type.clone(),
+                type_family: ts_sqlite_column_type(column).to_string(),
+                app_type: schema_app_type(column, table_config).to_string(),
+                nullable: is_nullable(column),
+                notnull_required: !is_nullable(column) && column.pk == 0,
+                primary_key: column.pk > 0,
+                has_default: has_sql_default(column),
+                default_sql: column.dflt_value.clone(),
+                server_version: column.name == server_version_column,
+                soft_delete: table_config
+                    .soft_delete_column
+                    .as_deref()
+                    .is_some_and(|soft_delete_column| column.name == soft_delete_column),
+                blob_ref: is_blob_ref_column(column, table_config),
+                scope: scope.as_ref().map(scope_name).map(str::to_string),
+            }
+        })
+        .collect();
+
+    let scopes = scopes
+        .into_iter()
+        .map(|scope| SchemaJsonScope {
+            name: scope_name(&scope).to_string(),
+            column: scope.column,
+            source: scope.source.expect("validated scope has source"),
+            required: scope.required,
+        })
+        .collect();
+
+    Ok(SchemaJsonTable {
+        name: table.name.clone(),
+        primary_key_column: primary_key.name.clone(),
+        server_version_column: server_version_column.to_string(),
+        soft_delete_column: table_config
+            .soft_delete_column
+            .clone()
+            .filter(|column| column_names.contains(column.as_str())),
+        columns,
+        indexes: effective_local_indexes(&table.indexes)
+            .into_iter()
+            .map(|index| SchemaJsonIndex {
+                name: index.name.clone(),
+                sql: sqlite_index_create_if_not_exists(&index.sql),
+                unique: index.unique,
+                partial: index.partial,
+                columns: schema_json_index_columns(index),
+            })
+            .collect(),
+        blob_columns: table_config
+            .blob_columns
+            .iter()
+            .filter(|column| column_names.contains(column.as_str()))
+            .cloned()
+            .collect(),
+        crdt_yjs_fields: table_config
+            .crdt_yjs_fields
+            .iter()
+            .filter(|field| {
+                column_names.contains(field.field.as_str())
+                    && column_names.contains(field.state_column.as_str())
+                    && field
+                        .row_id_field
+                        .as_deref()
+                        .map_or(true, |row_id_field| column_names.contains(row_id_field))
+            })
+            .map(|field| SchemaJsonCrdtYjsField {
+                field: field.field.clone(),
+                state_column: field.state_column.clone(),
+                container_key: field
+                    .container_key
+                    .clone()
+                    .unwrap_or_else(|| field.field.clone()),
+                row_id_field: field
+                    .row_id_field
+                    .clone()
+                    .unwrap_or_else(|| primary_key.name.clone()),
+                kind: if field.kind.is_empty() {
+                    "text".to_string()
+                } else {
+                    field.kind.clone()
+                },
+                sync_mode: if field.sync_mode.is_empty() {
+                    "server-merge".to_string()
+                } else {
+                    field.sync_mode.clone()
+                },
+            })
+            .collect(),
+        encrypted_fields: table_config
+            .encrypted_fields
+            .iter()
+            .filter(|field| {
+                column_names.contains(field.field.as_str())
+                    && field
+                        .row_id_field
+                        .as_deref()
+                        .map_or(true, |row_id_field| column_names.contains(row_id_field))
+            })
+            .map(|field| SchemaJsonEncryptedField {
+                field: field.field.clone(),
+                scope: field.scope.clone().unwrap_or_else(|| table.name.clone()),
+                row_id_field: field
+                    .row_id_field
+                    .clone()
+                    .unwrap_or_else(|| primary_key.name.clone()),
+            })
+            .collect(),
+        scopes,
+        subscription: SchemaJsonSubscription {
+            id: table_config.subscription_id(&table.name),
+            params: table_config.subscription_params.clone(),
+        },
+        sqlite_without_rowid: table_config.sqlite_without_rowid.unwrap_or(false),
+    })
+}
+
+fn historical_client_schemas(
+    config: &CodegenConfig,
+    migrations_dir: &Path,
+    current_schema_version: i32,
+    client_schema_support: &SchemaJsonClientSchemaSupport,
+) -> Result<Vec<SchemaJsonHistoricalClientSchema>> {
+    let requested_versions = client_schema_support
+        .supported
+        .iter()
+        .copied()
+        .filter(|version| *version != current_schema_version)
+        .collect::<BTreeSet<_>>();
+    if requested_versions.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let sqlite_path = temp_sqlite_path()?;
+    let _ = fs::remove_file(&sqlite_path);
+    let mut conn = SqliteConnection::establish(sqlite_path.to_str().context("utf8 sqlite path")?)
+        .with_context(|| format!("open {}", sqlite_path.display()))?;
+    let migrations = migration_dirs(migrations_dir)?;
+    let mut historical = Vec::new();
+    for (index, migration_dir) in migrations.iter().enumerate() {
+        apply_migration_dir(&mut conn, migration_dir)?;
+        let schema_version = i32::try_from(index + 1).context("migration count exceeds i32")?;
+        if !requested_versions.contains(&schema_version) {
+            continue;
+        }
+
+        let tables = load_tables(&mut conn)?;
+        let mut schema_tables = Vec::new();
+        for table in tables
+            .iter()
+            .filter(|table| !table.name.starts_with("sync_"))
+        {
+            let Some(table_config) = config.tables.get(&table.name) else {
+                bail!(
+                    "clientSchemaSupport includes schema version {} but historical table {} is not present in syncular.codegen.json; explicit removed-table history is not implemented yet",
+                    schema_version,
+                    table.name
+                );
+            };
+            schema_tables.push(schema_json_table_from_info(table, table_config)?);
+        }
+        historical.push(SchemaJsonHistoricalClientSchema {
+            schema_version,
+            tables: schema_tables,
+        });
+    }
+    let _ = fs::remove_file(&sqlite_path);
+
+    let generated_versions = historical
+        .iter()
+        .map(|schema| schema.schema_version)
+        .collect::<BTreeSet<_>>();
+    for requested_version in requested_versions {
+        if !generated_versions.contains(&requested_version) {
+            bail!(
+                "clientSchemaSupport requested schema version {} but no matching migration was found",
+                requested_version
+            );
+        }
+    }
+
+    Ok(historical)
+}
+
 fn generate_schema_json(
     tables: &[TableInfo],
     config: &CodegenConfig,
@@ -999,111 +1294,7 @@ fn generate_schema_json(
         .filter(|table| !table.name.starts_with("sync_"))
     {
         let table_config = config.table(&table.name);
-        let primary_key = primary_key_column(table);
-        let server_version_column = table_config
-            .server_version_column
-            .as_deref()
-            .expect("validated table has server version column");
-        let scopes = table_config.scopes();
-
-        let columns = table
-            .columns
-            .iter()
-            .map(|column| {
-                let scope = scope_for_column(column, &table_config);
-                SchemaJsonColumn {
-                    name: column.name.clone(),
-                    sql_type: column.sql_type.clone(),
-                    type_family: ts_sqlite_column_type(column).to_string(),
-                    app_type: schema_app_type(column, &table_config).to_string(),
-                    nullable: is_nullable(column),
-                    notnull_required: !is_nullable(column) && column.pk == 0,
-                    primary_key: column.pk > 0,
-                    has_default: has_sql_default(column),
-                    default_sql: column.dflt_value.clone(),
-                    server_version: column.name == server_version_column,
-                    soft_delete: table_config
-                        .soft_delete_column
-                        .as_deref()
-                        .is_some_and(|soft_delete_column| column.name == soft_delete_column),
-                    blob_ref: is_blob_ref_column(column, &table_config),
-                    scope: scope.as_ref().map(scope_name).map(str::to_string),
-                }
-            })
-            .collect();
-
-        let scopes = scopes
-            .into_iter()
-            .map(|scope| SchemaJsonScope {
-                name: scope_name(&scope).to_string(),
-                column: scope.column,
-                source: scope.source.expect("validated scope has source"),
-                required: scope.required,
-            })
-            .collect();
-
-        schema_tables.push(SchemaJsonTable {
-            name: table.name.clone(),
-            primary_key_column: primary_key.name.clone(),
-            server_version_column: server_version_column.to_string(),
-            soft_delete_column: table_config.soft_delete_column.clone(),
-            columns,
-            indexes: effective_local_indexes(&table.indexes)
-                .into_iter()
-                .map(|index| SchemaJsonIndex {
-                    name: index.name.clone(),
-                    sql: sqlite_index_create_if_not_exists(&index.sql),
-                    unique: index.unique,
-                    partial: index.partial,
-                    columns: schema_json_index_columns(index),
-                })
-                .collect(),
-            blob_columns: table_config.blob_columns.clone(),
-            crdt_yjs_fields: table_config
-                .crdt_yjs_fields
-                .iter()
-                .map(|field| SchemaJsonCrdtYjsField {
-                    field: field.field.clone(),
-                    state_column: field.state_column.clone(),
-                    container_key: field
-                        .container_key
-                        .clone()
-                        .unwrap_or_else(|| field.field.clone()),
-                    row_id_field: field
-                        .row_id_field
-                        .clone()
-                        .unwrap_or_else(|| primary_key.name.clone()),
-                    kind: if field.kind.is_empty() {
-                        "text".to_string()
-                    } else {
-                        field.kind.clone()
-                    },
-                    sync_mode: if field.sync_mode.is_empty() {
-                        "server-merge".to_string()
-                    } else {
-                        field.sync_mode.clone()
-                    },
-                })
-                .collect(),
-            encrypted_fields: table_config
-                .encrypted_fields
-                .iter()
-                .map(|field| SchemaJsonEncryptedField {
-                    field: field.field.clone(),
-                    scope: field.scope.clone().unwrap_or_else(|| table.name.clone()),
-                    row_id_field: field
-                        .row_id_field
-                        .clone()
-                        .unwrap_or_else(|| primary_key.name.clone()),
-                })
-                .collect(),
-            scopes,
-            subscription: SchemaJsonSubscription {
-                id: table_config.subscription_id(&table.name),
-                params: table_config.subscription_params.clone(),
-            },
-            sqlite_without_rowid: table_config.sqlite_without_rowid.unwrap_or(false),
-        });
+        schema_tables.push(schema_json_table_from_info(table, &table_config)?);
         local_base_table_setup_sql.push(ts_raw_sql_create_table(
             table,
             table_config.sqlite_without_rowid.unwrap_or(false),
@@ -1154,11 +1345,20 @@ fn generate_schema_json(
             .collect(),
     };
 
+    let client_schema_support = client_schema_support_from_config(config, app_schema_version)?;
+    let historical_client_schemas = historical_client_schemas(
+        config,
+        migrations_dir,
+        app_schema_version,
+        &client_schema_support,
+    )?;
+
     let document = SchemaJsonDocument {
         schema_ref: "https://syncular.dev/schemas/syncular.schema.v1.json".to_string(),
         contract_version: 1,
         app_schema_version,
-        client_schema_support: current_only_client_schema_support(app_schema_version),
+        client_schema_support,
+        historical_client_schemas,
         migrations: migration_specs(migrations_dir)?,
         tables: schema_tables,
         local_base_schema: SchemaJsonLocalBaseSchema {
@@ -1256,7 +1456,7 @@ fn generate_runtime_app_schema_json(
 
     Ok(serde_json::to_string(&serde_json::json!({
         "schemaVersion": schema_version,
-        "clientSchemaSupport": current_only_client_schema_support(schema_version),
+        "clientSchemaSupport": client_schema_support_from_config(config, schema_version)?,
         "tables": app_tables,
         "migrations": migrations,
         "localBaseSchema": {
@@ -1388,6 +1588,10 @@ fn schema_backed_codegen_inputs(
 
     let mut schema_config = base_config.clone();
     schema_config.tables = table_configs;
+    schema_config.client_schema_support = Some(ClientSchemaSupportConfig {
+        min_supported: Some(document.client_schema_support.min_supported),
+        supported: document.client_schema_support.supported,
+    });
     schema_config.local_read_models = document
         .local_read_models
         .into_iter()
@@ -1405,16 +1609,21 @@ fn schema_backed_codegen_inputs(
 
 fn apply_migrations(conn: &mut SqliteConnection, migrations_dir: &Path) -> Result<()> {
     for migration_dir in migration_dirs(migrations_dir)? {
-        let up_sql_path = migration_dir.join("up.sql");
-        let sql = fs::read_to_string(&up_sql_path)
-            .with_context(|| format!("read migration {}", up_sql_path.display()))?;
-        for statement in split_sql_statements(&sql) {
-            sql_query(statement)
-                .execute(conn)
-                .with_context(|| format!("apply migration {}", up_sql_path.display()))?;
-        }
+        apply_migration_dir(conn, &migration_dir)?;
     }
 
+    Ok(())
+}
+
+fn apply_migration_dir(conn: &mut SqliteConnection, migration_dir: &Path) -> Result<()> {
+    let up_sql_path = migration_dir.join("up.sql");
+    let sql = fs::read_to_string(&up_sql_path)
+        .with_context(|| format!("read migration {}", up_sql_path.display()))?;
+    for statement in split_sql_statements(&sql) {
+        sql_query(statement)
+            .execute(conn)
+            .with_context(|| format!("apply migration {}", up_sql_path.display()))?;
+    }
     Ok(())
 }
 
@@ -5244,14 +5453,27 @@ fn push_typescript_app_db_rows(
     }
 }
 
-fn push_typescript_client_schema_support(out: &mut String, schema_version: i32) {
+fn push_typescript_client_schema_support(
+    out: &mut String,
+    client_schema_support: &SchemaJsonClientSchemaSupport,
+) {
+    let schema_version = client_schema_support.current;
+    let supported = client_schema_support
+        .supported
+        .iter()
+        .map(i32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ");
     out.push_str(&format!(
         "export const syncularGeneratedSchemaVersion = {schema_version} as const;\n"
     ));
     out.push_str("export const syncularGeneratedClientSchemaSupport = {\n");
     out.push_str("  current: syncularGeneratedSchemaVersion,\n");
-    out.push_str("  minSupported: syncularGeneratedSchemaVersion,\n");
-    out.push_str("  supported: [syncularGeneratedSchemaVersion],\n");
+    out.push_str(&format!(
+        "  minSupported: {},\n",
+        client_schema_support.min_supported
+    ));
+    out.push_str(&format!("  supported: [{supported}],\n"));
     out.push_str("} as const;\n");
     out.push_str(
         "export type SyncularGeneratedSupportedClientSchemaVersion = typeof syncularGeneratedClientSchemaSupport.supported[number];\n",
@@ -5306,7 +5528,8 @@ fn generate_typescript_server_module(
         "import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';\n",
     );
     out.push_str("import type { ApplyOperationResult } from '@syncular/server';\n\n");
-    push_typescript_client_schema_support(&mut out, schema_version);
+    let client_schema_support = client_schema_support_from_config(config, schema_version)?;
+    push_typescript_client_schema_support(&mut out, &client_schema_support);
     push_typescript_unsupported_client_schema_result(&mut out);
     push_typescript_app_db_rows(&mut out, &user_tables, config);
     push_typescript_binary_snapshot_exports(&mut out, &user_tables, config);
@@ -5404,7 +5627,8 @@ fn generate_typescript_module(
         "  encryptedFields: readonly { field: string; scope: string; rowIdField: string }[];\n",
     );
     out.push_str("}\n\n");
-    push_typescript_client_schema_support(&mut out, schema_version);
+    let client_schema_support = client_schema_support_from_config(config, schema_version)?;
+    push_typescript_client_schema_support(&mut out, &client_schema_support);
     out.push_str("const syncularGeneratedSchemaId = 'syncular-app';\n\n");
     out.push_str("export interface SyncularGeneratedAppMigration {\n");
     out.push_str("  version: string;\n");
@@ -10867,6 +11091,74 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
             .find(|column| column["name"] == "project_id")
             .expect("project_id column");
         assert_eq!(project_id["scope"], "project_id");
+
+        let _ = fs::remove_dir_all(&migrations_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn schema_json_replays_supported_historical_client_schemas() -> Result<()> {
+        let migrations_dir = temp_test_dir("historical-schema-json")?;
+        fs::create_dir_all(migrations_dir.join("0001_initial"))?;
+        fs::write(
+            migrations_dir.join("0001_initial/up.sql"),
+            r#"
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  project_id TEXT NULL,
+  server_version BIGINT NOT NULL DEFAULT 0
+);
+"#,
+        )?;
+        fs::create_dir_all(migrations_dir.join("0002_add_images"))?;
+        fs::write(
+            migrations_dir.join("0002_add_images/up.sql"),
+            "ALTER TABLE tasks ADD COLUMN image TEXT NULL;",
+        )?;
+
+        let tables = vec![table(
+            "tasks",
+            vec![
+                column("id", "TEXT", false, true, None),
+                column("title", "TEXT", true, false, None),
+                column("project_id", "TEXT", false, false, None),
+                column("server_version", "BIGINT", true, false, Some("0")),
+                column("image", "TEXT", false, false, None),
+            ],
+        )];
+        let mut tasks_config = table_config(
+            "sub-tasks",
+            "server_version",
+            vec![scope("project_id", "project_id", "projectId", false)],
+        );
+        tasks_config.blob_columns = vec!["image".to_string()];
+        let config = CodegenConfig {
+            client_schema_support: Some(ClientSchemaSupportConfig {
+                min_supported: Some(1),
+                supported: Vec::new(),
+            }),
+            tables: BTreeMap::from([("tasks".to_string(), tasks_config)]),
+            ..CodegenConfig::default()
+        };
+
+        let output = generate_schema_json(&tables, &config, &migrations_dir, 2)?;
+        let json: JsonValue = serde_json::from_str(&output)?;
+        let historical = &json["historicalClientSchemas"][0];
+        let historical_table = &historical["tables"][0];
+
+        assert_eq!(json["clientSchemaSupport"]["current"], 2);
+        assert_eq!(json["clientSchemaSupport"]["minSupported"], 1);
+        assert_eq!(json["clientSchemaSupport"]["supported"][0], 1);
+        assert_eq!(json["clientSchemaSupport"]["supported"][1], 2);
+        assert_eq!(historical["schemaVersion"], 1);
+        assert_eq!(historical_table["name"], "tasks");
+        assert_eq!(historical_table["columns"].as_array().unwrap().len(), 4);
+        assert!(historical_table["blobColumns"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+        assert_eq!(json["tables"][0]["blobColumns"][0], "image");
 
         let _ = fs::remove_dir_all(&migrations_dir);
         Ok(())
