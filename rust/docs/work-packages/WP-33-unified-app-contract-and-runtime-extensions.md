@@ -1114,6 +1114,26 @@ The contract should distinguish two local cases:
   `.codecs`, proving the generated app object is usable for local/no-server
   and old-client schema tests.
 
+### Batch 4 App Contract Handoff Slice
+
+- The todo app fixture now treats `syncular.app.ts` as the source of truth for
+  app sync metadata and generates the low-level `syncular.codegen.json` handoff
+  from it through `syncular.codegen.ts`.
+- Added example package scripts:
+  - `codegen:config` writes the low-level handoff JSON from the typed app
+    contract.
+  - `codegen` writes the handoff JSON and runs Rust codegen.
+  - `codegen:check` verifies the handoff JSON still matches the typed contract
+    and runs Rust codegen in check mode.
+- Tightened the todo app authoring test to compare the exact generated JSON
+  string, not only parsed semantic equality. This keeps accidental hand-edits
+  to `syncular.codegen.json` visible.
+- Normalized `syncular.codegen.json` to the stable
+  `toSyncularCodegenJson(app)` output so future changes flow through the typed
+  app authoring file.
+- Updated the example README to show the typed-contract handoff before Rust
+  codegen.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -1226,6 +1246,8 @@ Gates run:
 - `bun run --cwd packages/server tsgo`
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
 - `bun run --cwd packages/client tsgo`
+- `bun test rust/examples/todo-app/syncular.app.test.ts`
+- `bun --cwd rust/examples/todo-app codegen:check`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
@@ -1235,7 +1257,8 @@ Gates run:
 
 Batch 6 is closed for the known runtime extension boundaries. Batch 5 now has
 generated server and client public shapes aligned around one generated app
-object. Continue WP-33 with the developer-facing contract flow: make the app
-authoring surface generate the same language-neutral schema contract without
-app authors editing low-level `syncular.codegen.json`, while preserving
-divergent server/client shapes and schema-version-aware handler helpers.
+object. Batch 4 now has the todo fixture generating the low-level
+`syncular.codegen.json` handoff from the typed app contract. Continue WP-33 by
+generalizing that flow beyond the todo fixture: make the published authoring
+tooling/CLI produce the handoff contract directly and document the same flow
+for new apps.

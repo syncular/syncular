@@ -590,10 +590,12 @@ read-only review:
   TypeScript client output now also exposes one `syncularGeneratedApp` object
   with `appSchema`, `tables`, `tableNames`, `tableConfig`, generated codecs,
   and field-encryption helpers; the old exported client app-table list was
-  removed. The next WP-33 gap is the developer-facing authoring surface that
-  generates the
-  language-neutral schema contract without app authors editing low-level
-  `syncular.codegen.json`.
+  removed. The todo fixture now generates the low-level
+  `syncular.codegen.json` handoff from the typed `syncular.app.ts` authoring
+  file via `syncular.codegen.ts`, with `codegen:config` / `codegen` /
+  `codegen:check` scripts and exact-string drift coverage. The next WP-33 gap
+  is generalizing that typed-contract handoff into published authoring tooling
+  and new-app docs.
 
 ## Later
 
