@@ -37,6 +37,7 @@ export const SyncularErrorRecommendedActionSchema = z.enum([
   'retryLater',
   'forceResync',
   'regenerateClient',
+  'upgradeClient',
   'inspectStorage',
   'inspectServer',
   'resolveConflict',

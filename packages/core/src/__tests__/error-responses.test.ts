@@ -81,6 +81,13 @@ describe('Syncular error responses', () => {
       retryable: false,
       recommendedAction: 'regenerateClient',
     });
+    expect(
+      createSyncularErrorResponse('sync.client_schema_unsupported')
+    ).toMatchObject({
+      category: 'schema-mismatch',
+      retryable: false,
+      recommendedAction: 'upgradeClient',
+    });
     expect(createSyncularErrorResponse('sync.scope_revoked')).toMatchObject({
       category: 'scope-revoked',
       retryable: false,

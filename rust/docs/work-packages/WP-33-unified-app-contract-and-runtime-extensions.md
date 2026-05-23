@@ -1,6 +1,6 @@
 # WP-33 Unified App Contract And Runtime Extensions
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -531,10 +531,77 @@ The contract should distinguish two local cases:
   needs to shape this into a documented backend-less app mode instead of an
   implicit test/demo capability.
 
+## Progress
+
+### Batch 1 Inventory
+
+- Static generated contract today:
+  - `syncular.schema.json` carries contract version, current app schema
+    version, migrations, tables, columns, scopes, subscriptions, blobs, CRDT
+    fields, encrypted fields, local base schema SQL, local indexes, and local
+    read models.
+  - Generated Rust, TypeScript, Swift, Kotlin, and JVM artifacts consume that
+    contract and embed runtime app schema/migration data where needed.
+  - Generated TypeScript server output carries client row types and binary
+    snapshot metadata, but previously did not expose the current client schema
+    version or a supported-client-schema policy.
+- Generated intermediate today:
+  - `syncular.codegen.json` remains the low-level editable metadata source for
+    subscriptions/scopes/blob/CRDT/encryption/read-model configuration.
+  - The desired higher-level authoring surface should emit this intermediate or
+    replace it, but runtime packages must consume generated artifacts rather
+    than path strings.
+- Server behavior today:
+  - `createServerHandler` is a useful same-shape/default helper. Its type
+    boundary still couples `TableName` to `keyof ServerDB & keyof ClientDB`, so
+    it is not the right long-term helper for divergent server/client schemas.
+  - `ServerTableHandler` and `createServerHandlerCollection` already use
+    string protocol table ids and are the lower-level path for generated
+    `app.tables.notes` helpers that do not require a server table named
+    `notes`.
+- Runtime extensions today:
+  - Auth lifecycle, diagnostics, network status, events, field encryption, CRDT
+    adapters, blob policy, live rows/queries, and native worker event streams
+    are dynamic runtime configuration. Static storage/wire implications still
+    need to be declared in the generated contract.
+
+### Batch 2 First Slice
+
+- Added `clientSchemaSupport` to generated `syncular.schema.json` and embedded
+  native runtime app schema JSON.
+- The policy is intentionally fail-closed for now:
+  `current == minSupported == supported[0] == appSchemaVersion`. Older client
+  versions are not advertised as supported until codegen can generate real
+  historical schema metadata.
+- Added generated TypeScript client/server exports:
+  `syncularGeneratedClientSchemaSupport`,
+  `SyncularGeneratedSupportedClientSchemaVersion`, and
+  `syncularIsSupportedClientSchemaVersion(...)`.
+- Added stable public taxonomy for unsupported old clients:
+  `sync.client_schema_unsupported` with recommended action `upgradeClient`,
+  plus Rust runtime classification and the shared taxonomy fixture.
+- Added generated TypeScript server helper
+  `syncularUnsupportedClientSchemaResult(...)`, returning an
+  `ApplyOperationResult` with the stable unsupported-client-schema code.
+- This gives server handlers a generated schema-version boundary and a stable
+  rejection path without pretending older payload/snapshot shapes are safe to
+  handle.
+
+Gates run:
+
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
+- `bun run --cwd packages/core tsgo`
+- `bun run --cwd packages/client tsgo`
+- `bun run --cwd packages/server tsgo`
+- `bun test packages/core/src/__tests__/error-responses.test.ts`
+- `bun test packages/client/src/generated-app-conformance.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
+
 ## Next Action
 
-Start with Batch 1. Produce a short contract-boundary inventory before changing
-code, explicitly noting the current `createServerHandler` same-shape constraint
-and the lower-level `ServerTableHandler` path. Then design the smallest
-versioned-schema contract slice that lets one old client schema version be
-handled or rejected with generated metadata.
+Start the real historical-schema slice: replay deterministic migrations into
+per-version schema metadata, expose the supported-version policy from config,
+and keep historical schemas server/codegen-side unless a client runtime needs
+them.

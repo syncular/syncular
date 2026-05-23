@@ -250,6 +250,7 @@ fn known_error_classification(code: &str) -> Option<SyncularErrorClassification>
         "sync.not_found" => ("not-found", false, "forceResync"),
         "sync.rate_limited" => ("rate-limited", true, "retryLater"),
         "sync.schema_mismatch" => ("schema-mismatch", false, "regenerateClient"),
+        "sync.client_schema_unsupported" => ("schema-mismatch", false, "upgradeClient"),
         "sync.integrity_rejected" => ("integrity-rejected", false, "forceResync"),
         "sync.scope_revoked" => ("scope-revoked", false, "checkPermissions"),
         "sync.offline" => ("offline", true, "retryLater"),

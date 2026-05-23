@@ -799,6 +799,7 @@ struct SchemaJsonDocument {
     schema_ref: String,
     contract_version: u32,
     app_schema_version: i32,
+    client_schema_support: SchemaJsonClientSchemaSupport,
     migrations: Vec<SchemaJsonMigration>,
     tables: Vec<SchemaJsonTable>,
     #[serde(default)]
@@ -807,6 +808,22 @@ struct SchemaJsonDocument {
     local_read_models: Vec<SchemaJsonLocalReadModel>,
     #[serde(default)]
     local_derived_schema: SchemaJsonLocalDerivedSchema,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SchemaJsonClientSchemaSupport {
+    current: i32,
+    min_supported: i32,
+    supported: Vec<i32>,
+}
+
+fn current_only_client_schema_support(schema_version: i32) -> SchemaJsonClientSchemaSupport {
+    SchemaJsonClientSchemaSupport {
+        current: schema_version,
+        min_supported: schema_version,
+        supported: vec![schema_version],
+    }
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -1141,6 +1158,7 @@ fn generate_schema_json(
         schema_ref: "https://syncular.dev/schemas/syncular.schema.v1.json".to_string(),
         contract_version: 1,
         app_schema_version,
+        client_schema_support: current_only_client_schema_support(app_schema_version),
         migrations: migration_specs(migrations_dir)?,
         tables: schema_tables,
         local_base_schema: SchemaJsonLocalBaseSchema {
@@ -1238,6 +1256,7 @@ fn generate_runtime_app_schema_json(
 
     Ok(serde_json::to_string(&serde_json::json!({
         "schemaVersion": schema_version,
+        "clientSchemaSupport": current_only_client_schema_support(schema_version),
         "tables": app_tables,
         "migrations": migrations,
         "localBaseSchema": {
@@ -5225,9 +5244,54 @@ fn push_typescript_app_db_rows(
     }
 }
 
+fn push_typescript_client_schema_support(out: &mut String, schema_version: i32) {
+    out.push_str(&format!(
+        "export const syncularGeneratedSchemaVersion = {schema_version} as const;\n"
+    ));
+    out.push_str("export const syncularGeneratedClientSchemaSupport = {\n");
+    out.push_str("  current: syncularGeneratedSchemaVersion,\n");
+    out.push_str("  minSupported: syncularGeneratedSchemaVersion,\n");
+    out.push_str("  supported: [syncularGeneratedSchemaVersion],\n");
+    out.push_str("} as const;\n");
+    out.push_str(
+        "export type SyncularGeneratedSupportedClientSchemaVersion = typeof syncularGeneratedClientSchemaSupport.supported[number];\n",
+    );
+    out.push_str(
+        "export function syncularIsSupportedClientSchemaVersion(schemaVersion: number | null | undefined): schemaVersion is SyncularGeneratedSupportedClientSchemaVersion {\n",
+    );
+    out.push_str("  if (typeof schemaVersion !== 'number') return false;\n");
+    out.push_str("  return (syncularGeneratedClientSchemaSupport.supported as readonly number[]).includes(schemaVersion);\n");
+    out.push_str("}\n\n");
+}
+
+fn push_typescript_unsupported_client_schema_result(out: &mut String) {
+    out.push_str("export interface SyncularUnsupportedClientSchemaResultOptions {\n");
+    out.push_str("  opIndex: number;\n");
+    out.push_str("  schemaVersion: number | null | undefined;\n");
+    out.push_str("}\n\n");
+    out.push_str("export function syncularUnsupportedClientSchemaResult(options: SyncularUnsupportedClientSchemaResultOptions): ApplyOperationResult {\n");
+    out.push_str(
+        "  const response = createSyncularErrorResponse('sync.client_schema_unsupported', {\n",
+    );
+    out.push_str("    message: `Client schema version ${options.schemaVersion ?? 'unknown'} is not supported. Supported client schema versions: ${syncularGeneratedClientSchemaSupport.supported.join(', ')}.`,\n");
+    out.push_str("  });\n");
+    out.push_str("  return {\n");
+    out.push_str("    result: {\n");
+    out.push_str("      opIndex: options.opIndex,\n");
+    out.push_str("      status: 'error',\n");
+    out.push_str("      error: response.message ?? response.error,\n");
+    out.push_str("      code: response.code,\n");
+    out.push_str("      retriable: response.retryable,\n");
+    out.push_str("    },\n");
+    out.push_str("    emittedChanges: [],\n");
+    out.push_str("  };\n");
+    out.push_str("}\n\n");
+}
+
 fn generate_typescript_server_module(
     tables: &[TableInfo],
     config: &CodegenConfig,
+    schema_version: i32,
 ) -> Result<String> {
     let user_tables = tables
         .iter()
@@ -5239,8 +5303,11 @@ fn generate_typescript_server_module(
     );
     out.push_str("// Source: migrations/*.sql and syncular.codegen.json\n\n");
     out.push_str(
-        "import { BinarySnapshotTableWriter, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';\n\n",
+        "import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';\n",
     );
+    out.push_str("import type { ApplyOperationResult } from '@syncular/server';\n\n");
+    push_typescript_client_schema_support(&mut out, schema_version);
+    push_typescript_unsupported_client_schema_result(&mut out);
     push_typescript_app_db_rows(&mut out, &user_tables, config);
     push_typescript_binary_snapshot_exports(&mut out, &user_tables, config);
     out.push_str("export const syncularGeneratedServerSnapshotBinary = {\n");
@@ -5337,9 +5404,7 @@ fn generate_typescript_module(
         "  encryptedFields: readonly { field: string; scope: string; rowIdField: string }[];\n",
     );
     out.push_str("}\n\n");
-    out.push_str(&format!(
-        "export const syncularGeneratedSchemaVersion = {schema_version} as const;\n"
-    ));
+    push_typescript_client_schema_support(&mut out, schema_version);
     out.push_str("const syncularGeneratedSchemaId = 'syncular-app';\n\n");
     out.push_str("export interface SyncularGeneratedAppMigration {\n");
     out.push_str("  version: string;\n");
@@ -10225,7 +10290,7 @@ fn main() -> Result<()> {
         Some(&migrations_dir),
     )?;
     let generated_ts_server =
-        generate_typescript_server_module(&schema_tables, &schema_codegen_config)?;
+        generate_typescript_server_module(&schema_tables, &schema_codegen_config, schema_version)?;
     let generated_swift = generate_swift_module(
         &schema_tables,
         &schema_codegen_config,
@@ -10711,6 +10776,9 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
 
         assert_eq!(json["contractVersion"], 1);
         assert_eq!(json["appSchemaVersion"], 2);
+        assert_eq!(json["clientSchemaSupport"]["current"], 2);
+        assert_eq!(json["clientSchemaSupport"]["minSupported"], 2);
+        assert_eq!(json["clientSchemaSupport"]["supported"][0], 2);
         assert_eq!(json["migrations"][1]["version"], "0002");
         assert_eq!(json["migrations"][1]["name"], "add_images");
         assert_eq!(table["name"], "tasks");
@@ -10826,6 +10894,9 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
         let json: JsonValue = serde_json::from_str(&output)?;
 
         assert_eq!(json["schemaVersion"], 2);
+        assert_eq!(json["clientSchemaSupport"]["current"], 2);
+        assert_eq!(json["clientSchemaSupport"]["minSupported"], 2);
+        assert_eq!(json["clientSchemaSupport"]["supported"][0], 2);
         assert_eq!(
             json["localBaseSchema"]["tableSetupSql"][0],
             "CREATE TABLE IF NOT EXISTS \"tasks\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"title\" TEXT NOT NULL,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0\n)"
@@ -10889,8 +10960,8 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
             generate_typescript_module(&tables, &config, 2, None)?
         );
         assert_eq!(
-            generate_typescript_server_module(&schema_tables, &schema_config)?,
-            generate_typescript_server_module(&tables, &config)?
+            generate_typescript_server_module(&schema_tables, &schema_config, schema_version)?,
+            generate_typescript_server_module(&tables, &config, 2)?
         );
         assert_eq!(
             generate_swift_module(
@@ -11092,6 +11163,11 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
             "  const syncularGeneratedDerivedTimings = await ensureSyncularAppDerivedSchemaWithTimings(db);"
         ));
         assert!(output.contains("export const syncularGeneratedSchemaVersion = 7 as const;"));
+        assert!(output.contains("export const syncularGeneratedClientSchemaSupport = {"));
+        assert!(output.contains("export type SyncularGeneratedSupportedClientSchemaVersion"));
+        assert!(output.contains(
+            "export function syncularIsSupportedClientSchemaVersion(schemaVersion: number | null | undefined)"
+        ));
         assert!(output.contains("export interface SyncularGeneratedAppMigration"));
         assert!(output.contains("export const syncularGeneratedAppMigrations"));
         assert!(output.contains("async function applySyncularGeneratedAppMigrations"));
@@ -11189,15 +11265,25 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
             ..CodegenConfig::default()
         };
 
-        let output = generate_typescript_server_module(&tables, &config)?;
+        let output = generate_typescript_server_module(&tables, &config, 7)?;
 
         assert!(output.contains(
-            "import { BinarySnapshotTableWriter, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';"
+            "import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';"
         ));
+        assert!(output.contains("import type { ApplyOperationResult } from '@syncular/server';"));
         assert!(!output.contains("@app/sync-runtime"));
         assert!(!output.contains("createSyncularRustSqliteDatabase"));
         assert!(!output.contains("withSyncularSchemaWrites"));
         assert!(!output.contains("from 'kysely'"));
+        assert!(output.contains("export const syncularGeneratedSchemaVersion = 7 as const;"));
+        assert!(output.contains("export const syncularGeneratedClientSchemaSupport = {"));
+        assert!(output.contains(
+            "export function syncularIsSupportedClientSchemaVersion(schemaVersion: number | null | undefined)"
+        ));
+        assert!(output.contains(
+            "export function syncularUnsupportedClientSchemaResult(options: SyncularUnsupportedClientSchemaResultOptions): ApplyOperationResult"
+        ));
+        assert!(output.contains("createSyncularErrorResponse('sync.client_schema_unsupported'"));
         assert!(output.contains("export interface SyncularAppDb"));
         assert!(output.contains("export interface TaskRow"));
         assert!(output.contains("  image: BlobRef | null;"));
