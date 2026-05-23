@@ -308,6 +308,7 @@ export type SyncSnapshotArtifactsRequest = z.infer<
 
 export const SyncPullRequestSchema = z.object({
   clientId: z.string().min(1),
+  schemaVersion: z.number().int().min(1),
   limitCommits: z.number().int().min(1),
   limitSnapshotRows: z.number().int().min(1).optional(),
   maxSnapshotPages: z.number().int().min(1).optional(),

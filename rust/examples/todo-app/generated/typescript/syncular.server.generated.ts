@@ -2,7 +2,7 @@
 // Source: migrations/*.sql and syncular.codegen.json
 
 import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';
-import type { ApplyOperationResult, ScopeValues, ServerApplyOperationContext, ServerContext, ServerSnapshotContext, ServerTableHandler, StoredScopes, SyncCoreDb, SyncOperation, SyncServerAuth } from '@syncular/server';
+import { SyncClientSchemaUnsupportedError, type ApplyOperationResult, type ScopeValues, type ServerApplyOperationContext, type ServerContext, type ServerSnapshotContext, type ServerTableHandler, type StoredScopes, type SyncCoreDb, type SyncOperation, type SyncServerAuth } from '@syncular/server';
 
 export const syncularGeneratedSchemaVersion = 7 as const;
 export const syncularGeneratedClientSchemaSupport = {
@@ -1188,7 +1188,20 @@ export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreD
     canRejectSingleOperationWithoutSavepoint: options.canRejectSingleOperationWithoutSavepoint,
     resolveScopes: async (ctx) => options.resolveScopes(ctx),
     extractScopes: options.extractScopes ?? ((row) => syncularGeneratedExtractScopes(tableName, row)),
-    snapshot: options.snapshot,
+    async snapshot(ctx, params) {
+      if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {
+        throw new SyncClientSchemaUnsupportedError({ schemaVersion: ctx.schemaVersion, supportedSchemaVersions: syncularGeneratedClientSchemaSupport.supported });
+      }
+      const page = await options.snapshot(ctx, params);
+      const rows = page.rows ?? [];
+      for (let index = 0; index < rows.length; index += 1) {
+        const validation = syncularValidateGeneratedClientRow(tableName, rows[index], ctx.schemaVersion);
+        if (!validation.ok) {
+          throw new Error(`Generated snapshot row ${tableName}[${index}] does not match client schema ${ctx.schemaVersion}: ${validation.errors.map((error) => `${error.path}: ${error.message}`).join('; ')}`);
+        }
+      }
+      return page;
+    },
     async applyOperation(ctx, op, opIndex) {
       if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {
         return syncularUnsupportedClientSchemaResult({ opIndex, schemaVersion: ctx.schemaVersion });

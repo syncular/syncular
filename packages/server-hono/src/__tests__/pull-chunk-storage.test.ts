@@ -226,6 +226,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'client-1',
           pull: {
+            schemaVersion: 1,
             limitCommits: 10,
             limitSnapshotRows: 100,
             maxSnapshotPages: 1,
@@ -309,6 +310,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'client-1',
           pull: {
+            schemaVersion: 1,
             limitCommits: 10,
             limitSnapshotRows: 100,
             maxSnapshotPages: 1,
@@ -459,6 +461,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'client-1',
           pull: {
+            schemaVersion: 1,
             limitCommits: 10,
             limitSnapshotRows: 1,
             maxSnapshotPages: 2,
@@ -538,6 +541,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'client-1',
           pull: {
+            schemaVersion: 1,
             limitCommits: 10,
             limitSnapshotRows: 100,
             maxSnapshotPages: 1,
@@ -639,6 +643,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'client-1',
           pull: {
+            schemaVersion: 1,
             limitCommits: 10,
             limitSnapshotRows: 100,
             maxSnapshotPages: 1,
@@ -969,6 +974,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'shared-client',
           pull: {
+            schemaVersion: 1,
             limitCommits: 10,
             subscriptions: [
               {
@@ -1063,6 +1069,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'client-1',
           pull: {
+            schemaVersion: 1,
             limitCommits: 10,
             limitSnapshotRows: 1,
             maxSnapshotPages: 3,
@@ -1174,6 +1181,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
           body: JSON.stringify({
             clientId: 'client-1',
             pull: {
+              schemaVersion: 1,
               limitCommits: 10,
               limitSnapshotRows: 100,
               maxSnapshotPages: 1,

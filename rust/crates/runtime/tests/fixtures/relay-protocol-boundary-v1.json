@@ -39,6 +39,7 @@
         ]
       },
       "pull": {
+        "schemaVersion": 7,
         "limitCommits": 100,
         "limitSnapshotRows": 2000,
         "maxSnapshotPages": 2,

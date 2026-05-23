@@ -82,6 +82,11 @@ export interface ServerSnapshotContext<
   cursor: string | null;
   /** Max rows to return */
   limit: number;
+  /**
+   * Client schema version targeted by this snapshot.
+   * Use this to emit the correct generated client row shape for older clients.
+   */
+  schemaVersion: number;
 }
 
 /**

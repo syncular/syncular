@@ -204,6 +204,11 @@ export function createRelayRoutes<DB extends RelayDatabase = RelayDatabase>(
 
     const request: SyncPullRequest = {
       clientId: rawBody.clientId,
+      schemaVersion:
+        typeof rawBody.schemaVersion === 'number' &&
+        Number.isInteger(rawBody.schemaVersion)
+          ? rawBody.schemaVersion
+          : Number.NaN,
       limitCommits: clampInt(
         typeof rawBody.limitCommits === 'number' &&
           Number.isInteger(rawBody.limitCommits)

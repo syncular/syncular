@@ -76,6 +76,7 @@ import {
   resolveEffectiveScopesForSubscriptions,
   rowScopesAllowed,
   scopesToSnapshotChunkScopeKey,
+  SyncClientSchemaUnsupportedError,
   validateAuthLeaseOperation,
   verifyAuthLeaseToken,
 } from '@syncular/server';
@@ -3571,6 +3572,7 @@ export function createSyncRoutes<
 
         const request = {
           clientId,
+          schemaVersion: body.pull.schemaVersion,
           limitCommits: clampInt(
             body.pull.limitCommits ?? 1000,
             1,
@@ -3620,6 +3622,14 @@ export function createSyncRoutes<
         } catch (err) {
           if (err instanceof InvalidSubscriptionScopeError) {
             return syncError(c, 400, 'sync.invalid_subscription', err.message);
+          }
+          if (err instanceof SyncClientSchemaUnsupportedError) {
+            return syncError(
+              c,
+              409,
+              'sync.client_schema_unsupported',
+              err.message
+            );
           }
           throw err;
         }

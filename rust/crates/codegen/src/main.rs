@@ -5793,7 +5793,20 @@ fn push_typescript_app_server_handler_helpers(
     out.push_str("    canRejectSingleOperationWithoutSavepoint: options.canRejectSingleOperationWithoutSavepoint,\n");
     out.push_str("    resolveScopes: async (ctx) => options.resolveScopes(ctx),\n");
     out.push_str("    extractScopes: options.extractScopes ?? ((row) => syncularGeneratedExtractScopes(tableName, row)),\n");
-    out.push_str("    snapshot: options.snapshot,\n");
+    out.push_str("    async snapshot(ctx, params) {\n");
+    out.push_str("      if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {\n");
+    out.push_str("        throw new SyncClientSchemaUnsupportedError({ schemaVersion: ctx.schemaVersion, supportedSchemaVersions: syncularGeneratedClientSchemaSupport.supported });\n");
+    out.push_str("      }\n");
+    out.push_str("      const page = await options.snapshot(ctx, params);\n");
+    out.push_str("      const rows = page.rows ?? [];\n");
+    out.push_str("      for (let index = 0; index < rows.length; index += 1) {\n");
+    out.push_str("        const validation = syncularValidateGeneratedClientRow(tableName, rows[index], ctx.schemaVersion);\n");
+    out.push_str("        if (!validation.ok) {\n");
+    out.push_str("          throw new Error(`Generated snapshot row ${tableName}[${index}] does not match client schema ${ctx.schemaVersion}: ${validation.errors.map((error) => `${error.path}: ${error.message}`).join('; ')}`);\n");
+    out.push_str("        }\n");
+    out.push_str("      }\n");
+    out.push_str("      return page;\n");
+    out.push_str("    },\n");
     out.push_str("    async applyOperation(ctx, op, opIndex) {\n");
     out.push_str("      if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {\n");
     out.push_str("        return syncularUnsupportedClientSchemaResult({ opIndex, schemaVersion: ctx.schemaVersion });\n");
@@ -5837,7 +5850,7 @@ fn generate_typescript_server_module(
     out.push_str(
         "import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';\n",
     );
-    out.push_str("import type { ApplyOperationResult, ScopeValues, ServerApplyOperationContext, ServerContext, ServerSnapshotContext, ServerTableHandler, StoredScopes, SyncCoreDb, SyncOperation, SyncServerAuth } from '@syncular/server';\n\n");
+    out.push_str("import { SyncClientSchemaUnsupportedError, type ApplyOperationResult, type ScopeValues, type ServerApplyOperationContext, type ServerContext, type ServerSnapshotContext, type ServerTableHandler, type StoredScopes, type SyncCoreDb, type SyncOperation, type SyncServerAuth } from '@syncular/server';\n\n");
     let client_schema_support = client_schema_support_from_config(config, schema_version)?;
     push_typescript_client_schema_support(&mut out, &client_schema_support);
     push_typescript_unsupported_client_schema_result(&mut out);
@@ -11962,7 +11975,7 @@ CREATE TABLE tasks (
             "import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';"
         ));
         assert!(output.contains(
-            "import type { ApplyOperationResult, ScopeValues, ServerApplyOperationContext, ServerContext, ServerSnapshotContext, ServerTableHandler, StoredScopes, SyncCoreDb, SyncOperation, SyncServerAuth } from '@syncular/server';"
+            "import { SyncClientSchemaUnsupportedError, type ApplyOperationResult, type ScopeValues, type ServerApplyOperationContext, type ServerContext, type ServerSnapshotContext, type ServerTableHandler, type StoredScopes, type SyncCoreDb, type SyncOperation, type SyncServerAuth } from '@syncular/server';"
         ));
         assert!(!output.contains("@app/sync-runtime"));
         assert!(!output.contains("createSyncularRustSqliteDatabase"));

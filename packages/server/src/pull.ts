@@ -694,6 +694,15 @@ export async function pull<
   const pullPlugins = sortServerPullPlugins(args.plugins);
   const partitionId = args.auth.partitionId ?? 'default';
   const snapshotChunkGzipLevel = sanitizeGzipLevel(args.snapshotChunkGzipLevel);
+  const clientSchemaVersion = request.schemaVersion;
+  if (!Number.isInteger(clientSchemaVersion) || clientSchemaVersion < 1) {
+    throw new Error('Pull request schemaVersion must be a positive integer');
+  }
+  const snapshotChunkCacheSchemaVersion =
+    args.snapshotChunkCacheSchemaVersion === null ||
+    args.snapshotChunkCacheSchemaVersion === undefined
+      ? clientSchemaVersion
+      : `${clientSchemaVersion}:${args.snapshotChunkCacheSchemaVersion}`;
   const requestedSubscriptionCount = Array.isArray(request.subscriptions)
     ? request.subscriptions.length
     : 0;
@@ -877,7 +886,7 @@ export async function pull<
                     const cacheKey = await createSnapshotChunkScopeCacheKey({
                       partitionId,
                       scopes: effectiveScopes,
-                      schemaVersion: args.snapshotChunkCacheSchemaVersion,
+                      schemaVersion: snapshotChunkCacheSchemaVersion,
                       encoding: snapshotChunkEncoding,
                       compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
                       gzipLevel: snapshotChunkGzipLevel,
@@ -1295,6 +1304,7 @@ export async function pull<
                           scopeValues: effectiveScopes,
                           cursor: nextState.rowCursor,
                           limit: limitSnapshotRows,
+                          schemaVersion: clientSchemaVersion,
                         },
                         sub.params
                       );
