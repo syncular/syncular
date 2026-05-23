@@ -83,6 +83,7 @@ struct TableInfo {
 #[serde(default, rename_all = "camelCase", deny_unknown_fields)]
 struct CodegenConfig {
     tables: BTreeMap<String, TableCodegenConfig>,
+    local_only_tables: Vec<String>,
     client_schema_support: Option<ClientSchemaSupportConfig>,
     local_read_models: Vec<LocalReadModelConfig>,
     schema_output_path: Option<PathBuf>,
@@ -1221,6 +1222,7 @@ fn historical_client_schemas(
     current_schema_version: i32,
     client_schema_support: &SchemaJsonClientSchemaSupport,
 ) -> Result<Vec<SchemaJsonHistoricalClientSchema>> {
+    let local_only_tables = local_only_table_names(config)?;
     let requested_versions = client_schema_support
         .supported
         .iter()
@@ -1251,6 +1253,10 @@ fn historical_client_schemas(
             .iter()
             .filter(|table| !table.name.starts_with("sync_"))
         {
+            if local_only_tables.contains(&table.name) {
+                local_base_table_setup_sql.push(ts_raw_sql_create_table(table, false));
+                continue;
+            }
             let Some(table_config) = config.tables.get(&table.name) else {
                 bail!(
                     "clientSchemaSupport includes schema version {} but historical table {} is not present in syncular.codegen.json; explicit removed-table history is not implemented yet",
@@ -1296,18 +1302,23 @@ fn generate_schema_json(
     migrations_dir: &Path,
     app_schema_version: i32,
 ) -> Result<String> {
+    let local_only_tables = local_only_table_names(config)?;
     let mut schema_tables = Vec::new();
     let mut local_base_table_setup_sql = Vec::new();
-    for table in tables
+    let user_tables = tables
         .iter()
         .filter(|table| !table.name.starts_with("sync_"))
-    {
+        .collect::<Vec<_>>();
+    for table in &user_tables {
         let table_config = config.table(&table.name);
-        schema_tables.push(schema_json_table_from_info(table, &table_config)?);
         local_base_table_setup_sql.push(ts_raw_sql_create_table(
             table,
             table_config.sqlite_without_rowid.unwrap_or(false),
         ));
+        if local_only_tables.contains(&table.name) {
+            continue;
+        }
+        schema_tables.push(schema_json_table_from_info(table, &table_config)?);
     }
 
     let local_read_models = config
@@ -1386,6 +1397,7 @@ fn generate_runtime_app_schema_json(
     migrations_dir: Option<&Path>,
     schema_version: i32,
 ) -> Result<String> {
+    let local_only_tables = local_only_table_names(config)?;
     let mut app_tables = Vec::new();
     let user_tables = tables
         .iter()
@@ -1398,6 +1410,9 @@ fn generate_runtime_app_schema_json(
             table,
             table_config.sqlite_without_rowid.unwrap_or(false),
         ));
+        if local_only_tables.contains(&table.name) {
+            continue;
+        }
         let primary_key = primary_key_column(table);
         let server_version_column = table_config
             .server_version_column
@@ -2542,11 +2557,23 @@ fn validate_codegen_config(tables: &[TableInfo], config: &CodegenConfig) -> Resu
         .iter()
         .filter(|table| !table.name.starts_with("sync_"))
         .collect::<Vec<_>>();
+    let local_only_tables = local_only_table_names(config)?;
+
+    for table_name in &local_only_tables {
+        if config.tables.contains_key(table_name) {
+            bail!(
+                "syncular.codegen.json localOnlyTables contains synced table {table_name}; remove it from localOnlyTables or tables"
+            );
+        }
+        if !user_tables.iter().any(|table| &table.name == table_name) {
+            bail!("syncular.codegen.json localOnlyTables references unknown table {table_name}");
+        }
+    }
 
     for table in &user_tables {
-        if !config.tables.contains_key(&table.name) {
+        if !config.tables.contains_key(&table.name) && !local_only_tables.contains(&table.name) {
             bail!(
-                "syncular.codegen.json is missing metadata for app table {}; add an entry under tables.{}",
+                "syncular.codegen.json is missing metadata for app table {}; add an entry under tables.{} or localOnlyTables",
                 table.name,
                 table.name
             );
@@ -2891,6 +2918,19 @@ fn validate_codegen_config(tables: &[TableInfo], config: &CodegenConfig) -> Resu
     validate_local_read_models(tables, config)?;
 
     Ok(())
+}
+
+fn local_only_table_names(config: &CodegenConfig) -> Result<BTreeSet<String>> {
+    let mut names = BTreeSet::new();
+    for table in &config.local_only_tables {
+        if table.trim().is_empty() {
+            bail!("syncular.codegen.json localOnlyTables contains an empty table name");
+        }
+        if !names.insert(table.clone()) {
+            bail!("syncular.codegen.json localOnlyTables contains duplicate table {table}");
+        }
+    }
+    Ok(names)
 }
 
 fn validate_local_read_models(tables: &[TableInfo], config: &CodegenConfig) -> Result<()> {
@@ -11614,6 +11654,91 @@ ALTER TABLE sync_blob_outbox ADD COLUMN next_attempt_at BIGINT NOT NULL DEFAULT 
             .find(|column| column["name"] == "project_id")
             .expect("project_id column");
         assert_eq!(project_id["scope"], "project_id");
+
+        let _ = fs::remove_dir_all(&migrations_dir);
+        Ok(())
+    }
+
+    #[test]
+    fn local_only_tables_are_installed_but_not_synced() -> Result<()> {
+        let migrations_dir = temp_test_dir("local-only-tables")?;
+        fs::create_dir_all(migrations_dir.join("0001_initial"))?;
+        fs::write(
+            migrations_dir.join("0001_initial/up.sql"),
+            r#"
+CREATE TABLE tasks (
+  id TEXT PRIMARY KEY,
+  title TEXT NOT NULL,
+  server_version BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE TABLE local_preferences (
+  id TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
+"#,
+        )?;
+
+        let tables = vec![
+            table(
+                "tasks",
+                vec![
+                    column("id", "TEXT", false, true, None),
+                    column("title", "TEXT", true, false, None),
+                    column("server_version", "BIGINT", true, false, Some("0")),
+                ],
+            ),
+            table(
+                "local_preferences",
+                vec![
+                    column("id", "TEXT", false, true, None),
+                    column("value", "TEXT", true, false, None),
+                ],
+            ),
+        ];
+        let config = CodegenConfig {
+            tables: BTreeMap::from([(
+                "tasks".to_string(),
+                table_config("sub-tasks", "server_version", Vec::new()),
+            )]),
+            local_only_tables: vec!["local_preferences".to_string()],
+            ..CodegenConfig::default()
+        };
+
+        validate_codegen_config(&tables, &config)?;
+        let schema_json = generate_schema_json(&tables, &config, &migrations_dir, 1)?;
+        let json: JsonValue = serde_json::from_str(&schema_json)?;
+        assert_eq!(json["tables"].as_array().expect("tables").len(), 1);
+        assert_eq!(json["tables"][0]["name"], "tasks");
+        assert!(
+            json["localBaseSchema"]["tableSetupSql"]
+                .as_array()
+                .expect("table setup sql")
+                .iter()
+                .any(|sql| sql
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("local_preferences")),
+            "local-only tables should still be installed from local base SQL"
+        );
+
+        let runtime_json = generate_runtime_app_schema_json(&tables, &config, None, 1)?;
+        let runtime: JsonValue = serde_json::from_str(&runtime_json)?;
+        assert_eq!(
+            runtime["tables"].as_array().expect("runtime tables").len(),
+            1
+        );
+        assert!(
+            runtime["localBaseSchema"]["tableSetupSql"]
+                .as_array()
+                .expect("runtime table setup sql")
+                .iter()
+                .any(|sql| sql
+                    .as_str()
+                    .unwrap_or_default()
+                    .contains("local_preferences")),
+            "local-only tables should be available locally without sync metadata"
+        );
 
         let _ = fs::remove_dir_all(&migrations_dir);
         Ok(())

@@ -51,7 +51,7 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         version: "0008",
         schema_version: 8,
         name: "add_task_descriptions",
-        up_sql: "ALTER TABLE tasks ADD COLUMN description TEXT NULL;",
+        up_sql: "ALTER TABLE tasks ADD COLUMN description TEXT NULL;\n\nCREATE TABLE IF NOT EXISTS local_preferences (\n  id TEXT PRIMARY KEY,\n  key TEXT NOT NULL,\n  value TEXT NOT NULL\n);",
     },
 ];
 

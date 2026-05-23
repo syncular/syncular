@@ -1,6 +1,6 @@
 # WP-33 Unified App Contract And Runtime Extensions
 
-Status: `[~]` in progress
+Status: `[x]` accepted
 
 ## Goal
 
@@ -919,9 +919,10 @@ The contract should distinguish two local cases:
 - Added generated browser no-server conformance proving a generated todo client
   opens from embedded migrations, runs a safe mutation, reads the local row, and
   leaves the outbox commit pending at the generated schema version.
-- Kept `local-only` as a future mode rather than exposing it prematurely. The
-  implemented mode still uses outbox/safe-write semantics so a backend can be
-  attached later.
+- Kept full client-level `local-only` mode out of scope. Sync-compatible app
+  tables still use outbox/safe-write semantics so a backend can be attached
+  later; explicit `localOnlyTables` now covers app-local tables that should
+  never sync.
 
 ### Batch 7 Rust Local-Sync-Compatible Slice
 
@@ -938,8 +939,9 @@ The contract should distinguish two local cases:
 - Disabled doctests for the generated todo example crate. It has no
   documentation examples; rustdoc was trying to compile generated `include!`
   artifacts as a doctest harness instead of testing a public docs surface.
-- Kept `local-only` as a future mode for Rust as well. The implemented helper
-  is sync-compatible and keeps safe mutation/outbox semantics.
+- Kept full client-level `local-only` mode out of scope for Rust as well. The
+  implemented helper is sync-compatible and keeps safe mutation/outbox
+  semantics; explicit `localOnlyTables` covers non-synced app-local tables.
 
 ### Batch 6 Runtime Extension Boundary Slice
 
@@ -1171,6 +1173,19 @@ The contract should distinguish two local cases:
 - Updated the todo fixture scripts and app-contract test to use the generated
   handoff location.
 
+### Batch 7 Explicit Local-Only Tables Slice
+
+- Added `localOnlyTables` to the typed app contract and generated handoff.
+- Rust codegen now allows configured local-only tables to exist in app
+  migrations without requiring synced table metadata or generating app-table
+  outbox/sync metadata for them.
+- Local-only tables remain installed through embedded migrations and
+  `localBaseSchema.tableSetupSql`, while `syncular.schema.json` and runtime
+  app-table metadata list only synced replica tables.
+- The todo fixture now includes `local_preferences` as an explicit local-only
+  table in both runtime and app migrations. Codegen tests prove the table is
+  installed locally but omitted from synced table metadata.
+
 ### Batch 5 Typed Server Authoring Example Slice
 
 - Added a checked todo server-handler example that uses the public generated
@@ -1316,15 +1331,19 @@ Gates run:
 - `git diff --check`
 - `bun test rust/examples/todo-app/server-handlers.test.ts`
 - `bun run --cwd packages/server tsgo`
+- `bun packages/typegen/src/cli.ts codegen-config --app rust/examples/todo-app/syncular.app.ts --check`
+- `bun test packages/typegen/src/app-contract.test.ts`
+- `bun run --cwd packages/typegen tsgo`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `bun test rust/examples/todo-app/syncular.app.test.ts`
+- `bun --cwd rust/examples/todo-app codegen:check`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --lib --features native,crdt-yjs,demo-todo-native-fixture`
+- `bun test packages/client/src/client-config.test.ts packages/client/src/__tests__/variant-core.wasm.test.ts -t "local-sync-compatible|opens a generated local-sync-compatible"`
 
 ## Next Action
 
-Batch 6 is closed for the known runtime extension boundaries. Batch 5 now has
-generated server and client public shapes aligned around one generated app
-object plus a checked divergent-schema server-handler example. Batch 4 now has
-published `@syncular/typegen` helpers/CLI, the todo fixture generating the
-low-level `generated/syncular.codegen.json` handoff from the typed app
-contract, new-app docs that describe the same flow, and the decision that Rust
-codegen only consumes the checked handoff file. The low-level handoff now lives
-under `generated/` by default, with `--codegen-config` for intentional internal
-overrides. Move to the next roadmap item.
+WP-33 is accepted for the current Rust-first foundation. Future work should be
+driven by concrete app feedback against the generated app contract,
+server-handler helpers, versioned schema handling, runtime extension
+boundaries, local-sync-compatible clients, or explicit local-only table support.

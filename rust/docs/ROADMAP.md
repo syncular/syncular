@@ -519,91 +519,11 @@ read-only review:
   no HTTP recovery pulls occur. Treat further `500+` reconnect work as
   worker/event-delivery or benchmark-harness investigation, not a relay/server
   Rust rewrite trigger.
-- [`WP-33 Unified App Contract And Runtime Extensions`](work-packages/WP-33-unified-app-contract-and-runtime-extensions.md)
-  is the next schema/config ergonomics track. It captures the decision to make
-  a generated language-neutral app contract the stable center, keep
-  imperative server behavior through custom/generated handlers, preserve
-  different server/client schema shapes, keep runtime hooks/plugins as
-  app-installed extensions rather than executable generated schema behavior,
-  and add generated per-version client schema metadata so servers can
-  type-safely accept, transform, or reject older client schema versions with an
-  upgrade-required error. It also makes backend-less app flows first-class:
-  local-sync-compatible clients should get generated local SQLite setup, typed
-  reads, safe mutations, row/field events, and a later path to remote sync,
-  while true local-only tables stay explicit. The current
-  `createServerHandler` helper is same-shape biased; WP-33 should add a
-  generated/custom handler layer for divergent server/client table shapes
-  instead of forcing a declarative mapping DSL. Current WP-33 progress adds
-  real generated schema-version drift to the todo fixture
-  (`tasks.description` in schema 8, absent from supported schemas 6/7), emits
-  historical local table DDL, fixes generated handler scope patterns for real
-  Hono subscription validation, and proves a browser v6 client can bootstrap
-  from a schema 8 server without applying the current-only column. Native
-  Rust/Diesel conformance now covers the same old-client bootstrap path and
-  confirms the schema 6 local table does not expose `tasks.description`.
-  Browser/Hono conformance also covers unsupported schema 5 rejection as
-  `sync.client_schema_unsupported` with `upgradeClient`. Generated server
-  validation now rejects extra current-only fields for historical snapshot rows
-  and conflict `server_row` payloads, and exposes a projection helper for app
-  handlers that query authoritative current rows but need to emit a targeted
-  historical client shape. Generated apply results now also validate emitted
-  commit-log rows as canonical current-schema rows, and incremental pull
-  projects persisted rows through the generated handler before plugins,
-  integrity, and response encoding. Browser/Hono conformance now proves a
-  schema 6 generated client can bootstrap and then receive a schema 8
-  incremental commit-log update without applying the current-only
-  `tasks.description` column. The next WP-33 gap is the runtime-extension and
-  backend-less app boundary. Browser TypeScript now has an explicit
-  `local-sync-compatible` mode that opens generated clients without `baseUrl`,
-  disables auto-sync by default, keeps safe mutations pending in the outbox,
-  and fails manual remote sync/realtime/auth-lease calls clearly. The next
-  Rust/native slice adds `SyncularClientConfig::local_sync_compatible(...)`
-  and proves a generated Rust todo client can open embedded migrations, apply
-  generated safe mutations, read through Diesel, keep the outbox pending, and
-  reject manual remote sync without a server. The next WP-33 gap is the
-  runtime-extension boundary. Current Batch 6 progress removes the unsafe
-  runtime-only field-encryption scenario, declares `tasks.description` as the
-  generated encrypted field, moves shared E2EE conformance off CRDT `title`,
-  validates runtime field-encryption/blob/encrypted-CRDT config against
-  generated static metadata, and removes ad hoc field-encryption rule
-  injection from generated TypeScript/Swift/Kotlin helpers. Direct
-  `SyncWorker::set_*` config methods now validate synchronously against the
-  generated app schema before queueing worker config changes, and Rust
-  protocol/testkit E2EE assertions now target generated encrypted
-  `tasks.description` instead of CRDT-backed `title`. Browser Rust-owned
-  SQLite live-query registration now validates dependency tables and hinted
-  fields against generated app metadata, matching the native observed-query
-  boundary. Blob storage/cache/upload APIs now require generated blob-column
-  metadata before creating detached blob state. Auth lease requests, responses,
-  and direct stored lease records now validate schema version, generated
-  tables, protocol operations, and generated scope keys before network/storage
-  use. The remaining Batch 6 inventory keeps auth headers/refresh/signers,
-  diagnostics, network status, presence, foreground/background lifecycle, and
-  event subscription mechanics as runtime-only hooks while requiring row/field,
-  CRDT, blob, encrypted-field, and auth-lease storage/wire semantics to be
-  backed by generated metadata. Batch 6 is closed for known extension
-  boundaries. The generated TypeScript server helper now exposes
-  `syncularGeneratedApp.tables.<table>` as the public app-table reference and
-  keeps the lower-level table map internal, so server code lines up with the
-  intended `app.tables.notes` authoring style while retaining imperative
-  snapshot/apply handlers and divergent server/client shapes. The generated
-  TypeScript client output now also exposes one `syncularGeneratedApp` object
-  with `appSchema`, `tables`, `tableNames`, `tableConfig`, generated codecs,
-  and field-encryption helpers; the old exported client app-table list was
-  removed. `@syncular/typegen` now exposes module-loading helpers plus a
-  `syncular-typegen codegen-config` CLI, and the todo fixture uses that CLI to
-  generate/check the low-level `generated/syncular.codegen.json` handoff from
-  the typed `syncular.app.ts` authoring file. Local integration docs and the
-  public Rust quick start now describe the same typed-contract flow for new
-  apps. Decision:
-  Rust codegen stays pure and only consumes the checked generated handoff file;
-  build scripts/CI run `syncular-typegen codegen-config --check` before Rust
-  codegen. The todo fixture now also includes a checked divergent-schema server
-  handler that uses `syncularGeneratedApp.tables.tasks`, generated
-  schema-version projection helpers, and app-owned authorization/snapshot/write
-  translation. The low-level handoff now lives under `generated/` by default,
-  so root app files stay focused on the typed authoring contract and runtime
-  entrypoints.
+- No local [`WP-33 Unified App Contract And Runtime Extensions`](work-packages/WP-33-unified-app-contract-and-runtime-extensions.md)
+  foundation slice remains. Future work should be driven by concrete app
+  feedback against the generated app contract, server-handler helpers,
+  versioned schema handling, runtime extension boundaries, local-sync-compatible
+  clients, or explicit local-only table support.
 
 ## Later
 
@@ -1089,6 +1009,16 @@ read-only review:
     Tauri, React Native, Expo, and testkit host surfaces expose leased
     mutations, auth leases, lifecycle resume, row/field event metadata, and
     diagnostic snapshots without reviving a JavaScript sync client.
+- `[x]` [`WP-33 Unified App Contract And Runtime Extensions`](work-packages/WP-33-unified-app-contract-and-runtime-extensions.md)
+  - Accepted for the current Rust-first foundation. The typed app contract now
+    drives the generated handoff, Rust codegen consumes the checked
+    `generated/syncular.codegen.json` artifact, generated server/client app
+    references share the same app-table shape, divergent server/client handler
+    examples are tested, versioned client-schema projection is available for
+    old clients, runtime storage/wire extensions validate against generated
+    metadata, local-sync-compatible clients work without a server, and
+    `localOnlyTables` lets app migrations carry explicit non-synced local
+    tables without generating outbox/sync metadata for them.
 
 ## Planned Server / Relay Rust Work
 

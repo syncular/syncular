@@ -81,6 +81,7 @@ export interface DefineSyncularClientOptions<
 > extends SyncularCodegenPathsDefinition {
   migrations?: unknown;
   tables: Tables;
+  localOnlyTables?: readonly string[];
   localReadModels?: readonly SyncularLocalReadModelDefinition[];
   clientSchemaSupport?: SyncularClientSchemaSupportDefinition;
 }
@@ -139,6 +140,7 @@ export interface SyncularCodegenLocalReadModelConfig {
 
 export interface SyncularCodegenConfig extends SyncularCodegenPathsDefinition {
   tables: Record<string, SyncularCodegenTableConfig>;
+  localOnlyTables?: string[];
   localReadModels?: SyncularCodegenLocalReadModelConfig[];
   clientSchemaSupport?: {
     minSupported?: number;
@@ -241,6 +243,10 @@ export function toSyncularCodegenConfig(
     if (value !== undefined) {
       config[key] = value;
     }
+  }
+
+  if (contract.localOnlyTables && contract.localOnlyTables.length > 0) {
+    config.localOnlyTables = [...contract.localOnlyTables];
   }
 
   if (contract.localReadModels && contract.localReadModels.length > 0) {

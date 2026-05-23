@@ -10,6 +10,7 @@
   "clientSchemaSupport": {
     "minSupported": 6
   },
+  "localOnlyTables": ["local_preferences"],
   "localReadModels": [
     {
       "name": "taskCountsByUserCompletion",

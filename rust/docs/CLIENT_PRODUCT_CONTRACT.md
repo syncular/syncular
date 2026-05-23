@@ -120,8 +120,9 @@ Implications:
 - Low-level bindings may expose schema-agnostic primitives, but generated app
   clients should expose safe mutations.
 - Browser Kysely is a read surface for synced tables.
-- Local-only scratch tables need an explicit non-synced allowlist if they are
-  ever supported.
+- Local-only scratch tables must be declared through an explicit non-synced
+  allowlist such as `localOnlyTables`; they are installed locally but must not
+  receive generated synced mutation/outbox metadata.
 
 ### Verification Must Match What The Client Is Allowed To See
 
