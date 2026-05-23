@@ -11,6 +11,9 @@ import {
   type SyncularAppMutations,
   syncularAppChangedRows,
   syncularChangedRows,
+  syncularGeneratedAppMigrations,
+  syncularGeneratedAppSchema,
+  syncularGeneratedEmbeddedMigrations,
   syncularGeneratedFieldEncryptionConfig,
   syncularGeneratedTableConfig,
   taskChangedRows,
@@ -117,6 +120,29 @@ describe('generated app conformance', () => {
       envelopePrefix: syncConformance.e2ee.envelopePrefix,
       rules: [syncConformance.e2ee.rule],
     });
+  });
+
+  it('embeds generated app migrations in the runtime app schema', () => {
+    expect(syncularGeneratedAppSchema.migrations).toBe(
+      syncularGeneratedEmbeddedMigrations
+    );
+    expect(syncularGeneratedEmbeddedMigrations).toHaveLength(
+      syncularGeneratedAppMigrations.length
+    );
+
+    for (const [index, migration] of syncularGeneratedAppMigrations.entries()) {
+      const embedded = syncularGeneratedEmbeddedMigrations[index];
+      expect(embedded).toEqual({
+        version: migration.version,
+        schemaVersion: migration.schemaVersion,
+        name: migration.name,
+        upSql: migration.appSql.join('\n\n'),
+      });
+    }
+
+    expect(syncularGeneratedEmbeddedMigrations[0]?.upSql).toContain(
+      'CREATE TABLE IF NOT EXISTS projects'
+    );
   });
 
   it('turns generic row deltas into typed table helpers', () => {
