@@ -1018,7 +1018,10 @@ read-only review:
     old clients, runtime storage/wire extensions validate against generated
     metadata, local-sync-compatible clients work without a server, and
     `localOnlyTables` lets app migrations carry explicit non-synced local
-    tables without generating outbox/sync metadata for them.
+    tables without generating outbox/sync metadata for them. Follow-up doc
+    hygiene aligned older WP references with the current
+    `generated/syncular.codegen.json` handoff so docs no longer imply app
+    authors should maintain a root low-level codegen file.
 
 ## Planned Server / Relay Rust Work
 
