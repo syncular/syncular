@@ -2,7 +2,7 @@
 // Source: migrations/*.sql and syncular.codegen.json
 
 import { SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, withSyncularSchemaWrites } from '../../../../../packages/client/src';
-import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope } from '../../../../../packages/client/src';
+import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope } from '../../../../../packages/client/src';
 
 import { sql, type Kysely } from 'kysely';
 import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';
@@ -72,6 +72,13 @@ export interface SyncularGeneratedAppMigration {
   name: string;
   appSql: readonly string[];
   skippedSystemStatements: number;
+}
+
+export interface SyncularGeneratedEmbeddedMigration extends SyncularEmbeddedMigration {
+  version: string;
+  schemaVersion: number;
+  name: string;
+  upSql: string;
 }
 
 export const syncularGeneratedAppMigrations: readonly SyncularGeneratedAppMigration[] = [
@@ -156,6 +163,51 @@ export const syncularGeneratedAppMigrations: readonly SyncularGeneratedAppMigrat
     appSql: [
     ],
     skippedSystemStatements: 1,
+  },
+];
+
+export const syncularGeneratedEmbeddedMigrations: readonly SyncularGeneratedEmbeddedMigration[] = [
+  {
+    version: '0001',
+    schemaVersion: 1,
+    name: 'initial',
+    upSql: 'CREATE TABLE IF NOT EXISTS projects (\n  id TEXT PRIMARY KEY,\n  name TEXT NOT NULL,\n  owner_id TEXT NOT NULL,\n  archived INTEGER NOT NULL DEFAULT 0,\n  server_version BIGINT NOT NULL DEFAULT 0\n) WITHOUT ROWID;\n\nCREATE TABLE IF NOT EXISTS tasks (\n  id TEXT PRIMARY KEY,\n  title TEXT NOT NULL,\n  completed INTEGER NOT NULL DEFAULT 0,\n  user_id TEXT NOT NULL,\n  project_id TEXT NULL,\n  server_version BIGINT NOT NULL DEFAULT 0,\n  image TEXT NULL,\n  title_yjs_state TEXT NULL\n) WITHOUT ROWID;\n\nCREATE TABLE IF NOT EXISTS comments (\n  id TEXT PRIMARY KEY,\n  task_id TEXT NOT NULL,\n  project_id TEXT NULL,\n  body TEXT NOT NULL,\n  author_id TEXT NOT NULL,\n  deleted INTEGER NOT NULL DEFAULT 0,\n  server_version BIGINT NOT NULL DEFAULT 0\n) WITHOUT ROWID;',
+  },
+  {
+    version: '0002',
+    schemaVersion: 2,
+    name: 'blob_client_tables',
+    upSql: '',
+  },
+  {
+    version: '0003',
+    schemaVersion: 3,
+    name: 'retry_backoff',
+    upSql: '',
+  },
+  {
+    version: '0004',
+    schemaVersion: 4,
+    name: 'encrypted_crdt_tables',
+    upSql: '',
+  },
+  {
+    version: '0005',
+    schemaVersion: 5,
+    name: 'encrypted_crdt_server_seq',
+    upSql: '',
+  },
+  {
+    version: '0006',
+    schemaVersion: 6,
+    name: 'crdt_document_persistence',
+    upSql: '',
+  },
+  {
+    version: '0007',
+    schemaVersion: 7,
+    name: 'verified_roots',
+    upSql: '',
   },
 ];
 
@@ -300,6 +352,7 @@ export interface SyncularGeneratedSchemaInstallTimings extends SyncularGenerated
 
 export const syncularGeneratedAppSchema = {
   schemaVersion: syncularGeneratedSchemaVersion,
+  migrations: syncularGeneratedEmbeddedMigrations,
   localBaseSchema: {
     tableSetupSql: [
       'CREATE TABLE IF NOT EXISTS "comments" (\n  "id" TEXT PRIMARY KEY,\n  "task_id" TEXT NOT NULL,\n  "project_id" TEXT,\n  "body" TEXT NOT NULL,\n  "author_id" TEXT NOT NULL,\n  "deleted" INTEGER NOT NULL DEFAULT 0,\n  "server_version" INTEGER NOT NULL DEFAULT 0\n) WITHOUT ROWID',

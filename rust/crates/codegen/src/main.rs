@@ -5818,7 +5818,7 @@ fn generate_typescript_module(
         ts_string(runtime_import_path)
     ));
     out.push_str(&format!(
-        "import type {{ CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
+        "import type {{ CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
         ts_string(runtime_import_path)
     ));
     out.push_str("import { sql, type Kysely } from 'kysely';\n");
@@ -5889,6 +5889,14 @@ fn generate_typescript_module(
     out.push_str("  skippedSystemStatements: number;\n");
     out.push_str("}\n\n");
     out.push_str(
+        "export interface SyncularGeneratedEmbeddedMigration extends SyncularEmbeddedMigration {\n",
+    );
+    out.push_str("  version: string;\n");
+    out.push_str("  schemaVersion: number;\n");
+    out.push_str("  name: string;\n");
+    out.push_str("  upSql: string;\n");
+    out.push_str("}\n\n");
+    out.push_str(
         "export const syncularGeneratedAppMigrations: readonly SyncularGeneratedAppMigration[] = [\n",
     );
     for migration in &app_migrations {
@@ -5912,6 +5920,25 @@ fn generate_typescript_module(
         out.push_str(&format!(
             "    skippedSystemStatements: {},\n",
             migration.skipped_system_statements
+        ));
+        out.push_str("  },\n");
+    }
+    out.push_str("];\n\n");
+    out.push_str("export const syncularGeneratedEmbeddedMigrations: readonly SyncularGeneratedEmbeddedMigration[] = [\n");
+    for migration in &app_migrations {
+        out.push_str("  {\n");
+        out.push_str(&format!(
+            "    version: {},\n",
+            ts_string(&migration.version)
+        ));
+        out.push_str(&format!(
+            "    schemaVersion: {},\n",
+            migration.schema_version
+        ));
+        out.push_str(&format!("    name: {},\n", ts_string(&migration.name)));
+        out.push_str(&format!(
+            "    upSql: {},\n",
+            ts_string(&app_migration_up_sql(migration))
         ));
         out.push_str("  },\n");
     }
@@ -6115,6 +6142,7 @@ fn generate_typescript_module(
     out.push_str("}\n\n");
     out.push_str("export const syncularGeneratedAppSchema = {\n");
     out.push_str("  schemaVersion: syncularGeneratedSchemaVersion,\n");
+    out.push_str("  migrations: syncularGeneratedEmbeddedMigrations,\n");
     out.push_str("  localBaseSchema: {\n");
     out.push_str("    tableSetupSql: [\n");
     for table in &user_tables {
@@ -11633,7 +11661,7 @@ CREATE TABLE tasks (
             "import { SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, withSyncularSchemaWrites } from '@app/sync-runtime';"
         ));
         assert!(output.contains(
-            "import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
+            "import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
         ));
         assert!(output.contains("import { sql, type Kysely } from 'kysely';"));
         assert!(output.contains(
@@ -11739,6 +11767,8 @@ CREATE TABLE tasks (
         ));
         assert!(output.contains("export interface SyncularGeneratedAppMigration"));
         assert!(output.contains("export const syncularGeneratedAppMigrations"));
+        assert!(output.contains("export interface SyncularGeneratedEmbeddedMigration"));
+        assert!(output.contains("export const syncularGeneratedEmbeddedMigrations"));
         assert!(output.contains("async function applySyncularGeneratedAppMigrations"));
         assert!(output.contains("await ensureSyncularAppSchemaMetadata(db);"));
         assert!(output.contains("Regenerate the client before opening this database"));
@@ -11755,6 +11785,7 @@ CREATE TABLE tasks (
         assert!(output.contains("export interface SyncularGeneratedTableConfig"));
         assert!(output.contains("export const syncularGeneratedTableConfig = {"));
         assert!(output.contains("export const syncularGeneratedAppSchema = {"));
+        assert!(output.contains("  migrations: syncularGeneratedEmbeddedMigrations,"));
         assert!(output.contains("} satisfies SyncularAppSchema;"));
         assert!(!output.contains("syncularGeneratedSnapshotBinaryColumns"));
         assert!(!output.contains("syncularGeneratedSnapshotBinaryEncoders"));

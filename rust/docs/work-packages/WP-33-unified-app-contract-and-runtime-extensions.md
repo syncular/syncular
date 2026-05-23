@@ -626,6 +626,20 @@ The contract should distinguish two local cases:
   generated metadata attachment, unsupported schema rejection, invalid payload
   rejection, and batch preflight validation.
 
+### Batch 3 Runtime Artifact Slice
+
+- Added generated TypeScript embedded migration artifacts:
+  `syncularGeneratedEmbeddedMigrations`.
+- `syncularGeneratedAppSchema` now carries `migrations:
+  syncularGeneratedEmbeddedMigrations`, so the runtime app schema is
+  self-contained for browser/WASM/native opens and does not depend on loose SQL
+  paths at runtime.
+- Kept `syncularGeneratedAppMigrations` as the statement-split installer
+  artifact for TypeScript schema writes while deriving embedded `upSql` from
+  the same app-only SQL migration trace.
+- Added conformance coverage proving embedded runtime migrations match the
+  generated app migration statements.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -641,7 +655,7 @@ Gates run:
 
 ## Next Action
 
-Start Batch 3 by replacing path-string migration references in the TypeScript
-example contract with explicit imported migration artifacts, then prove the
-generated app can be typechecked without depending on filesystem-only migration
-paths.
+Continue Batch 3 by proving the Rust/WASM open path consumes
+`SyncularAppSchema.migrations` directly for generated app tables, then remove
+any remaining generated example reliance on post-open schema installation where
+the runtime can safely own migration replay.
