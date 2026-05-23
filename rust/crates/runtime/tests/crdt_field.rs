@@ -691,7 +691,7 @@ fn rust_client_exposes_encrypted_crdt_field_through_same_identity() -> Result<()
     let store = DieselSqliteStore::open_with_schema(&path, app_schema)?;
     let mut client =
         SyncularClient::with_app_schema_parts(test_config(&path), store, NoopTransport, app_schema);
-    client.set_encrypted_crdt(Some(test_encrypted_crdt()?));
+    client.set_encrypted_crdt(Some(test_encrypted_crdt()?))?;
 
     client.apply_mutation_json(
         &json!({
@@ -923,8 +923,8 @@ fn encrypted_crdt_field_converges_after_offline_updates_without_plaintext_leakag
         server.clone(),
         app_schema,
     );
-    client_a.set_encrypted_crdt(Some(encryption.clone()));
-    client_b.set_encrypted_crdt(Some(encryption.clone()));
+    client_a.set_encrypted_crdt(Some(encryption.clone()))?;
+    client_b.set_encrypted_crdt(Some(encryption.clone()))?;
 
     client_a.sync_http()?;
     client_b.sync_http()?;
@@ -990,7 +990,7 @@ fn encrypted_crdt_field_converges_after_offline_updates_without_plaintext_leakag
         NoopTransport,
         app_schema,
     );
-    reopened_a.set_encrypted_crdt(Some(encryption));
+    reopened_a.set_encrypted_crdt(Some(encryption))?;
     let reopened_field = reopened_a.open_crdt_field(CrdtFieldId::new(
         "tasks",
         "encrypted-converge-task",
@@ -1017,7 +1017,7 @@ fn encrypted_crdt_local_edit_survives_first_bootstrap_snapshot() -> Result<()> {
         server,
         app_schema,
     );
-    client.set_encrypted_crdt(Some(test_encrypted_crdt()?));
+    client.set_encrypted_crdt(Some(test_encrypted_crdt()?))?;
 
     client.apply_mutation_json(
         &json!({
@@ -1084,8 +1084,8 @@ fn encrypted_crdt_multiple_fields_share_system_table_and_pull_independently() ->
         server.clone(),
         app_schema,
     );
-    client_a.set_encrypted_crdt(Some(encryption.clone()));
-    client_b.set_encrypted_crdt(Some(encryption));
+    client_a.set_encrypted_crdt(Some(encryption.clone()))?;
+    client_b.set_encrypted_crdt(Some(encryption))?;
 
     client_a.sync_http()?;
     client_b.sync_http()?;
@@ -1161,8 +1161,8 @@ fn encrypted_crdt_checkpoint_compaction_prunes_updates_without_blanking_content(
         server.clone(),
         app_schema,
     );
-    client_a.set_encrypted_crdt(Some(encryption.clone()));
-    client_b.set_encrypted_crdt(Some(encryption));
+    client_a.set_encrypted_crdt(Some(encryption.clone()))?;
+    client_b.set_encrypted_crdt(Some(encryption))?;
 
     client_a.sync_http()?;
     client_b.sync_http()?;
@@ -1267,8 +1267,8 @@ fn encrypted_crdt_checkpoint_persists_after_reopen_with_pruned_updates() -> Resu
         server.clone(),
         app_schema,
     );
-    client_a.set_encrypted_crdt(Some(encryption.clone()));
-    client_b.set_encrypted_crdt(Some(encryption.clone()));
+    client_a.set_encrypted_crdt(Some(encryption.clone()))?;
+    client_b.set_encrypted_crdt(Some(encryption.clone()))?;
 
     client_a.sync_http()?;
     client_b.sync_http()?;
@@ -1323,7 +1323,7 @@ fn encrypted_crdt_checkpoint_persists_after_reopen_with_pruned_updates() -> Resu
         NoopTransport,
         app_schema,
     );
-    reopened_b.set_encrypted_crdt(Some(encryption));
+    reopened_b.set_encrypted_crdt(Some(encryption))?;
     let reopened_field = reopened_b.open_crdt_field(CrdtFieldId::new(
         "tasks",
         "encrypted-checkpoint-reopen-task",

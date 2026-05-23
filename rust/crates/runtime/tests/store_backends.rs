@@ -1556,7 +1556,7 @@ fn diesel_client_applies_local_encrypted_crdt_text_update() -> Result<()> {
         TestTransport::new(),
         encrypted_app_schema(),
     );
-    client.set_encrypted_crdt(Some(test_encrypted_crdt()?));
+    client.set_encrypted_crdt(Some(test_encrypted_crdt()?))?;
 
     client.add_task(
         "Local initial".to_string(),
@@ -1675,6 +1675,23 @@ fn sync_worker_enqueues_encrypted_crdt_yjs_update() -> Result<()> {
 }
 
 #[test]
+fn sync_worker_rejects_runtime_config_not_backed_by_app_schema() -> Result<()> {
+    let path = temp_db_path("syncular-worker-invalid-runtime-config");
+    let store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let client = demo_client(test_config(&path), store, TestTransport::new());
+    let worker = SyncWorker::start(client);
+
+    let error = worker
+        .set_encrypted_crdt(Some(test_encrypted_crdt()?))
+        .expect_err("worker config should validate against generated app schema");
+    assert!(error.message_text().contains("encrypted-update-log"));
+
+    worker.stop()?;
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn diesel_client_decrypts_pulled_encrypted_crdt_update_and_materializes_row() -> Result<()> {
     let path = temp_db_path("syncular-diesel-encrypted-crdt-pull");
     let encryption = test_encrypted_crdt()?;
@@ -1687,7 +1704,7 @@ fn diesel_client_decrypts_pulled_encrypted_crdt_update_and_materializes_row() ->
         transport,
         encrypted_app_schema(),
     );
-    client.set_encrypted_crdt(Some(encryption));
+    client.set_encrypted_crdt(Some(encryption))?;
 
     let report = client.sync_http()?;
     assert!(report.changes_table("tasks"));
@@ -1719,7 +1736,7 @@ fn diesel_client_decrypts_pulled_encrypted_crdt_checkpoint_without_updates() -> 
         transport,
         encrypted_app_schema(),
     );
-    client.set_encrypted_crdt(Some(encryption));
+    client.set_encrypted_crdt(Some(encryption))?;
 
     let report = client.sync_http()?;
     assert!(report.changes_table("tasks"));
@@ -1750,7 +1767,7 @@ fn diesel_client_recovers_encrypted_crdt_update_after_required_base_resync() -> 
         transport.clone(),
         encrypted_app_schema(),
     );
-    client.set_encrypted_crdt(Some(encryption));
+    client.set_encrypted_crdt(Some(encryption))?;
     client.set_subscriptions(encrypted_crdt_test_subscriptions())?;
 
     let err = client
@@ -1798,7 +1815,7 @@ fn diesel_client_checkpoints_and_compacts_encrypted_crdt_updates() -> Result<()>
         transport,
         encrypted_app_schema(),
     );
-    client.set_encrypted_crdt(Some(encryption));
+    client.set_encrypted_crdt(Some(encryption))?;
     client.sync_http()?;
     assert_eq!(client.list_tasks()?[0].title, "Remote secret");
 

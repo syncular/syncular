@@ -1,3 +1,7 @@
+use crate::app_schema::{
+    validate_blob_encryption_against_app_schema, validate_encrypted_crdt_against_app_schema,
+    validate_field_encryption_rules_against_app_schema, AppSchema,
+};
 #[cfg(feature = "native")]
 use crate::client::sync_changed_crdt_field_from_metadata;
 #[cfg(feature = "native")]
@@ -854,6 +858,7 @@ where
 }
 
 pub struct SyncWorker {
+    app_schema: AppSchema,
     command_tx: SyncSender<WorkerCommand>,
     events: SyncWorkerEventHub,
     default_events: SyncWorkerEventSubscription,
@@ -1388,6 +1393,7 @@ impl SyncWorker {
         SyncularClient<S, T>: SyncWorkerClientExt,
     {
         let (command_tx, command_rx) = mpsc::sync_channel(config.command_queue_capacity);
+        let app_schema = client.app_schema();
         let events = SyncWorkerEventHub::default();
         let default_events = events.subscribe(DEFAULT_WORKER_EVENT_QUEUE_CAPACITY);
         let worker_events = events.clone();
@@ -1457,6 +1463,7 @@ impl SyncWorker {
         });
 
         Self {
+            app_schema,
             command_tx,
             events,
             default_events,
@@ -1688,14 +1695,26 @@ impl SyncWorker {
     }
 
     pub fn set_field_encryption(&self, encryption: Option<FieldEncryption>) -> Result<()> {
+        if let Some(encryption) = &encryption {
+            validate_field_encryption_rules_against_app_schema(
+                self.app_schema,
+                encryption.rules(),
+            )?;
+        }
         self.try_send(WorkerCommand::SetFieldEncryption(encryption))
     }
 
     pub fn set_encrypted_crdt(&self, encryption: Option<EncryptedCrdt>) -> Result<()> {
+        if encryption.is_some() {
+            validate_encrypted_crdt_against_app_schema(self.app_schema)?;
+        }
         self.try_send(WorkerCommand::SetEncryptedCrdt(encryption))
     }
 
     pub fn set_blob_encryption(&self, encryption: Option<BlobEncryption>) -> Result<()> {
+        if encryption.is_some() {
+            validate_blob_encryption_against_app_schema(self.app_schema)?;
+        }
         self.try_send(WorkerCommand::SetBlobEncryption(encryption))
     }
 

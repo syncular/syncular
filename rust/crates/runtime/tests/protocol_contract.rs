@@ -215,38 +215,48 @@ fn http_sync_encrypts_push_payload_just_in_time() -> Result<()> {
         scenario["clientId"].as_str().expect("e2ee client id"),
     );
     let mut client = demo_client(config, store, transport);
-    client.set_field_encryption(Some(test_field_encryption()?));
+    client.set_field_encryption(Some(test_field_encryption()?))?;
 
-    client.add_task(
-        scenario["task"]["title"]
-            .as_str()
-            .expect("e2ee task title")
-            .to_string(),
-        Some(
-            scenario["task"]["id"]
-                .as_str()
-                .expect("e2ee task id")
-                .to_string(),
-        ),
+    client.apply_mutation_json(
+        &json!({
+            "table": "tasks",
+            "row_id": scenario["task"]["id"].as_str().expect("e2ee task id"),
+            "op": "upsert",
+            "payload": {
+                "id": scenario["task"]["id"].as_str().expect("e2ee task id"),
+                "title": scenario["task"]["title"].as_str().expect("e2ee task title"),
+                "completed": 0,
+                "user_id": "user-rust",
+                "project_id": "p0",
+                "description": scenario["task"]["description"]
+                    .as_str()
+                    .expect("e2ee task description")
+            },
+            "base_version": 0
+        })
+        .to_string(),
+        None,
     )?;
     client.sync_http()?;
 
     let requests = handle.requests();
     let operation = &requests[0].push.as_ref().expect("push").commits[0].operations[0];
-    let title = operation
+    let description = operation
         .payload
         .as_ref()
-        .and_then(|payload| payload.get("title"))
+        .and_then(|payload| payload.get("description"))
         .and_then(Value::as_str)
-        .expect("encrypted title");
-    assert!(title.starts_with(
+        .expect("encrypted description");
+    assert!(description.starts_with(
         scenario["envelopePrefix"]
             .as_str()
             .expect("e2ee envelope prefix")
     ));
     assert_ne!(
-        title,
-        scenario["task"]["title"].as_str().expect("e2ee title")
+        description,
+        scenario["task"]["description"]
+            .as_str()
+            .expect("e2ee description")
     );
 
     let _ = std::fs::remove_file(path);
@@ -266,7 +276,7 @@ fn http_sync_decrypts_encrypted_snapshot_rows() -> Result<()> {
             .expect("e2ee pull client id"),
     );
     let mut client = demo_client(config, store, transport);
-    client.set_field_encryption(Some(test_field_encryption()?));
+    client.set_field_encryption(Some(test_field_encryption()?))?;
 
     client.sync_http()?;
 
@@ -310,7 +320,7 @@ fn http_sync_decrypts_encrypted_conflict_server_rows() -> Result<()> {
             .expect("e2ee conflict client id"),
     );
     let mut client = demo_client(config, store, transport);
-    client.set_field_encryption(Some(test_field_encryption()?));
+    client.set_field_encryption(Some(test_field_encryption()?))?;
 
     client.add_task(
         conflict["localTitle"]
@@ -367,7 +377,7 @@ fn http_sync_decrypts_encrypted_snapshot_chunk_rows() -> Result<()> {
             .expect("e2ee chunk client id"),
     );
     let mut client = demo_client(config, store, transport);
-    client.set_field_encryption(Some(test_field_encryption()?));
+    client.set_field_encryption(Some(test_field_encryption()?))?;
 
     client.sync_http()?;
 
@@ -1956,7 +1966,7 @@ fn canonical_commit_integrity_verifies_wire_payload_before_decrypting_pull() -> 
         store,
         transport,
     );
-    client.set_field_encryption(Some(test_field_encryption()?));
+    client.set_field_encryption(Some(test_field_encryption()?))?;
 
     client.sync_http()?;
     let tasks = client.list_tasks()?;

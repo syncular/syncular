@@ -566,11 +566,14 @@ read-only review:
   generated encrypted field, moves shared E2EE conformance off CRDT `title`,
   validates runtime field-encryption/blob/encrypted-CRDT config against
   generated static metadata, and removes ad hoc field-encryption rule
-  injection from generated TypeScript/Swift/Kotlin helpers. The next Batch 6
-  gap is raw worker config command shape: direct worker `set_*` config commands
-  should become first-class command/event operations or be removed, then auth,
-  diagnostics, network status, blob policy, live queries, row/field events, and
-  lifecycle hooks should be checked for remaining runtime-only behavior.
+  injection from generated TypeScript/Swift/Kotlin helpers. Direct
+  `SyncWorker::set_*` config methods now validate synchronously against the
+  generated app schema before queueing worker config changes, and Rust
+  protocol/testkit E2EE assertions now target generated encrypted
+  `tasks.description` instead of CRDT-backed `title`. The next Batch 6 gap is
+  inventorying auth, diagnostics, network status, blob policy, live queries,
+  row/field events, and lifecycle hooks for remaining runtime-only behavior
+  that should be backed by generated static metadata.
 
 ## Later
 

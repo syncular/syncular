@@ -892,10 +892,12 @@ fn app_test_server_syncs_encrypted_fields_without_plaintext_storage() {
     .expect("reader fixture");
     writer
         .client
-        .set_field_encryption(Some(stateful_test_field_encryption()));
+        .set_field_encryption(Some(stateful_test_field_encryption()))
+        .expect("writer field encryption config");
     reader
         .client
-        .set_field_encryption(Some(stateful_test_field_encryption()));
+        .set_field_encryption(Some(stateful_test_field_encryption()))
+        .expect("reader field encryption config");
 
     writer
         .client
@@ -909,7 +911,8 @@ fn app_test_server_syncs_encrypted_fields_without_plaintext_storage() {
                     "title": &scenario.e2ee.task.title,
                     "completed": 0,
                     "user_id": &scenario.actors.rust.actor_id,
-                    "project_id": &scenario.actors.rust.project_id
+                    "project_id": &scenario.actors.rust.project_id,
+                    "description": &scenario.e2ee.task.description
                 },
                 "base_version": 0
             })
@@ -919,17 +922,24 @@ fn app_test_server_syncs_encrypted_fields_without_plaintext_storage() {
         .expect("local encrypted mutation");
     writer.client.sync_http().expect("writer push");
 
-    let encrypted_title = assert_app_server_has_row(&server, "tasks", &scenario.e2ee.task.id)
-        ["title"]
+    let encrypted_description = assert_app_server_has_row(&server, "tasks", &scenario.e2ee.task.id)
+        ["description"]
         .as_str()
-        .expect("encrypted title")
+        .expect("encrypted description")
         .to_string();
-    assert!(encrypted_title.starts_with(&scenario.e2ee.envelope_prefix));
-    assert_ne!(encrypted_title, scenario.e2ee.task.title);
+    let task_description = scenario
+        .e2ee
+        .task
+        .description
+        .as_ref()
+        .expect("e2ee task description");
+    assert!(encrypted_description.starts_with(&scenario.e2ee.envelope_prefix));
+    assert_ne!(&encrypted_description, task_description);
 
     reader.client.sync_http().expect("reader pull");
     let row = assert_table_has_row(&mut reader.client, "tasks", "id", &scenario.e2ee.task.id);
     assert_eq!(row["title"], scenario.e2ee.task.title.as_str());
+    assert_eq!(row["description"], task_description.as_str());
 }
 
 #[test]
