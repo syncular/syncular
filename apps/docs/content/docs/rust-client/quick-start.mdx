@@ -5,9 +5,11 @@ description: Generate and use the Rust-first Syncular app clients.
 
 # Quick Start
 
-The Rust client is generated from your SQLite migrations and
-`syncular.codegen.json`. The generated files are app code: keep them in your
-app repo so Rust, TypeScript, Swift, and Kotlin tooling can see the types.
+The Rust client is generated from your SQLite migrations and a typed
+`syncular.app.ts` contract. That contract writes `syncular.codegen.json`, the
+low-level handoff consumed by Rust codegen. The generated files are app code:
+keep them in your app repo so Rust, TypeScript, Swift, and Kotlin tooling can
+see the types.
 
 ## 1. Add migrations
 
@@ -32,37 +34,40 @@ create table tasks (
 );
 ```
 
-Keep Syncular internal migrations in the app schema for now. The todo example
-under `rust/examples/todo-app/migrations` is the reference shape.
+Do not add Syncular internal `sync_*` tables to app migrations. The runtime
+installs its own system tables; the todo example under
+`rust/examples/todo-app/migrations` is the reference shape.
 
-## 2. Add codegen config
+## 2. Add the app contract
 
-Create `syncular.codegen.json` beside your app manifest:
+Create `syncular.app.ts` beside your app manifest:
 
-```json
-{
-  "typescriptOutputPath": "src/generated/syncular.browser.ts",
-  "nativeSwiftOutputPath": "Generated/SyncularApp.swift",
-  "nativeKotlinOutputPath": "generated/SyncularApp.kt",
-  "tables": {
-    "tasks": {
-      "subscriptionId": "sub-tasks",
-      "scopes": [
-        {
-          "name": "user_id",
-          "column": "user_id",
-          "source": "actorId",
-          "required": true
-        }
-      ],
-      "serverVersionColumn": "server_version"
-    }
-  }
-}
+```ts
+import { defineSyncularClient, scope, syncedTable } from '@syncular/typegen';
+
+export const app = defineSyncularClient({
+  typescriptOutputPath: 'src/generated/syncular.browser.ts',
+  nativeSwiftOutputPath: 'Generated/SyncularApp.swift',
+  nativeKotlinOutputPath: 'generated/SyncularApp.kt',
+  tables: {
+    tasks: syncedTable({
+      table: 'tasks',
+      subscriptionId: 'sub-tasks',
+      serverVersion: 'server_version',
+      scopes: [scope('user_id', { source: 'actorId', required: true })],
+    }),
+  },
+});
 ```
 
-Use `blobColumns`, `crdtYjsFields`, `softDeleteColumn`, and
+Use `blobColumns`, `crdt`, `encryptedFields`, `softDelete`, and
 `subscriptionParams` when the table needs those features.
+
+Generate the Rust-codegen handoff:
+
+```bash
+syncular-typegen codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json
+```
 
 ## 3. Run codegen
 
@@ -76,6 +81,8 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
 Run the check form in CI:
 
 ```bash
+syncular-typegen codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json --check
+
 cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
   --manifest-dir /absolute/path/to/your-app \
   --check

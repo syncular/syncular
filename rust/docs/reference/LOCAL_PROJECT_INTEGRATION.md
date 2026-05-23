@@ -68,48 +68,12 @@ Current app-table rules:
   `INSERT`/`UPDATE`/`DELETE`.
 - reads stay normal Diesel query-builder expressions.
 
-## 3. Add `syncular.codegen.json`
+## 3. Add The Typed App Contract
 
-Create `syncular.codegen.json` next to your app's `Cargo.toml`.
-
-Minimal example:
-
-```json
-{
-  "tables": {
-    "tasks": {
-      "subscriptionId": "sub-tasks",
-      "scopes": [
-        {
-          "name": "user_id",
-          "column": "user_id",
-          "source": "actorId",
-          "required": true
-        },
-        {
-          "name": "project_id",
-          "column": "project_id",
-          "source": "projectId",
-          "required": false
-        }
-      ],
-      "serverVersionColumn": "server_version",
-      "blobColumns": ["image"],
-      "crdtYjsFields": [
-        {
-          "field": "title",
-          "stateColumn": "title_yjs_state",
-          "containerKey": "title",
-          "kind": "text"
-        }
-      ]
-    }
-  }
-}
-```
-
-You can also author this config in TypeScript and write the JSON handoff that
-Rust codegen consumes:
+Create `syncular.app.ts` next to your app manifest. This file is the source of
+truth for Syncular table metadata; `syncular.codegen.json` is now the generated
+handoff consumed by Rust codegen, not something app authors should edit by
+hand.
 
 ```ts
 // syncular.app.ts
@@ -117,7 +81,6 @@ import {
   defineSyncularClient,
   scope,
   syncedTable,
-  writeSyncularCodegenJson,
   yjsText,
 } from '@syncular/typegen';
 
@@ -132,6 +95,7 @@ export const app = defineSyncularClient({
         scope('project_id', { source: 'projectId', required: false }),
       ],
       blobColumns: ['image'],
+      encryptedFields: [{ field: 'description', scope: 'tasks' }],
       crdt: {
         title: yjsText({
           stateColumn: 'title_yjs_state',
@@ -141,13 +105,29 @@ export const app = defineSyncularClient({
     }),
   },
 });
+```
 
-await writeSyncularCodegenJson(app, './syncular.codegen.json');
+Generate the low-level handoff JSON from the typed contract:
+
+```bash
+syncular-typegen codegen-config \
+  --app ./syncular.app.ts \
+  --out ./syncular.codegen.json
+```
+
+Use the check form in CI:
+
+```bash
+syncular-typegen codegen-config \
+  --app ./syncular.app.ts \
+  --out ./syncular.codegen.json \
+  --check
 ```
 
 This TypeScript file is a build/dev-time authoring layer only. Generated Rust,
-Swift, Kotlin, JVM, and browser clients consume generated artifacts and
-`syncular.schema.json`; they do not import `syncular.app.ts` at runtime.
+Swift, Kotlin, JVM, and browser clients consume generated artifacts,
+`syncular.schema.json`, and embedded migrations; they do not import
+`syncular.app.ts` at runtime.
 
 For a same-shape starter app, scaffold the initial contract from existing
 TypeScript migrations, then edit the authoring file/config once the client
@@ -181,12 +161,13 @@ Useful fields:
 - `tables`: app tables that Syncular should generate metadata/mutations for.
 - `subscriptionId`: server subscription id for this table.
 - `scopes`: how default subscriptions are built from client config.
-- `serverVersionColumn`: required optimistic-sync version column.
-- `softDeleteColumn`: optional column used for generated soft-delete mutation
+- `serverVersion`: required optimistic-sync version column.
+- `softDelete`: optional column used for generated soft-delete mutation
   semantics.
 - `blobColumns`: optional blob reference columns.
-- `crdtYjsFields`: optional Yrs/Yjs-backed CRDT fields. The app table must
-  have both the materialized field and a nullable text state column, for example
+- `encryptedFields`: optional generated field-encryption declarations.
+- `crdt`: optional Yrs/Yjs-backed CRDT fields. The app table must have both the
+  materialized field and a nullable text state column, for example
   `title TEXT NOT NULL` plus `title_yjs_state TEXT NULL`.
 - `subscriptionParams`: optional static params sent with default subscriptions.
 - `schemaOutputPath`: defaults to `syncular.schema.json`.
@@ -471,17 +452,14 @@ The Rust client can encrypt configured fields on push and decrypt them on pull
 while keeping local SQLite/outbox rows plaintext. The server sees ciphertext
 only for encrypted columns.
 
-Declare encrypted columns in `syncular.codegen.json`:
+Declare encrypted columns in the typed app contract:
 
-```json
-{
-  "tables": {
-    "tasks": {
-      "serverVersionColumn": "server_version",
-      "encryptedFields": [{ "field": "title" }]
-    }
-  }
-}
+```ts
+tasks: syncedTable({
+  table: 'tasks',
+  serverVersion: 'server_version',
+  encryptedFields: [encryptedField('description', { scope: 'tasks' })],
+});
 ```
 
 The generated clients turn that schema metadata into field-encryption rules, so
@@ -606,10 +584,10 @@ println!("queued commit {}", batch.commit.client_commit_id);
 
 ## 11. Yrs/Yjs CRDT Mutations
 
-For configured `crdtYjsFields`, generated Rust mutations get typed envelope
-helpers. Local SQLite rows are materialized immediately, but the outbox
-operation keeps `__yjs` so the server-side Yjs push plugin can merge concurrent
-updates.
+For configured CRDT fields in the typed app contract, generated Rust mutations
+get typed envelope helpers. Local SQLite rows are materialized immediately, but
+the outbox operation keeps `__yjs` so the server-side Yjs push plugin can merge
+concurrent updates.
 
 ```rust
 use syncular_client::crdt_yjs::{build_yjs_text_update, BuildYjsTextUpdateArgs};
@@ -652,17 +630,17 @@ println!("title = {}", materialized.value);
 Encrypted CRDT fields use the same generic field APIs, but the schema must mark
 the field with `syncMode: "encrypted-update-log"`:
 
-```json
-{
-  "crdtYjsFields": [
-    {
-      "field": "body",
-      "stateColumn": "body_yjs_state",
-      "kind": "text",
-      "syncMode": "encrypted-update-log"
-    }
-  ]
-}
+```ts
+tasks: syncedTable({
+  table: 'tasks',
+  serverVersion: 'server_version',
+  crdt: {
+    body: yjsText({
+      stateColumn: 'body_yjs_state',
+      syncMode: 'encrypted-update-log',
+    }),
+  },
+});
 ```
 
 This creates support for the shared hidden `sync_crdt_updates` and
@@ -812,7 +790,7 @@ live_tasks.refresh(&mut client)?;
 
 ## 15. Blobs
 
-Blob columns should be listed in `syncular.codegen.json` under `blobColumns`.
+Blob columns should be listed in the typed app contract under `blobColumns`.
 
 Store bytes locally and queue upload:
 
