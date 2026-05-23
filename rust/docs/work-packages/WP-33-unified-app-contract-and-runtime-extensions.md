@@ -670,6 +670,9 @@ The contract should distinguish two local cases:
 - Kept the boundary explicit: this is a dev/build-time authoring surface in
   `@syncular/typegen`, while generated cross-platform clients still consume
   generated artifacts at runtime.
+- Added `rust/examples/todo-app/syncular.app.ts` using the authoring helpers
+  and a conformance test proving it serializes to the checked-in
+  `syncular.codegen.json`.
 
 Gates run:
 
@@ -686,11 +689,12 @@ Gates run:
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
 - `bun run --cwd packages/typegen tsgo`
 - `bun test packages/typegen/src/app-contract.test.ts`
+- `bun test rust/examples/todo-app/syncular.app.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
 
 ## Next Action
 
-Continue Batch 4 by proving a real example app can use the TypeScript
-authoring helper to generate its `syncular.codegen.json` contents, then decide
-whether the Rust codegen CLI should consume that authoring module directly or
-keep consuming checked-in generated JSON only.
+Continue Batch 4 by deciding the build workflow: either keep
+`syncular.codegen.json` as the checked-in handoff generated from the TypeScript
+authoring module, or teach the Rust codegen CLI to invoke an explicit exported
+authoring module before generation.
