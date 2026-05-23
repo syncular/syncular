@@ -782,7 +782,12 @@ describe('createSyncServer console configuration', () => {
     app.route('/sync', server.syncRoutes);
 
     const response = await app.request(
-      'http://localhost/sync/realtime?clientId=client-3'
+      'http://localhost/sync/realtime?clientId=client-3',
+      {
+        headers: {
+          Origin: 'https://evil.syncular.test',
+        },
+      }
     );
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({
@@ -942,6 +947,35 @@ describe('createSyncServer console configuration', () => {
           Origin: 'http://localhost',
         },
       }
+    );
+
+    expect(response.status).toBe(200);
+    expect(capturedEvents).not.toBeNull();
+  });
+
+  it('allows origin-less realtime websocket upgrades when allowedOrigins is derived from CORS', async () => {
+    const options = createOptions();
+    let capturedEvents: WSEvents | null = null;
+    const upgradeWebSocket = defineWebSocketHelper(async (_c, events) => {
+      capturedEvents = events;
+      return new Response(null, { status: 200 });
+    });
+
+    const server = createSyncServer({
+      ...options,
+      routes: {
+        cors: {
+          origin: ['http://127.0.0.1:*', 'http://localhost:*'],
+        },
+      },
+      upgradeWebSocket,
+    });
+
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const response = await app.request(
+      'http://localhost/sync/realtime?clientId=client-originless-configured'
     );
 
     expect(response.status).toBe(200);
@@ -1246,7 +1280,11 @@ describe('createSyncServer console configuration', () => {
     const app = new Hono();
     app.route('/console', server.consoleRoutes!);
 
-    const response = await app.request('http://localhost/console/events/live');
+    const response = await app.request('http://localhost/console/events/live', {
+      headers: {
+        Origin: 'https://evil.syncular.test',
+      },
+    });
     expect(response.status).toBe(403);
     expect(await response.json()).toMatchObject({
       error: 'console.forbidden_origin',

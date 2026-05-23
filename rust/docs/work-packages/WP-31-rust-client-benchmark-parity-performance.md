@@ -892,6 +892,15 @@ The unsupported benchmark rows are now covered by native Rust client behavior,
 including an opt-in browser-worker OPFS/process-restart durability lane. No
 additional WP-31 client-side parity slice is currently identified.
 
+A 2026-05-23 follow-up fixed the benchmark-discovered Hono websocket origin
+policy issue: configured websocket `allowedOrigins` still rejects explicit
+disallowed browser origins, but originless non-browser websocket clients are
+allowed through to the upgrade/auth path. The rebuilt `offline-sync-bench`
+`syncular-rust` online-propagation run
+`2026-05-23T04-37-19-197Z` completed with `15/15` binary realtime sync-packs,
+`0` pull-required recoveries, p50 reader visibility `9.09ms`, and p95
+`14.06ms`.
+
 The `250`-client reconnect cliff is no longer a WP-31 client tuning item. It is
 handed off to
 [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](WP-32-realtime-recovery-fanout-external-notifications.md),

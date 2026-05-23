@@ -208,9 +208,14 @@ read-only review:
     `13.15ms` over `1` attempt. Slice 15 adds the stronger browser durability
     lane: real Chrome worker, `opfsSahPool`, browser process restarts between
     bootstrap/offline queue/replay, reopened outbox `10/10` pending, final
-    outbox `10/10` acked, and no storage fallback. No additional WP-31
-    client-side parity slice is currently identified; the remaining `250`
-    client reconnect cliff is tracked in WP-32.
+    outbox `10/10` acked, and no storage fallback. A follow-up Hono websocket
+    origin-policy fix keeps configured browser origin rejection strict while
+    allowing originless non-browser websocket clients; the rebuilt external
+    `syncular-rust` online-propagation run `2026-05-23T04-37-19-197Z`
+    completed with `15/15` binary realtime sync-packs and `0` pull-required
+    recoveries. No additional WP-31 client-side parity slice is currently
+    identified; the remaining `250` client reconnect cliff is tracked in
+    WP-32.
 - `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table
