@@ -780,6 +780,13 @@ The contract should distinguish two local cases:
   for both generated handlers and same-shape server handler collections.
 - Added scoped SQLite artifact precompute coverage proving a schema 6 artifact
   is encoded with schema 6 columns, not the current-only column list.
+- Added pull bootstrap coverage proving a schema 6 client receives a binary
+  snapshot chunk encoded from schema 6 columns and does not invoke the current
+  generated row encoder.
+- Note: the checked-in todo app currently supports schema 6 and 7, but its app
+  table shape does not differ between those versions. The synthetic pull test
+  is intentionally the stronger regression test for current-vs-historical
+  column leakage until a fixture app has a real user-table schema difference.
 
 Gates run:
 
@@ -824,9 +831,10 @@ Gates run:
 - `bun run --cwd packages/server-hono tsgo`
 - `bun run --cwd packages/testkit tsgo`
 - `bun run --cwd packages/relay tsgo`
+- `bun test tests/unit/server-pull.test.ts`
 
 ## Next Action
 
-Continue Batch 2/8 by adding an end-to-end old-client bootstrap conformance
-case where the server emits a supported historical snapshot shape and the
-client applies it without current-schema artifact/chunk metadata leaking in.
+Continue Batch 2/8 by adding a generated fixture with a real app-table schema
+difference across supported client versions, then use it for browser/native
+old-client bootstrap apply conformance.
