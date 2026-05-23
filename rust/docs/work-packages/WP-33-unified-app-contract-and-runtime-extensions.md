@@ -686,6 +686,16 @@ The contract should distinguish two local cases:
 - Documented the scaffold as a starter workflow for same-shape apps in the
   local Rust project integration guide.
 
+### Batch 5 Server Handler Validation Slice
+
+- Added generated `syncularValidateGeneratedOperation(...)` and changed
+  `createSyncularAppServerHandler(...)` to validate the whole sync operation
+  before app apply code runs.
+- The wrapper now rejects wrong table names, unsupported op names, upserts with
+  null payloads, deletes with non-null payloads, unknown mutation columns, and
+  nullable violations before custom server writes.
+- Extended server wrapper conformance tests for upsert/delete payload shape.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -706,5 +716,6 @@ Gates run:
 
 ## Next Action
 
-Move to Batch 5/8 follow-up coverage for versioned schema branches in server
-handlers.
+Continue Batch 5/8 with a generated fixture that supports an older client
+schema version and proves server handlers can branch on generated historical
+metadata instead of hand-written structural guesses.

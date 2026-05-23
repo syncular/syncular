@@ -306,6 +306,47 @@ describe('generated app server handler', () => {
     expect(
       invalidPayload.result.status === 'error' ? invalidPayload.result.error : ''
     ).toContain('tasks.missing_column: Unknown column');
+
+    const missingUpsertPayload = await handler.applyOperation(
+      createApplyContext(),
+      createTaskOperation({ payload: null }),
+      5
+    );
+    expect(missingUpsertPayload).toEqual({
+      result: expect.objectContaining({
+        opIndex: 5,
+        status: 'error',
+        code: 'sync.invalid_request',
+      }),
+      emittedChanges: [],
+    });
+    expect(
+      missingUpsertPayload.result.status === 'error'
+        ? missingUpsertPayload.result.error
+        : ''
+    ).toContain('tasks.payload: Upsert payload is required');
+
+    const deleteWithPayload = await handler.applyOperation(
+      createApplyContext(),
+      createTaskOperation({
+        op: 'delete',
+        payload: { title: 'not allowed' },
+      }),
+      6
+    );
+    expect(deleteWithPayload).toEqual({
+      result: expect.objectContaining({
+        opIndex: 6,
+        status: 'error',
+        code: 'sync.invalid_request',
+      }),
+      emittedChanges: [],
+    });
+    expect(
+      deleteWithPayload.result.status === 'error'
+        ? deleteWithPayload.result.error
+        : ''
+    ).toContain('tasks.payload: Delete payload must be null');
     expect(callCount).toBe(0);
   });
 

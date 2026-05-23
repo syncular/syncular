@@ -5621,6 +5621,17 @@ fn push_typescript_client_schema_metadata(
         "  return errors.length === 0 ? { ok: true, value: payload } : { ok: false, errors };\n",
     );
     out.push_str("}\n\n");
+    out.push_str("export function syncularValidateGeneratedOperation(table: string, op: SyncOperation, schemaVersion: number | null | undefined): SyncularGeneratedValidationResult<SyncOperation> {\n");
+    out.push_str("  if (op.table !== table) return { ok: false, errors: [{ path: op.table, message: `Expected operation table ${table}` }] };\n");
+    out.push_str("  if (op.op === 'delete') {\n");
+    out.push_str("    if (op.payload !== null) return { ok: false, errors: [{ path: `${table}.payload`, message: 'Delete payload must be null' }] };\n");
+    out.push_str("    return { ok: true, value: op };\n");
+    out.push_str("  }\n");
+    out.push_str("  if (op.op !== 'upsert') return { ok: false, errors: [{ path: `${table}.op`, message: `Unsupported operation ${op.op}` }] };\n");
+    out.push_str("  if (op.payload == null) return { ok: false, errors: [{ path: `${table}.payload`, message: 'Upsert payload is required' }] };\n");
+    out.push_str("  const payload = syncularValidateGeneratedMutationPayload(table, op.payload, schemaVersion);\n");
+    out.push_str("  return payload.ok ? { ok: true, value: op } : payload;\n");
+    out.push_str("}\n\n");
     Ok(())
 }
 
@@ -5722,10 +5733,7 @@ fn push_typescript_app_server_handler_helpers(
     out.push_str("      if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {\n");
     out.push_str("        return syncularUnsupportedClientSchemaResult({ opIndex, schemaVersion: ctx.schemaVersion });\n");
     out.push_str("      }\n");
-    out.push_str("      if (op.table !== tableName) {\n");
-    out.push_str("        return syncularGeneratedValidationErrorResult(opIndex, [{ path: op.table, message: `Expected operation table ${tableName}` }]);\n");
-    out.push_str("      }\n");
-    out.push_str("      const validation = syncularValidateGeneratedMutationPayload(tableName, op.payload, ctx.schemaVersion);\n");
+    out.push_str("      const validation = syncularValidateGeneratedOperation(tableName, op, ctx.schemaVersion);\n");
     out.push_str("      if (!validation.ok) return syncularGeneratedValidationErrorResult(opIndex, validation.errors);\n");
     out.push_str("      return options.applyOperation(ctx, op, opIndex);\n");
     out.push_str("    },\n");
@@ -5736,10 +5744,7 @@ fn push_typescript_app_server_handler_helpers(
     out.push_str("        if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {\n");
     out.push_str("          return [syncularUnsupportedClientSchemaResult({ opIndex, schemaVersion: ctx.schemaVersion })];\n");
     out.push_str("        }\n");
-    out.push_str("        if (op.table !== tableName) {\n");
-    out.push_str("          return [syncularGeneratedValidationErrorResult(opIndex, [{ path: op.table, message: `Expected operation table ${tableName}` }])];\n");
-    out.push_str("        }\n");
-    out.push_str("        const validation = syncularValidateGeneratedMutationPayload(tableName, op.payload, ctx.schemaVersion);\n");
+    out.push_str("        const validation = syncularValidateGeneratedOperation(tableName, op, ctx.schemaVersion);\n");
     out.push_str("        if (!validation.ok) return [syncularGeneratedValidationErrorResult(opIndex, validation.errors)];\n");
     out.push_str("      }\n");
     out.push_str("      return options.applyOperationBatch(ctx, operations);\n");
@@ -11468,6 +11473,7 @@ CREATE TABLE tasks (
         assert!(server_output.contains("export function syncularGeneratedTableSchemaForVersion"));
         assert!(server_output.contains("export function syncularValidateGeneratedClientRow"));
         assert!(server_output.contains("export function syncularValidateGeneratedMutationPayload"));
+        assert!(server_output.contains("export function syncularValidateGeneratedOperation"));
 
         let _ = fs::remove_dir_all(&migrations_dir);
         Ok(())
@@ -11907,6 +11913,7 @@ CREATE TABLE tasks (
         assert!(output.contains("export function syncularGeneratedTableSchemaForVersion"));
         assert!(output.contains("export function syncularValidateGeneratedClientRow"));
         assert!(output.contains("export function syncularValidateGeneratedMutationPayload"));
+        assert!(output.contains("export function syncularValidateGeneratedOperation"));
         assert!(output.contains("export interface SyncularAppDb"));
         assert!(output.contains("export interface TaskRow"));
         assert!(output.contains("  image: BlobRef | null;"));
@@ -11922,7 +11929,7 @@ CREATE TABLE tasks (
         assert!(output.contains("export const syncularGeneratedServerSnapshotBinary = {"));
         assert!(output.contains("export const syncularGeneratedAppTables = {"));
         assert!(output.contains("export function createSyncularAppServerHandler"));
-        assert!(output.contains("syncularValidateGeneratedMutationPayload"));
+        assert!(output.contains("syncularValidateGeneratedOperation"));
         assert!(output.contains("syncularUnsupportedClientSchemaResult"));
         Ok(())
     }
