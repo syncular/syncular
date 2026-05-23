@@ -787,6 +787,9 @@ The contract should distinguish two local cases:
   table shape does not differ between those versions. The synthetic pull test
   is intentionally the stronger regression test for current-vs-historical
   column leakage until a fixture app has a real user-table schema difference.
+- Tightened the existing codegen historical-schema replay test, whose synthetic
+  app adds an `image` column in v2, to assert the generated server output
+  includes versioned binary column and encoder helpers.
 
 Gates run:
 
@@ -800,6 +803,7 @@ Gates run:
 - `bun test packages/client/src/generated-app-conformance.test.ts`
 - `bun test packages/server/src/generated-app-server-handler.test.ts`
 - `bun test tests/unit/server-pull.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen schema_json_replays_supported_historical_client_schemas`
 - `bun test packages/server/src/generated-app-server-handler.test.ts packages/core/src/__tests__/snapshot-chunks.test.ts packages/core/src/__tests__/sync-packs.test.ts`
 - `bun test packages/server/src/pull-plugins.test.ts packages/server/src/notify.test.ts packages/server/src/pull-snapshot-artifacts.test.ts packages/server/src/commit-integrity.test.ts packages/server/src/encrypted-crdt.test.ts`
 - `bun test tests/unit/create-server-handler.test.ts tests/unit/pull-bootstrap-dependencies.test.ts tests/unit/server-pull.test.ts`
