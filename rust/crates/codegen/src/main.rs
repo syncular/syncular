@@ -5453,6 +5453,71 @@ fn push_typescript_app_db_rows(
     }
 }
 
+fn schema_column_ts_type(column: &SchemaJsonColumn) -> String {
+    let base = match column.app_type.as_str() {
+        "integer" | "number" => "number",
+        "bytes" => "Uint8Array",
+        "blobRef" => "BlobRef",
+        _ => "string",
+    };
+    if column.nullable {
+        format!("{base} | null")
+    } else {
+        base.to_string()
+    }
+}
+
+fn schema_row_type_name(table: &str, schema_version: i32) -> String {
+    format!("{}RowV{schema_version}", singular_pascal_case(table))
+}
+
+fn schema_mutation_payload_type_name(table: &str, schema_version: i32) -> String {
+    format!(
+        "{}MutationPayloadV{schema_version}",
+        singular_pascal_case(table)
+    )
+}
+
+fn push_typescript_historical_app_db_rows(
+    out: &mut String,
+    historical_client_schemas: &[SchemaJsonHistoricalClientSchema],
+) {
+    for schema in historical_client_schemas {
+        out.push_str(&format!(
+            "export interface SyncularAppDbV{} {{\n",
+            schema.schema_version
+        ));
+        for table in &schema.tables {
+            out.push_str(&format!(
+                "  {}: {};\n",
+                ts_property_name(&table.name),
+                schema_row_type_name(&table.name, schema.schema_version)
+            ));
+        }
+        out.push_str("}\n\n");
+
+        for table in &schema.tables {
+            let row_type = schema_row_type_name(&table.name, schema.schema_version);
+            let payload_type =
+                schema_mutation_payload_type_name(&table.name, schema.schema_version);
+            out.push_str(&format!("export interface {row_type} {{\n"));
+            for column in &table.columns {
+                out.push_str(&format!(
+                    "  {}: {};\n",
+                    ts_property_name(&column.name),
+                    schema_column_ts_type(column)
+                ));
+            }
+            out.push_str("}\n\n");
+            out.push_str(&format!(
+                "export type {payload_type} = Partial<Omit<{row_type}, {} | {}>>;\n\n",
+                ts_string(&table.primary_key_column),
+                ts_string(&table.server_version_column)
+            ));
+        }
+    }
+}
+
 fn push_typescript_client_schema_support(
     out: &mut String,
     client_schema_support: &SchemaJsonClientSchemaSupport,
@@ -5787,6 +5852,7 @@ fn generate_typescript_server_module(
         historical_client_schemas,
     )?;
     push_typescript_app_db_rows(&mut out, &user_tables, config);
+    push_typescript_historical_app_db_rows(&mut out, historical_client_schemas);
     push_typescript_binary_snapshot_exports(&mut out, &user_tables, config);
     out.push_str("export const syncularGeneratedServerSnapshotBinary = {\n");
     out.push_str("  columns: syncularGeneratedSnapshotBinaryColumns,\n");
@@ -11474,6 +11540,17 @@ CREATE TABLE tasks (
         assert!(server_output.contains("export function syncularValidateGeneratedClientRow"));
         assert!(server_output.contains("export function syncularValidateGeneratedMutationPayload"));
         assert!(server_output.contains("export function syncularValidateGeneratedOperation"));
+        assert!(server_output.contains("export interface SyncularAppDbV1"));
+        assert!(server_output.contains("export interface TaskRowV1"));
+        assert!(server_output.contains("export type TaskMutationPayloadV1"));
+        let task_v1 = server_output
+            .split("export interface TaskRowV1")
+            .nth(1)
+            .expect("TaskRowV1 emitted")
+            .split("}\n\n")
+            .next()
+            .expect("TaskRowV1 body");
+        assert!(!task_v1.contains("image"));
 
         let _ = fs::remove_dir_all(&migrations_dir);
         Ok(())
