@@ -1,6 +1,7 @@
 use crate::app_schema::{
     app_schema_from_config, checksum, empty_app_schema, split_sql_statements,
-    validate_app_schema_runtime_features, AppSchema, AppSchemaJson, AppTableMetadata,
+    validate_app_schema_runtime_features, validate_blob_runtime_against_app_schema, AppSchema,
+    AppSchemaJson, AppTableMetadata,
 };
 use crate::auth_lease_selection::{
     app_table_operation_scope,
@@ -1805,6 +1806,7 @@ impl SyncularRustOwnedSqliteClient {
         }
         #[cfg(feature = "web-blobs")]
         async {
+            self.inner.store().ensure_blob_runtime_declared()?;
             let options = parse_blob_store_options(options_json)?;
             let immediate = options.immediate.unwrap_or(false);
             let transport = self.inner.transport().clone();
@@ -1846,6 +1848,7 @@ impl SyncularRustOwnedSqliteClient {
         }
         #[cfg(feature = "web-blobs")]
         async {
+            self.inner.store().ensure_blob_runtime_declared()?;
             let blob: BlobRef = serde_json::from_str(ref_json).map_err(SyncularError::protocol)?;
             ensure_blob_decryption_available(self.inner.blob_encryption(), &blob)?;
             if let Some(bytes) = self.inner.store_mut().read_cached_blob(&blob.hash)? {
@@ -1869,10 +1872,16 @@ impl SyncularRustOwnedSqliteClient {
             return Err(web_blobs_feature_disabled()).map_err(error_to_js);
         }
         #[cfg(feature = "web-blobs")]
-        self.inner
-            .store_mut()
-            .is_blob_local_inner(hash)
-            .map_err(error_to_js)
+        {
+            self.inner
+                .store()
+                .ensure_blob_runtime_declared()
+                .map_err(error_to_js)?;
+            self.inner
+                .store_mut()
+                .is_blob_local_inner(hash)
+                .map_err(error_to_js)
+        }
     }
 
     #[wasm_bindgen(js_name = processBlobUploadQueueJson)]
@@ -1886,6 +1895,7 @@ impl SyncularRustOwnedSqliteClient {
         }
         #[cfg(feature = "web-blobs")]
         async {
+            self.inner.store().ensure_blob_runtime_declared()?;
             let transport = self.inner.transport().clone();
             let result = self
                 .inner
@@ -1905,10 +1915,16 @@ impl SyncularRustOwnedSqliteClient {
             return Err(web_blobs_feature_disabled()).map_err(error_to_js);
         }
         #[cfg(feature = "web-blobs")]
-        self.inner
-            .store_mut()
-            .blob_upload_queue_stats_json_inner()
-            .map_err(error_to_js)
+        {
+            self.inner
+                .store()
+                .ensure_blob_runtime_declared()
+                .map_err(error_to_js)?;
+            self.inner
+                .store_mut()
+                .blob_upload_queue_stats_json_inner()
+                .map_err(error_to_js)
+        }
     }
 
     #[wasm_bindgen(js_name = blobCacheStatsJson)]
@@ -1918,10 +1934,16 @@ impl SyncularRustOwnedSqliteClient {
             return Err(web_blobs_feature_disabled()).map_err(error_to_js);
         }
         #[cfg(feature = "web-blobs")]
-        self.inner
-            .store_mut()
-            .blob_cache_stats_json_inner()
-            .map_err(error_to_js)
+        {
+            self.inner
+                .store()
+                .ensure_blob_runtime_declared()
+                .map_err(error_to_js)?;
+            self.inner
+                .store_mut()
+                .blob_cache_stats_json_inner()
+                .map_err(error_to_js)
+        }
     }
 
     #[wasm_bindgen(js_name = pruneBlobCache)]
@@ -1932,10 +1954,16 @@ impl SyncularRustOwnedSqliteClient {
             return Err(web_blobs_feature_disabled()).map_err(error_to_js);
         }
         #[cfg(feature = "web-blobs")]
-        self.inner
-            .store_mut()
-            .prune_blob_cache_inner(max_bytes)
-            .map_err(error_to_js)
+        {
+            self.inner
+                .store()
+                .ensure_blob_runtime_declared()
+                .map_err(error_to_js)?;
+            self.inner
+                .store_mut()
+                .prune_blob_cache_inner(max_bytes)
+                .map_err(error_to_js)
+        }
     }
 
     #[wasm_bindgen(js_name = clearBlobCache)]
@@ -1945,10 +1973,16 @@ impl SyncularRustOwnedSqliteClient {
             return Err(web_blobs_feature_disabled()).map_err(error_to_js);
         }
         #[cfg(feature = "web-blobs")]
-        self.inner
-            .store_mut()
-            .clear_blob_cache_inner()
-            .map_err(error_to_js)
+        {
+            self.inner
+                .store()
+                .ensure_blob_runtime_declared()
+                .map_err(error_to_js)?;
+            self.inner
+                .store_mut()
+                .clear_blob_cache_inner()
+                .map_err(error_to_js)
+        }
     }
 
     #[wasm_bindgen(js_name = compactStorageJson)]
@@ -2250,6 +2284,7 @@ impl SyncularRustOwnedSqlite {
         options: &RustOwnedBlobStoreOptions,
         enqueue_upload: bool,
     ) -> Result<BlobRef> {
+        self.ensure_blob_runtime_declared()?;
         let mime_type = options
             .mime_type
             .clone()
@@ -2267,6 +2302,10 @@ impl SyncularRustOwnedSqlite {
         };
         self.store_blob_body(&blob, data, enqueue_upload)?;
         Ok(blob)
+    }
+
+    fn ensure_blob_runtime_declared(&self) -> Result<()> {
+        validate_blob_runtime_against_app_schema(self.app_schema)
     }
 
     #[cfg(feature = "web-blobs")]

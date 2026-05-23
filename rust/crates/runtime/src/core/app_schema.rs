@@ -215,6 +215,16 @@ pub fn validate_field_encryption_rules_against_app_schema(
 }
 
 pub fn validate_blob_encryption_against_app_schema(app_schema: AppSchema) -> Result<()> {
+    if validate_blob_runtime_against_app_schema(app_schema).is_ok() {
+        return Ok(());
+    }
+
+    Err(SyncularError::config(
+        "blob encryption requires at least one generated blob column",
+    ))
+}
+
+pub fn validate_blob_runtime_against_app_schema(app_schema: AppSchema) -> Result<()> {
     if app_schema
         .app_table_metadata
         .iter()
@@ -224,7 +234,7 @@ pub fn validate_blob_encryption_against_app_schema(app_schema: AppSchema) -> Res
     }
 
     Err(SyncularError::config(
-        "blob encryption requires at least one generated blob column",
+        "blob operations require at least one generated blob column",
     ))
 }
 

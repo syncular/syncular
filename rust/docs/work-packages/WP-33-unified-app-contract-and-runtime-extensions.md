@@ -1010,6 +1010,21 @@ The contract should distinguish two local cases:
   `client.subscribeQuery(...)` cannot register runtime-only live-query table or
   field dependencies.
 
+### Batch 6 Blob Policy Slice
+
+- Inventory result: blob storage and blob upload/cache APIs are storage/wire
+  semantics. A blob ref only becomes meaningful to Syncular when a generated
+  app table has a blob column that can carry that ref.
+- Added a shared blob-runtime schema guard. Native/Rust blob operations and
+  browser Rust-owned SQLite blob APIs now require at least one generated blob
+  column before storing, retrieving, uploading, pruning, or inspecting blob
+  state.
+- Kept the stricter blob-encryption validation message, but backed it with the
+  same generated blob-column check.
+- Updated native blob transport tests to open with the generated todo app
+  schema when they expect blob support, and added a negative native test
+  proving default/no-app-schema blob operations fail clearly.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -1107,13 +1122,14 @@ Gates run:
 - `bun run --cwd rust/bindings/javascript build:wasm:dev`
 - `bun test packages/client/src/__tests__/sync-hono.wasm.test.ts -t "rejects live-query dependencies"`
 - `bun test packages/client/src/__tests__/sync-hono.wasm.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test blob_transport`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
 
 ## Next Action
 
 Continue Batch 6 by inventorying the remaining runtime extension surfaces:
-auth lifecycle, diagnostics, network status, blob policy, row/field events, and
-lifecycle hooks. For each, decide whether it is pure runtime behavior or
-whether it carries storage/wire semantics that must be backed by generated
-static contract metadata.
+auth lifecycle, diagnostics, network status, row/field events, and lifecycle
+hooks. For each, decide whether it is pure runtime behavior or whether it
+carries storage/wire semantics that must be backed by generated static contract
+metadata.
