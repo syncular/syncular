@@ -664,6 +664,78 @@ describe('pull', () => {
     ]);
   });
 
+  it('uses schema-versioned binary metadata for old-client bootstrap chunks', async () => {
+    const historicalColumns = [
+      { name: 'id', type: 'string' },
+      { name: 'user_id', type: 'string' },
+      { name: 'title', type: 'string' },
+      { name: 'server_version', type: 'integer' },
+    ] as const;
+    let currentEncoderCallCount = 0;
+    const handlers = makeHandlers({
+      snapshotBinaryColumns: [
+        ...historicalColumns,
+        { name: 'current_only', type: 'string', nullable: true },
+      ],
+      snapshotBinaryColumnsForVersion: (schemaVersion) =>
+        schemaVersion === 6 ? historicalColumns : undefined,
+      snapshotBinaryEncoder: (rows) => {
+        currentEncoderCallCount += 1;
+        return encodeBinarySnapshotTable({
+          table: 'tasks',
+          columns: [
+            ...historicalColumns,
+            { name: 'current_only', type: 'string', nullable: true },
+          ],
+          rows: rows as Record<string, unknown>[],
+        });
+      },
+      snapshotBinaryEncoderForVersion: (schemaVersion) =>
+        schemaVersion === 6 ? null : undefined,
+    });
+
+    await pushTask(handlers, 'task-1', 'First Task');
+
+    const res = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c-schema-6',
+        schemaVersion: 6,
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+            crdtStateVectors: [],
+          },
+        ],
+      },
+    });
+
+    expect(currentEncoderCallCount).toBe(0);
+    const chunkRef = res.response.subscriptions[0]!.snapshots![0]!.chunks![0]!;
+    const chunk = await readSnapshotChunk(db, chunkRef.id);
+    if (!chunk) throw new Error('Expected stored snapshot chunk');
+    const decoded = decodeBinarySnapshotTable(
+      gunzipSync(snapshotBodyBytes(chunk.body))
+    );
+
+    expect(decoded.columns).toEqual([...historicalColumns]);
+    expect(decoded.rows).toEqual([
+      {
+        id: 'task-1',
+        user_id: 'u1',
+        title: 'First Task',
+        server_version: 1,
+      },
+    ]);
+  });
+
   it('keeps snapshot chunk cache entries separate by gzip level', async () => {
     const handlers = makeHandlers({
       snapshotBinaryColumns: [
