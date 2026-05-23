@@ -7,8 +7,8 @@ import type { ApplyOperationResult } from '@syncular/server';
 export const syncularGeneratedSchemaVersion = 7 as const;
 export const syncularGeneratedClientSchemaSupport = {
   current: syncularGeneratedSchemaVersion,
-  minSupported: syncularGeneratedSchemaVersion,
-  supported: [syncularGeneratedSchemaVersion],
+  minSupported: 7,
+  supported: [7],
 } as const;
 export type SyncularGeneratedSupportedClientSchemaVersion = typeof syncularGeneratedClientSchemaSupport.supported[number];
 export function syncularIsSupportedClientSchemaVersion(schemaVersion: number | null | undefined): schemaVersion is SyncularGeneratedSupportedClientSchemaVersion {

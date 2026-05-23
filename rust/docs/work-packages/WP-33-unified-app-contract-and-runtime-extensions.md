@@ -587,6 +587,25 @@ The contract should distinguish two local cases:
   rejection path without pretending older payload/snapshot shapes are safe to
   handle.
 
+### Batch 2 Historical Replay Slice
+
+- Added opt-in `clientSchemaSupport` config semantics to
+  `syncular.codegen.json`:
+  - omitted means current-only support;
+  - `minSupported` expands to the inclusive range through the current schema;
+  - `supported` declares the exact supported versions and must include current.
+- Added deterministic migration replay for opted-in old versions. Generated
+  `syncular.schema.json` now includes `historicalClientSchemas` only when old
+  versions are explicitly supported.
+- Historical schema generation is deliberately conservative:
+  - removed historical tables without current config fail generation;
+  - historical columns are generated from the replayed schema;
+  - blob/CRDT/encryption/scope metadata is filtered to columns that existed in
+    that version;
+  - old platform clients are not generated or shipped by default.
+- Generated TypeScript client/server support constants now reflect the resolved
+  support policy instead of hard-coding current-only.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -601,7 +620,6 @@ Gates run:
 
 ## Next Action
 
-Start the real historical-schema slice: replay deterministic migrations into
-per-version schema metadata, expose the supported-version policy from config,
-and keep historical schemas server/codegen-side unless a client runtime needs
-them.
+Expose historical schema metadata through generated TypeScript server helpers:
+per-version table metadata first, then parse/validation helpers for operation
+payloads and snapshot rows. Keep query builders/client artifacts current-only.
