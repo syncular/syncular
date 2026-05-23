@@ -905,6 +905,23 @@ The contract should distinguish two local cases:
   completion, scopes, and server version, while its SQLite table schema still
   has no `description` column.
 
+### Batch 7 TypeScript Local-Sync-Compatible Slice
+
+- Added explicit browser TypeScript client `mode: 'local-sync-compatible'`.
+- Remote clients still require `baseUrl`; local-sync-compatible clients can
+  omit `baseUrl`, and the resolved runtime config uses an internal disabled
+  URL only after validation.
+- Auto-sync after mutation is disabled by default for local-sync-compatible
+  clients so local writes are not silently treated as remote-accepted.
+- Manual `syncPull`, `syncPush`, `syncOnce`, auth-lease issue, and realtime
+  startup fail clearly because they require `remote` mode.
+- Added generated browser no-server conformance proving a generated todo client
+  opens from embedded migrations, runs a safe mutation, reads the local row, and
+  leaves the outbox commit pending at the generated schema version.
+- Kept `local-only` as a future mode rather than exposing it prematurely. The
+  implemented mode still uses outbox/safe-write semantics so a backend can be
+  attached later.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -977,12 +994,14 @@ Gates run:
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
 - `bun run --cwd packages/client tsgo`
 - `git diff --check`
+- `bun test packages/client/src/client-config.test.ts packages/client/src/__tests__/variant-core.wasm.test.ts -t "local-sync-compatible"`
+- `bun test packages/client/src/client-config.test.ts packages/client/src/__tests__/variant-core.wasm.test.ts`
+- `bun run --cwd packages/client tsgo`
+- `git diff --check`
 
 ## Next Action
 
-Continue Batch 6/7 with the runtime-extension and backend-less app boundary.
-Start with the smallest generated local/no-server smoke: a generated
-local-sync-compatible TypeScript client should open from embedded migrations,
-run typed reads and safe mutations without a Syncular server, surface honest
-pending/outbox lifecycle state, and keep the path compatible with later remote
-sync attachment.
+Continue Batch 7 with a Rust/native generated local-sync-compatible no-server
+smoke. TypeScript now proves the public browser mode; Rust should prove the
+same foundation can open embedded migrations, perform generated safe mutations
+and typed reads, and leave outbox state pending without any server dependency.

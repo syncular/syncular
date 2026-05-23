@@ -553,8 +553,8 @@ function endpointFromConsoleBaseUrl(
   return `${trimmed}/console/client-diagnostics`;
 }
 
-function endpointFromSyncBaseUrl(value: string): string | undefined {
-  const trimmed = value.trim().replace(/\/+$/u, '');
+function endpointFromSyncBaseUrl(value: string | undefined): string | undefined {
+  const trimmed = value?.trim().replace(/\/+$/u, '');
   if (!trimmed) return undefined;
   if (trimmed.endsWith('/sync')) {
     return `${trimmed.slice(0, -'/sync'.length)}/console/client-diagnostics`;

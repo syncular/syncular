@@ -3,7 +3,7 @@ import {
   syncularDiagnosticAttemptFields,
 } from './diagnostics';
 import type {
-  SyncularClientConfig,
+  ResolvedSyncularClientConfig,
   SyncularDiagnosticEvent,
   SyncularLiveQueryEvent,
   SyncularRealtimeConnectionState,
@@ -72,7 +72,7 @@ export interface SyncularWorkerRealtimeSocket {
 
 export interface SyncularWorkerRealtimeControllerOptions {
   getClient(): SyncularWorkerRealtimeClient;
-  getConfig(): SyncularClientConfig | undefined;
+  getConfig(): ResolvedSyncularClientConfig | undefined;
   getLocationOrigin(): string;
   createWebSocket(url: string): SyncularWorkerRealtimeSocket;
   postEvent(event: SyncularWorkerEvent): void;
@@ -669,7 +669,7 @@ function syncResultCursor(result: SyncularSyncResult): number {
 }
 
 export function resolveSyncularRealtimeUrl(
-  config: SyncularClientConfig,
+  config: ResolvedSyncularClientConfig,
   options: SyncularWorkerRealtimeOptions,
   locationOrigin: string
 ): string {
