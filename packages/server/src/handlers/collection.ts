@@ -21,6 +21,14 @@ export interface ServerSnapshotBinaryMetadata {
     Record<string, readonly BinarySnapshotColumn[] | undefined>
   >;
   encoders?: Readonly<Record<string, BinarySnapshotRowsEncoder | undefined>>;
+  columnsForVersion?: (
+    table: string,
+    schemaVersion: number
+  ) => readonly BinarySnapshotColumn[] | null | undefined;
+  encoderForVersion?: (
+    table: string,
+    schemaVersion: number
+  ) => BinarySnapshotRowsEncoder | null | undefined;
 }
 
 export interface ServerHandlerCollectionOptions {
@@ -36,12 +44,33 @@ function attachSnapshotBinaryMetadata<
 ): ServerTableHandler<DB, Auth> {
   const generatedColumns = metadata.columns[handler.table];
   const generatedEncoder = metadata.encoders?.[handler.table];
-  if (!generatedColumns && !generatedEncoder) return handler;
+  const generatedColumnsForVersion = metadata.columnsForVersion;
+  const generatedEncoderForVersion = metadata.encoderForVersion;
+  if (
+    !generatedColumns &&
+    !generatedEncoder &&
+    !generatedColumnsForVersion &&
+    !generatedEncoderForVersion
+  ) {
+    return handler;
+  }
 
   return {
     ...handler,
     snapshotBinaryColumns: handler.snapshotBinaryColumns ?? generatedColumns,
     snapshotBinaryEncoder: handler.snapshotBinaryEncoder ?? generatedEncoder,
+    snapshotBinaryColumnsForVersion:
+      handler.snapshotBinaryColumnsForVersion ??
+      (generatedColumnsForVersion
+        ? (schemaVersion) =>
+            generatedColumnsForVersion(handler.table, schemaVersion)
+        : undefined),
+    snapshotBinaryEncoderForVersion:
+      handler.snapshotBinaryEncoderForVersion ??
+      (generatedEncoderForVersion
+        ? (schemaVersion) =>
+            generatedEncoderForVersion(handler.table, schemaVersion)
+        : undefined),
   };
 }
 

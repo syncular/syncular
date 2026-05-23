@@ -157,11 +157,27 @@ export interface CreateServerHandlerOptions<
   snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
 
   /**
+   * Version-aware binary snapshot column metadata. Returning null intentionally
+   * disables fallback to current metadata.
+   */
+  snapshotBinaryColumnsForVersion?: (
+    schemaVersion: number
+  ) => readonly BinarySnapshotColumn[] | null | undefined;
+
+  /**
    * Optional generated binary snapshot encoder used by binary bootstrap chunks.
    */
   snapshotBinaryEncoder?: BinarySnapshotRowsEncoder<
     Selectable<ClientDB[TableName]>
   >;
+
+  /**
+   * Version-aware generated binary snapshot encoder. Returning null
+   * intentionally disables fallback to the current encoder.
+   */
+  snapshotBinaryEncoderForVersion?: (
+    schemaVersion: number
+  ) => BinarySnapshotRowsEncoder<Selectable<ClientDB[TableName]>> | null | undefined;
 
   /**
    * Resolve allowed scope values for the current actor.
@@ -305,7 +321,9 @@ export function createServerHandler<
     dependsOn,
     snapshotChunkTtlMs,
     snapshotBinaryColumns,
+    snapshotBinaryColumnsForVersion,
     snapshotBinaryEncoder,
+    snapshotBinaryEncoderForVersion,
     resolveScopes,
     transformInbound,
     transformOutbound,
@@ -1063,8 +1081,12 @@ export function createServerHandler<
     dependsOn,
     snapshotChunkTtlMs,
     snapshotBinaryColumns,
+    snapshotBinaryColumnsForVersion,
     snapshotBinaryEncoder: snapshotBinaryEncoder as
       | BinarySnapshotRowsEncoder
+      | undefined,
+    snapshotBinaryEncoderForVersion: snapshotBinaryEncoderForVersion as
+      | ((schemaVersion: number) => BinarySnapshotRowsEncoder | null | undefined)
       | undefined,
     canRejectSingleOperationWithoutSavepoint:
       options.canRejectSingleOperationWithoutSavepoint ??

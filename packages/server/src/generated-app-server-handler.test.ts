@@ -4,6 +4,8 @@ import {
   createSyncularAppServerHandler,
   syncularGeneratedClientSchemaForVersion,
   syncularGeneratedAppTables,
+  syncularGeneratedSnapshotBinaryColumnsForVersion,
+  syncularGeneratedSnapshotBinaryEncoderForVersion,
   syncularGeneratedSchemaVersion,
 } from '../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
 import type {
@@ -191,6 +193,25 @@ describe('generated app server handler', () => {
         'title_yjs_state',
       ]
     );
+    expect(
+      handler
+        .snapshotBinaryColumnsForVersion?.(6)
+        ?.map((column) => column.name)
+    ).toEqual(
+      syncularGeneratedSnapshotBinaryColumnsForVersion('tasks', 6)?.map(
+        (column) => column.name
+      )
+    );
+    expect(
+      handler.snapshotBinaryEncoderForVersion?.(syncularGeneratedSchemaVersion)
+    ).toBe(handler.snapshotBinaryEncoder);
+    expect(handler.snapshotBinaryEncoderForVersion?.(6)).toBeNull();
+    expect(
+      syncularGeneratedSnapshotBinaryEncoderForVersion(
+        'tasks',
+        syncularGeneratedSchemaVersion
+      )
+    ).toBe(handler.snapshotBinaryEncoder);
     expect(
       handler.extractScopes({
         id: 'task-1',

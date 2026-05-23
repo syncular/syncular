@@ -5422,6 +5422,32 @@ fn push_typescript_binary_snapshot_exports(
         ));
     }
     out.push_str("} satisfies Record<keyof SyncularAppDb, BinarySnapshotRowsEncoder>;\n\n");
+    out.push_str("function syncularGeneratedSnapshotBinaryColumnType(column: SyncularGeneratedColumnSchemaMetadata): BinarySnapshotColumn['type'] {\n");
+    out.push_str("  if (column.blobRef || column.appType === 'blobRef') return 'json';\n");
+    out.push_str("  switch (column.typeFamily) {\n");
+    out.push_str("    case 'integer': return 'integer';\n");
+    out.push_str("    case 'real': return 'float';\n");
+    out.push_str("    case 'blob': return 'bytes';\n");
+    out.push_str("    default: return 'string';\n");
+    out.push_str("  }\n");
+    out.push_str("}\n\n");
+    out.push_str("export function syncularGeneratedSnapshotBinaryColumnsForVersion(table: string, schemaVersion: number | null | undefined): readonly BinarySnapshotColumn[] | null {\n");
+    out.push_str(
+        "  const tableSchema = syncularGeneratedTableSchemaForVersion(table, schemaVersion);\n",
+    );
+    out.push_str("  if (!tableSchema) return null;\n");
+    out.push_str("  return tableSchema.columns.map((column) => ({\n");
+    out.push_str("    name: column.name,\n");
+    out.push_str("    type: syncularGeneratedSnapshotBinaryColumnType(column),\n");
+    out.push_str("    ...(column.nullable ? { nullable: true } : {}),\n");
+    out.push_str("  }));\n");
+    out.push_str("}\n\n");
+    out.push_str("export function syncularGeneratedSnapshotBinaryEncoderForVersion(table: string, schemaVersion: number | null | undefined): BinarySnapshotRowsEncoder | null {\n");
+    out.push_str("  if (schemaVersion !== syncularGeneratedSchemaVersion) return null;\n");
+    out.push_str(
+        "  return syncularGeneratedSnapshotBinaryEncoders[table as keyof SyncularAppDb] ?? null;\n",
+    );
+    out.push_str("}\n\n");
 }
 
 fn push_typescript_app_db_rows(
@@ -5587,9 +5613,13 @@ fn push_typescript_client_schema_metadata(
     });
     out.push_str("export interface SyncularGeneratedColumnSchemaMetadata {\n");
     out.push_str("  name: string;\n");
+    out.push_str("  sqlType: string;\n");
+    out.push_str("  typeFamily: string;\n");
+    out.push_str("  appType: string;\n");
     out.push_str("  nullable: boolean;\n");
     out.push_str("  notnullRequired: boolean;\n");
     out.push_str("  primaryKey: boolean;\n");
+    out.push_str("  blobRef: boolean;\n");
     out.push_str("}\n\n");
     out.push_str("export interface SyncularGeneratedTableSchemaMetadata {\n");
     out.push_str("  name: string;\n");
@@ -5790,6 +5820,8 @@ fn push_typescript_app_server_handler_helpers(
     out.push_str("    snapshotChunkTtlMs: options.snapshotChunkTtlMs,\n");
     out.push_str("    snapshotBinaryColumns: syncularGeneratedSnapshotBinaryColumns[tableName as keyof SyncularAppDb],\n");
     out.push_str("    snapshotBinaryEncoder: syncularGeneratedSnapshotBinaryEncoders[tableName as keyof SyncularAppDb],\n");
+    out.push_str("    snapshotBinaryColumnsForVersion: (schemaVersion) => syncularGeneratedSnapshotBinaryColumnsForVersion(tableName, schemaVersion),\n");
+    out.push_str("    snapshotBinaryEncoderForVersion: (schemaVersion) => syncularGeneratedSnapshotBinaryEncoderForVersion(tableName, schemaVersion),\n");
     out.push_str("    canRejectSingleOperationWithoutSavepoint: options.canRejectSingleOperationWithoutSavepoint,\n");
     out.push_str("    resolveScopes: async (ctx) => options.resolveScopes(ctx),\n");
     out.push_str("    extractScopes: options.extractScopes ?? ((row) => syncularGeneratedExtractScopes(tableName, row)),\n");
@@ -5870,6 +5902,8 @@ fn generate_typescript_server_module(
     out.push_str("export const syncularGeneratedServerSnapshotBinary = {\n");
     out.push_str("  columns: syncularGeneratedSnapshotBinaryColumns,\n");
     out.push_str("  encoders: syncularGeneratedSnapshotBinaryEncoders,\n");
+    out.push_str("  columnsForVersion: syncularGeneratedSnapshotBinaryColumnsForVersion,\n");
+    out.push_str("  encoderForVersion: syncularGeneratedSnapshotBinaryEncoderForVersion,\n");
     out.push_str("} as const;\n");
     push_typescript_app_server_handler_helpers(&mut out, &user_tables, config);
     Ok(out)

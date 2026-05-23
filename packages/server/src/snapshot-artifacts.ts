@@ -24,7 +24,7 @@ import {
 } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
 import type { ServerHandlerCollection } from './handlers/collection';
-import type { SyncServerAuth } from './handlers/types';
+import type { ServerTableHandler, SyncServerAuth } from './handlers/types';
 import type { SyncCoreDb } from './schema';
 import { scopesToSnapshotChunkScopeKey } from './snapshot-chunks';
 
@@ -711,6 +711,19 @@ function snapshotRowsAsObjects(
   });
 }
 
+function resolveSnapshotBinaryColumns<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(
+  handler: ServerTableHandler<DB, Auth>,
+  schemaVersion: number
+): readonly BinarySnapshotColumn[] | undefined {
+  const versioned = handler.snapshotBinaryColumnsForVersion?.(schemaVersion);
+  return versioned === undefined
+    ? handler.snapshotBinaryColumns
+    : (versioned ?? undefined);
+}
+
 export async function precomputeScopedSnapshotArtifact<
   DB extends SyncCoreDb,
   Auth extends SyncServerAuth = SyncServerAuth,
@@ -723,7 +736,12 @@ export async function precomputeScopedSnapshotArtifact<
       `Unknown table for scoped snapshot artifact: ${args.table}`
     );
   }
-  if (!handler.snapshotBinaryColumns) {
+  const schemaVersion = Number(args.schemaVersion);
+  const snapshotBinaryColumns = resolveSnapshotBinaryColumns(
+    handler,
+    schemaVersion
+  );
+  if (!snapshotBinaryColumns) {
     throw new Error(
       `Table ${args.table} cannot build SQLite snapshot artifacts without generated snapshotBinaryColumns`
     );
@@ -738,7 +756,7 @@ export async function precomputeScopedSnapshotArtifact<
       scopeValues: args.scopes,
       cursor: rowCursor,
       limit: args.rowLimit,
-      schemaVersion: Number(args.schemaVersion),
+      schemaVersion,
     },
     args.params
   );
@@ -756,7 +774,7 @@ export async function precomputeScopedSnapshotArtifact<
   const body = await args.encoder.encode({
     table: args.table,
     primaryKeyColumn: handler.primaryKeyColumn,
-    columns: handler.snapshotBinaryColumns,
+    columns: snapshotBinaryColumns,
     rows,
   });
 

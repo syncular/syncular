@@ -163,6 +163,32 @@ function resolveSnapshotArtifactSelection(
   };
 }
 
+function resolveSnapshotBinaryColumns<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(
+  handler: ServerTableHandler<DB, Auth>,
+  schemaVersion: number
+): readonly BinarySnapshotColumn[] | undefined {
+  const versioned = handler.snapshotBinaryColumnsForVersion?.(schemaVersion);
+  return versioned === undefined
+    ? handler.snapshotBinaryColumns
+    : (versioned ?? undefined);
+}
+
+function resolveSnapshotBinaryEncoder<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(
+  handler: ServerTableHandler<DB, Auth>,
+  schemaVersion: number
+): BinarySnapshotRowsEncoder | undefined {
+  const versioned = handler.snapshotBinaryEncoderForVersion?.(schemaVersion);
+  return versioned === undefined
+    ? handler.snapshotBinaryEncoder
+    : (versioned ?? undefined);
+}
+
 function createPullBootstrapTimings(): PullBootstrapTimings {
   return {
     snapshotQueryMs: 0,
@@ -1146,8 +1172,14 @@ export async function pull<
                           nextState.rowCursor,
                           tableHandler.snapshotChunkTtlMs ??
                             24 * 60 * 60 * 1000,
-                          tableHandler.snapshotBinaryColumns,
-                          tableHandler.snapshotBinaryEncoder
+                          resolveSnapshotBinaryColumns(
+                            tableHandler,
+                            clientSchemaVersion
+                          ),
+                          resolveSnapshotBinaryEncoder(
+                            tableHandler,
+                            clientSchemaVersion
+                          )
                         );
                       }
 

@@ -610,8 +610,17 @@ describe('pull', () => {
             });
           },
         },
+        columnsForVersion: (table, schemaVersion) =>
+          table === 'tasks' && schemaVersion === 6 ? columns : undefined,
+        encoderForVersion: (_table, schemaVersion) =>
+          schemaVersion === 6 ? null : undefined,
       },
     });
+    const resolvedTaskHandler = handlers.byTable.get('tasks');
+    expect(resolvedTaskHandler?.snapshotBinaryColumnsForVersion?.(6)).toEqual(
+      columns
+    );
+    expect(resolvedTaskHandler?.snapshotBinaryEncoderForVersion?.(6)).toBeNull();
 
     await pushTask(handlers, 'task-1', 'First Task');
 
