@@ -77,6 +77,9 @@
   "nativeKotlinOutputPath": "generated/kotlin/SyncularApp.kt",
   "nativeAndroidKotlinOutputPath": "generated/kotlin/android/SyncularApp.kt",
   "nativeAndroidKotlinPackage": "dev.syncular.client.generated",
+  "localOnlyTables": [
+    "local_preferences"
+  ],
   "localReadModels": [
     {
       "name": "taskCountsByUserCompletion",

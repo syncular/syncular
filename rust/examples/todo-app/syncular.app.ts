@@ -20,6 +20,7 @@ export const app = defineSyncularClient({
   clientSchemaSupport: {
     minSupported: 6,
   },
+  localOnlyTables: ['local_preferences'],
   localReadModels: [
     countByReadModel({
       name: 'taskCountsByUserCompletion',

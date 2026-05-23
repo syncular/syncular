@@ -170,6 +170,11 @@ export const syncularGeneratedAppMigrations: readonly SyncularGeneratedAppMigrat
     name: 'add_task_descriptions',
     appSql: [
       `ALTER TABLE tasks ADD COLUMN description TEXT NULL;`,
+      `CREATE TABLE IF NOT EXISTS local_preferences (
+  id TEXT PRIMARY KEY,
+  key TEXT NOT NULL,
+  value TEXT NOT NULL
+);`,
     ],
     skippedSystemStatements: 0,
   },
@@ -222,7 +227,7 @@ export const syncularGeneratedEmbeddedMigrations: readonly SyncularGeneratedEmbe
     version: '0008',
     schemaVersion: 8,
     name: 'add_task_descriptions',
-    upSql: 'ALTER TABLE tasks ADD COLUMN description TEXT NULL;',
+    upSql: 'ALTER TABLE tasks ADD COLUMN description TEXT NULL;\n\nCREATE TABLE IF NOT EXISTS local_preferences (\n  id TEXT PRIMARY KEY,\n  key TEXT NOT NULL,\n  value TEXT NOT NULL\n);',
   },
 ];
 

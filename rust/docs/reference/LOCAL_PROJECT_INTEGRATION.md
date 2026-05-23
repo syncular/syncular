@@ -85,6 +85,7 @@ import {
 } from '@syncular/typegen';
 
 export const app = defineSyncularClient({
+  localOnlyTables: ['local_preferences'],
   tables: {
     tasks: syncedTable({
       table: 'tasks',
@@ -157,6 +158,8 @@ await writeSyncularCodegenJson(app);
 Useful fields:
 
 - `tables`: app tables that Syncular should generate metadata/mutations for.
+- `localOnlyTables`: app-local tables installed from migrations without
+  generated outbox/sync metadata.
 - `subscriptionId`: server subscription id for this table.
 - `scopes`: how default subscriptions are built from client config.
 - `serverVersion`: required optimistic-sync version column.

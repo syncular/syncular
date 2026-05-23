@@ -49,6 +49,7 @@ describe('Syncular app contract authoring', () => {
           sqliteWithoutRowid: true,
         }),
       },
+      localOnlyTables: ['local_preferences'],
       localReadModels: [
         countByReadModel({
           name: 'taskCountsByUserCompletion',
@@ -67,6 +68,7 @@ describe('Syncular app contract authoring', () => {
         'generated/typescript/syncular.server.generated.ts',
       typescriptRuntimeImportPath: '@syncular/client',
       clientSchemaSupport: { minSupported: 5, supported: [5, 6, 7] },
+      localOnlyTables: ['local_preferences'],
       localReadModels: [
         {
           name: 'taskCountsByUserCompletion',

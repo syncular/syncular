@@ -75,11 +75,19 @@ fn assert_schema_contract(path: &Path) {
     let table_setup_sql = local_base["tableSetupSql"]
         .as_array()
         .expect("localBaseSchema.tableSetupSql array");
-    assert_eq!(
-        table_setup_sql.len(),
-        tables.len(),
-        "localBaseSchema.tableSetupSql should install every app table"
+    assert!(
+        table_setup_sql.len() >= tables.len(),
+        "localBaseSchema.tableSetupSql should install every synced table and may include explicit local-only tables"
     );
+    for table in tables {
+        let table_name = table["name"].as_str().expect("table name");
+        assert!(
+            table_setup_sql.iter().any(|statement| statement
+                .as_str()
+                .is_some_and(|sql| sql.contains(table_name))),
+            "localBaseSchema.tableSetupSql should install synced table {table_name}"
+        );
+    }
     for statement in table_setup_sql {
         let sql = statement
             .as_str()
