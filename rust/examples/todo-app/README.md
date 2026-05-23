@@ -2,10 +2,24 @@
 
 This example is the app-owned generator target for the Rust rewrite.
 
-Run the generator from the repo root:
+The typed app contract in `syncular.app.ts` is the source of truth for table
+sync metadata. Generate the low-level Rust-codegen handoff JSON from that
+contract instead of editing `syncular.codegen.json` by hand:
+
+```bash
+bun --cwd rust/examples/todo-app codegen:config
+```
+
+Then run the Rust generator from the repo root:
 
 ```bash
 cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app
+```
+
+Or run both steps from the example package:
+
+```bash
+bun --cwd rust/examples/todo-app codegen
 ```
 
 The generated files under `generated/` are intentionally app-local fixtures.

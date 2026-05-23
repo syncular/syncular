@@ -1,26 +1,7 @@
 {
-  "typescriptOutputPath": "generated/typescript/syncular.generated.ts",
-  "typescriptServerOutputPath": "generated/typescript/syncular.server.generated.ts",
-  "typescriptRuntimeImportPath": "../../../../../packages/client/src",
-  "nativeSwiftOutputPath": "generated/swift/SyncularApp.swift",
-  "nativeKotlinOutputPath": "generated/kotlin/SyncularApp.kt",
-  "nativeAndroidKotlinOutputPath": "generated/kotlin/android/SyncularApp.kt",
-  "nativeAndroidKotlinPackage": "dev.syncular.client.generated",
-  "clientSchemaSupport": {
-    "minSupported": 6
-  },
-  "localReadModels": [
-    {
-      "name": "taskCountsByUserCompletion",
-      "kind": "countBy",
-      "sourceTable": "tasks",
-      "outputTable": "syncular_task_counts",
-      "dimensions": ["user_id", "completed"],
-      "countColumn": "task_count"
-    }
-  ],
   "tables": {
     "projects": {
+      "serverVersionColumn": "server_version",
       "subscriptionId": "sub-projects",
       "scopes": [
         {
@@ -30,10 +11,10 @@
           "required": true
         }
       ],
-      "serverVersionColumn": "server_version",
       "sqliteWithoutRowid": true
     },
     "tasks": {
+      "serverVersionColumn": "server_version",
       "subscriptionId": "sub-tasks",
       "scopes": [
         {
@@ -49,14 +30,8 @@
           "required": false
         }
       ],
-      "serverVersionColumn": "server_version",
-      "sqliteWithoutRowid": true,
-      "blobColumns": ["image"],
-      "encryptedFields": [
-        {
-          "field": "description",
-          "scope": "tasks"
-        }
+      "blobColumns": [
+        "image"
       ],
       "crdtYjsFields": [
         {
@@ -65,9 +40,17 @@
           "containerKey": "title",
           "kind": "text"
         }
-      ]
+      ],
+      "encryptedFields": [
+        {
+          "field": "description",
+          "scope": "tasks"
+        }
+      ],
+      "sqliteWithoutRowid": true
     },
     "comments": {
+      "serverVersionColumn": "server_version",
       "subscriptionId": "sub-comments",
       "scopes": [
         {
@@ -83,9 +66,31 @@
           "required": false
         }
       ],
-      "serverVersionColumn": "server_version",
       "softDeleteColumn": "deleted",
       "sqliteWithoutRowid": true
     }
+  },
+  "typescriptOutputPath": "generated/typescript/syncular.generated.ts",
+  "typescriptServerOutputPath": "generated/typescript/syncular.server.generated.ts",
+  "typescriptRuntimeImportPath": "../../../../../packages/client/src",
+  "nativeSwiftOutputPath": "generated/swift/SyncularApp.swift",
+  "nativeKotlinOutputPath": "generated/kotlin/SyncularApp.kt",
+  "nativeAndroidKotlinOutputPath": "generated/kotlin/android/SyncularApp.kt",
+  "nativeAndroidKotlinPackage": "dev.syncular.client.generated",
+  "localReadModels": [
+    {
+      "name": "taskCountsByUserCompletion",
+      "kind": "countBy",
+      "sourceTable": "tasks",
+      "outputTable": "syncular_task_counts",
+      "dimensions": [
+        "user_id",
+        "completed"
+      ],
+      "countColumn": "task_count"
+    }
+  ],
+  "clientSchemaSupport": {
+    "minSupported": 6
   }
 }
