@@ -700,6 +700,15 @@ The contract should distinguish two local cases:
   `SyncularAppDbV1`, `TaskRowV1`, and `TaskMutationPayloadV1`. These are
   generated from replayed historical schema metadata and omit columns that did
   not exist in the old client shape.
+- Opted the todo app contract into supporting schema version 6 through the
+  current schema version, and aligned the runtime fixture manifest because it
+  writes the same generated todo artifacts.
+- Added server conformance coverage that imports generated historical aliases
+  (`TaskRowV6`, `TaskMutationPayloadV6`) and branches in a custom
+  `createSyncularAppServerHandler(...)` apply path based on
+  `ctx.schemaVersion`. This proves older-client handling can be written
+  against generated schema-version types rather than hand-written structural
+  guesses.
 
 Gates run:
 
@@ -717,10 +726,11 @@ Gates run:
 - `bun run --cwd packages/typegen tsgo`
 - `bun test packages/typegen/src/app-contract.test.ts`
 - `bun test rust/examples/todo-app/syncular.app.test.ts`
+- `bun test rust/examples/todo-app/syncular.app.test.ts packages/server/src/generated-app-server-handler.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
 
 ## Next Action
 
-Continue Batch 5/8 by adding a TypeScript fixture/test that imports generated
-historical server types and demonstrates schema-version branching in a custom
-server handler.
+Continue Batch 2/5 by adding generated helpers for version-specific snapshot
+row validation and unsupported-schema error classification in snapshot/pull
+paths, not only apply-operation paths.
