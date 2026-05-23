@@ -126,7 +126,9 @@ read-only review:
     testkit helpers, and protocol fixtures. Final fresh scan found no active
     old protocol/package names after OpenAPI regeneration; targeted `knip`
     passed for relevant package surfaces, while full `knip` remains blocked
-    only by the known out-of-scope relay evaluation unused exports.
+    only by the known out-of-scope relay evaluation unused exports. Follow-up
+    docs/generated-banner cleanup now avoids implying app authors maintain a
+    root low-level codegen file or select legacy client dialects.
 - `[x]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is accepted. Console diagnostics now persist normalized,
     size-bounded, sensitive-key-guarded Rust client snapshots in

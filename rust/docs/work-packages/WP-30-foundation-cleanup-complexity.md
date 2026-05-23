@@ -494,3 +494,17 @@ decision, not from the deleted protocol/package paths closed here.
   - `bun --cwd apps/docs build`: passed.
   - `bunx biome check <changed mdx>`: attempted; Biome ignores MDX files in
     this repo, so no files were processed.
+- Updated generated-client source banners and package/runtime docs that still
+  implied a root app-authored `syncular.codegen.json` file. Generated
+  TS/Swift/Kotlin app files now refer to the generated Syncular codegen
+  handoff, `@syncular/typegen` examples use
+  `generated/syncular.codegen.json`, and the root README no longer describes
+  old client dialect selection as a product shape.
+- Gates:
+  - `bun --cwd rust/examples/todo-app codegen`: passed.
+  - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`: passed,
+    `31` tests.
+  - `bun --cwd rust/examples/todo-app codegen:check`: passed.
+  - `bun run --cwd packages/typegen tsgo`: passed.
+  - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`: passed.
+  - `git diff --check`: passed.

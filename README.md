@@ -122,7 +122,8 @@ See the [Testing docs](https://syncular.dev/docs/testing) for the full testkit A
 
 ## Supported platforms
 
-Mix and match any client dialect with any server dialect. The sync protocol is the same everywhere.
+Use the canonical Rust-backed client with the server runtime/dialect that fits
+your deployment. The sync protocol is the same everywhere.
 
 ### Client
 

@@ -5,7 +5,7 @@ Generate TypeScript database types from your migrations.
 Supports SQLite and Postgres introspection with column-level codec type overrides via `codecs`.
 
 It also includes build-time helpers for authoring the Rust-first Syncular app
-contract and serializing it to the low-level `syncular.codegen.json` shape.
+contract and serializing it to the generated Rust-codegen handoff.
 
 ## Install
 
@@ -71,7 +71,7 @@ export const app = defineSyncularClient({
   },
 });
 
-await writeSyncularCodegenJson(app, './syncular.codegen.json');
+await writeSyncularCodegenJson(app, './generated/syncular.codegen.json');
 ```
 
 For same-shape starter apps, scaffold the initial contract from existing
@@ -93,15 +93,15 @@ const app = await scaffoldSyncularClientContract({
   },
 });
 
-await writeSyncularCodegenJson(app, './syncular.codegen.json');
+await writeSyncularCodegenJson(app, './generated/syncular.codegen.json');
 ```
 
 For apps that keep the contract in a module, generate or check the low-level
 Rust-codegen handoff from the typed module:
 
 ```bash
-syncular-typegen codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json
-syncular-typegen codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json --check
+syncular-typegen codegen-config --app ./syncular.app.ts
+syncular-typegen codegen-config --app ./syncular.app.ts --check
 ```
 
 This is a dev/build-time authoring layer. Generated Rust, Swift, Kotlin, JVM,
