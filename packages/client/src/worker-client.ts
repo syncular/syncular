@@ -7,6 +7,7 @@ import type {
 import { issueSyncularAuthLease } from './auth-leases';
 import { assertSyncularBlobPayloadLimit } from './blob-limits';
 import {
+  isSyncularRemoteMode,
   resolveSyncularClientConfig,
   SYNCULAR_DEFAULT_STORAGE,
 } from './client-config';
@@ -24,6 +25,7 @@ import { browserSyncularNetworkStatusSource } from './network';
 import { assertSyncularReadonlySql } from './sql-safety';
 import type {
   CreateSyncularDatabaseOptions,
+  ResolvedSyncularClientConfig,
   SyncularApplyYjsEnvelopeToPayloadArgs,
   SyncularApplyYjsTextUpdatesArgs,
   SyncularApplyYjsTextUpdatesResult,
@@ -37,7 +39,6 @@ import type {
   SyncularBootstrapStatus,
   SyncularBuildYjsTextUpdateArgs,
   SyncularBuildYjsTextUpdateResult,
-  SyncularClientConfig,
   SyncularClientEventMap,
   SyncularClientEventSink,
   SyncularClientEventType,
@@ -224,7 +225,7 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
   #authHeaders: SyncularAuthHeaders = {};
   #authLifecycle: CreateSyncularDatabaseOptions['authLifecycle'] | undefined;
   #authRefreshInFlight: Promise<boolean> | undefined;
-  #config: SyncularClientConfig | undefined;
+  #config: ResolvedSyncularClientConfig | undefined;
   #realtimeOptions: SyncularRealtimeOptions | undefined;
   #realtimeState: SyncularRealtimeConnectionState = 'disconnected';
   #storageFallback: SyncularStorageFallbackInfo | undefined;
@@ -335,12 +336,13 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
     config: CreateSyncularDatabaseOptions['config'],
     runtime?: CreateSyncularDatabaseOptions['runtime']
   ): Promise<void> {
+    const resolvedConfig = resolveSyncularClientConfig(config);
     await this.#request({
       type: 'open',
-      config,
+      config: resolvedConfig,
       runtime: serializeRuntimeArtifact(runtime),
     });
-    this.#config = config;
+    this.#config = resolvedConfig;
     this.#realtimeOptions = undefined;
     this.#subscriptions = [];
     this.#lastBootstrap = undefined;
@@ -438,6 +440,7 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
         'Syncular worker client must be opened before auth lease issue'
       );
     }
+    assertSyncularRemoteMode(config, 'auth lease issue');
     const lease = await issueSyncularAuthLease({
       baseUrl: config.baseUrl,
       headers: this.#authHeaders,
@@ -469,6 +472,7 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
     if (!config) {
       throw new Error('Syncular worker client must be opened before realtime');
     }
+    assertSyncularRemoteMode(config, 'realtime');
     const realtimeOptions = options === true ? {} : options;
     if (realtimeOptions.enabled === false) {
       await this.stopRealtime();
@@ -1317,6 +1321,11 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
     >,
     options: { refreshAuthHeaders: boolean } = { refreshAuthHeaders: true }
   ): Promise<SyncularSyncResult> {
+    const config = this.#config;
+    if (!config) {
+      throw new Error('Syncular worker client must be opened before sync');
+    }
+    assertSyncularRemoteMode(config, request.type);
     if (options.refreshAuthHeaders) {
       await this.#refreshAuthHeaders({ restartRealtime: false });
     }
@@ -2139,7 +2148,7 @@ function bytesToBase64Url(bytes: Uint8Array): string {
 
 async function resolveRealtimeWorkerOptions(
   options: SyncularRealtimeOptions,
-  config: SyncularClientConfig
+  config: ResolvedSyncularClientConfig
 ): Promise<SyncularWorkerRealtimeOptions> {
   const params = {
     ...(options.params ?? {}),
@@ -2161,6 +2170,16 @@ async function resolveRealtimeWorkerOptions(
       ? { heartbeatTimeoutMs: options.heartbeatTimeoutMs }
       : {}),
   };
+}
+
+function assertSyncularRemoteMode(
+  config: ResolvedSyncularClientConfig,
+  operation: string
+): void {
+  if (isSyncularRemoteMode(config)) return;
+  throw new Error(
+    `Syncular ${operation} requires remote mode; current mode is ${config.mode}`
+  );
 }
 
 function isWorkerEvent(

@@ -15,7 +15,10 @@ import {
 } from './generated-bridge';
 import { createSyncularRuntimeInfo } from './runtime-contract';
 import { openSyncularRustClient, type SyncularRustClient } from './rust-client';
-import type { SyncularClientConfig, SyncularDiagnosticEvent } from './types';
+import type {
+  ResolvedSyncularClientConfig,
+  SyncularDiagnosticEvent,
+} from './types';
 import {
   getSyncularRustRuntimeInfo,
   getSyncularWasmGlueUrl,
@@ -35,7 +38,7 @@ import {
 import { SyncularWorkerRealtimeController } from './worker-realtime';
 
 let client: SyncularRustClient | undefined;
-let openedConfig: SyncularClientConfig | undefined;
+let openedConfig: ResolvedSyncularClientConfig | undefined;
 let openedRuntime: SyncularWorkerRuntimeArtifact | undefined;
 let removeRowsChangedListener: (() => void) | undefined;
 const canceledRequests = new Set<number>();

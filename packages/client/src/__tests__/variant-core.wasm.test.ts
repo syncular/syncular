@@ -98,6 +98,10 @@ interface GeneratedTodoServerDb extends SyncCoreDb {
   tasks: GeneratedTodoTaskCurrentServerRow;
 }
 
+interface GeneratedTodoCurrentClientDb {
+  tasks: GeneratedTodoTaskCurrentServerRow;
+}
+
 interface GeneratedTodoTaskV6ClientRow
   extends Omit<GeneratedTodoTaskCurrentServerRow, 'image' | 'description'> {
   image: BlobRef | null;
@@ -332,6 +336,69 @@ describe('Syncular core WASM artifact', () => {
           server_version: 0,
         },
       ]);
+    } finally {
+      await syncular.close();
+    }
+  });
+
+  it('opens a generated local-sync-compatible client without a server', async () => {
+    const actorId = 'actor-generated-local';
+    const projectId = 'project-generated-local';
+    const syncular = await createSyncularDatabase<GeneratedTodoCurrentClientDb>({
+      config: {
+        mode: 'local-sync-compatible',
+        actorId,
+        projectId,
+        clientId: `client-generated-local-${Date.now()}`,
+        storage: 'memory',
+        clearOnInit: true,
+        schemaVersion: todoGeneratedSchemaVersion,
+        appSchema: todoGeneratedCurrentAppSchema,
+      },
+      codecs: todoGeneratedCodecs,
+      appTables: todoGeneratedClientAppTables,
+      tableConfig: todoGeneratedTableConfig,
+      requiredRuntimeFeatures: ['web-owned-sqlite'],
+    });
+
+    try {
+      await syncular.mutations.tasks.insert({
+        id: 'generated-local-task-1',
+        title: 'Local generated task',
+        completed: 0,
+        user_id: actorId,
+        project_id: projectId,
+        server_version: 0,
+        image: null,
+        title_yjs_state: null,
+        description: 'local-only until remote is attached',
+      });
+
+      await expect(
+        syncular.db
+          .selectFrom('tasks')
+          .select(['id', 'title', 'description'])
+          .execute()
+      ).resolves.toEqual([
+        {
+          id: 'generated-local-task-1',
+          title: 'Local generated task',
+          description: 'local-only until remote is attached',
+        },
+      ]);
+      const unsafe = syncular.client as unknown as SyncularUnsafeSqlClient;
+      const outboxRows = await unsafe.executeUnsafeSql<{
+        status: string;
+        schema_version: number;
+      }>(
+        'select status, schema_version from sync_outbox_commits order by created_at'
+      );
+      expect(outboxRows.rows).toEqual([
+        { status: 'pending', schema_version: todoGeneratedSchemaVersion },
+      ]);
+      await expect(syncular.client.syncOnce()).rejects.toThrow(
+        'requires remote mode'
+      );
     } finally {
       await syncular.close();
     }

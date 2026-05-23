@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import {
   resolveSyncularClientConfig,
+  SYNCULAR_LOCAL_DISABLED_BASE_URL,
   SYNCULAR_DEFAULT_STORAGE,
 } from './client-config';
 
@@ -24,5 +25,27 @@ describe('Syncular client config', () => {
         storage: 'indexedDb',
       }).storage
     ).toBe('indexedDb');
+  });
+
+  it('requires baseUrl for remote clients', () => {
+    expect(() =>
+      resolveSyncularClientConfig({
+        actorId: 'actor',
+        clientId: 'client',
+      })
+    ).toThrow('Syncular remote clients require config.baseUrl');
+  });
+
+  it('allows local-sync-compatible clients without baseUrl', () => {
+    expect(
+      resolveSyncularClientConfig({
+        mode: 'local-sync-compatible',
+        actorId: 'actor',
+        clientId: 'client',
+      })
+    ).toMatchObject({
+      mode: 'local-sync-compatible',
+      baseUrl: SYNCULAR_LOCAL_DISABLED_BASE_URL,
+    });
   });
 });

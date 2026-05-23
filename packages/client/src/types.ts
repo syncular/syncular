@@ -10,8 +10,11 @@ import type {
 } from '@syncular/core';
 import type { CompiledQuery } from 'kysely';
 
+export type SyncularClientMode = 'remote' | 'local-sync-compatible';
+
 export interface SyncularClientConfig {
-  baseUrl: string;
+  mode?: SyncularClientMode;
+  baseUrl?: string;
   clientId: string;
   actorId: string;
   projectId?: string | null;
@@ -23,6 +26,12 @@ export interface SyncularClientConfig {
   stateId?: string;
   schemaVersion?: number;
   appSchema?: SyncularAppSchema;
+}
+
+export interface ResolvedSyncularClientConfig
+  extends Omit<SyncularClientConfig, 'baseUrl' | 'mode'> {
+  mode: SyncularClientMode;
+  baseUrl: string;
 }
 
 export interface SyncularPullOptions {

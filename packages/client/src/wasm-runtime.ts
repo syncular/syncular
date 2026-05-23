@@ -3,7 +3,10 @@ import {
   getSyncularWasmUrl,
   type SyncularRustOwnedSqliteClient,
 } from '@syncular/client-javascript-bindings';
-import type { SyncularClientConfig, SyncularRustRuntimeInfo } from './types';
+import type {
+  ResolvedSyncularClientConfig,
+  SyncularRustRuntimeInfo,
+} from './types';
 
 export type {
   SyncularRustOwnedSqliteClient,
@@ -28,7 +31,7 @@ export interface SyncularWasmGlue {
   syncularMaterializeYjsRowJson(argsJson: string): string;
   syncularEncryptionHelperJson(method: string, argsJson: string): string;
   openSyncularRustOwnedSqliteClient(
-    config: SyncularClientConfig
+    config: ResolvedSyncularClientConfig
   ): Promise<SyncularRustOwnedSqliteClient>;
 }
 

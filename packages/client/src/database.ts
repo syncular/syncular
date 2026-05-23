@@ -151,8 +151,9 @@ export async function createSyncularDatabase<DB>(
       : undefined,
   });
   let closed = false;
+  const localClientMode = (options.config.mode ?? 'remote') !== 'remote';
   const mutationSyncScheduler = createMutationSyncScheduler(client, {
-    enabled: options.sync?.autoSyncAfterMutation ?? true,
+    enabled: options.sync?.autoSyncAfterMutation ?? !localClientMode,
     debounceMs: options.sync?.mutationSyncDebounceMs ?? 10,
     network:
       options.sync?.network === false

@@ -553,8 +553,11 @@ read-only review:
   schema 6 generated client can bootstrap and then receive a schema 8
   incremental commit-log update without applying the current-only
   `tasks.description` column. The next WP-33 gap is the runtime-extension and
-  backend-less app boundary, starting with generated local-sync-compatible
-  no-server smokes.
+  backend-less app boundary. Browser TypeScript now has an explicit
+  `local-sync-compatible` mode that opens generated clients without `baseUrl`,
+  disables auto-sync by default, keeps safe mutations pending in the outbox,
+  and fails manual remote sync/realtime/auth-lease calls clearly. The next
+  WP-33 gap is the matching Rust/native generated no-server smoke.
 
 ## Later
 

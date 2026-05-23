@@ -36,6 +36,7 @@ import type {
   SyncularBuildYjsTextUpdateResult,
   SyncularChangedRow,
   SyncularClientConfig,
+  ResolvedSyncularClientConfig,
   SyncularConflictResolution,
   SyncularConflictSummary,
   SyncularConnectionState,
@@ -261,7 +262,7 @@ export class SyncularRustClient {
   constructor(
     private readonly raw: SyncularRustOwnedSqliteClient,
     private readonly runtime: SyncularRuntimeInfo,
-    private readonly config: SyncularClientConfig,
+    private readonly config: ResolvedSyncularClientConfig,
     private readonly pullOptions: SyncularPullOptions | undefined,
     private readonly blobLimits: SyncularBlobLimits | undefined
   ) {}
