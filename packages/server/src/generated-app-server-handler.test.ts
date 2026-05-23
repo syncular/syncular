@@ -5,6 +5,7 @@ import {
   syncularGeneratedClientSchemaForVersion,
   syncularGeneratedAppTables,
   syncularGeneratedClientSchemaSupport,
+  syncularProjectGeneratedClientRowForVersion,
   syncularGeneratedSnapshotBinaryColumnsForVersion,
   syncularGeneratedSnapshotBinaryEncoderForVersion,
   syncularGeneratedSchemaVersion,
@@ -343,6 +344,61 @@ describe('generated app server handler', () => {
       handler.snapshot(createSnapshotContext({ schemaVersion: 6 }), undefined)
     ).resolves.toEqual({ rows: [legacyRow], nextCursor: null });
     expect(seenSchemaVersion).toBe(6);
+  });
+
+  it('rejects current-only fields in historical snapshot rows unless projected', async () => {
+    const currentShapeRow = {
+      id: 'task-v6-extra',
+      title: 'Legacy snapshot title',
+      completed: 0,
+      user_id: 'user-1',
+      project_id: 'project-1',
+      server_version: 6,
+      image: null,
+      title_yjs_state: null,
+      description: 'current-only field',
+    };
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot() {
+        return { rows: [currentShapeRow], nextCursor: null };
+      },
+      async applyOperation(_ctx, op, opIndex) {
+        return appliedResult(opIndex, op);
+      },
+    });
+
+    await expect(
+      handler.snapshot(createSnapshotContext({ schemaVersion: 6 }), undefined)
+    ).rejects.toThrow('tasks.description: Unknown column');
+
+    const projected = syncularProjectGeneratedClientRowForVersion(
+      'tasks',
+      currentShapeRow,
+      6
+    );
+    expect(projected).not.toHaveProperty('description');
+    const projectedHandler = createSyncularAppServerHandler<
+      DivergentServerDb,
+      TestAuth
+    >({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot() {
+        return { rows: [projected], nextCursor: null };
+      },
+      async applyOperation(_ctx, op, opIndex) {
+        return appliedResult(opIndex, op);
+      },
+    });
+
+    await expect(
+      projectedHandler.snapshot(
+        createSnapshotContext({ schemaVersion: 6 }),
+        undefined
+      )
+    ).resolves.toEqual({ rows: [projected], nextCursor: null });
   });
 
   it('rejects unsupported client schema versions before custom apply code runs', async () => {
