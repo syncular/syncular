@@ -55,8 +55,8 @@ export interface SyncularGeneratedTableConfig {
 export const syncularGeneratedSchemaVersion = 7 as const;
 export const syncularGeneratedClientSchemaSupport = {
   current: syncularGeneratedSchemaVersion,
-  minSupported: 7,
-  supported: [7],
+  minSupported: 6,
+  supported: [6, 7],
 } as const;
 export type SyncularGeneratedSupportedClientSchemaVersion = typeof syncularGeneratedClientSchemaSupport.supported[number];
 export function syncularIsSupportedClientSchemaVersion(schemaVersion: number | null | undefined): schemaVersion is SyncularGeneratedSupportedClientSchemaVersion {

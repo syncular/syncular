@@ -7,6 +7,9 @@
   "nativeKotlinOutputPath": "../../examples/todo-app/generated/kotlin/SyncularApp.kt",
   "nativeAndroidKotlinOutputPath": "../../examples/todo-app/generated/kotlin/android/SyncularApp.kt",
   "nativeAndroidKotlinPackage": "dev.syncular.client.generated",
+  "clientSchemaSupport": {
+    "minSupported": 6
+  },
   "localReadModels": [
     {
       "name": "taskCountsByUserCompletion",

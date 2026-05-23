@@ -16,6 +16,9 @@ export const app = defineSyncularClient({
   nativeKotlinOutputPath: 'generated/kotlin/SyncularApp.kt',
   nativeAndroidKotlinOutputPath: 'generated/kotlin/android/SyncularApp.kt',
   nativeAndroidKotlinPackage: 'dev.syncular.client.generated',
+  clientSchemaSupport: {
+    minSupported: 6,
+  },
   localReadModels: [
     countByReadModel({
       name: 'taskCountsByUserCompletion',

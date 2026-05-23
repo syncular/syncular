@@ -2,8 +2,13 @@ import { describe, expect, it } from 'bun:test';
 import type { SyncOperation } from '@syncular/core';
 import {
   createSyncularAppServerHandler,
+  syncularGeneratedClientSchemaForVersion,
   syncularGeneratedAppTables,
   syncularGeneratedSchemaVersion,
+} from '../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
+import type {
+  TaskMutationPayloadV6,
+  TaskRowV6,
 } from '../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
 import type {
   ApplyOperationResult,
@@ -242,7 +247,7 @@ describe('generated app server handler', () => {
     });
 
     const result = await handler.applyOperation(
-      createApplyContext({ schemaVersion: syncularGeneratedSchemaVersion - 1 }),
+      createApplyContext({ schemaVersion: syncularGeneratedSchemaVersion - 2 }),
       createTaskOperation(),
       7
     );
@@ -256,6 +261,70 @@ describe('generated app server handler', () => {
         retriable: false,
       }),
       emittedChanges: [],
+    });
+  });
+
+  it('lets custom handlers branch with generated historical schema types', async () => {
+    const legacySchema = syncularGeneratedClientSchemaForVersion(6);
+    expect(legacySchema?.schemaVersion).toBe(6);
+    expect(
+      legacySchema?.tables
+        .find((table) => table.name === 'tasks')
+        ?.columns.map((column) => column.name)
+    ).toContain('title');
+
+    const legacyPayload: TaskMutationPayloadV6 = {
+      title: 'Legacy task title',
+      completed: 0,
+      user_id: 'user-1',
+      project_id: 'project-1',
+    };
+    const legacyRow: TaskRowV6 = {
+      id: 'task-v6',
+      title: 'Legacy task title',
+      completed: 0,
+      user_id: 'user-1',
+      project_id: 'project-1',
+      server_version: 6,
+      image: null,
+      title_yjs_state: null,
+    };
+    let branch:
+      | { schemaVersion: 6; payload: TaskMutationPayloadV6; row: TaskRowV6 }
+      | { schemaVersion: number }
+      | null = null;
+
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot() {
+        return { rows: [legacyRow], nextCursor: null };
+      },
+      async applyOperation(_ctx, op, opIndex) {
+        if (_ctx.schemaVersion === 6) {
+          branch = {
+            schemaVersion: 6,
+            payload: op.payload as TaskMutationPayloadV6,
+            row: legacyRow,
+          };
+        } else {
+          branch = { schemaVersion: _ctx.schemaVersion };
+        }
+        return appliedResult(opIndex, op);
+      },
+    });
+
+    const result = await handler.applyOperation(
+      createApplyContext({ schemaVersion: 6 }),
+      createTaskOperation({ row_id: 'task-v6', payload: legacyPayload }),
+      8
+    );
+
+    expect(result.result).toEqual({ opIndex: 8, status: 'applied' });
+    expect(branch).toEqual({
+      schemaVersion: 6,
+      payload: legacyPayload,
+      row: legacyRow,
     });
   });
 
