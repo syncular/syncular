@@ -217,7 +217,56 @@ cargo run \
   --check
 ```
 
-## 5. Include Generated Rust Modules
+## 5. Add Server Handlers
+
+Server handlers stay app-owned. The generated server artifact supplies the
+protocol/client table contract, schema-version helpers, validation, and binary
+snapshot metadata. Your handler still owns authorization, snapshots, writes,
+and translation between the authoritative server schema and the client replica.
+
+```ts
+import {
+  createSyncularAppServerHandler,
+  syncularGeneratedApp,
+} from './generated/typescript/syncular.server.generated';
+
+export const tasksHandler = createSyncularAppServerHandler({
+  table: syncularGeneratedApp.tables.tasks,
+
+  resolveScopes: (ctx) => ({
+    user_id: [ctx.actorId],
+    project_id: ctx.auth.workspaceIds,
+  }),
+
+  async snapshot(ctx) {
+    const rows = await ctx.db
+      .selectFrom('documents')
+      .select([
+        'id',
+        'content as title',
+        'done as completed',
+        'owner_id as user_id',
+        'workspace_id as project_id',
+        'revision as server_version',
+      ])
+      .where('owner_id', '=', ctx.actorId)
+      .execute();
+
+    return { rows, nextCursor: null };
+  },
+
+  async applyOperation(ctx, op, opIndex) {
+    // Translate generated client mutation payloads into authoritative server
+    // writes, then emit the canonical current client row shape.
+  },
+});
+```
+
+For a checked example that projects current server rows to older generated
+client schema versions, see
+`rust/examples/todo-app/server-handlers.ts`.
+
+## 6. Include Generated Rust Modules
 
 Create something like `src/generated.rs`:
 
@@ -257,7 +306,7 @@ Then expose it from `src/lib.rs` or `src/main.rs`:
 mod generated;
 ```
 
-## 6. Open A Client With Your Generated Schema
+## 7. Open A Client With Your Generated Schema
 
 ```rust
 use syncular_client::app_schema::AppSchema;
@@ -292,7 +341,7 @@ fn open_client() -> syncular_client::error::Result<SyncularClient> {
 installs Syncular runtime system tables, builds default subscriptions from your
 config, and uses generated table adapters for sync changes.
 
-## 7. Auth Headers
+## 8. Auth Headers
 
 App code owns auth. Set headers before sync calls when your server requires
 auth:
@@ -446,7 +495,7 @@ and Kotlin clients decode it as `SyncularBootstrapStatus`.
 Do not render missing later-phase data as an empty result while
 `complete == false`. Gate each view on the relevant phase or subscription id.
 
-## 8. Client-Side Field Encryption
+## 9. Client-Side Field Encryption
 
 The Rust client can encrypt configured fields on push and decrypt them on pull
 while keeping local SQLite/outbox rows plaintext. The server sees ciphertext
@@ -519,7 +568,7 @@ Compatibility notes:
 - PBKDF2 scoped derivation exists for the old demo/passphrase flow.
 - Argon2id is preferred for new passphrase-derived keys.
 
-## 9. Type-Safe Reads With Diesel
+## 10. Type-Safe Reads With Diesel
 
 Reads are normal Diesel query-builder expressions. The SDK owns the SQLite
 connection, so app code never receives or passes `SqliteConnection`.
@@ -540,7 +589,7 @@ let tasks: Vec<TaskRow> = client.read(
 Do not use raw Diesel inserts/updates/deletes against app tables. That bypasses
 the local-row/outbox/conflict path.
 
-## 10. Outbox-Safe Mutations
+## 11. Outbox-Safe Mutations
 
 Generated mutations mirror the pre-Rust Syncular JS shape: table namespace,
 typed insert/patch/delete DTOs, and one Syncular outbox path.
@@ -582,7 +631,7 @@ let batch = client.commit(|tx| {
 println!("queued commit {}", batch.commit.client_commit_id);
 ```
 
-## 11. Yrs/Yjs CRDT Mutations
+## 12. Yrs/Yjs CRDT Mutations
 
 For configured CRDT fields in the typed app contract, generated Rust mutations
 get typed envelope helpers. Local SQLite rows are materialized immediately, but
@@ -678,7 +727,7 @@ If local state is missing or stale, sync fails with `resyncRequired`; call
 `forceSubscriptionsBootstrap()` in the browser worker, then sync again so the
 app/update/checkpoint subscriptions recover from canonical snapshots.
 
-## 12. Sync
+## 13. Sync
 
 HTTP push/pull:
 
@@ -712,7 +761,7 @@ client.watch(30, |event| {
 })?;
 ```
 
-## 13. Conflicts
+## 14. Conflicts
 
 The low-level summaries still exist, but new code should prefer the namespaced
 helper API:
@@ -740,7 +789,7 @@ client.conflicts().dismiss(conflict_id)?;
 `accept_server` and `dismiss` mark the conflict resolved. `keep_local` also
 queues a retry commit.
 
-## 14. Typed Live Queries
+## 15. Typed Live Queries
 
 Live queries keep Diesel semantics. You declare table dependencies and provide
 a closure that rebuilds the Diesel query.
@@ -788,7 +837,7 @@ You can also force a refresh:
 live_tasks.refresh(&mut client)?;
 ```
 
-## 15. Blobs
+## 16. Blobs
 
 Blob columns should be listed in the typed app contract under `blobColumns`.
 
@@ -818,7 +867,7 @@ Read bytes later:
 let bytes = client.retrieve_blob_bytes(&blob)?;
 ```
 
-## 16. Quick Smoke Test
+## 17. Quick Smoke Test
 
 After codegen, this should compile and run in your app:
 
@@ -847,7 +896,7 @@ fn main() -> syncular_client::error::Result<()> {
 
 Adjust module paths to match where you put `generated.rs`.
 
-## 17. Known Local-Only Caveats
+## 18. Known Local-Only Caveats
 
 - The crates are not published yet; use path dependencies.
 - Keep generated files checked into the app while developing. They are what
@@ -874,7 +923,7 @@ Adjust module paths to match where you put `generated.rs`.
 - CI coverage exists for local integration hardening, but the crates/packages
   are not published yet; use path dependencies until published packages are cut.
 
-## 18. Local Native Generated-Client Smoke
+## 19. Local Native Generated-Client Smoke
 
 To validate the generated Swift/Kotlin app clients locally without pushing CI,
 run this from the Syncular repo root:
@@ -930,7 +979,7 @@ bash rust/examples/todo-app/native-smokes/ios-lifecycle/run-local.sh
 bash rust/examples/todo-app/native-smokes/android-lifecycle/run-local.sh
 ```
 
-## 19. Native App Lifecycle Rules
+## 20. Native App Lifecycle Rules
 
 For Swift, Kotlin/Android, and JVM UI apps, treat the low-level native binding
 as a long-lived runtime object, not as a per-screen helper:
@@ -982,7 +1031,7 @@ as a long-lived runtime object, not as a per-screen helper:
   subscription state with the generated/native force-bootstrap helper and run a
   normal sync; do not try to manually patch the app row or CRDT system tables.
 
-## 20. Typed Row Delta Helpers
+## 21. Typed Row Delta Helpers
 
 The runtime emits schema-agnostic `changedRows` on sync, local write, live
 query, and native worker events. Codegen turns those generic rows into

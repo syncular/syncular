@@ -597,9 +597,12 @@ read-only review:
   quick start now describe the same typed-contract flow for new apps. Decision:
   Rust codegen stays pure and only consumes the checked generated handoff file;
   build scripts/CI run `syncular-typegen codegen-config --check` before Rust
-  codegen. The next WP-33 gap is authoring polish around whether
+  codegen. The todo fixture now also includes a checked divergent-schema server
+  handler that uses `syncularGeneratedApp.tables.tasks`, generated
+  schema-version projection helpers, and app-owned authorization/snapshot/write
+  translation. The next WP-33 gap is authoring polish around whether
   `syncular.codegen.json` remains visible in app repos or becomes a hidden
-  build output, plus missing server-side typed authoring examples.
+  build output.
 
 ## Later
 

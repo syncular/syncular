@@ -1150,6 +1150,26 @@ The contract should distinguish two local cases:
 - Updated `rust:codegen:check` and quality-gate docs so the canonical generator
   check covers the typed app contract and Rust output together.
 
+### Batch 5 Typed Server Authoring Example Slice
+
+- Added a checked todo server-handler example that uses the public generated
+  app reference:
+  `createSyncularAppServerHandler({ table: syncularGeneratedApp.tables.tasks,
+  ... })`.
+- The example keeps the server model intentionally divergent from the client
+  replica model. The app owns authorization, snapshot queries, mutation writes,
+  and translation from authoritative `documents` rows to generated `tasks`
+  client rows.
+- The example uses generated schema-version projection helpers so one server
+  handler can intentionally serve older supported client schema versions while
+  still emitting canonical current rows after writes.
+- Added focused tests for old-client snapshot projection, app-owned server row
+  translation after writes, and standalone projection helpers. This closes the
+  missing typed server-side authoring example without introducing a mapping DSL
+  or ORM-like server abstraction.
+- Updated local integration docs and the todo example README with the
+  server-handler shape and test command.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -1273,15 +1293,17 @@ Gates run:
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
+- `bun test rust/examples/todo-app/server-handlers.test.ts`
+- `bun run --cwd packages/server tsgo`
 
 ## Next Action
 
 Batch 6 is closed for the known runtime extension boundaries. Batch 5 now has
 generated server and client public shapes aligned around one generated app
-object. Batch 4 now has published `@syncular/typegen` helpers/CLI, the todo
-fixture generating the low-level `syncular.codegen.json` handoff from the typed
-app contract, new-app docs that describe the same flow, and the decision that
-Rust codegen only consumes the checked handoff file. Continue WP-33 with the
-remaining authoring polish: decide how much of `syncular.codegen.json` stays as
-a visible generated artifact versus a hidden build output, and add any missing
-server-side typed authoring examples.
+object plus a checked divergent-schema server-handler example. Batch 4 now has
+published `@syncular/typegen` helpers/CLI, the todo fixture generating the
+low-level `syncular.codegen.json` handoff from the typed app contract, new-app
+docs that describe the same flow, and the decision that Rust codegen only
+consumes the checked handoff file. Continue WP-33 with the remaining authoring
+polish: decide how much of `syncular.codegen.json` stays as a visible generated
+artifact versus a hidden build output, and then move to the next roadmap item.
