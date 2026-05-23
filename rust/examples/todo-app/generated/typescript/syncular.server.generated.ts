@@ -39,9 +39,13 @@ export function syncularUnsupportedClientSchemaResult(options: SyncularUnsupport
 
 export interface SyncularGeneratedColumnSchemaMetadata {
   name: string;
+  sqlType: string;
+  typeFamily: string;
+  appType: string;
   nullable: boolean;
   notnullRequired: boolean;
   primaryKey: boolean;
+  blobRef: boolean;
 }
 
 export interface SyncularGeneratedTableSchemaMetadata {
@@ -1106,9 +1110,36 @@ export const syncularGeneratedSnapshotBinaryEncoders = {
   tasks: (rows) => encodeTasksBinarySnapshotRows(rows as readonly TaskRow[]),
 } satisfies Record<keyof SyncularAppDb, BinarySnapshotRowsEncoder>;
 
+function syncularGeneratedSnapshotBinaryColumnType(column: SyncularGeneratedColumnSchemaMetadata): BinarySnapshotColumn['type'] {
+  if (column.blobRef || column.appType === 'blobRef') return 'json';
+  switch (column.typeFamily) {
+    case 'integer': return 'integer';
+    case 'real': return 'float';
+    case 'blob': return 'bytes';
+    default: return 'string';
+  }
+}
+
+export function syncularGeneratedSnapshotBinaryColumnsForVersion(table: string, schemaVersion: number | null | undefined): readonly BinarySnapshotColumn[] | null {
+  const tableSchema = syncularGeneratedTableSchemaForVersion(table, schemaVersion);
+  if (!tableSchema) return null;
+  return tableSchema.columns.map((column) => ({
+    name: column.name,
+    type: syncularGeneratedSnapshotBinaryColumnType(column),
+    ...(column.nullable ? { nullable: true } : {}),
+  }));
+}
+
+export function syncularGeneratedSnapshotBinaryEncoderForVersion(table: string, schemaVersion: number | null | undefined): BinarySnapshotRowsEncoder | null {
+  if (schemaVersion !== syncularGeneratedSchemaVersion) return null;
+  return syncularGeneratedSnapshotBinaryEncoders[table as keyof SyncularAppDb] ?? null;
+}
+
 export const syncularGeneratedServerSnapshotBinary = {
   columns: syncularGeneratedSnapshotBinaryColumns,
   encoders: syncularGeneratedSnapshotBinaryEncoders,
+  columnsForVersion: syncularGeneratedSnapshotBinaryColumnsForVersion,
+  encoderForVersion: syncularGeneratedSnapshotBinaryEncoderForVersion,
 } as const;
 export const syncularGeneratedAppTables = {
   comments: {
@@ -1185,6 +1216,8 @@ export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreD
     snapshotChunkTtlMs: options.snapshotChunkTtlMs,
     snapshotBinaryColumns: syncularGeneratedSnapshotBinaryColumns[tableName as keyof SyncularAppDb],
     snapshotBinaryEncoder: syncularGeneratedSnapshotBinaryEncoders[tableName as keyof SyncularAppDb],
+    snapshotBinaryColumnsForVersion: (schemaVersion) => syncularGeneratedSnapshotBinaryColumnsForVersion(tableName, schemaVersion),
+    snapshotBinaryEncoderForVersion: (schemaVersion) => syncularGeneratedSnapshotBinaryEncoderForVersion(tableName, schemaVersion),
     canRejectSingleOperationWithoutSavepoint: options.canRejectSingleOperationWithoutSavepoint,
     resolveScopes: async (ctx) => options.resolveScopes(ctx),
     extractScopes: options.extractScopes ?? ((row) => syncularGeneratedExtractScopes(tableName, row)),

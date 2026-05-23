@@ -226,10 +226,26 @@ export interface ServerHandlerOptions<
   snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
 
   /**
+   * Version-aware binary snapshot column metadata. Returning null intentionally
+   * disables fallback to current metadata.
+   */
+  snapshotBinaryColumnsForVersion?: (
+    schemaVersion: number
+  ) => readonly BinarySnapshotColumn[] | null | undefined;
+
+  /**
    * Optional generated binary snapshot encoder. When present, binary bootstrap
    * chunks use this instead of the generic object-row encoder.
    */
   snapshotBinaryEncoder?: BinarySnapshotRowsEncoder;
+
+  /**
+   * Version-aware generated binary snapshot encoder. Returning null
+   * intentionally disables fallback to the current encoder.
+   */
+  snapshotBinaryEncoderForVersion?: (
+    schemaVersion: number
+  ) => BinarySnapshotRowsEncoder | null | undefined;
 
   /**
    * Transform client payload → server row on writes.
@@ -298,9 +314,26 @@ export interface ServerTableHandler<
   snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
 
   /**
+   * Version-aware binary snapshot column metadata. Generated handlers should
+   * use this when old client schema versions can have different row shapes.
+   * Returning null intentionally disables fallback to current metadata.
+   */
+  snapshotBinaryColumnsForVersion?: (
+    schemaVersion: number
+  ) => readonly BinarySnapshotColumn[] | null | undefined;
+
+  /**
    * Optional generated binary snapshot encoder used by binary bootstrap chunks.
    */
   snapshotBinaryEncoder?: BinarySnapshotRowsEncoder;
+
+  /**
+   * Version-aware binary snapshot encoder. Returning null intentionally
+   * disables fallback to the current generated encoder.
+   */
+  snapshotBinaryEncoderForVersion?: (
+    schemaVersion: number
+  ) => BinarySnapshotRowsEncoder | null | undefined;
 
   /**
    * Hint for push engine savepoint optimization on single-op commits.

@@ -759,6 +759,28 @@ The contract should distinguish two local cases:
   schema 6 scoped artifact even when scope and table match; it falls back to
   row/chunk snapshot generation instead.
 
+### Batch 2/8 Versioned Binary Metadata Slice
+
+- Added version-aware snapshot binary metadata hooks on server handlers:
+  `snapshotBinaryColumnsForVersion(...)` and
+  `snapshotBinaryEncoderForVersion(...)`.
+- Server pull and scoped SQLite artifact precompute now resolve binary columns
+  and encoders for the targeted pull/client schema version. If a generated
+  version resolver returns `null`, the runtime intentionally avoids falling
+  back to current-schema metadata.
+- Generated TypeScript server artifacts now expose
+  `syncularGeneratedSnapshotBinaryColumnsForVersion(...)` and
+  `syncularGeneratedSnapshotBinaryEncoderForVersion(...)`.
+- Generated app server handlers wire those resolvers automatically. Current
+  schema pulls still use the generated fixed encoder; historical schema pulls
+  use generated historical column metadata and the generic encoder path instead
+  of accidentally invoking current row encoders.
+- `createServerHandlerCollection(..., { snapshotBinary })` now preserves the
+  same versioned binary metadata resolvers, so generated snapshot metadata works
+  for both generated handlers and same-shape server handler collections.
+- Added scoped SQLite artifact precompute coverage proving a schema 6 artifact
+  is encoded with schema 6 columns, not the current-only column list.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -797,9 +819,14 @@ Gates run:
 - `bun test packages/core/src/__tests__/snapshot-chunks.test.ts packages/core/src/__tests__/sync-packs.test.ts`
 - `bun test packages/server/src/pull-snapshot-artifacts.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
+- `bun test packages/server/src/generated-app-server-handler.test.ts packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts`
+- `bun test tests/unit/server-pull.test.ts packages/server/src/generated-app-server-handler.test.ts packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts`
+- `bun run --cwd packages/server-hono tsgo`
+- `bun run --cwd packages/testkit tsgo`
+- `bun run --cwd packages/relay tsgo`
 
 ## Next Action
 
-Continue Batch 2/8 by proving version-specific snapshot artifact generation and
-precompute paths use generated per-version row/binary metadata, not only
-version-specific artifact lookup keys.
+Continue Batch 2/8 by adding an end-to-end old-client bootstrap conformance
+case where the server emits a supported historical snapshot shape and the
+client applies it without current-schema artifact/chunk metadata leaking in.

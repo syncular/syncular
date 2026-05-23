@@ -503,6 +503,95 @@ describe('scoped snapshot artifacts', () => {
     }
   });
 
+  it('uses schema-versioned binary columns when precomputing scoped SQLite artifacts', async () => {
+    const storage = createMemoryArtifactStorage();
+    const historicalColumns = [
+      { name: 'id', type: 'string' },
+      { name: 'user_id', type: 'string' },
+      { name: 'title', type: 'string' },
+      { name: 'server_version', type: 'integer' },
+    ] as const;
+    const handlers = createServerHandlerCollection<TestDb>([
+      createServerHandler<TestDb, ClientDb, 'tasks'>({
+        table: 'tasks',
+        scopes: ['user:{user_id}'],
+        snapshotBinaryColumns: [
+          ...historicalColumns,
+          { name: 'current_only', type: 'string', nullable: true },
+        ],
+        snapshotBinaryColumnsForVersion: (schemaVersion) =>
+          schemaVersion === 6 ? historicalColumns : undefined,
+        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+        snapshot: async (ctx) => {
+          expect(ctx.schemaVersion).toBe(6);
+          return {
+            rows: [
+              {
+                id: 'task-1',
+                user_id: 'user-1',
+                title: 'Historical artifact task',
+                server_version: 6,
+              },
+            ],
+            nextCursor: null,
+          };
+        },
+      }),
+    ]);
+
+    const ref = await precomputeScopedSnapshotArtifact({
+      db,
+      storage,
+      handlers,
+      auth: { actorId: 'user-1' },
+      partitionId: 'default',
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      scopes: { user_id: 'user-1' },
+      schemaVersion: 6,
+      asOfCommitSeq: 42,
+      rowCursor: null,
+      rowLimit: 50_000,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      artifactId: 'artifact-schema-6',
+      encoder: createBunSqliteSnapshotArtifactEncoder(),
+    });
+
+    const row = await readScopedSnapshotArtifact(db, ref.id);
+    const storedBody = await storage.readArtifact(row!);
+    expect(storedBody).toBeTruthy();
+    const artifactDb = Database.deserialize(await gunzipBytes(storedBody!));
+    try {
+      expect(
+        artifactDb
+          .query(
+            "select sql from sqlite_master where type = 'table' and name = 'tasks'"
+          )
+          .get()
+      ).toEqual({
+        sql:
+          'CREATE TABLE "tasks" ("id" text primary key, "user_id" text, ' +
+          '"title" text, "server_version" integer) without rowid',
+      });
+      expect(
+        artifactDb
+          .query(
+            'select id, user_id, title, server_version from tasks order by id'
+          )
+          .all()
+      ).toEqual([
+        {
+          id: 'task-1',
+          user_id: 'user-1',
+          title: 'Historical artifact task',
+          server_version: 6,
+        },
+      ]);
+    } finally {
+      artifactDb.close();
+    }
+  });
+
   it('encodes Postgres-style snapshot values into typed SQLite artifacts', () => {
     const body = encodeBunSqliteSnapshotArtifact({
       table: 'tasks',
