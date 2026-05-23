@@ -6,6 +6,7 @@
     "@syncular/client": "workspace:*",
     "@syncular/core": "workspace:*",
     "@syncular/server": "workspace:*",
+    "@syncular/typegen": "workspace:*",
     "hono": "^4.12.15",
     "kysely": "^0.28.0"
   }
