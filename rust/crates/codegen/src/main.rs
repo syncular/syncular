@@ -6608,7 +6608,7 @@ fn generate_typescript_module(
     out.push_str("export interface CreateSyncularAppDatabaseOptions extends CreateSyncularDatabaseOptions {\n");
     out.push_str("  subscriptions?: SyncularAppSubscriptionsOption;\n");
     out.push_str("  bootstrapPhases?: Record<string, number>;\n");
-    out.push_str("  schemaInstallMode?: 'full' | 'base' | 'none';\n");
+    out.push_str("  schemaInstallMode?: 'derived' | 'full' | 'base' | 'none';\n");
     out.push_str("}\n\n");
     out.push_str("export async function assertSyncularAppRuntime(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {\n");
     out.push_str("  assertSyncularAppRuntimeInfo(await database.client.runtimeInfo());\n");
@@ -6678,8 +6678,12 @@ fn generate_typescript_module(
     out.push_str("  });\n");
     out.push_str("  try {\n");
     out.push_str("    await assertSyncularAppRuntime(database);\n");
-    out.push_str("    const schemaInstallMode = options.schemaInstallMode ?? 'full';\n");
-    out.push_str("    if (schemaInstallMode === 'full') {\n");
+    out.push_str("    const schemaInstallMode = options.schemaInstallMode ?? 'derived';\n");
+    out.push_str("    if (schemaInstallMode === 'derived') {\n");
+    out.push_str(
+        "      await withSyncularSchemaWrites(database, ensureSyncularAppDerivedSchema);\n",
+    );
+    out.push_str("    } else if (schemaInstallMode === 'full') {\n");
     out.push_str("      await withSyncularSchemaWrites(database, ensureSyncularAppSchema);\n");
     out.push_str("    } else if (schemaInstallMode === 'base') {\n");
     out.push_str("      await withSyncularSchemaWrites(database, ensureSyncularAppBaseSchema);\n");
@@ -11716,13 +11720,17 @@ CREATE TABLE tasks (
         assert!(
             output.contains("await withSyncularSchemaWrites(database, ensureSyncularAppSchema);")
         );
-        assert!(output.contains("schemaInstallMode?: 'full' | 'base' | 'none';"));
+        assert!(output.contains("schemaInstallMode?: 'derived' | 'full' | 'base' | 'none';"));
         assert!(output.contains(
             "export async function finalizeSyncularAppDatabaseSchema(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {"
         ));
         assert!(output
             .contains("await withSyncularSchemaWrites(database, ensureSyncularAppDerivedSchema);"));
-        assert!(output.contains("const schemaInstallMode = options.schemaInstallMode ?? 'full';"));
+        assert!(
+            output.contains("const schemaInstallMode = options.schemaInstallMode ?? 'derived';")
+        );
+        assert!(output
+            .contains("await withSyncularSchemaWrites(database, ensureSyncularAppDerivedSchema);"));
         assert!(output
             .contains("await withSyncularSchemaWrites(database, ensureSyncularAppBaseSchema);"));
         assert!(!output.contains("ensureSyncularAppLiveSchema"));
