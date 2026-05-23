@@ -1,0 +1,363 @@
+import { describe, expect, it } from 'bun:test';
+import type { SyncOperation } from '@syncular/core';
+import {
+  createSyncularAppServerHandler,
+  syncularGeneratedAppTables,
+  syncularGeneratedSchemaVersion,
+} from '../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
+import type {
+  ApplyOperationResult,
+  ServerApplyOperationContext,
+  ServerSnapshotContext,
+  SyncCoreDb,
+  SyncServerAuth,
+} from './index';
+
+interface DocumentsTable {
+  id: string;
+  content: string;
+  done: number;
+  owner_id: string;
+  workspace_id: string | null;
+  revision: number;
+}
+
+interface DivergentServerDb extends SyncCoreDb {
+  documents: DocumentsTable;
+}
+
+interface TestAuth extends SyncServerAuth {
+  workspaceIds: string[];
+}
+
+function createSnapshotContext(
+  overrides: Partial<ServerSnapshotContext<DivergentServerDb, string, TestAuth>> =
+    {}
+): ServerSnapshotContext<DivergentServerDb, string, TestAuth> {
+  const auth: TestAuth = {
+    actorId: 'user-1',
+    workspaceIds: ['project-1'],
+  };
+  return {
+    db: {} as ServerSnapshotContext<DivergentServerDb, string, TestAuth>['db'],
+    actorId: auth.actorId,
+    auth,
+    scopeValues: { user_id: 'user-1', project_id: 'project-1' },
+    cursor: null,
+    limit: 50,
+    ...overrides,
+  };
+}
+
+function createApplyContext(
+  overrides: Partial<ServerApplyOperationContext<DivergentServerDb, TestAuth>> =
+    {}
+): ServerApplyOperationContext<DivergentServerDb, TestAuth> {
+  const auth: TestAuth = {
+    actorId: 'user-1',
+    workspaceIds: ['project-1'],
+  };
+  const db = {} as ServerApplyOperationContext<
+    DivergentServerDb,
+    TestAuth
+  >['db'];
+  return {
+    db,
+    trx: db,
+    actorId: auth.actorId,
+    auth,
+    clientId: 'client-1',
+    commitId: 'commit-1',
+    schemaVersion: syncularGeneratedSchemaVersion,
+    ...overrides,
+  };
+}
+
+function createTaskOperation(
+  overrides: Partial<SyncOperation> = {}
+): SyncOperation {
+  return {
+    table: 'tasks',
+    row_id: 'task-1',
+    op: 'upsert',
+    payload: {
+      title: 'Client title',
+      completed: 1,
+      user_id: 'user-1',
+      project_id: 'project-1',
+    },
+    base_version: 4,
+    ...overrides,
+  };
+}
+
+function appliedResult(
+  opIndex: number,
+  op: SyncOperation
+): ApplyOperationResult {
+  return {
+    result: { opIndex, status: 'applied' },
+    emittedChanges: [
+      {
+        table: op.table,
+        row_id: op.row_id,
+        op: op.op,
+        row_json: op.payload,
+        row_version: 5,
+        scopes: {
+          user_id: 'user-1',
+          project_id: 'project-1',
+        },
+      },
+    ],
+  };
+}
+
+describe('generated app server handler', () => {
+  it('delegates divergent server/client table mapping to app-owned snapshot and apply handlers', async () => {
+    const translatedWrites: DocumentsTable[] = [];
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
+      table: syncularGeneratedAppTables.tasks,
+      resolveScopes: (ctx) => ({
+        user_id: [ctx.actorId],
+        project_id: ctx.auth.workspaceIds,
+      }),
+      async snapshot(ctx) {
+        expect(ctx.scopeValues).toEqual({
+          user_id: 'user-1',
+          project_id: 'project-1',
+        });
+
+        const serverRows: DocumentsTable[] = [
+          {
+            id: 'task-1',
+            content: 'Server title',
+            done: 0,
+            owner_id: ctx.actorId,
+            workspace_id: 'project-1',
+            revision: 3,
+          },
+        ];
+
+        return {
+          rows: serverRows.map((row) => ({
+            id: row.id,
+            title: row.content,
+            completed: row.done,
+            user_id: row.owner_id,
+            project_id: row.workspace_id,
+            server_version: row.revision,
+            image: null,
+            title_yjs_state: null,
+          })),
+          nextCursor: null,
+        };
+      },
+      async applyOperation(_ctx, op, opIndex) {
+        translatedWrites.push({
+          id: op.row_id,
+          content: String(op.payload?.title),
+          done: Number(op.payload?.completed),
+          owner_id: String(op.payload?.user_id),
+          workspace_id:
+            op.payload?.project_id == null
+              ? null
+              : String(op.payload.project_id),
+          revision: 5,
+        });
+        return appliedResult(opIndex, op);
+      },
+    });
+
+    expect(handler.table).toBe('tasks');
+    expect(handler.primaryKeyColumn).toBe('id');
+    expect(handler.scopePatterns).toEqual(['user_id', 'project_id']);
+    expect(handler.snapshotBinaryColumns?.map((column) => column.name)).toEqual(
+      [
+        'id',
+        'title',
+        'completed',
+        'user_id',
+        'project_id',
+        'server_version',
+        'image',
+        'title_yjs_state',
+      ]
+    );
+    expect(
+      handler.extractScopes({
+        id: 'task-1',
+        user_id: 'user-1',
+        project_id: 'project-1',
+      })
+    ).toEqual({ user_id: 'user-1', project_id: 'project-1' });
+
+    const snapshot = await handler.snapshot(createSnapshotContext(), undefined);
+    expect(snapshot).toEqual({
+      rows: [
+        {
+          id: 'task-1',
+          title: 'Server title',
+          completed: 0,
+          user_id: 'user-1',
+          project_id: 'project-1',
+          server_version: 3,
+          image: null,
+          title_yjs_state: null,
+        },
+      ],
+      nextCursor: null,
+    });
+
+    const result = await handler.applyOperation(
+      createApplyContext(),
+      createTaskOperation(),
+      2
+    );
+    expect(result.result).toEqual({ opIndex: 2, status: 'applied' });
+    expect(translatedWrites).toEqual([
+      {
+        id: 'task-1',
+        content: 'Client title',
+        done: 1,
+        owner_id: 'user-1',
+        workspace_id: 'project-1',
+        revision: 5,
+      },
+    ]);
+  });
+
+  it('rejects unsupported client schema versions before custom apply code runs', async () => {
+    let called = false;
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot() {
+        return { rows: [], nextCursor: null };
+      },
+      async applyOperation(_ctx, op, opIndex) {
+        called = true;
+        return appliedResult(opIndex, op);
+      },
+    });
+
+    const result = await handler.applyOperation(
+      createApplyContext({ schemaVersion: syncularGeneratedSchemaVersion - 1 }),
+      createTaskOperation(),
+      7
+    );
+
+    expect(called).toBe(false);
+    expect(result).toEqual({
+      result: expect.objectContaining({
+        opIndex: 7,
+        status: 'error',
+        code: 'sync.client_schema_unsupported',
+        retriable: false,
+      }),
+      emittedChanges: [],
+    });
+  });
+
+  it('rejects wrong tables and invalid mutation payloads before custom apply code runs', async () => {
+    let callCount = 0;
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot() {
+        return { rows: [], nextCursor: null };
+      },
+      async applyOperation(_ctx, op, opIndex) {
+        callCount += 1;
+        return appliedResult(opIndex, op);
+      },
+    });
+
+    const wrongTable = await handler.applyOperation(
+      createApplyContext(),
+      createTaskOperation({ table: 'projects' }),
+      3
+    );
+    expect(wrongTable).toEqual({
+      result: expect.objectContaining({
+        opIndex: 3,
+        status: 'error',
+        code: 'sync.invalid_request',
+      }),
+      emittedChanges: [],
+    });
+    expect(
+      wrongTable.result.status === 'error' ? wrongTable.result.error : ''
+    ).toContain('Expected operation table tasks');
+
+    const invalidPayload = await handler.applyOperation(
+      createApplyContext(),
+      createTaskOperation({ payload: { missing_column: true } }),
+      4
+    );
+    expect(invalidPayload).toEqual({
+      result: expect.objectContaining({
+        opIndex: 4,
+        status: 'error',
+        code: 'sync.invalid_request',
+      }),
+      emittedChanges: [],
+    });
+    expect(
+      invalidPayload.result.status === 'error' ? invalidPayload.result.error : ''
+    ).toContain('tasks.missing_column: Unknown column');
+    expect(callCount).toBe(0);
+  });
+
+  it('applies the same validation gate to generated batch handlers', async () => {
+    let delegated: SyncOperation[] = [];
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot() {
+        return { rows: [], nextCursor: null };
+      },
+      async applyOperation(_ctx, op, opIndex) {
+        return appliedResult(opIndex, op);
+      },
+      async applyOperationBatch(_ctx, operations) {
+        delegated = operations.map(({ op }) => op);
+        return operations.map(({ op, opIndex }) => appliedResult(opIndex, op));
+      },
+    });
+
+    const valid = await handler.applyOperationBatch?.(createApplyContext(), [
+      { op: createTaskOperation({ row_id: 'task-a' }), opIndex: 0 },
+      { op: createTaskOperation({ row_id: 'task-b' }), opIndex: 1 },
+    ]);
+    expect(valid?.map(({ result }) => result)).toEqual([
+      { opIndex: 0, status: 'applied' },
+      { opIndex: 1, status: 'applied' },
+    ]);
+    expect(delegated.map((op) => op.row_id)).toEqual(['task-a', 'task-b']);
+
+    delegated = [];
+    const invalid = await handler.applyOperationBatch?.(createApplyContext(), [
+      { op: createTaskOperation({ row_id: 'task-a' }), opIndex: 0 },
+      {
+        op: createTaskOperation({
+          row_id: 'task-b',
+          payload: { unknown: true },
+        }),
+        opIndex: 1,
+      },
+    ]);
+
+    expect(invalid).toEqual([
+      {
+        result: expect.objectContaining({
+          opIndex: 1,
+          status: 'error',
+          code: 'sync.invalid_request',
+        }),
+        emittedChanges: [],
+      },
+    ]);
+    expect(delegated).toEqual([]);
+  });
+});
