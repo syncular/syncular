@@ -362,14 +362,15 @@ native bindings can use Diesel without a separate rusqlite query path.
 The generator emits subscription functions, full-row upsert helpers, partial
 upsert helpers, typed delete helpers, and app-table metadata from the app tables
 found in migrations.
-`syncular.codegen.json` supplies Syncular-specific metadata: named protocol
-scopes, their local SQLite columns, where default subscription values come from,
-the subscription id, server version column, soft-delete column, and blob
-columns. The generator turns migrations plus config into a versioned
-`syncular.schema.json` contract, then emits Rust, TypeScript/Kysely, Swift, and
-Kotlin app-local modules from that contract. Every app table must have metadata,
-scope sources must be declared, unknown/deprecated config keys are rejected, the server
-version column must exist, and each app table must have exactly one primary key.
+The generated Syncular codegen handoff supplies Syncular-specific metadata:
+named protocol scopes, their local SQLite columns, where default subscription
+values come from, the subscription id, server version column, soft-delete
+column, and blob columns. The generator turns migrations plus config into a
+versioned `syncular.schema.json` contract, then emits Rust, TypeScript/Kysely,
+Swift, and Kotlin app-local modules from that contract. Every app table must
+have metadata, scope sources must be declared, unknown/deprecated config keys
+are rejected, the server version column must exist, and each app table must have
+exactly one primary key.
 Native low-level bindings stay app-agnostic: app-generated Swift/Kotlin helpers
 route through `applyMutationJson` and `queryJson` instead of binding-specific
 table methods or predefined read queries.
@@ -613,7 +614,8 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir 
 
 3. The generator applies those migrations to a temporary SQLite database.
 4. It introspects the database with `PRAGMA table_info`.
-5. It reads `syncular.codegen.json` for Syncular table metadata:
+5. It reads the generated `generated/syncular.codegen.json` handoff for
+   Syncular table metadata:
 
 ```json
 {
