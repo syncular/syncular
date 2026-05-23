@@ -18,6 +18,58 @@ Decision:
 Notes:
 ```
 
+## 2026-05-23 - WP-31 Originless Non-Browser WebSocket Guard
+
+Commit: uncommitted local websocket-origin fix
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Updated the Hono websocket origin policy to allow requests with no `Origin`
+  header before matching configured `allowedOrigins`.
+- Explicit browser `Origin` headers are still matched against exact and
+  wildcard configured origins, and disallowed browser origins are rejected.
+- This fixes Bun/non-browser Rust worker realtime connections when websocket
+  `allowedOrigins` is derived from sync CORS, as in `offline-sync-bench`.
+
+Verification:
+
+```bash
+bun test packages/server-hono/src/__tests__/websocket-origin.test.ts
+bun test packages/server-hono/src/__tests__/create-server.test.ts
+cd packages/server-hono && bun run tsgo
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+```
+
+Manual originless Bun websocket check after rebuilding the benchmark stack:
+`open`, then `close code=1000`.
+
+External benchmark:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+  bun run bench:run -- --stack syncular-rust --scenario online-propagation
+```
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `online-propagation` | `2026-05-23T04-37-19-197Z` | completed; reader visibility p50 `9.09ms`, p95 `14.06ms`; binary sync-pack applies `15/15`; pull-required recoveries `0`; binary apply p95 `2ms`; request count `30` |
+
+Decision:
+
+- Retain. The previous failure was a server websocket origin-policy mismatch,
+  not a Rust worker realtime regression.
+- No compatibility-register update is needed: this keeps browser-origin checks
+  strict and only accepts the absent-Origin shape that non-browser websocket
+  clients commonly use.
+
 ## 2026-05-22 - WP-31 External Measurement Correction Slice
 
 Commit: uncommitted local measurement slice

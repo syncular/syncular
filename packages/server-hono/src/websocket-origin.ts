@@ -97,14 +97,14 @@ export function isRequestOriginAllowed(args: {
   }
 
   const origin = args.originHeader;
+  if (!origin) {
+    return true;
+  }
+
   if (Array.isArray(args.allowedOrigins)) {
     return (
       resolveAllowedOriginFromPatterns(origin, args.allowedOrigins) !== null
     );
-  }
-
-  if (!origin) {
-    return true;
   }
 
   const normalizedOrigin = normalizeOrigin(origin);
