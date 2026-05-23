@@ -5531,6 +5531,9 @@ fn push_typescript_client_schema_metadata(
     out.push_str("  primaryKeyColumn: string;\n");
     out.push_str("  serverVersionColumn: string;\n");
     out.push_str("  columns: readonly SyncularGeneratedColumnSchemaMetadata[];\n");
+    out.push_str(
+        "  scopes: readonly { name: string; column: string; source: string; required: boolean }[];\n",
+    );
     out.push_str("}\n\n");
     out.push_str("export interface SyncularGeneratedClientSchemaMetadata {\n");
     out.push_str("  schemaVersion: number;\n");
@@ -5621,6 +5624,131 @@ fn push_typescript_client_schema_metadata(
     Ok(())
 }
 
+fn push_typescript_app_server_handler_helpers(
+    out: &mut String,
+    user_tables: &[TableInfo],
+    config: &CodegenConfig,
+) {
+    out.push_str("export const syncularGeneratedAppTables = {\n");
+    for table in user_tables {
+        let table_config = config.table(&table.name);
+        let primary_key = primary_key_column(table);
+        let server_version_column = table_config
+            .server_version_column
+            .as_deref()
+            .expect("validated table has server version column");
+        out.push_str(&format!("  {}: {{\n", ts_property_name(&table.name)));
+        out.push_str(&format!("    name: {},\n", ts_string(&table.name)));
+        out.push_str(&format!(
+            "    primaryKeyColumn: {},\n",
+            ts_string(&primary_key.name)
+        ));
+        out.push_str(&format!(
+            "    serverVersionColumn: {},\n",
+            ts_string(server_version_column)
+        ));
+        out.push_str("    scopePatterns: [");
+        for (index, scope) in table_config.scopes().iter().enumerate() {
+            if index > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&ts_string(scope_name(scope)));
+        }
+        out.push_str("],\n");
+        out.push_str("  },\n");
+    }
+    out.push_str("} as const;\n");
+    out.push_str("export type SyncularGeneratedAppTableName = keyof typeof syncularGeneratedAppTables & string;\n");
+    out.push_str("export type SyncularGeneratedAppTableRef = typeof syncularGeneratedAppTables[SyncularGeneratedAppTableName];\n\n");
+    out.push_str("function syncularResolveGeneratedAppTable(table: SyncularGeneratedAppTableName | SyncularGeneratedAppTableRef): SyncularGeneratedAppTableRef {\n");
+    out.push_str(
+        "  return typeof table === 'string' ? syncularGeneratedAppTables[table] : table;\n",
+    );
+    out.push_str("}\n\n");
+    out.push_str("function syncularGeneratedExtractScopes(table: string, row: Record<string, unknown>): StoredScopes {\n");
+    out.push_str("  const tableSchema = syncularGeneratedTableSchemaForVersion(table, syncularGeneratedSchemaVersion);\n");
+    out.push_str("  if (!tableSchema) throw new Error(`Unknown generated app table ${table}`);\n");
+    out.push_str("  const scopes: StoredScopes = {};\n");
+    out.push_str("  for (const scope of tableSchema.scopes) {\n");
+    out.push_str("    const value = row[scope.column];\n");
+    out.push_str("    if (value == null) {\n");
+    out.push_str("      if (scope.required) throw new Error(`Missing required scope column ${table}.${scope.column}`);\n");
+    out.push_str("      continue;\n");
+    out.push_str("    }\n");
+    out.push_str("    scopes[scope.name] = String(value);\n");
+    out.push_str("  }\n");
+    out.push_str("  return scopes;\n");
+    out.push_str("}\n\n");
+    out.push_str("function syncularGeneratedValidationErrorResult(opIndex: number, errors: readonly SyncularGeneratedValidationError[]): ApplyOperationResult {\n");
+    out.push_str("  const response = createSyncularErrorResponse('sync.invalid_request', {\n");
+    out.push_str(
+        "    message: errors.map((error) => `${error.path}: ${error.message}`).join('; '),\n",
+    );
+    out.push_str("  });\n");
+    out.push_str("  return {\n");
+    out.push_str("    result: { opIndex, status: 'error', error: response.message ?? response.error, code: response.code, retriable: response.retryable },\n");
+    out.push_str("    emittedChanges: [],\n");
+    out.push_str("  };\n");
+    out.push_str("}\n\n");
+    out.push_str("export interface CreateSyncularAppServerHandlerOptions<DB extends SyncCoreDb = SyncCoreDb, Auth extends SyncServerAuth = SyncServerAuth> {\n");
+    out.push_str("  table: SyncularGeneratedAppTableName | SyncularGeneratedAppTableRef;\n");
+    out.push_str("  dependsOn?: string[];\n");
+    out.push_str("  snapshotChunkTtlMs?: number;\n");
+    out.push_str("  canRejectSingleOperationWithoutSavepoint?: boolean;\n");
+    out.push_str(
+        "  resolveScopes(ctx: ServerContext<DB, Auth>): Promise<ScopeValues> | ScopeValues;\n",
+    );
+    out.push_str("  extractScopes?: (row: Record<string, unknown>) => StoredScopes;\n");
+    out.push_str("  snapshot(ctx: ServerSnapshotContext<DB, string, Auth>, params: Record<string, unknown> | undefined): Promise<{ rows: unknown[]; nextCursor: string | null }>;\n");
+    out.push_str("  applyOperation(ctx: ServerApplyOperationContext<DB, Auth>, op: SyncOperation, opIndex: number): Promise<ApplyOperationResult>;\n");
+    out.push_str("  applyOperationBatch?(ctx: ServerApplyOperationContext<DB, Auth>, operations: { op: SyncOperation; opIndex: number }[]): Promise<ApplyOperationResult[]>;\n");
+    out.push_str("}\n\n");
+    out.push_str("export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreDb, Auth extends SyncServerAuth = SyncServerAuth>(options: CreateSyncularAppServerHandlerOptions<DB, Auth>): ServerTableHandler<DB, Auth> {\n");
+    out.push_str("  const table = syncularResolveGeneratedAppTable(options.table);\n");
+    out.push_str("  const tableName = table.name;\n");
+    out.push_str("  const handler: ServerTableHandler<DB, Auth> = {\n");
+    out.push_str("    table: tableName,\n");
+    out.push_str("    primaryKeyColumn: table.primaryKeyColumn,\n");
+    out.push_str("    scopePatterns: [...table.scopePatterns],\n");
+    out.push_str("    dependsOn: options.dependsOn,\n");
+    out.push_str("    snapshotChunkTtlMs: options.snapshotChunkTtlMs,\n");
+    out.push_str("    snapshotBinaryColumns: syncularGeneratedSnapshotBinaryColumns[tableName as keyof SyncularAppDb],\n");
+    out.push_str("    snapshotBinaryEncoder: syncularGeneratedSnapshotBinaryEncoders[tableName as keyof SyncularAppDb],\n");
+    out.push_str("    canRejectSingleOperationWithoutSavepoint: options.canRejectSingleOperationWithoutSavepoint,\n");
+    out.push_str("    resolveScopes: async (ctx) => options.resolveScopes(ctx),\n");
+    out.push_str("    extractScopes: options.extractScopes ?? ((row) => syncularGeneratedExtractScopes(tableName, row)),\n");
+    out.push_str("    snapshot: options.snapshot,\n");
+    out.push_str("    async applyOperation(ctx, op, opIndex) {\n");
+    out.push_str("      if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {\n");
+    out.push_str("        return syncularUnsupportedClientSchemaResult({ opIndex, schemaVersion: ctx.schemaVersion });\n");
+    out.push_str("      }\n");
+    out.push_str("      if (op.table !== tableName) {\n");
+    out.push_str("        return syncularGeneratedValidationErrorResult(opIndex, [{ path: op.table, message: `Expected operation table ${tableName}` }]);\n");
+    out.push_str("      }\n");
+    out.push_str("      const validation = syncularValidateGeneratedMutationPayload(tableName, op.payload, ctx.schemaVersion);\n");
+    out.push_str("      if (!validation.ok) return syncularGeneratedValidationErrorResult(opIndex, validation.errors);\n");
+    out.push_str("      return options.applyOperation(ctx, op, opIndex);\n");
+    out.push_str("    },\n");
+    out.push_str(
+        "    applyOperationBatch: options.applyOperationBatch ? async (ctx, operations) => {\n",
+    );
+    out.push_str("      for (const { op, opIndex } of operations) {\n");
+    out.push_str("        if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {\n");
+    out.push_str("          return [syncularUnsupportedClientSchemaResult({ opIndex, schemaVersion: ctx.schemaVersion })];\n");
+    out.push_str("        }\n");
+    out.push_str("        if (op.table !== tableName) {\n");
+    out.push_str("          return [syncularGeneratedValidationErrorResult(opIndex, [{ path: op.table, message: `Expected operation table ${tableName}` }])];\n");
+    out.push_str("        }\n");
+    out.push_str("        const validation = syncularValidateGeneratedMutationPayload(tableName, op.payload, ctx.schemaVersion);\n");
+    out.push_str("        if (!validation.ok) return [syncularGeneratedValidationErrorResult(opIndex, validation.errors)];\n");
+    out.push_str("      }\n");
+    out.push_str("      return options.applyOperationBatch(ctx, operations);\n");
+    out.push_str("    } : undefined,\n");
+    out.push_str("  };\n");
+    out.push_str("  return handler;\n");
+    out.push_str("}\n");
+}
+
 fn generate_typescript_server_module(
     tables: &[TableInfo],
     config: &CodegenConfig,
@@ -5639,7 +5767,7 @@ fn generate_typescript_server_module(
     out.push_str(
         "import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';\n",
     );
-    out.push_str("import type { ApplyOperationResult } from '@syncular/server';\n\n");
+    out.push_str("import type { ApplyOperationResult, ScopeValues, ServerApplyOperationContext, ServerContext, ServerSnapshotContext, ServerTableHandler, StoredScopes, SyncCoreDb, SyncOperation, SyncServerAuth } from '@syncular/server';\n\n");
     let client_schema_support = client_schema_support_from_config(config, schema_version)?;
     push_typescript_client_schema_support(&mut out, &client_schema_support);
     push_typescript_unsupported_client_schema_result(&mut out);
@@ -5659,6 +5787,7 @@ fn generate_typescript_server_module(
     out.push_str("  columns: syncularGeneratedSnapshotBinaryColumns,\n");
     out.push_str("  encoders: syncularGeneratedSnapshotBinaryEncoders,\n");
     out.push_str("} as const;\n");
+    push_typescript_app_server_handler_helpers(&mut out, &user_tables, config);
     Ok(out)
 }
 
@@ -11710,7 +11839,9 @@ CREATE TABLE tasks (
         assert!(output.contains(
             "import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';"
         ));
-        assert!(output.contains("import type { ApplyOperationResult } from '@syncular/server';"));
+        assert!(output.contains(
+            "import type { ApplyOperationResult, ScopeValues, ServerApplyOperationContext, ServerContext, ServerSnapshotContext, ServerTableHandler, StoredScopes, SyncCoreDb, SyncOperation, SyncServerAuth } from '@syncular/server';"
+        ));
         assert!(!output.contains("@app/sync-runtime"));
         assert!(!output.contains("createSyncularRustSqliteDatabase"));
         assert!(!output.contains("withSyncularSchemaWrites"));
@@ -11750,6 +11881,10 @@ CREATE TABLE tasks (
         ));
         assert!(output.contains("export const syncularGeneratedSnapshotBinaryEncoders = {"));
         assert!(output.contains("export const syncularGeneratedServerSnapshotBinary = {"));
+        assert!(output.contains("export const syncularGeneratedAppTables = {"));
+        assert!(output.contains("export function createSyncularAppServerHandler"));
+        assert!(output.contains("syncularValidateGeneratedMutationPayload"));
+        assert!(output.contains("syncularUnsupportedClientSchemaResult"));
         Ok(())
     }
 

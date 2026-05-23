@@ -2,7 +2,7 @@
 // Source: migrations/*.sql and syncular.codegen.json
 
 import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';
-import type { ApplyOperationResult } from '@syncular/server';
+import type { ApplyOperationResult, ScopeValues, ServerApplyOperationContext, ServerContext, ServerSnapshotContext, ServerTableHandler, StoredScopes, SyncCoreDb, SyncOperation, SyncServerAuth } from '@syncular/server';
 
 export const syncularGeneratedSchemaVersion = 7 as const;
 export const syncularGeneratedClientSchemaSupport = {
@@ -49,6 +49,7 @@ export interface SyncularGeneratedTableSchemaMetadata {
   primaryKeyColumn: string;
   serverVersionColumn: string;
   columns: readonly SyncularGeneratedColumnSchemaMetadata[];
+  scopes: readonly { name: string; column: string; source: string; required: boolean }[];
 }
 
 export interface SyncularGeneratedClientSchemaMetadata {
@@ -655,3 +656,109 @@ export const syncularGeneratedServerSnapshotBinary = {
   columns: syncularGeneratedSnapshotBinaryColumns,
   encoders: syncularGeneratedSnapshotBinaryEncoders,
 } as const;
+export const syncularGeneratedAppTables = {
+  comments: {
+    name: 'comments',
+    primaryKeyColumn: 'id',
+    serverVersionColumn: 'server_version',
+    scopePatterns: ['user_id', 'project_id'],
+  },
+  projects: {
+    name: 'projects',
+    primaryKeyColumn: 'id',
+    serverVersionColumn: 'server_version',
+    scopePatterns: ['user_id'],
+  },
+  tasks: {
+    name: 'tasks',
+    primaryKeyColumn: 'id',
+    serverVersionColumn: 'server_version',
+    scopePatterns: ['user_id', 'project_id'],
+  },
+} as const;
+export type SyncularGeneratedAppTableName = keyof typeof syncularGeneratedAppTables & string;
+export type SyncularGeneratedAppTableRef = typeof syncularGeneratedAppTables[SyncularGeneratedAppTableName];
+
+function syncularResolveGeneratedAppTable(table: SyncularGeneratedAppTableName | SyncularGeneratedAppTableRef): SyncularGeneratedAppTableRef {
+  return typeof table === 'string' ? syncularGeneratedAppTables[table] : table;
+}
+
+function syncularGeneratedExtractScopes(table: string, row: Record<string, unknown>): StoredScopes {
+  const tableSchema = syncularGeneratedTableSchemaForVersion(table, syncularGeneratedSchemaVersion);
+  if (!tableSchema) throw new Error(`Unknown generated app table ${table}`);
+  const scopes: StoredScopes = {};
+  for (const scope of tableSchema.scopes) {
+    const value = row[scope.column];
+    if (value == null) {
+      if (scope.required) throw new Error(`Missing required scope column ${table}.${scope.column}`);
+      continue;
+    }
+    scopes[scope.name] = String(value);
+  }
+  return scopes;
+}
+
+function syncularGeneratedValidationErrorResult(opIndex: number, errors: readonly SyncularGeneratedValidationError[]): ApplyOperationResult {
+  const response = createSyncularErrorResponse('sync.invalid_request', {
+    message: errors.map((error) => `${error.path}: ${error.message}`).join('; '),
+  });
+  return {
+    result: { opIndex, status: 'error', error: response.message ?? response.error, code: response.code, retriable: response.retryable },
+    emittedChanges: [],
+  };
+}
+
+export interface CreateSyncularAppServerHandlerOptions<DB extends SyncCoreDb = SyncCoreDb, Auth extends SyncServerAuth = SyncServerAuth> {
+  table: SyncularGeneratedAppTableName | SyncularGeneratedAppTableRef;
+  dependsOn?: string[];
+  snapshotChunkTtlMs?: number;
+  canRejectSingleOperationWithoutSavepoint?: boolean;
+  resolveScopes(ctx: ServerContext<DB, Auth>): Promise<ScopeValues> | ScopeValues;
+  extractScopes?: (row: Record<string, unknown>) => StoredScopes;
+  snapshot(ctx: ServerSnapshotContext<DB, string, Auth>, params: Record<string, unknown> | undefined): Promise<{ rows: unknown[]; nextCursor: string | null }>;
+  applyOperation(ctx: ServerApplyOperationContext<DB, Auth>, op: SyncOperation, opIndex: number): Promise<ApplyOperationResult>;
+  applyOperationBatch?(ctx: ServerApplyOperationContext<DB, Auth>, operations: { op: SyncOperation; opIndex: number }[]): Promise<ApplyOperationResult[]>;
+}
+
+export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreDb, Auth extends SyncServerAuth = SyncServerAuth>(options: CreateSyncularAppServerHandlerOptions<DB, Auth>): ServerTableHandler<DB, Auth> {
+  const table = syncularResolveGeneratedAppTable(options.table);
+  const tableName = table.name;
+  const handler: ServerTableHandler<DB, Auth> = {
+    table: tableName,
+    primaryKeyColumn: table.primaryKeyColumn,
+    scopePatterns: [...table.scopePatterns],
+    dependsOn: options.dependsOn,
+    snapshotChunkTtlMs: options.snapshotChunkTtlMs,
+    snapshotBinaryColumns: syncularGeneratedSnapshotBinaryColumns[tableName as keyof SyncularAppDb],
+    snapshotBinaryEncoder: syncularGeneratedSnapshotBinaryEncoders[tableName as keyof SyncularAppDb],
+    canRejectSingleOperationWithoutSavepoint: options.canRejectSingleOperationWithoutSavepoint,
+    resolveScopes: async (ctx) => options.resolveScopes(ctx),
+    extractScopes: options.extractScopes ?? ((row) => syncularGeneratedExtractScopes(tableName, row)),
+    snapshot: options.snapshot,
+    async applyOperation(ctx, op, opIndex) {
+      if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {
+        return syncularUnsupportedClientSchemaResult({ opIndex, schemaVersion: ctx.schemaVersion });
+      }
+      if (op.table !== tableName) {
+        return syncularGeneratedValidationErrorResult(opIndex, [{ path: op.table, message: `Expected operation table ${tableName}` }]);
+      }
+      const validation = syncularValidateGeneratedMutationPayload(tableName, op.payload, ctx.schemaVersion);
+      if (!validation.ok) return syncularGeneratedValidationErrorResult(opIndex, validation.errors);
+      return options.applyOperation(ctx, op, opIndex);
+    },
+    applyOperationBatch: options.applyOperationBatch ? async (ctx, operations) => {
+      for (const { op, opIndex } of operations) {
+        if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {
+          return [syncularUnsupportedClientSchemaResult({ opIndex, schemaVersion: ctx.schemaVersion })];
+        }
+        if (op.table !== tableName) {
+          return [syncularGeneratedValidationErrorResult(opIndex, [{ path: op.table, message: `Expected operation table ${tableName}` }])];
+        }
+        const validation = syncularValidateGeneratedMutationPayload(tableName, op.payload, ctx.schemaVersion);
+        if (!validation.ok) return [syncularGeneratedValidationErrorResult(opIndex, validation.errors)];
+      }
+      return options.applyOperationBatch(ctx, operations);
+    } : undefined,
+  };
+  return handler;
+}

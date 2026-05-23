@@ -616,6 +616,11 @@ The contract should distinguish two local cases:
   `syncularValidateGeneratedMutationPayload(...)`. These validate schema shape
   for server-emitted snapshot rows and incoming mutation payloads without
   introducing an ORM or query abstraction.
+- Added generated `createSyncularAppServerHandler(...)` wrapper around the
+  lower-level `ServerTableHandler` interface. The wrapper uses generated table
+  refs, current binary snapshot metadata, schema-version support checks, and
+  payload validation, while keeping `snapshot`, `applyOperation`,
+  `resolveScopes`, and server DB translation app-owned.
 
 Gates run:
 
@@ -631,7 +636,7 @@ Gates run:
 
 ## Next Action
 
-Add a generated `createAppServerHandler` wrapper that uses the current
-metadata, schema-version support policy, unsupported-schema result helper, and
-validation helpers while still leaving `snapshot`, `applyOperation`,
-`resolveScopes`, and server DB translation app-owned.
+Add focused server-side conformance tests that exercise
+`createSyncularAppServerHandler(...)` with divergent server/client table names,
+unsupported client schema versions, invalid payloads, and valid custom
+snapshot/apply handlers.
