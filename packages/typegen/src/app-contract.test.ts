@@ -2,11 +2,13 @@ import { describe, expect, it } from 'bun:test';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { defineMigrations } from '@syncular/migrations';
 import {
   countByReadModel,
   defineSyncularClient,
   encryptedField,
   scope,
+  scaffoldSyncularClientContract,
   syncedTable,
   toSyncularCodegenConfig,
   toSyncularCodegenJson,
@@ -154,5 +156,52 @@ describe('Syncular app contract authoring', () => {
     } finally {
       await rm(dir, { recursive: true, force: true });
     }
+  });
+
+  it('scaffolds a same-shape client contract from migrations', async () => {
+    const migrations = defineMigrations({
+      v1: {
+        async up(db) {
+          await db.schema
+            .createTable('tasks')
+            .addColumn('id', 'text', (column) => column.primaryKey())
+            .addColumn('title', 'text', (column) => column.notNull())
+            .addColumn('user_id', 'text', (column) => column.notNull())
+            .addColumn('server_version', 'integer', (column) =>
+              column.notNull().defaultTo(0)
+            )
+            .execute();
+        },
+        async down(db) {
+          await db.schema.dropTable('tasks').execute();
+        },
+      },
+    });
+
+    const app = await scaffoldSyncularClientContract({
+      migrations,
+      scopes: {
+        tasks: [scope('user_id', { source: 'actorId', required: true })],
+      },
+      sqliteWithoutRowid: true,
+    });
+
+    expect(toSyncularCodegenConfig(app)).toEqual({
+      tables: {
+        tasks: {
+          subscriptionId: 'sub-tasks',
+          serverVersionColumn: 'server_version',
+          scopes: [
+            {
+              name: 'user_id',
+              column: 'user_id',
+              source: 'actorId',
+              required: true,
+            },
+          ],
+          sqliteWithoutRowid: true,
+        },
+      },
+    });
   });
 });

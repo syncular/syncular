@@ -1,6 +1,9 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import type { DefinedMigrations } from '@syncular/migrations';
+import { introspectCurrentSchema } from './introspect';
+import type { TableSchema, TypegenDialect } from './types';
 
 export type SyncularScopeSource = 'actorId' | 'projectId';
 export type SyncularCrdtYjsKind = 'text' | 'xml-fragment' | 'prosemirror';
@@ -143,6 +146,24 @@ export interface SyncularCodegenConfig extends SyncularCodegenPathsDefinition {
   };
 }
 
+export interface ScaffoldSyncularClientContractOptions<DB = unknown>
+  extends SyncularCodegenPathsDefinition {
+  migrations: DefinedMigrations<DB>;
+  dialect?: TypegenDialect;
+  tables?: readonly string[];
+  scopes?: Record<string, readonly SyncularScopeDefinition[]>;
+  serverVersionColumn?:
+    | string
+    | Record<string, string>
+    | ((table: TableSchema) => string);
+  subscriptionId?: string | Record<string, string> | ((table: string) => string);
+  sqliteWithoutRowid?:
+    | boolean
+    | Record<string, boolean>
+    | ((table: TableSchema) => boolean);
+  clientSchemaSupport?: SyncularClientSchemaSupportDefinition;
+}
+
 export function defineSyncularClient<
   Tables extends Record<string, SyncedTableDefinition>,
 >(options: DefineSyncularClientOptions<Tables>): SyncularClientContract<Tables> {
@@ -255,6 +276,46 @@ export async function writeSyncularCodegenJson(
   await writeFile(outputPath, toSyncularCodegenJson(contract, space));
 }
 
+export async function scaffoldSyncularClientContract<DB = unknown>(
+  options: ScaffoldSyncularClientContractOptions<DB>
+): Promise<SyncularClientContract<Record<string, SyncedTableDefinition>>> {
+  const schema = await introspectCurrentSchema(
+    options.migrations,
+    options.dialect ?? 'sqlite',
+    options.tables ? [...options.tables] : undefined
+  );
+  const tables = Object.fromEntries(
+    schema.tables.map((table) => {
+      const serverVersion = resolveServerVersionColumn(
+        table,
+        options.serverVersionColumn
+      );
+      assertColumnExists(table, serverVersion, 'server version');
+      const synced = syncedTable({
+        table: table.name,
+        subscriptionId: resolveStringOption(
+          table.name,
+          options.subscriptionId,
+          `sub-${table.name}`
+        ),
+        serverVersion,
+        scopes: options.scopes?.[table.name] ?? [],
+        sqliteWithoutRowid: resolveBooleanOption(
+          table,
+          options.sqliteWithoutRowid
+        ),
+      });
+      return [table.name, synced];
+    })
+  );
+
+  return defineSyncularClient({
+    ...pickCodegenPathOptions(options),
+    clientSchemaSupport: options.clientSchemaSupport,
+    tables,
+  });
+}
+
 const CODEGEN_PATH_KEYS = [
   'schemaOutputPath',
   'typescriptOutputPath',
@@ -326,4 +387,56 @@ function toCodegenTable(
   }
 
   return config;
+}
+
+function pickCodegenPathOptions(
+  options: SyncularCodegenPathsDefinition
+): SyncularCodegenPathsDefinition {
+  const picked: SyncularCodegenPathsDefinition = {};
+  for (const key of CODEGEN_PATH_KEYS) {
+    const value = options[key];
+    if (value !== undefined) {
+      picked[key] = value;
+    }
+  }
+  return picked;
+}
+
+function resolveServerVersionColumn(
+  table: TableSchema,
+  option: ScaffoldSyncularClientContractOptions['serverVersionColumn']
+): string {
+  if (typeof option === 'function') return option(table);
+  if (typeof option === 'string') return option;
+  return option?.[table.name] ?? 'server_version';
+}
+
+function resolveStringOption(
+  table: string,
+  option: ScaffoldSyncularClientContractOptions['subscriptionId'],
+  fallback: string
+): string {
+  if (typeof option === 'function') return option(table);
+  if (typeof option === 'string') return option;
+  return option?.[table] ?? fallback;
+}
+
+function resolveBooleanOption(
+  table: TableSchema,
+  option: ScaffoldSyncularClientContractOptions['sqliteWithoutRowid']
+): boolean | undefined {
+  if (typeof option === 'function') return option(table);
+  if (typeof option === 'boolean') return option;
+  return option?.[table.name];
+}
+
+function assertColumnExists(
+  table: TableSchema,
+  column: string,
+  label: string
+): void {
+  if (table.columns.some((candidate) => candidate.name === column)) return;
+  throw new Error(
+    `Cannot scaffold Syncular table ${table.name}: ${label} column ${column} does not exist`
+  );
 }
