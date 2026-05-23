@@ -20,7 +20,7 @@ import {
 } from './app-contract';
 
 describe('Syncular app contract authoring', () => {
-  it('serializes typed table metadata to the low-level codegen config shape', () => {
+  it('serializes typed table metadata to the generated codegen handoff shape', () => {
     const app = defineSyncularClient({
       typescriptOutputPath: 'generated/typescript/syncular.generated.ts',
       typescriptServerOutputPath:

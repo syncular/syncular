@@ -96,7 +96,7 @@ const app = await scaffoldSyncularClientContract({
 await writeSyncularCodegenJson(app, './generated/syncular.codegen.json');
 ```
 
-For apps that keep the contract in a module, generate or check the low-level
+For apps that keep the contract in a module, generate or check the
 Rust-codegen handoff from the typed module:
 
 ```bash

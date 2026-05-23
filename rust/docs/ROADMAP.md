@@ -129,7 +129,9 @@ read-only review:
     only by the known out-of-scope relay evaluation unused exports. Follow-up
     docs/generated-banner cleanup now avoids implying app authors maintain a
     root low-level codegen file or select legacy client dialects; the public
-    Rust-client docs now show the default generated handoff path.
+    Rust-client docs now show the default generated handoff path. Public Build
+    and Runtimes docs now route deleted client/setup/auth/realtime/blob pages to
+    the current Rust-client, concepts, recipe, and server-reference pages.
 - `[x]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is accepted. Console diagnostics now persist normalized,
     size-bounded, sensitive-key-guarded Rust client snapshots in

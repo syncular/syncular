@@ -1,42 +1,45 @@
 ---
 title: Runtimes
-description: Choose a SQLite dialect and runtime setup for web, Electron, Expo/React Native, Bun/Node, and Cloudflare
+description: Choose a Rust client runtime and server deployment target for web, native, Electron, React Native, Bun, Node, and Cloudflare
 ---
 
 # Runtimes
 
-Syncular is designed for **universal TypeScript apps**. This section helps you pick the right database dialect and understand runtime-specific setup and constraints.
+Syncular's client path is Rust-first. This section points to the browser,
+native, and server runtime guides that matter for the current product shape.
 
-> Start here if you’re unsure which dialect to use. If you already chose a runtime, follow [Client Setup](/docs/build/client-setup) and then come back for runtime caveats.
+> Start here if you are unsure which runtime to use. If you already chose a
+> client target, follow the [Rust client quick start](/docs/rust-client/quick-start)
+> and then come back for runtime caveats.
 
 ## Quick recommendations
 
-- **Web:** `@syncular/client` for the Rust-owned browser client, or `@syncular/dialect-pglite` for local Postgres-style runtime experiments
-- **Electron:** `@syncular/dialect-electron-sqlite` (renderer → main IPC) or `@syncular/dialect-better-sqlite3`
-- **Expo / React Native:** `@syncular/dialect-expo-sqlite` or `@syncular/dialect-react-native-nitro-sqlite`
-- **Bun / Node:** `@syncular/dialect-bun-sqlite`, `@syncular/dialect-better-sqlite3`, or `@syncular/dialect-sqlite3`
-- **Cloudflare:** run the server with `@syncular/server-cloudflare` and pair it with a dialect (D1/SQLite or Neon/Postgres)
+- **Web:** `@syncular/client` for the Rust-owned browser worker and generated Kysely types.
+- **Native apps:** generated Rust, Swift, Kotlin, Android, and JVM clients over the native runtime.
+- **Electron / Tauri / React Native:** use the platform bridge package over a Rust/native host.
+- **Bun / Node:** run server code with the normal Kysely server dialects; use native Rust client packages for local app storage.
+- **Cloudflare:** run the server with `@syncular/server-cloudflare`; browser/native clients stay on the Rust client path.
 
 <Cards>
-  <Card title="Web" href="/docs/build/runtimes/web">
-    Browser SQLite (WASM), persistence, bundlers, and gotchas
+  <Card title="Browser TypeScript" href="/docs/rust-client/browser">
+    Rust-owned SQLite worker, Kysely reads, realtime, blobs, and presence
+  </Card>
+  <Card title="Native Apps" href="/docs/rust-client/native">
+    Rust, Swift, Kotlin, Android, JVM, lifecycle, realtime, and packaging shape
   </Card>
   <Card title="Electron" href="/docs/build/runtimes/electron">
-    Renderer/main split, IPC dialect, and local DB file placement
-  </Card>
-  <Card title="Expo / React Native" href="/docs/build/runtimes/expo">
-    expo-sqlite, Nitro SQLite, persistence, and mobile constraints
-  </Card>
-  <Card title="Bun / Node" href="/docs/build/runtimes/bun-node">
-    Desktop/CLI/testing runtimes and native SQLite drivers
+    Desktop shell constraints and local DB file placement
   </Card>
   <Card title="Cloudflare" href="/docs/build/runtimes/cloudflare">
     Deploy the server on Workers + Durable Objects, and choose DB + blob storage
+  </Card>
+  <Card title="Native Packaging" href="/docs/rust-client/packaging">
+    Build Apple, Android, JVM, and browser packages from the Rust runtime
   </Card>
 </Cards>
 
 ## Next steps
 
 - [Installation](/docs/introduction/installation) — package selection
-- [Client Setup](/docs/build/client-setup) — end-to-end client configuration
+- [Rust client quick start](/docs/rust-client/quick-start) — end-to-end client configuration
 - [Server Setup](/docs/build/server-setup) — end-to-end server configuration

@@ -1,39 +1,60 @@
 ---
 title: Electron
-description: Renderer/main split, IPC dialects, and recommended database setups for Electron apps
+description: Rust-owned local storage, renderer/main boundaries, and packaging notes for Electron apps
 ---
 
 # Electron
 
-Electron apps are a great fit for Syncular: you get a durable local SQLite database, instant UI reads/writes, and background sync.
+Electron apps are a good fit for Syncular: you get durable local SQLite,
+instant UI reads/writes, and background sync without putting raw app-table
+writes in the renderer.
 
-## Recommended dialects
+## Recommended Shape
 
-You typically choose between:
+Use the Rust client runtime as the owner of local SQLite, sync, outbox,
+realtime, blobs, CRDT fields, and encryption. The renderer should talk to a
+small host bridge for app-specific commands and events, while normal
+browser-style TypeScript apps can still use the generated Kysely surface from
+the Rust-owned client.
 
-- **`@syncular/dialect-electron-sqlite` (recommended)**: renderer uses Kysely, SQL executes in the main process via a preload IPC bridge.
-- **`@syncular/dialect-better-sqlite3`**: run SQLite directly in a Node-capable process.
+For most Electron apps:
 
-The IPC approach is usually the cleanest because it keeps direct DB access out of the renderer and centralizes file/system access in main.
+- Keep the Syncular runtime hot in the main process or a dedicated native host.
+- Expose only generated mutations, generated reads, lifecycle commands, blob
+  APIs, and event subscriptions through preload IPC.
+- Keep raw synced table writes disallowed; writes go through generated Syncular
+  mutations so the outbox, conflict handling, and encryption stay coherent.
+- Use the browser TypeScript client shape when the renderer owns the UI query
+  code and a native-host shape when app lifecycle/background work should stay
+  outside the renderer.
 
-## Renderer setup (IPC dialect)
+## Query And Mutation Model
 
-In the renderer:
+Renderer reads should stay query-builder based through generated Kysely types,
+or through an app-specific IPC method that runs a generated query on the host.
+Renderer writes should call generated mutation helpers, not direct SQL:
 
 ```ts
-import { createDatabase } from '@syncular/core';
-import { createElectronSqliteDialectFromWindow } from '@syncular/dialect-electron-sqlite';
-
-// Uses window.electronAPI.sqlite by default (bridgeKey: "sqlite")
-const db = createDatabase({
-  dialect: createElectronSqliteDialectFromWindow(),
-  family: 'sqlite',
+const task = await syncular.mutations.tasks.insert({
+  id: crypto.randomUUID(),
+  title: 'Electron task',
+  user_id: actorId,
 });
+
+const rows = await syncular.db
+  .selectFrom('tasks')
+  .selectAll()
+  .where('user_id', '=', actorId)
+  .execute();
 ```
 
-You’ll also need to implement the preload/main bridge that actually executes SQL and stores the DB on disk. The exact bridge is app-specific, but the mental model stays simple: renderer calls Kysely, main executes queries.
+The older Electron SQLite dialect package is only for custom Kysely/server
+tooling. It is not the recommended Syncular client storage path for new
+Rust-first apps.
 
 ## Next steps
 
-- [Client Setup](/docs/build/client-setup)
+- [Rust client quick start](/docs/rust-client/quick-start)
+- [Browser TypeScript client](/docs/rust-client/browser)
+- [Native client lifecycle](/docs/rust-client/native)
 - [Installation](/docs/introduction/installation) (package selection)
