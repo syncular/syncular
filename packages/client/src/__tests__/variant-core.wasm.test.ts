@@ -3,7 +3,7 @@ import { type BlobRef, codecs } from '@syncular/core';
 import { sql, type Kysely } from 'kysely';
 import {
   createSyncularAppServerHandler as createTodoAppServerHandler,
-  syncularGeneratedAppTables as todoGeneratedServerAppTables,
+  syncularGeneratedApp as todoGeneratedServerApp,
   syncularGeneratedClientSchemaForVersion as todoGeneratedClientSchemaForVersion,
   syncularGeneratedClientSchemaSupport as todoGeneratedClientSchemaSupport,
   syncularProjectGeneratedClientRowForVersion as todoProjectGeneratedClientRowForVersion,
@@ -645,7 +645,7 @@ describe('Syncular core WASM artifact', () => {
       createTables: ensureGeneratedTodoServerTables,
       handlers: [
         createTodoAppServerHandler<GeneratedTodoServerDb>({
-          table: todoGeneratedServerAppTables.tasks,
+          table: todoGeneratedServerApp.tables.tasks,
           resolveScopes: async (ctx) => ({
             user_id: [ctx.actorId],
             project_id: [projectId],
@@ -766,7 +766,7 @@ describe('Syncular core WASM artifact', () => {
     const oldSchemaVersion = todoGeneratedClientSchemaSupport.minSupported;
     const taskId = 'generated-incremental-task-1';
     const handler = createTodoAppServerHandler<GeneratedTodoServerDb>({
-      table: todoGeneratedServerAppTables.tasks,
+      table: todoGeneratedServerApp.tables.tasks,
       resolveScopes: async (ctx) => ({
         user_id: [ctx.actorId],
         project_id: [projectId],
@@ -989,7 +989,7 @@ describe('Syncular core WASM artifact', () => {
       createTables: ensureGeneratedTodoServerTables,
       handlers: [
         createTodoAppServerHandler<GeneratedTodoServerDb>({
-          table: todoGeneratedServerAppTables.tasks,
+          table: todoGeneratedServerApp.tables.tasks,
           resolveScopes: async (ctx) => ({
             user_id: [ctx.actorId],
             project_id: [projectId],

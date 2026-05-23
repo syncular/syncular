@@ -2,8 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import type { SyncOperation } from '@syncular/core';
 import {
   createSyncularAppServerHandler,
+  syncularGeneratedApp,
   syncularGeneratedClientSchemaForVersion,
-  syncularGeneratedAppTables,
   syncularGeneratedClientSchemaSupport,
   syncularProjectGeneratedClientRowForVersion,
   syncularGeneratedSnapshotBinaryColumnsForVersion,
@@ -149,7 +149,7 @@ describe('generated app server handler', () => {
   it('delegates divergent server/client table mapping to app-owned snapshot and apply handlers', async () => {
     const translatedWrites: DocumentsTable[] = [];
     const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: syncularGeneratedAppTables.tasks,
+      table: syncularGeneratedApp.tables.tasks,
       resolveScopes: (ctx) => ({
         user_id: [ctx.actorId],
         project_id: ctx.auth.workspaceIds,
