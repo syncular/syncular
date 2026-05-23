@@ -74,6 +74,28 @@ export const app = defineSyncularClient({
 await writeSyncularCodegenJson(app, './syncular.codegen.json');
 ```
 
+For same-shape starter apps, scaffold the initial contract from existing
+migrations and then edit the generated authoring/config when client and server
+shapes diverge:
+
+```ts
+import {
+  scaffoldSyncularClientContract,
+  scope,
+  writeSyncularCodegenJson,
+} from '@syncular/typegen';
+import { migrations } from './migrations';
+
+const app = await scaffoldSyncularClientContract({
+  migrations,
+  scopes: {
+    tasks: [scope('user_id', { source: 'actorId', required: true })],
+  },
+});
+
+await writeSyncularCodegenJson(app, './syncular.codegen.json');
+```
+
 This is a dev/build-time authoring layer. Generated Rust, Swift, Kotlin, JVM,
 and browser clients consume generated artifacts, not the TypeScript authoring
 module at runtime.

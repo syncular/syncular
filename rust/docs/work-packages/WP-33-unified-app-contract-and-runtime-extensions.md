@@ -679,6 +679,10 @@ The contract should distinguish two local cases:
   TypeScript modules directly.
 - Documented the TypeScript authoring-to-JSON handoff in the local Rust project
   integration guide.
+- Added `scaffoldSyncularClientContract(...)`, a conservative same-shape
+  scaffold that introspects existing migrations, infers table names plus
+  `server_version`, and requires app-supplied scope metadata instead of
+  guessing access rules from column names.
 
 Gates run:
 
@@ -700,6 +704,6 @@ Gates run:
 
 ## Next Action
 
-Start a small same-shape scaffold path that can generate an initial app
-authoring module/config from existing client migrations, while keeping the
-generated contract editable once server/client shapes diverge.
+Continue Batch 4 by wiring the scaffold path into docs/examples as a starter
+workflow, then move to Batch 5/8 follow-up coverage for versioned schema
+branches in server handlers.
