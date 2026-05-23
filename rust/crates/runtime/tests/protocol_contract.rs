@@ -13,8 +13,9 @@ use rusqlite::params;
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
 use syncular_protocol::scoped_snapshot_artifact_manifest_digest;
+use syncular_runtime::app_schema::{app_schema_from_json, AppSchema};
 use syncular_runtime::binary_snapshot::SnapshotChunkRows;
-use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
+use syncular_runtime::client::{SubscriptionSpec, SyncularClient, SyncularClientConfig};
 use syncular_runtime::diesel_sqlite::DieselSqliteStore;
 use syncular_runtime::encryption::{
     FieldEncryption, FieldEncryptionContext, FieldEncryptionRule, StaticFieldEncryptionConfig,
@@ -114,6 +115,89 @@ fn http_sync_sends_schema_version_and_applies_snapshot() -> Result<()> {
     assert_eq!(tasks[0].id, "remote-task");
     assert_eq!(tasks[0].title, "Remote snapshot");
     assert_eq!(tasks[0].server_version, 42);
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn native_old_generated_client_applies_current_snapshot_without_current_only_columns() -> Result<()>
+{
+    let old_schema_version = 6;
+    let path = temp_db_path("syncular-protocol-old-generated-client");
+    let app_schema = generated_todo_historical_app_schema(old_schema_version);
+    let store = DieselSqliteStore::open_with_schema(&path, app_schema)?;
+    let transport = TestTransport::new();
+    let handle = transport.handle();
+    let mut snapshot_row = todo_task_row("native-old-task", "Native old snapshot", 88);
+    snapshot_row
+        .as_object_mut()
+        .expect("snapshot row object")
+        .insert(
+            "description".to_string(),
+            json!("current-only server description"),
+        );
+    transport.push_http_response_fn(move |request| {
+        assert_eq!(
+            request.pull.as_ref().map(|pull| pull.schema_version),
+            Some(old_schema_version)
+        );
+        let mut response = snapshot_combined_response(
+            "sub-tasks",
+            "tasks",
+            vec![snapshot_row.clone()],
+            scopes(),
+            88,
+        );
+        response.latest_schema_version = Some(current_schema_version());
+        Ok(response)
+    });
+    let mut client = SyncularClient::with_app_schema_parts(
+        test_config(&path, "client-native-old-generated"),
+        store,
+        transport,
+        app_schema,
+    );
+    client.set_subscriptions(vec![SubscriptionSpec {
+        id: "sub-tasks".to_string(),
+        table: "tasks".to_string(),
+        scopes: scopes(),
+        params: Map::new(),
+        bootstrap_phase: 0,
+    }])?;
+
+    let report = client.sync_http()?;
+    assert_eq!(report.changed_tables, vec!["tasks".to_string()]);
+    let requests = handle.requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(
+        requests[0].pull.as_ref().map(|pull| pull.schema_version),
+        Some(old_schema_version)
+    );
+
+    let query_result: Value = serde_json::from_str(&client.readonly_query_json(
+        &json!({
+            "sql": "select id, title, completed, user_id, project_id, server_version from tasks",
+            "params": [],
+            "tables": ["tasks"]
+        })
+        .to_string(),
+    )?)?;
+    assert_eq!(query_result["rows"].as_array().map(Vec::len), Some(1));
+    assert_eq!(query_result["rows"][0]["id"], "native-old-task");
+    assert_eq!(query_result["rows"][0]["title"], "Native old snapshot");
+    assert_eq!(query_result["rows"][0]["server_version"], 88);
+    let error = client
+        .readonly_query_json(
+            &json!({
+                "sql": "select description from tasks",
+                "params": [],
+                "tables": ["tasks"]
+            })
+            .to_string(),
+        )
+        .expect_err("schema 6 local table must not include the schema 8 description column");
+    assert!(error.to_string().contains("description"));
 
     let _ = std::fs::remove_file(path);
     Ok(())
@@ -2747,15 +2831,16 @@ fn sqlite_snapshot_artifact_bytes_for_test(
           project_id text null,
           server_version bigint not null default 0,
           image text null,
-          title_yjs_state text null
+          title_yjs_state text null,
+          description text null
         ) without rowid;
         "#,
     )?;
     sql_query(
         r#"
         insert into tasks (
-          id, title, completed, user_id, project_id, server_version, image, title_yjs_state
-        ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+          id, title, completed, user_id, project_id, server_version, image, title_yjs_state, description
+        ) values (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
         "#,
     )
     .bind::<Text, _>(id)
@@ -2764,6 +2849,7 @@ fn sqlite_snapshot_artifact_bytes_for_test(
     .bind::<Text, _>(sync_conformance_str(&["actors", "rust", "actorId"]))
     .bind::<Nullable<Text>, _>(Some(sync_conformance_str(&["actors", "rust", "projectId"])))
     .bind::<BigInt, _>(server_version)
+    .bind::<Nullable<Text>, _>(None::<String>)
     .bind::<Nullable<Text>, _>(None::<String>)
     .bind::<Nullable<Text>, _>(None::<String>)
     .execute(&mut conn)?;
@@ -2920,6 +3006,52 @@ where
     T: SyncTransport,
 {
     SyncularClient::with_app_schema_parts(config, store, transport, demo_todo_app_schema())
+}
+
+fn generated_todo_historical_app_schema(schema_version: i32) -> AppSchema {
+    let document: Value = serde_json::from_str(include_str!(
+        "../../../examples/todo-app/syncular.schema.json"
+    ))
+    .expect("generated todo schema JSON");
+    let historical = document["historicalClientSchemas"]
+        .as_array()
+        .expect("historical client schemas")
+        .iter()
+        .find(|schema| schema["schemaVersion"].as_i64() == Some(i64::from(schema_version)))
+        .unwrap_or_else(|| panic!("historical schema version {schema_version}"));
+    let mut tables = Vec::new();
+    for table in historical["tables"]
+        .as_array()
+        .expect("historical schema tables")
+    {
+        let mut table = table.clone();
+        let subscription_id = table["subscription"]["id"]
+            .as_str()
+            .expect("historical table subscription id")
+            .to_string();
+        table
+            .as_object_mut()
+            .expect("historical table object")
+            .insert("subscriptionId".to_string(), json!(subscription_id));
+        tables.push(table);
+    }
+    let table_setup_sql = historical["localBaseSchema"]["tableSetupSql"]
+        .as_array()
+        .expect("historical local base SQL")
+        .iter()
+        .map(|value| value.as_str().expect("historical setup SQL statement"))
+        .collect::<Vec<_>>();
+    let app_schema_json = json!({
+        "schemaVersion": schema_version,
+        "migrations": [{
+            "version": format!("historical-{schema_version}"),
+            "schemaVersion": schema_version,
+            "name": format!("generated_todo_schema_{schema_version}"),
+            "upSql": table_setup_sql.join(";\n")
+        }],
+        "tables": tables
+    });
+    app_schema_from_json(&app_schema_json.to_string()).expect("historical generated app schema")
 }
 
 fn test_config(path: &str, client_id: &str) -> SyncularClientConfig {
