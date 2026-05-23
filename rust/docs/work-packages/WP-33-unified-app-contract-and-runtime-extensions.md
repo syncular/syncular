@@ -1079,6 +1079,24 @@ The contract should distinguish two local cases:
   should carry generated row/field metadata when reporting data changes, but
   the event subscription mechanism itself remains runtime-only.
 
+### Batch 5 Generated App Server API Shape Slice
+
+- Generated TypeScript server output now emits a single public generated app
+  reference:
+  `syncularGeneratedApp.tables.<table>`.
+- The lower-level server table-ref map is no longer exported from the generated
+  server file. It remains an implementation detail behind the public app
+  reference, so app server code can use the same `app.tables.notes` shape
+  described in this WP without carrying a second public table constant surface.
+- `createSyncularAppServerHandler(...)` continues to keep server behavior
+  imperative: `snapshot`, `applyOperation`, `resolveScopes`, authorization, and
+  server-shape translation remain app code. The generated app reference only
+  supplies the protocol/client table contract and schema-version helpers.
+- Updated server and browser conformance imports to use
+  `syncularGeneratedApp.tables.tasks` for generated server handlers while
+  leaving the client-side generated app table list in place for runtime startup
+  metadata.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -1186,13 +1204,20 @@ Gates run:
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --lib`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `bun test packages/server/src/generated-app-server-handler.test.ts`
+- `bun run --cwd packages/server tsgo`
+- `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
 
 ## Next Action
 
-Batch 6 is now closed for the known runtime extension boundaries. Continue
-WP-33 with the developer-facing contract flow: make the app authoring surface
-and generated server/client helper APIs line up with the generated
-language-neutral schema contract, including divergent server/client shapes and
-schema-version-aware handler helpers.
+Batch 6 is closed for the known runtime extension boundaries. Batch 5 now has
+the generated server helper public shape aligned with `app.tables.<table>`.
+Continue WP-33 with the developer-facing contract flow: make the app authoring
+surface generate the same language-neutral schema contract without app authors
+editing low-level `syncular.codegen.json`, while preserving divergent
+server/client shapes and schema-version-aware handler helpers.

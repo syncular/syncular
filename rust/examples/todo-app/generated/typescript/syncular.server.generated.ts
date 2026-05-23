@@ -1640,7 +1640,7 @@ export const syncularGeneratedServerSnapshotBinary = {
   columnsForVersion: syncularGeneratedSnapshotBinaryColumnsForVersion,
   encoderForVersion: syncularGeneratedSnapshotBinaryEncoderForVersion,
 } as const;
-export const syncularGeneratedAppTables = {
+const syncularGeneratedAppTableRefs = {
   comments: {
     name: 'comments',
     primaryKeyColumn: 'id',
@@ -1660,11 +1660,21 @@ export const syncularGeneratedAppTables = {
     scopePatterns: ['{user_id}', '{project_id}'],
   },
 } as const;
-export type SyncularGeneratedAppTableName = keyof typeof syncularGeneratedAppTables & string;
-export type SyncularGeneratedAppTableRef = typeof syncularGeneratedAppTables[SyncularGeneratedAppTableName];
+
+export const syncularGeneratedApp = {
+  currentSchemaVersion: syncularGeneratedSchemaVersion,
+  clientSchemaSupport: syncularGeneratedClientSchemaSupport,
+  tables: syncularGeneratedAppTableRefs,
+  clientSchemaForVersion: syncularGeneratedClientSchemaForVersion,
+  tableSchemaForVersion: syncularGeneratedTableSchemaForVersion,
+  projectClientRowForVersion: syncularProjectGeneratedClientRowForVersion,
+} as const;
+
+export type SyncularGeneratedAppTableName = keyof typeof syncularGeneratedApp.tables & string;
+export type SyncularGeneratedAppTableRef = typeof syncularGeneratedApp.tables[SyncularGeneratedAppTableName];
 
 function syncularResolveGeneratedAppTable(table: SyncularGeneratedAppTableName | SyncularGeneratedAppTableRef): SyncularGeneratedAppTableRef {
-  return typeof table === 'string' ? syncularGeneratedAppTables[table] : table;
+  return typeof table === 'string' ? syncularGeneratedApp.tables[table] : table;
 }
 
 function syncularGeneratedExtractScopes(table: string, row: Record<string, unknown>): StoredScopes {

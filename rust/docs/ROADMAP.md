@@ -582,9 +582,14 @@ read-only review:
   event subscription mechanics as runtime-only hooks while requiring row/field,
   CRDT, blob, encrypted-field, and auth-lease storage/wire semantics to be
   backed by generated metadata. Batch 6 is closed for known extension
-  boundaries; the next WP-33 gap is the developer-facing app contract and
-  generated server/client helper flow for divergent server/client shapes and
-  schema-version-aware handlers.
+  boundaries. The generated TypeScript server helper now exposes
+  `syncularGeneratedApp.tables.<table>` as the public app-table reference and
+  keeps the lower-level table map internal, so server code lines up with the
+  intended `app.tables.notes` authoring style while retaining imperative
+  snapshot/apply handlers and divergent server/client shapes. The next WP-33
+  gap is the developer-facing authoring surface that generates the
+  language-neutral schema contract without app authors editing low-level
+  `syncular.codegen.json`.
 
 ## Later
 

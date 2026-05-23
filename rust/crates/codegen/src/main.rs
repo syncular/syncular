@@ -5760,7 +5760,7 @@ fn push_typescript_app_server_handler_helpers(
     user_tables: &[TableInfo],
     config: &CodegenConfig,
 ) {
-    out.push_str("export const syncularGeneratedAppTables = {\n");
+    out.push_str("const syncularGeneratedAppTableRefs = {\n");
     for table in user_tables {
         let table_config = config.table(&table.name);
         let primary_key = primary_key_column(table);
@@ -5788,12 +5788,20 @@ fn push_typescript_app_server_handler_helpers(
         out.push_str("],\n");
         out.push_str("  },\n");
     }
-    out.push_str("} as const;\n");
-    out.push_str("export type SyncularGeneratedAppTableName = keyof typeof syncularGeneratedAppTables & string;\n");
-    out.push_str("export type SyncularGeneratedAppTableRef = typeof syncularGeneratedAppTables[SyncularGeneratedAppTableName];\n\n");
+    out.push_str("} as const;\n\n");
+    out.push_str("export const syncularGeneratedApp = {\n");
+    out.push_str("  currentSchemaVersion: syncularGeneratedSchemaVersion,\n");
+    out.push_str("  clientSchemaSupport: syncularGeneratedClientSchemaSupport,\n");
+    out.push_str("  tables: syncularGeneratedAppTableRefs,\n");
+    out.push_str("  clientSchemaForVersion: syncularGeneratedClientSchemaForVersion,\n");
+    out.push_str("  tableSchemaForVersion: syncularGeneratedTableSchemaForVersion,\n");
+    out.push_str("  projectClientRowForVersion: syncularProjectGeneratedClientRowForVersion,\n");
+    out.push_str("} as const;\n\n");
+    out.push_str("export type SyncularGeneratedAppTableName = keyof typeof syncularGeneratedApp.tables & string;\n");
+    out.push_str("export type SyncularGeneratedAppTableRef = typeof syncularGeneratedApp.tables[SyncularGeneratedAppTableName];\n\n");
     out.push_str("function syncularResolveGeneratedAppTable(table: SyncularGeneratedAppTableName | SyncularGeneratedAppTableRef): SyncularGeneratedAppTableRef {\n");
     out.push_str(
-        "  return typeof table === 'string' ? syncularGeneratedAppTables[table] : table;\n",
+        "  return typeof table === 'string' ? syncularGeneratedApp.tables[table] : table;\n",
     );
     out.push_str("}\n\n");
     out.push_str("function syncularGeneratedExtractScopes(table: string, row: Record<string, unknown>): StoredScopes {\n");
@@ -12125,7 +12133,9 @@ CREATE TABLE tasks (
         ));
         assert!(output.contains("export const syncularGeneratedSnapshotBinaryEncoders = {"));
         assert!(output.contains("export const syncularGeneratedServerSnapshotBinary = {"));
-        assert!(output.contains("export const syncularGeneratedAppTables = {"));
+        assert!(output.contains("const syncularGeneratedAppTableRefs = {"));
+        assert!(output.contains("export const syncularGeneratedApp = {"));
+        assert!(output.contains("  tables: syncularGeneratedAppTableRefs,"));
         assert!(output.contains("export function createSyncularAppServerHandler"));
         assert!(output.contains("syncularValidateGeneratedOperation"));
         assert!(output.contains("syncularAssertGeneratedApplyOperationResult"));
