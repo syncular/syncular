@@ -695,6 +695,11 @@ The contract should distinguish two local cases:
   null payloads, deletes with non-null payloads, unknown mutation columns, and
   nullable violations before custom server writes.
 - Extended server wrapper conformance tests for upsert/delete payload shape.
+- Added generated TypeScript server row and mutation-payload aliases for
+  supported historical client schema versions, for example
+  `SyncularAppDbV1`, `TaskRowV1`, and `TaskMutationPayloadV1`. These are
+  generated from replayed historical schema metadata and omit columns that did
+  not exist in the old client shape.
 
 Gates run:
 
@@ -716,6 +721,6 @@ Gates run:
 
 ## Next Action
 
-Continue Batch 5/8 with a generated fixture that supports an older client
-schema version and proves server handlers can branch on generated historical
-metadata instead of hand-written structural guesses.
+Continue Batch 5/8 by adding a TypeScript fixture/test that imports generated
+historical server types and demonstrates schema-version branching in a custom
+server handler.
