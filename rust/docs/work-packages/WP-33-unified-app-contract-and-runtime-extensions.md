@@ -739,6 +739,10 @@ The contract should distinguish two local cases:
   - unsupported generated snapshot schemas fail before app snapshot code runs;
   - snapshot chunk cache entries are reused for the same client schema version
     and separated across different client schema versions.
+- Added Hono route coverage proving snapshot-path
+  `SyncClientSchemaUnsupportedError` maps to the stable
+  `sync.client_schema_unsupported` upgrade response instead of surfacing as a
+  generic server error.
 
 Gates run:
 
@@ -756,6 +760,7 @@ Gates run:
 - `bun test packages/server/src/pull-plugins.test.ts packages/server/src/notify.test.ts packages/server/src/pull-snapshot-artifacts.test.ts packages/server/src/commit-integrity.test.ts packages/server/src/encrypted-crdt.test.ts`
 - `bun test tests/unit/create-server-handler.test.ts tests/unit/pull-bootstrap-dependencies.test.ts tests/unit/server-pull.test.ts`
 - `bun test packages/server-hono/src/__tests__/sync-maintenance.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts packages/server-hono/src/__tests__/create-server.test.ts`
+- `bun test packages/server-hono/src/__tests__/create-server.test.ts`
 - `bun test packages/testkit/src/faults.test.ts`
 - `bun --cwd rust/bindings/javascript build:wasm:core`
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
@@ -778,5 +783,4 @@ Gates run:
 ## Next Action
 
 Continue Batch 2/8 by adding conformance coverage for old-client pull flows:
-full Hono-level unsupported schema response coverage and version-specific
-snapshot artifact generation/selection.
+version-specific snapshot artifact generation/selection.

@@ -11,6 +11,7 @@ import {
   ensureSyncSchema,
   insertScopedSnapshotArtifact,
   type SnapshotArtifactStorage,
+  SyncClientSchemaUnsupportedError,
   type SyncCoreDb,
 } from '@syncular/server';
 import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
@@ -207,6 +208,7 @@ describe('createSyncServer console configuration', () => {
     userId: string;
     subscriptionUserId: string;
     requestId?: string;
+    schemaVersion?: number;
   }): Request {
     return new Request('http://localhost/sync', {
       method: 'POST',
@@ -218,7 +220,7 @@ describe('createSyncServer console configuration', () => {
       body: JSON.stringify({
         clientId: args.clientId,
         pull: {
-          schemaVersion: 1,
+          schemaVersion: args.schemaVersion ?? 1,
           limitCommits: 10,
           subscriptions: [
             {
@@ -440,6 +442,48 @@ describe('createSyncServer console configuration', () => {
         limit: 'maxSyncRequestJsonBytes',
         max: 96,
       },
+    });
+  });
+
+  it('maps unsupported client schema snapshots to a stable upgrade response', async () => {
+    const server = createSyncServer({
+      ...createOptions(),
+      sync: {
+        handlers: [
+          createServerHandler<ServerDb, ClientDb, 'tasks'>({
+            table: 'tasks',
+            scopes: ['user:{user_id}'],
+            resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+            snapshot: async (ctx) => {
+              throw new SyncClientSchemaUnsupportedError({
+                schemaVersion: ctx.schemaVersion,
+                supportedSchemaVersions: [6, 7],
+              });
+            },
+          }),
+        ],
+        authenticate: async () => ({ actorId: 'u1' }),
+      },
+    });
+    const app = new Hono();
+    app.route('/sync', server.syncRoutes);
+
+    const response = await app.request(
+      createPullRequest({
+        clientId: 'schema-too-old',
+        userId: 'u1',
+        subscriptionUserId: 'u1',
+        schemaVersion: 5,
+      })
+    );
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({
+      error: 'sync.client_schema_unsupported',
+      code: 'sync.client_schema_unsupported',
+      category: 'schema-mismatch',
+      recommendedAction: 'upgradeClient',
+      retryable: false,
     });
   });
 
