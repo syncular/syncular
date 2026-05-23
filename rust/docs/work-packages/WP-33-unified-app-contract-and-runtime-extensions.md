@@ -639,6 +639,12 @@ The contract should distinguish two local cases:
   the same app-only SQL migration trace.
 - Added conformance coverage proving embedded runtime migrations match the
   generated app migration statements.
+- Taught the Rust-owned SQLite WASM store to replay
+  `SyncularAppSchema.migrations` during open, validate the generated app table
+  shape, and record `syncular_app_schema` state. This lets generated browser
+  clients open a migrated app schema without relying on post-open table DDL.
+- Added a core WASM smoke proving embedded app schema migrations create app
+  tables during Rust open and can be used for immediate safe mutations.
 
 Gates run:
 
@@ -651,11 +657,13 @@ Gates run:
 - `bun test packages/core/src/__tests__/error-responses.test.ts`
 - `bun test packages/client/src/generated-app-conformance.test.ts`
 - `bun test packages/server/src/generated-app-server-handler.test.ts`
+- `bun --cwd rust/bindings/javascript build:wasm:core`
+- `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
 
 ## Next Action
 
-Continue Batch 3 by proving the Rust/WASM open path consumes
-`SyncularAppSchema.migrations` directly for generated app tables, then remove
-any remaining generated example reliance on post-open schema installation where
-the runtime can safely own migration replay.
+Continue Batch 3 by updating generated app creation to default to runtime-owned
+base migration replay when embedded migrations are present, leaving post-open
+TypeScript schema writes for derived artifacts such as local indexes/read
+models and for explicit manual schemas without embedded migrations.
