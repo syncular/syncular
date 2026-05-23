@@ -354,6 +354,8 @@ pub struct SyncScenarioVersionedTask {
 pub struct SyncScenarioTaskInput {
     pub id: String,
     pub title: String,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]

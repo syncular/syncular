@@ -977,6 +977,24 @@ The contract should distinguish two local cases:
   synchronously; the raw worker command shape should be tightened in a later
   Batch 6 slice.
 
+### Batch 6 Worker Runtime Config Slice
+
+- Tightened direct `SyncWorker::set_field_encryption`,
+  `SyncWorker::set_encrypted_crdt`, and `SyncWorker::set_blob_encryption` so
+  they validate synchronously against the worker's generated app schema before
+  queueing config changes.
+- Added a regression proving a worker opened with the plain generated todo
+  schema rejects encrypted-CRDT config immediately because there is no
+  generated `encrypted-update-log` CRDT field.
+- Cleaned Rust tests to handle the now-meaningful `Result` from runtime
+  encryption config setters instead of ignoring validation failures.
+- Updated stale Rust protocol/testkit E2EE assertions to use generated
+  encrypted `tasks.description` instead of CRDT-backed `tasks.title`.
+- Result: public native facade calls, direct worker calls, browser/WASM client
+  calls, and direct Rust client calls all reject runtime-only storage/wire
+  extension config before the runtime can silently drift from generated
+  metadata.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -1066,14 +1084,18 @@ Gates run:
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`
 - `bun run --cwd packages/client tsgo`
 - `bun run --cwd packages/server tsgo`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test crdt_field`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --lib`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
 
 ## Next Action
 
-Continue Batch 6 by tightening the remaining runtime extension surfaces:
-convert raw worker `set_*` config commands into first-class command/event
-operations or remove the direct worker config setters, then inventory auth
-lifecycle, diagnostics, network status, blob policy, live queries, row/field
-events, and lifecycle hooks for any remaining runtime-only behavior that should
-be backed by generated static contract metadata.
+Continue Batch 6 by inventorying the remaining runtime extension surfaces:
+auth lifecycle, diagnostics, network status, blob policy, live queries,
+row/field events, and lifecycle hooks. For each, decide whether it is pure
+runtime behavior or whether it carries storage/wire semantics that must be
+backed by generated static contract metadata.
