@@ -1143,6 +1143,12 @@ The contract should distinguish two local cases:
   so new apps author `syncular.app.ts`, generate/check the
   `syncular.codegen.json` handoff with `syncular-typegen codegen-config`, and
   avoid hand-authoring low-level JSON for blobs, encryption, and CRDT fields.
+- Decided Rust codegen should consume the checked generated handoff file rather
+  than directly invoking Bun/TypeScript. Build scripts and CI should run
+  `syncular-typegen codegen-config --check` first; keeping Rust codegen pure
+  avoids making native/Rust-only generation depend on a JavaScript runtime.
+- Updated `rust:codegen:check` and quality-gate docs so the canonical generator
+  check covers the typed app contract and Rust output together.
 
 Gates run:
 
@@ -1274,6 +1280,8 @@ Batch 6 is closed for the known runtime extension boundaries. Batch 5 now has
 generated server and client public shapes aligned around one generated app
 object. Batch 4 now has published `@syncular/typegen` helpers/CLI, the todo
 fixture generating the low-level `syncular.codegen.json` handoff from the typed
-app contract, and new-app docs that describe the same flow. Continue WP-33 by
-deciding whether Rust codegen should directly invoke the authoring step or only
-consume the checked generated handoff file.
+app contract, new-app docs that describe the same flow, and the decision that
+Rust codegen only consumes the checked handoff file. Continue WP-33 with the
+remaining authoring polish: decide how much of `syncular.codegen.json` stays as
+a visible generated artifact versus a hidden build output, and add any missing
+server-side typed authoring examples.
