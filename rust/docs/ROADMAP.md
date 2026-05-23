@@ -570,10 +570,12 @@ read-only review:
   `SyncWorker::set_*` config methods now validate synchronously against the
   generated app schema before queueing worker config changes, and Rust
   protocol/testkit E2EE assertions now target generated encrypted
-  `tasks.description` instead of CRDT-backed `title`. The next Batch 6 gap is
-  inventorying auth, diagnostics, network status, blob policy, live queries,
-  row/field events, and lifecycle hooks for remaining runtime-only behavior
-  that should be backed by generated static metadata.
+  `tasks.description` instead of CRDT-backed `title`. Browser Rust-owned
+  SQLite live-query registration now validates dependency tables and hinted
+  fields against generated app metadata, matching the native observed-query
+  boundary. The next Batch 6 gap is inventorying auth, diagnostics, network
+  status, blob policy, row/field events, and lifecycle hooks for remaining
+  runtime-only behavior that should be backed by generated static metadata.
 
 ## Later
 
