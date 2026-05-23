@@ -6,6 +6,7 @@ import type {
   ScopeValuesForKeys,
   StoredScopes,
   SyncAuthLeaseProvenance,
+  SyncChange,
   SyncOp,
   SyncOperation,
   SyncOperationResult,
@@ -334,6 +335,19 @@ export interface ServerTableHandler<
   snapshotBinaryEncoderForVersion?: (
     schemaVersion: number
   ) => BinarySnapshotRowsEncoder | null | undefined;
+
+  /**
+   * Project a persisted incremental change row to the requested client schema
+   * before pull plugins, wire integrity, and response encoding run.
+   *
+   * Generated divergent-schema handlers use this to keep the commit log in the
+   * current client row shape while serving older clients their targeted row
+   * shape.
+   */
+  projectChangeForVersion?: (
+    change: SyncChange,
+    schemaVersion: number
+  ) => SyncChange;
 
   /**
    * Hint for push engine savepoint optimization on single-op commits.

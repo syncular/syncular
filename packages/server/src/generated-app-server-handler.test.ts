@@ -102,6 +102,27 @@ function createTaskOperation(
   };
 }
 
+function currentTaskRowForOperation(
+  op: SyncOperation
+): Record<string, unknown> | null {
+  if (op.op === 'delete') return null;
+  const payload =
+    op.payload && typeof op.payload === 'object' && !Array.isArray(op.payload)
+      ? (op.payload as Record<string, unknown>)
+      : {};
+  return {
+    id: op.row_id,
+    title: payload.title ?? 'Client title',
+    completed: payload.completed ?? 0,
+    user_id: payload.user_id ?? 'user-1',
+    project_id: payload.project_id ?? 'project-1',
+    server_version: 5,
+    image: null,
+    title_yjs_state: null,
+    description: null,
+  };
+}
+
 function appliedResult(
   opIndex: number,
   op: SyncOperation
@@ -113,7 +134,7 @@ function appliedResult(
         table: op.table,
         row_id: op.row_id,
         op: op.op,
-        row_json: op.payload,
+        row_json: currentTaskRowForOperation(op),
         row_version: 5,
         scopes: {
           user_id: 'user-1',
@@ -513,6 +534,79 @@ describe('generated app server handler', () => {
         'description'
       );
     }
+  });
+
+  it('requires generated handlers to emit canonical current rows', async () => {
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot() {
+        return { rows: [], nextCursor: null };
+      },
+      async applyOperation(_ctx, op, opIndex) {
+        return {
+          result: { opIndex, status: 'applied' },
+          emittedChanges: [
+            {
+              table: op.table,
+              row_id: op.row_id,
+              op: 'upsert',
+              row_json: op.payload,
+              row_version: 9,
+              scopes: { user_id: 'user-1', project_id: 'project-1' },
+            },
+          ],
+        };
+      },
+    });
+
+    await expect(
+      handler.applyOperation(createApplyContext(), createTaskOperation(), 14)
+    ).rejects.toThrow('Generated emitted change row_json tasks.task-1');
+    await expect(
+      handler.applyOperation(createApplyContext(), createTaskOperation(), 15)
+    ).rejects.toThrow('tasks.id: Missing column');
+  });
+
+  it('projects persisted incremental change rows to historical client schemas', () => {
+    const currentShapeRow = {
+      id: 'task-v6-pull',
+      title: 'Incremental server title',
+      completed: 0,
+      user_id: 'user-1',
+      project_id: 'project-1',
+      server_version: 8,
+      image: null,
+      title_yjs_state: null,
+      description: 'current-only pull field',
+    };
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot() {
+        return { rows: [], nextCursor: null };
+      },
+      async applyOperation(_ctx, op, opIndex) {
+        return appliedResult(opIndex, op);
+      },
+    });
+
+    const projected = handler.projectChangeForVersion?.(
+      {
+        table: 'tasks',
+        row_id: 'task-v6-pull',
+        op: 'upsert',
+        row_json: currentShapeRow,
+        row_version: 8,
+        scopes: { user_id: 'user-1', project_id: 'project-1' },
+      },
+      6
+    );
+
+    expect(projected?.row_json).toEqual(
+      syncularProjectGeneratedClientRowForVersion('tasks', currentShapeRow, 6)
+    );
+    expect(projected?.row_json).not.toHaveProperty('description');
   });
 
   it('rejects unsupported client schema versions before custom apply code runs', async () => {

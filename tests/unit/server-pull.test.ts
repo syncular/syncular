@@ -15,6 +15,7 @@ import {
   pull,
   pushCommit,
   readSnapshotChunk,
+  type ServerTableHandler,
   type SyncCoreDb,
   type SyncSnapshot,
 } from '@syncular/server';
@@ -243,6 +244,87 @@ describe('pull', () => {
     });
 
     expect(seenSchemaVersion).toBe(6);
+  });
+
+  it('projects incremental pull changes through the table handler schema hook', async () => {
+    const baseHandlers = makeHandlers();
+    const baseHandler = baseHandlers.byTable.get('tasks');
+    if (!baseHandler) throw new Error('Expected tasks handler');
+    let seenSchemaVersion = 0;
+    const projectedHandler: ServerTableHandler<ServerDb> = {
+      ...baseHandler,
+      projectChangeForVersion(change, schemaVersion) {
+        seenSchemaVersion = schemaVersion;
+        if (
+          schemaVersion === 6 &&
+          change.row_json &&
+          typeof change.row_json === 'object' &&
+          !Array.isArray(change.row_json)
+        ) {
+          const { server_version: _serverVersion, ...row } =
+            change.row_json as TasksTable;
+          return { ...change, row_json: row };
+        }
+        return change;
+      },
+    };
+    const handlers = createServerHandlerCollection<ServerDb>([
+      projectedHandler,
+    ]);
+
+    await pushTask(handlers, 'schema-project-task', 'Initial');
+    const bootstrap = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'schema-project-reader',
+        schemaVersion: 6,
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+            crdtStateVectors: [],
+          },
+        ],
+      },
+    });
+
+    await pushTask(handlers, 'schema-project-task', 'Changed');
+    const result = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'schema-project-reader',
+        schemaVersion: 6,
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: bootstrap.response.subscriptions[0]!.nextCursor,
+            crdtStateVectors: [],
+          },
+        ],
+      },
+    });
+
+    expect(seenSchemaVersion).toBe(6);
+    const row = result.response.subscriptions[0]?.commits[0]?.changes[0]
+      ?.row_json as Record<string, unknown>;
+    expect(row).toMatchObject({
+      id: 'schema-project-task',
+      user_id: 'u1',
+      title: 'Changed',
+    });
+    expect(row).not.toHaveProperty('server_version');
   });
 
   it('keeps snapshot chunk cache entries separated by client schema version', async () => {

@@ -871,6 +871,26 @@ The contract should distinguish two local cases:
   `tasks.description` is rejected for a schema 6 conflict row unless the server
   projects it to the schema 6 row shape.
 
+### Batch 2/5/8 Emitted Change And Incremental Pull Row Targeting Slice
+
+- Added a server table-handler `projectChangeForVersion(...)` hook used while
+  building incremental pull responses.
+- Generated app server handlers now provide that hook and project persisted
+  current-schema commit-log rows to the requesting client schema version before
+  pull plugins, wire integrity, and response encoding run.
+- Generated app server handlers now validate
+  `ApplyOperationResult.emittedChanges[]` as canonical current-schema rows
+  before they can be persisted to the commit log. Old-client writes can still
+  be accepted, but the server must emit the current generated client row shape
+  so newer clients do not lose columns.
+- The projection hook is constrained to row-payload reshaping only; changing
+  table, row id, or operation fails before response construction.
+- Added generated server handler tests proving partial mutation payloads cannot
+  be persisted as commit-log rows, and generated historical projection removes
+  schema 8-only `tasks.description` from schema 6 incremental rows.
+- Added server pull coverage proving incremental pull changes are routed
+  through the table-handler schema hook.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -930,11 +950,20 @@ Gates run:
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
+- `bun test packages/server/src/generated-app-server-handler.test.ts`
+- `bun test tests/unit/server-pull.test.ts -t "projects incremental pull changes"`
+- `bun test tests/unit/server-pull.test.ts`
+- `bun run --cwd packages/server tsgo`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
+- `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
+- `git diff --check`
 
 ## Next Action
 
-Continue Batch 2/5/8 with emitted change and incremental pull row-shape
-targeting. `ApplyOperationResult.emittedChanges[].row_json` and subsequent pull
-changes need the same generated projection/validation rules as snapshots and
-conflict rows so historical clients do not receive current-only columns through
-the commit-log path.
+Continue Batch 8 with an end-to-end generated old-client incremental-pull
+conformance test through the browser/Hono path. The unit-level hook is covered;
+the remaining proof is that a schema 6 generated browser client can bootstrap,
+then receive a schema 8 commit-log update without applying current-only
+`tasks.description`.

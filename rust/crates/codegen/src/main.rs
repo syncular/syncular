@@ -5821,7 +5821,19 @@ fn push_typescript_app_server_handler_helpers(
     out.push_str("    emittedChanges: [],\n");
     out.push_str("  };\n");
     out.push_str("}\n\n");
+    out.push_str("function syncularAssertGeneratedEmittedChange(table: string, change: ApplyOperationResult['emittedChanges'][number]): void {\n");
+    out.push_str("  if (change.table !== table) throw new Error(`Generated emitted change table ${change.table} does not match handler table ${table}`);\n");
+    out.push_str("  if (change.op === 'delete') {\n");
+    out.push_str("    if (change.row_json !== null) throw new Error(`Generated delete emitted change ${table}.${change.row_id} must not include row_json`);\n");
+    out.push_str("    return;\n");
+    out.push_str("  }\n");
+    out.push_str("  const validation = syncularValidateGeneratedClientRow(table, change.row_json, syncularGeneratedSchemaVersion);\n");
+    out.push_str("  if (!validation.ok) {\n");
+    out.push_str("    throw new Error(`Generated emitted change row_json ${table}.${change.row_id} does not match current schema ${syncularGeneratedSchemaVersion}: ${validation.errors.map((error) => `${error.path}: ${error.message}`).join('; ')}`);\n");
+    out.push_str("  }\n");
+    out.push_str("}\n\n");
     out.push_str("function syncularAssertGeneratedApplyOperationResult(table: string, result: ApplyOperationResult, schemaVersion: number | null | undefined): void {\n");
+    out.push_str("  for (const change of result.emittedChanges) syncularAssertGeneratedEmittedChange(table, change);\n");
     out.push_str("  if (result.result.status !== 'conflict') return;\n");
     out.push_str("  const validation = syncularValidateGeneratedClientRow(table, result.result.server_row, schemaVersion);\n");
     out.push_str("  if (!validation.ok) {\n");
@@ -5854,6 +5866,14 @@ fn push_typescript_app_server_handler_helpers(
     out.push_str("    snapshotBinaryEncoder: syncularGeneratedSnapshotBinaryEncoders[tableName as keyof SyncularAppDb],\n");
     out.push_str("    snapshotBinaryColumnsForVersion: (schemaVersion) => syncularGeneratedSnapshotBinaryColumnsForVersion(tableName, schemaVersion),\n");
     out.push_str("    snapshotBinaryEncoderForVersion: (schemaVersion) => syncularGeneratedSnapshotBinaryEncoderForVersion(tableName, schemaVersion),\n");
+    out.push_str("    projectChangeForVersion(change, schemaVersion) {\n");
+    out.push_str("      if (change.row_json == null) return change;\n");
+    out.push_str("      if (!syncularGeneratedIsRecord(change.row_json)) throw new Error(`Generated pull change row_json ${tableName}.${change.row_id} must be an object`);\n");
+    out.push_str("      const row = syncularProjectGeneratedClientRowForVersion(tableName, change.row_json, schemaVersion);\n");
+    out.push_str("      const validation = syncularValidateGeneratedClientRow(tableName, row, schemaVersion);\n");
+    out.push_str("      if (!validation.ok) throw new Error(`Generated pull change row_json ${tableName}.${change.row_id} does not match client schema ${schemaVersion}: ${validation.errors.map((error) => `${error.path}: ${error.message}`).join('; ')}`);\n");
+    out.push_str("      return { ...change, row_json: row };\n");
+    out.push_str("    },\n");
     out.push_str("    canRejectSingleOperationWithoutSavepoint: options.canRejectSingleOperationWithoutSavepoint,\n");
     out.push_str("    resolveScopes: async (ctx) => options.resolveScopes(ctx),\n");
     out.push_str("    extractScopes: options.extractScopes ?? ((row) => syncularGeneratedExtractScopes(tableName, row)),\n");
@@ -11633,6 +11653,8 @@ CREATE TABLE tasks (
         assert!(server_output.contains("export function syncularValidateGeneratedMutationPayload"));
         assert!(server_output.contains("export function syncularValidateGeneratedOperation"));
         assert!(server_output.contains("syncularAssertGeneratedApplyOperationResult"));
+        assert!(server_output.contains("syncularAssertGeneratedEmittedChange"));
+        assert!(server_output.contains("projectChangeForVersion(change, schemaVersion)"));
         assert!(server_output
             .contains("export function syncularGeneratedSnapshotBinaryColumnsForVersion"));
         assert!(server_output
@@ -12108,6 +12130,8 @@ CREATE TABLE tasks (
         assert!(output.contains("export function createSyncularAppServerHandler"));
         assert!(output.contains("syncularValidateGeneratedOperation"));
         assert!(output.contains("syncularAssertGeneratedApplyOperationResult"));
+        assert!(output.contains("syncularAssertGeneratedEmittedChange"));
+        assert!(output.contains("projectChangeForVersion(change, schemaVersion)"));
         assert!(output.contains("syncularUnsupportedClientSchemaResult"));
         Ok(())
     }

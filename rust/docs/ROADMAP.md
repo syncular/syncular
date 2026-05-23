@@ -546,9 +546,11 @@ read-only review:
   validation now rejects extra current-only fields for historical snapshot rows
   and conflict `server_row` payloads, and exposes a projection helper for app
   handlers that query authoritative current rows but need to emit a targeted
-  historical client shape. The next WP-33 gap is emitted change/incremental
-  pull row-shape targeting through `ApplyOperationResult.emittedChanges[]` and
-  the commit-log pull path.
+  historical client shape. Generated apply results now also validate emitted
+  commit-log rows as canonical current-schema rows, and incremental pull
+  projects persisted rows through the generated handler before plugins,
+  integrity, and response encoding. The next WP-33 gap is an end-to-end
+  browser/Hono old-client incremental-pull conformance test over that path.
 
 ## Later
 
