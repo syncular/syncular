@@ -843,6 +843,20 @@ The contract should distinguish two local cases:
   integration lane if we add a Rust test harness that can drive the TypeScript
   Hono server from Cargo.
 
+### Batch 5/8 Historical Row Projection Slice
+
+- Tightened generated snapshot row validation so extra fields are rejected for
+  the targeted client schema version. This prevents current-only fields from
+  leaking through inline snapshots, conflict rows, or any future non-binary
+  path just because binary snapshot columns would have omitted them.
+- Added generated
+  `syncularProjectGeneratedClientRowForVersion(table, row, schemaVersion)`,
+  which lets app-owned server handlers intentionally project an authoritative
+  current row into the targeted generated client row shape.
+- Updated browser old-client conformance to project schema 8 task rows before
+  returning them to a schema 6 client, and added server unit coverage proving
+  historical rows with `tasks.description` are rejected unless projected.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -867,6 +881,7 @@ Gates run:
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts -t "generated old-client"`
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts -t "unsupported generated"`
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
+- `bun test packages/server/src/generated-app-server-handler.test.ts`
 - `bun run --cwd packages/typegen tsgo`
 - `bun test packages/typegen/src/app-contract.test.ts`
 - `bun test rust/examples/todo-app/syncular.app.test.ts`
@@ -897,7 +912,6 @@ Gates run:
 
 ## Next Action
 
-Continue Batch 5/8 by tightening generated server validation for current rows:
-decide whether extra current-only fields should be allowed for historical
-snapshot validation because binary columns omit them, or rejected unless the
-handler explicitly returns the targeted historical row shape.
+Continue Batch 5/8 with versioned conflict `server_row` validation/projection
+so conflict payloads follow the same targeted client schema rules as
+snapshots.

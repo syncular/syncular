@@ -5677,6 +5677,17 @@ fn push_typescript_client_schema_metadata(
         "  return schema?.tables.find((candidate) => candidate.name === table) ?? null;\n",
     );
     out.push_str("}\n\n");
+    out.push_str("export function syncularProjectGeneratedClientRowForVersion(table: string, row: Record<string, unknown>, schemaVersion: number | null | undefined): Record<string, unknown> {\n");
+    out.push_str(
+        "  const tableSchema = syncularGeneratedTableSchemaForVersion(table, schemaVersion);\n",
+    );
+    out.push_str("  if (!tableSchema) throw new Error(`Unknown table or unsupported client schema version ${schemaVersion ?? 'unknown'} for ${table}`);\n");
+    out.push_str("  const projected: Record<string, unknown> = {};\n");
+    out.push_str("  for (const column of tableSchema.columns) {\n");
+    out.push_str("    if (column.name in row) projected[column.name] = row[column.name];\n");
+    out.push_str("  }\n");
+    out.push_str("  return projected;\n");
+    out.push_str("}\n\n");
     out.push_str("export function syncularValidateGeneratedClientRow(table: string, row: unknown, schemaVersion: number | null | undefined): SyncularGeneratedValidationResult<Record<string, unknown>> {\n");
     out.push_str(
         "  const tableSchema = syncularGeneratedTableSchemaForVersion(table, schemaVersion);\n",
@@ -5684,6 +5695,10 @@ fn push_typescript_client_schema_metadata(
     out.push_str("  if (!tableSchema) return { ok: false, errors: [{ path: table, message: `Unknown table or unsupported client schema version ${schemaVersion ?? 'unknown'}` }] };\n");
     out.push_str("  if (!syncularGeneratedIsRecord(row)) return { ok: false, errors: [{ path: table, message: 'Expected row object' }] };\n");
     out.push_str("  const errors: SyncularGeneratedValidationError[] = [];\n");
+    out.push_str("  const columns = new Set(tableSchema.columns.map((column) => column.name));\n");
+    out.push_str("  for (const key of Object.keys(row)) {\n");
+    out.push_str("    if (!columns.has(key)) errors.push({ path: `${table}.${key}`, message: 'Unknown column' });\n");
+    out.push_str("  }\n");
     out.push_str("  for (const column of tableSchema.columns) {\n");
     out.push_str("    if (!(column.name in row)) {\n");
     out.push_str(
@@ -11600,6 +11615,9 @@ CREATE TABLE tasks (
         assert!(server_output.contains("\"localBaseSchema\""));
         assert!(server_output.contains("export function syncularGeneratedClientSchemaForVersion"));
         assert!(server_output.contains("export function syncularGeneratedTableSchemaForVersion"));
+        assert!(
+            server_output.contains("export function syncularProjectGeneratedClientRowForVersion")
+        );
         assert!(server_output.contains("export function syncularValidateGeneratedClientRow"));
         assert!(server_output.contains("export function syncularValidateGeneratedMutationPayload"));
         assert!(server_output.contains("export function syncularValidateGeneratedOperation"));
@@ -12057,6 +12075,7 @@ CREATE TABLE tasks (
         ));
         assert!(output.contains("export interface SyncularGeneratedTableSchemaMetadata"));
         assert!(output.contains("export function syncularGeneratedTableSchemaForVersion"));
+        assert!(output.contains("export function syncularProjectGeneratedClientRowForVersion"));
         assert!(output.contains("export function syncularValidateGeneratedClientRow"));
         assert!(output.contains("export function syncularValidateGeneratedMutationPayload"));
         assert!(output.contains("export function syncularValidateGeneratedOperation"));

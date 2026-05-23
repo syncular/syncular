@@ -6,6 +6,7 @@ import {
   syncularGeneratedAppTables as todoGeneratedServerAppTables,
   syncularGeneratedClientSchemaForVersion as todoGeneratedClientSchemaForVersion,
   syncularGeneratedClientSchemaSupport as todoGeneratedClientSchemaSupport,
+  syncularProjectGeneratedClientRowForVersion as todoProjectGeneratedClientRowForVersion,
   syncularGeneratedSchemaVersion as todoGeneratedSchemaVersion,
   type SyncularGeneratedClientSchemaMetadata as TodoGeneratedClientSchemaMetadata,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
@@ -593,7 +594,16 @@ describe('Syncular core WASM artifact', () => {
               .where('user_id', '=', ctx.actorId)
               .where('project_id', '=', projectId)
               .execute();
-            return { rows, nextCursor: null };
+            return {
+              rows: rows.map((row) =>
+                todoProjectGeneratedClientRowForVersion(
+                  'tasks',
+                  row,
+                  ctx.schemaVersion
+                )
+              ),
+              nextCursor: null,
+            };
           },
           async applyOperation(_ctx, _op, opIndex) {
             return {

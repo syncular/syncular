@@ -1316,11 +1316,25 @@ export function syncularGeneratedTableSchemaForVersion(table: string, schemaVers
   return schema?.tables.find((candidate) => candidate.name === table) ?? null;
 }
 
+export function syncularProjectGeneratedClientRowForVersion(table: string, row: Record<string, unknown>, schemaVersion: number | null | undefined): Record<string, unknown> {
+  const tableSchema = syncularGeneratedTableSchemaForVersion(table, schemaVersion);
+  if (!tableSchema) throw new Error(`Unknown table or unsupported client schema version ${schemaVersion ?? 'unknown'} for ${table}`);
+  const projected: Record<string, unknown> = {};
+  for (const column of tableSchema.columns) {
+    if (column.name in row) projected[column.name] = row[column.name];
+  }
+  return projected;
+}
+
 export function syncularValidateGeneratedClientRow(table: string, row: unknown, schemaVersion: number | null | undefined): SyncularGeneratedValidationResult<Record<string, unknown>> {
   const tableSchema = syncularGeneratedTableSchemaForVersion(table, schemaVersion);
   if (!tableSchema) return { ok: false, errors: [{ path: table, message: `Unknown table or unsupported client schema version ${schemaVersion ?? 'unknown'}` }] };
   if (!syncularGeneratedIsRecord(row)) return { ok: false, errors: [{ path: table, message: 'Expected row object' }] };
   const errors: SyncularGeneratedValidationError[] = [];
+  const columns = new Set(tableSchema.columns.map((column) => column.name));
+  for (const key of Object.keys(row)) {
+    if (!columns.has(key)) errors.push({ path: `${table}.${key}`, message: 'Unknown column' });
+  }
   for (const column of tableSchema.columns) {
     if (!(column.name in row)) {
       errors.push({ path: `${table}.${column.name}`, message: 'Missing column' });

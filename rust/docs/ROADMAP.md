@@ -542,7 +542,10 @@ read-only review:
   Rust/Diesel conformance now covers the same old-client bootstrap path and
   confirms the schema 6 local table does not expose `tasks.description`.
   Browser/Hono conformance also covers unsupported schema 5 rejection as
-  `sync.client_schema_unsupported` with `upgradeClient`.
+  `sync.client_schema_unsupported` with `upgradeClient`. Generated server
+  validation now rejects extra current-only fields for historical snapshot rows
+  and exposes a projection helper for app handlers that query authoritative
+  current rows but need to emit a targeted historical client shape.
 
 ## Later
 
