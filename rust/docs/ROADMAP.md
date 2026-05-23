@@ -541,6 +541,8 @@ read-only review:
   from a schema 8 server without applying the current-only column. Native
   Rust/Diesel conformance now covers the same old-client bootstrap path and
   confirms the schema 6 local table does not expose `tasks.description`.
+  Browser/Hono conformance also covers unsupported schema 5 rejection as
+  `sync.client_schema_unsupported` with `upgradeClient`.
 
 ## Later
 
