@@ -610,6 +610,12 @@ The contract should distinguish two local cases:
   `syncularGeneratedHistoricalClientSchemas`, and
   `syncularGeneratedClientSchemaForVersion(...)`. This gives server handlers
   generated per-version table metadata without shipping old client packages.
+- Added generated TypeScript server validation helpers:
+  `syncularGeneratedTableSchemaForVersion(...)`,
+  `syncularValidateGeneratedClientRow(...)`, and
+  `syncularValidateGeneratedMutationPayload(...)`. These validate schema shape
+  for server-emitted snapshot rows and incoming mutation payloads without
+  introducing an ORM or query abstraction.
 
 Gates run:
 
@@ -625,7 +631,7 @@ Gates run:
 
 ## Next Action
 
-Add parse/validation helpers for generated TypeScript server operation
-payloads and snapshot rows, using `ctx.schemaVersion` plus
-`syncularGeneratedClientSchemaForVersion(...)`. Keep query builders/client
-artifacts current-only.
+Add a generated `createAppServerHandler` wrapper that uses the current
+metadata, schema-version support policy, unsupported-schema result helper, and
+validation helpers while still leaving `snapshot`, `applyOperation`,
+`resolveScopes`, and server DB translation app-owned.

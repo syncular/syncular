@@ -5520,9 +5520,21 @@ fn push_typescript_client_schema_metadata(
         "schemaVersion": schema_version,
         "tables": current_tables,
     });
+    out.push_str("export interface SyncularGeneratedColumnSchemaMetadata {\n");
+    out.push_str("  name: string;\n");
+    out.push_str("  nullable: boolean;\n");
+    out.push_str("  notnullRequired: boolean;\n");
+    out.push_str("  primaryKey: boolean;\n");
+    out.push_str("}\n\n");
+    out.push_str("export interface SyncularGeneratedTableSchemaMetadata {\n");
+    out.push_str("  name: string;\n");
+    out.push_str("  primaryKeyColumn: string;\n");
+    out.push_str("  serverVersionColumn: string;\n");
+    out.push_str("  columns: readonly SyncularGeneratedColumnSchemaMetadata[];\n");
+    out.push_str("}\n\n");
     out.push_str("export interface SyncularGeneratedClientSchemaMetadata {\n");
     out.push_str("  schemaVersion: number;\n");
-    out.push_str("  tables: readonly unknown[];\n");
+    out.push_str("  tables: readonly SyncularGeneratedTableSchemaMetadata[];\n");
     out.push_str("}\n\n");
     out.push_str(
         "export const syncularGeneratedCurrentClientSchema: SyncularGeneratedClientSchemaMetadata = ",
@@ -5538,6 +5550,73 @@ fn push_typescript_client_schema_metadata(
     out.push_str("export function syncularGeneratedClientSchemaForVersion(schemaVersion: number | null | undefined): SyncularGeneratedClientSchema | null {\n");
     out.push_str("  if (schemaVersion === syncularGeneratedSchemaVersion) return syncularGeneratedCurrentClientSchema;\n");
     out.push_str("  return syncularGeneratedHistoricalClientSchemas.find((schema) => schema.schemaVersion === schemaVersion) ?? null;\n");
+    out.push_str("}\n\n");
+    out.push_str("export interface SyncularGeneratedValidationError {\n");
+    out.push_str("  path: string;\n");
+    out.push_str("  message: string;\n");
+    out.push_str("}\n\n");
+    out.push_str("export type SyncularGeneratedValidationResult<T> = { ok: true; value: T } | { ok: false; errors: SyncularGeneratedValidationError[] };\n\n");
+    out.push_str(
+        "function syncularGeneratedIsRecord(value: unknown): value is Record<string, unknown> {\n",
+    );
+    out.push_str(
+        "  return typeof value === 'object' && value !== null && !Array.isArray(value);\n",
+    );
+    out.push_str("}\n\n");
+    out.push_str("export function syncularGeneratedTableSchemaForVersion(table: string, schemaVersion: number | null | undefined): SyncularGeneratedTableSchemaMetadata | null {\n");
+    out.push_str("  const schema = syncularGeneratedClientSchemaForVersion(schemaVersion);\n");
+    out.push_str(
+        "  return schema?.tables.find((candidate) => candidate.name === table) ?? null;\n",
+    );
+    out.push_str("}\n\n");
+    out.push_str("export function syncularValidateGeneratedClientRow(table: string, row: unknown, schemaVersion: number | null | undefined): SyncularGeneratedValidationResult<Record<string, unknown>> {\n");
+    out.push_str(
+        "  const tableSchema = syncularGeneratedTableSchemaForVersion(table, schemaVersion);\n",
+    );
+    out.push_str("  if (!tableSchema) return { ok: false, errors: [{ path: table, message: `Unknown table or unsupported client schema version ${schemaVersion ?? 'unknown'}` }] };\n");
+    out.push_str("  if (!syncularGeneratedIsRecord(row)) return { ok: false, errors: [{ path: table, message: 'Expected row object' }] };\n");
+    out.push_str("  const errors: SyncularGeneratedValidationError[] = [];\n");
+    out.push_str("  for (const column of tableSchema.columns) {\n");
+    out.push_str("    if (!(column.name in row)) {\n");
+    out.push_str(
+        "      errors.push({ path: `${table}.${column.name}`, message: 'Missing column' });\n",
+    );
+    out.push_str("      continue;\n");
+    out.push_str("    }\n");
+    out.push_str("    if (row[column.name] == null && !column.nullable) {\n");
+    out.push_str("      errors.push({ path: `${table}.${column.name}`, message: 'Column cannot be null' });\n");
+    out.push_str("    }\n");
+    out.push_str("  }\n");
+    out.push_str(
+        "  return errors.length === 0 ? { ok: true, value: row } : { ok: false, errors };\n",
+    );
+    out.push_str("}\n\n");
+    out.push_str("export function syncularValidateGeneratedMutationPayload(table: string, payload: unknown, schemaVersion: number | null | undefined): SyncularGeneratedValidationResult<Record<string, unknown> | null> {\n");
+    out.push_str(
+        "  const tableSchema = syncularGeneratedTableSchemaForVersion(table, schemaVersion);\n",
+    );
+    out.push_str("  if (!tableSchema) return { ok: false, errors: [{ path: table, message: `Unknown table or unsupported client schema version ${schemaVersion ?? 'unknown'}` }] };\n");
+    out.push_str("  if (payload == null) return { ok: true, value: null };\n");
+    out.push_str("  if (!syncularGeneratedIsRecord(payload)) return { ok: false, errors: [{ path: table, message: 'Expected mutation payload object or null' }] };\n");
+    out.push_str("  const errors: SyncularGeneratedValidationError[] = [];\n");
+    out.push_str(
+        "  const columns = new Map(tableSchema.columns.map((column) => [column.name, column]));\n",
+    );
+    out.push_str("  for (const [key, value] of Object.entries(payload)) {\n");
+    out.push_str("    const column = columns.get(key);\n");
+    out.push_str("    if (!column) {\n");
+    out.push_str("      errors.push({ path: `${table}.${key}`, message: 'Unknown column' });\n");
+    out.push_str("      continue;\n");
+    out.push_str("    }\n");
+    out.push_str("    if (value == null && !column.nullable) {\n");
+    out.push_str(
+        "      errors.push({ path: `${table}.${key}`, message: 'Column cannot be null' });\n",
+    );
+    out.push_str("    }\n");
+    out.push_str("  }\n");
+    out.push_str(
+        "  return errors.length === 0 ? { ok: true, value: payload } : { ok: false, errors };\n",
+    );
     out.push_str("}\n\n");
     Ok(())
 }
@@ -11225,6 +11304,9 @@ CREATE TABLE tasks (
         assert!(server_output.contains("\"schemaVersion\": 1"));
         assert!(server_output.contains("\"blobColumns\": []"));
         assert!(server_output.contains("export function syncularGeneratedClientSchemaForVersion"));
+        assert!(server_output.contains("export function syncularGeneratedTableSchemaForVersion"));
+        assert!(server_output.contains("export function syncularValidateGeneratedClientRow"));
+        assert!(server_output.contains("export function syncularValidateGeneratedMutationPayload"));
 
         let _ = fs::remove_dir_all(&migrations_dir);
         Ok(())
@@ -11651,6 +11733,10 @@ CREATE TABLE tasks (
         assert!(output.contains(
             "export function syncularGeneratedClientSchemaForVersion(schemaVersion: number | null | undefined)"
         ));
+        assert!(output.contains("export interface SyncularGeneratedTableSchemaMetadata"));
+        assert!(output.contains("export function syncularGeneratedTableSchemaForVersion"));
+        assert!(output.contains("export function syncularValidateGeneratedClientRow"));
+        assert!(output.contains("export function syncularValidateGeneratedMutationPayload"));
         assert!(output.contains("export interface SyncularAppDb"));
         assert!(output.contains("export interface TaskRow"));
         assert!(output.contains("  image: BlobRef | null;"));
