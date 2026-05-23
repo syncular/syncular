@@ -1257,6 +1257,7 @@ Gates run:
 - `bun packages/typegen/src/cli.ts codegen-config --app rust/examples/todo-app/syncular.app.ts --out rust/examples/todo-app/syncular.codegen.json --check`
 - `bun test rust/examples/todo-app/syncular.app.test.ts`
 - `bun --cwd rust/examples/todo-app codegen:check`
+- `bun run rust:codegen:check`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
