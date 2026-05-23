@@ -156,7 +156,7 @@ const tasksHandler = createServerHandler({
 });
 ```
 
-See [Table Handlers](/docs/build/table-handlers) for advanced patterns and [Auth](/docs/build/auth) for authorization strategies.
+See [Table Handlers](/docs/reference/server/table-handlers-reference) for advanced patterns and [Auth](/docs/concepts/scopes) for authorization strategies.
 
 ## 3. Create sync routes
 
@@ -224,7 +224,7 @@ const { syncRoutes } = createSyncServer({
 });
 ```
 
-See [Real-time Guide](/docs/build/realtime) for multi-instance broadcasting and client setup.
+See [Real-time Guide](/docs/reference/server/realtime-bridge) for multi-instance broadcasting and client setup.
 
 ## 5. Add the console (optional)
 
@@ -358,7 +358,7 @@ Bun.serve({ fetch: app.fetch, port: 3001 });
 
 ## Next steps
 
-- [Client Setup](/docs/build/client-setup) — set up the React client
-- [Table Handlers](/docs/build/table-handlers) — deep dive into handlers
-- [Auth](/docs/build/auth) — authorization patterns
+- [Client Setup](/docs/rust-client/quick-start) — set up the React client
+- [Table Handlers](/docs/reference/server/table-handlers-reference) — deep dive into handlers
+- [Auth](/docs/concepts/scopes) — authorization patterns
 - [Deployment](/docs/operate/deployment) — production deployment

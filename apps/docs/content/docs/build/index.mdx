@@ -5,13 +5,14 @@ description: Step-by-step guides for implementing Syncular in your application
 
 # Build
 
-Practical, step-by-step guides for building with Syncular. Start with server and client setup, then explore features as you need them.
+Practical, step-by-step guides for building with Syncular. Start with server
+setup and the Rust client quick start, then explore features as you need them.
 
 > **You are here:** Build (how-to guides).
 >
-> **Recommended build sequence:** [Server Setup](/docs/build/server-setup) → [Client Setup](/docs/build/client-setup) → [Table Handlers](/docs/build/table-handlers).
+> **Recommended build sequence:** [Server Setup](/docs/build/server-setup) → [Rust Client Quick Start](/docs/rust-client/quick-start) → [Table Handlers](/docs/reference/server/table-handlers-reference).
 
-Not sure which runtime/dialect to use? Start with [Runtimes](/docs/build/runtimes).
+Not sure which runtime to use? Start with [Runtimes](/docs/build/runtimes).
 
 ## Getting started
 
@@ -19,13 +20,13 @@ Not sure which runtime/dialect to use? Start with [Runtimes](/docs/build/runtime
   <Card title="Server Setup" href="/docs/build/server-setup">
     Set up a Syncular server with Postgres and Hono
   </Card>
-  <Card title="Client Setup" href="/docs/build/client-setup">
-    Configure the React client with SQLite
+  <Card title="Rust Client Quick Start" href="/docs/rust-client/quick-start">
+    Generate Rust, browser TypeScript, Swift, and Kotlin app clients
   </Card>
   <Card title="Service Worker Server" href="/docs/build/service-worker-server">
     Run Syncular server APIs fully in-browser via Service Worker
   </Card>
-  <Card title="Table Handlers" href="/docs/build/table-handlers">
+  <Card title="Table Handlers" href="/docs/reference/server/table-handlers-reference">
     Define how each table syncs and who can access it
   </Card>
   <Card title="Common Architectures" href="/docs/build/recipes">
@@ -39,11 +40,11 @@ Not sure which runtime/dialect to use? Start with [Runtimes](/docs/build/runtime
 ## Core features
 
 <Cards>
-  <Card title="Authentication" href="/docs/build/auth">
+  <Card title="Authentication" href="/docs/concepts/scopes">
     Implement scope-based authorization patterns
   </Card>
-  <Card title="Offline Auth" href="/docs/build/offline-auth">
-    Add provider-agnostic offline identity/session continuity
+  <Card title="Offline Native Apps" href="/docs/rust-client/native">
+    Wire lifecycle, realtime, presence, and queued work in native shells
   </Card>
   <Card title="Data Modeling" href="/docs/build/data-modeling">
     Design schemas and scopes that sync well
@@ -51,16 +52,16 @@ Not sure which runtime/dialect to use? Start with [Runtimes](/docs/build/runtime
   <Card title="Audit & History" href="/docs/build/audit-ui">
     Build product-facing history views and long-lived audit trails
   </Card>
-  <Card title="Real-time" href="/docs/build/realtime">
+  <Card title="Real-time" href="/docs/reference/server/realtime-bridge">
     Enable instant updates with WebSocket deltas and recovery pulls
   </Card>
-  <Card title="Presence" href="/docs/build/presence">
+  <Card title="Presence" href="/docs/rust-client/browser#presence">
     Track who's online with scope-based presence
   </Card>
-  <Card title="Blob Storage" href="/docs/build/blob-storage">
+  <Card title="Blob Storage" href="/docs/build/recipes/blobs-and-media">
     Handle binary files with content-addressable storage
   </Card>
-  <Card title="Encryption" href="/docs/build/encryption">
+  <Card title="Encryption" href="/docs/rust-client/browser">
     End-to-end field encryption with key sharing
   </Card>
 </Cards>

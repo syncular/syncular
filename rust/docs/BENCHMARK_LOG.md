@@ -6309,7 +6309,7 @@ Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work
 Change:
 
 - Added the explicit external benchmark read model
-  `taskCountsByProjectCompletion` to `syncular.codegen.json`.
+  `taskCountsByProjectCompletion` to the generated Syncular codegen handoff.
 - Regenerated the external benchmark `syncular.schema.json` and Rust generated
   schema so `localDerivedSchema` installs
   `syncular_rust_task_counts_by_project_completion`.

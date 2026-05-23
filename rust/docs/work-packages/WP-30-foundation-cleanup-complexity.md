@@ -517,3 +517,27 @@ decision, not from the deleted protocol/package paths closed here.
   - `bun run --cwd packages/typegen tsgo`: passed.
   - `bun --cwd apps/docs types:check`: passed.
   - `git diff --check`: passed.
+- Fixed public docs links that still targeted removed Build pages such as
+  `/docs/build/client-setup`, `/docs/build/table-handlers`, old auth/realtime/
+  blob/encryption pages, and nonexistent runtime pages. The links now point to
+  the Rust-client quick start, concepts/scopes, server table-handler reference,
+  realtime bridge reference, blob/media recipe, or current Rust client pages.
+  The Runtimes and Electron pages now describe the Rust-owned client host model
+  instead of steering new client apps toward old SQLite dialect packages, and
+  the Client SDK reference is visible in the Reference nav.
+- Gates:
+  - `rg -n '/docs/build/(client-setup|table-handlers|auth|offline-auth|realtime|presence|blob-storage|encryption|yjs|runtimes/(web|expo|bun-node))' apps/docs/content/docs -g '*.mdx'`:
+    no matches.
+  - `bun --cwd apps/docs types:check`: passed.
+  - `bun --cwd apps/docs build`: passed.
+  - `git diff --check`: passed.
+- Tightened remaining current-facing DX wording: typegen docs/tests now call
+  the generated file a codegen handoff rather than a low-level config,
+  CLI-guide wording now says server/runtime selection instead of broad dialect
+  selection, and the benchmark log entry for the dashboard read model no longer
+  names a root app-authored `syncular.codegen.json`.
+- Gates:
+  - `bun test packages/typegen/src/app-contract.test.ts`: passed, `5` tests.
+  - `bun run --cwd packages/typegen tsgo`: passed.
+  - `bun --cwd apps/docs types:check`: passed.
+  - `git diff --check`: passed.
