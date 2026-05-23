@@ -518,6 +518,18 @@ export function syncularValidateGeneratedMutationPayload(table: string, payload:
   return errors.length === 0 ? { ok: true, value: payload } : { ok: false, errors };
 }
 
+export function syncularValidateGeneratedOperation(table: string, op: SyncOperation, schemaVersion: number | null | undefined): SyncularGeneratedValidationResult<SyncOperation> {
+  if (op.table !== table) return { ok: false, errors: [{ path: op.table, message: `Expected operation table ${table}` }] };
+  if (op.op === 'delete') {
+    if (op.payload !== null) return { ok: false, errors: [{ path: `${table}.payload`, message: 'Delete payload must be null' }] };
+    return { ok: true, value: op };
+  }
+  if (op.op !== 'upsert') return { ok: false, errors: [{ path: `${table}.op`, message: `Unsupported operation ${op.op}` }] };
+  if (op.payload == null) return { ok: false, errors: [{ path: `${table}.payload`, message: 'Upsert payload is required' }] };
+  const payload = syncularValidateGeneratedMutationPayload(table, op.payload, schemaVersion);
+  return payload.ok ? { ok: true, value: op } : payload;
+}
+
 export interface SyncularAppDb {
   comments: CommentRow;
   projects: ProjectRow;
@@ -739,10 +751,7 @@ export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreD
       if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {
         return syncularUnsupportedClientSchemaResult({ opIndex, schemaVersion: ctx.schemaVersion });
       }
-      if (op.table !== tableName) {
-        return syncularGeneratedValidationErrorResult(opIndex, [{ path: op.table, message: `Expected operation table ${tableName}` }]);
-      }
-      const validation = syncularValidateGeneratedMutationPayload(tableName, op.payload, ctx.schemaVersion);
+      const validation = syncularValidateGeneratedOperation(tableName, op, ctx.schemaVersion);
       if (!validation.ok) return syncularGeneratedValidationErrorResult(opIndex, validation.errors);
       return options.applyOperation(ctx, op, opIndex);
     },
@@ -751,10 +760,7 @@ export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreD
         if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {
           return [syncularUnsupportedClientSchemaResult({ opIndex, schemaVersion: ctx.schemaVersion })];
         }
-        if (op.table !== tableName) {
-          return [syncularGeneratedValidationErrorResult(opIndex, [{ path: op.table, message: `Expected operation table ${tableName}` }])];
-        }
-        const validation = syncularValidateGeneratedMutationPayload(tableName, op.payload, ctx.schemaVersion);
+        const validation = syncularValidateGeneratedOperation(tableName, op, ctx.schemaVersion);
         if (!validation.ok) return [syncularGeneratedValidationErrorResult(opIndex, validation.errors)];
       }
       return options.applyOperationBatch(ctx, operations);
