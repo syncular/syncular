@@ -508,3 +508,12 @@ decision, not from the deleted protocol/package paths closed here.
   - `bun run --cwd packages/typegen tsgo`: passed.
   - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`: passed.
   - `git diff --check`: passed.
+- Updated the public Rust-client docs and typegen test descriptions that still
+  pointed at `./syncular.codegen.json`. The docs now show the normal
+  `syncular-typegen codegen-config --app ./syncular.app.ts` flow, which writes
+  `generated/syncular.codegen.json` beside the typed contract by default.
+- Gates:
+  - `bun test packages/typegen/src/app-contract.test.ts`: passed, `5` tests.
+  - `bun run --cwd packages/typegen tsgo`: passed.
+  - `bun --cwd apps/docs types:check`: passed.
+  - `git diff --check`: passed.

@@ -128,7 +128,8 @@ read-only review:
     passed for relevant package surfaces, while full `knip` remains blocked
     only by the known out-of-scope relay evaluation unused exports. Follow-up
     docs/generated-banner cleanup now avoids implying app authors maintain a
-    root low-level codegen file or select legacy client dialects.
+    root low-level codegen file or select legacy client dialects; the public
+    Rust-client docs now show the default generated handoff path.
 - `[x]` [`WP-29 Rust Client Console Workbench`](work-packages/WP-29-rust-client-console-workbench.md)
   - Slice 1 persistence is accepted. Console diagnostics now persist normalized,
     size-bounded, sensitive-key-guarded Rust client snapshots in

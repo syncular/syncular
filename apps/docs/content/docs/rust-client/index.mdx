@@ -5,9 +5,8 @@ description: Rust-first Syncular client docs for Rust, browser TypeScript, Swift
 
 # Rust Client
 
-This section covers the Rust-first Syncular client. It is separate from the
-existing JavaScript client docs on purpose: the Rust client owns SQLite, sync
-state, outbox, conflicts, blobs, CRDT persistence, encryption, and native
+This section covers the Rust-first Syncular client: the runtime owns SQLite,
+sync state, outbox, conflicts, blobs, CRDT persistence, encryption, and native
 bindings.
 
 The current public shape is:
@@ -17,7 +16,7 @@ The current public shape is:
 - Swift and Kotlin use generated small query DSLs over generic native bindings.
 - Writes go through generated Syncular mutations, not raw app-table SQL.
 - App-specific code is generated from migrations plus a typed app contract that
-  produces `syncular.codegen.json`.
+  produces `generated/syncular.codegen.json` as the Rust-codegen handoff.
 
 <Cards>
   <Card title="Quick Start" href="/docs/rust-client/quick-start" description="Generate app clients from migrations and schema config" />
