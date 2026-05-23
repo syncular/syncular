@@ -16,7 +16,9 @@ also require a before/after comparison in [`BENCHMARK_LOG.md`](BENCHMARK_LOG.md)
   relevant.
 - Generator or generated-client changes:
   run generator checks and at least one generated example/smoke that exercises
-  the changed output.
+  the changed output. Use `bun run rust:codegen:check` for the todo fixture so
+  the typed app contract, generated `syncular.codegen.json` handoff, and Rust
+  codegen output are checked together.
 
 ## Protocol / Wire Format
 

@@ -594,9 +594,12 @@ read-only review:
   `syncular-typegen codegen-config` CLI, and the todo fixture uses that CLI to
   generate/check the low-level `syncular.codegen.json` handoff from the typed
   `syncular.app.ts` authoring file. Local integration docs and the public Rust
-  quick start now describe the same typed-contract flow for new apps. The next
-  WP-33 decision is whether Rust codegen should directly invoke the authoring
-  step or only consume the checked generated handoff file.
+  quick start now describe the same typed-contract flow for new apps. Decision:
+  Rust codegen stays pure and only consumes the checked generated handoff file;
+  build scripts/CI run `syncular-typegen codegen-config --check` before Rust
+  codegen. The next WP-33 gap is authoring polish around whether
+  `syncular.codegen.json` remains visible in app repos or becomes a hidden
+  build output, plus missing server-side typed authoring examples.
 
 ## Later
 
