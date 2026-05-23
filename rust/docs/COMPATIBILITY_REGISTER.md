@@ -86,6 +86,7 @@ exception.
 | Explicit `json-v1` sync-pack negotiation | `Removed` | `packages/core/src/sync-packs.ts`, `packages/server-hono/src/routes.ts`, Rust protocol validation, protocol fixtures | Combined sync responses are binary sync-packs only. JSON HTTP error envelopes remain separate error responses, not a sync-pack encoding |
 | Sync-pack request encoding negotiation fields | `Removed` | `SyncCombinedRequest`, `SyncPullRequest`, testkit builders, Rust request builders, protocol fixtures | Binary sync-packs are the only combined response path, so request-time `syncPackEncodings` knobs were no-op compatibility surface |
 | Snapshot request encoding negotiation field | `Removed` | `SyncPullRequest`, server pull path, Rust request builders, protocol fixtures | Snapshot chunks are binary-only, so request-time `snapshotEncodings` was removed instead of kept as a misleading selector |
+| Generated TypeScript app-table metadata aliases | `Removed` | Generated TypeScript client/server outputs and conformance imports | Generated app metadata now uses the single public `syncularGeneratedApp` object. Separate exported table-map/list constants were removed so generated app code follows the current `app.tables.<table>` / `app.tableNames` shape instead of preserving extra public metadata aliases |
 
 ## Items That Are Not Compatibility Debt
 

@@ -11,10 +11,7 @@ import {
   type SyncularGeneratedClientSchemaMetadata as TodoGeneratedClientSchemaMetadata,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
 import {
-  syncularGeneratedAppSchema as todoGeneratedCurrentAppSchema,
-  syncularGeneratedAppTables as todoGeneratedClientAppTables,
-  syncularGeneratedCodecs as todoGeneratedCodecs,
-  syncularGeneratedTableConfig as todoGeneratedTableConfig,
+  syncularGeneratedApp as todoGeneratedClientApp,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import {
   createServerHandler,
@@ -353,11 +350,11 @@ describe('Syncular core WASM artifact', () => {
         storage: 'memory',
         clearOnInit: true,
         schemaVersion: todoGeneratedSchemaVersion,
-        appSchema: todoGeneratedCurrentAppSchema,
+        appSchema: todoGeneratedClientApp.appSchema,
       },
-      codecs: todoGeneratedCodecs,
-      appTables: todoGeneratedClientAppTables,
-      tableConfig: todoGeneratedTableConfig,
+      codecs: todoGeneratedClientApp.codecs,
+      appTables: todoGeneratedClientApp.tableNames,
+      tableConfig: todoGeneratedClientApp.tableConfig,
       requiredRuntimeFeatures: ['web-owned-sqlite'],
     });
 
@@ -1243,9 +1240,9 @@ async function openGeneratedTodoOldClient(args: {
         args.appSchema ?? generatedTodoAppSchemaForVersion(args.schemaVersion),
     },
     getHeaders: () => ({ authorization: args.token }),
-    codecs: todoGeneratedCodecs,
-    appTables: todoGeneratedClientAppTables,
-    tableConfig: todoGeneratedTableConfig,
+    codecs: todoGeneratedClientApp.codecs,
+    appTables: todoGeneratedClientApp.tableNames,
+    tableConfig: todoGeneratedClientApp.tableConfig,
     requiredRuntimeFeatures: ['web-owned-sqlite'],
   });
   try {
@@ -1372,7 +1369,7 @@ async function ensureBasicServerTables(
 async function ensureGeneratedTodoServerTables(
   db: Kysely<GeneratedTodoServerDb>
 ): Promise<void> {
-  for (const statement of todoGeneratedCurrentAppSchema.localBaseSchema
+  for (const statement of todoGeneratedClientApp.appSchema.localBaseSchema
     ?.tableSetupSql ?? []) {
     await sql.raw(statement).execute(db);
   }

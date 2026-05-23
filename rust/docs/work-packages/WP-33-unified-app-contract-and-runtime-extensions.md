@@ -1097,6 +1097,23 @@ The contract should distinguish two local cases:
   leaving the client-side generated app table list in place for runtime startup
   metadata.
 
+### Batch 5 Generated App Client API Shape Slice
+
+- Generated TypeScript client output now also emits a single public generated
+  app reference:
+  `syncularGeneratedApp`.
+- The public generated client app reference carries `appSchema`, `tables`,
+  `tableNames`, `tableConfig`, generated codecs, and field-encryption helpers.
+  App code can pass the generated app object into lower-level client/runtime
+  APIs without importing separate metadata constants.
+- The old exported client-side `syncularGeneratedAppTables` list was removed.
+  The table-name list remains internal and is exposed through
+  `syncularGeneratedApp.tableNames` only.
+- Browser conformance now opens generated Rust-owned SQLite clients from
+  `todoGeneratedClientApp.appSchema`, `.tableNames`, `.tableConfig`, and
+  `.codecs`, proving the generated app object is usable for local/no-server
+  and old-client schema tests.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -1208,6 +1225,7 @@ Gates run:
 - `bun test packages/server/src/generated-app-server-handler.test.ts`
 - `bun run --cwd packages/server tsgo`
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
+- `bun run --cwd packages/client tsgo`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
@@ -1216,8 +1234,8 @@ Gates run:
 ## Next Action
 
 Batch 6 is closed for the known runtime extension boundaries. Batch 5 now has
-the generated server helper public shape aligned with `app.tables.<table>`.
-Continue WP-33 with the developer-facing contract flow: make the app authoring
-surface generate the same language-neutral schema contract without app authors
-editing low-level `syncular.codegen.json`, while preserving divergent
-server/client shapes and schema-version-aware handler helpers.
+generated server and client public shapes aligned around one generated app
+object. Continue WP-33 with the developer-facing contract flow: make the app
+authoring surface generate the same language-neutral schema contract without
+app authors editing low-level `syncular.codegen.json`, while preserving
+divergent server/client shapes and schema-version-aware handler helpers.

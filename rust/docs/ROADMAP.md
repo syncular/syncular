@@ -586,8 +586,12 @@ read-only review:
   `syncularGeneratedApp.tables.<table>` as the public app-table reference and
   keeps the lower-level table map internal, so server code lines up with the
   intended `app.tables.notes` authoring style while retaining imperative
-  snapshot/apply handlers and divergent server/client shapes. The next WP-33
-  gap is the developer-facing authoring surface that generates the
+  snapshot/apply handlers and divergent server/client shapes. The generated
+  TypeScript client output now also exposes one `syncularGeneratedApp` object
+  with `appSchema`, `tables`, `tableNames`, `tableConfig`, generated codecs,
+  and field-encryption helpers; the old exported client app-table list was
+  removed. The next WP-33 gap is the developer-facing authoring surface that
+  generates the
   language-neutral schema contract without app authors editing low-level
   `syncular.codegen.json`.
 
