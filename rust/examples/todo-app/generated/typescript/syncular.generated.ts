@@ -53,6 +53,17 @@ export interface SyncularGeneratedTableConfig {
 }
 
 export const syncularGeneratedSchemaVersion = 7 as const;
+export const syncularGeneratedClientSchemaSupport = {
+  current: syncularGeneratedSchemaVersion,
+  minSupported: syncularGeneratedSchemaVersion,
+  supported: [syncularGeneratedSchemaVersion],
+} as const;
+export type SyncularGeneratedSupportedClientSchemaVersion = typeof syncularGeneratedClientSchemaSupport.supported[number];
+export function syncularIsSupportedClientSchemaVersion(schemaVersion: number | null | undefined): schemaVersion is SyncularGeneratedSupportedClientSchemaVersion {
+  if (typeof schemaVersion !== 'number') return false;
+  return (syncularGeneratedClientSchemaSupport.supported as readonly number[]).includes(schemaVersion);
+}
+
 const syncularGeneratedSchemaId = 'syncular-app';
 
 export interface SyncularGeneratedAppMigration {

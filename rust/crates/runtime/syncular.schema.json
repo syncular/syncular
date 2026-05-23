@@ -2,6 +2,13 @@
   "$schema": "https://syncular.dev/schemas/syncular.schema.v1.json",
   "contractVersion": 1,
   "appSchemaVersion": 7,
+  "clientSchemaSupport": {
+    "current": 7,
+    "minSupported": 7,
+    "supported": [
+      7
+    ]
+  },
   "migrations": [
     {
       "version": "0001",

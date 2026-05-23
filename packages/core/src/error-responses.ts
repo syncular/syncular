@@ -150,6 +150,13 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     recommendedAction: 'regenerateClient',
     message: 'The generated client schema is not compatible with this server.',
   },
+  'sync.client_schema_unsupported': {
+    category: 'schema-mismatch',
+    retryable: false,
+    recommendedAction: 'upgradeClient',
+    message:
+      'The client schema version is no longer supported by this server.',
+  },
   'sync.integrity_rejected': {
     category: 'integrity-rejected',
     retryable: false,
