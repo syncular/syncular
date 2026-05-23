@@ -5510,10 +5510,43 @@ fn push_typescript_unsupported_client_schema_result(out: &mut String) {
     out.push_str("}\n\n");
 }
 
+fn push_typescript_client_schema_metadata(
+    out: &mut String,
+    schema_version: i32,
+    current_tables: &[SchemaJsonTable],
+    historical_client_schemas: &[SchemaJsonHistoricalClientSchema],
+) -> Result<()> {
+    let current_schema = serde_json::json!({
+        "schemaVersion": schema_version,
+        "tables": current_tables,
+    });
+    out.push_str("export interface SyncularGeneratedClientSchemaMetadata {\n");
+    out.push_str("  schemaVersion: number;\n");
+    out.push_str("  tables: readonly unknown[];\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "export const syncularGeneratedCurrentClientSchema: SyncularGeneratedClientSchemaMetadata = ",
+    );
+    out.push_str(&serde_json::to_string_pretty(&current_schema)?);
+    out.push_str(" as const;\n\n");
+    out.push_str("export const syncularGeneratedHistoricalClientSchemas: readonly SyncularGeneratedClientSchemaMetadata[] = ");
+    out.push_str(&serde_json::to_string_pretty(historical_client_schemas)?);
+    out.push_str(" as const;\n");
+    out.push_str(
+        "export type SyncularGeneratedClientSchema = SyncularGeneratedClientSchemaMetadata;\n",
+    );
+    out.push_str("export function syncularGeneratedClientSchemaForVersion(schemaVersion: number | null | undefined): SyncularGeneratedClientSchema | null {\n");
+    out.push_str("  if (schemaVersion === syncularGeneratedSchemaVersion) return syncularGeneratedCurrentClientSchema;\n");
+    out.push_str("  return syncularGeneratedHistoricalClientSchemas.find((schema) => schema.schemaVersion === schemaVersion) ?? null;\n");
+    out.push_str("}\n\n");
+    Ok(())
+}
+
 fn generate_typescript_server_module(
     tables: &[TableInfo],
     config: &CodegenConfig,
     schema_version: i32,
+    historical_client_schemas: &[SchemaJsonHistoricalClientSchema],
 ) -> Result<String> {
     let user_tables = tables
         .iter()
@@ -5531,6 +5564,16 @@ fn generate_typescript_server_module(
     let client_schema_support = client_schema_support_from_config(config, schema_version)?;
     push_typescript_client_schema_support(&mut out, &client_schema_support);
     push_typescript_unsupported_client_schema_result(&mut out);
+    let current_schema_tables = user_tables
+        .iter()
+        .map(|table| schema_json_table_from_info(table, &config.table(&table.name)))
+        .collect::<Result<Vec<_>>>()?;
+    push_typescript_client_schema_metadata(
+        &mut out,
+        schema_version,
+        &current_schema_tables,
+        historical_client_schemas,
+    )?;
     push_typescript_app_db_rows(&mut out, &user_tables, config);
     push_typescript_binary_snapshot_exports(&mut out, &user_tables, config);
     out.push_str("export const syncularGeneratedServerSnapshotBinary = {\n");
@@ -10513,8 +10556,20 @@ fn main() -> Result<()> {
         schema_version,
         Some(&migrations_dir),
     )?;
-    let generated_ts_server =
-        generate_typescript_server_module(&schema_tables, &schema_codegen_config, schema_version)?;
+    let client_schema_support =
+        client_schema_support_from_config(&schema_codegen_config, schema_version)?;
+    let generated_historical_client_schemas = historical_client_schemas(
+        &schema_codegen_config,
+        &migrations_dir,
+        schema_version,
+        &client_schema_support,
+    )?;
+    let generated_ts_server = generate_typescript_server_module(
+        &schema_tables,
+        &schema_codegen_config,
+        schema_version,
+        &generated_historical_client_schemas,
+    )?;
     let generated_swift = generate_swift_module(
         &schema_tables,
         &schema_codegen_config,
@@ -11160,6 +11215,17 @@ CREATE TABLE tasks (
             .is_empty());
         assert_eq!(json["tables"][0]["blobColumns"][0], "image");
 
+        let support = client_schema_support_from_config(&config, 2)?;
+        let historical_schemas = historical_client_schemas(&config, &migrations_dir, 2, &support)?;
+        let server_output =
+            generate_typescript_server_module(&tables, &config, 2, &historical_schemas)?;
+        assert!(server_output.contains(
+            "export const syncularGeneratedHistoricalClientSchemas: readonly SyncularGeneratedClientSchemaMetadata[] = ["
+        ));
+        assert!(server_output.contains("\"schemaVersion\": 1"));
+        assert!(server_output.contains("\"blobColumns\": []"));
+        assert!(server_output.contains("export function syncularGeneratedClientSchemaForVersion"));
+
         let _ = fs::remove_dir_all(&migrations_dir);
         Ok(())
     }
@@ -11252,8 +11318,8 @@ CREATE TABLE tasks (
             generate_typescript_module(&tables, &config, 2, None)?
         );
         assert_eq!(
-            generate_typescript_server_module(&schema_tables, &schema_config, schema_version)?,
-            generate_typescript_server_module(&tables, &config, 2)?
+            generate_typescript_server_module(&schema_tables, &schema_config, schema_version, &[])?,
+            generate_typescript_server_module(&tables, &config, 2, &[])?
         );
         assert_eq!(
             generate_swift_module(
@@ -11557,7 +11623,7 @@ CREATE TABLE tasks (
             ..CodegenConfig::default()
         };
 
-        let output = generate_typescript_server_module(&tables, &config, 7)?;
+        let output = generate_typescript_server_module(&tables, &config, 7, &[])?;
 
         assert!(output.contains(
             "import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';"
@@ -11576,6 +11642,15 @@ CREATE TABLE tasks (
             "export function syncularUnsupportedClientSchemaResult(options: SyncularUnsupportedClientSchemaResultOptions): ApplyOperationResult"
         ));
         assert!(output.contains("createSyncularErrorResponse('sync.client_schema_unsupported'"));
+        assert!(output.contains(
+            "export const syncularGeneratedCurrentClientSchema: SyncularGeneratedClientSchemaMetadata = {"
+        ));
+        assert!(output.contains(
+            "export const syncularGeneratedHistoricalClientSchemas: readonly SyncularGeneratedClientSchemaMetadata[] = []"
+        ));
+        assert!(output.contains(
+            "export function syncularGeneratedClientSchemaForVersion(schemaVersion: number | null | undefined)"
+        ));
         assert!(output.contains("export interface SyncularAppDb"));
         assert!(output.contains("export interface TaskRow"));
         assert!(output.contains("  image: BlobRef | null;"));
