@@ -905,8 +905,8 @@ impl NativeSyncularClient {
     }
 
     pub fn set_field_encryption(&mut self, encryption: Option<FieldEncryption>) -> Result<()> {
+        self.writer.set_field_encryption(encryption.clone())?;
         self.field_encryption = encryption.clone();
-        self.writer.set_field_encryption(encryption.clone());
         if let Some(worker) = &self.worker {
             worker.set_field_encryption(encryption)?;
         }
@@ -918,8 +918,8 @@ impl NativeSyncularClient {
     }
 
     pub fn set_encrypted_crdt(&mut self, encryption: Option<EncryptedCrdt>) -> Result<()> {
+        self.writer.set_encrypted_crdt(encryption.clone())?;
         self.encrypted_crdt = encryption.clone();
-        self.writer.set_encrypted_crdt(encryption.clone());
         if let Some(worker) = &self.worker {
             worker.set_encrypted_crdt(encryption)?;
         }
@@ -931,8 +931,8 @@ impl NativeSyncularClient {
     }
 
     pub fn set_blob_encryption(&mut self, encryption: Option<BlobEncryption>) -> Result<()> {
+        self.writer.set_blob_encryption(encryption.clone())?;
         self.blob_encryption = encryption.clone();
-        self.writer.set_blob_encryption(encryption.clone());
         if let Some(worker) = &self.worker {
             worker.set_blob_encryption(encryption)?;
         }
@@ -964,9 +964,9 @@ impl NativeSyncularClient {
             SyncularClient::open_with_schema(self.config.clone(), self.writer.app_schema())?;
         worker_client.set_subscriptions(self.writer.subscriptions().to_vec())?;
         worker_client.set_auth_headers(self.auth_headers.clone());
-        worker_client.set_field_encryption(self.field_encryption.clone());
-        worker_client.set_encrypted_crdt(self.encrypted_crdt.clone());
-        worker_client.set_blob_encryption(self.blob_encryption.clone());
+        worker_client.set_field_encryption(self.field_encryption.clone())?;
+        worker_client.set_encrypted_crdt(self.encrypted_crdt.clone())?;
+        worker_client.set_blob_encryption(self.blob_encryption.clone())?;
         let worker = SyncWorker::start(worker_client);
         self.worker_event_pump = Some(start_worker_event_pump(
             self.events.clone(),

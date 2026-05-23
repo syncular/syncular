@@ -561,9 +561,16 @@ read-only review:
   and proves a generated Rust todo client can open embedded migrations, apply
   generated safe mutations, read through Diesel, keep the outbox pending, and
   reject manual remote sync without a server. The next WP-33 gap is the
-  runtime-extension boundary: storage/wire-affecting hooks such as auth,
-  encryption, CRDT, blobs, diagnostics, live queries, row/field events, network
-  status, and lifecycle need explicit static-contract backing where relevant.
+  runtime-extension boundary. Current Batch 6 progress removes the unsafe
+  runtime-only field-encryption scenario, declares `tasks.description` as the
+  generated encrypted field, moves shared E2EE conformance off CRDT `title`,
+  validates runtime field-encryption/blob/encrypted-CRDT config against
+  generated static metadata, and removes ad hoc field-encryption rule
+  injection from generated TypeScript/Swift/Kotlin helpers. The next Batch 6
+  gap is raw worker config command shape: direct worker `set_*` config commands
+  should become first-class command/event operations or be removed, then auth,
+  diagnostics, network status, blob policy, live queries, row/field events, and
+  lifecycle hooks should be checked for remaining runtime-only behavior.
 
 ## Later
 

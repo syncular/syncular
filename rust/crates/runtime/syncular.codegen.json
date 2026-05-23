@@ -53,6 +53,12 @@
       "serverVersionColumn": "server_version",
       "sqliteWithoutRowid": true,
       "blobColumns": ["image"],
+      "encryptedFields": [
+        {
+          "field": "description",
+          "scope": "tasks"
+        }
+      ],
       "crdtYjsFields": [
         {
           "field": "title",

@@ -6460,13 +6460,11 @@ fn generate_typescript_module(
     }
     out.push_str("] satisfies readonly SyncularFieldEncryptionRule[];\n\n");
     out.push_str("export function syncularGeneratedFieldEncryptionConfig(\n");
-    out.push_str("  options: Omit<SyncularFieldEncryptionConfig, 'rules'> & { rules?: SyncularFieldEncryptionRule[] }\n");
+    out.push_str("  options: Omit<SyncularFieldEncryptionConfig, 'rules'>\n");
     out.push_str("): SyncularFieldEncryptionConfig {\n");
     out.push_str("  return {\n");
     out.push_str("    ...options,\n");
-    out.push_str(
-        "    rules: [...syncularGeneratedFieldEncryptionRules, ...(options.rules ?? [])],\n",
-    );
+    out.push_str("    rules: [...syncularGeneratedFieldEncryptionRules],\n");
     out.push_str("  };\n");
     out.push_str("}\n\n");
     out.push_str("export const syncularGeneratedAppTables = [\n");
@@ -8018,8 +8016,8 @@ fn generate_swift_module(
         }
     }
     out.push_str("]\n\n");
-    out.push_str("public func syncularGeneratedFieldEncryptionConfigJson(keys: [String: String], encryptionKid: String? = nil, decryptionErrorMode: String? = nil, envelopePrefix: String? = nil, additionalRules: [SyncularFieldEncryptionRule] = []) throws -> String {\n");
-    out.push_str("    try SyncularFieldEncryptionConfig(keys: keys, rules: syncularGeneratedFieldEncryptionRules + additionalRules, encryptionKid: encryptionKid, decryptionErrorMode: decryptionErrorMode, envelopePrefix: envelopePrefix).jsonString()\n");
+    out.push_str("public func syncularGeneratedFieldEncryptionConfigJson(keys: [String: String], encryptionKid: String? = nil, decryptionErrorMode: String? = nil, envelopePrefix: String? = nil) throws -> String {\n");
+    out.push_str("    try SyncularFieldEncryptionConfig(keys: keys, rules: syncularGeneratedFieldEncryptionRules, encryptionKid: encryptionKid, decryptionErrorMode: decryptionErrorMode, envelopePrefix: envelopePrefix).jsonString()\n");
     out.push_str("}\n\n");
     if has_native_crdt {
         out.push_str("public struct SyncularYjsUpdateEnvelope: Codable, Equatable {\n");
@@ -9450,9 +9448,10 @@ fn generate_kotlin_module(
     out.push_str("    encryptionKid: String? = null,\n");
     out.push_str("    decryptionErrorMode: String? = null,\n");
     out.push_str("    envelopePrefix: String? = null,\n");
-    out.push_str("    additionalRules: List<SyncularFieldEncryptionRule> = emptyList(),\n");
     out.push_str("): String = syncularJsonValue(linkedMapOf(\n");
-    out.push_str("    \"rules\" to (syncularGeneratedFieldEncryptionRules + additionalRules).map { it.toJsonValue() },\n");
+    out.push_str(
+        "    \"rules\" to syncularGeneratedFieldEncryptionRules.map { it.toJsonValue() },\n",
+    );
     out.push_str("    \"keys\" to keys,\n");
     out.push_str("    \"encryptionKid\" to encryptionKid,\n");
     out.push_str("    \"decryptionErrorMode\" to decryptionErrorMode,\n");

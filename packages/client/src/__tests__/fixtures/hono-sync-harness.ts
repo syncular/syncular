@@ -106,6 +106,7 @@ export interface HonoWorkerClientOptions {
 export interface HonoTaskSeed {
   id: string;
   title: string;
+  description?: string | null;
   actorId: string;
   completed?: number;
   projectId?: string | null;
@@ -136,10 +137,11 @@ export async function createHonoSyncHarness(
       await db
         .insertInto('tasks')
         .values({
-          id: task.id,
-          title: task.title,
-          completed: task.completed ?? 0,
-          user_id: task.actorId,
+            id: task.id,
+            title: task.title,
+            description: task.description ?? null,
+            completed: task.completed ?? 0,
+            user_id: task.actorId,
           project_id: task.projectId ?? null,
           server_version: task.serverVersion ?? 1,
           image: task.image ?? null,
@@ -381,6 +383,7 @@ export async function createHonoSyncHarness(
 export interface HonoTaskTable {
   id: string;
   title: string;
+  description: string | null;
   completed: number;
   user_id: string;
   project_id: string | null;
@@ -413,6 +416,7 @@ export async function ensureHonoSyncTasksTable(
     .ifNotExists()
     .addColumn('id', 'text', (col) => col.primaryKey())
     .addColumn('title', 'text', (col) => col.notNull())
+    .addColumn('description', 'text')
     .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
     .addColumn('user_id', 'text', (col) => col.notNull())
     .addColumn('project_id', 'text')

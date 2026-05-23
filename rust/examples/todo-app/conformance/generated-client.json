@@ -46,12 +46,12 @@
       "bootstrapPhase": 0
     },
     "nativeQuery": {
-      "sql": "select \"id\", \"title\", \"completed\", \"user_id\", \"project_id\", \"server_version\", \"image\", \"title_yjs_state\" from \"tasks\" where \"user_id\" = ? order by \"server_version\" desc limit 5",
+      "sql": "select \"id\", \"title\", \"completed\", \"user_id\", \"project_id\", \"server_version\", \"image\", \"title_yjs_state\", \"description\" from \"tasks\" where \"user_id\" = ? order by \"server_version\" desc limit 5",
       "params": ["user-rust"],
       "tables": ["tasks"]
     },
     "typescriptKyselyQuery": {
-      "sql": "select \"id\", \"title\", \"completed\", \"user_id\", \"project_id\", \"server_version\", \"image\", \"title_yjs_state\" from \"tasks\" where \"user_id\" = ? order by \"server_version\" desc limit ?",
+      "sql": "select \"id\", \"title\", \"completed\", \"user_id\", \"project_id\", \"server_version\", \"image\", \"title_yjs_state\", \"description\" from \"tasks\" where \"user_id\" = ? order by \"server_version\" desc limit ?",
       "params": ["user-rust", 5],
       "tables": ["tasks"]
     }

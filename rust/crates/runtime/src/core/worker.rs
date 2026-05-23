@@ -2143,15 +2143,15 @@ where
             true
         }
         WorkerCommand::SetFieldEncryption(encryption) => {
-            client.set_field_encryption(encryption);
+            let _ = client.set_field_encryption(encryption);
             true
         }
         WorkerCommand::SetEncryptedCrdt(encryption) => {
-            client.set_encrypted_crdt(encryption);
+            let _ = client.set_encrypted_crdt(encryption);
             true
         }
         WorkerCommand::SetBlobEncryption(encryption) => {
-            client.set_blob_encryption(encryption);
+            let _ = client.set_blob_encryption(encryption);
             true
         }
         WorkerCommand::Stop => {
@@ -2266,13 +2266,13 @@ where
                     let _ = client.set_subscriptions(subscriptions);
                 }
                 Ok(WorkerCommand::SetFieldEncryption(encryption)) => {
-                    client.set_field_encryption(encryption);
+                    let _ = client.set_field_encryption(encryption);
                 }
                 Ok(WorkerCommand::SetEncryptedCrdt(encryption)) => {
-                    client.set_encrypted_crdt(encryption);
+                    let _ = client.set_encrypted_crdt(encryption);
                 }
                 Ok(WorkerCommand::SetBlobEncryption(encryption)) => {
-                    client.set_blob_encryption(encryption);
+                    let _ = client.set_blob_encryption(encryption);
                 }
                 Ok(WorkerCommand::ApplyMutationJson {
                     command_id,

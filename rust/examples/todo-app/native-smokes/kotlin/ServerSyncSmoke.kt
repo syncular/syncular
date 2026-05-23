@@ -115,21 +115,11 @@ private fun configureServerSync(
 }
 
 private fun configureFieldEncryption(client: SyncularBoltClient, e2ee: JsonObject, message: String) {
-    val rule = e2ee["rule"]?.jsonObject ?: error("missing E2EE rule")
     expect(
         client.setFieldEncryptionJson(
             syncularGeneratedFieldEncryptionConfigJson(
                 keys = mapOf("default" to e2ee.str("keyBase64")),
                 envelopePrefix = e2ee.str("envelopePrefix"),
-                additionalRules = listOf(
-                    SyncularFieldEncryptionRule(
-                        scope = rule.str("scope"),
-                        table = rule.optionalString("table"),
-                        fields = rule["fields"]?.jsonArray?.map { it.jsonPrimitive.content }
-                            ?: error("missing E2EE rule fields"),
-                        rowIdField = rule.optionalString("rowIdField"),
-                    ),
-                ),
             ),
         ),
         message,
@@ -628,6 +618,7 @@ fun main(args: Array<String>) {
                     completed = 0L,
                     userId = info.str("actorId"),
                     projectId = info.optionalString("projectId"),
+                    description = e2eeTask.str("description"),
                 ),
             ).toJsonString(),
             null,
@@ -707,7 +698,7 @@ fun main(args: Array<String>) {
             val ciphertextRows = queryTaskRowsById(reader, encryptedTaskId)
             expect(ciphertextRows.size == 1, "Kotlin server sync reader should pull encrypted task")
             expect(
-                ciphertextRows[0].jsonObject.str("title").startsWith(e2ee.str("envelopePrefix")),
+                ciphertextRows[0].jsonObject.str("description").startsWith(e2ee.str("envelopePrefix")),
                 "Kotlin server sync reader without field encryption should see ciphertext envelope",
             )
             val conflictRows = queryTaskRowsById(reader, conflict.str("rowId"))
@@ -744,8 +735,8 @@ fun main(args: Array<String>) {
             val decryptedRows = queryTaskRowsById(encryptedReader, encryptedTaskId)
             expect(decryptedRows.size == 1, "Kotlin encrypted reader should pull encrypted task")
             expect(
-                decryptedRows[0].jsonObject.str("title") == e2eeTask.str("title"),
-                "Kotlin encrypted reader should decrypt pulled title",
+                decryptedRows[0].jsonObject.str("description") == e2eeTask.str("description"),
+                "Kotlin encrypted reader should decrypt pulled description",
             )
         } finally {
             encryptedReader.shutdown()

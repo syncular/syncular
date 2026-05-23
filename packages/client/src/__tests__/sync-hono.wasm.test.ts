@@ -2525,12 +2525,14 @@ describe('Syncular worker sync protocol against Hono routes', () => {
       server_version: 0,
       image: null,
       title_yjs_state: null,
+      description: scenario.task.description,
     };
     await client.applyMutation(
       newTaskOperation({
         id: scenario.task.id,
         title: scenario.task.title,
         user_id: ACTOR_A,
+        description: scenario.task.description,
       }),
       localRow
     );
@@ -2541,11 +2543,13 @@ describe('Syncular worker sync protocol against Hono routes', () => {
 
     const serverRow = await sync.db
       .selectFrom('tasks')
-      .select(['id', 'title'])
+      .select(['id', 'description'])
       .where('id', '=', scenario.task.id)
       .executeTakeFirstOrThrow();
-    expect(serverRow.title.startsWith(scenario.envelopePrefix)).toBe(true);
-    expect(serverRow.title).not.toContain(scenario.task.title);
+    expect(serverRow.description?.startsWith(scenario.envelopePrefix)).toBe(
+      true
+    );
+    expect(serverRow.description).not.toContain(scenario.task.description);
 
     const reader = await sync.openWorkerClient({
       clientId: scenario.pullClientId,
@@ -2564,6 +2568,7 @@ describe('Syncular worker sync protocol against Hono routes', () => {
     const rows = await reader.listTable<{
       id: string;
       title: string;
+      description: string | null;
       user_id: string;
     }>('tasks');
     expect(rows).toHaveLength(scenario.expectedDecryptedRowCount);
@@ -2571,6 +2576,7 @@ describe('Syncular worker sync protocol against Hono routes', () => {
       expect.objectContaining({
         id: scenario.task.id,
         title: scenario.task.title,
+        description: scenario.task.description,
         user_id: ACTOR_A,
       }),
     ]);
@@ -2602,12 +2608,14 @@ describe('Syncular worker sync protocol against Hono routes', () => {
       server_version: 0,
       image: null,
       title_yjs_state: null,
+      description: scenario.conflict.serverTitle,
     };
     await seeder.applyMutation(
       newTaskOperation({
         id: scenario.conflict.rowId,
         title: scenario.conflict.serverTitle,
         user_id: ACTOR_A,
+        description: scenario.conflict.serverTitle,
       }),
       seedRow
     );
@@ -2617,13 +2625,13 @@ describe('Syncular worker sync protocol against Hono routes', () => {
 
     const encryptedServerRow = await sync.db
       .selectFrom('tasks')
-      .select(['title'])
+      .select(['description'])
       .where('id', '=', scenario.conflict.rowId)
       .executeTakeFirstOrThrow();
-    expect(encryptedServerRow.title.startsWith(scenario.envelopePrefix)).toBe(
-      true
-    );
-    expect(encryptedServerRow.title).not.toContain(
+    expect(
+      encryptedServerRow.description?.startsWith(scenario.envelopePrefix)
+    ).toBe(true);
+    expect(encryptedServerRow.description).not.toContain(
       scenario.conflict.serverTitle
     );
 
@@ -2639,7 +2647,7 @@ describe('Syncular worker sync protocol against Hono routes', () => {
     });
     const localRow = {
       ...seedRow,
-      title: scenario.conflict.localTitle,
+      description: scenario.conflict.localTitle,
       server_version: scenario.conflict.staleBaseVersion,
     };
     await client.applyMutation(
@@ -2648,7 +2656,7 @@ describe('Syncular worker sync protocol against Hono routes', () => {
         row_id: scenario.conflict.rowId,
         op: 'upsert',
         payload: {
-          title: scenario.conflict.localTitle,
+          description: scenario.conflict.localTitle,
           completed: 0,
           user_id: ACTOR_A,
         },
@@ -2672,9 +2680,9 @@ describe('Syncular worker sync protocol against Hono routes', () => {
       scenario.conflict.expectedConflictCount
     );
     const serverRow = JSON.parse(conflictRows.rows[0]!.server_row_json) as {
-      title?: string;
+      description?: string;
     };
-    expect(serverRow.title).toBe(scenario.conflict.serverTitle);
+    expect(serverRow.description).toBe(scenario.conflict.serverTitle);
     expect(conflictRows.rows[0]!.server_row_json).not.toContain(
       scenario.envelopePrefix
     );
@@ -2706,12 +2714,14 @@ describe('Syncular worker sync protocol against Hono routes', () => {
       server_version: 0,
       image: null,
       title_yjs_state: null,
+      description: scenario.task.description,
     };
     await seeder.applyMutation(
       newTaskOperation({
         id: scenario.task.id,
         title: scenario.task.title,
         user_id: ACTOR_A,
+        description: scenario.task.description,
       }),
       seedRow
     );
@@ -2721,10 +2731,12 @@ describe('Syncular worker sync protocol against Hono routes', () => {
 
     const serverRow = await sync.db
       .selectFrom('tasks')
-      .select(['title'])
+      .select(['description'])
       .where('id', '=', scenario.task.id)
       .executeTakeFirstOrThrow();
-    expect(serverRow.title.startsWith(scenario.envelopePrefix)).toBe(true);
+    expect(serverRow.description?.startsWith(scenario.envelopePrefix)).toBe(
+      true
+    );
 
     const reader = await sync.openWorkerClient({
       clientId: scenario.chunk.clientId,
@@ -2743,11 +2755,12 @@ describe('Syncular worker sync protocol against Hono routes', () => {
       pushedCommits: 0,
     });
     await expect(
-      reader.listTable<{ id: string; title: string }>('tasks')
+      reader.listTable<{ id: string; title: string; description: string | null }>('tasks')
     ).resolves.toEqual([
       expect.objectContaining({
         id: scenario.task.id,
         title: scenario.task.title,
+        description: scenario.task.description,
       }),
     ]);
   });

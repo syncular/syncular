@@ -1,4 +1,5 @@
 use crate::client::{SubscriptionSpec, SyncularClientConfig};
+use crate::encryption::FieldEncryptionRule;
 #[cfg(feature = "native")]
 use crate::error::ErrorKind;
 use crate::error::{Result, SyncularError};
@@ -162,6 +163,84 @@ pub fn validate_app_schema_runtime_features(app_schema: &AppSchema) -> Result<()
     }
 
     Ok(())
+}
+
+pub fn validate_field_encryption_rules_against_app_schema(
+    app_schema: AppSchema,
+    rules: &[FieldEncryptionRule],
+) -> Result<()> {
+    for rule in rules {
+        let table_name = rule.table.as_deref().ok_or_else(|| {
+            SyncularError::config(format!(
+                "field encryption rule for scope {} must specify a generated table",
+                rule.scope
+            ))
+        })?;
+        let metadata = app_schema.table_metadata(table_name).ok_or_else(|| {
+            SyncularError::config(format!(
+                "field encryption rule references unknown generated table {table_name}"
+            ))
+        })?;
+        let row_id_field = rule
+            .row_id_field
+            .as_deref()
+            .unwrap_or(metadata.primary_key_column);
+        if !metadata
+            .columns
+            .iter()
+            .any(|column| column.name == row_id_field)
+        {
+            return Err(SyncularError::config(format!(
+                "field encryption rule for {}.{} references unknown rowIdField {}",
+                rule.scope, table_name, row_id_field
+            )));
+        }
+
+        for field in &rule.fields {
+            let declared = metadata.encrypted_fields.iter().any(|candidate| {
+                candidate.field == field
+                    && candidate.scope == rule.scope
+                    && candidate.row_id_field == row_id_field
+            });
+            if !declared {
+                return Err(SyncularError::config(format!(
+                    "field encryption rule for {}.{} is not declared in the generated app schema",
+                    table_name, field
+                )));
+            }
+        }
+    }
+
+    Ok(())
+}
+
+pub fn validate_blob_encryption_against_app_schema(app_schema: AppSchema) -> Result<()> {
+    if app_schema
+        .app_table_metadata
+        .iter()
+        .any(|table| !table.blob_columns.is_empty())
+    {
+        return Ok(());
+    }
+
+    Err(SyncularError::config(
+        "blob encryption requires at least one generated blob column",
+    ))
+}
+
+pub fn validate_encrypted_crdt_against_app_schema(app_schema: AppSchema) -> Result<()> {
+    if app_schema.app_table_metadata.iter().any(|table| {
+        table
+            .crdt_yjs_fields
+            .iter()
+            .any(|field| field.sync_mode == "encrypted-update-log")
+    }) {
+        return Ok(());
+    }
+
+    Err(SyncularError::config(
+        "encrypted CRDT config requires at least one generated encrypted-update-log CRDT field",
+    ))
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -454,7 +533,44 @@ mod runtime_feature_tests {
         row_id_field: "id",
     }];
     const TABLES: &[&str] = &["tasks"];
-    const EMPTY_COLUMNS: &[ColumnMetadata] = &[];
+    const TABLE_COLUMNS: &[ColumnMetadata] = &[
+        ColumnMetadata {
+            name: "id",
+            type_family: "text",
+            notnull_required: false,
+            primary_key: true,
+        },
+        ColumnMetadata {
+            name: "title",
+            type_family: "text",
+            notnull_required: true,
+            primary_key: false,
+        },
+        ColumnMetadata {
+            name: "title_yjs_state",
+            type_family: "text",
+            notnull_required: false,
+            primary_key: false,
+        },
+        ColumnMetadata {
+            name: "secret",
+            type_family: "text",
+            notnull_required: false,
+            primary_key: false,
+        },
+        ColumnMetadata {
+            name: "image",
+            type_family: "text",
+            notnull_required: false,
+            primary_key: false,
+        },
+        ColumnMetadata {
+            name: "server_version",
+            type_family: "integer",
+            notnull_required: true,
+            primary_key: false,
+        },
+    ];
     const EMPTY_SCOPES: &[ScopeMetadata] = &[];
     const EMPTY_BLOBS: &[&str] = &[];
     const BLOB_COLUMNS: &[&str] = &["image"];
@@ -488,7 +604,7 @@ mod runtime_feature_tests {
             server_version_column: "server_version",
             soft_delete_column: None,
             subscription_id: "sub-tasks",
-            columns: EMPTY_COLUMNS,
+            columns: TABLE_COLUMNS,
             blob_columns,
             crdt_yjs_fields,
             encrypted_fields,
@@ -563,5 +679,73 @@ mod runtime_feature_tests {
                 .message_text();
             assert!(message.contains("crdt-yjs") || message.contains("e2ee"));
         }
+    }
+
+    #[test]
+    fn field_encryption_rules_must_match_generated_metadata() {
+        let valid = FieldEncryptionRule {
+            scope: "tasks".to_string(),
+            table: Some("tasks".to_string()),
+            fields: vec!["secret".to_string()],
+            row_id_field: Some("id".to_string()),
+        };
+        assert!(validate_field_encryption_rules_against_app_schema(
+            schema(ENCRYPTED_FIELD_SCHEMA_TABLES),
+            &[valid]
+        )
+        .is_ok());
+
+        let unknown_field = FieldEncryptionRule {
+            scope: "tasks".to_string(),
+            table: Some("tasks".to_string()),
+            fields: vec!["title".to_string()],
+            row_id_field: Some("id".to_string()),
+        };
+        assert!(validate_field_encryption_rules_against_app_schema(
+            schema(ENCRYPTED_FIELD_SCHEMA_TABLES),
+            &[unknown_field]
+        )
+        .expect_err("runtime-only encryption fields should fail")
+        .message_text()
+        .contains("not declared"));
+
+        let wildcard_table = FieldEncryptionRule {
+            scope: "tasks".to_string(),
+            table: None,
+            fields: vec!["secret".to_string()],
+            row_id_field: Some("id".to_string()),
+        };
+        assert!(validate_field_encryption_rules_against_app_schema(
+            schema(ENCRYPTED_FIELD_SCHEMA_TABLES),
+            &[wildcard_table]
+        )
+        .expect_err("field encryption rules must be table-specific")
+        .message_text()
+        .contains("must specify"));
+    }
+
+    #[test]
+    fn blob_encryption_requires_generated_blob_column() {
+        assert!(validate_blob_encryption_against_app_schema(schema(BLOB_SCHEMA_TABLES)).is_ok());
+        assert!(
+            validate_blob_encryption_against_app_schema(schema(PLAIN_SCHEMA_TABLES))
+                .expect_err("blob encryption without blob fields should fail")
+                .message_text()
+                .contains("blob column")
+        );
+    }
+
+    #[test]
+    fn encrypted_crdt_requires_generated_encrypted_crdt_field() {
+        assert!(
+            validate_encrypted_crdt_against_app_schema(schema(ENCRYPTED_CRDT_SCHEMA_TABLES))
+                .is_ok()
+        );
+        assert!(
+            validate_encrypted_crdt_against_app_schema(schema(CRDT_SCHEMA_TABLES))
+                .expect_err("encrypted CRDT config without encrypted-update-log fields should fail")
+                .message_text()
+                .contains("encrypted-update-log")
+        );
     }
 }

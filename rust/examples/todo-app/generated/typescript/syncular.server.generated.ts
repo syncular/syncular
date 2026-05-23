@@ -450,7 +450,13 @@ export const syncularGeneratedCurrentClientSchema: SyncularGeneratedClientSchema
           "syncMode": "server-merge"
         }
       ],
-      "encryptedFields": [],
+      "encryptedFields": [
+        {
+          "field": "description",
+          "rowIdField": "id",
+          "scope": "tasks"
+        }
+      ],
       "name": "tasks",
       "primaryKeyColumn": "id",
       "scopes": [

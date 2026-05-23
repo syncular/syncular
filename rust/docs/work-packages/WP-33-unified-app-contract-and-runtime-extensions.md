@@ -940,6 +940,43 @@ The contract should distinguish two local cases:
 - Kept `local-only` as a future mode for Rust as well. The implemented helper
   is sync-compatible and keeps safe mutation/outbox semantics.
 
+### Batch 6 Runtime Extension Boundary Slice
+
+- Found and removed a concrete storage/wire drift case in the todo
+  conformance app: field encryption was being installed at runtime for
+  `tasks.title`, even though the generated contract declared no encrypted
+  fields and `title` is already a CRDT-backed field.
+- Declared `tasks.description` as the generated encrypted field in
+  `syncular.app.ts`/`syncular.codegen.json` and regenerated Rust, TypeScript,
+  Swift, Kotlin, Android Kotlin, server, and schema artifacts from that
+  contract.
+- Moved the shared E2EE scenario and browser/native smoke expectations from
+  encrypting CRDT `title` to encrypting declared `description`.
+- Added runtime validation for storage/wire-affecting extension config:
+  field-encryption rules must be table-specific and match generated
+  `encryptedFields`; blob encryption requires at least one generated blob
+  column; encrypted CRDT config requires at least one generated
+  `encrypted-update-log` CRDT field.
+- Applied the validation to Rust/native and browser/WASM runtime setters. The
+  native facade validates before sending config to the worker.
+- Tightened generated TypeScript/Swift/Kotlin field-encryption helpers so
+  callers provide keys and modes only. Storage/wire rule selection now comes
+  from generated `encryptedFields` metadata instead of accepting ad hoc
+  `additionalRules`/`options.rules` at runtime.
+- Aligned the runtime fixture and todo app codegen configs so both generation
+  paths declare the same `tasks.description` encrypted field and no longer
+  fight over the shared generated example outputs.
+- Preserved the existing Rust client feature-profile check for apps with no
+  encrypted fields:
+  `syncular-client --no-default-features --features native,crdt-yjs` still
+  compiles. The todo example itself now enables `e2ee` because its generated
+  app contract declares an encrypted field.
+- Remaining cleanup: raw `SyncWorker::set_*` config commands still do not carry
+  command ids, so worker-internal validation errors cannot be reported through
+  the normal command event shape yet. Public native facade calls validate
+  synchronously; the raw worker command shape should be tightened in a later
+  Batch 6 slice.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -1017,14 +1054,26 @@ Gates run:
 - `bun run --cwd packages/client tsgo`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --lib`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `bun test packages/client/src/generated-app-conformance.test.ts`
+- `bun test packages/client/src/__tests__/sync-hono.wasm.test.ts`
+- `bash rust/examples/todo-app/native-smokes/run-local.sh`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-client --no-default-features --features native,crdt-yjs`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
+- `bun test rust/examples/todo-app/syncular.app.test.ts`
+- `bun test rust/examples/todo-app/syncular.app.test.ts packages/client/src/__tests__/sync-hono.wasm.test.ts -t "encrypts pushed fields|decrypts encrypted conflict|decrypts encrypted rows delivered"`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`
+- `bun run --cwd packages/client tsgo`
+- `bun run --cwd packages/server tsgo`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
 
 ## Next Action
 
-Continue Batch 6 by tightening the runtime extension boundary: inventory the
-current dynamic hooks/options used by auth, diagnostics, encryption, CRDT,
-blob policy, live queries, row/field events, network status, and lifecycle;
-then add focused conformance that every storage/wire-affecting extension is
-backed by static generated contract metadata rather than hidden runtime-only
-configuration.
+Continue Batch 6 by tightening the remaining runtime extension surfaces:
+convert raw worker `set_*` config commands into first-class command/event
+operations or remove the direct worker config setters, then inventory auth
+lifecycle, diagnostics, network status, blob policy, live queries, row/field
+events, and lifecycle hooks for any remaining runtime-only behavior that should
+be backed by generated static contract metadata.

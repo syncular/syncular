@@ -235,7 +235,11 @@ pub const TASKS_CRDT_YJS_FIELDS: &[CrdtYjsFieldMetadata] = &[CrdtYjsFieldMetadat
     sync_mode: "server-merge",
 }];
 
-pub const TASKS_ENCRYPTED_FIELDS: &[EncryptedFieldMetadata] = &[];
+pub const TASKS_ENCRYPTED_FIELDS: &[EncryptedFieldMetadata] = &[EncryptedFieldMetadata {
+    field: "description",
+    scope: "tasks",
+    row_id_field: "id",
+}];
 
 pub const TASKS_SCOPES: &[ScopeMetadata] = &[
     ScopeMetadata {
@@ -521,7 +525,12 @@ pub fn task_changed_rows<'a>(
 }
 
 pub fn generated_field_encryption_rules() -> Vec<FieldEncryptionRule> {
-    Vec::new()
+    vec![FieldEncryptionRule {
+        scope: "tasks".to_string(),
+        table: Some("tasks".to_string()),
+        fields: vec!["description".to_string()],
+        row_id_field: Some("id".to_string()),
+    }]
 }
 
 pub fn default_subscriptions(config: &SyncularClientConfig) -> Vec<SubscriptionSpec> {
@@ -1668,6 +1677,7 @@ fn syncular_command_history_unsafe_fields(
         "projects" => Ok(fields),
         "tasks" => {
             syncular_command_history_push_unsafe_field(&mut fields, entry, "image");
+            syncular_command_history_push_unsafe_field(&mut fields, entry, "description");
             syncular_command_history_push_unsafe_field(&mut fields, entry, "title");
             syncular_command_history_push_unsafe_field(&mut fields, entry, "title_yjs_state");
             Ok(fields)
