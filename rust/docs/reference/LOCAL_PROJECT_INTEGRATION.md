@@ -149,6 +149,33 @@ This TypeScript file is a build/dev-time authoring layer only. Generated Rust,
 Swift, Kotlin, JVM, and browser clients consume generated artifacts and
 `syncular.schema.json`; they do not import `syncular.app.ts` at runtime.
 
+For a same-shape starter app, scaffold the initial contract from existing
+TypeScript migrations, then edit the authoring file/config once the client
+replica diverges from the server shape:
+
+```ts
+import {
+  scaffoldSyncularClientContract,
+  scope,
+  writeSyncularCodegenJson,
+} from '@syncular/typegen';
+import { migrations } from './migrations';
+
+const app = await scaffoldSyncularClientContract({
+  migrations,
+  scopes: {
+    tasks: [
+      scope('user_id', {
+        source: 'actorId',
+        required: true,
+      }),
+    ],
+  },
+});
+
+await writeSyncularCodegenJson(app, './syncular.codegen.json');
+```
+
 Useful fields:
 
 - `tables`: app tables that Syncular should generate metadata/mutations for.
