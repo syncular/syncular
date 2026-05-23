@@ -519,6 +519,13 @@ read-only review:
   no HTTP recovery pulls occur. Treat further `500+` reconnect work as
   worker/event-delivery or benchmark-harness investigation, not a relay/server
   Rust rewrite trigger.
+- [`WP-33 Unified App Contract And Runtime Extensions`](work-packages/WP-33-unified-app-contract-and-runtime-extensions.md)
+  is the next schema/config ergonomics track. It captures the decision to make
+  a generated language-neutral app contract the stable center, keep
+  `createServerHandler({ table: app.tables.notes, snapshot, applyOperation,
+  ... })` as the imperative server behavior style, preserve different
+  server/client schema shapes, and keep runtime hooks/plugins as app-installed
+  extensions rather than executable generated schema behavior.
 
 ## Later
 
