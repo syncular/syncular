@@ -891,6 +891,20 @@ The contract should distinguish two local cases:
 - Added server pull coverage proving incremental pull changes are routed
   through the table-handler schema hook.
 
+### Batch 8 Generated Old-Client Incremental Conformance Slice
+
+- Added browser/Hono conformance for a generated schema 6 client against a
+  schema 8 server.
+- The old client first bootstraps from a generated server handler that projects
+  schema 8 rows to schema 6.
+- The server then persists a current-schema commit-log row with the schema
+  8-only `tasks.description` column through `pushCommit(...)` and the generated
+  handler.
+- The schema 6 browser client pulls the incremental commit through Hono and
+  applies only the projected schema 6 row. The local table updates title,
+  completion, scopes, and server version, while its SQLite table schema still
+  has no `description` column.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -959,11 +973,16 @@ Gates run:
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
+- `bun test packages/client/src/__tests__/variant-core.wasm.test.ts -t "generated old-client incremental"`
+- `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
+- `bun run --cwd packages/client tsgo`
+- `git diff --check`
 
 ## Next Action
 
-Continue Batch 8 with an end-to-end generated old-client incremental-pull
-conformance test through the browser/Hono path. The unit-level hook is covered;
-the remaining proof is that a schema 6 generated browser client can bootstrap,
-then receive a schema 8 commit-log update without applying current-only
-`tasks.description`.
+Continue Batch 6/7 with the runtime-extension and backend-less app boundary.
+Start with the smallest generated local/no-server smoke: a generated
+local-sync-compatible TypeScript client should open from embedded migrations,
+run typed reads and safe mutations without a Syncular server, surface honest
+pending/outbox lifecycle state, and keep the path compatible with later remote
+sync attachment.

@@ -16,7 +16,12 @@ import {
   syncularGeneratedCodecs as todoGeneratedCodecs,
   syncularGeneratedTableConfig as todoGeneratedTableConfig,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
-import { createServerHandler, type SyncCoreDb } from '../../../server/src';
+import {
+  createServerHandler,
+  createServerHandlerCollection,
+  pushCommit,
+  type SyncCoreDb,
+} from '../../../server/src';
 import { createHttpServerFixture } from '../../../testkit/src/http-fixtures';
 import {
   createSyncularDatabase,
@@ -28,6 +33,7 @@ import type {
   SyncularAuthLeaseRecord,
   SyncularRuntimeArtifactCandidate,
   SyncularSubscriptionSpec,
+  SyncularUnsafeSqlClient,
 } from '../types';
 import { getSyncularRuntimeArtifact } from '../wasm-runtime';
 
@@ -680,6 +686,224 @@ describe('Syncular core WASM artifact', () => {
           server_version: todoGeneratedSchemaVersion,
         },
       ]);
+    } finally {
+      await oldClient?.close();
+      await server.destroy();
+    }
+  });
+
+  it('applies generated old-client incremental pulls without current-only columns', async () => {
+    const actorId = 'actor-generated-old-client-incremental';
+    const token = 'token-generated-old-client-incremental';
+    const projectId = 'project-generated-old-client-incremental';
+    const oldSchemaVersion = todoGeneratedClientSchemaSupport.minSupported;
+    const taskId = 'generated-incremental-task-1';
+    const handler = createTodoAppServerHandler<GeneratedTodoServerDb>({
+      table: todoGeneratedServerAppTables.tasks,
+      resolveScopes: async (ctx) => ({
+        user_id: [ctx.actorId],
+        project_id: [projectId],
+      }),
+      async snapshot(ctx) {
+        const rows = await ctx.db
+          .selectFrom('tasks')
+          .select([
+            'id',
+            'title',
+            'completed',
+            'user_id',
+            'project_id',
+            'server_version',
+            'image',
+            'title_yjs_state',
+            'description',
+          ])
+          .where('user_id', '=', ctx.actorId)
+          .where('project_id', '=', projectId)
+          .execute();
+        return {
+          rows: rows.map((row) =>
+            todoProjectGeneratedClientRowForVersion(
+              'tasks',
+              row,
+              ctx.schemaVersion
+            )
+          ),
+          nextCursor: null,
+        };
+      },
+      async applyOperation(ctx, op, opIndex) {
+        if (op.op !== 'upsert') {
+          return {
+            result: {
+              opIndex,
+              status: 'error',
+              error: 'only upsert is supported in this fixture',
+              retriable: false,
+            },
+            emittedChanges: [],
+          };
+        }
+        const payload =
+          op.payload &&
+          typeof op.payload === 'object' &&
+          !Array.isArray(op.payload)
+            ? (op.payload as Record<string, unknown>)
+            : {};
+        const existing = await ctx.trx
+          .selectFrom('tasks')
+          .select('server_version')
+          .where('id', '=', op.row_id)
+          .executeTakeFirst();
+        const nextVersion = Number(existing?.server_version ?? 0) + 1;
+        const row: GeneratedTodoTaskCurrentServerRow = {
+          id: op.row_id,
+          title: String(payload.title ?? 'Incremental server title'),
+          completed: Number(payload.completed ?? 0),
+          user_id: String(payload.user_id ?? ctx.actorId),
+          project_id:
+            payload.project_id == null ? projectId : String(payload.project_id),
+          server_version: nextVersion,
+          image: null,
+          title_yjs_state: null,
+          description: String(
+            payload.description ?? 'current-only incremental description'
+          ),
+        };
+        await ctx.trx
+          .insertInto('tasks')
+          .values(row)
+          .onConflict((oc) =>
+            oc.column('id').doUpdateSet({
+              title: row.title,
+              completed: row.completed,
+              user_id: row.user_id,
+              project_id: row.project_id,
+              server_version: row.server_version,
+              image: row.image,
+              title_yjs_state: row.title_yjs_state,
+              description: row.description,
+            })
+          )
+          .execute();
+        return {
+          result: { opIndex, status: 'applied' },
+          emittedChanges: [
+            {
+              table: 'tasks',
+              row_id: row.id,
+              op: 'upsert',
+              row_json: row,
+              row_version: row.server_version,
+              scopes: { user_id: row.user_id, project_id: row.project_id },
+            },
+          ],
+        };
+      },
+    });
+    const handlers = [handler];
+    const handlerCollection =
+      createServerHandlerCollection<GeneratedTodoServerDb>(handlers);
+    const server = await createHttpServerFixture<GeneratedTodoServerDb>({
+      serverDialect: 'sqlite',
+      createTables: ensureGeneratedTodoServerTables,
+      handlers,
+      authenticate: async (c) => {
+        const authorization = c.req.header('authorization');
+        return authorization === token ? { actorId } : null;
+      },
+      sync: {
+        latestSchemaVersion: todoGeneratedSchemaVersion,
+      },
+    });
+    let oldClient: SyncularDatabase<GeneratedTodoV6ClientDb> | null = null;
+
+    try {
+      await server.db
+        .insertInto('tasks')
+        .values({
+          id: taskId,
+          title: 'Initial old-client title',
+          completed: 0,
+          user_id: actorId,
+          project_id: projectId,
+          server_version: 1,
+          image: null,
+          title_yjs_state: null,
+          description: 'initial current-only description',
+        })
+        .execute();
+
+      oldClient = await openGeneratedTodoOldClient({
+        baseUrl: `${server.baseUrl}/sync`,
+        actorId,
+        projectId,
+        schemaVersion: oldSchemaVersion,
+        clientId: `client-generated-incremental-v${oldSchemaVersion}-${Date.now()}`,
+        token,
+      });
+
+      await expect(oldClient.client.syncPull()).resolves.toMatchObject({
+        changedTables: ['tasks'],
+      });
+
+      await pushCommit({
+        db: server.db,
+        dialect: server.dialect,
+        handlers: handlerCollection,
+        auth: { actorId },
+        request: {
+          clientId: 'current-schema-writer',
+          clientCommitId: `current-schema-writer-${Date.now()}`,
+          schemaVersion: todoGeneratedSchemaVersion,
+          operations: [
+            {
+              table: 'tasks',
+              row_id: taskId,
+              op: 'upsert',
+              payload: {
+                title: 'Incremental title visible to v6',
+                completed: 1,
+                user_id: actorId,
+                project_id: projectId,
+                description: 'incremental current-only description',
+              },
+              base_version: null,
+            },
+          ],
+        },
+      });
+
+      await expect(oldClient.client.syncPull()).resolves.toMatchObject({
+        changedTables: ['tasks'],
+      });
+      await expect(
+        oldClient.db
+          .selectFrom('tasks')
+          .select([
+            'id',
+            'title',
+            'completed',
+            'user_id',
+            'project_id',
+            'server_version',
+          ])
+          .execute()
+      ).resolves.toEqual([
+        {
+          id: taskId,
+          title: 'Incremental title visible to v6',
+          completed: 1,
+          user_id: actorId,
+          project_id: projectId,
+          server_version: 2,
+        },
+      ]);
+      const unsafe = oldClient.client as unknown as SyncularUnsafeSqlClient;
+      const columns = await unsafe.executeUnsafeSql<{ name: string }>(
+        'pragma table_info("tasks")'
+      );
+      expect(columns.rows.map((row) => row.name)).not.toContain('description');
     } finally {
       await oldClient?.close();
       await server.destroy();
