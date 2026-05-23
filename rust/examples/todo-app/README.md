@@ -29,6 +29,15 @@ The root `syncular.schema.json` is the generated cross-platform metadata
 contract that the app-specific TypeScript, Rust, Swift, and Kotlin generators
 consume before emitting target code.
 
+The checked server-handler example in `server-handlers.ts` shows the intended
+server-side shape: generated table contracts and schema-version projection
+helpers, with app-owned authorization, snapshots, writes, and server/client row
+translation.
+
+```bash
+bun test rust/examples/todo-app/server-handlers.test.ts
+```
+
 The Rust example crate compiles those generated files directly. Its tests prove
 that the generated Diesel schema, Diesel table adapters, migrations, mutations,
 subscriptions, and `AppSchema` wiring work against the `syncular-client` SDK:
