@@ -6475,11 +6475,22 @@ fn generate_typescript_module(
     out.push_str("    rules: [...syncularGeneratedFieldEncryptionRules],\n");
     out.push_str("  };\n");
     out.push_str("}\n\n");
-    out.push_str("export const syncularGeneratedAppTables = [\n");
+    out.push_str("const syncularGeneratedAppTableNames = [\n");
     for table in &user_tables {
         out.push_str(&format!("  {},\n", ts_string(&table.name)));
     }
     out.push_str("] as const satisfies readonly (keyof SyncularAppDb)[];\n\n");
+    out.push_str("const syncularGeneratedAppTableRefs = {\n");
+    for table in &user_tables {
+        out.push_str(&format!("  {}: {{\n", ts_property_name(&table.name)));
+        out.push_str(&format!("    name: {},\n", ts_string(&table.name)));
+        out.push_str(&format!(
+            "    config: syncularGeneratedTableConfig.{},\n",
+            ts_property_name(&table.name)
+        ));
+        out.push_str("  },\n");
+    }
+    out.push_str("} as const;\n\n");
     push_typescript_changed_row_helpers(&mut out, &user_tables);
     out.push_str("export const syncularGeneratedCodecs: ColumnCodecSource = (column) => {\n");
     out.push_str(
@@ -6494,6 +6505,16 @@ fn generate_typescript_module(
     out.push_str("function withSyncularGeneratedCodecs(userCodecs?: ColumnCodecSource): ColumnCodecSource {\n");
     out.push_str("  return (column) => syncularGeneratedCodecs(column) ?? userCodecs?.(column);\n");
     out.push_str("}\n\n");
+    out.push_str("export const syncularGeneratedApp = {\n");
+    out.push_str("  currentSchemaVersion: syncularGeneratedSchemaVersion,\n");
+    out.push_str("  appSchema: syncularGeneratedAppSchema,\n");
+    out.push_str("  tables: syncularGeneratedAppTableRefs,\n");
+    out.push_str("  tableNames: syncularGeneratedAppTableNames,\n");
+    out.push_str("  tableConfig: syncularGeneratedTableConfig,\n");
+    out.push_str("  fieldEncryptionRules: syncularGeneratedFieldEncryptionRules,\n");
+    out.push_str("  fieldEncryptionConfig: syncularGeneratedFieldEncryptionConfig,\n");
+    out.push_str("  codecs: syncularGeneratedCodecs,\n");
+    out.push_str("} as const;\n\n");
     out.push_str(
         "export async function ensureSyncularAppBaseSchema(db: Kysely<any>): Promise<void> {\n",
     );
@@ -6852,7 +6873,7 @@ fn generate_typescript_module(
     out.push_str("      appSchema: options.config.appSchema ?? syncularGeneratedAppSchema,\n");
     out.push_str("    },\n");
     out.push_str("    codecs: withSyncularGeneratedCodecs(options.codecs),\n");
-    out.push_str("    appTables: syncularGeneratedAppTables,\n");
+    out.push_str("    appTables: syncularGeneratedApp.tableNames,\n");
     out.push_str("    tableConfig: { ...options.tableConfig, ...syncularGeneratedTableConfig },\n");
     out.push_str("    requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,\n");
     out.push_str("  });\n");
@@ -12025,11 +12046,14 @@ CREATE TABLE tasks (
             "  { scope: 'tasks', table: 'tasks', fields: ['title'], rowIdField: 'id' },"
         ));
         assert!(output.contains("export function syncularGeneratedFieldEncryptionConfig("));
-        assert!(output.contains("export const syncularGeneratedAppTables = ["));
+        assert!(output.contains("const syncularGeneratedAppTableNames = ["));
+        assert!(output.contains("const syncularGeneratedAppTableRefs = {"));
+        assert!(output.contains("export const syncularGeneratedApp = {"));
+        assert!(output.contains("  tableNames: syncularGeneratedAppTableNames,"));
         assert!(output.contains("  'projects',"));
         assert!(output
             .contains("      appSchema: options.config.appSchema ?? syncularGeneratedAppSchema,"));
-        assert!(output.contains("    appTables: syncularGeneratedAppTables,"));
+        assert!(output.contains("    appTables: syncularGeneratedApp.tableNames,"));
         assert!(output
             .contains("tableConfig: { ...options.tableConfig, ...syncularGeneratedTableConfig },"));
         assert!(output.contains("export const syncularGeneratedCodecs: ColumnCodecSource"));

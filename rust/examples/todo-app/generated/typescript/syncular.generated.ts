@@ -453,11 +453,26 @@ export function syncularGeneratedFieldEncryptionConfig(
   };
 }
 
-export const syncularGeneratedAppTables = [
+const syncularGeneratedAppTableNames = [
   'comments',
   'projects',
   'tasks',
 ] as const satisfies readonly (keyof SyncularAppDb)[];
+
+const syncularGeneratedAppTableRefs = {
+  comments: {
+    name: 'comments',
+    config: syncularGeneratedTableConfig.comments,
+  },
+  projects: {
+    name: 'projects',
+    config: syncularGeneratedTableConfig.projects,
+  },
+  tasks: {
+    name: 'tasks',
+    config: syncularGeneratedTableConfig.tasks,
+  },
+} as const;
 
 export type SyncularGeneratedChangedOperation = SyncularChangedRow['operation'];
 export type SyncularChangedRowsInput = SyncularRowsChangedEvent | { changedRows?: readonly SyncularChangedRow[] } | readonly SyncularChangedRow[];
@@ -597,6 +612,17 @@ export const syncularGeneratedCodecs: ColumnCodecSource = (column) => {
 function withSyncularGeneratedCodecs(userCodecs?: ColumnCodecSource): ColumnCodecSource {
   return (column) => syncularGeneratedCodecs(column) ?? userCodecs?.(column);
 }
+
+export const syncularGeneratedApp = {
+  currentSchemaVersion: syncularGeneratedSchemaVersion,
+  appSchema: syncularGeneratedAppSchema,
+  tables: syncularGeneratedAppTableRefs,
+  tableNames: syncularGeneratedAppTableNames,
+  tableConfig: syncularGeneratedTableConfig,
+  fieldEncryptionRules: syncularGeneratedFieldEncryptionRules,
+  fieldEncryptionConfig: syncularGeneratedFieldEncryptionConfig,
+  codecs: syncularGeneratedCodecs,
+} as const;
 
 export async function ensureSyncularAppBaseSchema(db: Kysely<any>): Promise<void> {
   await ensureSyncularAppSchemaMetadata(db);
@@ -938,7 +964,7 @@ export async function createSyncularAppDatabase(
       appSchema: options.config.appSchema ?? syncularGeneratedAppSchema,
     },
     codecs: withSyncularGeneratedCodecs(options.codecs),
-    appTables: syncularGeneratedAppTables,
+    appTables: syncularGeneratedApp.tableNames,
     tableConfig: { ...options.tableConfig, ...syncularGeneratedTableConfig },
     requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
   });
