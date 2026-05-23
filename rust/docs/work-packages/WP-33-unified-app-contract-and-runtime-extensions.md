@@ -656,6 +656,21 @@ The contract should distinguish two local cases:
 - Updated generated-client and local-project integration docs with the runtime
   migration split.
 
+### Batch 4 Authoring Surface Slice
+
+- Added build-time `@syncular/typegen` app contract helpers:
+  `defineSyncularClient`, `syncedTable`, `scope`, `yjsText`,
+  `encryptedField`, `countByReadModel`, `toSyncularCodegenConfig`, and
+  `toSyncularCodegenJson`.
+- The helpers serialize to the existing low-level `syncular.codegen.json`
+  semantics: tables, subscriptions, scopes, server-version columns, blob
+  columns, CRDT fields, encrypted fields, soft deletes, local read models,
+  output paths, runtime import paths, native output paths, and client schema
+  support.
+- Kept the boundary explicit: this is a dev/build-time authoring surface in
+  `@syncular/typegen`, while generated cross-platform clients still consume
+  generated artifacts at runtime.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -669,11 +684,13 @@ Gates run:
 - `bun test packages/server/src/generated-app-server-handler.test.ts`
 - `bun --cwd rust/bindings/javascript build:wasm:core`
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
+- `bun run --cwd packages/typegen tsgo`
+- `bun test packages/typegen/src/app-contract.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
 
 ## Next Action
 
-Start Batch 4 by designing and implementing the first higher-level TypeScript
-authoring surface that can emit the existing low-level `syncular.codegen.json`
-semantics without making TypeScript authoring part of the cross-platform
-runtime API.
+Continue Batch 4 by proving a real example app can use the TypeScript
+authoring helper to generate its `syncular.codegen.json` contents, then decide
+whether the Rust codegen CLI should consume that authoring module directly or
+keep consuming checked-in generated JSON only.
