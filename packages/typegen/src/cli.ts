@@ -1,6 +1,8 @@
 #!/usr/bin/env bun
 
 import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   loadSyncularClientContract,
   toSyncularCodegenJson,
@@ -47,7 +49,7 @@ async function main(argv: string[]): Promise<void> {
 
 function parseCodegenConfigArgs(args: string[]): CodegenConfigCommand {
   let app: string | undefined;
-  let out = 'syncular.codegen.json';
+  let out: string | undefined;
   let exportName: string | undefined;
   let check = false;
   for (let index = 0; index < args.length; index += 1) {
@@ -67,7 +69,17 @@ function parseCodegenConfigArgs(args: string[]): CodegenConfigCommand {
     }
   }
   if (!app) printUsageAndExit('Missing --app');
-  return { app, out, exportName, check };
+  return {
+    app,
+    out: out ?? defaultCodegenConfigPath(app),
+    exportName,
+    check,
+  };
+}
+
+function defaultCodegenConfigPath(app: string): string {
+  const appPath = app.startsWith('file:') ? fileURLToPath(app) : app;
+  return join(dirname(appPath), 'generated', 'syncular.codegen.json');
 }
 
 function requireValue(args: string[], index: number, option: string): string {
@@ -83,7 +95,7 @@ function printUsageAndExit(message?: string): never {
   console.error(
     [
       'Usage:',
-      '  syncular-typegen codegen-config --app ./syncular.app.ts [--out ./syncular.codegen.json] [--export app] [--check]',
+      '  syncular-typegen codegen-config --app ./syncular.app.ts [--out ./generated/syncular.codegen.json] [--export app] [--check]',
     ].join('\n')
   );
   process.exit(message ? 1 : 0);

@@ -2510,14 +2510,31 @@ fn load_index_columns(
         .collect())
 }
 
-fn load_codegen_config(manifest_dir: &Path) -> Result<CodegenConfig> {
-    let path = manifest_dir.join("syncular.codegen.json");
+fn load_codegen_config(
+    manifest_dir: &Path,
+    configured_path: Option<PathBuf>,
+) -> Result<CodegenConfig> {
+    let explicit = configured_path.is_some();
+    let path = configured_path
+        .map(|path| manifest_relative_path(manifest_dir, path))
+        .unwrap_or_else(|| manifest_dir.join("generated/syncular.codegen.json"));
     if !path.exists() {
+        if explicit {
+            bail!("codegen config {} does not exist", path.display());
+        }
         return Ok(CodegenConfig::default());
     }
 
     let json = fs::read_to_string(&path).with_context(|| format!("read {}", path.display()))?;
     serde_json::from_str(&json).with_context(|| format!("parse {}", path.display()))
+}
+
+fn manifest_relative_path(manifest_dir: &Path, path: PathBuf) -> PathBuf {
+    if path.is_absolute() {
+        path
+    } else {
+        manifest_dir.join(path)
+    }
 }
 
 fn validate_codegen_config(tables: &[TableInfo], config: &CodegenConfig) -> Result<()> {
@@ -10883,17 +10900,19 @@ fn format_rust(source: String) -> Result<String> {
 struct CodegenArgs {
     check: bool,
     manifest_dir: PathBuf,
+    codegen_config: Option<PathBuf>,
     migrations_dir: Option<PathBuf>,
     rust_output_dir: Option<PathBuf>,
 }
 
 fn usage() -> &'static str {
-    "usage: syncular-codegen [--check] [--manifest-dir <path>] [--migrations-dir <path>] [--rust-output-dir <path>]"
+    "usage: syncular-codegen [--check] [--manifest-dir <path>] [--codegen-config <path>] [--migrations-dir <path>] [--rust-output-dir <path>]"
 }
 
 fn parse_args() -> Result<CodegenArgs> {
     let mut check = false;
     let mut manifest_dir = None;
+    let mut codegen_config = None;
     let mut migrations_dir = None;
     let mut rust_output_dir = None;
     let mut args = env::args().skip(1);
@@ -10905,6 +10924,12 @@ fn parse_args() -> Result<CodegenArgs> {
                 manifest_dir =
                     Some(PathBuf::from(args.next().ok_or_else(|| {
                         anyhow::anyhow!("--manifest-dir requires a path")
+                    })?));
+            }
+            "--codegen-config" => {
+                codegen_config =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        anyhow::anyhow!("--codegen-config requires a path")
                     })?));
             }
             "--migrations-dir" => {
@@ -10928,6 +10953,7 @@ fn parse_args() -> Result<CodegenArgs> {
         check,
         manifest_dir: manifest_dir
             .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+        codegen_config,
         migrations_dir,
         rust_output_dir,
     })
@@ -10955,7 +10981,7 @@ fn main() -> Result<()> {
     apply_migrations(&mut conn, &migrations_dir)?;
 
     let tables = load_tables(&mut conn)?;
-    let codegen_config = load_codegen_config(&manifest_dir)?;
+    let codegen_config = load_codegen_config(&manifest_dir, args.codegen_config)?;
     validate_codegen_config(&tables, &codegen_config)?;
     let schema_version = current_schema_version_from_migrations(&migrations_dir)?;
     let schema_json_path = codegen_config.schema_output_path(&manifest_dir)?;

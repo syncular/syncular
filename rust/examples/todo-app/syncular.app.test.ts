@@ -6,7 +6,10 @@ import { app, syncularCodegenConfig } from './syncular.app';
 describe('todo app Syncular authoring contract', () => {
   it('serializes to the checked-in low-level codegen config', () => {
     const expected = JSON.parse(
-      readFileSync(new URL('./syncular.codegen.json', import.meta.url), 'utf8')
+      readFileSync(
+        new URL('./generated/syncular.codegen.json', import.meta.url),
+        'utf8'
+      )
     );
 
     expect(syncularCodegenConfig).toEqual(expected);
@@ -14,7 +17,7 @@ describe('todo app Syncular authoring contract', () => {
 
   it('writes the checked-in codegen handoff JSON from the typed app contract', () => {
     const expected = readFileSync(
-      new URL('./syncular.codegen.json', import.meta.url),
+      new URL('./generated/syncular.codegen.json', import.meta.url),
       'utf8'
     );
 

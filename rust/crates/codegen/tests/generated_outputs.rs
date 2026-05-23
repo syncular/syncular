@@ -13,6 +13,8 @@ fn generated_outputs_are_current() {
     let output = Command::new(env!("CARGO_BIN_EXE_syncular-codegen"))
         .arg("--manifest-dir")
         .arg(&runtime_dir)
+        .arg("--codegen-config")
+        .arg("syncular.codegen.json")
         .arg("--migrations-dir")
         .arg(runtime_dir.join("migrations"))
         .arg("--rust-output-dir")
