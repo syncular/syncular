@@ -38,7 +38,6 @@ describe('snapshot chunk protocol', () => {
       schemaVersion: 7,
       limitCommits: 50,
       snapshotArtifacts: {
-        schemaVersion: '7',
         artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
         compressions: [SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE],
         featureSet: ['blobs', 'crdt-yjs'],
@@ -47,7 +46,6 @@ describe('snapshot chunk protocol', () => {
     });
 
     expect(parsed.snapshotArtifacts).toEqual({
-      schemaVersion: '7',
       artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
       compressions: [SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE],
       featureSet: ['blobs', 'crdt-yjs'],
