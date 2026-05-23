@@ -6,10 +6,10 @@ description: Generate and use the Rust-first Syncular app clients.
 # Quick Start
 
 The Rust client is generated from your SQLite migrations and a typed
-`syncular.app.ts` contract. That contract writes `syncular.codegen.json`, the
-low-level handoff consumed by Rust codegen. The generated files are app code:
-keep them in your app repo so Rust, TypeScript, Swift, and Kotlin tooling can
-see the types.
+`syncular.app.ts` contract. That contract writes
+`generated/syncular.codegen.json`, the generated handoff consumed by Rust
+codegen. The generated files are app code: keep them in your app repo so Rust,
+TypeScript, Swift, and Kotlin tooling can see the types.
 
 ## 1. Add migrations
 
@@ -66,7 +66,7 @@ Use `blobColumns`, `crdt`, `encryptedFields`, `softDelete`, and
 Generate the Rust-codegen handoff:
 
 ```bash
-syncular-typegen codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json
+syncular-typegen codegen-config --app ./syncular.app.ts
 ```
 
 ## 3. Run codegen
@@ -81,7 +81,7 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
 Run the check form in CI:
 
 ```bash
-syncular-typegen codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json --check
+syncular-typegen codegen-config --app ./syncular.app.ts --check
 
 cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
   --manifest-dir /absolute/path/to/your-app \

@@ -113,7 +113,7 @@ describe('Syncular app contract authoring', () => {
     });
   });
 
-  it('emits stable JSON for generated syncular.codegen.json files', () => {
+  it('emits stable JSON for generated Rust-codegen handoff files', () => {
     const app = defineSyncularClient({
       tables: {
         projects: syncedTable({
@@ -142,9 +142,9 @@ describe('Syncular app contract authoring', () => {
     );
   });
 
-  it('writes syncular.codegen.json for the Rust codegen handoff', async () => {
+  it('writes the generated Rust-codegen handoff', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'syncular-codegen-'));
-    const output = join(dir, 'nested', 'syncular.codegen.json');
+    const output = join(dir, 'nested', 'generated', 'syncular.codegen.json');
     const app = defineSyncularClient({
       tables: {
         tasks: syncedTable({
@@ -166,7 +166,7 @@ describe('Syncular app contract authoring', () => {
   it('loads and writes a codegen handoff from a typed app module', async () => {
     const dir = await mkdtemp(join(tmpdir(), 'syncular-app-module-'));
     const modulePath = join(dir, 'syncular.app.ts');
-    const outputPath = join(dir, 'syncular.codegen.json');
+    const outputPath = join(dir, 'generated', 'syncular.codegen.json');
     const appContractImport = pathToFileURL(
       join(process.cwd(), 'packages/typegen/src/app-contract.ts')
     ).href;
