@@ -77,6 +77,7 @@ use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
 const DEFAULT_STATE_ID: &str = "default";
+pub const LOCAL_SYNC_DISABLED_BASE_URL: &str = "syncular-local://disabled";
 const MAX_PULL_ROUNDS: usize = 20;
 static ACTIVE_SYNC_KEYS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
 
@@ -87,6 +88,27 @@ pub struct SyncularClientConfig {
     pub client_id: String,
     pub actor_id: String,
     pub project_id: Option<String>,
+}
+
+impl SyncularClientConfig {
+    pub fn local_sync_compatible(
+        db_path: impl Into<String>,
+        client_id: impl Into<String>,
+        actor_id: impl Into<String>,
+        project_id: Option<String>,
+    ) -> Self {
+        Self {
+            db_path: db_path.into(),
+            base_url: LOCAL_SYNC_DISABLED_BASE_URL.to_string(),
+            client_id: client_id.into(),
+            actor_id: actor_id.into(),
+            project_id,
+        }
+    }
+
+    pub fn is_local_sync_compatible(&self) -> bool {
+        self.base_url == LOCAL_SYNC_DISABLED_BASE_URL
+    }
 }
 
 pub trait SyncularMutationExecutor {
@@ -1835,6 +1857,15 @@ where
     S: SyncStore,
     T: SyncTransport,
 {
+    fn ensure_remote_sync_enabled(&self, operation: &str) -> Result<()> {
+        if !self.config.is_local_sync_compatible() {
+            return Ok(());
+        }
+        Err(SyncularError::config(format!(
+            "Syncular {operation} requires remote mode; client was opened with local-sync-compatible config"
+        )))
+    }
+
     pub fn with_parts(config: SyncularClientConfig, store: S, transport: T) -> Self {
         Self::with_app_schema_parts(config, store, transport, default_app_schema())
     }
@@ -2010,6 +2041,7 @@ where
 
     pub fn sync_http(&mut self) -> Result<SyncReport> {
         let _guard = SyncLockGuard::acquire(&self.sync_lock_key)?;
+        self.ensure_remote_sync_enabled("sync_http")?;
         self.sync_http_unlocked()
     }
 
@@ -2033,6 +2065,7 @@ where
 
     pub fn sync_ws(&mut self) -> Result<SyncReport> {
         let _guard = SyncLockGuard::acquire(&self.sync_lock_key)?;
+        self.ensure_remote_sync_enabled("sync_ws")?;
         self.sync_ws_unlocked()
     }
 

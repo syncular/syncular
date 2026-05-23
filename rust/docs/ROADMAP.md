@@ -557,7 +557,13 @@ read-only review:
   `local-sync-compatible` mode that opens generated clients without `baseUrl`,
   disables auto-sync by default, keeps safe mutations pending in the outbox,
   and fails manual remote sync/realtime/auth-lease calls clearly. The next
-  WP-33 gap is the matching Rust/native generated no-server smoke.
+  Rust/native slice adds `SyncularClientConfig::local_sync_compatible(...)`
+  and proves a generated Rust todo client can open embedded migrations, apply
+  generated safe mutations, read through Diesel, keep the outbox pending, and
+  reject manual remote sync without a server. The next WP-33 gap is the
+  runtime-extension boundary: storage/wire-affecting hooks such as auth,
+  encryption, CRDT, blobs, diagnostics, live queries, row/field events, network
+  status, and lifecycle need explicit static-contract backing where relevant.
 
 ## Later
 
