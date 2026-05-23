@@ -621,6 +621,10 @@ The contract should distinguish two local cases:
   refs, current binary snapshot metadata, schema-version support checks, and
   payload validation, while keeping `snapshot`, `applyOperation`,
   `resolveScopes`, and server DB translation app-owned.
+- Added focused server conformance coverage for
+  `createSyncularAppServerHandler(...)`: divergent server/client table mapping,
+  generated metadata attachment, unsupported schema rejection, invalid payload
+  rejection, and batch preflight validation.
 
 Gates run:
 
@@ -632,11 +636,12 @@ Gates run:
 - `bun run --cwd packages/server tsgo`
 - `bun test packages/core/src/__tests__/error-responses.test.ts`
 - `bun test packages/client/src/generated-app-conformance.test.ts`
+- `bun test packages/server/src/generated-app-server-handler.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
 
 ## Next Action
 
-Add focused server-side conformance tests that exercise
-`createSyncularAppServerHandler(...)` with divergent server/client table names,
-unsupported client schema versions, invalid payloads, and valid custom
-snapshot/apply handlers.
+Start Batch 3 by replacing path-string migration references in the TypeScript
+example contract with explicit imported migration artifacts, then prove the
+generated app can be typechecked without depending on filesystem-only migration
+paths.
