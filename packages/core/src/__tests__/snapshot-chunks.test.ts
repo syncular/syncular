@@ -22,6 +22,7 @@ describe('snapshot chunk protocol', () => {
   it('uses binary snapshot chunk refs for transport metadata', () => {
     const parsed = SyncPullRequestSchema.parse({
       clientId: 'client-1',
+      schemaVersion: 7,
       limitCommits: 50,
       limitSnapshotRows: 1000,
       maxSnapshotPages: 4,
@@ -34,6 +35,7 @@ describe('snapshot chunk protocol', () => {
   it('accepts scoped snapshot artifact capabilities on pull requests', () => {
     const parsed = SyncPullRequestSchema.parse({
       clientId: 'client-1',
+      schemaVersion: 7,
       limitCommits: 50,
       snapshotArtifacts: {
         schemaVersion: '7',

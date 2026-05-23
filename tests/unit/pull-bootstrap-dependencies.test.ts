@@ -162,6 +162,7 @@ describe('pull bootstrap behavior', () => {
 
       const request: SyncPullRequest = {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -268,6 +269,7 @@ describe('pull bootstrap behavior', () => {
       const requestedCatalogs = ['zeta', 'alpha'];
       const request: SyncPullRequest = {
         clientId: 'client-2',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 1,
@@ -346,6 +348,7 @@ describe('pull bootstrap behavior', () => {
 
       const request: SyncPullRequest = {
         clientId: 'client-gzip-bundle',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 1,
         maxSnapshotPages: 2,

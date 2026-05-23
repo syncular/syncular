@@ -195,6 +195,7 @@ export class PullEngine<DB extends RelayDatabase = RelayDatabase> {
       const combined = await this.transport.sync({
         clientId: this.clientId,
         pull: {
+          schemaVersion: 1,
           subscriptions: subscriptionRequests,
           limitCommits: 100,
         },

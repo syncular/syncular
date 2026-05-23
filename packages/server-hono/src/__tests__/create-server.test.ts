@@ -218,6 +218,7 @@ describe('createSyncServer console configuration', () => {
       body: JSON.stringify({
         clientId: args.clientId,
         pull: {
+          schemaVersion: 1,
           limitCommits: 10,
           subscriptions: [
             {
@@ -248,6 +249,7 @@ describe('createSyncServer console configuration', () => {
       body: JSON.stringify({
         clientId: args.clientId,
         pull: {
+          schemaVersion: 1,
           limitCommits: 10,
           subscriptions: [],
         },
@@ -420,6 +422,7 @@ describe('createSyncServer console configuration', () => {
       body: JSON.stringify({
         clientId: `client-${'x'.repeat(200)}`,
         pull: {
+          schemaVersion: 1,
           limitCommits: 10,
           subscriptions: [],
         },
@@ -464,6 +467,7 @@ describe('createSyncServer console configuration', () => {
       body: JSON.stringify({
         clientId: `client-${'x'.repeat(200)}`,
         pull: {
+          schemaVersion: 1,
           limitCommits: 10,
           subscriptions: [],
         },
@@ -552,6 +556,7 @@ describe('createSyncServer console configuration', () => {
       body: JSON.stringify({
         clientId: 'client-binary-limit',
         pull: {
+          schemaVersion: 1,
           limitCommits: 10,
           subscriptions: [],
         },

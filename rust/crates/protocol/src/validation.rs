@@ -186,6 +186,11 @@ fn validate_auth_lease_provenance(auth_lease: &AuthLeaseProvenance) -> Result<()
 }
 
 fn validate_pull_request(pull: &PullRequest) -> Result<()> {
+    if pull.schema_version < 1 {
+        return Err(ProtocolError::message(
+            "pull request schemaVersion must be positive",
+        ));
+    }
     if pull.limit_commits < 1 {
         return Err(ProtocolError::message(
             "pull request limitCommits must be positive",

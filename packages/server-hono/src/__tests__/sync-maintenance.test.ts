@@ -122,6 +122,7 @@ describe('createSyncRoutes maintenance automation', () => {
       createJsonRequest({
         clientId,
         pull: {
+          schemaVersion: 1,
           limitCommits: 50,
           subscriptions: [
             {

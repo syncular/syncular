@@ -122,6 +122,7 @@ describe('pull scoped snapshot artifacts', () => {
       snapshotChunkCacheSchemaVersion: 7,
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 1000,
         limitSnapshotRows: 50_000,
         maxSnapshotPages: 1,
@@ -237,6 +238,7 @@ describe('pull scoped snapshot artifacts', () => {
       snapshotChunkCacheSchemaVersion: 7,
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 1000,
         limitSnapshotRows: 1,
         maxSnapshotPages: 2,
@@ -333,6 +335,7 @@ describe('pull scoped snapshot artifacts', () => {
       snapshotChunkCacheSchemaVersion: 7,
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 1000,
         limitSnapshotRows: 50_000,
         maxSnapshotPages: 1,

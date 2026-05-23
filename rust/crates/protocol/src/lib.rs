@@ -152,6 +152,8 @@ pub struct SnapshotArtifactsRequest {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PullRequest {
+    #[serde(rename = "schemaVersion")]
+    pub schema_version: i32,
     #[serde(rename = "limitCommits")]
     pub limit_commits: i64,
     #[serde(rename = "limitSnapshotRows")]

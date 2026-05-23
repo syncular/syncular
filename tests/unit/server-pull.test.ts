@@ -156,6 +156,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [],
       },
@@ -183,6 +184,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -223,6 +225,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -276,6 +279,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c2',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -339,6 +343,7 @@ describe('pull', () => {
         auth: { actorId: 'u1' },
         request: {
           clientId,
+          schemaVersion: 1,
           limitCommits: 10,
           limitSnapshotRows: 2,
           maxSnapshotPages: 3,
@@ -415,6 +420,7 @@ describe('pull', () => {
         auth: { actorId: 'u1' },
         request: {
           clientId,
+          schemaVersion: 1,
           limitCommits: 10,
           limitSnapshotRows: 60_000,
           maxSnapshotPages: 1,
@@ -460,6 +466,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -534,6 +541,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -593,6 +601,7 @@ describe('pull', () => {
         snapshotChunkGzipLevel: gzipLevel,
         request: {
           clientId,
+          schemaVersion: 1,
           limitCommits: 10,
           subscriptions: [
             {
@@ -645,6 +654,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -689,6 +699,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -716,6 +727,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -750,6 +762,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -783,6 +796,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -814,6 +828,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -847,6 +862,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -894,6 +910,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -927,6 +944,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -950,6 +968,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -991,6 +1010,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -1053,6 +1073,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -1095,6 +1116,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -1121,6 +1143,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         dedupeRows: true,
         subscriptions: [
@@ -1166,6 +1189,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -1192,6 +1216,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         dedupeRows: false,
         subscriptions: [
@@ -1231,6 +1256,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -1258,6 +1284,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 2,
         subscriptions: [
           {
@@ -1291,6 +1318,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: Number.NaN,
         subscriptions: [
           {
@@ -1313,6 +1341,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: -5,
         subscriptions: [
           {
@@ -1335,6 +1364,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: Number.POSITIVE_INFINITY,
         subscriptions: [
           {
@@ -1391,6 +1421,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -1446,6 +1477,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -1506,6 +1538,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -1532,6 +1565,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -1575,6 +1609,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {

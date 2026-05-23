@@ -710,6 +710,29 @@ The contract should distinguish two local cases:
   against generated schema-version types rather than hand-written structural
   guesses.
 
+### Batch 2/5 Pull Snapshot Schema-Version Slice
+
+- Added explicit `schemaVersion` to the pull request protocol in TypeScript
+  and Rust. Snapshot and incremental pull handling can now target the client's
+  actual generated schema version instead of inferring it from server config or
+  cache metadata.
+- Added `schemaVersion` to `ServerSnapshotContext`, threaded it through server
+  pull, scoped snapshot artifact precomputation, Rust native pull requests, and
+  Rust browser/WASM pull requests.
+- Snapshot chunk cache keys now include the target client schema version, with
+  any server cache semantic version appended, so cached binary snapshots cannot
+  cross schema-version boundaries.
+- Generated `createSyncularAppServerHandler(...)` now rejects unsupported
+  snapshot schema versions before app snapshot code runs and validates emitted
+  snapshot rows against the targeted generated client schema. Apply-operation
+  validation already covered push; this closes the same contract gap for
+  bootstrap snapshots.
+- Added `SyncClientSchemaUnsupportedError` in `@syncular/server` and mapped it
+  through Hono combined pull to the stable
+  `sync.client_schema_unsupported` taxonomy.
+- Updated protocol fixtures, testkit builders, relay pull requests, Hono tests,
+  and direct server pull tests to provide pull `schemaVersion` explicitly.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -721,16 +744,31 @@ Gates run:
 - `bun test packages/core/src/__tests__/error-responses.test.ts`
 - `bun test packages/client/src/generated-app-conformance.test.ts`
 - `bun test packages/server/src/generated-app-server-handler.test.ts`
+- `bun test packages/server/src/generated-app-server-handler.test.ts packages/core/src/__tests__/snapshot-chunks.test.ts packages/core/src/__tests__/sync-packs.test.ts`
+- `bun test packages/server/src/pull-plugins.test.ts packages/server/src/notify.test.ts packages/server/src/pull-snapshot-artifacts.test.ts packages/server/src/commit-integrity.test.ts packages/server/src/encrypted-crdt.test.ts`
+- `bun test tests/unit/create-server-handler.test.ts tests/unit/pull-bootstrap-dependencies.test.ts tests/unit/server-pull.test.ts`
+- `bun test packages/server-hono/src/__tests__/sync-maintenance.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts packages/server-hono/src/__tests__/create-server.test.ts`
+- `bun test packages/testkit/src/faults.test.ts`
 - `bun --cwd rust/bindings/javascript build:wasm:core`
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
 - `bun run --cwd packages/typegen tsgo`
 - `bun test packages/typegen/src/app-contract.test.ts`
 - `bun test rust/examples/todo-app/syncular.app.test.ts`
 - `bun test rust/examples/todo-app/syncular.app.test.ts packages/server/src/generated-app-server-handler.test.ts`
+- `bun run --cwd packages/core tsgo`
+- `bun run --cwd packages/server tsgo`
+- `bun run --cwd packages/server-hono tsgo`
+- `bun run --cwd packages/testkit tsgo`
+- `bun run --cwd packages/client tsgo`
+- `bun run --cwd packages/relay tsgo`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen -p syncular-protocol`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures`
+- `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
+- `git diff --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
 
 ## Next Action
 
-Continue Batch 2/5 by adding generated helpers for version-specific snapshot
-row validation and unsupported-schema error classification in snapshot/pull
-paths, not only apply-operation paths.
+Continue Batch 2/8 by adding conformance coverage for old-client pull flows:
+supported old schema snapshot bootstrap, unsupported old schema rejection, and
+snapshot artifact/cache-key separation by client schema version.

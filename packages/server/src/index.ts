@@ -16,6 +16,7 @@ export * from './commit-integrity';
 export * from './compaction';
 export * from './dialect';
 export * from './encrypted-crdt';
+export * from './errors';
 export * from './handlers';
 export * from './helpers';
 export * from './migrate';

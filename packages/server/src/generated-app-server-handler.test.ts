@@ -17,6 +17,7 @@ import type {
   SyncCoreDb,
   SyncServerAuth,
 } from './index';
+import { SyncClientSchemaUnsupportedError } from './index';
 
 interface DocumentsTable {
   id: string;
@@ -50,6 +51,7 @@ function createSnapshotContext(
     scopeValues: { user_id: 'user-1', project_id: 'project-1' },
     cursor: null,
     limit: 50,
+    schemaVersion: syncularGeneratedSchemaVersion,
     ...overrides,
   };
 }
@@ -230,6 +232,62 @@ describe('generated app server handler', () => {
         revision: 5,
       },
     ]);
+  });
+
+  it('validates snapshot rows against the targeted generated client schema', async () => {
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot() {
+        return {
+          rows: [
+            {
+              id: 'task-bad',
+              title: null,
+              completed: 0,
+              user_id: 'user-1',
+              project_id: null,
+              server_version: 1,
+              image: null,
+              title_yjs_state: null,
+            },
+          ],
+          nextCursor: null,
+        };
+      },
+      async applyOperation(_ctx, op, opIndex) {
+        return appliedResult(opIndex, op);
+      },
+    });
+
+    await expect(
+      handler.snapshot(createSnapshotContext(), undefined)
+    ).rejects.toThrow('tasks.title: Column cannot be null');
+  });
+
+  it('rejects unsupported client schema versions before custom snapshot code runs', async () => {
+    let called = false;
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot() {
+        called = true;
+        return { rows: [], nextCursor: null };
+      },
+      async applyOperation(_ctx, op, opIndex) {
+        return appliedResult(opIndex, op);
+      },
+    });
+
+    await expect(
+      handler.snapshot(
+        createSnapshotContext({
+          schemaVersion: syncularGeneratedSchemaVersion - 2,
+        }),
+        undefined
+      )
+    ).rejects.toThrow(SyncClientSchemaUnsupportedError);
+    expect(called).toBe(false);
   });
 
   it('rejects unsupported client schema versions before custom apply code runs', async () => {

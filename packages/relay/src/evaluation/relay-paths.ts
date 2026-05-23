@@ -384,6 +384,7 @@ async function measureLocalPull(iterations: number, warmupIterations: number) {
           auth: { actorId: 'u1' },
           request: {
             clientId: 'local-reader',
+            schemaVersion: 1,
             limitCommits: 1,
             subscriptions: [
               {

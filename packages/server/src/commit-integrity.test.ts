@@ -253,6 +253,7 @@ describe('commit integrity metadata', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'reader',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -301,6 +302,7 @@ describe('commit integrity metadata', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'reader',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {

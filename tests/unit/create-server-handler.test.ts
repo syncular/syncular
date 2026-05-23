@@ -171,6 +171,7 @@ describe('createServerHandler', () => {
 
     const request: SyncPullRequest = {
       clientId: 'c1',
+      schemaVersion: 1,
       limitCommits: 10,
       subscriptions: [
         {
@@ -227,6 +228,7 @@ describe('createServerHandler', () => {
 
     const request: SyncPullRequest = {
       clientId: 'c1',
+      schemaVersion: 1,
       limitCommits: 10,
       subscriptions: [
         {
@@ -322,6 +324,7 @@ describe('createServerHandler', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -431,6 +434,7 @@ describe('createServerHandler', () => {
         auth: { actorId: 'u1' },
         request: {
           clientId: 'c1',
+          schemaVersion: 1,
           limitCommits: 10,
           subscriptions: [
             {
@@ -476,6 +480,7 @@ describe('createServerHandler', () => {
         auth: { actorId: 'u1' },
         request: {
           clientId: 'c1',
+          schemaVersion: 1,
           limitCommits: 10,
           subscriptions: [
             {
@@ -694,6 +699,7 @@ describe('createServerHandler', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-u1',
+        schemaVersion: 1,
         limitCommits: 2,
         subscriptions: [
           {

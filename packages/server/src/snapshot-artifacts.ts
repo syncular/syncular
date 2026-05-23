@@ -738,6 +738,7 @@ export async function precomputeScopedSnapshotArtifact<
       scopeValues: args.scopes,
       cursor: rowCursor,
       limit: args.rowLimit,
+      schemaVersion: Number(args.schemaVersion),
     },
     args.params
   );

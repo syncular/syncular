@@ -89,6 +89,7 @@ function jsonCombinedSyncFixture() {
         ],
       },
       pull: {
+        schemaVersion: 7,
         limitCommits: 50,
         limitSnapshotRows: 1000,
         maxSnapshotPages: 4,
@@ -495,6 +496,7 @@ async function relayProtocolBoundaryFixture() {
         ],
       },
       pull: {
+        schemaVersion: 7,
         limitCommits: 100,
         limitSnapshotRows: 2000,
         maxSnapshotPages: 2,

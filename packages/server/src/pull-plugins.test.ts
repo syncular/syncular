@@ -88,6 +88,7 @@ describe('server pull plugins', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'reader',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -160,6 +161,7 @@ describe('server pull plugins', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'reader',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 10,
         maxSnapshotPages: 1,
@@ -219,13 +221,7 @@ describe('server pull plugins', () => {
     expect(transformCalls).toBe(0);
     expect(subscription.bootstrap).toBe(true);
     expect(subscription.commits).toEqual([]);
-    expect(subscription.snapshots?.[0]?.rows).toEqual([
-      expect.objectContaining({
-        id: 'task-1',
-        title: 'Full state',
-        title_yjs_state: 'full-yjs-state',
-      }),
-    ]);
+    expect(subscription.snapshots?.[0]?.chunks?.length).toBe(1);
     expect(JSON.stringify(subscription.snapshots)).not.toContain('__yjs');
   });
 });

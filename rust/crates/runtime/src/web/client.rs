@@ -1828,6 +1828,7 @@ where
         };
 
         Ok(PullRequest {
+            schema_version: self.schema_version(),
             limit_commits: self.config.pull.limit_commits,
             limit_snapshot_rows: self.config.pull.limit_snapshot_rows,
             max_snapshot_pages,

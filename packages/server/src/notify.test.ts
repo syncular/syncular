@@ -244,6 +244,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -271,6 +272,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -305,6 +307,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -362,6 +365,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -394,6 +398,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -459,6 +464,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -493,6 +499,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -562,6 +569,7 @@ describe('notifyExternalRowChanges', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -631,6 +639,7 @@ describe('notifyExternalRowChanges', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,

@@ -91,6 +91,7 @@ export function createSyncPushRequest(
 
 export interface CreateSyncPullRequestOptions {
   clientId: string;
+  schemaVersion?: number;
   subscriptions: SyncSubscriptionRequest[];
   limitCommits?: number;
   limitSnapshotRows?: number;
@@ -103,6 +104,7 @@ export function createSyncPullRequest(
 ): SyncPullRequest {
   return {
     clientId: options.clientId,
+    schemaVersion: options.schemaVersion ?? 1,
     subscriptions: options.subscriptions,
     limitCommits: options.limitCommits ?? 50,
     ...(options.limitSnapshotRows !== undefined

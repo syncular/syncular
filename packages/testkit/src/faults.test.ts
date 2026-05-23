@@ -31,6 +31,7 @@ function createPullRequest(): Pick<SyncCombinedRequest, 'clientId' | 'pull'> {
   return {
     clientId: 'client-1',
     pull: {
+      schemaVersion: 1,
       limitCommits: 10,
       subscriptions: [
         {
