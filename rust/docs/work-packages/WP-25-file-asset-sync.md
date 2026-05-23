@@ -179,9 +179,10 @@ Fifth retained slice:
   available for app-level conflict resolution.
 - Decision: do not add a file asset codegen template yet. The reference schema
   stays in `syncular-testkit::file_assets` so apps can adopt, copy, or adapt it,
-  while normal `syncular.codegen.json` plus migrations remain the canonical
-  generator contract. This avoids baking Dropbox-specific names, cache policy,
-  sharing, or conflict-product semantics into framework codegen.
+  while normal app migrations plus the generated
+  `generated/syncular.codegen.json` handoff remain the canonical generator
+  contract. This avoids baking Dropbox-specific names, cache policy, sharing,
+  or conflict-product semantics into framework codegen.
 - Gates:
   - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit
     file_asset`
@@ -271,7 +272,7 @@ Production server/browser/native reference path:
    missing/corrupted blob bodies.
 4. `[x]` Decide whether the reference schema should also become a codegen
    optional template. Decision: keep it as a testkit/reference app schema for
-   now; apps use normal migrations and `syncular.codegen.json` for generated
-   clients.
+   now; apps use normal migrations and `generated/syncular.codegen.json` for
+   generated clients.
 5. `[x]` Prove the reference path with native file-path blob APIs so
    platform-native large-file flows do not require in-memory app-row payloads.

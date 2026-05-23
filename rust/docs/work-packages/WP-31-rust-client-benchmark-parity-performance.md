@@ -413,9 +413,10 @@ Retained external schema/adapter change on 2026-05-22:
 - Added a second explicit generated `countBy` read model to the external
   Syncular benchmark app:
   `taskCountsByProjectCompletion -> syncular_rust_task_counts_by_project_completion`.
-- The model is declared in `syncular.codegen.json` with dimensions
-  `project_id` and `completed`, then emitted into `syncular.schema.json`
-  `localReadModels` and `localDerivedSchema`.
+- The model is declared through the generated
+  `generated/syncular.codegen.json` handoff with dimensions `project_id` and
+  `completed`, then emitted into `syncular.schema.json` `localReadModels` and
+  `localDerivedSchema`.
 - `deep-relationship-query` now keeps the former raw dashboard SQL as
   `dashboard_raw_sql_query_*`, while the primary `dashboard_query_*` uses keyed
   joins against the generated read model.

@@ -41,7 +41,8 @@ generated projections over implicit cache behavior.
 
 Retained first slice:
 
-- Added explicit `localReadModels` support to `syncular.codegen.json`.
+- Added explicit `localReadModels` support to the generated
+  `generated/syncular.codegen.json` handoff.
 - The first generated read-model kind is `countBy`: source table, output table,
   dimensions, and count column are declared by the app.
 - `syncular.schema.json` now carries the local read-model contract so generator

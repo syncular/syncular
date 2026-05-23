@@ -18,8 +18,8 @@ The Rust-first path currently has good mechanical pieces, but app authors must
 coordinate several surfaces manually:
 
 - SQL migrations for the local replica.
-- `syncular.codegen.json` metadata for tables, scopes, blobs, CRDT fields,
-  encryption, generated outputs, and subscriptions.
+- the generated `generated/syncular.codegen.json` handoff for tables, scopes,
+  blobs, CRDT fields, encryption, generated outputs, and subscriptions.
 - Server handlers that define `snapshot`, `applyOperation`, `resolveScopes`,
   and custom server-shape translation.
 - Runtime options and extension points such as auth refresh, encryption keys,
@@ -284,10 +284,10 @@ The contract should distinguish two local cases:
   mutation payloads, scope metadata, binary snapshot columns/encoders,
   conflict server rows, blob/encryption/CRDT field metadata, and snapshot/pull
   transforms per supported schema version.
-- Replace direct app-author editing of low-level `syncular.codegen.json` with a
-  higher-level authoring surface or generated intermediate.
-- Keep `syncular.codegen.json` only as a generated/intermediate/escape-hatch
-  format if still useful.
+- Replace direct app-author editing of the low-level generated handoff with a
+  higher-level authoring surface.
+- Keep `generated/syncular.codegen.json` only as a generated/intermediate/
+  escape-hatch format if still useful.
 - Generate explicit runtime artifacts that bundlers and native compilers can
   include without implicit filesystem reads.
 - Support a same-shape backend-first scaffold for simple apps by generating an
@@ -335,9 +335,9 @@ The contract should distinguish two local cases:
 ### Batch 1: Contract Design And Drift Audit
 
 - Inventory all current generated metadata and hand-written metadata:
-  `syncular.codegen.json`, `syncular.schema.json`, generated TS/Rust/Swift/
-  Kotlin outputs, server handler table metadata, CRDT/blob/encryption config,
-  local read models, and conformance fixtures.
+  `generated/syncular.codegen.json`, `syncular.schema.json`, generated
+  TS/Rust/Swift/Kotlin outputs, server handler table metadata,
+  CRDT/blob/encryption config, local read models, and conformance fixtures.
 - Mark which fields are static contract, generated intermediate, server
   behavior, or runtime extension.
 - Mark which current server APIs are same-shape defaults and which APIs already
@@ -590,8 +590,8 @@ The contract should distinguish two local cases:
 
 ### Batch 2 Historical Replay Slice
 
-- Added opt-in `clientSchemaSupport` config semantics to
-  `syncular.codegen.json`:
+- Added opt-in `clientSchemaSupport` config semantics to the generated
+  `generated/syncular.codegen.json` handoff:
   - omitted means current-only support;
   - `minSupported` expands to the inclusive range through the current schema;
   - `supported` declares the exact supported versions and must include current.
@@ -663,11 +663,11 @@ The contract should distinguish two local cases:
   `defineSyncularClient`, `syncedTable`, `scope`, `yjsText`,
   `encryptedField`, `countByReadModel`, `toSyncularCodegenConfig`, and
   `toSyncularCodegenJson`.
-- The helpers serialize to the existing low-level `syncular.codegen.json`
-  semantics: tables, subscriptions, scopes, server-version columns, blob
-  columns, CRDT fields, encrypted fields, soft deletes, local read models,
-  output paths, runtime import paths, native output paths, and client schema
-  support.
+- The helpers serialize to the existing low-level
+  `generated/syncular.codegen.json` semantics: tables, subscriptions, scopes,
+  server-version columns, blob columns, CRDT fields, encrypted fields, soft
+  deletes, local read models, output paths, runtime import paths, native output
+  paths, and client schema support.
 - Kept the boundary explicit: this is a dev/build-time authoring surface in
   `@syncular/typegen`, while generated cross-platform clients still consume
   generated artifacts at runtime.
@@ -950,9 +950,9 @@ The contract should distinguish two local cases:
   `tasks.title`, even though the generated contract declared no encrypted
   fields and `title` is already a CRDT-backed field.
 - Declared `tasks.description` as the generated encrypted field in
-  `syncular.app.ts`/`syncular.codegen.json` and regenerated Rust, TypeScript,
-  Swift, Kotlin, Android Kotlin, server, and schema artifacts from that
-  contract.
+  `syncular.app.ts`/`generated/syncular.codegen.json` and regenerated Rust,
+  TypeScript, Swift, Kotlin, Android Kotlin, server, and schema artifacts from
+  that contract.
 - Moved the shared E2EE scenario and browser/native smoke expectations from
   encrypting CRDT `title` to encrypting declared `description`.
 - Added runtime validation for storage/wire-affecting extension config:
@@ -1157,8 +1157,8 @@ The contract should distinguish two local cases:
 
 ### Batch 4 Generated Handoff Location Slice
 
-- Moved the app-authored handoff default from a root `syncular.codegen.json`
-  file to `generated/syncular.codegen.json`. Root app files now remain focused
+- Moved the generated handoff default from a root `syncular.codegen.json` file
+  to `generated/syncular.codegen.json`. Root app files now remain focused
   on the typed contract (`syncular.app.ts`), migrations, and runtime entrypoint.
 - Added `syncular-codegen --codegen-config <path>` for crates/internal
   fixtures that intentionally keep the low-level handoff somewhere else.
