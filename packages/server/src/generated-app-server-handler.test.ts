@@ -4,6 +4,7 @@ import {
   createSyncularAppServerHandler,
   syncularGeneratedClientSchemaForVersion,
   syncularGeneratedAppTables,
+  syncularGeneratedClientSchemaSupport,
   syncularGeneratedSnapshotBinaryColumnsForVersion,
   syncularGeneratedSnapshotBinaryEncoderForVersion,
   syncularGeneratedSchemaVersion,
@@ -158,6 +159,7 @@ describe('generated app server handler', () => {
             server_version: row.revision,
             image: null,
             title_yjs_state: null,
+            description: null,
           })),
           nextCursor: null,
         };
@@ -180,7 +182,7 @@ describe('generated app server handler', () => {
 
     expect(handler.table).toBe('tasks');
     expect(handler.primaryKeyColumn).toBe('id');
-    expect(handler.scopePatterns).toEqual(['user_id', 'project_id']);
+    expect(handler.scopePatterns).toEqual(['{user_id}', '{project_id}']);
     expect(handler.snapshotBinaryColumns?.map((column) => column.name)).toEqual(
       [
         'id',
@@ -191,6 +193,7 @@ describe('generated app server handler', () => {
         'server_version',
         'image',
         'title_yjs_state',
+        'description',
       ]
     );
     expect(
@@ -232,6 +235,7 @@ describe('generated app server handler', () => {
           server_version: 3,
           image: null,
           title_yjs_state: null,
+          description: null,
         },
       ],
       nextCursor: null,
@@ -303,7 +307,7 @@ describe('generated app server handler', () => {
     await expect(
       handler.snapshot(
         createSnapshotContext({
-          schemaVersion: syncularGeneratedSchemaVersion - 2,
+          schemaVersion: syncularGeneratedClientSchemaSupport.minSupported - 1,
         }),
         undefined
       )
@@ -356,7 +360,9 @@ describe('generated app server handler', () => {
     });
 
     const result = await handler.applyOperation(
-      createApplyContext({ schemaVersion: syncularGeneratedSchemaVersion - 2 }),
+      createApplyContext({
+        schemaVersion: syncularGeneratedClientSchemaSupport.minSupported - 1,
+      }),
       createTaskOperation(),
       7
     );
@@ -381,6 +387,11 @@ describe('generated app server handler', () => {
         .find((table) => table.name === 'tasks')
         ?.columns.map((column) => column.name)
     ).toContain('title');
+    expect(
+      legacySchema?.tables
+        .find((table) => table.name === 'tasks')
+        ?.columns.map((column) => column.name)
+    ).not.toContain('description');
 
     const legacyPayload: TaskMutationPayloadV6 = {
       title: 'Legacy task title',

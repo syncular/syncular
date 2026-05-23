@@ -533,7 +533,12 @@ read-only review:
   while true local-only tables stay explicit. The current
   `createServerHandler` helper is same-shape biased; WP-33 should add a
   generated/custom handler layer for divergent server/client table shapes
-  instead of forcing a declarative mapping DSL.
+  instead of forcing a declarative mapping DSL. Current WP-33 progress adds
+  real generated schema-version drift to the todo fixture
+  (`tasks.description` in schema 8, absent from supported schemas 6/7), emits
+  historical local table DDL, fixes generated handler scope patterns for real
+  Hono subscription validation, and proves a browser v6 client can bootstrap
+  from a schema 8 server without applying the current-only column.
 
 ## Later
 

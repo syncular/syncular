@@ -288,6 +288,7 @@ pub struct TaskRow {
     pub server_version: i64,
     pub image: Option<String>,
     pub title_yjs_state: Option<String>,
+    pub description: Option<String>,
 }
 
 struct TasksTableAdapter;
@@ -374,6 +375,10 @@ impl DieselTableAdapter for TasksTableAdapter {
                 .get("title_yjs_state")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            description: obj
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string),
         };
 
         diesel::insert_into(t::tasks)
@@ -388,6 +393,7 @@ impl DieselTableAdapter for TasksTableAdapter {
                 t::server_version.eq(&row.server_version),
                 t::image.eq(&row.image),
                 t::title_yjs_state.eq(&row.title_yjs_state),
+                t::description.eq(&row.description),
             ))
             .execute(conn)?;
 

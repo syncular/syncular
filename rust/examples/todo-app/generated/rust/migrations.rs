@@ -47,12 +47,18 @@ pub const MIGRATIONS: &[EmbeddedMigration] = &[
         name: "verified_roots",
         up_sql: "",
     },
+    EmbeddedMigration {
+        version: "0008",
+        schema_version: 8,
+        name: "add_task_descriptions",
+        up_sql: "ALTER TABLE tasks ADD COLUMN description TEXT NULL;",
+    },
 ];
 
 pub const LOCAL_BASE_TABLE_SETUP_SQL: &[&str] = &[
     "CREATE TABLE IF NOT EXISTS \"comments\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"task_id\" TEXT NOT NULL,\n  \"project_id\" TEXT,\n  \"body\" TEXT NOT NULL,\n  \"author_id\" TEXT NOT NULL,\n  \"deleted\" INTEGER NOT NULL DEFAULT 0,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0\n) WITHOUT ROWID",
     "CREATE TABLE IF NOT EXISTS \"projects\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"name\" TEXT NOT NULL,\n  \"owner_id\" TEXT NOT NULL,\n  \"archived\" INTEGER NOT NULL DEFAULT 0,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0\n) WITHOUT ROWID",
-    "CREATE TABLE IF NOT EXISTS \"tasks\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"title\" TEXT NOT NULL,\n  \"completed\" INTEGER NOT NULL DEFAULT 0,\n  \"user_id\" TEXT NOT NULL,\n  \"project_id\" TEXT,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0,\n  \"image\" TEXT,\n  \"title_yjs_state\" TEXT\n) WITHOUT ROWID",
+    "CREATE TABLE IF NOT EXISTS \"tasks\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"title\" TEXT NOT NULL,\n  \"completed\" INTEGER NOT NULL DEFAULT 0,\n  \"user_id\" TEXT NOT NULL,\n  \"project_id\" TEXT,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0,\n  \"image\" TEXT,\n  \"title_yjs_state\" TEXT,\n  \"description\" TEXT\n) WITHOUT ROWID",
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

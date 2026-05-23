@@ -1,5 +1,20 @@
 import { describe, expect, it } from 'bun:test';
 import { type BlobRef, codecs } from '@syncular/core';
+import { sql, type Kysely } from 'kysely';
+import {
+  createSyncularAppServerHandler as createTodoAppServerHandler,
+  syncularGeneratedAppTables as todoGeneratedServerAppTables,
+  syncularGeneratedClientSchemaForVersion as todoGeneratedClientSchemaForVersion,
+  syncularGeneratedClientSchemaSupport as todoGeneratedClientSchemaSupport,
+  syncularGeneratedSchemaVersion as todoGeneratedSchemaVersion,
+  type SyncularGeneratedClientSchemaMetadata as TodoGeneratedClientSchemaMetadata,
+} from '../../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
+import {
+  syncularGeneratedAppSchema as todoGeneratedCurrentAppSchema,
+  syncularGeneratedAppTables as todoGeneratedClientAppTables,
+  syncularGeneratedCodecs as todoGeneratedCodecs,
+  syncularGeneratedTableConfig as todoGeneratedTableConfig,
+} from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import { createServerHandler, type SyncCoreDb } from '../../../server/src';
 import { createHttpServerFixture } from '../../../testkit/src/http-fixtures';
 import {
@@ -34,29 +49,6 @@ interface BasicClientDb {
   basic_tasks: BasicTaskRow;
 }
 
-interface VersionedTaskV1Row {
-  id: string;
-  title: string;
-  user_id: string;
-  server_version: number;
-}
-
-interface VersionedTaskV2ServerRow extends VersionedTaskV1Row {
-  image: string | null;
-}
-
-interface VersionedV1Db {
-  versioned_tasks: VersionedTaskV1Row;
-}
-
-interface VersionedServerDb extends SyncCoreDb {
-  versioned_tasks: VersionedTaskV2ServerRow;
-}
-
-interface VersionedClientDb {
-  versioned_tasks: VersionedTaskV1Row;
-}
-
 interface FileVersionServerRow {
   id: string;
   file_id: string;
@@ -81,6 +73,31 @@ interface FileAssetServerDb extends SyncCoreDb {
 
 interface FileAssetClientDb {
   file_versions: FileVersionClientRow;
+}
+
+interface GeneratedTodoTaskCurrentServerRow {
+  id: string;
+  title: string;
+  completed: number;
+  user_id: string;
+  project_id: string | null;
+  server_version: number;
+  image: string | null;
+  title_yjs_state: string | null;
+  description: string | null;
+}
+
+interface GeneratedTodoServerDb extends SyncCoreDb {
+  tasks: GeneratedTodoTaskCurrentServerRow;
+}
+
+interface GeneratedTodoTaskV6ClientRow
+  extends Omit<GeneratedTodoTaskCurrentServerRow, 'image' | 'description'> {
+  image: BlobRef | null;
+}
+
+interface GeneratedTodoV6ClientDb {
+  tasks: GeneratedTodoTaskV6ClientRow;
 }
 
 const basicAppSchema: SyncularAppSchema = {
@@ -186,83 +203,6 @@ const blobAppSchema: SyncularAppSchema = {
         },
       ],
       blobColumns: ['image'],
-    },
-  ],
-};
-
-const versionedTaskV1Columns = [
-  { name: 'id', type: 'string' },
-  { name: 'title', type: 'string' },
-  { name: 'user_id', type: 'string' },
-  { name: 'server_version', type: 'integer' },
-] as const;
-
-const versionedTaskV2Columns = [
-  ...versionedTaskV1Columns,
-  { name: 'image', type: 'string', nullable: true },
-] as const;
-
-const versionedV1AppSchema: SyncularAppSchema = {
-  schemaVersion: 1,
-  migrations: [
-    {
-      version: '0001',
-      schemaVersion: 1,
-      name: 'create_versioned_tasks',
-      upSql: `
-        CREATE TABLE IF NOT EXISTS versioned_tasks (
-          id TEXT PRIMARY KEY,
-          title TEXT NOT NULL,
-          user_id TEXT NOT NULL,
-          server_version INTEGER NOT NULL DEFAULT 0
-        ) WITHOUT ROWID;
-      `,
-    },
-  ],
-  tables: [
-    {
-      name: 'versioned_tasks',
-      primaryKeyColumn: 'id',
-      serverVersionColumn: 'server_version',
-      softDeleteColumn: null,
-      subscriptionId: 'sub-versioned-tasks',
-      columns: [
-        {
-          name: 'id',
-          typeFamily: 'text',
-          notnullRequired: false,
-          primaryKey: true,
-        },
-        {
-          name: 'title',
-          typeFamily: 'text',
-          notnullRequired: true,
-          primaryKey: false,
-        },
-        {
-          name: 'user_id',
-          typeFamily: 'text',
-          notnullRequired: true,
-          primaryKey: false,
-        },
-        {
-          name: 'server_version',
-          typeFamily: 'integer',
-          notnullRequired: true,
-          primaryKey: false,
-        },
-      ],
-      blobColumns: [],
-      crdtYjsFields: [],
-      encryptedFields: [],
-      scopes: [
-        {
-          name: 'user_id',
-          column: 'user_id',
-          source: 'actorId',
-          required: true,
-        },
-      ],
     },
   ],
 };
@@ -613,24 +553,59 @@ describe('Syncular core WASM artifact', () => {
     }
   });
 
-  it('applies old-client bootstrap chunks without current-only columns', async () => {
-    const actorId = 'actor-versioned-old-client';
-    const token = 'token-versioned-old-client';
-    const server = await createHttpServerFixture<VersionedServerDb>({
+  it('applies generated old-client bootstrap chunks without current-only columns', async () => {
+    const actorId = 'actor-generated-old-client';
+    const token = 'token-generated-old-client';
+    const projectId = 'project-generated-old-client';
+    const oldSchemaVersion = todoGeneratedClientSchemaSupport.minSupported;
+    const oldTaskColumns = todoGeneratedClientSchemaForVersion(
+      oldSchemaVersion
+    )
+      ?.tables.find((table) => table.name === 'tasks')
+      ?.columns.map((column) => column.name);
+    expect(oldTaskColumns).toContain('title_yjs_state');
+    expect(oldTaskColumns).not.toContain('description');
+
+    const server = await createHttpServerFixture<GeneratedTodoServerDb>({
       serverDialect: 'sqlite',
-      createTables: ensureVersionedServerTables,
+      createTables: ensureGeneratedTodoServerTables,
       handlers: [
-        createServerHandler<
-          VersionedServerDb,
-          VersionedClientDb,
-          'versioned_tasks'
-        >({
-          table: 'versioned_tasks',
-          scopes: ['user:{user_id}'],
-          snapshotBinaryColumns: versionedTaskV2Columns,
-          snapshotBinaryColumnsForVersion: (schemaVersion) =>
-            schemaVersion === 1 ? versionedTaskV1Columns : undefined,
-          resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+        createTodoAppServerHandler<GeneratedTodoServerDb>({
+          table: todoGeneratedServerAppTables.tasks,
+          resolveScopes: async (ctx) => ({
+            user_id: [ctx.actorId],
+            project_id: [projectId],
+          }),
+          async snapshot(ctx) {
+            const rows = await ctx.db
+              .selectFrom('tasks')
+              .select([
+                'id',
+                'title',
+                'completed',
+                'user_id',
+                'project_id',
+                'server_version',
+                'image',
+                'title_yjs_state',
+                'description',
+              ])
+              .where('user_id', '=', ctx.actorId)
+              .where('project_id', '=', projectId)
+              .execute();
+            return { rows, nextCursor: null };
+          },
+          async applyOperation(_ctx, _op, opIndex) {
+            return {
+              result: {
+                opIndex,
+                status: 'error',
+                error: 'read-only generated old-client fixture',
+                retriable: false,
+              },
+              emittedChanges: [],
+            };
+          },
         }),
       ],
       authenticate: async (c) => {
@@ -638,46 +613,61 @@ describe('Syncular core WASM artifact', () => {
         return authorization === token ? { actorId } : null;
       },
       sync: {
-        latestSchemaVersion: 2,
+        latestSchemaVersion: todoGeneratedSchemaVersion,
       },
     });
-    let oldClient: SyncularDatabase<VersionedV1Db> | null = null;
+    let oldClient: SyncularDatabase<GeneratedTodoV6ClientDb> | null = null;
 
     try {
       await server.db
-        .insertInto('versioned_tasks')
+        .insertInto('tasks')
         .values({
-          id: 'versioned-task-1',
-          title: 'Visible to old client',
+          id: 'generated-task-1',
+          title: 'Visible to generated old client',
+          completed: 0,
           user_id: actorId,
-          server_version: 2,
-          image: 'current-only-image',
+          project_id: projectId,
+          server_version: todoGeneratedSchemaVersion,
+          image: null,
+          title_yjs_state: null,
+          description: 'current-only-description',
         })
         .execute();
 
-      oldClient = await openVersionedV1CoreDatabase({
+      oldClient = await openGeneratedTodoOldClient({
         baseUrl: `${server.baseUrl}/sync`,
         actorId,
-        clientId: `client-versioned-v1-${Date.now()}`,
+        projectId,
+        schemaVersion: oldSchemaVersion,
+        clientId: `client-generated-v${oldSchemaVersion}-${Date.now()}`,
         token,
       });
 
       const pullResult = await oldClient.client.syncPull();
       expect(pullResult).toMatchObject({
-        changedTables: ['versioned_tasks'],
+        changedTables: ['tasks'],
         pushedCommits: 0,
       });
       await expect(
         oldClient.db
-          .selectFrom('versioned_tasks')
-          .select(['id', 'title', 'user_id', 'server_version'])
+          .selectFrom('tasks')
+          .select([
+            'id',
+            'title',
+            'completed',
+            'user_id',
+            'project_id',
+            'server_version',
+          ])
           .execute()
       ).resolves.toEqual([
         {
-          id: 'versioned-task-1',
-          title: 'Visible to old client',
+          id: 'generated-task-1',
+          title: 'Visible to generated old client',
+          completed: 0,
           user_id: actorId,
-          server_version: 2,
+          project_id: projectId,
+          server_version: todoGeneratedSchemaVersion,
         },
       ]);
     } finally {
@@ -861,41 +851,102 @@ async function openBasicCoreDatabase(args: {
   }
 }
 
-async function openVersionedV1CoreDatabase(args: {
+async function openGeneratedTodoOldClient(args: {
   baseUrl: string;
   actorId: string;
+  projectId: string;
+  schemaVersion: number;
   clientId: string;
   token: string;
-}): Promise<SyncularDatabase<VersionedV1Db>> {
-  const syncular = await createSyncularDatabase<VersionedV1Db>({
+}): Promise<SyncularDatabase<GeneratedTodoV6ClientDb>> {
+  const syncular = await createSyncularDatabase<GeneratedTodoV6ClientDb>({
     config: {
       baseUrl: args.baseUrl,
       actorId: args.actorId,
+      projectId: args.projectId,
       clientId: args.clientId,
       storage: 'memory',
       clearOnInit: true,
-      appSchema: versionedV1AppSchema,
+      schemaVersion: args.schemaVersion,
+      appSchema: generatedTodoAppSchemaForVersion(args.schemaVersion),
     },
     getHeaders: () => ({ authorization: args.token }),
-    appTables: ['versioned_tasks'],
-    tableConfig: {
-      versioned_tasks: {
-        primaryKeyColumn: 'id',
-        serverVersionColumn: 'server_version',
-      },
-    },
-    requiredRuntimeFeatures: ['web-owned-sqlite-core'],
-    runtimeArtifacts: [coreRuntimeArtifact()],
+    codecs: todoGeneratedCodecs,
+    appTables: todoGeneratedClientAppTables,
+    tableConfig: todoGeneratedTableConfig,
+    requiredRuntimeFeatures: ['web-owned-sqlite'],
   });
   try {
     await syncular.client.setSubscriptions([
-      versionedTaskSubscription(args.actorId),
+      generatedTodoTaskSubscription(args.actorId, args.projectId),
     ]);
     return syncular;
   } catch (error) {
     await syncular.close();
     throw error;
   }
+}
+
+type GeneratedTableMetadata =
+  TodoGeneratedClientSchemaMetadata['tables'][number] & {
+    blobColumns?: readonly string[];
+    crdtYjsFields?: SyncularAppSchema['tables'][number]['crdtYjsFields'];
+    encryptedFields?: SyncularAppSchema['tables'][number]['encryptedFields'];
+    softDeleteColumn?: string | null;
+    subscription?: { id?: string };
+  };
+
+function generatedTodoAppSchemaForVersion(
+  schemaVersion: number
+): SyncularAppSchema {
+  const schema = todoGeneratedClientSchemaForVersion(schemaVersion);
+  if (!schema) {
+    throw new Error(`Missing generated todo schema version ${schemaVersion}`);
+  }
+  const localBaseSql = schema.localBaseSchema?.tableSetupSql ?? [];
+  if (localBaseSql.length === 0) {
+    throw new Error(
+      `Generated todo schema version ${schemaVersion} is missing local base SQL`
+    );
+  }
+
+  return {
+    schemaVersion: schema.schemaVersion,
+    localBaseSchema: { tableSetupSql: localBaseSql },
+    migrations: [
+      {
+        version: `historical-${schema.schemaVersion}`,
+        schemaVersion: schema.schemaVersion,
+        name: `generated_todo_schema_${schema.schemaVersion}`,
+        upSql: localBaseSql.join(';\n'),
+      },
+    ],
+    tables: schema.tables.map((table) => {
+      const generated = table as GeneratedTableMetadata;
+      return {
+        name: table.name,
+        primaryKeyColumn: table.primaryKeyColumn,
+        serverVersionColumn: table.serverVersionColumn,
+        softDeleteColumn: generated.softDeleteColumn ?? null,
+        subscriptionId: generated.subscription?.id ?? `sub-${table.name}`,
+        columns: table.columns.map((column) => ({
+          name: column.name,
+          typeFamily: column.typeFamily,
+          notnullRequired: column.notnullRequired,
+          primaryKey: column.primaryKey,
+        })),
+        blobColumns: [...(generated.blobColumns ?? [])],
+        crdtYjsFields: [...(generated.crdtYjsFields ?? [])],
+        encryptedFields: [...(generated.encryptedFields ?? [])],
+        scopes: table.scopes.map((scope) => ({
+          name: scope.name,
+          column: scope.column,
+          source: scope.source as 'actorId' | 'projectId',
+          required: scope.required,
+        })),
+      };
+    }),
+  };
 }
 
 async function installBasicClientSchema(
@@ -916,7 +967,7 @@ async function installBasicClientSchema(
 }
 
 async function ensureBasicServerTables(
-  db: import('kysely').Kysely<BasicServerDb>
+  db: Kysely<BasicServerDb>
 ): Promise<void> {
   await db.schema
     .createTable('basic_tasks')
@@ -928,18 +979,13 @@ async function ensureBasicServerTables(
     .execute();
 }
 
-async function ensureVersionedServerTables(
-  db: import('kysely').Kysely<VersionedServerDb>
+async function ensureGeneratedTodoServerTables(
+  db: Kysely<GeneratedTodoServerDb>
 ): Promise<void> {
-  await db.schema
-    .createTable('versioned_tasks')
-    .ifNotExists()
-    .addColumn('id', 'text', (col) => col.primaryKey())
-    .addColumn('title', 'text', (col) => col.notNull())
-    .addColumn('user_id', 'text', (col) => col.notNull())
-    .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
-    .addColumn('image', 'text')
-    .execute();
+  for (const statement of todoGeneratedCurrentAppSchema.localBaseSchema
+    ?.tableSetupSql ?? []) {
+    await sql.raw(statement).execute(db);
+  }
 }
 
 const fileAssetCodecs = (column: { table: string; column: string }) => {
@@ -1010,7 +1056,7 @@ async function installFileAssetClientSchema(
 }
 
 async function ensureFileAssetServerTables(
-  db: import('kysely').Kysely<FileAssetServerDb>
+  db: Kysely<FileAssetServerDb>
 ): Promise<void> {
   await db.schema
     .createTable('file_versions')
@@ -1043,11 +1089,14 @@ function basicTaskSubscription(actorId: string): SyncularSubscriptionSpec {
   };
 }
 
-function versionedTaskSubscription(actorId: string): SyncularSubscriptionSpec {
+function generatedTodoTaskSubscription(
+  actorId: string,
+  projectId: string
+): SyncularSubscriptionSpec {
   return {
-    id: 'sub-versioned-tasks',
-    table: 'versioned_tasks',
-    scopes: { user_id: actorId },
+    id: 'sub-tasks',
+    table: 'tasks',
+    scopes: { user_id: actorId, project_id: projectId },
     params: {},
   };
 }

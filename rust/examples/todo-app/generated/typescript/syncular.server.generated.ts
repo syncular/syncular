@@ -4,11 +4,11 @@
 import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';
 import { SyncClientSchemaUnsupportedError, type ApplyOperationResult, type ScopeValues, type ServerApplyOperationContext, type ServerContext, type ServerSnapshotContext, type ServerTableHandler, type StoredScopes, type SyncCoreDb, type SyncOperation, type SyncServerAuth } from '@syncular/server';
 
-export const syncularGeneratedSchemaVersion = 7 as const;
+export const syncularGeneratedSchemaVersion = 8 as const;
 export const syncularGeneratedClientSchemaSupport = {
   current: syncularGeneratedSchemaVersion,
   minSupported: 6,
-  supported: [6, 7],
+  supported: [6, 7, 8],
 } as const;
 export type SyncularGeneratedSupportedClientSchemaVersion = typeof syncularGeneratedClientSchemaSupport.supported[number];
 export function syncularIsSupportedClientSchemaVersion(schemaVersion: number | null | undefined): schemaVersion is SyncularGeneratedSupportedClientSchemaVersion {
@@ -59,10 +59,11 @@ export interface SyncularGeneratedTableSchemaMetadata {
 export interface SyncularGeneratedClientSchemaMetadata {
   schemaVersion: number;
   tables: readonly SyncularGeneratedTableSchemaMetadata[];
+  localBaseSchema?: { tableSetupSql: readonly string[] };
 }
 
 export const syncularGeneratedCurrentClientSchema: SyncularGeneratedClientSchemaMetadata = {
-  "schemaVersion": 7,
+  "schemaVersion": 8,
   "tables": [
     {
       "blobColumns": [],
@@ -414,6 +415,21 @@ export const syncularGeneratedCurrentClientSchema: SyncularGeneratedClientSchema
           "defaultSql": null,
           "hasDefault": false,
           "name": "title_yjs_state",
+          "notnullRequired": false,
+          "nullable": true,
+          "primaryKey": false,
+          "scope": null,
+          "serverVersion": false,
+          "softDelete": false,
+          "sqlType": "TEXT",
+          "typeFamily": "text"
+        },
+        {
+          "appType": "string",
+          "blobRef": false,
+          "defaultSql": null,
+          "hasDefault": false,
+          "name": "description",
           "notnullRequired": false,
           "nullable": true,
           "primaryKey": false,
@@ -861,7 +877,421 @@ export const syncularGeneratedHistoricalClientSchemas: readonly SyncularGenerate
         },
         "sqliteWithoutRowid": true
       }
-    ]
+    ],
+    "localBaseSchema": {
+      "tableSetupSql": [
+        "CREATE TABLE IF NOT EXISTS \"comments\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"task_id\" TEXT NOT NULL,\n  \"project_id\" TEXT,\n  \"body\" TEXT NOT NULL,\n  \"author_id\" TEXT NOT NULL,\n  \"deleted\" INTEGER NOT NULL DEFAULT 0,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0\n) WITHOUT ROWID",
+        "CREATE TABLE IF NOT EXISTS \"projects\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"name\" TEXT NOT NULL,\n  \"owner_id\" TEXT NOT NULL,\n  \"archived\" INTEGER NOT NULL DEFAULT 0,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0\n) WITHOUT ROWID",
+        "CREATE TABLE IF NOT EXISTS \"tasks\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"title\" TEXT NOT NULL,\n  \"completed\" INTEGER NOT NULL DEFAULT 0,\n  \"user_id\" TEXT NOT NULL,\n  \"project_id\" TEXT,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0,\n  \"image\" TEXT,\n  \"title_yjs_state\" TEXT\n) WITHOUT ROWID"
+      ]
+    }
+  },
+  {
+    "schemaVersion": 7,
+    "tables": [
+      {
+        "name": "comments",
+        "primaryKeyColumn": "id",
+        "serverVersionColumn": "server_version",
+        "softDeleteColumn": "deleted",
+        "columns": [
+          {
+            "name": "id",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": false,
+            "notnullRequired": false,
+            "primaryKey": true,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          },
+          {
+            "name": "task_id",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          },
+          {
+            "name": "project_id",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": true,
+            "notnullRequired": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": "project_id"
+          },
+          {
+            "name": "body",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          },
+          {
+            "name": "author_id",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": "user_id"
+          },
+          {
+            "name": "deleted",
+            "sqlType": "INTEGER",
+            "typeFamily": "integer",
+            "appType": "integer",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": true,
+            "defaultSql": "0",
+            "serverVersion": false,
+            "softDelete": true,
+            "blobRef": false,
+            "scope": null
+          },
+          {
+            "name": "server_version",
+            "sqlType": "BIGINT",
+            "typeFamily": "integer",
+            "appType": "integer",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": true,
+            "defaultSql": "0",
+            "serverVersion": true,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          }
+        ],
+        "blobColumns": [],
+        "crdtYjsFields": [],
+        "encryptedFields": [],
+        "scopes": [
+          {
+            "name": "user_id",
+            "column": "author_id",
+            "source": "actorId",
+            "required": true
+          },
+          {
+            "name": "project_id",
+            "column": "project_id",
+            "source": "projectId",
+            "required": false
+          }
+        ],
+        "subscription": {
+          "id": "sub-comments",
+          "params": {}
+        },
+        "sqliteWithoutRowid": true
+      },
+      {
+        "name": "projects",
+        "primaryKeyColumn": "id",
+        "serverVersionColumn": "server_version",
+        "softDeleteColumn": null,
+        "columns": [
+          {
+            "name": "id",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": false,
+            "notnullRequired": false,
+            "primaryKey": true,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          },
+          {
+            "name": "name",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          },
+          {
+            "name": "owner_id",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": "user_id"
+          },
+          {
+            "name": "archived",
+            "sqlType": "INTEGER",
+            "typeFamily": "integer",
+            "appType": "integer",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": true,
+            "defaultSql": "0",
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          },
+          {
+            "name": "server_version",
+            "sqlType": "BIGINT",
+            "typeFamily": "integer",
+            "appType": "integer",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": true,
+            "defaultSql": "0",
+            "serverVersion": true,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          }
+        ],
+        "blobColumns": [],
+        "crdtYjsFields": [],
+        "encryptedFields": [],
+        "scopes": [
+          {
+            "name": "user_id",
+            "column": "owner_id",
+            "source": "actorId",
+            "required": true
+          }
+        ],
+        "subscription": {
+          "id": "sub-projects",
+          "params": {}
+        },
+        "sqliteWithoutRowid": true
+      },
+      {
+        "name": "tasks",
+        "primaryKeyColumn": "id",
+        "serverVersionColumn": "server_version",
+        "softDeleteColumn": null,
+        "columns": [
+          {
+            "name": "id",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": false,
+            "notnullRequired": false,
+            "primaryKey": true,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          },
+          {
+            "name": "title",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          },
+          {
+            "name": "completed",
+            "sqlType": "INTEGER",
+            "typeFamily": "integer",
+            "appType": "integer",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": true,
+            "defaultSql": "0",
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          },
+          {
+            "name": "user_id",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": "user_id"
+          },
+          {
+            "name": "project_id",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": true,
+            "notnullRequired": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": "project_id"
+          },
+          {
+            "name": "server_version",
+            "sqlType": "BIGINT",
+            "typeFamily": "integer",
+            "appType": "integer",
+            "nullable": false,
+            "notnullRequired": true,
+            "primaryKey": false,
+            "hasDefault": true,
+            "defaultSql": "0",
+            "serverVersion": true,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          },
+          {
+            "name": "image",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "blobRef",
+            "nullable": true,
+            "notnullRequired": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": true,
+            "scope": null
+          },
+          {
+            "name": "title_yjs_state",
+            "sqlType": "TEXT",
+            "typeFamily": "text",
+            "appType": "string",
+            "nullable": true,
+            "notnullRequired": false,
+            "primaryKey": false,
+            "hasDefault": false,
+            "defaultSql": null,
+            "serverVersion": false,
+            "softDelete": false,
+            "blobRef": false,
+            "scope": null
+          }
+        ],
+        "blobColumns": [
+          "image"
+        ],
+        "crdtYjsFields": [
+          {
+            "field": "title",
+            "stateColumn": "title_yjs_state",
+            "containerKey": "title",
+            "rowIdField": "id",
+            "kind": "text",
+            "syncMode": "server-merge"
+          }
+        ],
+        "encryptedFields": [],
+        "scopes": [
+          {
+            "name": "user_id",
+            "column": "user_id",
+            "source": "actorId",
+            "required": true
+          },
+          {
+            "name": "project_id",
+            "column": "project_id",
+            "source": "projectId",
+            "required": false
+          }
+        ],
+        "subscription": {
+          "id": "sub-tasks",
+          "params": {}
+        },
+        "sqliteWithoutRowid": true
+      }
+    ],
+    "localBaseSchema": {
+      "tableSetupSql": [
+        "CREATE TABLE IF NOT EXISTS \"comments\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"task_id\" TEXT NOT NULL,\n  \"project_id\" TEXT,\n  \"body\" TEXT NOT NULL,\n  \"author_id\" TEXT NOT NULL,\n  \"deleted\" INTEGER NOT NULL DEFAULT 0,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0\n) WITHOUT ROWID",
+        "CREATE TABLE IF NOT EXISTS \"projects\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"name\" TEXT NOT NULL,\n  \"owner_id\" TEXT NOT NULL,\n  \"archived\" INTEGER NOT NULL DEFAULT 0,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0\n) WITHOUT ROWID",
+        "CREATE TABLE IF NOT EXISTS \"tasks\" (\n  \"id\" TEXT PRIMARY KEY,\n  \"title\" TEXT NOT NULL,\n  \"completed\" INTEGER NOT NULL DEFAULT 0,\n  \"user_id\" TEXT NOT NULL,\n  \"project_id\" TEXT,\n  \"server_version\" INTEGER NOT NULL DEFAULT 0,\n  \"image\" TEXT,\n  \"title_yjs_state\" TEXT\n) WITHOUT ROWID"
+      ]
+    }
   }
 ] as const;
 export type SyncularGeneratedClientSchema = SyncularGeneratedClientSchemaMetadata;
@@ -968,6 +1398,7 @@ export interface TaskRow {
   server_version: number;
   image: BlobRef | null;
   title_yjs_state: string | null;
+  description: string | null;
 }
 
 export interface SyncularAppDbV6 {
@@ -1011,6 +1442,47 @@ export interface TaskRowV6 {
 
 export type TaskMutationPayloadV6 = Partial<Omit<TaskRowV6, 'id' | 'server_version'>>;
 
+export interface SyncularAppDbV7 {
+  comments: CommentRowV7;
+  projects: ProjectRowV7;
+  tasks: TaskRowV7;
+}
+
+export interface CommentRowV7 {
+  id: string;
+  task_id: string;
+  project_id: string | null;
+  body: string;
+  author_id: string;
+  deleted: number;
+  server_version: number;
+}
+
+export type CommentMutationPayloadV7 = Partial<Omit<CommentRowV7, 'id' | 'server_version'>>;
+
+export interface ProjectRowV7 {
+  id: string;
+  name: string;
+  owner_id: string;
+  archived: number;
+  server_version: number;
+}
+
+export type ProjectMutationPayloadV7 = Partial<Omit<ProjectRowV7, 'id' | 'server_version'>>;
+
+export interface TaskRowV7 {
+  id: string;
+  title: string;
+  completed: number;
+  user_id: string;
+  project_id: string | null;
+  server_version: number;
+  image: BlobRef | null;
+  title_yjs_state: string | null;
+}
+
+export type TaskMutationPayloadV7 = Partial<Omit<TaskRowV7, 'id' | 'server_version'>>;
+
 export const syncularGeneratedSnapshotBinaryColumns = {
   comments: [
     { name: 'id', type: 'string' },
@@ -1037,6 +1509,7 @@ export const syncularGeneratedSnapshotBinaryColumns = {
     { name: 'server_version', type: 'integer' },
     { name: 'image', type: 'json', nullable: true },
     { name: 'title_yjs_state', type: 'string', nullable: true },
+    { name: 'description', type: 'string', nullable: true },
   ],
 } satisfies Record<keyof SyncularAppDb, readonly BinarySnapshotColumn[]>;
 
@@ -1100,6 +1573,12 @@ export function encodeTasksBinarySnapshotRows(rows: readonly TaskRow[]): Uint8Ar
     } else {
       writer.writeString(value7, 'binary snapshot tasks.title_yjs_state');
     }
+    const value8 = row.description;
+    if (value8 == null) {
+      writer.writeNull(8);
+    } else {
+      writer.writeString(value8, 'binary snapshot tasks.description');
+    }
   }
   return writer.finish();
 }
@@ -1146,19 +1625,19 @@ export const syncularGeneratedAppTables = {
     name: 'comments',
     primaryKeyColumn: 'id',
     serverVersionColumn: 'server_version',
-    scopePatterns: ['user_id', 'project_id'],
+    scopePatterns: ['{user_id}', '{project_id}'],
   },
   projects: {
     name: 'projects',
     primaryKeyColumn: 'id',
     serverVersionColumn: 'server_version',
-    scopePatterns: ['user_id'],
+    scopePatterns: ['{user_id}'],
   },
   tasks: {
     name: 'tasks',
     primaryKeyColumn: 'id',
     serverVersionColumn: 'server_version',
-    scopePatterns: ['user_id', 'project_id'],
+    scopePatterns: ['{user_id}', '{project_id}'],
   },
 } as const;
 export type SyncularGeneratedAppTableName = keyof typeof syncularGeneratedAppTables & string;

@@ -52,11 +52,11 @@ export interface SyncularGeneratedTableConfig {
   encryptedFields: readonly { field: string; scope: string; rowIdField: string }[];
 }
 
-export const syncularGeneratedSchemaVersion = 7 as const;
+export const syncularGeneratedSchemaVersion = 8 as const;
 export const syncularGeneratedClientSchemaSupport = {
   current: syncularGeneratedSchemaVersion,
   minSupported: 6,
-  supported: [6, 7],
+  supported: [6, 7, 8],
 } as const;
 export type SyncularGeneratedSupportedClientSchemaVersion = typeof syncularGeneratedClientSchemaSupport.supported[number];
 export function syncularIsSupportedClientSchemaVersion(schemaVersion: number | null | undefined): schemaVersion is SyncularGeneratedSupportedClientSchemaVersion {
@@ -164,6 +164,15 @@ export const syncularGeneratedAppMigrations: readonly SyncularGeneratedAppMigrat
     ],
     skippedSystemStatements: 1,
   },
+  {
+    version: '0008',
+    schemaVersion: 8,
+    name: 'add_task_descriptions',
+    appSql: [
+      `ALTER TABLE tasks ADD COLUMN description TEXT NULL;`,
+    ],
+    skippedSystemStatements: 0,
+  },
 ];
 
 export const syncularGeneratedEmbeddedMigrations: readonly SyncularGeneratedEmbeddedMigration[] = [
@@ -208,6 +217,12 @@ export const syncularGeneratedEmbeddedMigrations: readonly SyncularGeneratedEmbe
     schemaVersion: 7,
     name: 'verified_roots',
     upSql: '',
+  },
+  {
+    version: '0008',
+    schemaVersion: 8,
+    name: 'add_task_descriptions',
+    upSql: 'ALTER TABLE tasks ADD COLUMN description TEXT NULL;',
   },
 ];
 
@@ -357,7 +372,7 @@ export const syncularGeneratedAppSchema = {
     tableSetupSql: [
       'CREATE TABLE IF NOT EXISTS "comments" (\n  "id" TEXT PRIMARY KEY,\n  "task_id" TEXT NOT NULL,\n  "project_id" TEXT,\n  "body" TEXT NOT NULL,\n  "author_id" TEXT NOT NULL,\n  "deleted" INTEGER NOT NULL DEFAULT 0,\n  "server_version" INTEGER NOT NULL DEFAULT 0\n) WITHOUT ROWID',
       'CREATE TABLE IF NOT EXISTS "projects" (\n  "id" TEXT PRIMARY KEY,\n  "name" TEXT NOT NULL,\n  "owner_id" TEXT NOT NULL,\n  "archived" INTEGER NOT NULL DEFAULT 0,\n  "server_version" INTEGER NOT NULL DEFAULT 0\n) WITHOUT ROWID',
-      'CREATE TABLE IF NOT EXISTS "tasks" (\n  "id" TEXT PRIMARY KEY,\n  "title" TEXT NOT NULL,\n  "completed" INTEGER NOT NULL DEFAULT 0,\n  "user_id" TEXT NOT NULL,\n  "project_id" TEXT,\n  "server_version" INTEGER NOT NULL DEFAULT 0,\n  "image" TEXT,\n  "title_yjs_state" TEXT\n) WITHOUT ROWID',
+      'CREATE TABLE IF NOT EXISTS "tasks" (\n  "id" TEXT PRIMARY KEY,\n  "title" TEXT NOT NULL,\n  "completed" INTEGER NOT NULL DEFAULT 0,\n  "user_id" TEXT NOT NULL,\n  "project_id" TEXT,\n  "server_version" INTEGER NOT NULL DEFAULT 0,\n  "image" TEXT,\n  "title_yjs_state" TEXT,\n  "description" TEXT\n) WITHOUT ROWID',
     ],
   },
   tables: [
@@ -414,6 +429,7 @@ export const syncularGeneratedAppSchema = {
         { name: 'server_version', typeFamily: 'integer', notnullRequired: true, primaryKey: false },
         { name: 'image', typeFamily: 'text', notnullRequired: false, primaryKey: false },
         { name: 'title_yjs_state', typeFamily: 'text', notnullRequired: false, primaryKey: false },
+        { name: 'description', typeFamily: 'text', notnullRequired: false, primaryKey: false },
       ],
       blobColumns: ['image'],
       crdtYjsFields: [{ field: 'title', stateColumn: 'title_yjs_state', containerKey: 'title', rowIdField: 'id', kind: 'text', syncMode: 'server-merge' }],
@@ -539,6 +555,7 @@ export const syncularTaskChangedFields = [
   'server_version',
   'image',
   'title_yjs_state',
+  'description',
 ] as const;
 export type TaskChangedField = typeof syncularTaskChangedFields[number];
 export type TaskChangedColumns = Record<TaskChangedField, boolean>;
@@ -771,6 +788,7 @@ async function validateSyncularAppSchema(db: Kysely<any>): Promise<void> {
     { name: 'server_version', type: 'integer', notnull: 1, pk: 0 },
     { name: 'image', type: 'text', notnull: 0, pk: 0 },
     { name: 'title_yjs_state', type: 'text', notnull: 0, pk: 0 },
+    { name: 'description', type: 'text', notnull: 0, pk: 0 },
   ]);
 }
 
@@ -1154,6 +1172,7 @@ export interface TaskRow {
   server_version: number;
   image: BlobRef | null;
   title_yjs_state: string | null;
+  description: string | null;
 }
 
 export interface NewTask extends SyncularYjsPayloadEnvelope<'title'> {
@@ -1163,6 +1182,7 @@ export interface NewTask extends SyncularYjsPayloadEnvelope<'title'> {
   user_id: string;
   project_id?: string | null;
   image?: BlobRef | null;
+  description?: string | null;
 }
 
 export interface NewTaskPayload {
@@ -1171,9 +1191,10 @@ export interface NewTaskPayload {
   user_id: string;
   project_id?: string | null;
   image?: BlobRef | null;
+  description?: string | null;
 }
 
-export type TaskPatch = Partial<Pick<TaskRow, 'title' | 'completed' | 'user_id' | 'project_id' | 'image'>> & SyncularYjsPayloadEnvelope<'title'>;
+export type TaskPatch = Partial<Pick<TaskRow, 'title' | 'completed' | 'user_id' | 'project_id' | 'image' | 'description'>> & SyncularYjsPayloadEnvelope<'title'>;
 
 export function newTaskPayload(input: NewTask): NewTaskPayload {
   const payload: Partial<NewTaskPayload> = {
@@ -1183,6 +1204,7 @@ export function newTaskPayload(input: NewTask): NewTaskPayload {
   payload.completed = input.completed ?? 0;
   if (input.project_id !== undefined) payload.project_id = input.project_id;
   if (input.image !== undefined) payload.image = input.image;
+  if (input.description !== undefined) payload.description = input.description;
   if (input.__yjs !== undefined) (payload as Record<string, unknown>).__yjs = input.__yjs;
   if (input.__yjs?.title !== undefined) {
     delete (payload as Record<string, unknown>).title;
@@ -1198,6 +1220,7 @@ export function taskPatchPayload(patch: TaskPatch): TaskPatch {
   if (patch.user_id !== undefined) payload.user_id = patch.user_id;
   if (patch.project_id !== undefined) payload.project_id = patch.project_id;
   if (patch.image !== undefined) payload.image = patch.image;
+  if (patch.description !== undefined) payload.description = patch.description;
   if (patch.__yjs !== undefined) (payload as Record<string, unknown>).__yjs = patch.__yjs;
   if (patch.__yjs?.title !== undefined) {
     delete (payload as Record<string, unknown>).title;
