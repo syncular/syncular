@@ -110,6 +110,25 @@ const basicAppSchema: SyncularAppSchema = {
   ],
 };
 
+const basicAppSchemaWithMigrations: SyncularAppSchema = {
+  ...basicAppSchema,
+  migrations: [
+    {
+      version: '0001',
+      schemaVersion: 1,
+      name: 'create_basic_tasks',
+      upSql: `
+        CREATE TABLE IF NOT EXISTS basic_tasks (
+          id TEXT PRIMARY KEY,
+          title TEXT NOT NULL,
+          user_id TEXT NOT NULL,
+          server_version INTEGER NOT NULL DEFAULT 0
+        ) WITHOUT ROWID;
+      `,
+    },
+  ],
+};
+
 const crdtAppSchema: SyncularAppSchema = {
   schemaVersion: 1,
   tables: [
@@ -217,6 +236,60 @@ const fileVersionAppSchema: SyncularAppSchema = {
 };
 
 describe('Syncular core WASM artifact', () => {
+  it('applies embedded app schema migrations during Rust WASM open', async () => {
+    const syncular = await createSyncularDatabase<BasicDb>({
+      config: {
+        baseUrl: 'http://127.0.0.1:1/sync',
+        actorId: 'actor-core',
+        clientId: `client-core-migrated-${Date.now()}`,
+        storage: 'memory',
+        clearOnInit: true,
+        appSchema: basicAppSchemaWithMigrations,
+      },
+      appTables: ['basic_tasks'],
+      tableConfig: {
+        basic_tasks: {
+          primaryKeyColumn: 'id',
+          serverVersionColumn: 'server_version',
+        },
+      },
+      requiredRuntimeFeatures: ['web-owned-sqlite-core'],
+      runtimeArtifacts: [coreRuntimeArtifact()],
+    });
+
+    try {
+      await expect(syncular.client.generatedSchemaState()).resolves.toEqual({
+        schemaId: 'syncular-app',
+        schemaVersion: 1,
+        currentSchemaVersion: 1,
+        updatedAt: expect.any(Number),
+      });
+
+      await syncular.mutations.basic_tasks.insert({
+        id: 'task-runtime-migrated',
+        title: 'Runtime migrated task',
+        user_id: 'actor-core',
+        server_version: 0,
+      });
+
+      await expect(
+        syncular.db
+          .selectFrom('basic_tasks')
+          .select(['id', 'title', 'user_id', 'server_version'])
+          .execute()
+      ).resolves.toEqual([
+        {
+          id: 'task-runtime-migrated',
+          title: 'Runtime migrated task',
+          user_id: 'actor-core',
+          server_version: 0,
+        },
+      ]);
+    } finally {
+      await syncular.close();
+    }
+  });
+
   it('opens a basic SQLite app schema without CRDT or E2EE', async () => {
     const syncular = await createSyncularDatabase<BasicDb>({
       config: {

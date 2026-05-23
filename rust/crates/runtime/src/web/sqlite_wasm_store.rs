@@ -2084,18 +2084,89 @@ impl SyncularRustOwnedSqlite {
             ),
             |row| row.i32("schema_version"),
         )?;
-        if let Some(local_version) = rows.first().copied() {
+        let local_version = rows.first().copied();
+        if let Some(local_version) = local_version {
             let current = self.schema_version;
             if local_version > current {
                 return Err(SyncularError::schema(format!(
                     "Syncular app schema version mismatch: local {local_version}, configured {current}"
                 )));
             }
+        }
+
+        if !self.app_schema.migrations.is_empty() {
+            self.ensure_app_migrations()?;
+            self.validate_generated_app_schema()?;
+            self.record_generated_schema_state()?;
+            return Ok(());
+        }
+
+        if let Some(local_version) = rows.first().copied() {
+            let current = self.schema_version;
             if local_version == current {
                 self.validate_generated_app_schema()?;
             }
         }
         Ok(())
+    }
+
+    fn ensure_app_migrations(&self) -> Result<()> {
+        for migration in self.app_schema.migrations {
+            let expected_checksum = checksum(migration.up_sql);
+            let rows = self.query_rows(
+                &format!(
+                    "SELECT checksum FROM sync_migrations WHERE version = {} LIMIT 1",
+                    sql_string(migration.version)
+                ),
+                |row| row.string("checksum"),
+            )?;
+            if let Some(applied_checksum) = rows.first() {
+                if applied_checksum != &expected_checksum {
+                    return Err(SyncularError::schema(format!(
+                        "migration {} checksum mismatch",
+                        migration.version
+                    )));
+                }
+                continue;
+            }
+
+            self.exec("BEGIN IMMEDIATE")?;
+            let result = (|| {
+                for statement in split_sql_statements(migration.up_sql) {
+                    self.exec(&statement)?;
+                }
+                self.exec(&format!(
+                    "INSERT INTO sync_migrations (version, name, checksum, applied_at) \
+                     VALUES ({version}, {name}, {checksum}, {applied_at})",
+                    version = sql_string(migration.version),
+                    name = sql_string(migration.name),
+                    checksum = sql_string(&expected_checksum),
+                    applied_at = now_ms()
+                ))
+            })();
+
+            match result {
+                Ok(()) => self.exec("COMMIT")?,
+                Err(err) => {
+                    let _ = self.exec("ROLLBACK");
+                    return Err(err);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn record_generated_schema_state(&self) -> Result<()> {
+        self.exec(&format!(
+            "INSERT INTO syncular_app_schema (schema_id, schema_version, updated_at) \
+             VALUES ({schema_id}, {schema_version}, {updated_at}) \
+             ON CONFLICT(schema_id) DO UPDATE SET \
+               schema_version = excluded.schema_version, \
+               updated_at = excluded.updated_at",
+            schema_id = sql_string(GENERATED_SCHEMA_ID),
+            schema_version = self.schema_version,
+            updated_at = now_ms()
+        ))
     }
 
     fn validate_generated_app_schema(&self) -> Result<()> {
