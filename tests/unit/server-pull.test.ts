@@ -212,6 +212,87 @@ describe('pull', () => {
     expect(rows.length).toBe(2);
   });
 
+  it('passes the requested client schema version into snapshot handlers', async () => {
+    let seenSchemaVersion = 0;
+    const handlers = makeHandlers({
+      snapshot: async (ctx) => {
+        seenSchemaVersion = ctx.schemaVersion;
+        return { rows: [], nextCursor: null };
+      },
+    });
+
+    await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'schema-reader',
+        schemaVersion: 6,
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+            crdtStateVectors: [],
+          },
+        ],
+      },
+    });
+
+    expect(seenSchemaVersion).toBe(6);
+  });
+
+  it('keeps snapshot chunk cache entries separated by client schema version', async () => {
+    const handlers = makeHandlers();
+    await pushTask(handlers, 't-schema-cache', 'Schema cached task');
+
+    const pullSnapshot = async (schemaVersion: number) => {
+      const result = await pull({
+        db,
+        dialect,
+        handlers,
+        auth: { actorId: 'u1' },
+        request: {
+          clientId: `schema-cache-${schemaVersion}`,
+          schemaVersion,
+          limitCommits: 10,
+          subscriptions: [
+            {
+              id: 's1',
+              table: 'tasks',
+              scopes: { user_id: 'u1' },
+              cursor: -1,
+              crdtStateVectors: [],
+            },
+          ],
+        },
+      });
+      const snapshot = result.response.subscriptions[0]?.snapshots?.[0];
+      if (!snapshot?.chunks?.[0]) {
+        throw new Error('Expected chunked snapshot');
+      }
+      return snapshot;
+    };
+
+    const schema6First = await pullSnapshot(6);
+    const schema6Second = await pullSnapshot(6);
+    const schema7 = await pullSnapshot(7);
+
+    expect(schema6Second.chunks?.[0]?.id).toBe(schema6First.chunks?.[0]?.id);
+    expect(schema7.chunks?.[0]?.id).not.toBe(schema6First.chunks?.[0]?.id);
+    await expect(readSnapshotRows(db, schema7)).resolves.toEqual([
+      {
+        id: 't-schema-cache',
+        user_id: 'u1',
+        title: 'Schema cached task',
+        server_version: 1,
+      },
+    ]);
+  });
+
   it('emits binary snapshot chunks when the client requests them', async () => {
     const handlers = makeHandlers();
 

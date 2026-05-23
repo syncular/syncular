@@ -732,6 +732,13 @@ The contract should distinguish two local cases:
   `sync.client_schema_unsupported` taxonomy.
 - Updated protocol fixtures, testkit builders, relay pull requests, Hono tests,
   and direct server pull tests to provide pull `schemaVersion` explicitly.
+- Added focused pull conformance coverage proving:
+  - pull passes the requested schema version into snapshot handlers;
+  - generated snapshot validation accepts a supported historical schema
+    version;
+  - unsupported generated snapshot schemas fail before app snapshot code runs;
+  - snapshot chunk cache entries are reused for the same client schema version
+    and separated across different client schema versions.
 
 Gates run:
 
@@ -744,6 +751,7 @@ Gates run:
 - `bun test packages/core/src/__tests__/error-responses.test.ts`
 - `bun test packages/client/src/generated-app-conformance.test.ts`
 - `bun test packages/server/src/generated-app-server-handler.test.ts`
+- `bun test tests/unit/server-pull.test.ts`
 - `bun test packages/server/src/generated-app-server-handler.test.ts packages/core/src/__tests__/snapshot-chunks.test.ts packages/core/src/__tests__/sync-packs.test.ts`
 - `bun test packages/server/src/pull-plugins.test.ts packages/server/src/notify.test.ts packages/server/src/pull-snapshot-artifacts.test.ts packages/server/src/commit-integrity.test.ts packages/server/src/encrypted-crdt.test.ts`
 - `bun test tests/unit/create-server-handler.test.ts tests/unit/pull-bootstrap-dependencies.test.ts tests/unit/server-pull.test.ts`
@@ -770,5 +778,5 @@ Gates run:
 ## Next Action
 
 Continue Batch 2/8 by adding conformance coverage for old-client pull flows:
-supported old schema snapshot bootstrap, unsupported old schema rejection, and
-snapshot artifact/cache-key separation by client schema version.
+full Hono-level unsupported schema response coverage and version-specific
+snapshot artifact generation/selection.

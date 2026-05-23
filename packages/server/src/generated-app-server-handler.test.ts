@@ -290,6 +290,36 @@ describe('generated app server handler', () => {
     expect(called).toBe(false);
   });
 
+  it('allows supported historical schema versions through snapshot validation', async () => {
+    let seenSchemaVersion = 0;
+    const legacyRow: TaskRowV6 = {
+      id: 'task-v6',
+      title: 'Legacy snapshot title',
+      completed: 0,
+      user_id: 'user-1',
+      project_id: 'project-1',
+      server_version: 6,
+      image: null,
+      title_yjs_state: null,
+    };
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot(ctx) {
+        seenSchemaVersion = ctx.schemaVersion;
+        return { rows: [legacyRow], nextCursor: null };
+      },
+      async applyOperation(_ctx, op, opIndex) {
+        return appliedResult(opIndex, op);
+      },
+    });
+
+    await expect(
+      handler.snapshot(createSnapshotContext({ schemaVersion: 6 }), undefined)
+    ).resolves.toEqual({ rows: [legacyRow], nextCursor: null });
+    expect(seenSchemaVersion).toBe(6);
+  });
+
   it('rejects unsupported client schema versions before custom apply code runs', async () => {
     let called = false;
     const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
