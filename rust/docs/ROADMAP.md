@@ -549,8 +549,12 @@ read-only review:
   historical client shape. Generated apply results now also validate emitted
   commit-log rows as canonical current-schema rows, and incremental pull
   projects persisted rows through the generated handler before plugins,
-  integrity, and response encoding. The next WP-33 gap is an end-to-end
-  browser/Hono old-client incremental-pull conformance test over that path.
+  integrity, and response encoding. Browser/Hono conformance now proves a
+  schema 6 generated client can bootstrap and then receive a schema 8
+  incremental commit-log update without applying the current-only
+  `tasks.description` column. The next WP-33 gap is the runtime-extension and
+  backend-less app boundary, starting with generated local-sync-compatible
+  no-server smokes.
 
 ## Later
 
