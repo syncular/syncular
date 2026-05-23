@@ -1897,6 +1897,35 @@ describe('Syncular worker sync protocol against Hono routes', () => {
     expect(events).toHaveLength(scenario.expectedEventsAfterUnsubscribe);
   });
 
+  it('rejects live-query dependencies outside the generated app schema', async () => {
+    const sync = await createHonoSyncHarness({
+      actors: [{ actorId: ACTOR_A, token: TOKEN_A }],
+    });
+    harnesses.push(sync);
+
+    const client = await sync.openWorkerClient({
+      clientId: 'client-live-query-schema-validation',
+      actorId: ACTOR_A,
+      getHeaders: () => ({ authorization: TOKEN_A }),
+    });
+
+    await expect(
+      client.subscribeQuery('select 1 as value', [], ['runtime_only_table'])
+    ).rejects.toThrow(/unknown generated app table/);
+
+    await expect(
+      client.subscribeQuery('select "id" from "tasks" limit 1', [], ['tasks'], [
+        { table: 'comments', rowIds: [], fields: [] },
+      ])
+    ).rejects.toThrow(/not one of the observed tables/);
+
+    await expect(
+      client.subscribeQuery('select "id" from "tasks" limit 1', [], ['tasks'], [
+        { table: 'tasks', rowIds: [], fields: ['runtime_only_field'] },
+      ])
+    ).rejects.toThrow(/unknown generated app column/);
+  });
+
   it('infers live-query dependencies and refreshes from row-level sync apply', async () => {
     const scenario = syncConformance.liveQuery;
     const sync = await createHonoSyncHarness({

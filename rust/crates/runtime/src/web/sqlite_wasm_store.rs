@@ -4504,10 +4504,9 @@ impl SyncularRustOwnedSqlite {
         for table in &tables {
             validate_table_name(table)?;
         }
+        validate_requested_app_tables(self.app_schema, &tables)?;
         let dependency_hints: Vec<LiveQueryDependencyHint> = serde_json::from_str(hints_json)?;
-        for hint in &dependency_hints {
-            validate_table_name(&hint.table)?;
-        }
+        validate_live_query_dependency_hints(self.app_schema, &tables, &dependency_hints)?;
         let stmt = prepare_sql_statement(self.db, sql, SqlExecutionMode::Readonly)?;
         let rows = match execute_prepared_sql(self.db, stmt, &params, "live query") {
             Ok(rows) => rows,
@@ -6854,6 +6853,53 @@ fn validate_requested_app_tables(app_schema: AppSchema, tables: &[String]) -> Re
         }
     }
     Ok(())
+}
+
+fn validate_live_query_dependency_hints(
+    app_schema: AppSchema,
+    tables: &[String],
+    hints: &[LiveQueryDependencyHint],
+) -> Result<()> {
+    for hint in hints {
+        validate_table_name(&hint.table)?;
+        if !tables.iter().any(|table| table == &hint.table) {
+            return Err(SyncularError::config(format!(
+                "live query dependency hint table {} is not one of the observed tables",
+                hint.table
+            )));
+        }
+        let metadata = app_schema.table_metadata(&hint.table).ok_or_else(|| {
+            SyncularError::config(format!("unknown generated app table: {}", hint.table))
+        })?;
+        for row_id in &hint.row_ids {
+            if row_id.is_empty() {
+                return Err(SyncularError::config(
+                    "live query dependency hint row id is empty",
+                ));
+            }
+        }
+        for field in &hint.fields {
+            validate_app_column_name(metadata, field)?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_app_column_name(metadata: &AppTableMetadata, column: &str) -> Result<()> {
+    if metadata.primary_key_column == column
+        || metadata.server_version_column == column
+        || metadata
+            .columns
+            .iter()
+            .any(|metadata| metadata.name == column)
+    {
+        return Ok(());
+    }
+
+    Err(SyncularError::config(format!(
+        "unknown generated app column {}.{}",
+        metadata.name, column
+    )))
 }
 
 fn parse_params(params_json: &str) -> Result<Vec<Value>> {

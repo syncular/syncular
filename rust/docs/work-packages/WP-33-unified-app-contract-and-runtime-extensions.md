@@ -995,6 +995,21 @@ The contract should distinguish two local cases:
   extension config before the runtime can silently drift from generated
   metadata.
 
+### Batch 6 Live Query Dependency Slice
+
+- Inventory result: live-query dependency tables and dependency-hint fields are
+  storage/event semantics. They decide which row/field changes can wake an app
+  view and therefore must stay inside the generated app schema.
+- Native observed queries already validated tables and dependency-hint fields
+  against generated metadata.
+- Browser Rust-owned SQLite live-query registration only validated SQL
+  identifier syntax. It now rejects unknown generated tables, dependency hints
+  for tables outside the observed table set, empty row ids, and unknown
+  generated columns before registering the query.
+- Added browser/Hono WASM coverage proving direct
+  `client.subscribeQuery(...)` cannot register runtime-only live-query table or
+  field dependencies.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -1089,13 +1104,16 @@ Gates run:
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --lib`
+- `bun run --cwd rust/bindings/javascript build:wasm:dev`
+- `bun test packages/client/src/__tests__/sync-hono.wasm.test.ts -t "rejects live-query dependencies"`
+- `bun test packages/client/src/__tests__/sync-hono.wasm.test.ts`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
 
 ## Next Action
 
 Continue Batch 6 by inventorying the remaining runtime extension surfaces:
-auth lifecycle, diagnostics, network status, blob policy, live queries,
-row/field events, and lifecycle hooks. For each, decide whether it is pure
-runtime behavior or whether it carries storage/wire semantics that must be
-backed by generated static contract metadata.
+auth lifecycle, diagnostics, network status, blob policy, row/field events, and
+lifecycle hooks. For each, decide whether it is pure runtime behavior or
+whether it carries storage/wire semantics that must be backed by generated
+static contract metadata.

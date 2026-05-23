@@ -726,7 +726,7 @@ where
     pub fn set_field_encryption(&mut self, encryption: Option<FieldEncryption>) -> Result<()> {
         if let Some(encryption) = &encryption {
             validate_field_encryption_rules_against_app_schema(
-                self.app_schema,
+                self.store.app_schema(),
                 encryption.rules(),
             )?;
         }
@@ -740,7 +740,7 @@ where
 
     pub fn set_encrypted_crdt(&mut self, encryption: Option<EncryptedCrdt>) -> Result<()> {
         if encryption.is_some() {
-            validate_encrypted_crdt_against_app_schema(self.app_schema)?;
+            validate_encrypted_crdt_against_app_schema(self.store.app_schema())?;
         }
         self.encrypted_crdt = encryption;
         Ok(())
@@ -752,7 +752,7 @@ where
 
     pub fn set_blob_encryption(&mut self, encryption: Option<BlobEncryption>) -> Result<()> {
         if encryption.is_some() {
-            validate_blob_encryption_against_app_schema(self.app_schema)?;
+            validate_blob_encryption_against_app_schema(self.store.app_schema())?;
         }
         self.blob_encryption = encryption;
         Ok(())
