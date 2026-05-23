@@ -70,7 +70,7 @@
     "rust:test": "cargo test --manifest-path rust/Cargo.toml --workspace",
     "rust:check:no-default": "cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features",
     "rust:check:client-native-crdt": "cargo check --manifest-path rust/Cargo.toml -p syncular-client --no-default-features --features native,crdt-yjs",
-    "rust:codegen:check": "cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check",
+    "rust:codegen:check": "bun --cwd rust/examples/todo-app codegen:check",
     "client:test": "bun --cwd packages/client test",
     "client:tsgo": "bun --cwd packages/client tsgo",
     "client:test:wasm:variants": "bun --cwd packages/client test:wasm:variants",
