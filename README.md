@@ -127,9 +127,9 @@ your deployment. The sync protocol is the same everywhere.
 
 ### Client
 
-The canonical app client is `@syncular/client`, backed by the Rust browser/native
-runtime and generated TypeScript bindings. Older pure TypeScript client dialects
-are no longer a product path.
+The canonical app client is `@syncular/client`, backed by the Rust
+browser/native runtime and generated TypeScript bindings. Older pure TypeScript
+client implementations are no longer a product path.
 
 ### Server
 
