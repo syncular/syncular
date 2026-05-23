@@ -296,7 +296,6 @@ export const SyncSnapshotArtifactCompressionSchema = z.union([
 ]);
 
 export const SyncSnapshotArtifactsRequestSchema = z.object({
-  schemaVersion: z.string().min(1),
   artifactKinds: z.array(SyncScopedSnapshotArtifactKindSchema).min(1),
   compressions: z.array(SyncSnapshotArtifactCompressionSchema).optional(),
   featureSet: z.array(z.string()).optional(),

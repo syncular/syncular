@@ -207,7 +207,6 @@ fn validate_pull_request(pull: &PullRequest) -> Result<()> {
         ));
     }
     if let Some(artifacts) = &pull.snapshot_artifacts {
-        ensure_non_empty("snapshotArtifacts schemaVersion", &artifacts.schema_version)?;
         if artifacts.artifact_kinds.is_empty() {
             return Err(ProtocolError::message(
                 "snapshotArtifacts artifactKinds must not be empty",

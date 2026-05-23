@@ -502,7 +502,6 @@ async function relayProtocolBoundaryFixture() {
         maxSnapshotPages: 2,
         dedupeRows: true,
         snapshotArtifacts: {
-          schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
           compressions: [
             SYNC_SNAPSHOT_ARTIFACT_COMPRESSION_NONE,

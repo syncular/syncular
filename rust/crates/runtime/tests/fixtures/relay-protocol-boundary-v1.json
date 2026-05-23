@@ -45,7 +45,6 @@
         "maxSnapshotPages": 2,
         "dedupeRows": true,
         "snapshotArtifacts": {
-          "schemaVersion": "7",
           "artifactKinds": [
             "sqlite-snapshot-v1"
           ],

@@ -141,7 +141,8 @@ function normalizeFeatureSet(
 }
 
 function resolveSnapshotArtifactSelection(
-  request: SyncSnapshotArtifactsRequest | undefined
+  request: SyncSnapshotArtifactsRequest | undefined,
+  clientSchemaVersion: number
 ): SnapshotArtifactSelection | null {
   if (!request) return null;
   if (
@@ -157,7 +158,7 @@ function resolveSnapshotArtifactSelection(
   return {
     artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
     compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-    schemaVersion: request.schemaVersion,
+    schemaVersion: String(clientSchemaVersion),
     featureSet: normalizeFeatureSet(request.featureSet),
   };
 }
@@ -736,7 +737,8 @@ export async function pull<
         const dedupeRows = request.dedupeRows === true;
         const snapshotChunkEncoding = SYNC_SNAPSHOT_CHUNK_ENCODING;
         const snapshotArtifactSelection = resolveSnapshotArtifactSelection(
-          request.snapshotArtifacts
+          request.snapshotArtifacts,
+          clientSchemaVersion
         );
         const snapshotArtifactSchemaVersion =
           snapshotArtifactSelection?.schemaVersion ?? null;

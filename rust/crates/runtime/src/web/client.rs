@@ -1835,7 +1835,6 @@ where
             dedupe_rows: self.config.pull.dedupe_rows,
             snapshot_artifacts: request_sqlite_snapshot_artifacts.then(|| {
                 SnapshotArtifactsRequest {
-                    schema_version: self.schema_version().to_string(),
                     artifact_kinds: vec![SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1.to_string()],
                     compressions: vec![SNAPSHOT_CHUNK_COMPRESSION_GZIP.to_string()],
                     feature_set: Vec::new(),

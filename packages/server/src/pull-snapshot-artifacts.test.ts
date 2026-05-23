@@ -122,12 +122,11 @@ describe('pull scoped snapshot artifacts', () => {
       snapshotChunkCacheSchemaVersion: 7,
       request: {
         clientId: 'client-1',
-        schemaVersion: 1,
+        schemaVersion: 7,
         limitCommits: 1000,
         limitSnapshotRows: 50_000,
         maxSnapshotPages: 1,
         snapshotArtifacts: {
-          schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
           compressions: [SYNC_SNAPSHOT_CHUNK_COMPRESSION],
         },
@@ -151,6 +150,101 @@ describe('pull scoped snapshot artifacts', () => {
       scopeKey.split(':scope:')[1]
     );
     expect(result.response.subscriptions[0]?.bootstrapState).toBeNull();
+  });
+
+  it('uses the row snapshot path when the artifact schema does not match the pull schema', async () => {
+    await db
+      .insertInto('tasks')
+      .values({ id: 'task-1', user_id: 'u1', title: 'One', server_version: 1 })
+      .execute();
+    const external = await notifyExternalDataChange({
+      db,
+      dialect,
+      tables: ['tasks'],
+    });
+    const artifactSchemaVersion = 6;
+    const pullSchemaVersion = 7;
+    const scopeKey = await createScopedSnapshotArtifactScopeCacheKey({
+      partitionId: 'default',
+      subscriptionId: 'sub-tasks',
+      scopes: { user_id: 'u1' },
+      schemaVersion: artifactSchemaVersion,
+      artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+      features: [],
+    });
+    await insertScopedSnapshotArtifact(db, {
+      artifactId: 'artifact-schema-6',
+      partitionId: 'default',
+      scopeKey,
+      subscriptionId: 'sub-tasks',
+      table: 'tasks',
+      schemaVersion: artifactSchemaVersion,
+      asOfCommitSeq: external.commitSeq,
+      rowCursor: null,
+      rowLimit: 50_000,
+      rowCount: 1,
+      nextRowCursor: null,
+      isFirstPage: true,
+      isLastPage: true,
+      sha256: 'c'.repeat(64),
+      byteLength: 1024,
+      blobHash: 'sha256:artifact-schema-6',
+      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+
+    let snapshotCalls = 0;
+    const handlers = createServerHandlerCollection<TestDb>([
+      createServerHandler<TestDb, ClientDb, 'tasks'>({
+        table: 'tasks',
+        scopes: ['user:{user_id}'],
+        resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+        snapshot: async (ctx) => {
+          snapshotCalls += 1;
+          const rows = await ctx.db
+            .selectFrom('tasks')
+            .selectAll()
+            .where('user_id', '=', 'u1')
+            .orderBy('id', 'asc')
+            .limit(ctx.limit)
+            .execute();
+          return { rows, nextCursor: null };
+        },
+      }),
+    ]);
+
+    const result = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      snapshotChunkCacheSchemaVersion: pullSchemaVersion,
+      request: {
+        clientId: 'client-1',
+        schemaVersion: pullSchemaVersion,
+        limitCommits: 1000,
+        limitSnapshotRows: 50_000,
+        maxSnapshotPages: 1,
+        snapshotArtifacts: {
+          artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
+          compressions: [SYNC_SNAPSHOT_CHUNK_COMPRESSION],
+        },
+        subscriptions: [
+          {
+            id: 'sub-tasks',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+          },
+        ],
+      },
+    });
+
+    const snapshot = result.response.subscriptions[0]?.snapshots?.[0];
+    expect(snapshotCalls).toBe(1);
+    expect(snapshot?.artifacts).toBeUndefined();
+    expect(snapshot?.chunks).toHaveLength(1);
   });
 
   it('continues artifact bootstrap when the best artifact is smaller than the pull capacity', async () => {
@@ -238,12 +332,11 @@ describe('pull scoped snapshot artifacts', () => {
       snapshotChunkCacheSchemaVersion: 7,
       request: {
         clientId: 'client-1',
-        schemaVersion: 1,
+        schemaVersion: 7,
         limitCommits: 1000,
         limitSnapshotRows: 1,
         maxSnapshotPages: 2,
         snapshotArtifacts: {
-          schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
           compressions: [SYNC_SNAPSHOT_CHUNK_COMPRESSION],
         },
@@ -335,12 +428,11 @@ describe('pull scoped snapshot artifacts', () => {
       snapshotChunkCacheSchemaVersion: 7,
       request: {
         clientId: 'client-1',
-        schemaVersion: 1,
+        schemaVersion: 7,
         limitCommits: 1000,
         limitSnapshotRows: 50_000,
         maxSnapshotPages: 1,
         snapshotArtifacts: {
-          schemaVersion: '7',
           artifactKinds: [SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1],
           compressions: [SYNC_SNAPSHOT_CHUNK_COMPRESSION],
         },

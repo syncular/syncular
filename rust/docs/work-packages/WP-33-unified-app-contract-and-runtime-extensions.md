@@ -744,6 +744,21 @@ The contract should distinguish two local cases:
   `sync.client_schema_unsupported` upgrade response instead of surfacing as a
   generic server error.
 
+### Batch 2/8 Snapshot Artifact Schema-Version Cleanup Slice
+
+- Removed the duplicate `snapshotArtifacts.schemaVersion` request field from
+  the TypeScript and Rust protocol shapes.
+- Scoped SQLite snapshot artifact selection now derives its target schema
+  version from the enclosing pull request `schemaVersion`. This keeps pull
+  schema targeting single-source and avoids a request shape where two schema
+  versions can disagree.
+- Updated Rust native and browser/WASM pull builders to advertise artifact
+  capability only: artifact kind, compression, and feature set.
+- Regenerated protocol fixtures with the simplified artifact request shape.
+- Added server pull coverage proving a schema 7 pull does not receive a
+  schema 6 scoped artifact even when scope and table match; it falls back to
+  row/chunk snapshot generation instead.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -779,8 +794,12 @@ Gates run:
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test error_taxonomy`
+- `bun test packages/core/src/__tests__/snapshot-chunks.test.ts packages/core/src/__tests__/sync-packs.test.ts`
+- `bun test packages/server/src/pull-snapshot-artifacts.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
 
 ## Next Action
 
-Continue Batch 2/8 by adding conformance coverage for old-client pull flows:
-version-specific snapshot artifact generation/selection.
+Continue Batch 2/8 by proving version-specific snapshot artifact generation and
+precompute paths use generated per-version row/binary metadata, not only
+version-specific artifact lookup keys.
