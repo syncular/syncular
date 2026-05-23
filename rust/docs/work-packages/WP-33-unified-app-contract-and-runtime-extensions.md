@@ -1025,6 +1025,60 @@ The contract should distinguish two local cases:
   schema when they expect blob support, and added a negative native test
   proving default/no-app-schema blob operations fail clearly.
 
+### Batch 6 Auth Lease Boundary Slice
+
+- Inventory result: auth headers, token refresh, auth signers, online/offline
+  retry handling, and auth-expired lifecycle events are runtime/transport
+  behavior. They should stay app-installed runtime hooks and do not need
+  generated static metadata.
+- Auth leases are different. Auth lease requests and stored lease payloads
+  name protocol tables, schema versions, mutation operations, and scope keys.
+  They are storage/wire semantics and must match the generated app contract.
+- Added generated-app-schema validation for Rust/native auth lease issue
+  requests before the HTTP call: schema version must match the generated
+  client, scopes must reference generated tables, operations must be protocol
+  operations, and scope keys/required scopes must match generated metadata.
+- Added validation for auth lease issue responses before storing the returned
+  record. A server cannot hand the client a lease for a different client schema
+  version or unknown generated scope shape.
+- Added the same stored-record validation to direct native/Rust and
+  browser/WASM `upsertAuthLease` paths, so FFI/host code cannot inject a lease
+  whose payload disagrees with the generated app schema.
+- Added TypeScript-side validation in the browser worker/Rust client
+  `issueAuthLease` helper when `config.appSchema` is present. This rejects
+  impossible requests before fetch and rejects mismatched responses before
+  storage.
+- Tightened native tests so auth lease issuing runs with the generated todo app
+  schema, and removed stale hard-coded schema-version assertions from the
+  native facade test.
+
+### Batch 6 Remaining Runtime Hook Inventory
+
+- Diagnostics and support bundles are runtime observability. They should stay
+  runtime-only, with strict redaction/truncation and stable event shapes, but
+  they do not introduce storage/wire semantics by themselves.
+- Network status, foreground/background lifecycle, pause/resume, and
+  scheduled/manual sync hooks are runtime scheduling behavior. They should
+  remain platform-appropriate runtime APIs. If a future lifecycle hook starts
+  changing stored sync policy or protocol payloads, it must move behind
+  generated static metadata first.
+- Row/field events are storage/event semantics. The Rust core already derives
+  `SyncChangedRow` from generated app metadata, native observed queries
+  validate dependency tables/fields, and the browser live-query dependency
+  slice now validates the same boundary. No further runtime-only table/field
+  registration path is acceptable.
+- CRDT projection/materialization adapters are runtime code, but CRDT field
+  declarations, sync mode, state columns, and encrypted-update-log behavior are
+  generated metadata. The current field/encrypted-CRDT validation covers this
+  split.
+- Presence is currently realtime runtime behavior. If presence channels become
+  authorization-bearing or table/scope-addressed storage semantics, they should
+  get generated scope/channel metadata before being exposed as a typed app
+  contract.
+- Lifecycle events are public runtime events, not schema declarations. They
+  should carry generated row/field metadata when reporting data changes, but
+  the event subscription mechanism itself remains runtime-only.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -1123,13 +1177,22 @@ Gates run:
 - `bun test packages/client/src/__tests__/sync-hono.wasm.test.ts -t "rejects live-query dependencies"`
 - `bun test packages/client/src/__tests__/sync-hono.wasm.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test blob_transport`
+- `bun test packages/client/src/auth-leases.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime auth_lease_issue_request_must_match_generated_scope_metadata`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime native_facade_issues_and_stores_auth_lease`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends leased`
+- `bun test packages/client/src/__tests__/auth-hono.wasm.test.ts`
+- `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --lib`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test store_backends`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_facade`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
 
 ## Next Action
 
-Continue Batch 6 by inventorying the remaining runtime extension surfaces:
-auth lifecycle, diagnostics, network status, row/field events, and lifecycle
-hooks. For each, decide whether it is pure runtime behavior or whether it
-carries storage/wire semantics that must be backed by generated static contract
-metadata.
+Batch 6 is now closed for the known runtime extension boundaries. Continue
+WP-33 with the developer-facing contract flow: make the app authoring surface
+and generated server/client helper APIs line up with the generated
+language-neutral schema contract, including divergent server/client shapes and
+schema-version-aware handler helpers.

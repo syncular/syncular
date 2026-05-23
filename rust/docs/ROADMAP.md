@@ -574,10 +574,17 @@ read-only review:
   SQLite live-query registration now validates dependency tables and hinted
   fields against generated app metadata, matching the native observed-query
   boundary. Blob storage/cache/upload APIs now require generated blob-column
-  metadata before creating detached blob state. The next Batch 6 gap is
-  inventorying auth, diagnostics, network status, row/field events, and
-  lifecycle hooks for remaining runtime-only behavior that should be backed by
-  generated static metadata.
+  metadata before creating detached blob state. Auth lease requests, responses,
+  and direct stored lease records now validate schema version, generated
+  tables, protocol operations, and generated scope keys before network/storage
+  use. The remaining Batch 6 inventory keeps auth headers/refresh/signers,
+  diagnostics, network status, presence, foreground/background lifecycle, and
+  event subscription mechanics as runtime-only hooks while requiring row/field,
+  CRDT, blob, encrypted-field, and auth-lease storage/wire semantics to be
+  backed by generated metadata. Batch 6 is closed for known extension
+  boundaries; the next WP-33 gap is the developer-facing app contract and
+  generated server/client helper flow for divergent server/client shapes and
+  schema-version-aware handlers.
 
 ## Later
 

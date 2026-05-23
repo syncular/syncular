@@ -1,7 +1,7 @@
 use crate::app_schema::{
     app_schema_from_config, checksum, empty_app_schema, split_sql_statements,
-    validate_app_schema_runtime_features, validate_blob_runtime_against_app_schema, AppSchema,
-    AppSchemaJson, AppTableMetadata,
+    validate_app_schema_runtime_features, validate_auth_lease_payload_against_app_schema,
+    validate_blob_runtime_against_app_schema, AppSchema, AppSchemaJson, AppTableMetadata,
 };
 use crate::auth_lease_selection::{
     app_table_operation_scope,
@@ -51,9 +51,9 @@ use crate::protocol::{
 };
 use crate::protocol::{
     sync_operations_json_for_outbox, validate_mutation_batch_json_input_size,
-    validate_pending_mutation_batch_size, AuthLeaseProvenance, CrdtStateVectorHint,
-    OperationResult, PendingSyncularMutation, PushCommitResponse, ScopeValues, SyncChange,
-    SyncOperation,
+    validate_pending_mutation_batch_size, AuthLeasePayload, AuthLeaseProvenance,
+    CrdtStateVectorHint, OperationResult, PendingSyncularMutation, PushCommitResponse, ScopeValues,
+    SyncChange, SyncOperation,
 };
 use crate::runtime_schema::{runtime_schema_version, RUNTIME_SYSTEM_SCHEMA_SQL};
 use crate::store::{
@@ -4216,6 +4216,7 @@ impl SyncularRustOwnedSqlite {
     }
 
     fn upsert_auth_lease_sync(&self, lease: &AuthLeaseRecord) -> Result<()> {
+        validate_auth_lease_record_against_app_schema(self.app_schema, lease)?;
         self.exec(&format!(
             "INSERT INTO sync_auth_leases \
              (lease_id, kid, actor_id, issued_at_ms, not_before_ms, expires_at_ms, \
@@ -6717,6 +6718,30 @@ fn auth_lease_record_from_row(row: SqliteRow<'_>) -> Result<AuthLeaseRecord> {
         created_at_ms: row.i64("created_at_ms")?,
         updated_at_ms: row.i64("updated_at_ms")?,
     })
+}
+
+fn validate_auth_lease_record_against_app_schema(
+    app_schema: AppSchema,
+    lease: &AuthLeaseRecord,
+) -> Result<()> {
+    let payload: AuthLeasePayload = serde_json::from_str(&lease.payload_json)?;
+    if lease.schema_version != payload.schema_version {
+        return Err(SyncularError::protocol_message(format!(
+            "auth lease record schemaVersion {} does not match payload schemaVersion {}",
+            lease.schema_version, payload.schema_version
+        )));
+    }
+    if lease.lease_id != payload.lease_id {
+        return Err(SyncularError::protocol_message(
+            "auth lease record leaseId does not match payload leaseId",
+        ));
+    }
+    if lease.actor_id != payload.actor_id {
+        return Err(SyncularError::protocol_message(
+            "auth lease record actorId does not match payload actorId",
+        ));
+    }
+    validate_auth_lease_payload_against_app_schema(app_schema, &payload)
 }
 
 fn bind_text(stmt: *mut ffi::sqlite3_stmt, index: i32, value: &str) -> Result<()> {

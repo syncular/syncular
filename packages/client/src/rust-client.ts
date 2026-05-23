@@ -309,6 +309,7 @@ export class SyncularRustClient {
       baseUrl: this.config.baseUrl,
       headers: this.#authHeaders,
       request,
+      appSchema: this.config.appSchema,
     });
     await this.upsertAuthLease(lease);
     this.#emitDiagnostic({

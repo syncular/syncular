@@ -3,12 +3,15 @@ use crate::encryption::FieldEncryptionRule;
 #[cfg(feature = "native")]
 use crate::error::ErrorKind;
 use crate::error::{Result, SyncularError};
+use crate::protocol::{
+    AuthLeaseIssueRequest, AuthLeaseIssueResponse, AuthLeasePayload, AuthLeaseScope,
+    AUTH_LEASE_PROTOCOL_VERSION, AUTH_LEASE_VERSION,
+};
 #[cfg(feature = "native")]
 use crate::protocol::{ScopeValues, SyncChange};
 #[cfg(feature = "native")]
 use diesel::sqlite::SqliteConnection;
 use serde::{Deserialize, Serialize};
-#[cfg(feature = "native")]
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -251,6 +254,167 @@ pub fn validate_encrypted_crdt_against_app_schema(app_schema: AppSchema) -> Resu
     Err(SyncularError::config(
         "encrypted CRDT config requires at least one generated encrypted-update-log CRDT field",
     ))
+}
+
+pub fn validate_auth_lease_issue_request_against_app_schema(
+    app_schema: AppSchema,
+    request: &AuthLeaseIssueRequest,
+) -> Result<()> {
+    validate_auth_lease_schema_version(app_schema, request.schema_version, "auth lease request")?;
+    if let Some(ttl_ms) = request.ttl_ms {
+        if ttl_ms <= 0 {
+            return Err(SyncularError::config(
+                "auth lease request ttlMs must be positive",
+            ));
+        }
+    }
+    validate_auth_lease_scopes_against_app_schema(app_schema, &request.scopes, "auth lease request")
+}
+
+pub fn validate_auth_lease_issue_response_against_app_schema(
+    app_schema: AppSchema,
+    response: &AuthLeaseIssueResponse,
+    request_schema_version: i32,
+) -> Result<()> {
+    if response.payload.schema_version != request_schema_version {
+        return Err(SyncularError::protocol_message(format!(
+            "auth lease response schemaVersion {} does not match request schemaVersion {}",
+            response.payload.schema_version, request_schema_version
+        )));
+    }
+    validate_auth_lease_payload_against_app_schema(app_schema, &response.payload)
+}
+
+pub fn validate_auth_lease_payload_against_app_schema(
+    app_schema: AppSchema,
+    payload: &AuthLeasePayload,
+) -> Result<()> {
+    if payload.version != AUTH_LEASE_VERSION {
+        return Err(SyncularError::protocol_message(
+            "auth lease payload version is unsupported",
+        ));
+    }
+    if payload.protocol_version != AUTH_LEASE_PROTOCOL_VERSION {
+        return Err(SyncularError::protocol_message(
+            "auth lease payload protocolVersion is unsupported",
+        ));
+    }
+    validate_auth_lease_schema_version(app_schema, payload.schema_version, "auth lease payload")?;
+    validate_auth_lease_scopes_against_app_schema(app_schema, &payload.scopes, "auth lease payload")
+}
+
+fn validate_auth_lease_schema_version(
+    app_schema: AppSchema,
+    schema_version: i32,
+    source: &str,
+) -> Result<()> {
+    let current = app_schema.current_schema_version();
+    if schema_version == current {
+        return Ok(());
+    }
+    Err(SyncularError::config(format!(
+        "{source} schemaVersion {schema_version} does not match generated app schema version {current}"
+    )))
+}
+
+fn validate_auth_lease_scopes_against_app_schema(
+    app_schema: AppSchema,
+    scopes: &[AuthLeaseScope],
+    source: &str,
+) -> Result<()> {
+    if scopes.is_empty() {
+        return Err(SyncularError::config(format!(
+            "{source} must contain at least one generated table scope"
+        )));
+    }
+    for scope in scopes {
+        validate_auth_lease_scope_against_app_schema(app_schema, scope, source)?;
+    }
+    Ok(())
+}
+
+fn validate_auth_lease_scope_against_app_schema(
+    app_schema: AppSchema,
+    scope: &AuthLeaseScope,
+    source: &str,
+) -> Result<()> {
+    if scope.subscription_id.trim().is_empty() {
+        return Err(SyncularError::config(format!(
+            "{source} scope subscriptionId must not be empty"
+        )));
+    }
+    let table = scope.table.trim();
+    if table.is_empty() {
+        return Err(SyncularError::config(format!(
+            "{source} scope table must not be empty"
+        )));
+    }
+    let metadata = app_schema.table_metadata(table).ok_or_else(|| {
+        SyncularError::config(format!(
+            "{source} scope references unknown generated table {table}"
+        ))
+    })?;
+    if scope.operations.is_empty() {
+        return Err(SyncularError::config(format!(
+            "{source} scope for table {table} must include at least one operation"
+        )));
+    }
+    for operation in &scope.operations {
+        match operation.as_str() {
+            "upsert" | "delete" => {}
+            other => {
+                return Err(SyncularError::config(format!(
+                    "{source} scope for table {table} references unsupported operation {other}"
+                )));
+            }
+        }
+    }
+
+    for scope_key in scope.values.keys() {
+        if !metadata
+            .scopes
+            .iter()
+            .any(|metadata_scope| metadata_scope.name == scope_key)
+        {
+            return Err(SyncularError::config(format!(
+                "{source} scope for table {table} references unknown generated scope {scope_key}"
+            )));
+        }
+    }
+    for required_scope in metadata.scopes.iter().filter(|scope| scope.required) {
+        if !scope.values.contains_key(required_scope.name) {
+            return Err(SyncularError::config(format!(
+                "{source} scope for table {table} is missing required generated scope {}",
+                required_scope.name
+            )));
+        }
+    }
+    for (name, value) in &scope.values {
+        validate_auth_lease_scope_value(source, table, name, value)?;
+    }
+    Ok(())
+}
+
+fn validate_auth_lease_scope_value(
+    source: &str,
+    table: &str,
+    name: &str,
+    value: &Value,
+) -> Result<()> {
+    match value {
+        Value::String(value) if !value.is_empty() => Ok(()),
+        Value::Array(values)
+            if !values.is_empty()
+                && values
+                    .iter()
+                    .all(|value| matches!(value, Value::String(value) if !value.is_empty())) =>
+        {
+            Ok(())
+        }
+        _ => Err(SyncularError::config(format!(
+            "{source} scope {table}.{name} must be a non-empty string or non-empty string array"
+        ))),
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -582,6 +746,12 @@ mod runtime_feature_tests {
         },
     ];
     const EMPTY_SCOPES: &[ScopeMetadata] = &[];
+    const REQUIRED_SCOPES: &[ScopeMetadata] = &[ScopeMetadata {
+        name: "user_id",
+        column: "user_id",
+        source: ScopeSource::ActorId,
+        required: true,
+    }];
     const EMPTY_BLOBS: &[&str] = &[];
     const BLOB_COLUMNS: &[&str] = &["image"];
     const EMPTY_CRDT_FIELDS: &[CrdtYjsFieldMetadata] = &[];
@@ -597,16 +767,37 @@ mod runtime_feature_tests {
         table_metadata(EMPTY_BLOBS, EMPTY_CRDT_FIELDS, ENCRYPTED_FIELDS);
     const ENCRYPTED_CRDT_TABLE_METADATA: AppTableMetadata =
         table_metadata(EMPTY_BLOBS, ENCRYPTED_CRDT_FIELDS, EMPTY_ENCRYPTED_FIELDS);
+    const SCOPED_TABLE_METADATA: AppTableMetadata = table_metadata_with_scopes(
+        EMPTY_BLOBS,
+        EMPTY_CRDT_FIELDS,
+        EMPTY_ENCRYPTED_FIELDS,
+        REQUIRED_SCOPES,
+    );
     const PLAIN_SCHEMA_TABLES: &[AppTableMetadata] = &[PLAIN_TABLE_METADATA];
     const BLOB_SCHEMA_TABLES: &[AppTableMetadata] = &[BLOB_TABLE_METADATA];
     const CRDT_SCHEMA_TABLES: &[AppTableMetadata] = &[CRDT_TABLE_METADATA];
     const ENCRYPTED_FIELD_SCHEMA_TABLES: &[AppTableMetadata] = &[ENCRYPTED_FIELD_TABLE_METADATA];
     const ENCRYPTED_CRDT_SCHEMA_TABLES: &[AppTableMetadata] = &[ENCRYPTED_CRDT_TABLE_METADATA];
+    const SCOPED_SCHEMA_TABLES: &[AppTableMetadata] = &[SCOPED_TABLE_METADATA];
 
     const fn table_metadata(
         blob_columns: &'static [&'static str],
         crdt_yjs_fields: &'static [CrdtYjsFieldMetadata],
         encrypted_fields: &'static [EncryptedFieldMetadata],
+    ) -> AppTableMetadata {
+        table_metadata_with_scopes(
+            blob_columns,
+            crdt_yjs_fields,
+            encrypted_fields,
+            EMPTY_SCOPES,
+        )
+    }
+
+    const fn table_metadata_with_scopes(
+        blob_columns: &'static [&'static str],
+        crdt_yjs_fields: &'static [CrdtYjsFieldMetadata],
+        encrypted_fields: &'static [EncryptedFieldMetadata],
+        scopes: &'static [ScopeMetadata],
     ) -> AppTableMetadata {
         AppTableMetadata {
             name: "tasks",
@@ -618,7 +809,7 @@ mod runtime_feature_tests {
             blob_columns,
             crdt_yjs_fields,
             encrypted_fields,
-            scopes: EMPTY_SCOPES,
+            scopes,
         }
     }
 
@@ -757,5 +948,66 @@ mod runtime_feature_tests {
                 .message_text()
                 .contains("encrypted-update-log")
         );
+    }
+
+    #[test]
+    fn auth_lease_issue_request_must_match_generated_scope_metadata() {
+        let valid = AuthLeaseIssueRequest {
+            schema_version: 1,
+            ttl_ms: Some(60_000),
+            scopes: vec![AuthLeaseScope {
+                subscription_id: "custom-sub-tasks".to_string(),
+                table: "tasks".to_string(),
+                values: serde_json::json!({ "user_id": ["user-rust"] })
+                    .as_object()
+                    .expect("scope object")
+                    .clone(),
+                operations: vec!["upsert".to_string(), "delete".to_string()],
+            }],
+        };
+        assert!(validate_auth_lease_issue_request_against_app_schema(
+            schema(SCOPED_SCHEMA_TABLES),
+            &valid
+        )
+        .is_ok());
+
+        let unknown_scope = AuthLeaseIssueRequest {
+            schema_version: 1,
+            ttl_ms: None,
+            scopes: vec![AuthLeaseScope {
+                subscription_id: "sub-tasks".to_string(),
+                table: "tasks".to_string(),
+                values: serde_json::json!({ "project_id": "p0" })
+                    .as_object()
+                    .expect("scope object")
+                    .clone(),
+                operations: vec!["upsert".to_string()],
+            }],
+        };
+        assert!(validate_auth_lease_issue_request_against_app_schema(
+            schema(SCOPED_SCHEMA_TABLES),
+            &unknown_scope
+        )
+        .expect_err("unknown generated lease scopes should fail")
+        .message_text()
+        .contains("unknown generated scope project_id"));
+
+        let missing_required_scope = AuthLeaseIssueRequest {
+            schema_version: 1,
+            ttl_ms: None,
+            scopes: vec![AuthLeaseScope {
+                subscription_id: "sub-tasks".to_string(),
+                table: "tasks".to_string(),
+                values: serde_json::Map::new(),
+                operations: vec!["upsert".to_string()],
+            }],
+        };
+        assert!(validate_auth_lease_issue_request_against_app_schema(
+            schema(SCOPED_SCHEMA_TABLES),
+            &missing_required_scope
+        )
+        .expect_err("missing generated lease scopes should fail")
+        .message_text()
+        .contains("missing required generated scope user_id"));
     }
 }

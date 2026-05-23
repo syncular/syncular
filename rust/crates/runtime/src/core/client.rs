@@ -1,7 +1,9 @@
 #[cfg(feature = "native")]
 use crate::app_schema::validate_app_schema_runtime_features;
 use crate::app_schema::{
-    default_app_schema, validate_blob_encryption_against_app_schema,
+    default_app_schema, validate_auth_lease_issue_request_against_app_schema,
+    validate_auth_lease_issue_response_against_app_schema,
+    validate_auth_lease_payload_against_app_schema, validate_blob_encryption_against_app_schema,
     validate_blob_runtime_against_app_schema, validate_encrypted_crdt_against_app_schema,
     validate_field_encryption_rules_against_app_schema, AppSchema, AppTableMetadata,
 };
@@ -1777,7 +1779,13 @@ where
         &mut self,
         request: &AuthLeaseIssueRequest,
     ) -> Result<crate::store::AuthLeaseRecord> {
+        validate_auth_lease_issue_request_against_app_schema(self.app_schema, request)?;
         let response = self.transport.issue_auth_lease(request)?;
+        validate_auth_lease_issue_response_against_app_schema(
+            self.app_schema,
+            &response,
+            request.schema_version,
+        )?;
         let record = auth_lease_record_from_issue_response(response, now_ms())?;
         self.store.transaction(|tx| tx.upsert_auth_lease(&record))?;
         Ok(record)
@@ -1841,6 +1849,30 @@ fn auth_lease_record_from_issue_response(
         created_at_ms: payload.issued_at_ms,
         updated_at_ms,
     })
+}
+
+fn validate_auth_lease_record_against_app_schema(
+    app_schema: AppSchema,
+    lease: &crate::store::AuthLeaseRecord,
+) -> Result<()> {
+    let payload: AuthLeasePayload = serde_json::from_str(&lease.payload_json)?;
+    if lease.schema_version != payload.schema_version {
+        return Err(SyncularError::protocol_message(format!(
+            "auth lease record schemaVersion {} does not match payload schemaVersion {}",
+            lease.schema_version, payload.schema_version
+        )));
+    }
+    if lease.lease_id != payload.lease_id {
+        return Err(SyncularError::protocol_message(
+            "auth lease record leaseId does not match payload leaseId",
+        ));
+    }
+    if lease.actor_id != payload.actor_id {
+        return Err(SyncularError::protocol_message(
+            "auth lease record actorId does not match payload actorId",
+        ));
+    }
+    validate_auth_lease_payload_against_app_schema(app_schema, &payload)
 }
 
 impl<S, T> SyncularClient<S, T>
@@ -3896,6 +3928,7 @@ where
     }
 
     pub fn upsert_auth_lease(&mut self, lease: &crate::store::AuthLeaseRecord) -> Result<()> {
+        validate_auth_lease_record_against_app_schema(self.app_schema, lease)?;
         self.store.transaction(|tx| tx.upsert_auth_lease(lease))
     }
 
