@@ -650,6 +650,11 @@ The contract should distinguish two local cases:
   runtime when embedded migrations are present; TypeScript post-open schema
   writes handle derived artifacts such as indexes and read models. `full` and
   `base` remain explicit escape hatches for manual schemas/tests.
+- Added a Bun bundle conformance test proving the generated TypeScript app
+  module carries embedded migration SQL and does not depend on filesystem
+  migration paths for bundled browser/worker output.
+- Updated generated-client and local-project integration docs with the runtime
+  migration split.
 
 Gates run:
 
@@ -668,7 +673,7 @@ Gates run:
 
 ## Next Action
 
-Finish Batch 3 by adding a bundled-output/typecheck proof for the generated
-TypeScript app module and documenting the runtime migration split: embedded
-base migrations are runtime-owned, while TypeScript schema writes are for
-derived local artifacts or explicit manual schemas.
+Start Batch 4 by designing and implementing the first higher-level TypeScript
+authoring surface that can emit the existing low-level `syncular.codegen.json`
+semantics without making TypeScript authoring part of the cross-platform
+runtime API.

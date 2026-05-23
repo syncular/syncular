@@ -145,6 +145,31 @@ describe('generated app conformance', () => {
     );
   });
 
+  it('bundles generated app migrations without filesystem migration paths', async () => {
+    const result = await Bun.build({
+      entrypoints: [
+        new URL(
+          '../../../rust/examples/todo-app/generated/typescript/syncular.generated.ts',
+          import.meta.url
+        ).pathname,
+      ],
+      target: 'browser',
+      format: 'esm',
+      splitting: false,
+      minify: false,
+      write: false,
+    });
+
+    expect(result.logs).toEqual([]);
+    expect(result.success).toBe(true);
+    expect(result.outputs).toHaveLength(1);
+
+    const bundled = await result.outputs[0]!.text();
+    expect(bundled).toContain('syncularGeneratedEmbeddedMigrations');
+    expect(bundled).toContain('CREATE TABLE IF NOT EXISTS projects');
+    expect(bundled).not.toContain('migrations/0001_initial/up.sql');
+  });
+
   it('turns generic row deltas into typed table helpers', () => {
     const event = {
       source: 'remotePull',

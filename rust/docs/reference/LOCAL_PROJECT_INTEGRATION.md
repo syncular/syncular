@@ -45,9 +45,10 @@ your-app/
       up.sql
 ```
 
-For now, migrations must include both your app tables and Syncular's internal
-tables, because generated `AppSchema` migrations are what
-`SyncularClient::open_with_schema` applies.
+Migrations should declare your app replica tables. Syncular runtime system
+tables are installed by the runtime itself; if older example migrations still
+contain `sync_*` DDL, codegen strips those statements from generated app
+migrations before embedding them.
 
 Use the example app as the template:
 
@@ -55,9 +56,8 @@ Use the example app as the template:
 cp -R /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/examples/todo-app/migrations ./migrations
 ```
 
-Then edit `migrations/0001_initial/up.sql` app tables. Keep the internal
-`sync_*` tables, `0002_blob_client_tables`, and `0003_retry_backoff` unless you
-know exactly which runtime features you are removing.
+Then edit the app-table DDL in `migrations/0001_initial/up.sql`. New apps
+should not add runtime-owned `sync_*` tables to app migrations.
 
 Current app-table rules:
 
@@ -239,9 +239,9 @@ fn open_client() -> syncular_client::error::Result<SyncularClient> {
 }
 ```
 
-`open_with_schema` applies your generated migrations, builds default
-subscriptions from your config, and uses generated table adapters for sync
-changes.
+`open_with_schema` applies your generated app migrations from embedded SQL,
+installs Syncular runtime system tables, builds default subscriptions from your
+config, and uses generated table adapters for sync changes.
 
 ## 7. Auth Headers
 

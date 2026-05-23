@@ -164,6 +164,13 @@ const tasks = await database
   .execute();
 ```
 
+Generated browser app modules embed app migrations in
+`syncularGeneratedAppSchema`. The Rust/WASM store applies those base migrations
+while opening SQLite, so the default generated `schemaInstallMode` is
+`'derived'`: TypeScript post-open schema writes install derived local artifacts
+such as indexes and read models. Use `schemaInstallMode: 'full'` only for
+manual schemas or tests that intentionally need TypeScript to replay base DDL.
+
 Generated mutation types keep server-owned and CRDT state columns out of the
 write shape:
 
