@@ -605,6 +605,11 @@ The contract should distinguish two local cases:
   - old platform clients are not generated or shipped by default.
 - Generated TypeScript client/server support constants now reflect the resolved
   support policy instead of hard-coding current-only.
+- Generated TypeScript server output now exposes:
+  `syncularGeneratedCurrentClientSchema`,
+  `syncularGeneratedHistoricalClientSchemas`, and
+  `syncularGeneratedClientSchemaForVersion(...)`. This gives server handlers
+  generated per-version table metadata without shipping old client packages.
 
 Gates run:
 
@@ -620,6 +625,7 @@ Gates run:
 
 ## Next Action
 
-Expose historical schema metadata through generated TypeScript server helpers:
-per-version table metadata first, then parse/validation helpers for operation
-payloads and snapshot rows. Keep query builders/client artifacts current-only.
+Add parse/validation helpers for generated TypeScript server operation
+payloads and snapshot rows, using `ctx.schemaVersion` plus
+`syncularGeneratedClientSchemaForVersion(...)`. Keep query builders/client
+artifacts current-only.
