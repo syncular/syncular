@@ -833,6 +833,7 @@ struct SchemaJsonClientSchemaSupport {
 struct SchemaJsonHistoricalClientSchema {
     schema_version: i32,
     tables: Vec<SchemaJsonTable>,
+    local_base_schema: SchemaJsonLocalBaseSchema,
 }
 
 fn client_schema_support_from_config(
@@ -1245,6 +1246,7 @@ fn historical_client_schemas(
 
         let tables = load_tables(&mut conn)?;
         let mut schema_tables = Vec::new();
+        let mut local_base_table_setup_sql = Vec::new();
         for table in tables
             .iter()
             .filter(|table| !table.name.starts_with("sync_"))
@@ -1257,10 +1259,17 @@ fn historical_client_schemas(
                 );
             };
             schema_tables.push(schema_json_table_from_info(table, table_config)?);
+            local_base_table_setup_sql.push(ts_raw_sql_create_table(
+                table,
+                table_config.sqlite_without_rowid.unwrap_or(false),
+            ));
         }
         historical.push(SchemaJsonHistoricalClientSchema {
             schema_version,
             tables: schema_tables,
+            local_base_schema: SchemaJsonLocalBaseSchema {
+                table_setup_sql: local_base_table_setup_sql,
+            },
         });
     }
     let _ = fs::remove_file(&sqlite_path);
@@ -5633,6 +5642,7 @@ fn push_typescript_client_schema_metadata(
     out.push_str("export interface SyncularGeneratedClientSchemaMetadata {\n");
     out.push_str("  schemaVersion: number;\n");
     out.push_str("  tables: readonly SyncularGeneratedTableSchemaMetadata[];\n");
+    out.push_str("  localBaseSchema?: { tableSetupSql: readonly string[] };\n");
     out.push_str("}\n\n");
     out.push_str(
         "export const syncularGeneratedCurrentClientSchema: SyncularGeneratedClientSchemaMetadata = ",
@@ -5758,7 +5768,7 @@ fn push_typescript_app_server_handler_helpers(
             if index > 0 {
                 out.push_str(", ");
             }
-            out.push_str(&ts_string(scope_name(scope)));
+            out.push_str(&ts_string(&format!("{{{}}}", scope_name(scope))));
         }
         out.push_str("],\n");
         out.push_str("  },\n");
@@ -11571,6 +11581,11 @@ CREATE TABLE tasks (
             .as_array()
             .unwrap()
             .is_empty());
+        let historical_base_sql = historical["localBaseSchema"]["tableSetupSql"][0]
+            .as_str()
+            .expect("historical table setup sql");
+        assert!(historical_base_sql.contains("CREATE TABLE IF NOT EXISTS \"tasks\""));
+        assert!(!historical_base_sql.contains("image"));
         assert_eq!(json["tables"][0]["blobColumns"][0], "image");
 
         let support = client_schema_support_from_config(&config, 2)?;
@@ -11582,6 +11597,7 @@ CREATE TABLE tasks (
         ));
         assert!(server_output.contains("\"schemaVersion\": 1"));
         assert!(server_output.contains("\"blobColumns\": []"));
+        assert!(server_output.contains("\"localBaseSchema\""));
         assert!(server_output.contains("export function syncularGeneratedClientSchemaForVersion"));
         assert!(server_output.contains("export function syncularGeneratedTableSchemaForVersion"));
         assert!(server_output.contains("export function syncularValidateGeneratedClientRow"));

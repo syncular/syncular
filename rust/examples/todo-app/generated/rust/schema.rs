@@ -213,6 +213,7 @@ diesel::table! {
         server_version -> BigInt,
         image -> Nullable<Text>,
         title_yjs_state -> Nullable<Text>,
+        description -> Nullable<Text>,
     }
 }
 

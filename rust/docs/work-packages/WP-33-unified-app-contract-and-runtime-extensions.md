@@ -783,24 +783,28 @@ The contract should distinguish two local cases:
 - Added pull bootstrap coverage proving a schema 6 client receives a binary
   snapshot chunk encoded from schema 6 columns and does not invoke the current
   generated row encoder.
-- Note: the checked-in todo app currently supports schema 6 and 7, but its app
-  table shape does not differ between those versions. The synthetic pull test
-  is intentionally the stronger regression test for current-vs-historical
-  column leakage until a fixture app has a real user-table schema difference.
 - Tightened the existing codegen historical-schema replay test, whose synthetic
   app adds an `image` column in v2, to assert the generated server output
   includes versioned binary column and encoder helpers.
 
 ### Batch 2/8 Browser Old-Client Bootstrap Slice
 
-- Added browser/WASM conformance coverage for an old generated client schema
-  applying a bootstrap snapshot from a newer server shape.
-- The test uses a synthetic `versioned_tasks` app where schema v2 adds a
-  current-only `image` column while the schema v1 client only has
-  `id`, `title`, `user_id`, and `server_version`.
-- The server advertises versioned binary snapshot columns and the schema v1
-  Rust-owned SQLite browser client pulls successfully without trying to apply
-  the current-only `image` field.
+- Added a real generated app-table schema difference to the todo fixture:
+  schema 8 adds nullable `tasks.description`, while supported historical
+  schemas 6 and 7 keep the previous task shape.
+- Codegen now emits `localBaseSchema.tableSetupSql` for historical client
+  schema metadata. Tests can open an old generated client from generated
+  metadata instead of hand-writing a guessed old table DDL.
+- Generated server handler table refs now emit scope patterns as
+  `{scope_name}` variables. The previous raw scope-name values worked in direct
+  unit calls but failed real Hono subscription validation because the server
+  extracts valid requested scope keys from pattern variables.
+- Replaced the synthetic browser old-client bootstrap smoke with a generated
+  todo v6 client pulling from a schema 8 Hono server through
+  `createSyncularAppServerHandler(...)`.
+- The server row contains the current-only `description` value, while the v6
+  browser client applies the binary snapshot successfully into a local schema
+  without that column.
 - This proves the schema-versioned pull request, versioned binary metadata,
   binary chunk encoder path, and browser local apply path work together for an
   older client. It also guards against the easy regression where server binary
@@ -832,10 +836,12 @@ Gates run:
 - `bun test packages/testkit/src/faults.test.ts`
 - `bun --cwd rust/bindings/javascript build:wasm:core`
 - `bun --cwd rust/bindings/javascript build:wasm`
+- `bun test packages/client/src/__tests__/variant-core.wasm.test.ts -t "generated old-client"`
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
 - `bun run --cwd packages/typegen tsgo`
 - `bun test packages/typegen/src/app-contract.test.ts`
 - `bun test rust/examples/todo-app/syncular.app.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`
 - `bun test rust/examples/todo-app/syncular.app.test.ts packages/server/src/generated-app-server-handler.test.ts`
 - `bun run --cwd packages/core tsgo`
 - `bun run --cwd packages/server tsgo`
@@ -860,6 +866,6 @@ Gates run:
 
 ## Next Action
 
-Continue Batch 2/8 by adding a generated fixture with a real app-table schema
-difference across supported client versions, then use it for browser/native
-old-client bootstrap apply conformance.
+Continue Batch 2/8 by adding native old-client bootstrap apply conformance
+against the generated schema 6/8 todo fixture, then add the explicit
+unsupported-client upgrade-required flow through browser/native opens.

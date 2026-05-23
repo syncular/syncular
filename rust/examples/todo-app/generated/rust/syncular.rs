@@ -216,6 +216,12 @@ pub const TASKS_COLUMNS: &[ColumnMetadata] = &[
         notnull_required: false,
         primary_key: false,
     },
+    ColumnMetadata {
+        name: "description",
+        type_family: "text",
+        notnull_required: false,
+        primary_key: false,
+    },
 ];
 
 pub const TASKS_BLOB_COLUMNS: &[&str] = &["image"];
@@ -436,6 +442,7 @@ pub struct TaskChangedFields {
     pub server_version: bool,
     pub image: bool,
     pub title_yjs_state: bool,
+    pub description: bool,
 }
 
 impl TaskChangedFields {
@@ -449,6 +456,7 @@ impl TaskChangedFields {
             server_version: columns.iter().any(|column| column == "server_version"),
             image: columns.iter().any(|column| column == "image"),
             title_yjs_state: columns.iter().any(|column| column == "title_yjs_state"),
+            description: columns.iter().any(|column| column == "description"),
         }
     }
 
@@ -462,6 +470,7 @@ impl TaskChangedFields {
             "server_version" => self.server_version,
             "image" => self.image,
             "title_yjs_state" => self.title_yjs_state,
+            "description" => self.description,
             _ => false,
         }
     }
@@ -1051,6 +1060,7 @@ pub struct NewTask {
     pub user_id: String,
     pub project_id: Option<String>,
     pub image: Option<String>,
+    pub description: Option<String>,
     yjs_updates: Map<String, Value>,
 }
 
@@ -1063,6 +1073,7 @@ impl NewTask {
             user_id: user_id.to_string(),
             project_id: project_id.map(str::to_string),
             image: None,
+            description: None,
             yjs_updates: Map::new(),
         }
     }
@@ -1075,6 +1086,7 @@ impl NewTask {
             user_id: user_id.to_string(),
             project_id: project_id.map(str::to_string),
             image: None,
+            description: None,
             yjs_updates: Map::new(),
         }
     }
@@ -1101,6 +1113,9 @@ impl NewTask {
         if let Some(value) = &self.image {
             row.insert("image".to_string(), json!(value));
         }
+        if let Some(value) = &self.description {
+            row.insert("description".to_string(), json!(value));
+        }
         Value::Object(row)
     }
 
@@ -1116,6 +1131,9 @@ impl NewTask {
         }
         if let Some(value) = &self.image {
             payload.insert("image".to_string(), json!(value));
+        }
+        if let Some(value) = &self.description {
+            payload.insert("description".to_string(), json!(value));
         }
         if !self.yjs_updates.is_empty() {
             payload.insert(
@@ -1157,6 +1175,7 @@ pub struct TaskPatch {
     user_id: Option<String>,
     project_id: Option<Option<String>>,
     image: Option<Option<String>>,
+    description: Option<Option<String>>,
     yjs_updates: Map<String, Value>,
 }
 
@@ -1170,6 +1189,7 @@ impl TaskPatch {
             user_id: None,
             project_id: None,
             image: None,
+            description: None,
             yjs_updates: Map::new(),
         }
     }
@@ -1204,6 +1224,11 @@ impl TaskPatch {
         self
     }
 
+    pub fn description(mut self, description: Option<&str>) -> Self {
+        self.description = Some(description.map(str::to_string));
+        self
+    }
+
     pub fn title_yjs_update(mut self, update: YjsUpdateEnvelope) -> Self {
         self.yjs_updates.insert("title".to_string(), json!(update));
         self
@@ -1232,6 +1257,9 @@ impl TaskPatch {
         }
         if let Some(value) = &self.image {
             payload.insert("image".to_string(), json!(value));
+        }
+        if let Some(value) = &self.description {
+            payload.insert("description".to_string(), json!(value));
         }
         if !self.yjs_updates.is_empty() {
             payload.insert(

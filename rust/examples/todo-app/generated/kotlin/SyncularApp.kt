@@ -14,9 +14,9 @@ import kotlinx.serialization.json.longOrNull
 
 const val syncularNativeExpectedFfiAbiVersion: Int = 2
 const val syncularNativeExpectedCrateVersion: String = "0.1.0"
-const val syncularNativeGeneratedSchemaVersion: Int = 7
+const val syncularNativeGeneratedSchemaVersion: Int = 8
 
-const val syncularNativeGeneratedAppSchemaJson: String = "{\"clientSchemaSupport\":{\"current\":7,\"minSupported\":6,\"supported\":[6,7]},\"localBaseSchema\":{\"tableSetupSql\":[\"CREATE TABLE IF NOT EXISTS \\\"comments\\\" (\\n  \\\"id\\\" TEXT PRIMARY KEY,\\n  \\\"task_id\\\" TEXT NOT NULL,\\n  \\\"project_id\\\" TEXT,\\n  \\\"body\\\" TEXT NOT NULL,\\n  \\\"author_id\\\" TEXT NOT NULL,\\n  \\\"deleted\\\" INTEGER NOT NULL DEFAULT 0,\\n  \\\"server_version\\\" INTEGER NOT NULL DEFAULT 0\\n) WITHOUT ROWID\",\"CREATE TABLE IF NOT EXISTS \\\"projects\\\" (\\n  \\\"id\\\" TEXT PRIMARY KEY,\\n  \\\"name\\\" TEXT NOT NULL,\\n  \\\"owner_id\\\" TEXT NOT NULL,\\n  \\\"archived\\\" INTEGER NOT NULL DEFAULT 0,\\n  \\\"server_version\\\" INTEGER NOT NULL DEFAULT 0\\n) WITHOUT ROWID\",\"CREATE TABLE IF NOT EXISTS \\\"tasks\\\" (\\n  \\\"id\\\" TEXT PRIMARY KEY,\\n  \\\"title\\\" TEXT NOT NULL,\\n  \\\"completed\\\" INTEGER NOT NULL DEFAULT 0,\\n  \\\"user_id\\\" TEXT NOT NULL,\\n  \\\"project_id\\\" TEXT,\\n  \\\"server_version\\\" INTEGER NOT NULL DEFAULT 0,\\n  \\\"image\\\" TEXT,\\n  \\\"title_yjs_state\\\" TEXT\\n) WITHOUT ROWID\"]},\"migrations\":[{\"name\":\"initial\",\"schemaVersion\":1,\"upSql\":\"CREATE TABLE IF NOT EXISTS projects (\\n  id TEXT PRIMARY KEY,\\n  name TEXT NOT NULL,\\n  owner_id TEXT NOT NULL,\\n  archived INTEGER NOT NULL DEFAULT 0,\\n  server_version BIGINT NOT NULL DEFAULT 0\\n) WITHOUT ROWID;\\n\\nCREATE TABLE IF NOT EXISTS tasks (\\n  id TEXT PRIMARY KEY,\\n  title TEXT NOT NULL,\\n  completed INTEGER NOT NULL DEFAULT 0,\\n  user_id TEXT NOT NULL,\\n  project_id TEXT NULL,\\n  server_version BIGINT NOT NULL DEFAULT 0,\\n  image TEXT NULL,\\n  title_yjs_state TEXT NULL\\n) WITHOUT ROWID;\\n\\nCREATE TABLE IF NOT EXISTS comments (\\n  id TEXT PRIMARY KEY,\\n  task_id TEXT NOT NULL,\\n  project_id TEXT NULL,\\n  body TEXT NOT NULL,\\n  author_id TEXT NOT NULL,\\n  deleted INTEGER NOT NULL DEFAULT 0,\\n  server_version BIGINT NOT NULL DEFAULT 0\\n) WITHOUT ROWID;\",\"version\":\"0001\"},{\"name\":\"blob_client_tables\",\"schemaVersion\":2,\"upSql\":\"\",\"version\":\"0002\"},{\"name\":\"retry_backoff\",\"schemaVersion\":3,\"upSql\":\"\",\"version\":\"0003\"},{\"name\":\"encrypted_crdt_tables\",\"schemaVersion\":4,\"upSql\":\"\",\"version\":\"0004\"},{\"name\":\"encrypted_crdt_server_seq\",\"schemaVersion\":5,\"upSql\":\"\",\"version\":\"0005\"},{\"name\":\"crdt_document_persistence\",\"schemaVersion\":6,\"upSql\":\"\",\"version\":\"0006\"},{\"name\":\"verified_roots\",\"schemaVersion\":7,\"upSql\":\"\",\"version\":\"0007\"}],\"schemaVersion\":7,\"tables\":[{\"blobColumns\":[],\"columns\":[{\"name\":\"id\",\"notnullRequired\":false,\"primaryKey\":true,\"typeFamily\":\"text\"},{\"name\":\"task_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"project_id\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"body\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"author_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"deleted\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"server_version\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"}],\"crdtYjsFields\":[],\"encryptedFields\":[],\"name\":\"comments\",\"primaryKeyColumn\":\"id\",\"scopes\":[{\"column\":\"author_id\",\"name\":\"user_id\",\"required\":true,\"source\":\"actorId\"},{\"column\":\"project_id\",\"name\":\"project_id\",\"required\":false,\"source\":\"projectId\"}],\"serverVersionColumn\":\"server_version\",\"softDeleteColumn\":\"deleted\",\"subscriptionId\":\"sub-comments\"},{\"blobColumns\":[],\"columns\":[{\"name\":\"id\",\"notnullRequired\":false,\"primaryKey\":true,\"typeFamily\":\"text\"},{\"name\":\"name\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"owner_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"archived\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"server_version\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"}],\"crdtYjsFields\":[],\"encryptedFields\":[],\"name\":\"projects\",\"primaryKeyColumn\":\"id\",\"scopes\":[{\"column\":\"owner_id\",\"name\":\"user_id\",\"required\":true,\"source\":\"actorId\"}],\"serverVersionColumn\":\"server_version\",\"softDeleteColumn\":null,\"subscriptionId\":\"sub-projects\"},{\"blobColumns\":[\"image\"],\"columns\":[{\"name\":\"id\",\"notnullRequired\":false,\"primaryKey\":true,\"typeFamily\":\"text\"},{\"name\":\"title\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"completed\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"user_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"project_id\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"server_version\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"image\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"title_yjs_state\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"}],\"crdtYjsFields\":[{\"containerKey\":\"title\",\"field\":\"title\",\"kind\":\"text\",\"rowIdField\":\"id\",\"stateColumn\":\"title_yjs_state\",\"syncMode\":\"server-merge\"}],\"encryptedFields\":[],\"name\":\"tasks\",\"primaryKeyColumn\":\"id\",\"scopes\":[{\"column\":\"user_id\",\"name\":\"user_id\",\"required\":true,\"source\":\"actorId\"},{\"column\":\"project_id\",\"name\":\"project_id\",\"required\":false,\"source\":\"projectId\"}],\"serverVersionColumn\":\"server_version\",\"softDeleteColumn\":null,\"subscriptionId\":\"sub-tasks\"}]}"
+const val syncularNativeGeneratedAppSchemaJson: String = "{\"clientSchemaSupport\":{\"current\":8,\"minSupported\":6,\"supported\":[6,7,8]},\"localBaseSchema\":{\"tableSetupSql\":[\"CREATE TABLE IF NOT EXISTS \\\"comments\\\" (\\n  \\\"id\\\" TEXT PRIMARY KEY,\\n  \\\"task_id\\\" TEXT NOT NULL,\\n  \\\"project_id\\\" TEXT,\\n  \\\"body\\\" TEXT NOT NULL,\\n  \\\"author_id\\\" TEXT NOT NULL,\\n  \\\"deleted\\\" INTEGER NOT NULL DEFAULT 0,\\n  \\\"server_version\\\" INTEGER NOT NULL DEFAULT 0\\n) WITHOUT ROWID\",\"CREATE TABLE IF NOT EXISTS \\\"projects\\\" (\\n  \\\"id\\\" TEXT PRIMARY KEY,\\n  \\\"name\\\" TEXT NOT NULL,\\n  \\\"owner_id\\\" TEXT NOT NULL,\\n  \\\"archived\\\" INTEGER NOT NULL DEFAULT 0,\\n  \\\"server_version\\\" INTEGER NOT NULL DEFAULT 0\\n) WITHOUT ROWID\",\"CREATE TABLE IF NOT EXISTS \\\"tasks\\\" (\\n  \\\"id\\\" TEXT PRIMARY KEY,\\n  \\\"title\\\" TEXT NOT NULL,\\n  \\\"completed\\\" INTEGER NOT NULL DEFAULT 0,\\n  \\\"user_id\\\" TEXT NOT NULL,\\n  \\\"project_id\\\" TEXT,\\n  \\\"server_version\\\" INTEGER NOT NULL DEFAULT 0,\\n  \\\"image\\\" TEXT,\\n  \\\"title_yjs_state\\\" TEXT,\\n  \\\"description\\\" TEXT\\n) WITHOUT ROWID\"]},\"migrations\":[{\"name\":\"initial\",\"schemaVersion\":1,\"upSql\":\"CREATE TABLE IF NOT EXISTS projects (\\n  id TEXT PRIMARY KEY,\\n  name TEXT NOT NULL,\\n  owner_id TEXT NOT NULL,\\n  archived INTEGER NOT NULL DEFAULT 0,\\n  server_version BIGINT NOT NULL DEFAULT 0\\n) WITHOUT ROWID;\\n\\nCREATE TABLE IF NOT EXISTS tasks (\\n  id TEXT PRIMARY KEY,\\n  title TEXT NOT NULL,\\n  completed INTEGER NOT NULL DEFAULT 0,\\n  user_id TEXT NOT NULL,\\n  project_id TEXT NULL,\\n  server_version BIGINT NOT NULL DEFAULT 0,\\n  image TEXT NULL,\\n  title_yjs_state TEXT NULL\\n) WITHOUT ROWID;\\n\\nCREATE TABLE IF NOT EXISTS comments (\\n  id TEXT PRIMARY KEY,\\n  task_id TEXT NOT NULL,\\n  project_id TEXT NULL,\\n  body TEXT NOT NULL,\\n  author_id TEXT NOT NULL,\\n  deleted INTEGER NOT NULL DEFAULT 0,\\n  server_version BIGINT NOT NULL DEFAULT 0\\n) WITHOUT ROWID;\",\"version\":\"0001\"},{\"name\":\"blob_client_tables\",\"schemaVersion\":2,\"upSql\":\"\",\"version\":\"0002\"},{\"name\":\"retry_backoff\",\"schemaVersion\":3,\"upSql\":\"\",\"version\":\"0003\"},{\"name\":\"encrypted_crdt_tables\",\"schemaVersion\":4,\"upSql\":\"\",\"version\":\"0004\"},{\"name\":\"encrypted_crdt_server_seq\",\"schemaVersion\":5,\"upSql\":\"\",\"version\":\"0005\"},{\"name\":\"crdt_document_persistence\",\"schemaVersion\":6,\"upSql\":\"\",\"version\":\"0006\"},{\"name\":\"verified_roots\",\"schemaVersion\":7,\"upSql\":\"\",\"version\":\"0007\"},{\"name\":\"add_task_descriptions\",\"schemaVersion\":8,\"upSql\":\"ALTER TABLE tasks ADD COLUMN description TEXT NULL;\",\"version\":\"0008\"}],\"schemaVersion\":8,\"tables\":[{\"blobColumns\":[],\"columns\":[{\"name\":\"id\",\"notnullRequired\":false,\"primaryKey\":true,\"typeFamily\":\"text\"},{\"name\":\"task_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"project_id\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"body\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"author_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"deleted\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"server_version\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"}],\"crdtYjsFields\":[],\"encryptedFields\":[],\"name\":\"comments\",\"primaryKeyColumn\":\"id\",\"scopes\":[{\"column\":\"author_id\",\"name\":\"user_id\",\"required\":true,\"source\":\"actorId\"},{\"column\":\"project_id\",\"name\":\"project_id\",\"required\":false,\"source\":\"projectId\"}],\"serverVersionColumn\":\"server_version\",\"softDeleteColumn\":\"deleted\",\"subscriptionId\":\"sub-comments\"},{\"blobColumns\":[],\"columns\":[{\"name\":\"id\",\"notnullRequired\":false,\"primaryKey\":true,\"typeFamily\":\"text\"},{\"name\":\"name\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"owner_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"archived\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"server_version\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"}],\"crdtYjsFields\":[],\"encryptedFields\":[],\"name\":\"projects\",\"primaryKeyColumn\":\"id\",\"scopes\":[{\"column\":\"owner_id\",\"name\":\"user_id\",\"required\":true,\"source\":\"actorId\"}],\"serverVersionColumn\":\"server_version\",\"softDeleteColumn\":null,\"subscriptionId\":\"sub-projects\"},{\"blobColumns\":[\"image\"],\"columns\":[{\"name\":\"id\",\"notnullRequired\":false,\"primaryKey\":true,\"typeFamily\":\"text\"},{\"name\":\"title\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"completed\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"user_id\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"project_id\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"server_version\",\"notnullRequired\":true,\"primaryKey\":false,\"typeFamily\":\"integer\"},{\"name\":\"image\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"title_yjs_state\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"},{\"name\":\"description\",\"notnullRequired\":false,\"primaryKey\":false,\"typeFamily\":\"text\"}],\"crdtYjsFields\":[{\"containerKey\":\"title\",\"field\":\"title\",\"kind\":\"text\",\"rowIdField\":\"id\",\"stateColumn\":\"title_yjs_state\",\"syncMode\":\"server-merge\"}],\"encryptedFields\":[],\"name\":\"tasks\",\"primaryKeyColumn\":\"id\",\"scopes\":[{\"column\":\"user_id\",\"name\":\"user_id\",\"required\":true,\"source\":\"actorId\"},{\"column\":\"project_id\",\"name\":\"project_id\",\"required\":false,\"source\":\"projectId\"}],\"serverVersionColumn\":\"server_version\",\"softDeleteColumn\":null,\"subscriptionId\":\"sub-tasks\"}]}"
 
 data class SyncularNativeRuntimeManifest(
     val ffiAbiVersion: Int,
@@ -780,6 +780,7 @@ data class TaskChangedFields(val raw: Set<String>) {
     val serverVersion: Boolean = raw.contains("server_version")
     val image: Boolean = raw.contains("image")
     val titleYjsState: Boolean = raw.contains("title_yjs_state")
+    val description: Boolean = raw.contains("description")
 
     fun contains(column: String): Boolean = when (column) {
         "id" -> id
@@ -790,6 +791,7 @@ data class TaskChangedFields(val raw: Set<String>) {
         "server_version" -> serverVersion
         "image" -> image
         "title_yjs_state" -> titleYjsState
+        "description" -> description
         else -> false
     }
 }
@@ -1162,6 +1164,7 @@ data class TaskRow(
     val serverVersion: Long,
     val image: SyncularBlobRef?,
     val titleYjsState: String?,
+    val description: String?,
 )
 
 data class NewTask(
@@ -1171,6 +1174,7 @@ data class NewTask(
     val userId: String,
     val projectId: String? = null,
     val image: SyncularBlobRef? = null,
+    val description: String? = null,
 )
 
 data class TaskPatch(
@@ -1179,6 +1183,7 @@ data class TaskPatch(
     val userId: String? = null,
     val projectId: String? = null,
     val image: SyncularBlobRef? = null,
+    val description: String? = null,
 )
 
 object CommentQuery {
@@ -1204,7 +1209,7 @@ object ProjectQuery {
 }
 
 object TaskQuery {
-    val table = SyncularQueryTable(name = "tasks", columns = listOf("id", "title", "completed", "user_id", "project_id", "server_version", "image", "title_yjs_state"), decode = ::syncularDecodeTaskRow)
+    val table = SyncularQueryTable(name = "tasks", columns = listOf("id", "title", "completed", "user_id", "project_id", "server_version", "image", "title_yjs_state", "description"), decode = ::syncularDecodeTaskRow)
     val id = SyncularQueryColumn<String>(table = "tasks", name = "id")
     val title = SyncularQueryColumn<String>(table = "tasks", name = "title")
     val completed = SyncularQueryColumn<Long>(table = "tasks", name = "completed")
@@ -1213,6 +1218,7 @@ object TaskQuery {
     val serverVersion = SyncularQueryColumn<Long>(table = "tasks", name = "server_version")
     val image = SyncularQueryColumn<SyncularBlobRef>(table = "tasks", name = "image")
     val titleYjsState = SyncularQueryColumn<String>(table = "tasks", name = "title_yjs_state")
+    val description = SyncularQueryColumn<String>(table = "tasks", name = "description")
     fun select(): SyncularSelectQuery<TaskRow> = table.select()
 }
 
@@ -1300,6 +1306,7 @@ object SyncularAppOperations {
         payload["user_id"] = input.userId
         input.projectId?.let { payload["project_id"] = it }
         input.image?.let { payload["image"] = it.toJsonValue() }
+        input.description?.let { payload["description"] = it }
         return SyncularGeneratedOperation(
             table = "tasks",
             rowId = input.id,
@@ -1316,6 +1323,7 @@ object SyncularAppOperations {
         patch.userId?.let { payload["user_id"] = it }
         patch.projectId?.let { payload["project_id"] = it }
         patch.image?.let { payload["image"] = it.toJsonValue() }
+        patch.description?.let { payload["description"] = it }
         return SyncularGeneratedOperation(
             table = "tasks",
             rowId = rowId,
@@ -1542,6 +1550,7 @@ private fun syncularDecodeTaskRow(row: JsonObject): TaskRow = TaskRow(
     serverVersion = row.syncularRequiredLong("server_version"),
     image = row.syncularOptionalBlobRef("image"),
     titleYjsState = row.syncularOptionalString("title_yjs_state"),
+    description = row.syncularOptionalString("description"),
 )
 
 private fun JsonObject.syncularRequiredString(name: String): String =
