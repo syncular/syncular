@@ -115,8 +115,14 @@ fn native_facade_can_disable_auto_sync_after_local_write() -> Result<()> {
 
     let schema_state: Value = serde_json::from_str(&client.app_schema_state_json()?)?;
     assert_eq!(schema_state["schemaId"], "syncular-app");
-    assert_eq!(schema_state["schemaVersion"], 7);
-    assert_eq!(schema_state["currentSchemaVersion"], 7);
+    assert_eq!(
+        schema_state["schemaVersion"],
+        demo_todo_app_schema().current_schema_version()
+    );
+    assert_eq!(
+        schema_state["currentSchemaVersion"],
+        demo_todo_app_schema().current_schema_version()
+    );
     assert!(schema_state["updatedAt"].as_i64().is_some());
 
     let generic_tasks_json: Value = serde_json::from_str(&client.list_table_json("tasks")?)?;
@@ -371,7 +377,7 @@ fn native_facade_issues_and_stores_auth_lease() -> Result<()> {
         }
     }))])?;
     config.base_url = server.url();
-    let mut client = NativeSyncularClient::open_native_with_options(
+    let mut client = open_demo_native_with_options(
         config,
         NativeClientOptions {
             auto_sync_local_writes: false,
@@ -2675,6 +2681,7 @@ fn native_facade_builder_applies_lifecycle_options() -> Result<()> {
     let mut config = test_config(&path, "native-builder");
     let server = TestSyncServer::empty_success()?;
     config.base_url = server.url();
+    config.app_schema_json = Some(todo_app_schema_json());
     let mut client = NativeSyncularClient::builder(config)
         .auto_sync_local_writes(false)
         .realtime(false)

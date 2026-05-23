@@ -445,6 +445,7 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
       baseUrl: config.baseUrl,
       headers: this.#authHeaders,
       request,
+      appSchema: config.appSchema,
     });
     await this.upsertAuthLease(lease);
     this.#emitDiagnostic({
