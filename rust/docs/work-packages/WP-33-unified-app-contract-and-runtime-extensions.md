@@ -677,6 +677,8 @@ The contract should distinguish two local cases:
   the checked-in JSON handoff that Rust codegen consumes. Current decision:
   keep the Rust codegen CLI consuming stable JSON rather than executing
   TypeScript modules directly.
+- Documented the TypeScript authoring-to-JSON handoff in the local Rust project
+  integration guide.
 
 Gates run:
 
@@ -698,6 +700,6 @@ Gates run:
 
 ## Next Action
 
-Continue Batch 4 by documenting the app-authoring workflow in the Rust client
-docs, then start a small scaffold path for same-shape apps that can generate
-an initial authoring module/config from existing client migrations.
+Start a small same-shape scaffold path that can generate an initial app
+authoring module/config from existing client migrations, while keeping the
+generated contract editable once server/client shapes diverge.

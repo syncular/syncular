@@ -108,6 +108,47 @@ Minimal example:
 }
 ```
 
+You can also author this config in TypeScript and write the JSON handoff that
+Rust codegen consumes:
+
+```ts
+// syncular.app.ts
+import {
+  defineSyncularClient,
+  scope,
+  syncedTable,
+  writeSyncularCodegenJson,
+  yjsText,
+} from '@syncular/typegen';
+
+export const app = defineSyncularClient({
+  tables: {
+    tasks: syncedTable({
+      table: 'tasks',
+      subscriptionId: 'sub-tasks',
+      serverVersion: 'server_version',
+      scopes: [
+        scope('user_id', { source: 'actorId', required: true }),
+        scope('project_id', { source: 'projectId', required: false }),
+      ],
+      blobColumns: ['image'],
+      crdt: {
+        title: yjsText({
+          stateColumn: 'title_yjs_state',
+          containerKey: 'title',
+        }),
+      },
+    }),
+  },
+});
+
+await writeSyncularCodegenJson(app, './syncular.codegen.json');
+```
+
+This TypeScript file is a build/dev-time authoring layer only. Generated Rust,
+Swift, Kotlin, JVM, and browser clients consume generated artifacts and
+`syncular.schema.json`; they do not import `syncular.app.ts` at runtime.
+
 Useful fields:
 
 - `tables`: app tables that Syncular should generate metadata/mutations for.
