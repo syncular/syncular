@@ -1,3 +1,7 @@
+import { mkdir, writeFile } from 'node:fs/promises';
+import { dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
 export type SyncularScopeSource = 'actorId' | 'projectId';
 export type SyncularCrdtYjsKind = 'text' | 'xml-fragment' | 'prosemirror';
 export type SyncularCrdtYjsSyncMode =
@@ -236,6 +240,19 @@ export function toSyncularCodegenJson(
   space = 2
 ): string {
   return `${JSON.stringify(toSyncularCodegenConfig(contract), null, space)}\n`;
+}
+
+export async function writeSyncularCodegenJson(
+  contract: SyncularClientContract,
+  outputPath: string | URL = 'syncular.codegen.json',
+  space = 2
+): Promise<void> {
+  if (typeof outputPath === 'string') {
+    await mkdir(dirname(outputPath), { recursive: true });
+  } else if (outputPath.protocol === 'file:') {
+    await mkdir(dirname(fileURLToPath(outputPath)), { recursive: true });
+  }
+  await writeFile(outputPath, toSyncularCodegenJson(contract, space));
 }
 
 const CODEGEN_PATH_KEYS = [
