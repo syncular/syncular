@@ -96,6 +96,14 @@ const app = await scaffoldSyncularClientContract({
 await writeSyncularCodegenJson(app, './syncular.codegen.json');
 ```
 
+For apps that keep the contract in a module, generate or check the low-level
+Rust-codegen handoff from the typed module:
+
+```bash
+syncular-typegen codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json
+syncular-typegen codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json --check
+```
+
 This is a dev/build-time authoring layer. Generated Rust, Swift, Kotlin, JVM,
 and browser clients consume generated artifacts, not the TypeScript authoring
 module at runtime.

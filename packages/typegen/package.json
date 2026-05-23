@@ -27,6 +27,9 @@
     "access": "public"
   },
   "type": "module",
+  "bin": {
+    "syncular-typegen": "./src/cli.ts"
+  },
   "exports": {
     ".": {
       "bun": "./src/index.ts",

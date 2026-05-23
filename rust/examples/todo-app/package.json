@@ -3,9 +3,9 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "codegen:config": "bun ./syncular.codegen.ts",
-    "codegen": "bun ./syncular.codegen.ts && cargo run --manifest-path ../../Cargo.toml -p syncular-codegen -- --manifest-dir .",
-    "codegen:check": "bun test ./syncular.app.test.ts && cargo run --manifest-path ../../Cargo.toml -p syncular-codegen -- --manifest-dir . --check"
+    "codegen:config": "bun ../../../packages/typegen/src/cli.ts codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json",
+    "codegen": "bun ../../../packages/typegen/src/cli.ts codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json && cargo run --manifest-path ../../Cargo.toml -p syncular-codegen -- --manifest-dir .",
+    "codegen:check": "bun ../../../packages/typegen/src/cli.ts codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json --check && cargo run --manifest-path ../../Cargo.toml -p syncular-codegen -- --manifest-dir . --check"
   },
   "dependencies": {
     "@syncular/client": "workspace:*",

@@ -1,18 +1,21 @@
 import { describe, expect, it } from 'bun:test';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { defineMigrations } from '@syncular/migrations';
 import {
   countByReadModel,
   defineSyncularClient,
   encryptedField,
+  loadSyncularClientContract,
   scope,
   scaffoldSyncularClientContract,
   syncedTable,
   toSyncularCodegenConfig,
   toSyncularCodegenJson,
   writeSyncularCodegenJson,
+  writeSyncularCodegenJsonFromModule,
   yjsText,
 } from './app-contract';
 
@@ -153,6 +156,42 @@ describe('Syncular app contract authoring', () => {
     try {
       await writeSyncularCodegenJson(app, output);
       expect(await readFile(output, 'utf8')).toBe(toSyncularCodegenJson(app));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('loads and writes a codegen handoff from a typed app module', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'syncular-app-module-'));
+    const modulePath = join(dir, 'syncular.app.ts');
+    const outputPath = join(dir, 'syncular.codegen.json');
+    const appContractImport = pathToFileURL(
+      join(process.cwd(), 'packages/typegen/src/app-contract.ts')
+    ).href;
+    await writeFile(
+      modulePath,
+      [
+        `import { defineSyncularClient, scope, syncedTable } from ${JSON.stringify(appContractImport)};`,
+        'export const app = defineSyncularClient({',
+        '  tables: {',
+        '    tasks: syncedTable({',
+        "      table: 'tasks',",
+        "      serverVersion: 'server_version',",
+        "      scopes: [scope('user_id', { source: 'actorId', required: true })],",
+        '    }),',
+        '  },',
+        '});',
+      ].join('\n')
+    );
+
+    try {
+      const contract = await loadSyncularClientContract({ modulePath });
+      await writeSyncularCodegenJsonFromModule({ modulePath, outputPath });
+
+      expect(contract.tables.tasks.table).toBe('tasks');
+      expect(await readFile(outputPath, 'utf8')).toBe(
+        toSyncularCodegenJson(contract)
+      );
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

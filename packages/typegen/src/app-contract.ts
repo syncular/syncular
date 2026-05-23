@@ -1,6 +1,6 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { dirname } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import type { DefinedMigrations } from '@syncular/migrations';
 import { introspectCurrentSchema } from './introspect';
 import type { TableSchema, TypegenDialect } from './types';
@@ -173,6 +173,18 @@ export function defineSyncularClient<
   };
 }
 
+export function isSyncularClientContract(
+  value: unknown
+): value is SyncularClientContract {
+  return (
+    typeof value === 'object' &&
+    value !== null &&
+    (value as { kind?: unknown }).kind === 'syncular-client-contract' &&
+    typeof (value as { tables?: unknown }).tables === 'object' &&
+    (value as { tables?: unknown }).tables !== null
+  );
+}
+
 export function syncedTable(options: SyncedTableDefinition): SyncedTableDefinition {
   return { ...options };
 }
@@ -274,6 +286,45 @@ export async function writeSyncularCodegenJson(
     await mkdir(dirname(fileURLToPath(outputPath)), { recursive: true });
   }
   await writeFile(outputPath, toSyncularCodegenJson(contract, space));
+}
+
+export interface LoadSyncularClientContractOptions {
+  modulePath: string | URL;
+  exportName?: string;
+}
+
+export async function loadSyncularClientContract(
+  options: LoadSyncularClientContractOptions
+): Promise<SyncularClientContract> {
+  const exportName = options.exportName ?? 'app';
+  const module = (await import(
+    syncularContractModuleSpecifier(options.modulePath)
+  )) as Record<string, unknown>;
+  const contract = module[exportName];
+  if (!isSyncularClientContract(contract)) {
+    throw new Error(
+      `Syncular app contract module must export ${exportName} from defineSyncularClient(...)`
+    );
+  }
+  return contract;
+}
+
+export interface WriteSyncularCodegenJsonFromModuleOptions
+  extends LoadSyncularClientContractOptions {
+  outputPath?: string | URL;
+  space?: number;
+}
+
+export async function writeSyncularCodegenJsonFromModule(
+  options: WriteSyncularCodegenJsonFromModuleOptions
+): Promise<SyncularClientContract> {
+  const contract = await loadSyncularClientContract(options);
+  await writeSyncularCodegenJson(
+    contract,
+    options.outputPath ?? 'syncular.codegen.json',
+    options.space
+  );
+  return contract;
 }
 
 export async function scaffoldSyncularClientContract<DB = unknown>(
@@ -400,6 +451,29 @@ function pickCodegenPathOptions(
     }
   }
   return picked;
+}
+
+function syncularContractModuleSpecifier(modulePath: string | URL): string {
+  if (modulePath instanceof URL) return modulePath.href;
+  try {
+    const parsed = new URL(modulePath);
+    if (parsed.protocol === 'file:') return parsed.href;
+  } catch {
+    // Treat non-URL strings as filesystem paths or package specifiers below.
+  }
+  if (syncularLooksLikeLocalModulePath(modulePath)) {
+    return pathToFileURL(resolve(modulePath)).href;
+  }
+  return modulePath;
+}
+
+function syncularLooksLikeLocalModulePath(modulePath: string): boolean {
+  return (
+    modulePath.startsWith('.') ||
+    modulePath.startsWith('/') ||
+    (!modulePath.startsWith('@') && modulePath.includes('/')) ||
+    /\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/.test(modulePath)
+  );
 }
 
 function resolveServerVersionColumn(
