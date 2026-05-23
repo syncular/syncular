@@ -213,9 +213,14 @@ read-only review:
     allowing originless non-browser websocket clients; the rebuilt external
     `syncular-rust` online-propagation run `2026-05-23T04-37-19-197Z`
     completed with `15/15` binary realtime sync-packs and `0` pull-required
-    recoveries. No additional WP-31 client-side parity slice is currently
-    identified; the remaining `250` client reconnect cliff is tracked in
-    WP-32.
+    recoveries. A 2026-05-23 recheck raises the adaptive large-outbox cap to
+    `1000`, improving `1000` queued writes from `2063.25ms` to `1651.45ms` and
+    reducing attempts/requests from `10`/`20` to `1`/`2`; permission-change
+    comparisons now split same-client revoke from rebootstrap so Syncular's
+    native same-client behavior is not compared against another stack's fresh
+    client bootstrap. No additional WP-31 client-side parity slice is currently
+    identified; the remaining high-scale queue gap is server conditional apply
+    cost, not Rust client outbox overhead.
 - `[x]` [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
   - Small bind-loop/cache probes, SQLite `json_each()` import, and direct
     `sqlite3_carray_bind` import were rejected. A Rust-backed virtual table
@@ -507,6 +512,13 @@ read-only review:
   foundation slice remains. Future console/debugging work should be driven by
   concrete app feedback and retain the redacted, server-authoritative
   investigation contract.
+- [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](work-packages/WP-32-realtime-recovery-fanout-external-notifications.md)
+  remains accepted. Latest high-scale evidence shows the `1000` same-process
+  worker harness still has about a `2s` app-visible tail, but the server sends
+  binary packs to all clients in `13.40ms`, all clients apply binary packs, and
+  no HTTP recovery pulls occur. Treat further `500+` reconnect work as
+  worker/event-delivery or benchmark-harness investigation, not a relay/server
+  Rust rewrite trigger.
 
 ## Later
 

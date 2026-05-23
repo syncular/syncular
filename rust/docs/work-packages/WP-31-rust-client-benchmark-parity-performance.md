@@ -906,3 +906,22 @@ handed off to
 [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](WP-32-realtime-recovery-fanout-external-notifications.md),
 because fixing it requires server/realtime fanout design rather than more
 client-side retry backoff changes.
+
+A later 2026-05-23 queue/fairness recheck raised the default adaptive Rust
+outbox cap from `100` to `1000`. The `1000`-write large-offline-queue lane
+improved from `2063.25ms`, `10` sync attempts, `20` requests, and `729732`
+bytes to `1651.45ms`, `1` sync attempt, `2` requests, and `353499` bytes
+(`2026-05-23T07-41-53-173Z`). This is retained. The remaining gap to
+Replicache's latest `1000`-write result (`1390.3ms`) is server-side conditional
+mutation apply for `base_version` guarded commits, not the Rust client outbox
+loop. Do not remove `base_version` from the benchmark to hide that cost.
+
+The permission benchmark now reports same-client revoke and rebootstrap
+separately. Syncular Rust same-client revoke converged in `43.92ms` with
+`4842` bytes transferred (`2026-05-23T07-38-15-949Z`), while Replicache did not
+remove revoked rows from the already-open client within the `5s` same-client
+window and only the rebootstrap path was fast (`13.46ms`,
+`2026-05-23T07-41-10-790Z`). Electric's measured path is also rebootstrap-only
+in this harness (`32.13ms`, `2026-05-23T07-41-34-612Z`). Keep these as separate
+columns in comparisons; merging them makes Syncular look worse for supporting a
+harder same-client behavior.

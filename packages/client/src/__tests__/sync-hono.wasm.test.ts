@@ -538,10 +538,10 @@ describe('Syncular worker sync protocol against Hono routes', () => {
     }
 
     await expect(client.syncPush()).resolves.toMatchObject({
-      pushedCommits: 100,
+      pushedCommits: 200,
     });
     await expect(client.syncPush()).resolves.toMatchObject({
-      pushedCommits: 100,
+      pushedCommits: 0,
     });
   });
 
