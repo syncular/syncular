@@ -590,12 +590,12 @@ read-only review:
   TypeScript client output now also exposes one `syncularGeneratedApp` object
   with `appSchema`, `tables`, `tableNames`, `tableConfig`, generated codecs,
   and field-encryption helpers; the old exported client app-table list was
-  removed. The todo fixture now generates the low-level
-  `syncular.codegen.json` handoff from the typed `syncular.app.ts` authoring
-  file via `syncular.codegen.ts`, with `codegen:config` / `codegen` /
-  `codegen:check` scripts and exact-string drift coverage. The next WP-33 gap
-  is generalizing that typed-contract handoff into published authoring tooling
-  and new-app docs.
+  removed. `@syncular/typegen` now exposes module-loading helpers plus a
+  `syncular-typegen codegen-config` CLI, and the todo fixture uses that CLI to
+  generate/check the low-level `syncular.codegen.json` handoff from the typed
+  `syncular.app.ts` authoring file. The next WP-33 gap is documenting the same
+  flow for new apps and deciding whether Rust codegen should directly invoke or
+  only consume the checked generated handoff file.
 
 ## Later
 

@@ -1116,9 +1116,15 @@ The contract should distinguish two local cases:
 
 ### Batch 4 App Contract Handoff Slice
 
+- `@syncular/typegen` now exposes helpers for loading a typed app contract from
+  a module and writing the low-level Rust-codegen handoff:
+  `loadSyncularClientContract(...)` and
+  `writeSyncularCodegenJsonFromModule(...)`.
+- `@syncular/typegen` now publishes the Bun CLI command
+  `syncular-typegen codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json [--check]`.
 - The todo app fixture now treats `syncular.app.ts` as the source of truth for
   app sync metadata and generates the low-level `syncular.codegen.json` handoff
-  from it through `syncular.codegen.ts`.
+  from it through the `@syncular/typegen` CLI.
 - Added example package scripts:
   - `codegen:config` writes the low-level handoff JSON from the typed app
     contract.
@@ -1246,6 +1252,9 @@ Gates run:
 - `bun run --cwd packages/server tsgo`
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
 - `bun run --cwd packages/client tsgo`
+- `bun test packages/typegen/src/app-contract.test.ts`
+- `bun run --cwd packages/typegen tsgo`
+- `bun packages/typegen/src/cli.ts codegen-config --app rust/examples/todo-app/syncular.app.ts --out rust/examples/todo-app/syncular.codegen.json --check`
 - `bun test rust/examples/todo-app/syncular.app.test.ts`
 - `bun --cwd rust/examples/todo-app codegen:check`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
@@ -1257,8 +1266,8 @@ Gates run:
 
 Batch 6 is closed for the known runtime extension boundaries. Batch 5 now has
 generated server and client public shapes aligned around one generated app
-object. Batch 4 now has the todo fixture generating the low-level
-`syncular.codegen.json` handoff from the typed app contract. Continue WP-33 by
-generalizing that flow beyond the todo fixture: make the published authoring
-tooling/CLI produce the handoff contract directly and document the same flow
-for new apps.
+object. Batch 4 now has published `@syncular/typegen` helpers/CLI plus the todo
+fixture generating the low-level `syncular.codegen.json` handoff from the typed
+app contract. Continue WP-33 by documenting the same flow for new apps and
+deciding whether Rust codegen should directly invoke or only consume the
+checked generated handoff file.
