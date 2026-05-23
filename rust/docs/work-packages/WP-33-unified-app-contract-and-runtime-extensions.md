@@ -33,6 +33,8 @@ were closer to one typed authoring model.
 ## Core Decisions
 
 - The stable center is a language-neutral generated `syncular.schema.json`.
+- The generated contract must keep enough versioned client-schema history for
+  the server to explicitly accept, transform, or reject older clients.
 - A TypeScript authoring DSL may exist, but it is not the cross-platform
   runtime API.
 - Build-time config may reference paths. Runtime artifacts must not depend on
@@ -48,11 +50,21 @@ were closer to one typed authoring model.
 - Server behavior remains imperative through `createServerHandler({ table:
   app.tables.notes, snapshot, applyOperation, resolveScopes, ... })`.
 - `app.tables.notes` means "this handler emits and accepts the generated
-  client-row contract for notes"; it does not require a server table named
-  `notes`.
+  client-row contract for notes"; it does not require a server database table
+  named `notes`.
+- The existing `createServerHandler` is a good same-shape/default-table helper,
+  but it is currently typed around `TableName extends keyof ServerDB &
+  keyof ClientDB`. Divergent server/client shapes need a generated/custom
+  handler integration layer that treats the handler table as the
+  client/protocol table id and leaves server database access to custom handler
+  code.
 - Different server/client shapes are first-class. Custom server handlers own
   translation from authoritative server rows to client replica rows and from
   client mutation payloads to server writes.
+- Versioned schema handling is first-class. Server handlers can branch on the
+  client's schema version using generated per-version row, mutation, scope, and
+  binary snapshot metadata. Unsupported old versions should fail with a stable
+  upgrade-required error that apps can turn into a "please update" screen.
 - Runtime hooks/plugins are installed after generation. They are not embedded
   as executable behavior in the schema contract.
 - Extensions with storage/wire semantics, such as encrypted fields or CRDT
@@ -99,7 +111,7 @@ Server behavior remains app-owned:
 ```ts
 import { app } from './generated/syncular.app';
 
-export const notesHandler = createServerHandler({
+export const notesHandler = createAppServerHandler({
   table: app.tables.notes,
 
   async resolveScopes(ctx) {
@@ -125,6 +137,44 @@ export const notesHandler = createServerHandler({
   async applyOperation(ctx, op) {
     // App-owned translation from generated client mutation shape to
     // authoritative server writes.
+  },
+});
+```
+
+`createAppServerHandler` here is intentionally not the same as today's
+same-shape `createServerHandler` convenience helper. The generated helper should
+wire client/protocol table identity, generated scope metadata, validation,
+binary snapshot metadata, and schema-version helpers while leaving server
+queries and writes fully app-owned.
+
+Older client schema versions should be handled from generated schema snapshots,
+not from hand-written guesses:
+
+```ts
+export const notesHandler = createAppServerHandler({
+  table: app.tables.notes,
+  minClientSchemaVersion: 5,
+
+  async applyOperation(ctx, op) {
+    switch (ctx.schemaVersion) {
+      case 5: {
+        const mutation = app.tables.notes.v5.parseMutation(op);
+        return applyNotesV5(ctx, mutation);
+      }
+      case 6: {
+        const mutation = app.tables.notes.v6.parseMutation(op);
+        return applyNotesV6(ctx, mutation);
+      }
+      case app.currentSchemaVersion: {
+        const mutation = app.tables.notes.current.parseMutation(op);
+        return applyNotesCurrent(ctx, mutation);
+      }
+      default:
+        return app.rejectUnsupportedClientSchema(ctx, {
+          minSupported: 5,
+          current: app.currentSchemaVersion,
+        });
+    }
   },
 });
 ```
@@ -163,6 +213,10 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 
 - Design the generated app contract boundary between static sync metadata,
   server handler behavior, and runtime extensions.
+- Design the versioned generated schema boundary for older clients: row types,
+  mutation payloads, scope metadata, binary snapshot columns/encoders,
+  conflict server rows, blob/encryption/CRDT field metadata, and snapshot/pull
+  transforms per supported schema version.
 - Replace direct app-author editing of low-level `syncular.codegen.json` with a
   higher-level authoring surface or generated intermediate.
 - Keep `syncular.codegen.json` only as a generated/intermediate/escape-hatch
@@ -172,8 +226,15 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 - Preserve separate server and client schema shapes.
 - Preserve `createServerHandler` imperative control for snapshots,
   `applyOperation`, authorization, scope resolution, and custom transforms.
+- Add a generated/custom handler integration path for divergent server/client
+  schemas where the handler table is the client/protocol table id, not
+  necessarily a key in `ServerDB`.
 - Generate validation helpers so server handlers can assert emitted rows and
   mutation payloads match the generated client contract.
+- Generate version-aware validation/parse helpers for server handlers, so
+  `ctx.schemaVersion` can select an actual generated historical schema.
+- Generate a stable unsupported-client-schema error path that classifies as an
+  upgrade-required lifecycle state on clients.
 - Generate or expose typed plugin/extension configuration surfaces where static
   contract data is required, especially encryption, CRDT fields, blobs, and
   live row/field metadata.
@@ -202,9 +263,25 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
   local read models, and conformance fixtures.
 - Mark which fields are static contract, generated intermediate, server
   behavior, or runtime extension.
+- Mark which current server APIs are same-shape defaults and which APIs already
+  support divergent server/client shapes through raw `ServerTableHandler`.
 - Document the accepted boundary in this WP and in product docs.
 
-### Batch 2: Runtime Artifact Shape
+### Batch 2: Versioned Client Schema Contract
+
+- Generate or retain historical schema snapshots for supported client
+  versions.
+- Expose per-version row and mutation payload types in TypeScript and Rust, and
+  enough metadata for Swift/Kotlin/JVM generated clients to classify upgrade
+  requirements.
+- Generate per-version scope metadata and binary snapshot metadata so snapshot,
+  pull, conflicts, revocation, and binary artifacts can target the requesting
+  client schema.
+- Add an explicit support policy: minimum supported client schema version,
+  current schema version, and stable rejection for versions that cannot be
+  handled.
+
+### Batch 3: Runtime Artifact Shape
 
 - Make generated TypeScript artifacts explicitly import or inline migrations.
 - Make generated Rust/native migration artifacts self-contained for app
@@ -212,7 +289,7 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 - Ensure Cloudflare Worker and browser package examples do not rely on path
   strings for runtime migration inclusion.
 
-### Batch 3: Higher-Level App Contract Authoring
+### Batch 4: Higher-Level App Contract Authoring
 
 - Add a developer-facing app contract authoring surface that emits the same
   `syncular.schema.json` as the current generator.
@@ -223,18 +300,21 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 - Preserve Rust-first projects by allowing direct `syncular.schema.json`
   authoring/import if they do not want TypeScript authoring.
 
-### Batch 4: Server Handler Integration
+### Batch 5: Server Handler Integration
 
-- Make `createServerHandler({ table: app.tables.notes, ... })` the canonical
-  generated-handler style.
+- Keep today's `createServerHandler` as the default same-shape helper.
+- Add a generated/custom server handler helper for `table: app.tables.notes`
+  that does not require the protocol table to be a server database table.
 - Keep `snapshot`, `applyOperation`, `resolveScopes`, `authorize`, and custom
   transforms app-owned.
 - Add generated validation/type helpers for handler-emitted client rows and
   received mutation payloads.
 - Support different server/client shapes through custom handler code, not a
   required mapping DSL.
+- Add typed schema-version branching helpers so server code can handle old
+  client payloads and snapshots intentionally.
 
-### Batch 5: Runtime Extension Registry
+### Batch 6: Runtime Extension Registry
 
 - Define a clean extension/config boundary for auth lifecycle, diagnostics,
   network status, field encryption keys, encrypted CRDT config, blob policy,
@@ -246,11 +326,15 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 - Ensure every extension with storage/wire semantics is backed by static
   generated contract metadata.
 
-### Batch 6: Cross-Platform Generation And Conformance
+### Batch 7: Cross-Platform Generation And Conformance
 
 - Verify the generated contract produces equivalent semantics for TypeScript,
   Rust, Swift, Kotlin, JVM, browser, and native bindings.
 - Add conformance tests proving server/client shape divergence still works.
+- Add conformance tests proving an older generated client can push, pull,
+  receive conflicts, and bootstrap through version-specific server handling.
+- Add conformance tests proving unsupported old client schema versions fail
+  with an upgrade-required stable error and leave local state unchanged.
 - Add tests proving migrations are included in bundled TS output and compiled
   native/Rust output.
 
@@ -261,6 +345,10 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 - Server handlers retain imperative behavior and can use generated table
   references without requiring matching server table names.
 - Client/server schema divergence is covered by tests and docs.
+- Older supported client schema versions can be handled from generated
+  per-version schema types/metadata instead of hand-written structural guesses.
+- Unsupported client schema versions are rejected with a stable
+  upgrade-required error and no local mutation side effects.
 - Generated runtime artifacts do not depend on implicit migration path strings.
 - Runtime extension points remain dynamic and app-owned, but static protocol/
   storage implications are declared in the app contract.
@@ -275,6 +363,8 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`
 - `bun test packages/client/src/generated-app-conformance.test.ts`
+- Server/Hono schema-version compatibility tests covering supported and
+  unsupported older client schema versions.
 - `bun run --cwd packages/client tsgo`
 - `bun run --cwd packages/server tsgo`
 - `bun run rust:conformance:fast`
@@ -287,6 +377,10 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 - Accept changes that reduce schema/config drift while preserving explicit
   server authority and query-builder-first client reads.
 - Reject changes that turn server behavior into a required mapping DSL.
+- Reject divergent-schema APIs that require the client/protocol table to also
+  be a server database table.
+- Reject schema-version handling that branches only on numbers without
+  generated per-version payload/scope/snapshot metadata.
 - Reject generated APIs that imply remote sync is arbitrary SQL/query pushdown.
 - Reject runtime artifacts that require implicit filesystem reads after
   bundling or app packaging.
@@ -302,6 +396,15 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
   author-edited contract.
 - Current server handlers already support imperative `snapshot` and
   `applyOperation` behavior, plus server push/pull plugins.
+- Current `createServerHandler` is a useful same-shape/default helper, but its
+  generic table constraint assumes the handler table is present in both
+  `ServerDB` and `ClientDB`.
+- Current lower-level `ServerTableHandler` and `createServerHandlerCollection`
+  already use string table ids and can support generated client/protocol table
+  identities if a helper supplies the right metadata.
+- Current apply-operation contexts already expose `ctx.schemaVersion`, but
+  codegen does not yet expose per-version client schema types/metadata for
+  type-safe older-client handling.
 - Current runtime/client surfaces already expose dynamic hooks for diagnostics,
   events, auth lifecycle, network status, encryption config, CRDT adapters,
   blobs, presence, and live queries.
@@ -309,5 +412,7 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 ## Next Action
 
 Start with Batch 1. Produce a short contract-boundary inventory before changing
-code, then implement the smallest migration-inclusion/runtime-artifact slice
-that removes one real drift/bundling risk.
+code, explicitly noting the current `createServerHandler` same-shape constraint
+and the lower-level `ServerTableHandler` path. Then design the smallest
+versioned-schema contract slice that lets one old client schema version be
+handled or rejected with generated metadata.
