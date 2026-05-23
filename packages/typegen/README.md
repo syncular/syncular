@@ -4,6 +4,9 @@ Generate TypeScript database types from your migrations.
 
 Supports SQLite and Postgres introspection with column-level codec type overrides via `codecs`.
 
+It also includes build-time helpers for authoring the Rust-first Syncular app
+contract and serializing it to the low-level `syncular.codegen.json` shape.
+
 ## Install
 
 ```bash
@@ -38,6 +41,42 @@ await generateTypes({
   },
 });
 ```
+
+## App Contract Authoring
+
+```ts
+import {
+  defineSyncularClient,
+  scope,
+  syncedTable,
+  toSyncularCodegenJson,
+  yjsText,
+} from '@syncular/typegen';
+
+export const app = defineSyncularClient({
+  tables: {
+    notes: syncedTable({
+      table: 'notes',
+      serverVersion: 'server_version',
+      scopes: [
+        scope('user_id', {
+          column: 'owner_user_id',
+          source: 'actorId',
+        }),
+      ],
+      crdt: {
+        content: yjsText({ stateColumn: 'content_yjs_state' }),
+      },
+    }),
+  },
+});
+
+export const syncularCodegenJson = toSyncularCodegenJson(app);
+```
+
+This is a dev/build-time authoring layer. Generated Rust, Swift, Kotlin, JVM,
+and browser clients consume generated artifacts, not the TypeScript authoring
+module at runtime.
 
 ## Documentation
 
