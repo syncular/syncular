@@ -857,7 +857,7 @@ export type SyncularAppSubscriptionsOption =
 export interface CreateSyncularAppDatabaseOptions extends CreateSyncularDatabaseOptions {
   subscriptions?: SyncularAppSubscriptionsOption;
   bootstrapPhases?: Record<string, number>;
-  schemaInstallMode?: 'full' | 'base' | 'none';
+  schemaInstallMode?: 'derived' | 'full' | 'base' | 'none';
 }
 
 export async function assertSyncularAppRuntime(database: Pick<SyncularAppDatabase, 'client'>): Promise<void> {
@@ -924,8 +924,10 @@ export async function createSyncularAppDatabase(
   });
   try {
     await assertSyncularAppRuntime(database);
-    const schemaInstallMode = options.schemaInstallMode ?? 'full';
-    if (schemaInstallMode === 'full') {
+    const schemaInstallMode = options.schemaInstallMode ?? 'derived';
+    if (schemaInstallMode === 'derived') {
+      await withSyncularSchemaWrites(database, ensureSyncularAppDerivedSchema);
+    } else if (schemaInstallMode === 'full') {
       await withSyncularSchemaWrites(database, ensureSyncularAppSchema);
     } else if (schemaInstallMode === 'base') {
       await withSyncularSchemaWrites(database, ensureSyncularAppBaseSchema);

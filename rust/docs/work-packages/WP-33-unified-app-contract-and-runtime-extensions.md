@@ -645,6 +645,11 @@ The contract should distinguish two local cases:
   clients open a migrated app schema without relying on post-open table DDL.
 - Added a core WASM smoke proving embedded app schema migrations create app
   tables during Rust open and can be used for immediate safe mutations.
+- Changed generated `createSyncularAppDatabase(...)` default schema install
+  mode from `full` to `derived`. Base app-table migrations are now owned by the
+  runtime when embedded migrations are present; TypeScript post-open schema
+  writes handle derived artifacts such as indexes and read models. `full` and
+  `base` remain explicit escape hatches for manual schemas/tests.
 
 Gates run:
 
@@ -663,7 +668,7 @@ Gates run:
 
 ## Next Action
 
-Continue Batch 3 by updating generated app creation to default to runtime-owned
-base migration replay when embedded migrations are present, leaving post-open
-TypeScript schema writes for derived artifacts such as local indexes/read
-models and for explicit manual schemas without embedded migrations.
+Finish Batch 3 by adding a bundled-output/typecheck proof for the generated
+TypeScript app module and documenting the runtime migration split: embedded
+base migrations are runtime-owned, while TypeScript schema writes are for
+derived local artifacts or explicit manual schemas.
