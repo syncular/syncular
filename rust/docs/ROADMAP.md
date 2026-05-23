@@ -522,10 +522,15 @@ read-only review:
 - [`WP-33 Unified App Contract And Runtime Extensions`](work-packages/WP-33-unified-app-contract-and-runtime-extensions.md)
   is the next schema/config ergonomics track. It captures the decision to make
   a generated language-neutral app contract the stable center, keep
-  `createServerHandler({ table: app.tables.notes, snapshot, applyOperation,
-  ... })` as the imperative server behavior style, preserve different
-  server/client schema shapes, and keep runtime hooks/plugins as app-installed
-  extensions rather than executable generated schema behavior.
+  imperative server behavior through custom/generated handlers, preserve
+  different server/client schema shapes, keep runtime hooks/plugins as
+  app-installed extensions rather than executable generated schema behavior,
+  and add generated per-version client schema metadata so servers can
+  type-safely accept, transform, or reject older client schema versions with an
+  upgrade-required error. The current `createServerHandler` helper is
+  same-shape biased; WP-33 should add a generated/custom handler layer for
+  divergent server/client table shapes instead of forcing a declarative mapping
+  DSL.
 
 ## Later
 
