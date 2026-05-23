@@ -922,6 +922,24 @@ The contract should distinguish two local cases:
   implemented mode still uses outbox/safe-write semantics so a backend can be
   attached later.
 
+### Batch 7 Rust Local-Sync-Compatible Slice
+
+- Added `SyncularClientConfig::local_sync_compatible(...)` for native/Rust
+  clients that should open a generated local replica without a server URL.
+- Native `sync_http()` and `sync_ws()` now fail before remote transport work
+  when the client was opened in local-sync-compatible mode. Local mutations
+  remain queued as pending outbox intent instead of being treated as
+  server-accepted writes.
+- Added a generated todo Rust smoke proving the no-server path opens embedded
+  migrations, applies generated typed mutations, reads through the generated
+  Diesel query surface, records the generated schema version in the pending
+  outbox, and rejects manual remote sync clearly.
+- Disabled doctests for the generated todo example crate. It has no
+  documentation examples; rustdoc was trying to compile generated `include!`
+  artifacts as a doctest harness instead of testing a public docs surface.
+- Kept `local-only` as a future mode for Rust as well. The implemented helper
+  is sync-compatible and keeps safe mutation/outbox semantics.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -997,11 +1015,16 @@ Gates run:
 - `bun test packages/client/src/client-config.test.ts packages/client/src/__tests__/variant-core.wasm.test.ts -t "local-sync-compatible"`
 - `bun test packages/client/src/client-config.test.ts packages/client/src/__tests__/variant-core.wasm.test.ts`
 - `bun run --cwd packages/client tsgo`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --lib`
+- `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
 
 ## Next Action
 
-Continue Batch 7 with a Rust/native generated local-sync-compatible no-server
-smoke. TypeScript now proves the public browser mode; Rust should prove the
-same foundation can open embedded migrations, perform generated safe mutations
-and typed reads, and leave outbox state pending without any server dependency.
+Continue Batch 6 by tightening the runtime extension boundary: inventory the
+current dynamic hooks/options used by auth, diagnostics, encryption, CRDT,
+blob policy, live queries, row/field events, network status, and lifecycle;
+then add focused conformance that every storage/wire-affecting extension is
+backed by static generated contract metadata rather than hidden runtime-only
+configuration.

@@ -334,6 +334,59 @@ mod tests {
     }
 
     #[test]
+    fn generated_rust_local_sync_compatible_client_works_without_server() {
+        use diesel_tables::TaskRow;
+        use syncular::prelude::SyncularGeneratedMutationsExt;
+
+        let config = SyncularClientConfig::local_sync_compatible(
+            ":memory:",
+            "client-rust-local",
+            "user-rust",
+            Some("project-rust".to_string()),
+        );
+        let mut client =
+            SyncularClient::open_with_schema(config, generated_app_schema()).expect("open client");
+        let mut task = syncular::NewTask::new(
+            "task-rust-local",
+            "local generated Rust task",
+            "user-rust",
+            Some("project-rust"),
+        );
+        task.description = Some("pending until remote is attached".to_string());
+
+        client
+            .mutations()
+            .tasks()
+            .insert(task)
+            .expect("typed local insert");
+
+        let rows: Vec<TaskRow> = client
+            .read(
+                schema::tasks::dsl::tasks
+                    .filter(schema::tasks::dsl::id.eq("task-rust-local"))
+                    .select(TaskRow::as_select()),
+            )
+            .expect("typed Diesel local read");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].title, "local generated Rust task");
+        assert_eq!(
+            rows[0].description.as_deref(),
+            Some("pending until remote is attached")
+        );
+
+        let outbox = client.outbox_summaries().expect("outbox");
+        assert_eq!(outbox.len(), 1);
+        assert_eq!(outbox[0].status, "pending");
+        assert_eq!(
+            outbox[0].schema_version,
+            migrations::current_schema_version()
+        );
+
+        let error = client.sync_http().expect_err("local mode sync should fail");
+        assert!(error.to_string().contains("requires remote mode"));
+    }
+
+    #[test]
     fn rust_client_exposes_diesel_reads_and_typed_syncular_mutations() {
         use diesel_tables::TaskRow;
         use syncular::prelude::SyncularGeneratedMutationsExt;
