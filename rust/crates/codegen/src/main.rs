@@ -11587,6 +11587,12 @@ CREATE TABLE tasks (
         assert!(server_output.contains("export function syncularValidateGeneratedClientRow"));
         assert!(server_output.contains("export function syncularValidateGeneratedMutationPayload"));
         assert!(server_output.contains("export function syncularValidateGeneratedOperation"));
+        assert!(server_output
+            .contains("export function syncularGeneratedSnapshotBinaryColumnsForVersion"));
+        assert!(server_output
+            .contains("export function syncularGeneratedSnapshotBinaryEncoderForVersion"));
+        assert!(server_output
+            .contains("if (schemaVersion !== syncularGeneratedSchemaVersion) return null;"));
         assert!(server_output.contains("export interface SyncularAppDbV1"));
         assert!(server_output.contains("export interface TaskRowV1"));
         assert!(server_output.contains("export type TaskMutationPayloadV1"));
