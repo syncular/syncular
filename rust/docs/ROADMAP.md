@@ -538,7 +538,9 @@ read-only review:
   (`tasks.description` in schema 8, absent from supported schemas 6/7), emits
   historical local table DDL, fixes generated handler scope patterns for real
   Hono subscription validation, and proves a browser v6 client can bootstrap
-  from a schema 8 server without applying the current-only column.
+  from a schema 8 server without applying the current-only column. Native
+  Rust/Diesel conformance now covers the same old-client bootstrap path and
+  confirms the schema 6 local table does not expose `tasks.description`.
 
 ## Later
 

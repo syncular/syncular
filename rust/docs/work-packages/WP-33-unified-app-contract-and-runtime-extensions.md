@@ -815,6 +815,21 @@ The contract should distinguish two local cases:
   the BlobRef case, so stale artifacts can produce false failures after
   protocol shape changes.
 
+### Batch 2/8 Native Old-Client Bootstrap Slice
+
+- Added native Rust runtime conformance using the same generated todo schema
+  6/8 fixture.
+- The test builds a schema 6 native app schema from generated historical
+  `localBaseSchema` metadata, opens a Diesel-backed local SQLite store, and
+  syncs a snapshot row that includes schema 8's current-only
+  `tasks.description` field.
+- The schema 6 client sends pull `schemaVersion: 6`, applies the task row into
+  a local table without `description`, and readonly querying confirms that the
+  old local table does not expose the current-only column.
+- The current-schema SQLite snapshot artifact fixture was updated to include
+  `description`, so current native snapshot-artifact apply still matches the
+  generated schema 8 Diesel query surface.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -842,6 +857,8 @@ Gates run:
 - `bun test packages/typegen/src/app-contract.test.ts`
 - `bun test rust/examples/todo-app/syncular.app.test.ts`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime native_old_generated_client_applies_current_snapshot_without_current_only_columns`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract`
 - `bun test rust/examples/todo-app/syncular.app.test.ts packages/server/src/generated-app-server-handler.test.ts`
 - `bun run --cwd packages/core tsgo`
 - `bun run --cwd packages/server tsgo`
@@ -866,6 +883,6 @@ Gates run:
 
 ## Next Action
 
-Continue Batch 2/8 by adding native old-client bootstrap apply conformance
-against the generated schema 6/8 todo fixture, then add the explicit
-unsupported-client upgrade-required flow through browser/native opens.
+Continue Batch 2/8 by adding the explicit unsupported-client upgrade-required
+flow through browser/native sync, using schema 5 against the generated
+schema-support policy.
