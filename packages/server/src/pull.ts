@@ -482,25 +482,44 @@ interface PullResponseStats {
 }
 
 function assertPullChangeIdentityUnchanged(
-  pluginName: string,
+  source: string,
   before: SyncChange,
   after: SyncChange
 ): void {
   if (before.table !== after.table) {
     throw new Error(
-      `Server pull plugin "${pluginName}" cannot change change.table (${before.table} -> ${after.table})`
+      `${source} cannot change change.table (${before.table} -> ${after.table})`
     );
   }
   if (before.row_id !== after.row_id) {
     throw new Error(
-      `Server pull plugin "${pluginName}" cannot change change.row_id (${before.row_id} -> ${after.row_id})`
+      `${source} cannot change change.row_id (${before.row_id} -> ${after.row_id})`
     );
   }
   if (before.op !== after.op) {
     throw new Error(
-      `Server pull plugin "${pluginName}" cannot change change.op (${before.op} -> ${after.op})`
+      `${source} cannot change change.op (${before.op} -> ${after.op})`
     );
   }
+}
+
+function projectPullChangeForClientSchema<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(args: {
+  handler: ServerTableHandler<DB, Auth>;
+  change: SyncChange;
+  schemaVersion: number;
+}): SyncChange {
+  const projected = args.handler.projectChangeForVersion
+    ? args.handler.projectChangeForVersion(args.change, args.schemaVersion)
+    : args.change;
+  assertPullChangeIdentityUnchanged(
+    'Server table handler projectChangeForVersion',
+    args.change,
+    projected
+  );
+  return projected;
 }
 
 async function transformPullChanges<
@@ -534,12 +553,12 @@ async function transformPullChanges<
         `Server pull plugin "${plugin.name}" cannot change pull change count (${changes.length} -> ${nextChanges.length})`
       );
     }
-    for (let i = 0; i < changes.length; i += 1) {
-      assertPullChangeIdentityUnchanged(
-        plugin.name,
-        changes[i]!,
-        nextChanges[i]!
-      );
+      for (let i = 0; i < changes.length; i += 1) {
+        assertPullChangeIdentityUnchanged(
+          `Server pull plugin "${plugin.name}"`,
+          changes[i]!,
+          nextChanges[i]!
+        );
     }
     changes = [...nextChanges];
   }
@@ -1453,25 +1472,30 @@ export async function pull<
                     }
                   }
 
+                  const tableHandler = args.handlers.byTable.get(sub.table);
+                  if (!tableHandler) {
+                    throw new Error(`Unknown table: ${sub.table}`);
+                  }
+
                   const incrementalItems = incrementalRows.map((r) => ({
                     commitSeq: r.commit_seq,
                     createdAt: r.created_at,
                     actorId: r.actor_id,
-                    change: {
-                      table: r.table,
-                      row_id: r.row_id,
-                      op: r.op,
-                      row_json: r.row_json,
-                      row_version: r.row_version,
-                      scopes: r.scopes,
-                    } satisfies SyncChange,
+                    change: projectPullChangeForClientSchema({
+                      handler: tableHandler,
+                      schemaVersion: clientSchemaVersion,
+                      change: {
+                        table: r.table,
+                        row_id: r.row_id,
+                        op: r.op,
+                        row_json: r.row_json,
+                        row_version: r.row_version,
+                        scopes: r.scopes,
+                      } satisfies SyncChange,
+                    }),
                   }));
 
                   if (pullPlugins.length > 0 && incrementalItems.length > 0) {
-                    const tableHandler = args.handlers.byTable.get(sub.table);
-                    if (!tableHandler) {
-                      throw new Error(`Unknown table: ${sub.table}`);
-                    }
                     const transformedChanges = await transformPullChanges({
                       plugins: pullPlugins,
                       ctx: {

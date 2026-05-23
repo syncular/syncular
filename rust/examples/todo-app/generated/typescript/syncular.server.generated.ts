@@ -1686,7 +1686,20 @@ function syncularGeneratedValidationErrorResult(opIndex: number, errors: readonl
   };
 }
 
+function syncularAssertGeneratedEmittedChange(table: string, change: ApplyOperationResult['emittedChanges'][number]): void {
+  if (change.table !== table) throw new Error(`Generated emitted change table ${change.table} does not match handler table ${table}`);
+  if (change.op === 'delete') {
+    if (change.row_json !== null) throw new Error(`Generated delete emitted change ${table}.${change.row_id} must not include row_json`);
+    return;
+  }
+  const validation = syncularValidateGeneratedClientRow(table, change.row_json, syncularGeneratedSchemaVersion);
+  if (!validation.ok) {
+    throw new Error(`Generated emitted change row_json ${table}.${change.row_id} does not match current schema ${syncularGeneratedSchemaVersion}: ${validation.errors.map((error) => `${error.path}: ${error.message}`).join('; ')}`);
+  }
+}
+
 function syncularAssertGeneratedApplyOperationResult(table: string, result: ApplyOperationResult, schemaVersion: number | null | undefined): void {
+  for (const change of result.emittedChanges) syncularAssertGeneratedEmittedChange(table, change);
   if (result.result.status !== 'conflict') return;
   const validation = syncularValidateGeneratedClientRow(table, result.result.server_row, schemaVersion);
   if (!validation.ok) {
@@ -1719,6 +1732,14 @@ export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreD
     snapshotBinaryEncoder: syncularGeneratedSnapshotBinaryEncoders[tableName as keyof SyncularAppDb],
     snapshotBinaryColumnsForVersion: (schemaVersion) => syncularGeneratedSnapshotBinaryColumnsForVersion(tableName, schemaVersion),
     snapshotBinaryEncoderForVersion: (schemaVersion) => syncularGeneratedSnapshotBinaryEncoderForVersion(tableName, schemaVersion),
+    projectChangeForVersion(change, schemaVersion) {
+      if (change.row_json == null) return change;
+      if (!syncularGeneratedIsRecord(change.row_json)) throw new Error(`Generated pull change row_json ${tableName}.${change.row_id} must be an object`);
+      const row = syncularProjectGeneratedClientRowForVersion(tableName, change.row_json, schemaVersion);
+      const validation = syncularValidateGeneratedClientRow(tableName, row, schemaVersion);
+      if (!validation.ok) throw new Error(`Generated pull change row_json ${tableName}.${change.row_id} does not match client schema ${schemaVersion}: ${validation.errors.map((error) => `${error.path}: ${error.message}`).join('; ')}`);
+      return { ...change, row_json: row };
+    },
     canRejectSingleOperationWithoutSavepoint: options.canRejectSingleOperationWithoutSavepoint,
     resolveScopes: async (ctx) => options.resolveScopes(ctx),
     extractScopes: options.extractScopes ?? ((row) => syncularGeneratedExtractScopes(tableName, row)),
