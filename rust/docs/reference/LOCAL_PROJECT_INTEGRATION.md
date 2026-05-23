@@ -71,9 +71,9 @@ Current app-table rules:
 ## 3. Add The Typed App Contract
 
 Create `syncular.app.ts` next to your app manifest. This file is the source of
-truth for Syncular table metadata; `syncular.codegen.json` is now the generated
-handoff consumed by Rust codegen, not something app authors should edit by
-hand.
+truth for Syncular table metadata; `generated/syncular.codegen.json` is the
+generated handoff consumed by Rust codegen, not something app authors should
+edit by hand.
 
 ```ts
 // syncular.app.ts
@@ -111,8 +111,7 @@ Generate the low-level handoff JSON from the typed contract:
 
 ```bash
 syncular-typegen codegen-config \
-  --app ./syncular.app.ts \
-  --out ./syncular.codegen.json
+  --app ./syncular.app.ts
 ```
 
 Use the check form in CI:
@@ -120,7 +119,6 @@ Use the check form in CI:
 ```bash
 syncular-typegen codegen-config \
   --app ./syncular.app.ts \
-  --out ./syncular.codegen.json \
   --check
 ```
 
@@ -153,7 +151,7 @@ const app = await scaffoldSyncularClientContract({
   },
 });
 
-await writeSyncularCodegenJson(app, './syncular.codegen.json');
+await writeSyncularCodegenJson(app);
 ```
 
 Useful fields:

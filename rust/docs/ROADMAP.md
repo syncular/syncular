@@ -418,8 +418,8 @@ read-only review:
     WASM size gate remains under budget.
 - `[x]` [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
   - First retained slice adds explicit `countBy` read models to
-    `syncular.codegen.json`. The generator now emits the read-model contract in
-    `syncular.schema.json`, Rust SQL constants, and TypeScript schema
+    `generated/syncular.codegen.json`. The generator now emits the read-model
+    contract in `syncular.schema.json`, Rust SQL constants, and TypeScript schema
     installers that create table/triggers and rebuild only on first install or
     schema-version change. Generated read-model tables are now typed in Kysely
     and Diesel query surfaces while staying out of app-table sync/mutation
@@ -592,17 +592,18 @@ read-only review:
   and field-encryption helpers; the old exported client app-table list was
   removed. `@syncular/typegen` now exposes module-loading helpers plus a
   `syncular-typegen codegen-config` CLI, and the todo fixture uses that CLI to
-  generate/check the low-level `syncular.codegen.json` handoff from the typed
-  `syncular.app.ts` authoring file. Local integration docs and the public Rust
-  quick start now describe the same typed-contract flow for new apps. Decision:
+  generate/check the low-level `generated/syncular.codegen.json` handoff from
+  the typed `syncular.app.ts` authoring file. Local integration docs and the
+  public Rust quick start now describe the same typed-contract flow for new
+  apps. Decision:
   Rust codegen stays pure and only consumes the checked generated handoff file;
   build scripts/CI run `syncular-typegen codegen-config --check` before Rust
   codegen. The todo fixture now also includes a checked divergent-schema server
   handler that uses `syncularGeneratedApp.tables.tasks`, generated
   schema-version projection helpers, and app-owned authorization/snapshot/write
-  translation. The next WP-33 gap is authoring polish around whether
-  `syncular.codegen.json` remains visible in app repos or becomes a hidden
-  build output.
+  translation. The low-level handoff now lives under `generated/` by default,
+  so root app files stay focused on the typed authoring contract and runtime
+  entrypoints.
 
 ## Later
 
@@ -1081,7 +1082,7 @@ read-only review:
     putting bytes in app rows. Decision: keep the file asset schema as a
     testkit/reference app schema, not a framework codegen template, until a
     real app proves reusable file-product semantics beyond normal migrations
-    and `syncular.codegen.json`.
+    and `generated/syncular.codegen.json`.
 - `[x]` [`WP-26 TypeScript Host Bindings And Platform Bridges`](work-packages/WP-26-typescript-host-bindings-platform-bridges.md)
   - Accepted for the current Rust-first foundation. Feature WPs now carry
     explicit TypeScript/platform `Interface Impact` sections. Browser, React,

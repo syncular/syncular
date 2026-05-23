@@ -506,8 +506,9 @@ The contract should distinguish two local cases:
 - Current Rust codegen already emits `syncular.schema.json`, generated Rust
   app metadata, Diesel schema, migrations, TypeScript, Swift, and Kotlin
   outputs.
-- Current app examples still use low-level `syncular.codegen.json` as an
-  author-edited contract.
+- Current app examples use `syncular.app.ts` as the author-edited contract and
+  emit the low-level `generated/syncular.codegen.json` handoff for Rust
+  codegen.
 - Current server handlers already support imperative `snapshot` and
   `applyOperation` behavior, plus server push/pull plugins.
 - Current `createServerHandler` is a useful same-shape/default helper, but its
@@ -546,11 +547,11 @@ The contract should distinguish two local cases:
     snapshot metadata, but previously did not expose the current client schema
     version or a supported-client-schema policy.
 - Generated intermediate today:
-  - `syncular.codegen.json` remains the low-level editable metadata source for
-    subscriptions/scopes/blob/CRDT/encryption/read-model configuration.
-  - The desired higher-level authoring surface should emit this intermediate or
-    replace it, but runtime packages must consume generated artifacts rather
-    than path strings.
+  - `generated/syncular.codegen.json` remains the low-level generated metadata
+    handoff for subscriptions/scopes/blob/CRDT/encryption/read-model
+    configuration.
+  - The desired higher-level authoring surface emits this intermediate, but
+    runtime packages consume generated artifacts rather than path strings.
 - Server behavior today:
   - `createServerHandler` is a useful same-shape/default helper. Its type
     boundary still couples `TableName` to `keyof ServerDB & keyof ClientDB`, so
@@ -672,7 +673,7 @@ The contract should distinguish two local cases:
   generated artifacts at runtime.
 - Added `rust/examples/todo-app/syncular.app.ts` using the authoring helpers
   and a conformance test proving it serializes to the checked-in
-  `syncular.codegen.json`.
+  `generated/syncular.codegen.json`.
 - Added `writeSyncularCodegenJson(...)` so TypeScript app authoring can emit
   the checked-in JSON handoff that Rust codegen consumes. Current decision:
   keep the Rust codegen CLI consuming stable JSON rather than executing
@@ -1121,10 +1122,11 @@ The contract should distinguish two local cases:
   `loadSyncularClientContract(...)` and
   `writeSyncularCodegenJsonFromModule(...)`.
 - `@syncular/typegen` now publishes the Bun CLI command
-  `syncular-typegen codegen-config --app ./syncular.app.ts --out ./syncular.codegen.json [--check]`.
+  `syncular-typegen codegen-config --app ./syncular.app.ts [--out ./generated/syncular.codegen.json] [--check]`.
 - The todo app fixture now treats `syncular.app.ts` as the source of truth for
-  app sync metadata and generates the low-level `syncular.codegen.json` handoff
-  from it through the `@syncular/typegen` CLI.
+  app sync metadata and generates the low-level
+  `generated/syncular.codegen.json` handoff from it through the
+  `@syncular/typegen` CLI.
 - Added example package scripts:
   - `codegen:config` writes the low-level handoff JSON from the typed app
     contract.
@@ -1133,22 +1135,41 @@ The contract should distinguish two local cases:
     and runs Rust codegen in check mode.
 - Tightened the todo app authoring test to compare the exact generated JSON
   string, not only parsed semantic equality. This keeps accidental hand-edits
-  to `syncular.codegen.json` visible.
-- Normalized `syncular.codegen.json` to the stable
+  to `generated/syncular.codegen.json` visible.
+- Normalized `generated/syncular.codegen.json` to the stable
   `toSyncularCodegenJson(app)` output so future changes flow through the typed
   app authoring file.
 - Updated the example README to show the typed-contract handoff before Rust
   codegen.
 - Updated the local project integration guide and public Rust quick-start docs
   so new apps author `syncular.app.ts`, generate/check the
-  `syncular.codegen.json` handoff with `syncular-typegen codegen-config`, and
-  avoid hand-authoring low-level JSON for blobs, encryption, and CRDT fields.
+  `generated/syncular.codegen.json` handoff with
+  `syncular-typegen codegen-config`, and avoid hand-authoring low-level JSON
+  for blobs, encryption, and CRDT fields.
 - Decided Rust codegen should consume the checked generated handoff file rather
   than directly invoking Bun/TypeScript. Build scripts and CI should run
   `syncular-typegen codegen-config --check` first; keeping Rust codegen pure
   avoids making native/Rust-only generation depend on a JavaScript runtime.
 - Updated `rust:codegen:check` and quality-gate docs so the canonical generator
   check covers the typed app contract and Rust output together.
+
+### Batch 4 Generated Handoff Location Slice
+
+- Moved the app-authored handoff default from a root `syncular.codegen.json`
+  file to `generated/syncular.codegen.json`. Root app files now remain focused
+  on the typed contract (`syncular.app.ts`), migrations, and runtime entrypoint.
+- Added `syncular-codegen --codegen-config <path>` for crates/internal
+  fixtures that intentionally keep the low-level handoff somewhere else.
+  Relative paths resolve from `--manifest-dir`.
+- Changed the `@syncular/typegen` helper and CLI defaults to write/check
+  `generated/syncular.codegen.json`, so app scripts no longer need an explicit
+  `--out` for the normal path.
+- The CLI default output is relative to the `--app` module path, so
+  `syncular-typegen codegen-config --app path/to/syncular.app.ts` writes to
+  `path/to/generated/syncular.codegen.json` even when invoked from another
+  working directory.
+- Updated the todo fixture scripts and app-contract test to use the generated
+  handoff location.
 
 ### Batch 5 Typed Server Authoring Example Slice
 
@@ -1284,13 +1305,13 @@ Gates run:
 - `bun run --cwd packages/client tsgo`
 - `bun test packages/typegen/src/app-contract.test.ts`
 - `bun run --cwd packages/typegen tsgo`
-- `bun packages/typegen/src/cli.ts codegen-config --app rust/examples/todo-app/syncular.app.ts --out rust/examples/todo-app/syncular.codegen.json --check`
+- `bun packages/typegen/src/cli.ts codegen-config --app rust/examples/todo-app/syncular.app.ts --check`
 - `bun test rust/examples/todo-app/syncular.app.test.ts`
 - `bun --cwd rust/examples/todo-app codegen:check`
 - `bun run rust:codegen:check`
 - `bun run docs:build`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
-- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --codegen-config syncular.codegen.json --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
 - `git diff --check`
 - `bun test rust/examples/todo-app/server-handlers.test.ts`
@@ -1302,8 +1323,8 @@ Batch 6 is closed for the known runtime extension boundaries. Batch 5 now has
 generated server and client public shapes aligned around one generated app
 object plus a checked divergent-schema server-handler example. Batch 4 now has
 published `@syncular/typegen` helpers/CLI, the todo fixture generating the
-low-level `syncular.codegen.json` handoff from the typed app contract, new-app
-docs that describe the same flow, and the decision that Rust codegen only
-consumes the checked handoff file. Continue WP-33 with the remaining authoring
-polish: decide how much of `syncular.codegen.json` stays as a visible generated
-artifact versus a hidden build output, and then move to the next roadmap item.
+low-level `generated/syncular.codegen.json` handoff from the typed app
+contract, new-app docs that describe the same flow, and the decision that Rust
+codegen only consumes the checked handoff file. The low-level handoff now lives
+under `generated/` by default, with `--codegen-config` for intentional internal
+overrides. Move to the next roadmap item.

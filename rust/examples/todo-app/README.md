@@ -4,7 +4,8 @@ This example is the app-owned generator target for the Rust rewrite.
 
 The typed app contract in `syncular.app.ts` is the source of truth for table
 sync metadata. Generate the low-level Rust-codegen handoff JSON from that
-contract instead of editing `syncular.codegen.json` by hand:
+contract into `generated/syncular.codegen.json` instead of editing low-level
+JSON by hand:
 
 ```bash
 bun --cwd rust/examples/todo-app codegen:config

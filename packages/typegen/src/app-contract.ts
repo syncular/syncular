@@ -277,7 +277,7 @@ export function toSyncularCodegenJson(
 
 export async function writeSyncularCodegenJson(
   contract: SyncularClientContract,
-  outputPath: string | URL = 'syncular.codegen.json',
+  outputPath: string | URL = 'generated/syncular.codegen.json',
   space = 2
 ): Promise<void> {
   if (typeof outputPath === 'string') {
@@ -321,7 +321,7 @@ export async function writeSyncularCodegenJsonFromModule(
   const contract = await loadSyncularClientContract(options);
   await writeSyncularCodegenJson(
     contract,
-    options.outputPath ?? 'syncular.codegen.json',
+    options.outputPath ?? 'generated/syncular.codegen.json',
     options.space
   );
   return contract;
