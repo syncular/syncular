@@ -683,6 +683,8 @@ The contract should distinguish two local cases:
   scaffold that introspects existing migrations, infers table names plus
   `server_version`, and requires app-supplied scope metadata instead of
   guessing access rules from column names.
+- Documented the scaffold as a starter workflow for same-shape apps in the
+  local Rust project integration guide.
 
 Gates run:
 
@@ -704,6 +706,5 @@ Gates run:
 
 ## Next Action
 
-Continue Batch 4 by wiring the scaffold path into docs/examples as a starter
-workflow, then move to Batch 5/8 follow-up coverage for versioned schema
-branches in server handlers.
+Move to Batch 5/8 follow-up coverage for versioned schema branches in server
+handlers.
