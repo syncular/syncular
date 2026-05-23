@@ -245,6 +245,25 @@ SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indiana
 WP-32's original reconnect/external-notification goal is complete and the
 retained changes have been committed.
 
+A 2026-05-23 high-scale recheck kept the WP-32 conclusion but sharpened the
+next bottleneck:
+
+| Scale | Run ID | Visible result | Realtime/server split |
+| ---: | --- | ---: | --- |
+| `250` worker clients | `2026-05-23T07-43-20-851Z` | `201.53ms` convergence, p95 `201.14ms` | `250/250` binary applies, `0` HTTP pulls, external realtime notify `8.19ms` |
+| `500` worker clients | `2026-05-23T07-53-30-123Z` | p95 visible `2018.37ms` | `500/500` binary applies, `0` HTTP pulls, external realtime notify `9.21ms`, first binary-applied p95 `368ms`, binary apply p95 `43ms` |
+| `1000` worker clients | `2026-05-23T07-48-05-012Z` | `2049.28ms` convergence, p95 `2046.55ms` | `1000/1000` binary applies, `0` HTTP pulls, external realtime notify `13.40ms`, first binary-applied p95 `973ms`, binary apply p95 `58ms` |
+| `1000` Replicache clients | `2026-05-23T07-59-09-693Z` | `1157.91ms` convergence | `1005` HTTP requests, `57.8MB` transferred |
+
+The `1000` Syncular Rust app-visible number is still worse than Replicache, but
+not because the server is doing duplicate recovery pulls or because binary
+fanout failed. The server-side notification is single-digit to low-double-digit
+milliseconds, and every client applies a binary pack. The remaining high-scale
+tail is local worker/websocket/message/event pressure inside the single-process
+benchmark harness after binary apply starts. The external benchmark now records
+first binary wakeup/apply timing and visible-after-binary lag so this does not
+get mistaken for a server/relay Rust rewrite signal.
+
 Follow-up work should stay separate and evidence-driven:
 
 1. Add a small benchmark regression assertion or dashboard callout that reports

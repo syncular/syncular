@@ -70,6 +70,92 @@ Decision:
   strict and only accepts the absent-Origin shape that non-browser websocket
   clients commonly use.
 
+## 2026-05-23 - WP-31/WP-32 Permission, Queue, And Reconnect Recheck
+
+Commit: uncommitted local benchmark/perf slice
+
+Work packages:
+
+- [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+- [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](work-packages/WP-32-realtime-recovery-fanout-external-notifications.md)
+
+Changes:
+
+- Raised the Rust web client's default adaptive outbox push cap from `100` to
+  `MAX_OUTBOX_PUSH_BATCH_LIMIT` (`1000`), while keeping the adaptive threshold
+  at `100` and preserving explicit fixed `outboxBatchLimit` overrides.
+- Updated the external benchmark Rust adapter to expose adaptive batch env
+  overrides and to report the effective adaptive settings in metadata.
+- Split permission-change reporting into same-client revoke convergence and
+  rebootstrap-after-revoke visibility for Syncular Rust, Replicache, and
+  Electric, so fast rebootstrap paths no longer mask whether an already-open
+  local view loses revoked rows.
+- Added reconnect-storm diagnostic metrics for first binary wakeup/apply timing
+  and visible-after-binary lag; the external benchmark now defaults
+  `syncular-rust` reconnect to the worker realtime path, while direct HTTP
+  stress remains available with `SYNCULAR_RUST_RECONNECT_MODE=http`.
+- Added `REPLICACHE_RECONNECT_CLIENT_COUNTS` and a `1000 clients` public results
+  column for direct high-scale comparison.
+
+Verification:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+bun --cwd packages/client tsgo
+bun --cwd rust/bindings/javascript build:wasm:dev
+bun test packages/client/src/__tests__/sync-hono.wasm.test.ts -t "adapts default Rust outbox push batches for large queues"
+bun --cwd rust/bindings/javascript build:wasm
+```
+
+External benchmark targeted runs:
+
+| Scenario | Stack | Run ID | Key result |
+| --- | --- | --- | --- |
+| `permission-change` | `syncular-rust` | `2026-05-23T07-38-15-949Z` | same-client revoke `43.92ms`; rebootstrap visible `16.77ms`; same-client bytes `4842`; retained rows stay `500`, revoked rows `0` |
+| `permission-change` | `replicache` | `2026-05-23T07-41-10-790Z` | same-client revoke did not converge in `5s` and still showed `1000` rows; rebootstrap visible `13.46ms`; rebootstrap bytes `144244` |
+| `permission-change` | `electric` | `2026-05-23T07-41-34-612Z` | benchmark path is rebootstrap only; rebootstrap visible `32.13ms`; bytes `184305` |
+| `large-offline-queue` | `syncular-rust` | `2026-05-23T07-41-53-173Z` | `1000` queued writes converged in `1651.45ms`, `1` sync attempt, `2` requests, `353499` bytes |
+| `reconnect-storm` | `syncular-rust` worker realtime | `2026-05-23T07-43-20-851Z` | `250` clients converged in `201.53ms`; `250/250` binary applies; `0` HTTP pulls; external realtime notify `8.19ms` |
+| `reconnect-storm` | `syncular-rust` worker realtime | `2026-05-23T07-48-05-012Z` | `1000` clients visible convergence `2049.28ms`; `1000/1000` binary applies; `0` HTTP pulls; external realtime notify `13.40ms`; first binary-applied p95 `973ms`; binary apply total p95 `58ms` |
+| `reconnect-storm` | `replicache` | `2026-05-23T07-59-09-693Z` | `1000` clients converged in `1157.91ms`; `1005` requests; `57.8MB` transferred |
+
+Before/current highlights:
+
+| Path | Previous | Current | Decision |
+| --- | ---: | ---: | --- |
+| Rust queue `1000` convergence | `2063.25ms` | `1651.45ms` | Retain adaptive cap increase |
+| Rust queue `1000` attempts / requests | `10` / `20` | `1` / `2` | Retain; remaining time is server apply, not client loop overhead |
+| Rust queue `1000` bytes | `729732` | `353499` | Retain |
+| Rust reconnect `250` HTTP-direct visible | `2072.76ms` | `201.53ms` worker realtime | Retain worker realtime as default benchmark path |
+| Rust reconnect `1000` visible versus Replicache | n/a | `2049.28ms` vs `1157.91ms` | Keep decomposed metrics; investigate app-visible event/worker scheduling only if `1000` same-process clients is a target |
+
+Interpretation:
+
+- Permission was not purely slower. Syncular Rust is the only measured lane here
+  with a native same-client revoke result; Replicache's fast number is a
+  rebootstrap path in this harness, and Electric is also represented by a
+  rebootstrap shape proxy.
+- Large offline queue is materially better, but not fully solved. The single
+  `1000`-commit push still spends about `1.6s` in server-side conditional
+  mutation apply because benchmark writes carry `base_version`. Removing that
+  condition would fake the benchmark; a real follow-up would need conditional
+  batch apply or fewer/coalesced commits.
+- At `1000` reconnect clients, Syncular Rust is slower than Replicache on the
+  app-visible convergence number, but the bottleneck is no longer server fanout
+  or HTTP recovery: the server notifies all `1000` websocket owners in
+  `13.40ms`, every client applies a binary pack, and no client performs an HTTP
+  pull. The remaining tail is local worker/websocket/message/event pressure in
+  the single-process benchmark harness after the binary fast path is active.
+
+Decision:
+
+- Retain the product adaptive outbox default change.
+- Retain the benchmark fairness changes and extra reconnect diagnostics.
+- Do not move more relay/server app semantics into Rust from this evidence.
+  The measured reconnect server path is already cheap; Rust would only make
+  sense later for a byte-preserving protocol helper if encode/validate becomes
+  hot.
+
 ## 2026-05-22 - WP-31 External Measurement Correction Slice
 
 Commit: uncommitted local measurement slice
