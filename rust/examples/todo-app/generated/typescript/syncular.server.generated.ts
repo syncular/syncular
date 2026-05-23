@@ -1686,6 +1686,14 @@ function syncularGeneratedValidationErrorResult(opIndex: number, errors: readonl
   };
 }
 
+function syncularAssertGeneratedApplyOperationResult(table: string, result: ApplyOperationResult, schemaVersion: number | null | undefined): void {
+  if (result.result.status !== 'conflict') return;
+  const validation = syncularValidateGeneratedClientRow(table, result.result.server_row, schemaVersion);
+  if (!validation.ok) {
+    throw new Error(`Generated conflict server_row ${table} does not match client schema ${schemaVersion}: ${validation.errors.map((error) => `${error.path}: ${error.message}`).join('; ')}`);
+  }
+}
+
 export interface CreateSyncularAppServerHandlerOptions<DB extends SyncCoreDb = SyncCoreDb, Auth extends SyncServerAuth = SyncServerAuth> {
   table: SyncularGeneratedAppTableName | SyncularGeneratedAppTableRef;
   dependsOn?: string[];
@@ -1734,7 +1742,9 @@ export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreD
       }
       const validation = syncularValidateGeneratedOperation(tableName, op, ctx.schemaVersion);
       if (!validation.ok) return syncularGeneratedValidationErrorResult(opIndex, validation.errors);
-      return options.applyOperation(ctx, op, opIndex);
+      const result = await options.applyOperation(ctx, op, opIndex);
+      syncularAssertGeneratedApplyOperationResult(tableName, result, ctx.schemaVersion);
+      return result;
     },
     applyOperationBatch: options.applyOperationBatch ? async (ctx, operations) => {
       for (const { op, opIndex } of operations) {
@@ -1744,7 +1754,9 @@ export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreD
         const validation = syncularValidateGeneratedOperation(tableName, op, ctx.schemaVersion);
         if (!validation.ok) return [syncularGeneratedValidationErrorResult(opIndex, validation.errors)];
       }
-      return options.applyOperationBatch(ctx, operations);
+      const results = await options.applyOperationBatch(ctx, operations);
+      for (const result of results) syncularAssertGeneratedApplyOperationResult(tableName, result, ctx.schemaVersion);
+      return results;
     } : undefined,
   };
   return handler;

@@ -857,6 +857,20 @@ The contract should distinguish two local cases:
   returning them to a schema 6 client, and added server unit coverage proving
   historical rows with `tasks.description` are rejected unless projected.
 
+### Batch 5/8 Conflict Row Projection Slice
+
+- Added generated server-wrapper validation for conflict
+  `ApplyOperationResult.server_row` payloads.
+- Single-operation and batch `createSyncularAppServerHandler(...)` apply paths
+  now reject conflict rows that contain columns unknown to the requesting
+  client schema version.
+- App-owned handlers can use
+  `syncularProjectGeneratedClientRowForVersion(table, row, schemaVersion)` for
+  conflict rows the same way they already use it for historical snapshot rows.
+- Added generated server handler tests proving schema 8-only
+  `tasks.description` is rejected for a schema 6 conflict row unless the server
+  projects it to the schema 6 row shape.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -909,9 +923,18 @@ Gates run:
 - `bun run --cwd packages/testkit tsgo`
 - `bun run --cwd packages/relay tsgo`
 - `bun test tests/unit/server-pull.test.ts`
+- `bun test packages/server/src/generated-app-server-handler.test.ts`
+- `bun run --cwd packages/server tsgo`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
+- `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
+- `git diff --check`
 
 ## Next Action
 
-Continue Batch 5/8 with versioned conflict `server_row` validation/projection
-so conflict payloads follow the same targeted client schema rules as
-snapshots.
+Continue Batch 2/5/8 with emitted change and incremental pull row-shape
+targeting. `ApplyOperationResult.emittedChanges[].row_json` and subsequent pull
+changes need the same generated projection/validation rules as snapshots and
+conflict rows so historical clients do not receive current-only columns through
+the commit-log path.

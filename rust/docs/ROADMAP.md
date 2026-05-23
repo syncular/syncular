@@ -544,8 +544,11 @@ read-only review:
   Browser/Hono conformance also covers unsupported schema 5 rejection as
   `sync.client_schema_unsupported` with `upgradeClient`. Generated server
   validation now rejects extra current-only fields for historical snapshot rows
-  and exposes a projection helper for app handlers that query authoritative
-  current rows but need to emit a targeted historical client shape.
+  and conflict `server_row` payloads, and exposes a projection helper for app
+  handlers that query authoritative current rows but need to emit a targeted
+  historical client shape. The next WP-33 gap is emitted change/incremental
+  pull row-shape targeting through `ApplyOperationResult.emittedChanges[]` and
+  the commit-log pull path.
 
 ## Later
 

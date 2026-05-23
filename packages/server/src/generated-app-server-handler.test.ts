@@ -401,6 +401,120 @@ describe('generated app server handler', () => {
     ).resolves.toEqual({ rows: [projected], nextCursor: null });
   });
 
+  it('rejects current-only fields in historical conflict rows unless projected', async () => {
+    const currentShapeRow = {
+      id: 'task-v6-conflict',
+      title: 'Conflicting server title',
+      completed: 0,
+      user_id: 'user-1',
+      project_id: 'project-1',
+      server_version: 8,
+      image: null,
+      title_yjs_state: null,
+      description: 'current-only conflict field',
+    };
+    const conflictResult = (
+      opIndex: number,
+      serverRow: Record<string, unknown>
+    ): ApplyOperationResult => ({
+      result: {
+        opIndex,
+        status: 'conflict',
+        message: 'Version conflict',
+        code: 'sync.version_conflict',
+        server_version: 8,
+        server_row: serverRow,
+      },
+      emittedChanges: [],
+    });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot() {
+        return { rows: [], nextCursor: null };
+      },
+      async applyOperation(_ctx, _op, opIndex) {
+        return conflictResult(opIndex, currentShapeRow);
+      },
+      async applyOperationBatch(_ctx, operations) {
+        return operations.map(({ opIndex }) =>
+          conflictResult(opIndex, currentShapeRow)
+        );
+      },
+    });
+
+    await expect(
+      handler.applyOperation(
+        createApplyContext({ schemaVersion: 6 }),
+        createTaskOperation({ row_id: 'task-v6-conflict' }),
+        10
+      )
+    ).rejects.toThrow('tasks.description: Unknown column');
+
+    await expect(
+      handler.applyOperationBatch?.(
+        createApplyContext({ schemaVersion: 6 }),
+        [
+          {
+            op: createTaskOperation({ row_id: 'task-v6-conflict' }),
+            opIndex: 11,
+          },
+        ]
+      )
+    ).rejects.toThrow('tasks.description: Unknown column');
+
+    const projected = syncularProjectGeneratedClientRowForVersion(
+      'tasks',
+      currentShapeRow,
+      6
+    );
+    expect(projected).not.toHaveProperty('description');
+    const projectedHandler = createSyncularAppServerHandler<
+      DivergentServerDb,
+      TestAuth
+    >({
+      table: 'tasks',
+      resolveScopes: () => ({ user_id: ['user-1'] }),
+      async snapshot() {
+        return { rows: [], nextCursor: null };
+      },
+      async applyOperation(_ctx, _op, opIndex) {
+        return conflictResult(opIndex, projected);
+      },
+      async applyOperationBatch(_ctx, operations) {
+        return operations.map(({ opIndex }) => conflictResult(opIndex, projected));
+      },
+    });
+
+    const result = await projectedHandler.applyOperation(
+      createApplyContext({ schemaVersion: 6 }),
+      createTaskOperation({ row_id: 'task-v6-conflict' }),
+      12
+    );
+    expect(result.result.status).toBe('conflict');
+    if (result.result.status === 'conflict') {
+      expect(result.result.server_row).toEqual(projected);
+      expect(result.result.server_row).not.toHaveProperty('description');
+    }
+
+    const batchResult = await projectedHandler.applyOperationBatch?.(
+      createApplyContext({ schemaVersion: 6 }),
+      [
+        {
+          op: createTaskOperation({ row_id: 'task-v6-conflict' }),
+          opIndex: 13,
+        },
+      ]
+    );
+    expect(batchResult?.[0]?.result.status).toBe('conflict');
+    if (batchResult?.[0]?.result.status === 'conflict') {
+      expect(batchResult[0].result.server_row).toEqual(projected);
+      expect(batchResult[0].result.server_row).not.toHaveProperty(
+        'description'
+      );
+    }
+  });
+
   it('rejects unsupported client schema versions before custom apply code runs', async () => {
     let called = false;
     const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({

@@ -5821,6 +5821,13 @@ fn push_typescript_app_server_handler_helpers(
     out.push_str("    emittedChanges: [],\n");
     out.push_str("  };\n");
     out.push_str("}\n\n");
+    out.push_str("function syncularAssertGeneratedApplyOperationResult(table: string, result: ApplyOperationResult, schemaVersion: number | null | undefined): void {\n");
+    out.push_str("  if (result.result.status !== 'conflict') return;\n");
+    out.push_str("  const validation = syncularValidateGeneratedClientRow(table, result.result.server_row, schemaVersion);\n");
+    out.push_str("  if (!validation.ok) {\n");
+    out.push_str("    throw new Error(`Generated conflict server_row ${table} does not match client schema ${schemaVersion}: ${validation.errors.map((error) => `${error.path}: ${error.message}`).join('; ')}`);\n");
+    out.push_str("  }\n");
+    out.push_str("}\n\n");
     out.push_str("export interface CreateSyncularAppServerHandlerOptions<DB extends SyncCoreDb = SyncCoreDb, Auth extends SyncServerAuth = SyncServerAuth> {\n");
     out.push_str("  table: SyncularGeneratedAppTableName | SyncularGeneratedAppTableRef;\n");
     out.push_str("  dependsOn?: string[];\n");
@@ -5870,7 +5877,9 @@ fn push_typescript_app_server_handler_helpers(
     out.push_str("      }\n");
     out.push_str("      const validation = syncularValidateGeneratedOperation(tableName, op, ctx.schemaVersion);\n");
     out.push_str("      if (!validation.ok) return syncularGeneratedValidationErrorResult(opIndex, validation.errors);\n");
-    out.push_str("      return options.applyOperation(ctx, op, opIndex);\n");
+    out.push_str("      const result = await options.applyOperation(ctx, op, opIndex);\n");
+    out.push_str("      syncularAssertGeneratedApplyOperationResult(tableName, result, ctx.schemaVersion);\n");
+    out.push_str("      return result;\n");
     out.push_str("    },\n");
     out.push_str(
         "    applyOperationBatch: options.applyOperationBatch ? async (ctx, operations) => {\n",
@@ -5882,7 +5891,9 @@ fn push_typescript_app_server_handler_helpers(
     out.push_str("        const validation = syncularValidateGeneratedOperation(tableName, op, ctx.schemaVersion);\n");
     out.push_str("        if (!validation.ok) return [syncularGeneratedValidationErrorResult(opIndex, validation.errors)];\n");
     out.push_str("      }\n");
-    out.push_str("      return options.applyOperationBatch(ctx, operations);\n");
+    out.push_str("      const results = await options.applyOperationBatch(ctx, operations);\n");
+    out.push_str("      for (const result of results) syncularAssertGeneratedApplyOperationResult(tableName, result, ctx.schemaVersion);\n");
+    out.push_str("      return results;\n");
     out.push_str("    } : undefined,\n");
     out.push_str("  };\n");
     out.push_str("  return handler;\n");
@@ -11621,6 +11632,7 @@ CREATE TABLE tasks (
         assert!(server_output.contains("export function syncularValidateGeneratedClientRow"));
         assert!(server_output.contains("export function syncularValidateGeneratedMutationPayload"));
         assert!(server_output.contains("export function syncularValidateGeneratedOperation"));
+        assert!(server_output.contains("syncularAssertGeneratedApplyOperationResult"));
         assert!(server_output
             .contains("export function syncularGeneratedSnapshotBinaryColumnsForVersion"));
         assert!(server_output
@@ -12095,6 +12107,7 @@ CREATE TABLE tasks (
         assert!(output.contains("export const syncularGeneratedAppTables = {"));
         assert!(output.contains("export function createSyncularAppServerHandler"));
         assert!(output.contains("syncularValidateGeneratedOperation"));
+        assert!(output.contains("syncularAssertGeneratedApplyOperationResult"));
         assert!(output.contains("syncularUnsupportedClientSchemaResult"));
         Ok(())
     }
