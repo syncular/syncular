@@ -1259,7 +1259,13 @@
           "syncMode": "server-merge"
         }
       ],
-      "encryptedFields": [],
+      "encryptedFields": [
+        {
+          "field": "description",
+          "scope": "tasks",
+          "rowIdField": "id"
+        }
+      ],
       "scopes": [
         {
           "name": "user_id",

@@ -204,11 +204,13 @@
     "rule": {
       "scope": "tasks",
       "table": "tasks",
-      "fields": ["title"]
+      "fields": ["description"],
+      "rowIdField": "id"
     },
     "task": {
       "id": "local-secret",
-      "title": "Local secret"
+      "title": "Local secret",
+      "description": "Encrypted local detail"
     },
     "conflict": {
       "seedClientId": "client-rust-e2ee-conflict-seed",

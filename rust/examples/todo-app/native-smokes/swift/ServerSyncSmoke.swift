@@ -76,6 +76,7 @@ private struct ServerE2eeRule: Decodable {
 private struct ServerE2eeTask: Decodable {
     let id: String
     let title: String
+    let description: String
 }
 
 private struct ServerBlob: Decodable {
@@ -155,19 +156,10 @@ private func configureServerSync(
 }
 
 private func configureFieldEncryption(_ client: SyncularBoltClient, info: ServerInfo, message: String) throws {
-    let rule = info.e2ee.rule
     let acceptedEncryption = try client.setFieldEncryptionJson(
         configJson: syncularGeneratedFieldEncryptionConfigJson(
             keys: ["default": info.e2ee.keyBase64],
-            envelopePrefix: info.e2ee.envelopePrefix,
-            additionalRules: [
-                SyncularFieldEncryptionRule(
-                    scope: rule.scope,
-                    table: rule.table,
-                    fields: rule.fields,
-                    rowIdField: rule.rowIdField
-                )
-            ]
+            envelopePrefix: info.e2ee.envelopePrefix
         )
     )
     expect(acceptedEncryption, message)
@@ -626,7 +618,8 @@ private enum ServerSyncSmoke {
             title: info.e2ee.swiftTask.title,
             completed: 0,
             userId: info.actorId,
-            projectId: info.projectId
+            projectId: info.projectId,
+            description: info.e2ee.swiftTask.description
         ))
         _ = try waitForEvent(from: client, kind: "LocalWriteCommitted", commandId: encryptedWriteCommandId)
         let encryptedSyncCommandId = try client.enqueueSyncNow()
@@ -719,7 +712,7 @@ private enum ServerSyncSmoke {
             .fetch(on: reader)
         expect(ciphertextRows.count == 1, "Swift server sync reader should pull encrypted task")
         expect(
-            ciphertextRows[0].title.hasPrefix(info.e2ee.envelopePrefix),
+            ciphertextRows[0].description?.hasPrefix(info.e2ee.envelopePrefix) == true,
             "Swift server sync reader without field encryption should see ciphertext envelope"
         )
         let conflictRows = try TaskQuery
@@ -765,8 +758,8 @@ private enum ServerSyncSmoke {
             .fetch(on: encryptedReader)
         expect(decryptedRows.count == 1, "Swift encrypted reader should pull encrypted task")
         expect(
-            decryptedRows[0].title == info.e2ee.swiftTask.title,
-            "Swift encrypted reader should decrypt pulled title"
+            decryptedRows[0].description == info.e2ee.swiftTask.description,
+            "Swift encrypted reader should decrypt pulled description"
         )
         encryptedReaderShutdownFinished = try encryptedReader.shutdown()
         expect(encryptedReaderShutdownFinished, "Swift encrypted reader should shut down")

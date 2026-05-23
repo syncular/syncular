@@ -164,10 +164,12 @@ export interface SyncScenarioFixture {
       scope: string;
       table: string;
       fields: string[];
+      rowIdField: string;
     };
     task: {
       id: string;
       title: string;
+      description: string;
     };
     conflict: {
       seedClientId: string;
@@ -252,6 +254,7 @@ export interface SyncScenarioBlobRef {
 export interface SyncScenarioTaskRow {
   id: string;
   title: string;
+  description?: string | null;
   completed: number;
   user_id: string;
   project_id: string | null;

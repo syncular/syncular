@@ -132,6 +132,7 @@ for (const task of [
     .values({
       id: task.id,
       title: task.title,
+      description: null,
       completed: 0,
       user_id: task.actorId,
       project_id: task.projectId,
@@ -272,10 +273,12 @@ await writeFile(
         swiftTask: {
           id: `${e2ee.task.id}-swift-native`,
           title: e2ee.task.title,
+          description: e2ee.task.description,
         },
         kotlinTask: {
           id: `${e2ee.task.id}-kotlin-native`,
           title: e2ee.task.title,
+          description: e2ee.task.description,
         },
       },
       blob: {

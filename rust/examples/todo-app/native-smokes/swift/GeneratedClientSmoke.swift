@@ -267,7 +267,7 @@ private enum GeneratedClientSmoke {
             .limit(2)
         let advancedReadonly = advancedQuery.readonlyQuery()
         expect(
-            advancedReadonly.sql == #"select "id", "title", "completed", "user_id", "project_id", "server_version", "image", "title_yjs_state" from "tasks" where (((("user_id" = ?) and ("server_version" >= ?))) or ("project_id" is null)) and "id" in (?, ?) and "image" is not null and "completed" != ? order by "title" asc limit 2"#,
+            advancedReadonly.sql == #"select "id", "title", "completed", "user_id", "project_id", "server_version", "image", "title_yjs_state", "description" from "tasks" where (((("user_id" = ?) and ("server_version" >= ?))) or ("project_id" is null)) and "id" in (?, ?) and "image" is not null and "completed" != ? order by "title" asc limit 2"#,
             "unexpected Swift advanced query SQL"
         )
         expect(
@@ -388,13 +388,7 @@ private enum GeneratedClientSmoke {
 
         let fieldEncryptionConfig = try parseJson(syncularGeneratedFieldEncryptionConfigJson(
             keys: ["default": jsonString(e2eeFixture, "keyBase64")],
-            envelopePrefix: jsonString(e2eeFixture, "envelopePrefix"),
-            additionalRules: [SyncularFieldEncryptionRule(
-                scope: jsonString(e2eeRule, "scope"),
-                table: jsonString(e2eeRule, "table"),
-                fields: jsonStringArray(e2eeRule, "fields"),
-                rowIdField: nil
-            )]
+            envelopePrefix: jsonString(e2eeFixture, "envelopePrefix")
         ))
         let fieldEncryptionConfigObject = fieldEncryptionConfig as! [String: Any]
         try expectJsonEqual(jsonValue(fieldEncryptionConfigObject, "rules"), [e2eeRule], "Swift E2EE rules should match shared sync scenario")

@@ -96,6 +96,7 @@ describe('generated app conformance', () => {
         'server_version',
         'image',
         'title_yjs_state',
+        'description',
       ])
       .where('user_id', '=', 'user-rust')
       .orderBy('server_version', 'desc')
@@ -113,7 +114,6 @@ describe('generated app conformance', () => {
       syncularGeneratedFieldEncryptionConfig({
         keys: { default: syncConformance.e2ee.keyBase64 },
         envelopePrefix: syncConformance.e2ee.envelopePrefix,
-        rules: [syncConformance.e2ee.rule],
       })
     ).toEqual({
       keys: { default: syncConformance.e2ee.keyBase64 },

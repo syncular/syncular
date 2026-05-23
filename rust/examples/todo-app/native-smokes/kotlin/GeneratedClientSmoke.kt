@@ -207,7 +207,7 @@ fun main(args: Array<String>) {
         .limit(2)
     val advancedReadonly = advancedQuery.readonlyQuery()
     expect(
-        advancedReadonly.sql == """select "id", "title", "completed", "user_id", "project_id", "server_version", "image", "title_yjs_state" from "tasks" where (((("user_id" = ?) and ("server_version" >= ?))) or ("project_id" is null)) and "id" in (?, ?) and "image" is not null and "completed" != ? order by "title" asc limit 2""",
+        advancedReadonly.sql == """select "id", "title", "completed", "user_id", "project_id", "server_version", "image", "title_yjs_state", "description" from "tasks" where (((("user_id" = ?) and ("server_version" >= ?))) or ("project_id" is null)) and "id" in (?, ?) and "image" is not null and "completed" != ? order by "title" asc limit 2""",
         "unexpected Kotlin advanced query SQL",
     )
     expect(
@@ -344,14 +344,6 @@ fun main(args: Array<String>) {
         syncularGeneratedFieldEncryptionConfigJson(
             keys = mapOf("default" to e2eeFixture.str("keyBase64")),
             envelopePrefix = e2eeFixture.str("envelopePrefix"),
-            additionalRules = listOf(
-                SyncularFieldEncryptionRule(
-                    scope = e2eeRule.str("scope"),
-                    table = e2eeRule.str("table"),
-                    fields = e2eeRule["fields"]!!.jsonArray.map { it.jsonPrimitive.content },
-                    rowIdField = null,
-                ),
-            ),
         ),
     ).jsonObject
     val fieldEncryptionRules = fieldEncryptionConfig["rules"]?.jsonArray ?: error("missing E2EE rules")

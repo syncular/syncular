@@ -230,6 +230,7 @@ export const syncularGeneratedRequiredRuntimeFeatures = [
   'web-owned-sqlite-core',
   'blobs',
   'crdt-yjs',
+  'e2ee',
 ] as const;
 
 export const syncularGeneratedTableConfig = {
@@ -272,7 +273,7 @@ export const syncularGeneratedTableConfig = {
     },
     blobColumns: ['image'],
     crdtYjsFields: [{ field: 'title', stateColumn: 'title_yjs_state', containerKey: 'title', rowIdField: 'id', kind: 'text', syncMode: 'server-merge' }],
-    encryptedFields: [],
+    encryptedFields: [{ field: 'description', scope: 'tasks', rowIdField: 'id' }],
   },
 } satisfies Record<'comments' | 'projects' | 'tasks', SyncularGeneratedTableConfig>;
 
@@ -433,21 +434,22 @@ export const syncularGeneratedAppSchema = {
       ],
       blobColumns: ['image'],
       crdtYjsFields: [{ field: 'title', stateColumn: 'title_yjs_state', containerKey: 'title', rowIdField: 'id', kind: 'text', syncMode: 'server-merge' }],
-      encryptedFields: [],
+      encryptedFields: [{ field: 'description', scope: 'tasks', rowIdField: 'id' }],
       scopes: [{ name: 'user_id', column: 'user_id', source: 'actorId', required: true }, { name: 'project_id', column: 'project_id', source: 'projectId', required: false }],
     },
   ],
 } satisfies SyncularAppSchema;
 
 export const syncularGeneratedFieldEncryptionRules = [
+  { scope: 'tasks', table: 'tasks', fields: ['description'], rowIdField: 'id' },
 ] satisfies readonly SyncularFieldEncryptionRule[];
 
 export function syncularGeneratedFieldEncryptionConfig(
-  options: Omit<SyncularFieldEncryptionConfig, 'rules'> & { rules?: SyncularFieldEncryptionRule[] }
+  options: Omit<SyncularFieldEncryptionConfig, 'rules'>
 ): SyncularFieldEncryptionConfig {
   return {
     ...options,
-    rules: [...syncularGeneratedFieldEncryptionRules, ...(options.rules ?? [])],
+    rules: [...syncularGeneratedFieldEncryptionRules],
   };
 }
 

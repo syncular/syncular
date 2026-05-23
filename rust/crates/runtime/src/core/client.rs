@@ -1,6 +1,10 @@
 #[cfg(feature = "native")]
 use crate::app_schema::validate_app_schema_runtime_features;
-use crate::app_schema::{default_app_schema, AppSchema, AppTableMetadata};
+use crate::app_schema::{
+    default_app_schema, validate_blob_encryption_against_app_schema,
+    validate_encrypted_crdt_against_app_schema, validate_field_encryption_rules_against_app_schema,
+    AppSchema, AppTableMetadata,
+};
 use crate::binary_snapshot::{
     BinarySnapshotCell, BinarySnapshotPayload, BorrowedBinarySnapshotCell,
     DecodedBinarySnapshotRows, SnapshotChunkRows,
@@ -1926,31 +1930,43 @@ where
         }
     }
 
-    pub fn set_field_encryption(&mut self, encryption: Option<FieldEncryption>) {
+    pub fn set_field_encryption(&mut self, encryption: Option<FieldEncryption>) -> Result<()> {
+        if let Some(encryption) = &encryption {
+            validate_field_encryption_rules_against_app_schema(
+                self.app_schema,
+                encryption.rules(),
+            )?;
+        }
         self.field_encryption = encryption;
+        Ok(())
     }
 
     pub fn set_field_encryption_json(&mut self, config_json: &str) -> Result<()> {
-        self.field_encryption = FieldEncryption::from_static_config_json(config_json)?;
-        Ok(())
+        self.set_field_encryption(FieldEncryption::from_static_config_json(config_json)?)
     }
 
-    pub fn set_encrypted_crdt(&mut self, encryption: Option<EncryptedCrdt>) {
+    pub fn set_encrypted_crdt(&mut self, encryption: Option<EncryptedCrdt>) -> Result<()> {
+        if encryption.is_some() {
+            validate_encrypted_crdt_against_app_schema(self.app_schema)?;
+        }
         self.encrypted_crdt = encryption;
+        Ok(())
     }
 
     pub fn set_encrypted_crdt_json(&mut self, config_json: &str) -> Result<()> {
-        self.encrypted_crdt = EncryptedCrdt::from_static_config_json(config_json)?;
-        Ok(())
+        self.set_encrypted_crdt(EncryptedCrdt::from_static_config_json(config_json)?)
     }
 
-    pub fn set_blob_encryption(&mut self, encryption: Option<BlobEncryption>) {
+    pub fn set_blob_encryption(&mut self, encryption: Option<BlobEncryption>) -> Result<()> {
+        if encryption.is_some() {
+            validate_blob_encryption_against_app_schema(self.app_schema)?;
+        }
         self.blob_encryption = encryption;
+        Ok(())
     }
 
     pub fn set_blob_encryption_json(&mut self, config_json: &str) -> Result<()> {
-        self.blob_encryption = BlobEncryption::from_static_config_json(config_json)?;
-        Ok(())
+        self.set_blob_encryption(BlobEncryption::from_static_config_json(config_json)?)
     }
 
     pub fn table_metadata(&self, table: &str) -> Option<&'static AppTableMetadata> {

@@ -1,6 +1,7 @@
 import {
   countByReadModel,
   defineSyncularClient,
+  encryptedField,
   scope,
   syncedTable,
   toSyncularCodegenConfig,
@@ -58,6 +59,7 @@ export const app = defineSyncularClient({
       serverVersion: 'server_version',
       sqliteWithoutRowid: true,
       blobColumns: ['image'],
+      encryptedFields: [encryptedField('description', { scope: 'tasks' })],
       crdt: {
         title: yjsText({
           stateColumn: 'title_yjs_state',
