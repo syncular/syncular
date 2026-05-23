@@ -673,6 +673,10 @@ The contract should distinguish two local cases:
 - Added `rust/examples/todo-app/syncular.app.ts` using the authoring helpers
   and a conformance test proving it serializes to the checked-in
   `syncular.codegen.json`.
+- Added `writeSyncularCodegenJson(...)` so TypeScript app authoring can emit
+  the checked-in JSON handoff that Rust codegen consumes. Current decision:
+  keep the Rust codegen CLI consuming stable JSON rather than executing
+  TypeScript modules directly.
 
 Gates run:
 
@@ -694,7 +698,6 @@ Gates run:
 
 ## Next Action
 
-Continue Batch 4 by deciding the build workflow: either keep
-`syncular.codegen.json` as the checked-in handoff generated from the TypeScript
-authoring module, or teach the Rust codegen CLI to invoke an explicit exported
-authoring module before generation.
+Continue Batch 4 by documenting the app-authoring workflow in the Rust client
+docs, then start a small scaffold path for same-shape apps that can generate
+an initial authoring module/config from existing client migrations.

@@ -49,7 +49,7 @@ import {
   defineSyncularClient,
   scope,
   syncedTable,
-  toSyncularCodegenJson,
+  writeSyncularCodegenJson,
   yjsText,
 } from '@syncular/typegen';
 
@@ -71,7 +71,7 @@ export const app = defineSyncularClient({
   },
 });
 
-export const syncularCodegenJson = toSyncularCodegenJson(app);
+await writeSyncularCodegenJson(app, './syncular.codegen.json');
 ```
 
 This is a dev/build-time authoring layer. Generated Rust, Swift, Kotlin, JVM,

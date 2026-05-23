@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'bun:test';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
 import {
   countByReadModel,
   defineSyncularClient,
@@ -7,6 +10,7 @@ import {
   syncedTable,
   toSyncularCodegenConfig,
   toSyncularCodegenJson,
+  writeSyncularCodegenJson,
   yjsText,
 } from './app-contract';
 
@@ -129,5 +133,26 @@ describe('Syncular app contract authoring', () => {
         '  }\n' +
         '}\n'
     );
+  });
+
+  it('writes syncular.codegen.json for the Rust codegen handoff', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'syncular-codegen-'));
+    const output = join(dir, 'nested', 'syncular.codegen.json');
+    const app = defineSyncularClient({
+      tables: {
+        tasks: syncedTable({
+          table: 'tasks',
+          serverVersion: 'server_version',
+          scopes: [scope('user_id', { source: 'actorId' })],
+        }),
+      },
+    });
+
+    try {
+      await writeSyncularCodegenJson(app, output);
+      expect(await readFile(output, 'utf8')).toBe(toSyncularCodegenJson(app));
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
