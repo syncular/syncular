@@ -2,9 +2,11 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
+use syncular_runtime::app_schema::default_app_schema;
 use syncular_runtime::client::{SyncularClient, SyncularClientConfig};
 use syncular_runtime::diesel_sqlite::DieselSqliteStore;
 use syncular_runtime::error::Result;
+use syncular_runtime::fixtures::todo::app_schema as demo_todo_app_schema;
 use syncular_runtime::protocol::{blob_hash, BlobRef};
 use syncular_runtime::transport::SyncAuthHeaders;
 use syncular_testkit::{
@@ -19,13 +21,16 @@ fn native_http_blob_transport_uploads_and_downloads() -> Result<()> {
     let hash = blob_hash(&bytes);
     let server = blob_server(bytes.clone(), hash.clone())?;
     let path = temp_db_path("syncular-native-blob-transport");
-    let mut client = SyncularClient::open(SyncularClientConfig {
-        db_path: path.clone(),
-        base_url: server.sync_base_url(),
-        client_id: blob_conformance_str(&["clientId"]),
-        actor_id: blob_conformance_str(&["actorId"]),
-        project_id: Some("p0".to_string()),
-    })?;
+    let mut client = SyncularClient::open_with_schema(
+        SyncularClientConfig {
+            db_path: path.clone(),
+            base_url: server.sync_base_url(),
+            client_id: blob_conformance_str(&["clientId"]),
+            actor_id: blob_conformance_str(&["actorId"]),
+            project_id: Some("p0".to_string()),
+        },
+        demo_todo_app_schema(),
+    )?;
     let mut headers = SyncAuthHeaders::new();
     headers.insert(
         "authorization".to_string(),
@@ -102,25 +107,54 @@ fn native_http_blob_transport_uploads_and_downloads() -> Result<()> {
 }
 
 #[test]
+fn native_blob_operations_require_generated_blob_columns() -> Result<()> {
+    let path = temp_db_path("syncular-native-blob-without-generated-column");
+    let mut client = SyncularClient::open(SyncularClientConfig {
+        db_path: path.clone(),
+        base_url: "http://127.0.0.1:9/sync".to_string(),
+        client_id: "blob-without-schema-client".to_string(),
+        actor_id: "user-rust".to_string(),
+        project_id: Some("p0".to_string()),
+    })?;
+
+    let error = client
+        .store_blob_bytes(b"detached blob", "text/plain", false)
+        .expect_err("blob operations should require generated blob metadata");
+    assert!(error.message_text().contains("generated blob column"));
+
+    assert!(default_app_schema()
+        .app_table_metadata
+        .iter()
+        .all(|table| table.blob_columns.is_empty()));
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
 fn native_blob_encryption_stores_uploads_and_downloads_ciphertext() -> Result<()> {
     let plaintext = blob_conformance_bytes(&["bytes"]);
     let plaintext_hash = blob_hash(&plaintext);
     let path = temp_db_path("syncular-native-encrypted-blob");
+    let _ = std::fs::remove_file(&path);
     let encryption_json = encrypted_blob_config_json();
-    let mut client = SyncularClient::open(SyncularClientConfig {
-        db_path: path.clone(),
-        base_url: "http://127.0.0.1:9/sync".to_string(),
-        client_id: blob_conformance_str(&["clientId"]),
-        actor_id: blob_conformance_str(&["actorId"]),
-        project_id: Some("p0".to_string()),
-    })?;
+    let mut client = SyncularClient::open_with_schema(
+        SyncularClientConfig {
+            db_path: path.clone(),
+            base_url: "http://127.0.0.1:9/sync".to_string(),
+            client_id: blob_conformance_str(&["clientId"]),
+            actor_id: blob_conformance_str(&["actorId"]),
+            project_id: Some("p0".to_string()),
+        },
+        demo_todo_app_schema(),
+    )?;
     client.set_blob_encryption_json(&encryption_json)?;
 
     let blob = client.store_blob_bytes(&plaintext, "text/plain", false)?;
     assert!(blob.encrypted);
     assert_eq!(blob.key_id.as_deref(), Some("default"));
     assert_ne!(blob.hash, plaintext_hash);
-    let cached_ciphertext = DieselSqliteStore::open(&path)?
+    let cached_ciphertext = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?
         .read_cached_blob(&blob.hash)?
         .expect("cached encrypted blob");
     assert_ne!(cached_ciphertext, plaintext);
@@ -128,13 +162,16 @@ fn native_blob_encryption_stores_uploads_and_downloads_ciphertext() -> Result<()
     assert_eq!(client.retrieve_blob_bytes(&blob)?, plaintext);
 
     let server = blob_server(cached_ciphertext.clone(), blob.hash.clone())?;
-    let mut upload_client = SyncularClient::open(SyncularClientConfig {
-        db_path: path.clone(),
-        base_url: server.sync_base_url(),
-        client_id: blob_conformance_str(&["clientId"]),
-        actor_id: blob_conformance_str(&["actorId"]),
-        project_id: Some("p0".to_string()),
-    })?;
+    let mut upload_client = SyncularClient::open_with_schema(
+        SyncularClientConfig {
+            db_path: path.clone(),
+            base_url: server.sync_base_url(),
+            client_id: blob_conformance_str(&["clientId"]),
+            actor_id: blob_conformance_str(&["actorId"]),
+            project_id: Some("p0".to_string()),
+        },
+        demo_todo_app_schema(),
+    )?;
     upload_client.set_blob_encryption_json(&encryption_json)?;
     assert_eq!(upload_client.process_blob_upload_queue()?.uploaded, 1);
     upload_client.clear_blob_cache()?;
@@ -155,13 +192,16 @@ fn native_http_blob_transport_rejects_corrupted_downloads_without_caching() -> R
     corrupted[0] ^= 0xff;
     let server = blob_server(corrupted, hash.clone())?;
     let path = temp_db_path("syncular-native-blob-corrupt-download");
-    let mut client = SyncularClient::open(SyncularClientConfig {
-        db_path: path.clone(),
-        base_url: server.sync_base_url(),
-        client_id: blob_conformance_str(&["missingClientId"]),
-        actor_id: blob_conformance_str(&["actorId"]),
-        project_id: Some("p0".to_string()),
-    })?;
+    let mut client = SyncularClient::open_with_schema(
+        SyncularClientConfig {
+            db_path: path.clone(),
+            base_url: server.sync_base_url(),
+            client_id: blob_conformance_str(&["missingClientId"]),
+            actor_id: blob_conformance_str(&["actorId"]),
+            project_id: Some("p0".to_string()),
+        },
+        demo_todo_app_schema(),
+    )?;
     let mut headers = SyncAuthHeaders::new();
     headers.insert(
         "authorization".to_string(),
@@ -214,13 +254,16 @@ fn native_http_blob_transport_streams_files_without_local_cache() -> Result<()> 
     let input_path = temp_file_path("syncular-native-blob-streaming-input");
     let output_path = temp_file_path("syncular-native-blob-streaming-output");
     std::fs::write(&input_path, &bytes)?;
-    let mut client = SyncularClient::open(SyncularClientConfig {
-        db_path: path.clone(),
-        base_url: server.sync_base_url(),
-        client_id: blob_conformance_str(&["streamingClientId"]),
-        actor_id: blob_conformance_str(&["actorId"]),
-        project_id: Some("p0".to_string()),
-    })?;
+    let mut client = SyncularClient::open_with_schema(
+        SyncularClientConfig {
+            db_path: path.clone(),
+            base_url: server.sync_base_url(),
+            client_id: blob_conformance_str(&["streamingClientId"]),
+            actor_id: blob_conformance_str(&["actorId"]),
+            project_id: Some("p0".to_string()),
+        },
+        demo_todo_app_schema(),
+    )?;
     let mut headers = SyncAuthHeaders::new();
     headers.insert(
         "authorization".to_string(),
@@ -258,13 +301,16 @@ fn native_http_blob_transport_streams_files_without_local_cache() -> Result<()> 
 #[test]
 fn native_blob_cache_prunes_oldest_entries_to_byte_budget() -> Result<()> {
     let path = temp_db_path("syncular-native-blob-cache-prune");
-    let mut client = SyncularClient::open(SyncularClientConfig {
-        db_path: path.clone(),
-        base_url: "http://127.0.0.1:9/sync".to_string(),
-        client_id: blob_conformance_str(&["cachePruneClientId"]),
-        actor_id: blob_conformance_str(&["actorId"]),
-        project_id: Some("p0".to_string()),
-    })?;
+    let mut client = SyncularClient::open_with_schema(
+        SyncularClientConfig {
+            db_path: path.clone(),
+            base_url: "http://127.0.0.1:9/sync".to_string(),
+            client_id: blob_conformance_str(&["cachePruneClientId"]),
+            actor_id: blob_conformance_str(&["actorId"]),
+            project_id: Some("p0".to_string()),
+        },
+        demo_todo_app_schema(),
+    )?;
 
     let old_bytes = blob_conformance_str(&["cachePruneOldText"]).into_bytes();
     let old_blob =

@@ -2,8 +2,8 @@
 use crate::app_schema::validate_app_schema_runtime_features;
 use crate::app_schema::{
     default_app_schema, validate_blob_encryption_against_app_schema,
-    validate_encrypted_crdt_against_app_schema, validate_field_encryption_rules_against_app_schema,
-    AppSchema, AppTableMetadata,
+    validate_blob_runtime_against_app_schema, validate_encrypted_crdt_against_app_schema,
+    validate_field_encryption_rules_against_app_schema, AppSchema, AppTableMetadata,
 };
 use crate::binary_snapshot::{
     BinarySnapshotCell, BinarySnapshotPayload, BorrowedBinarySnapshotCell,
@@ -2215,6 +2215,7 @@ where
         mime_type: &str,
         immediate: bool,
     ) -> Result<BlobRef> {
+        self.ensure_blob_runtime_declared()?;
         let (blob, body) = if let Some(encryption) = &self.blob_encryption {
             let encrypted = encryption.encrypt_blob(data, mime_type)?;
             self.store
@@ -2237,6 +2238,7 @@ where
         immediate: bool,
         cache_local: bool,
     ) -> Result<BlobRef> {
+        self.ensure_blob_runtime_declared()?;
         if cache_local {
             let metadata = fs::metadata(path).map_err(|err| {
                 SyncularError::storage(err).context(format!("stat blob file {path:?}"))
@@ -2289,6 +2291,7 @@ where
     }
 
     pub fn retrieve_blob_bytes(&mut self, blob: &BlobRef) -> Result<Vec<u8>> {
+        self.ensure_blob_runtime_declared()?;
         self.ensure_blob_decryption_available(blob)?;
         if let Some(bytes) = self.store.read_cached_blob(&blob.hash)? {
             return self.decode_blob_body(blob, bytes);
@@ -2305,6 +2308,7 @@ where
         path: &Path,
         cache_local: bool,
     ) -> Result<()> {
+        self.ensure_blob_runtime_declared()?;
         self.ensure_blob_decryption_available(blob)?;
         if let Some(bytes) = self.store.read_cached_blob(&blob.hash)? {
             let plaintext = self.decode_blob_body(blob, bytes)?;
@@ -2343,6 +2347,7 @@ where
         &mut self,
         retry_now: bool,
     ) -> Result<crate::diesel_sqlite::BlobUploadQueueResult> {
+        self.ensure_blob_runtime_declared()?;
         self.store.requeue_stale_blob_uploads()?;
         let pending = self
             .store
@@ -2392,6 +2397,10 @@ where
 
 #[cfg(feature = "native")]
 impl<T> SyncularClient<DieselSqliteStore, T> {
+    fn ensure_blob_runtime_declared(&self) -> Result<()> {
+        validate_blob_runtime_against_app_schema(self.app_schema)
+    }
+
     fn ensure_blob_decryption_available(&self, blob: &BlobRef) -> Result<()> {
         if !blob.encrypted {
             return Ok(());
@@ -2429,6 +2438,7 @@ where
         mime_type: &str,
         enqueue_upload: bool,
     ) -> Result<String> {
+        self.ensure_blob_runtime_declared()?;
         let metadata = fs::metadata(path).map_err(|err| {
             SyncularError::storage(err).context(format!("stat blob file {path:?}"))
         })?;
@@ -2453,6 +2463,7 @@ where
         blob: &BlobRef,
         path: &Path,
     ) -> Result<String> {
+        self.ensure_blob_runtime_declared()?;
         let Some(bytes) = self.store.read_cached_blob(&blob.hash)? else {
             return Err(SyncularError::config(
                 "blob is not present in the local cache",
@@ -2466,24 +2477,29 @@ where
     }
 
     pub fn is_blob_local(&mut self, hash: &str) -> Result<bool> {
+        self.ensure_blob_runtime_declared()?;
         self.store.is_blob_local(hash)
     }
 
     pub fn blob_upload_queue_stats(
         &mut self,
     ) -> Result<crate::diesel_sqlite::BlobUploadQueueStats> {
+        self.ensure_blob_runtime_declared()?;
         self.store.blob_upload_queue_stats()
     }
 
     pub fn blob_cache_stats(&mut self) -> Result<crate::diesel_sqlite::BlobCacheStats> {
+        self.ensure_blob_runtime_declared()?;
         self.store.blob_cache_stats()
     }
 
     pub fn prune_blob_cache(&mut self, max_bytes: i64) -> Result<i64> {
+        self.ensure_blob_runtime_declared()?;
         self.store.prune_blob_cache(max_bytes)
     }
 
     pub fn clear_blob_cache(&mut self) -> Result<()> {
+        self.ensure_blob_runtime_declared()?;
         self.store.clear_blob_cache()
     }
 
