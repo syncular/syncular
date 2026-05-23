@@ -676,6 +676,75 @@ describe('Syncular core WASM artifact', () => {
     }
   });
 
+  it('classifies unsupported generated old-client schemas as upgrade-required', async () => {
+    const actorId = 'actor-generated-unsupported-client';
+    const token = 'token-generated-unsupported-client';
+    const projectId = 'project-generated-unsupported-client';
+    const unsupportedSchemaVersion =
+      todoGeneratedClientSchemaSupport.minSupported - 1;
+    let snapshotCalled = false;
+    const server = await createHttpServerFixture<GeneratedTodoServerDb>({
+      serverDialect: 'sqlite',
+      createTables: ensureGeneratedTodoServerTables,
+      handlers: [
+        createTodoAppServerHandler<GeneratedTodoServerDb>({
+          table: todoGeneratedServerAppTables.tasks,
+          resolveScopes: async (ctx) => ({
+            user_id: [ctx.actorId],
+            project_id: [projectId],
+          }),
+          async snapshot() {
+            snapshotCalled = true;
+            return { rows: [], nextCursor: null };
+          },
+          async applyOperation(_ctx, _op, opIndex) {
+            return {
+              result: {
+                opIndex,
+                status: 'error',
+                error: 'read-only generated unsupported-client fixture',
+                retriable: false,
+              },
+              emittedChanges: [],
+            };
+          },
+        }),
+      ],
+      authenticate: async (c) => {
+        const authorization = c.req.header('authorization');
+        return authorization === token ? { actorId } : null;
+      },
+      sync: {
+        latestSchemaVersion: todoGeneratedSchemaVersion,
+      },
+    });
+    let oldClient: SyncularDatabase<GeneratedTodoV6ClientDb> | null = null;
+
+    try {
+      oldClient = await openGeneratedTodoOldClient({
+        baseUrl: `${server.baseUrl}/sync`,
+        actorId,
+        projectId,
+        schemaVersion: unsupportedSchemaVersion,
+        appSchema: generatedTodoUnsupportedAppSchemaForVersion(
+          unsupportedSchemaVersion
+        ),
+        clientId: `client-generated-v${unsupportedSchemaVersion}-${Date.now()}`,
+        token,
+      });
+
+      await expect(oldClient.client.syncPull()).rejects.toMatchObject({
+        code: 'sync.client_schema_unsupported',
+        recommendedAction: 'upgradeClient',
+        retryable: false,
+      });
+      expect(snapshotCalled).toBe(false);
+    } finally {
+      await oldClient?.close();
+      await server.destroy();
+    }
+  });
+
   it('syncs file-version BlobRef rows through Hono and clears them on revocation', async () => {
     const actorId = 'actor-file-assets';
     const token = 'token-file-assets';
@@ -856,6 +925,7 @@ async function openGeneratedTodoOldClient(args: {
   actorId: string;
   projectId: string;
   schemaVersion: number;
+  appSchema?: SyncularAppSchema;
   clientId: string;
   token: string;
 }): Promise<SyncularDatabase<GeneratedTodoV6ClientDb>> {
@@ -868,7 +938,8 @@ async function openGeneratedTodoOldClient(args: {
       storage: 'memory',
       clearOnInit: true,
       schemaVersion: args.schemaVersion,
-      appSchema: generatedTodoAppSchemaForVersion(args.schemaVersion),
+      appSchema:
+        args.appSchema ?? generatedTodoAppSchemaForVersion(args.schemaVersion),
     },
     getHeaders: () => ({ authorization: args.token }),
     codecs: todoGeneratedCodecs,
@@ -946,6 +1017,24 @@ function generatedTodoAppSchemaForVersion(
         })),
       };
     }),
+  };
+}
+
+function generatedTodoUnsupportedAppSchemaForVersion(
+  schemaVersion: number
+): SyncularAppSchema {
+  const supportedBase = generatedTodoAppSchemaForVersion(
+    todoGeneratedClientSchemaSupport.minSupported
+  );
+  return {
+    ...supportedBase,
+    schemaVersion,
+    migrations: supportedBase.migrations?.map((migration) => ({
+      ...migration,
+      version: `unsupported-${schemaVersion}`,
+      schemaVersion,
+      name: `generated_todo_unsupported_schema_${schemaVersion}`,
+    })),
   };
 }
 

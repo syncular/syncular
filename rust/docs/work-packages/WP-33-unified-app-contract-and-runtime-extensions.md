@@ -830,6 +830,19 @@ The contract should distinguish two local cases:
   `description`, so current native snapshot-artifact apply still matches the
   generated schema 8 Diesel query surface.
 
+### Batch 2/8 Unsupported Old-Client Upgrade Slice
+
+- Added browser/Hono conformance for an unsupported generated old client:
+  schema 5 against the generated support policy `6, 7, 8`.
+- The generated server handler rejects before app snapshot code runs, and the
+  browser client classifies the failure as
+  `sync.client_schema_unsupported` with recommended action `upgradeClient`.
+- Native Rust already carries the same taxonomy through
+  `error_taxonomy.rs`, and native sync rejects newer required server schema
+  versions. A real native/Hono unsupported-client route test remains a future
+  integration lane if we add a Rust test harness that can drive the TypeScript
+  Hono server from Cargo.
+
 Gates run:
 
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-codegen`
@@ -852,6 +865,7 @@ Gates run:
 - `bun --cwd rust/bindings/javascript build:wasm:core`
 - `bun --cwd rust/bindings/javascript build:wasm`
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts -t "generated old-client"`
+- `bun test packages/client/src/__tests__/variant-core.wasm.test.ts -t "unsupported generated"`
 - `bun test packages/client/src/__tests__/variant-core.wasm.test.ts`
 - `bun run --cwd packages/typegen tsgo`
 - `bun test packages/typegen/src/app-contract.test.ts`
@@ -883,6 +897,7 @@ Gates run:
 
 ## Next Action
 
-Continue Batch 2/8 by adding the explicit unsupported-client upgrade-required
-flow through browser/native sync, using schema 5 against the generated
-schema-support policy.
+Continue Batch 5/8 by tightening generated server validation for current rows:
+decide whether extra current-only fields should be allowed for historical
+snapshot validation because binary columns omit them, or rejected unless the
+handler explicitly returns the targeted historical row shape.
