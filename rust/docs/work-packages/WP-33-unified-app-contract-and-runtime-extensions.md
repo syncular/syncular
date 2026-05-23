@@ -1139,6 +1139,10 @@ The contract should distinguish two local cases:
   app authoring file.
 - Updated the example README to show the typed-contract handoff before Rust
   codegen.
+- Updated the local project integration guide and public Rust quick-start docs
+  so new apps author `syncular.app.ts`, generate/check the
+  `syncular.codegen.json` handoff with `syncular-typegen codegen-config`, and
+  avoid hand-authoring low-level JSON for blobs, encryption, and CRDT fields.
 
 Gates run:
 
@@ -1258,6 +1262,7 @@ Gates run:
 - `bun test rust/examples/todo-app/syncular.app.test.ts`
 - `bun --cwd rust/examples/todo-app codegen:check`
 - `bun run rust:codegen:check`
+- `bun run docs:build`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
 - `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated --check`
 - `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`
@@ -1267,8 +1272,8 @@ Gates run:
 
 Batch 6 is closed for the known runtime extension boundaries. Batch 5 now has
 generated server and client public shapes aligned around one generated app
-object. Batch 4 now has published `@syncular/typegen` helpers/CLI plus the todo
+object. Batch 4 now has published `@syncular/typegen` helpers/CLI, the todo
 fixture generating the low-level `syncular.codegen.json` handoff from the typed
-app contract. Continue WP-33 by documenting the same flow for new apps and
-deciding whether Rust codegen should directly invoke or only consume the
-checked generated handoff file.
+app contract, and new-app docs that describe the same flow. Continue WP-33 by
+deciding whether Rust codegen should directly invoke the authoring step or only
+consume the checked generated handoff file.

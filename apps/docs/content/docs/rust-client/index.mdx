@@ -16,7 +16,8 @@ The current public shape is:
 - Browser TypeScript reads use Kysely over a Rust-owned SQLite Worker.
 - Swift and Kotlin use generated small query DSLs over generic native bindings.
 - Writes go through generated Syncular mutations, not raw app-table SQL.
-- App-specific code is generated from migrations plus `syncular.codegen.json`.
+- App-specific code is generated from migrations plus a typed app contract that
+  produces `syncular.codegen.json`.
 
 <Cards>
   <Card title="Quick Start" href="/docs/rust-client/quick-start" description="Generate app clients from migrations and schema config" />
