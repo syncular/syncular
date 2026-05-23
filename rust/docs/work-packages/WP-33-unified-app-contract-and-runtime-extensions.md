@@ -65,6 +65,9 @@ were closer to one typed authoring model.
   client's schema version using generated per-version row, mutation, scope, and
   binary snapshot metadata. Unsupported old versions should fail with a stable
   upgrade-required error that apps can turn into a "please update" screen.
+- Backend-less apps are first-class. The same app contract should support
+  local-only or local-sync-compatible clients without requiring a deployed
+  Syncular server, while keeping the path open to add a backend later.
 - Runtime hooks/plugins are installed after generation. They are not embedded
   as executable behavior in the schema contract.
 - Extensions with storage/wire semantics, such as encrypted fields or CRDT
@@ -209,6 +212,35 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
     .build()?;
 ```
 
+Apps without a backend should be able to use the same contract in a local mode:
+
+```ts
+export const app = defineSyncularClient({
+  mode: 'local-sync-compatible',
+  migrations: clientMigrations,
+  tables: {
+    notes: syncedTable({
+      table: 'notes',
+      primaryKey: 'id',
+      serverVersion: 'server_version',
+    }),
+  },
+});
+```
+
+In this mode the generated clients still get local SQLite setup, typed
+query-builder reads, safe mutation APIs, row/field events, CRDT/blob/encryption
+local behavior where available, and export/import/testkit support. They do not
+need server handlers, auth, remote subscriptions, or hosted sync routes until
+the app opts into remote sync.
+
+The contract should distinguish two local cases:
+
+- `local-sync-compatible`: mutations use the same outbox/safe-write semantics
+  and can be synced later when a backend is added.
+- `local-only`: tables or data that are explicitly never synced and may allow a
+  different write/read policy.
+
 ## Scope
 
 - Design the generated app contract boundary between static sync metadata,
@@ -235,6 +267,11 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
   `ctx.schemaVersion` can select an actual generated historical schema.
 - Generate a stable unsupported-client-schema error path that classifies as an
   upgrade-required lifecycle state on clients.
+- Define backend-less app modes, including local-sync-compatible and local-only
+  semantics.
+- Generate client/runtime surfaces that work without a server for local
+  SQLite, typed reads, safe mutations, events, CRDT/blob/encryption local
+  behavior where supported, and export/import/testkit flows.
 - Generate or expose typed plugin/extension configuration surfaces where static
   contract data is required, especially encryption, CRDT fields, blobs, and
   live row/field metadata.
@@ -250,6 +287,7 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 - Reintroducing the old JavaScript client as a parallel product path.
 - Allowing raw app-table synced writes.
 - Hiding explicit app intent behind automatic caches or implicit read models.
+- Treating local-only raw writes as equivalent to sync-compatible mutations.
 - Preserving compatibility with old config/protocol shapes unless explicitly
   recorded in `COMPATIBILITY_REGISTER.md`.
 
@@ -299,6 +337,8 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
   schema version.
 - Preserve Rust-first projects by allowing direct `syncular.schema.json`
   authoring/import if they do not want TypeScript authoring.
+- Add explicit app modes for remote-sync, local-sync-compatible, and local-only
+  use cases without duplicating the client contract.
 
 ### Batch 5: Server Handler Integration
 
@@ -326,7 +366,18 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 - Ensure every extension with storage/wire semantics is backed by static
   generated contract metadata.
 
-### Batch 7: Cross-Platform Generation And Conformance
+### Batch 7: Backend-Less App Flow
+
+- Generate and document a no-server app path.
+- Ensure TypeScript, Rust, Swift, Kotlin/JVM where applicable can open a local
+  client, run migrations, read with typed query builders, write through safe
+  mutation APIs, and receive row/field events without sync routes.
+- Prove local-sync-compatible mode can later attach remote config without
+  changing generated mutation semantics.
+- Keep true local-only tables explicit so they cannot be mistaken for synced
+  replica tables.
+
+### Batch 8: Cross-Platform Generation And Conformance
 
 - Verify the generated contract produces equivalent semantics for TypeScript,
   Rust, Swift, Kotlin, JVM, browser, and native bindings.
@@ -349,6 +400,9 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
   per-version schema types/metadata instead of hand-written structural guesses.
 - Unsupported client schema versions are rejected with a stable
   upgrade-required error and no local mutation side effects.
+- Apps can be created without a backend and still get local schema install,
+  typed reads, safe mutations, events, and later remote-sync compatibility when
+  declared.
 - Generated runtime artifacts do not depend on implicit migration path strings.
 - Runtime extension points remain dynamic and app-owned, but static protocol/
   storage implications are declared in the app contract.
@@ -365,6 +419,8 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 - `bun test packages/client/src/generated-app-conformance.test.ts`
 - Server/Hono schema-version compatibility tests covering supported and
   unsupported older client schema versions.
+- Local/no-backend generated-client smokes for TypeScript and Rust at minimum.
+- Native local/no-backend smokes when native generated surfaces change.
 - `bun run --cwd packages/client tsgo`
 - `bun run --cwd packages/server tsgo`
 - `bun run rust:conformance:fast`
@@ -381,6 +437,9 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
   be a server database table.
 - Reject schema-version handling that branches only on numbers without
   generated per-version payload/scope/snapshot metadata.
+- Reject backend-less flows that bypass outbox/safe mutation semantics while
+  claiming future sync compatibility.
+- Reject implicit local-only writes on synced tables.
 - Reject generated APIs that imply remote sync is arbitrary SQL/query pushdown.
 - Reject runtime artifacts that require implicit filesystem reads after
   bundling or app packaging.
@@ -408,6 +467,10 @@ let client = SyncularClient::builder(generated::syncular::APP_SCHEMA)
 - Current runtime/client surfaces already expose dynamic hooks for diagnostics,
   events, auth lifecycle, network status, encryption config, CRDT adapters,
   blobs, presence, and live queries.
+- Current Rust/browser runtime pieces can already open local SQLite, install
+  app schema, apply generated mutations, and emit row/event metadata; WP-33
+  needs to shape this into a documented backend-less app mode instead of an
+  implicit test/demo capability.
 
 ## Next Action
 

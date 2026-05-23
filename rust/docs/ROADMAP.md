@@ -527,10 +527,13 @@ read-only review:
   app-installed extensions rather than executable generated schema behavior,
   and add generated per-version client schema metadata so servers can
   type-safely accept, transform, or reject older client schema versions with an
-  upgrade-required error. The current `createServerHandler` helper is
-  same-shape biased; WP-33 should add a generated/custom handler layer for
-  divergent server/client table shapes instead of forcing a declarative mapping
-  DSL.
+  upgrade-required error. It also makes backend-less app flows first-class:
+  local-sync-compatible clients should get generated local SQLite setup, typed
+  reads, safe mutations, row/field events, and a later path to remote sync,
+  while true local-only tables stay explicit. The current
+  `createServerHandler` helper is same-shape biased; WP-33 should add a
+  generated/custom handler layer for divergent server/client table shapes
+  instead of forcing a declarative mapping DSL.
 
 ## Later
 
