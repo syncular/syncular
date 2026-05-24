@@ -54,3 +54,4 @@ to this shape.
 31. [`WP-31 Rust Client Benchmark Parity And Performance Triage`](WP-31-rust-client-benchmark-parity-performance.md)
 32. [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](WP-32-realtime-recovery-fanout-external-notifications.md)
 33. [`WP-33 Unified App Contract And Runtime Extensions`](WP-33-unified-app-contract-and-runtime-extensions.md)
+34. [`WP-34 Rust-First Docs Information Architecture`](WP-34-rust-first-docs-information-architecture.md)
