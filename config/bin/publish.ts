@@ -48,37 +48,50 @@ function readPackageMeta(): { name: string; version: string } {
   return { name: parsed.name, version: parsed.version };
 }
 
-async function readPublishedVersion(
-  packageName: string
-): Promise<string | null> {
+function readNpmTag(): string {
+  const tag = (
+    process.env.SYNCULAR_NPM_TAG ??
+    process.env.npm_config_tag ??
+    process.env.NPM_CONFIG_TAG ??
+    'latest'
+  ).trim();
+
+  if (!/^[a-zA-Z0-9._-]+$/.test(tag)) {
+    throw new Error(`Invalid npm tag: ${tag}`);
+  }
+
+  return tag;
+}
+
+async function isPublishedVersion(
+  packageName: string,
+  version: string
+): Promise<boolean> {
+  const packageSpec = `${packageName}@${version}`;
   const result =
-    await $`npm view ${packageName} version --registry https://registry.npmjs.org/ --json`.nothrow();
+    await $`npm view ${packageSpec} version --registry https://registry.npmjs.org/ --json`.nothrow();
   if (result.exitCode === 0) {
     const raw = decodeOutput(result.stdout).trim();
     if (raw.length === 0) {
-      return null;
+      return false;
     }
 
     const parsed = JSON.parse(raw) as string | string[];
     if (typeof parsed === 'string') {
-      return parsed;
+      return parsed === version;
     }
 
-    if (parsed.length === 0) {
-      return null;
-    }
-
-    return parsed[parsed.length - 1] ?? null;
+    return parsed.includes(version);
   }
 
   const stderr = decodeOutput(result.stderr);
   if (stderr.includes('E404') || stderr.includes('404 Not Found')) {
-    return null;
+    return false;
   }
 
   const stdout = decodeOutput(result.stdout);
   throw new Error(
-    `Failed to query npm for ${packageName} (exit ${result.exitCode}).\nstdout:\n${stdout}\nstderr:\n${stderr}`
+    `Failed to query npm for ${packageSpec} (exit ${result.exitCode}).\nstdout:\n${stdout}\nstderr:\n${stderr}`
   );
 }
 
@@ -96,8 +109,9 @@ if (tarballs.length !== 1) {
 
 const [tarball] = tarballs;
 const packageMeta = readPackageMeta();
+const npmTag = readNpmTag();
 const publishResult =
-  await $`npm publish ${tarball} --tag latest --provenance`.nothrow();
+  await $`npm publish ${tarball} --tag ${npmTag} --provenance`.nothrow();
 if (publishResult.exitCode !== 0) {
   const stderr = decodeOutput(publishResult.stderr);
   const stdout = decodeOutput(publishResult.stdout);
@@ -112,8 +126,7 @@ if (publishResult.exitCode !== 0) {
     );
 
   if (isVersionAlreadyPublished) {
-    const publishedVersion = await readPublishedVersion(packageMeta.name);
-    if (publishedVersion === packageMeta.version) {
+    if (await isPublishedVersion(packageMeta.name, packageMeta.version)) {
       console.warn(
         `[syncular-publish] ${packageMeta.name}@${packageMeta.version} is already published; skipping.`
       );

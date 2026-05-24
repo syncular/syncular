@@ -70,6 +70,13 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-38 Release Automation`](work-packages/WP-38-release-automation.md)
+  - Accepted. Rust crates now share npm's release version source and staging
+    syntax. The `release` branch publishes `0.1.0-staging.<run>` prereleases
+    with npm tag `staging`; `v*` tags/manual stable dispatch publish exact
+    stable versions with npm tag `latest`. Cargo crates are stamped and
+    published in explicit dependency order, `main` stays checks-only for
+    publishing, and Rust native checks now dry-run Cargo package publishing.
 - `[x]` [`WP-37 Rust Crates Publishing`](work-packages/WP-37-rust-crates-publishing.md)
   - Accepted. Published `syncular`, `syncular-protocol`,
     `syncular-codegen`, `syncular-runtime`, `syncular-testkit`, and
