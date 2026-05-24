@@ -372,17 +372,13 @@ pub struct SyncScenarioTaskRow {
 }
 
 pub fn sync_conformance_fixture() -> SyncScenarioFixture {
-    serde_json::from_str(include_str!(
-        "../../../examples/todo-app/conformance/sync-scenarios.json"
-    ))
-    .expect("typed sync conformance JSON")
+    serde_json::from_str(include_str!("../conformance/sync-scenarios.json"))
+        .expect("typed sync conformance JSON")
 }
 
 pub fn sync_conformance() -> Value {
-    serde_json::from_str(include_str!(
-        "../../../examples/todo-app/conformance/sync-scenarios.json"
-    ))
-    .expect("sync conformance JSON")
+    serde_json::from_str(include_str!("../conformance/sync-scenarios.json"))
+        .expect("sync conformance JSON")
 }
 
 pub fn sync_conformance_str(path: &[&str]) -> String {
