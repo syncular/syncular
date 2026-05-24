@@ -141,11 +141,14 @@ const tasksHandler: ServerTableHandler = {
 Clients request subscriptions by table and scopes:
 
 ```typescript
-<SyncProvider
-  sync={sync}
-  identity={{ actorId: userId }}
-  ...
-/>
+await syncular.client.setSubscriptions([
+  {
+    id: `tasks:user:${userId}`,
+    table: 'tasks',
+    scopes: { user_id: userId },
+    params: {},
+  },
+]);
 ```
 
 ## Authorization Flow

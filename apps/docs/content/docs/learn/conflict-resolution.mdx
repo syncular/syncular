@@ -8,7 +8,7 @@ description: Handle concurrent edits with optimistic concurrency
 <Callout title="What you'll learn">
 - How Syncular detects conflicts using optimistic concurrency control
 - How field-level merge works to auto-resolve non-overlapping edits
-- The three resolution strategies: accept server, keep local, custom merge
+- The resolution strategies: keep server, retry local, dismiss, or custom merge
 - How to build a complete conflict resolution UI in React
 </Callout>
 
@@ -117,21 +117,19 @@ const result = performFieldLevelMerge(base, server, client);
 
 ### Last-Write-Wins
 
-For non-critical data where you want to avoid user intervention, you can auto-resolve with a last-write-wins strategy. Resolve the conflict by accepting the server version, then immediately push the client's changes with the updated `base_version`:
+For non-critical data where you want to avoid user intervention, you can
+auto-resolve with a last-write-wins strategy. Resolve the conflict by keeping
+the server version, then immediately push the client's changes with the latest
+base version:
 
 ```typescript
-import { resolveConflict } from '@syncular/client';
+async function lastWriteWins(syncular, conflict) {
+  await syncular.conflicts.resolve(conflict.id, 'keep-server');
 
-async function lastWriteWins(db, conflict, mutations) {
-  // Accept the server version to clear the conflict
-  await resolveConflict(db, {
-    id: conflict.id,
-    resolution: 'accept',
-  });
-
-  // Re-apply the client's intent on top of the latest version
-  // (base_version is now correct since we accepted the server row)
-  await mutations.tasks.update(conflict.rowId, conflict.localPayload);
+  await syncular.mutations.tasks.update(
+    conflict.rowId,
+    conflict.localPayload
+  );
 }
 ```
 
@@ -141,9 +139,8 @@ Combine `performFieldLevelMerge` with auto-resolution:
 
 ```typescript
 import { performFieldLevelMerge } from '@syncular/core';
-import { resolveConflict } from '@syncular/client';
 
-async function autoMerge(db, conflict, mutations) {
+async function autoMerge(syncular, conflict) {
   const serverRow = JSON.parse(conflict.serverRowJson);
   const result = performFieldLevelMerge(
     conflict.baseRow,
@@ -152,9 +149,11 @@ async function autoMerge(db, conflict, mutations) {
   );
 
   if (result.canMerge) {
-    // No overlapping field changes -- merge automatically
-    await resolveConflict(db, { id: conflict.id, resolution: 'accept' });
-    await mutations.tasks.update(conflict.rowId, result.mergedPayload);
+    await syncular.conflicts.resolve(conflict.id, 'keep-server');
+    await syncular.mutations.tasks.update(
+      conflict.rowId,
+      result.mergedPayload
+    );
   } else {
     // True conflict on specific fields -- show UI
     console.log('Manual resolution needed for:', result.conflictingFields);
@@ -169,34 +168,31 @@ async function autoMerge(db, conflict, mutations) {
 Keep the server's version and discard local changes:
 
 ```typescript
-import { resolveConflict } from '@syncular/client';
-
-await resolveConflict(db, {
-  id: conflict.id,
-  resolution: 'accept',
-});
+await syncular.conflicts.resolve(conflict.id, 'keep-server');
 ```
 
 ### 2. Keep Local Change (Retry)
 
-Overwrite with your local intent by resolving the conflict, then retrying the mutation:
+Retry the queued local intent against the latest server version:
 
 ```typescript
-await resolveConflict(db, {
-  id: conflict.id,
-  resolution: 'reject',
-});
-
-// Retry the mutation (now with the correct base_version)
-await m.tasks.update(task.id, { title: 'My title' });
+await syncular.conflicts.retryKeepLocal(conflict.id);
 ```
 
-### 3. Custom Merge
+### 3. Dismiss
+
+Mark the conflict resolved without retrying the local intent:
+
+```typescript
+await syncular.conflicts.resolve(conflict.id, 'dismiss');
+```
+
+### 4. Custom Merge
 
 Show a UI and let the user pick field by field:
 
 ```typescript
-async function mergeAndResolve(db, conflict, userChoices, mutations) {
+async function mergeAndResolve(syncular, conflict, userChoices) {
   const serverRow = JSON.parse(conflict.serverRowJson);
 
   // Build merged payload from user's per-field choices
@@ -208,14 +204,10 @@ async function mergeAndResolve(db, conflict, userChoices, mutations) {
     // 'server' keeps the value already in merged
   }
 
-  // Clear the conflict
-  await resolveConflict(db, {
-    id: conflict.id,
-    resolution: 'accept',
-  });
+  await syncular.conflicts.resolve(conflict.id, 'keep-server');
 
   // Apply the merged data as a new mutation
-  await mutations.tasks.update(conflict.rowId, merged);
+  await syncular.mutations.tasks.update(conflict.rowId, merged);
 }
 ```
 
@@ -258,39 +250,12 @@ const stats = useConflictStats();
 const unresolved = stats?.unresolved ?? 0;
 ```
 
-## Auto-Version Plugin
+## Version handling
 
-High-level stateful clients already include the incrementing version plugin by default:
-
-- `SyncProvider`
-- `Client`
-- `createClient`
-- `SyncularClient`
-
-You only need to wire it manually when you are composing low-level mutation/push helpers yourself.
-
-```typescript
-import { createIncrementingVersionPlugin } from '@syncular/client';
-
-const plugin = createIncrementingVersionPlugin();
-
-await client.sync(db, transport, handlers, {
-  ...options,
-  plugins: [plugin],
-});
-```
-
-This plugin does **not** read local rows or turn on conflict detection by itself.
-
-What it actually does:
-
-- leaves inserts and missing `base_version` values alone
-- tracks the next expected version after successful pushes
-- bumps already-present numeric `base_version` values forward for rapid sequential writes on the same row
-
-That prevents "self-conflicts" when one client enqueues several updates to the same row in quick succession.
-
-For the standard `server_version` flow, `useMutations()` and `useMutation()` already read the current local row version automatically unless you override `baseVersion` yourself.
+Generated mutations read the local `server_version` and attach a base version
+unless you override it explicitly. That avoids self-conflicts for ordinary
+`insert`, `update`, and `delete` calls while still letting the server reject
+stale offline writes from another device.
 
 ## Best Practices
 
