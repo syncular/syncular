@@ -21,6 +21,9 @@ to this shape.
 
 ## Active Order
 
+Keep this list in numeric order when adding a new work package. The roadmap is
+the status source; this file is the stable package index.
+
 1. [`WP-01 Protocol Integrity`](WP-01-protocol-integrity.md)
 2. [`WP-02 Protocol Kernel`](WP-02-protocol-kernel.md)
 3. [`WP-03 Binary Apply Performance`](WP-03-binary-apply-performance.md)
@@ -55,3 +58,4 @@ to this shape.
 32. [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](WP-32-realtime-recovery-fanout-external-notifications.md)
 33. [`WP-33 Unified App Contract And Runtime Extensions`](WP-33-unified-app-contract-and-runtime-extensions.md)
 34. [`WP-34 Rust-First Docs Information Architecture`](WP-34-rust-first-docs-information-architecture.md)
+35. [`WP-35 Rust-First Public Docs API Cleanup`](WP-35-rust-first-public-docs-api-cleanup.md)
