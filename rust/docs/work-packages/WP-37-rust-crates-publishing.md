@@ -1,6 +1,6 @@
 # WP-37 Rust Crates Publishing
 
-Status: `[~]` in progress
+Status: `[x]` accepted
 
 ## Goal
 
@@ -45,6 +45,11 @@ cargo publish --manifest-path rust/crates/syncular/Cargo.toml --dry-run
 - Removed demo todo fixtures from runtime/client default features.
 - Added versioned path dependencies for internal crates.
 - Added the `syncular` crate as a tiny legitimate reservation package.
+- Published `syncular`, `syncular-protocol`, `syncular-codegen`,
+  `syncular-runtime`, `syncular-testkit`, and `syncular-client` `0.1.0` to
+  crates.io.
+- Moved the shared sync conformance JSON into `syncular-testkit` so the
+  published testkit tarball verifies without reaching outside the crate.
 
 ## Evidence
 
@@ -63,21 +68,21 @@ cargo publish --manifest-path rust/crates/syncular/Cargo.toml --dry-run
   passed.
 - `cargo publish --manifest-path rust/crates/syncular/Cargo.toml --dry-run --allow-dirty`:
   passed.
-
-## Blocker
-
-Actual crates.io publish is blocked by account setup:
-
-```text
-A verified email address is required to publish crates to crates.io.
-```
-
-The upload attempt that hit this was:
-
-```bash
-cargo publish --manifest-path rust/crates/protocol/Cargo.toml --allow-dirty
-```
-
-After the crates.io account email is verified, publish `syncular` immediately to
-reserve the name, then publish `syncular-protocol`/`syncular-codegen` and
-continue the dependency chain.
+- `cargo publish --manifest-path rust/crates/syncular/Cargo.toml`: published.
+- `cargo publish --manifest-path rust/crates/protocol/Cargo.toml`: published.
+- `cargo publish --manifest-path rust/crates/codegen/Cargo.toml`: published.
+- `cargo publish --manifest-path rust/crates/runtime/Cargo.toml --allow-dirty`:
+  published after temporarily removing the runtime -> testkit dev-dependency to
+  avoid the initial crates.io bootstrap cycle.
+- `cargo publish --manifest-path rust/crates/testkit/Cargo.toml --allow-dirty`:
+  published after packaging the conformance fixture inside the crate.
+- `cargo publish --manifest-path rust/crates/client/Cargo.toml --allow-dirty`:
+  published after the crates.io new-crate rate limit cleared.
+- `cargo search syncular --limit 20`: verified all six crates are visible.
+- `cargo info syncular-client && cargo info syncular-testkit`: verified the
+  published SDK and testkit metadata.
+- Final local packaging-fix gates passed:
+  `cargo fmt --manifest-path rust/Cargo.toml --all -- --check`,
+  `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime`,
+  `cargo check --manifest-path rust/Cargo.toml -p syncular-testkit`, and
+  `cargo check --manifest-path rust/Cargo.toml -p syncular-client`.

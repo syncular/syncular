@@ -70,13 +70,13 @@ read-only review:
 
 ## Now
 
-- `[~]` [`WP-37 Rust Crates Publishing`](work-packages/WP-37-rust-crates-publishing.md)
-  - In progress. Preparing the Rust-first crates for crates.io publication:
-    `syncular-protocol`, `syncular-runtime`, `syncular-codegen`,
-    `syncular-client`, `syncular-testkit`, and the reserved `syncular` crate.
-    Demo fixtures are being removed from release defaults, internal
-    dependencies are versioned for crates.io, and every non-reservation crate
-    must pass `cargo publish --dry-run` before an actual publish.
+- `[x]` [`WP-37 Rust Crates Publishing`](work-packages/WP-37-rust-crates-publishing.md)
+  - Accepted. Published `syncular`, `syncular-protocol`,
+    `syncular-codegen`, `syncular-runtime`, `syncular-testkit`, and
+    `syncular-client` `0.1.0` to crates.io. Release defaults no longer include
+    demo fixtures, internal crate dependencies are versioned, `syncular` is
+    reserved as the canonical crate name, and `syncular-testkit` now packages
+    its conformance fixture inside the crate tarball.
 - `[x]` [`WP-36 Binding Example Clarity`](work-packages/WP-36-binding-example-clarity.md)
   - Accepted. Feature docs now state that product semantics are binding-neutral
     and binding-specific snippets are examples, not defaults. Presence,
