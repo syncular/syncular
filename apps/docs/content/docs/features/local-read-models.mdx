@@ -18,6 +18,12 @@ materialized summaries, and app-local indexes.
   versions change.
 - Use read models for measured hotspots, not as the default for every query.
 
+## App contract example
+
+Local read models are declared in the generated app contract. Today that
+contract is TypeScript-authored, then consumed by Rust, browser TypeScript,
+Swift, Kotlin, and JVM generated outputs.
+
 ```ts
 import { countByReadModel, defineSyncularClient } from '@syncular/typegen';
 

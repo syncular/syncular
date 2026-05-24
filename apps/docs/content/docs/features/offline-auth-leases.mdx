@@ -21,7 +21,13 @@ for a while after losing network access.
 Auth leases are not permanent authorization. They make offline intent auditable
 and bounded, while the server still owns final acceptance.
 
-## Client flow
+## Binding examples
+
+The lease contract is binding-neutral. Browser TypeScript, Rust, Swift, Kotlin,
+JVM, React Native, and desktop clients all store lease provenance locally and
+send it with generated leased mutations.
+
+### Browser TypeScript
 
 ```ts
 const lease = await syncular.issueAuthLease({

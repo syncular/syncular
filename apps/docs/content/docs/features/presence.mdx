@@ -17,7 +17,14 @@ signals that should not become durable row history.
 - Leave presence when a screen, editor, or document closes.
 - Treat presence as best-effort; durable state still belongs in synced rows.
 
-## Browser example
+## Binding examples
+
+Presence is the same runtime concept across bindings. The exact host API
+differs: browser and React expose TypeScript helpers, while native hosts expose
+presence through generated Swift/Kotlin/Java wrappers and the native lifecycle
+event stream.
+
+### Browser TypeScript
 
 ```ts
 await syncular.setSubscriptions([
@@ -42,10 +49,13 @@ syncular.presence.leave('user:user-1');
 unsubscribe();
 ```
 
-## Native lifecycle
+### Native lifecycle
 
-Native bindings expose presence handles. Tie the handle to a screen or editor
-lifecycle so closing or dropping it leaves presence automatically.
+Native bindings expose presence handles and events through the generated
+Swift/Kotlin/Java clients. Tie the handle to a screen or editor lifecycle so
+closing or dropping it leaves presence automatically. Use
+[Native Lifecycle](/docs/client/native#ui-lifecycle) for the host-specific
+shape.
 
 ## Watch-outs
 
