@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, mock, test } from 'bun:test';
 import {
+  attachServiceWorkerServer,
   configureServiceWorkerServer,
   createServiceWorkerServer,
   createSyncWakeMessageResolver,
@@ -93,49 +94,6 @@ describe('createSyncWakeMessageResolver', () => {
     expect(wakeMessage?.sourceClientId).toBe('client-a');
     expect(typeof wakeMessage?.timestamp).toBe('number');
   });
-
-  test('supports legacy single-commit push payloads for wake messages', async () => {
-    const resolver = createSyncWakeMessageResolver();
-    const request = new Request('https://demo.local/api/sync', {
-      method: 'POST',
-      headers: {
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        clientId: 'client-a',
-        push: {
-          clientCommitId: 'commit-legacy',
-          operations: [{ table: 'tasks', op: 'upsert' }],
-          schemaVersion: 1,
-        },
-      }),
-    });
-
-    const response = new Response(
-      JSON.stringify({
-        push: {
-          status: 'applied',
-          commitSeq: 43,
-        },
-      }),
-      {
-        status: 200,
-        headers: {
-          'content-type': 'application/json',
-        },
-      }
-    );
-
-    const wakeContext = await resolver.captureContext(request);
-    const wakeMessage = await resolver.resolveMessage({
-      request,
-      response,
-      wakeContext,
-    });
-
-    expect(wakeMessage?.cursor).toBe(43);
-    expect(wakeMessage?.sourceClientId).toBe('client-a');
-  });
 });
 
 describe('createServiceWorkerServer', () => {
@@ -167,8 +125,12 @@ describe('createServiceWorkerServer', () => {
         return new Response(
           JSON.stringify({
             push: {
-              status: 'applied',
-              commitSeq: 7,
+              commits: [
+                {
+                  status: 'applied',
+                  commitSeq: 7,
+                },
+              ],
             },
           }),
           {
@@ -210,6 +172,148 @@ describe('createServiceWorkerServer', () => {
 
     expect(wakeMessage?.cursor).toBe(7);
     expect(wakeMessage?.sourceClientId).toBe('client-x');
+  });
+
+  test('returns a stable envelope for default handler errors', async () => {
+    const server = createServiceWorkerServer({
+      handleRequest: async () => {
+        throw new Error('boom');
+      },
+    });
+
+    const response = await server.handleRequest(
+      new Request('https://demo.local/api/sync')
+    );
+
+    expect(response.status).toBe(500);
+    expect(await response.json()).toMatchObject({
+      error: 'runtime.internal',
+      code: 'runtime.internal',
+      category: 'internal',
+      retryable: false,
+      recommendedAction: 'inspectServer',
+    });
+  });
+});
+
+describe('attachServiceWorkerServer', () => {
+  const originalBroadcastChannel = globalThis.BroadcastChannel;
+
+  afterEach(() => {
+    if (originalBroadcastChannel) {
+      Object.defineProperty(globalThis, 'BroadcastChannel', {
+        configurable: true,
+        value: originalBroadcastChannel,
+      });
+    } else {
+      // @ts-expect-error test cleanup
+      delete globalThis.BroadcastChannel;
+    }
+  });
+
+  function createFetchHarness() {
+    const listeners = new Map<string, (event: unknown) => void>();
+    const wakeMessage = {
+      type: SERVICE_WORKER_WAKE_MESSAGE_TYPE,
+      timestamp: Date.now(),
+      cursor: 7,
+      sourceClientId: 'client-a',
+    };
+    const response = new Response('ok', { status: 200 });
+    let responsePromise: Promise<Response> | null = null;
+
+    const server = {
+      shouldHandleRequest: () => true,
+      captureWakeContext: async () => ({}),
+      handleRequest: async () => response,
+      resolveWakeMessage: async () => wakeMessage,
+    };
+
+    const globalScope = {
+      addEventListener(type: string, listener: (event: unknown) => void) {
+        listeners.set(type, listener);
+      },
+      location: { origin: 'https://demo.local' },
+      clients: {
+        matchAll: mock(async () => []),
+      },
+    };
+
+    attachServiceWorkerServer(globalScope, server, {
+      manageLifecycle: false,
+      channelName: 'test-channel',
+    });
+
+    const triggerFetch = async () => {
+      const listener = listeners.get('fetch');
+      if (!listener) {
+        throw new Error('Expected fetch listener to be registered.');
+      }
+
+      listener({
+        request: new Request('https://demo.local/api/sync'),
+        respondWith(value: Response | Promise<Response>) {
+          responsePromise = Promise.resolve(value);
+        },
+      });
+
+      return await responsePromise;
+    };
+
+    return { globalScope, wakeMessage, triggerFetch };
+  }
+
+  test('broadcasts wake messages over BroadcastChannel when available', async () => {
+    const channelMessages: Array<{ channelName: string; message: unknown }> =
+      [];
+
+    class FakeBroadcastChannel {
+      constructor(readonly name: string) {}
+
+      postMessage(message: unknown): void {
+        channelMessages.push({ channelName: this.name, message });
+      }
+
+      close(): void {}
+    }
+
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: FakeBroadcastChannel,
+    });
+
+    const { globalScope, wakeMessage, triggerFetch } = createFetchHarness();
+    const response = await triggerFetch();
+
+    expect(response.status).toBe(200);
+    expect(channelMessages).toEqual([
+      { channelName: 'test-channel', message: wakeMessage },
+    ]);
+    expect(globalScope.clients.matchAll).not.toHaveBeenCalled();
+  });
+
+  test('falls back to client postMessage when BroadcastChannel is unavailable', async () => {
+    Object.defineProperty(globalThis, 'BroadcastChannel', {
+      configurable: true,
+      value: undefined,
+    });
+
+    const { globalScope, wakeMessage, triggerFetch } = createFetchHarness();
+    const clientMessages: unknown[] = [];
+    globalScope.clients.matchAll = mock(async () => [
+      {
+        postMessage(message: unknown): void {
+          clientMessages.push(message);
+        },
+      },
+    ]);
+
+    const response = await triggerFetch();
+    await Promise.resolve();
+
+    expect(response.status).toBe(200);
+    expect(globalScope.clients.matchAll).toHaveBeenCalledTimes(1);
+    expect(clientMessages).toEqual([wakeMessage]);
   });
 });
 

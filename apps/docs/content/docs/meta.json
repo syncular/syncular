@@ -2,9 +2,11 @@
   "title": "Syncular",
   "pages": [
     "index",
-    "introduction",
-    "concepts",
-    "build",
+    "start",
+    "learn",
+    "client",
+    "server",
+    "features",
     "testing",
     "operate",
     "reference"

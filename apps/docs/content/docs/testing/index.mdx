@@ -1,21 +1,33 @@
 ---
 title: Testing
-description: Runner-agnostic testing for Syncular with @syncular/testkit.
+description: Test Syncular apps with TypeScript and Rust testkits instead of broad mocks.
 ---
 
 # Testing
 
-Use `@syncular/testkit` to test Syncular behavior across:
+Syncular has two public testkit surfaces:
+
+- `@syncular/testkit` for TypeScript, server, browser, and package-level tests.
+- `syncular-testkit` for Rust/native app tests against generated schemas and
+  the Rust runtime.
+
+Use these instead of mocking Syncular internals. Both testkits aim for the same
+shape: real local SQLite behavior, real sync semantics, deterministic fixtures,
+and app-owned domain assertions.
+
+Use `@syncular/testkit` to test TypeScript/server/browser behavior across:
 
 - fast in-process tests
 - real HTTP integration tests
 - runtime-oriented tests (node, deno, cloudflare)
 
-The API is test-runner agnostic. You can use Bun, Vitest, Jest, or other runners without changing testkit code.
+The TypeScript API is test-runner agnostic. You can use Bun, Vitest, Jest, or
+other runners without changing testkit code. For Rust/native generated clients,
+use [Rust / Native Testkit](/docs/client/testing).
 
-If you are still evaluating whether Syncular is trustworthy enough to adopt, start with [Testing & Confidence](/docs/introduction/testing-and-confidence).
+If you are still evaluating whether Syncular is trustworthy enough to adopt, start with [Testing & Confidence](/docs/start/testing-and-confidence).
 
-If you are still wiring the system itself, use [Build](/docs/build) for implementation guides first.
+If you are still wiring the system itself, use [Client](/docs/client), [Server](/docs/server), and [Features](/docs/features) for implementation guides first.
 
 ## Choose your path
 
@@ -35,15 +47,20 @@ If you are still wiring the system itself, use [Build](/docs/build) for implemen
   <Card title="Runtime Patterns" href="/docs/testing/runtime">
     Share server handlers and runtime helpers across node/deno/cloudflare tests
   </Card>
+  <Card title="Rust / Native Testkit" href="/docs/client/testing">
+    Test generated Rust/native clients with `syncular-testkit` and real runtime clients
+  </Card>
   <Card title="Real-World Examples" href="/docs/testing/examples-offline-reconnect">
     Production-style flows for offline reconnect, realtime collaboration, and runtime release smoke checks
   </Card>
-  <Card title="CLI" href="/docs/build/cli">
+  <Card title="CLI" href="/docs/reference/cli">
     Scaffold projects and run migration workflows from the CLI section
   </Card>
 </Cards>
 
 ## API groups
+
+These groups refer to the TypeScript `@syncular/testkit` package:
 
 | Group | Main exports |
 |---|---|
@@ -56,10 +73,10 @@ If you are still wiring the system itself, use [Build](/docs/build) for implemen
 | Assertions | `assertOutboxEmpty`, `assertConflictCount`, `assertRowExists`, `waitForOutboxEmpty` |
 | Faults | `withFaults`, `withRecording`, `createMockTransport` |
 
-Need a rollout checklist rather than APIs? See [Testing Strategy](/docs/build/testing).
+Need a rollout checklist rather than APIs? See [Testing Strategy](/docs/testing/strategy).
 
 ## Continue with
 
-- Need implementation guides? Go back to [Build](/docs/build)
+- Need implementation guides? Go to [Client](/docs/client), [Server](/docs/server), and [Features](/docs/features)
 - Debugging a live system rather than writing tests? Use [Operate](/docs/operate)
 - Want exact helper APIs? Go to [Reference](/docs/reference)

@@ -105,6 +105,24 @@ describe('column codecs', () => {
     expect(hydrated).toEqual({ id: 't1', enabled: true });
   });
 
+  it('does not copy rows when codec columns are null', () => {
+    const tableCodecs = toTableColumnCodecs(
+      'tasks',
+      (col) => {
+        if (col.table === 'tasks' && col.column === 'metadata') {
+          return codecs.stringJson<{ tags: string[] }>();
+        }
+        return undefined;
+      },
+      ['metadata']
+    );
+
+    const dbRow = { id: 't1', metadata: null };
+    const hydrated = applyCodecsFromDbRow(dbRow, tableCodecs, 'sqlite');
+
+    expect(hydrated).toBe(dbRow);
+  });
+
   it('parses sqlite boolean string and numeric variants', () => {
     const tableCodecs = toTableColumnCodecs(
       'tasks',

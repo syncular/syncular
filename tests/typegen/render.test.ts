@@ -123,45 +123,7 @@ describe('renderTypes', () => {
     expect(code).toMatchSnapshot();
   });
 
-  it('renders extendsSyncClientDb import + extends', () => {
-    const code = renderTypes({
-      schemas: [makeSchema()],
-      extendsSyncClientDb: true,
-    });
-    expect(code).toContain(
-      "import type { SyncClientDb } from '@syncular/client';"
-    );
-    expect(code).toContain('export interface ClientDb extends SyncClientDb {');
-    expect(code).toMatchSnapshot();
-  });
-
-  it('supports umbrella syncular import type', () => {
-    const code = renderTypes({
-      schemas: [makeSchema()],
-      extendsSyncClientDb: true,
-      syncularImportType: 'umbrella',
-    });
-    expect(code).toContain(
-      "import type { SyncClientDb } from 'syncular/client';"
-    );
-    expect(code).toMatchSnapshot();
-  });
-
-  it('supports explicit package mapping for syncular imports', () => {
-    const code = renderTypes({
-      schemas: [makeSchema()],
-      extendsSyncClientDb: true,
-      syncularImportType: {
-        client: 'my-sync/client',
-      },
-    });
-    expect(code).toContain(
-      "import type { SyncClientDb } from 'my-sync/client';"
-    );
-    expect(code).toMatchSnapshot();
-  });
-
-  it('does not include SyncClientDb when not extending', () => {
+  it('does not include old client base types', () => {
     const code = renderTypes({ schemas: [makeSchema()] });
     expect(code).not.toContain('SyncClientDb');
     expect(code).toContain('export interface ClientDb {');

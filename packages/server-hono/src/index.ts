@@ -30,13 +30,15 @@ export * from './proxy';
 // Rate limiting
 export * from './rate-limit';
 
+// Realtime binary sync-pack helpers
+export * from './realtime-sync-packs';
+
 // Route types and factory
 export {
   type CreateSyncRoutesOptions,
   createSyncRoutes,
   getSyncRealtimeUnsubscribe,
   getSyncWebSocketConnectionManager,
-  type LegacySyncCorsOptions,
   type NormalizedSyncCorsConfig,
   normalizeSyncCorsConfig,
   type SyncCorsOptions,

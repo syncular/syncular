@@ -1,0 +1,61 @@
+{
+  "name": "binary-snapshot-table-v1-tasks",
+  "generatedBy": "packages/core/src/snapshot-chunks.ts encodeBinarySnapshotTable",
+  "encoding": "binary-table-v1",
+  "wireVersion": 1,
+  "encodedHex": "534254310100000005007461736b73060002006964010005007469746c6501000e007365727665725f76657273696f6e0200050073636f726503000400646f6e65040008006d6574616461746105010200000000060000007461736b2d310600000052656d6f74652a00000000000000000000000000f83f002d0000007b227072696f72697479223a2268696768222c2274616773223a5b2272757374222c2266697874757265225d7d20060000007461736b2d3204000000446f6e652b0000000000000000000000000002c001",
+  "decodedTable": {
+    "table": "tasks",
+    "columns": [
+      {
+        "name": "id",
+        "type": "string"
+      },
+      {
+        "name": "title",
+        "type": "string"
+      },
+      {
+        "name": "server_version",
+        "type": "integer"
+      },
+      {
+        "name": "score",
+        "type": "float"
+      },
+      {
+        "name": "done",
+        "type": "boolean"
+      },
+      {
+        "name": "metadata",
+        "type": "json",
+        "nullable": true
+      }
+    ],
+    "rows": [
+      {
+        "id": "task-1",
+        "title": "Remote",
+        "server_version": 42,
+        "score": 1.5,
+        "done": false,
+        "metadata": {
+          "priority": "high",
+          "tags": [
+            "rust",
+            "fixture"
+          ]
+        }
+      },
+      {
+        "id": "task-2",
+        "title": "Done",
+        "server_version": 43,
+        "score": -2.25,
+        "done": true,
+        "metadata": null
+      }
+    ]
+  }
+}

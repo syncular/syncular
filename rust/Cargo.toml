@@ -1,0 +1,17 @@
+[workspace]
+members = [
+    "crates/syncular",
+    "crates/protocol",
+    "crates/runtime",
+    "crates/client",
+    "crates/codegen",
+    "crates/testkit",
+    "examples/todo-app",
+]
+resolver = "2"
+
+[profile.release]
+opt-level = "z"
+lto = true
+codegen-units = 1
+panic = "abort"

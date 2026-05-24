@@ -27,10 +27,17 @@ function normalizeConfig(
   config: ConnectionConfig | null | undefined
 ): ConnectionConfig | null {
   if (!config) return null;
-  const serverUrl = config.serverUrl?.trim() ?? '';
+  const serverUrl = normalizeServerUrl(config.serverUrl);
   const token = config.token?.trim() ?? '';
   if (!serverUrl || !token) return null;
   return { serverUrl, token };
+}
+
+function normalizeServerUrl(value: string | null | undefined): string {
+  const trimmed = value?.trim() ?? '';
+  if (!trimmed) return '';
+  const withoutConsoleSuffix = trimmed.replace(/\/console\/?$/u, '');
+  return withoutConsoleSuffix || '/';
 }
 
 function getStorageForMode(mode: ConnectionStorageMode): Storage | null {

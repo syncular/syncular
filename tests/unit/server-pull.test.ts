@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { gunzipSync } from 'node:zlib';
-import { createDatabase, decodeSnapshotRows } from '@syncular/core';
+import {
+  createDatabase,
+  decodeBinarySnapshotTable,
+  encodeBinarySnapshotTable,
+  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
+  sha256Hex,
+} from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
 import {
   createServerHandler,
@@ -9,6 +15,7 @@ import {
   pull,
   pushCommit,
   readSnapshotChunk,
+  type ServerTableHandler,
   type SyncCoreDb,
   type SyncSnapshot,
 } from '@syncular/server';
@@ -30,11 +37,25 @@ interface ClientDb {
   tasks: TasksTable;
 }
 
-function decodeSnapshotRowsGzip(
-  bytes: Uint8Array | ReadableStream<Uint8Array>
+function decodeSnapshotChunkRowsGzip(
+  bytes: Uint8Array | ReadableStream<Uint8Array>,
+  encoding: string
 ): unknown[] {
   if (!(bytes instanceof Uint8Array)) throw new Error('Expected Uint8Array');
-  return decodeSnapshotRows(gunzipSync(bytes));
+  const decoded = gunzipSync(bytes);
+  if (encoding === SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1) {
+    return decodeBinarySnapshotTable(decoded).rows;
+  }
+  throw new Error(`Unexpected snapshot encoding: ${encoding}`);
+}
+
+function snapshotBodyBytes(
+  bytes: Uint8Array | ReadableStream<Uint8Array>
+): Uint8Array {
+  if (!(bytes instanceof Uint8Array)) {
+    throw new Error('Expected Uint8Array snapshot body in this test');
+  }
+  return bytes;
 }
 
 async function readSnapshotRows(
@@ -55,7 +76,7 @@ async function readSnapshotRows(
     throw new Error('Expected stored snapshot chunk');
   }
 
-  return decodeSnapshotRowsGzip(chunk.body);
+  return decodeSnapshotChunkRowsGzip(chunk.body, chunkRef.encoding);
 }
 
 describe('pull', () => {
@@ -136,6 +157,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [],
       },
@@ -163,6 +185,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -170,6 +193,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -189,6 +213,676 @@ describe('pull', () => {
     expect(rows.length).toBe(2);
   });
 
+  it('passes the requested client schema version into snapshot handlers', async () => {
+    let seenSchemaVersion = 0;
+    const handlers = makeHandlers({
+      snapshot: async (ctx) => {
+        seenSchemaVersion = ctx.schemaVersion;
+        return { rows: [], nextCursor: null };
+      },
+    });
+
+    await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'schema-reader',
+        schemaVersion: 6,
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+            crdtStateVectors: [],
+          },
+        ],
+      },
+    });
+
+    expect(seenSchemaVersion).toBe(6);
+  });
+
+  it('projects incremental pull changes through the table handler schema hook', async () => {
+    const baseHandlers = makeHandlers();
+    const baseHandler = baseHandlers.byTable.get('tasks');
+    if (!baseHandler) throw new Error('Expected tasks handler');
+    let seenSchemaVersion = 0;
+    const projectedHandler: ServerTableHandler<ServerDb> = {
+      ...baseHandler,
+      projectChangeForVersion(change, schemaVersion) {
+        seenSchemaVersion = schemaVersion;
+        if (
+          schemaVersion === 6 &&
+          change.row_json &&
+          typeof change.row_json === 'object' &&
+          !Array.isArray(change.row_json)
+        ) {
+          const { server_version: _serverVersion, ...row } =
+            change.row_json as TasksTable;
+          return { ...change, row_json: row };
+        }
+        return change;
+      },
+    };
+    const handlers = createServerHandlerCollection<ServerDb>([
+      projectedHandler,
+    ]);
+
+    await pushTask(handlers, 'schema-project-task', 'Initial');
+    const bootstrap = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'schema-project-reader',
+        schemaVersion: 6,
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+            crdtStateVectors: [],
+          },
+        ],
+      },
+    });
+
+    await pushTask(handlers, 'schema-project-task', 'Changed');
+    const result = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'schema-project-reader',
+        schemaVersion: 6,
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: bootstrap.response.subscriptions[0]!.nextCursor,
+            crdtStateVectors: [],
+          },
+        ],
+      },
+    });
+
+    expect(seenSchemaVersion).toBe(6);
+    const row = result.response.subscriptions[0]?.commits[0]?.changes[0]
+      ?.row_json as Record<string, unknown>;
+    expect(row).toMatchObject({
+      id: 'schema-project-task',
+      user_id: 'u1',
+      title: 'Changed',
+    });
+    expect(row).not.toHaveProperty('server_version');
+  });
+
+  it('keeps snapshot chunk cache entries separated by client schema version', async () => {
+    const handlers = makeHandlers();
+    await pushTask(handlers, 't-schema-cache', 'Schema cached task');
+
+    const pullSnapshot = async (schemaVersion: number) => {
+      const result = await pull({
+        db,
+        dialect,
+        handlers,
+        auth: { actorId: 'u1' },
+        request: {
+          clientId: `schema-cache-${schemaVersion}`,
+          schemaVersion,
+          limitCommits: 10,
+          subscriptions: [
+            {
+              id: 's1',
+              table: 'tasks',
+              scopes: { user_id: 'u1' },
+              cursor: -1,
+              crdtStateVectors: [],
+            },
+          ],
+        },
+      });
+      const snapshot = result.response.subscriptions[0]?.snapshots?.[0];
+      if (!snapshot?.chunks?.[0]) {
+        throw new Error('Expected chunked snapshot');
+      }
+      return snapshot;
+    };
+
+    const schema6First = await pullSnapshot(6);
+    const schema6Second = await pullSnapshot(6);
+    const schema7 = await pullSnapshot(7);
+
+    expect(schema6Second.chunks?.[0]?.id).toBe(schema6First.chunks?.[0]?.id);
+    expect(schema7.chunks?.[0]?.id).not.toBe(schema6First.chunks?.[0]?.id);
+    await expect(readSnapshotRows(db, schema7)).resolves.toEqual([
+      {
+        id: 't-schema-cache',
+        user_id: 'u1',
+        title: 'Schema cached task',
+        server_version: 1,
+      },
+    ]);
+  });
+
+  it('emits binary snapshot chunks when the client requests them', async () => {
+    const handlers = makeHandlers();
+
+    await pushTask(handlers, 'task-1', 'First Task');
+    await pushTask(handlers, 'task-2', 'Second Task');
+
+    const res = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        schemaVersion: 1,
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+            crdtStateVectors: [],
+          },
+        ],
+      },
+    });
+
+    const snapshot = res.response.subscriptions[0]!.snapshots![0]!;
+    const chunkRef = snapshot.chunks?.[0];
+    expect(chunkRef?.encoding).toBe(
+      SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1
+    );
+
+    const chunk = await readSnapshotChunk(db, chunkRef!.id);
+    if (!chunk) throw new Error('Expected stored snapshot chunk');
+    expect(chunkRef!.sha256).toBe(
+      await sha256Hex(snapshotBodyBytes(chunk.body))
+    );
+    const decoded = decodeBinarySnapshotTable(
+      gunzipSync(snapshotBodyBytes(chunk.body))
+    );
+    expect(decoded.table).toBe('tasks');
+    expect(decoded.columns.map((column) => column.name).sort()).toEqual([
+      'id',
+      'server_version',
+      'title',
+      'user_id',
+    ]);
+    expect(decoded.rows.map((row) => row.title).sort()).toEqual([
+      'First Task',
+      'Second Task',
+    ]);
+  });
+
+  it('keeps bootstrap snapshots chunked when resync could otherwise inline small rows', async () => {
+    const handlers = makeHandlers();
+
+    await pushTask(handlers, 'task-1', 'First Task');
+    await pushTask(handlers, 'task-2', 'Second Task');
+
+    const res = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c2',
+        schemaVersion: 1,
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: 999999,
+            crdtStateVectors: [],
+          },
+        ],
+      },
+    });
+
+    const snapshot = res.response.subscriptions[0]!.snapshots![0]!;
+    expect(snapshot.rows).toEqual([]);
+    expect(snapshot.chunks?.[0]?.encoding).toBe(
+      SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1
+    );
+  });
+
+  it('uses binary snapshot chunk continuation metadata to skip cached snapshot queries', async () => {
+    let snapshotQueryCount = 0;
+    const handlers = makeHandlers({
+      snapshotBinaryColumns: [
+        { name: 'id', type: 'string' },
+        { name: 'user_id', type: 'string' },
+        { name: 'title', type: 'string' },
+        { name: 'server_version', type: 'integer' },
+      ],
+      snapshot: async (ctx) => {
+        snapshotQueryCount += 1;
+        let query = ctx.db
+          .selectFrom('tasks')
+          .selectAll()
+          .where('user_id', '=', ctx.actorId);
+        if (ctx.cursor !== null) {
+          query = query.where('id', '>', ctx.cursor);
+        }
+        const rows = await query
+          .orderBy('id', 'asc')
+          .limit(ctx.limit + 1)
+          .execute();
+        const pageRows = rows.slice(0, ctx.limit);
+        const hasMore = rows.length > ctx.limit;
+        const nextCursor = hasMore
+          ? (pageRows[pageRows.length - 1]?.id ?? null)
+          : null;
+        return { rows: pageRows, nextCursor };
+      },
+    });
+
+    for (let index = 0; index < 5; index += 1) {
+      await pushTask(handlers, `task-${index}`, `Task ${index}`);
+    }
+
+    const pullRequest = (clientId: string) =>
+      pull({
+        db,
+        dialect,
+        handlers,
+        auth: { actorId: 'u1' },
+        request: {
+          clientId,
+          schemaVersion: 1,
+          limitCommits: 10,
+          limitSnapshotRows: 2,
+          maxSnapshotPages: 3,
+          subscriptions: [
+            {
+              id: 's1',
+              table: 'tasks',
+              scopes: { user_id: 'u1' },
+              cursor: -1,
+              crdtStateVectors: [],
+            },
+          ],
+        },
+      });
+
+    await pullRequest('c-cache-warm');
+    expect(snapshotQueryCount).toBe(3);
+
+    snapshotQueryCount = 0;
+    const cached = await pullRequest('c-cache-hit');
+    expect(snapshotQueryCount).toBe(0);
+
+    const snapshot = cached.response.subscriptions[0]!.snapshots![0]!;
+    expect(snapshot.isLastPage).toBe(true);
+    const chunkRef = snapshot.chunks?.[0];
+    expect(chunkRef?.encoding).toBe(
+      SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1
+    );
+    const chunk = await readSnapshotChunk(db, chunkRef!.id);
+    if (!chunk) throw new Error('Expected stored snapshot chunk');
+    const decoded = decodeBinarySnapshotTable(
+      gunzipSync(snapshotBodyBytes(chunk.body))
+    );
+    expect(decoded.rows).toHaveLength(5);
+  });
+
+  it('uses stable binary chunk cache keys when page size exceeds bundle target', async () => {
+    let snapshotQueryCount = 0;
+    const rows = Array.from({ length: 5 }, (_, index) => ({
+      id: `task-${index}`,
+      user_id: 'u1',
+      title: `Task ${index}`,
+      server_version: 1,
+    }));
+    const handlers = makeHandlers({
+      snapshotBinaryColumns: [
+        { name: 'id', type: 'string' },
+        { name: 'user_id', type: 'string' },
+        { name: 'title', type: 'string' },
+        { name: 'server_version', type: 'integer' },
+      ],
+      snapshot: async (ctx) => {
+        snapshotQueryCount += 1;
+        const start =
+          ctx.cursor == null
+            ? 0
+            : rows.findIndex((row) => row.id > ctx.cursor!);
+        const offset = start < 0 ? rows.length : start;
+        const pageRows = rows.slice(offset, offset + ctx.limit);
+        const nextRow = rows[offset + ctx.limit - 1];
+        return {
+          rows: pageRows,
+          nextCursor:
+            offset + ctx.limit < rows.length && nextRow ? nextRow.id : null,
+        };
+      },
+    });
+
+    const pullRequest = (clientId: string) =>
+      pull({
+        db,
+        dialect,
+        handlers,
+        auth: { actorId: 'u1' },
+        request: {
+          clientId,
+          schemaVersion: 1,
+          limitCommits: 10,
+          limitSnapshotRows: 60_000,
+          maxSnapshotPages: 1,
+          subscriptions: [
+            {
+              id: 's1',
+              table: 'tasks',
+              scopes: { user_id: 'u1' },
+              cursor: -1,
+              crdtStateVectors: [],
+            },
+          ],
+        },
+      });
+
+    await pullRequest('c-large-page-cache-warm');
+    expect(snapshotQueryCount).toBe(1);
+
+    snapshotQueryCount = 0;
+    const cached = await pullRequest('c-large-page-cache-hit');
+    expect(snapshotQueryCount).toBe(0);
+    expect(cached.response.subscriptions[0]!.snapshots![0]!.isLastPage).toBe(
+      true
+    );
+  });
+
+  it('uses handler-provided binary snapshot columns when available', async () => {
+    const handlers = makeHandlers({
+      snapshotBinaryColumns: [
+        { name: 'id', type: 'string' },
+        { name: 'user_id', type: 'string' },
+        { name: 'title', type: 'string' },
+        { name: 'server_version', type: 'integer' },
+      ],
+    });
+
+    await pushTask(handlers, 'task-1', 'First Task');
+
+    const res = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        schemaVersion: 1,
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+            crdtStateVectors: [],
+          },
+        ],
+      },
+    });
+
+    const chunkRef = res.response.subscriptions[0]!.snapshots![0]!.chunks![0]!;
+    const chunk = await readSnapshotChunk(db, chunkRef.id);
+    if (!chunk) throw new Error('Expected stored snapshot chunk');
+    const decoded = decodeBinarySnapshotTable(
+      gunzipSync(snapshotBodyBytes(chunk.body))
+    );
+
+    expect(decoded.columns).toEqual([
+      { name: 'id', type: 'string' },
+      { name: 'user_id', type: 'string' },
+      { name: 'title', type: 'string' },
+      { name: 'server_version', type: 'integer' },
+    ]);
+    expect(decoded.rows).toEqual([
+      {
+        id: 'task-1',
+        user_id: 'u1',
+        title: 'First Task',
+        server_version: 1,
+      },
+    ]);
+  });
+
+  it('attaches generated snapshot binary metadata at the handler collection boundary', async () => {
+    const columns = [
+      { name: 'id', type: 'string' },
+      { name: 'user_id', type: 'string' },
+      { name: 'title', type: 'string' },
+      { name: 'server_version', type: 'integer' },
+    ] as const;
+    let encoderCallCount = 0;
+    const taskHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+    const handlers = createServerHandlerCollection<ServerDb>([taskHandler], {
+      snapshotBinary: {
+        columns: { tasks: columns },
+        encoders: {
+          tasks: (rows) => {
+            encoderCallCount += 1;
+            return encodeBinarySnapshotTable({
+              table: 'tasks',
+              columns: [...columns],
+              rows: rows as Record<string, unknown>[],
+            });
+          },
+        },
+        columnsForVersion: (table, schemaVersion) =>
+          table === 'tasks' && schemaVersion === 6 ? columns : undefined,
+        encoderForVersion: (_table, schemaVersion) =>
+          schemaVersion === 6 ? null : undefined,
+      },
+    });
+    const resolvedTaskHandler = handlers.byTable.get('tasks');
+    expect(resolvedTaskHandler?.snapshotBinaryColumnsForVersion?.(6)).toEqual(
+      columns
+    );
+    expect(resolvedTaskHandler?.snapshotBinaryEncoderForVersion?.(6)).toBeNull();
+
+    await pushTask(handlers, 'task-1', 'First Task');
+
+    const res = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c1',
+        schemaVersion: 1,
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+            crdtStateVectors: [],
+          },
+        ],
+      },
+    });
+
+    expect(encoderCallCount).toBe(1);
+    const chunkRef = res.response.subscriptions[0]!.snapshots![0]!.chunks![0]!;
+    const chunk = await readSnapshotChunk(db, chunkRef.id);
+    if (!chunk) throw new Error('Expected stored snapshot chunk');
+    const decoded = decodeBinarySnapshotTable(
+      gunzipSync(snapshotBodyBytes(chunk.body))
+    );
+
+    expect(decoded.columns).toEqual([...columns]);
+    expect(decoded.rows).toEqual([
+      {
+        id: 'task-1',
+        user_id: 'u1',
+        title: 'First Task',
+        server_version: 1,
+      },
+    ]);
+  });
+
+  it('uses schema-versioned binary metadata for old-client bootstrap chunks', async () => {
+    const historicalColumns = [
+      { name: 'id', type: 'string' },
+      { name: 'user_id', type: 'string' },
+      { name: 'title', type: 'string' },
+      { name: 'server_version', type: 'integer' },
+    ] as const;
+    let currentEncoderCallCount = 0;
+    const handlers = makeHandlers({
+      snapshotBinaryColumns: [
+        ...historicalColumns,
+        { name: 'current_only', type: 'string', nullable: true },
+      ],
+      snapshotBinaryColumnsForVersion: (schemaVersion) =>
+        schemaVersion === 6 ? historicalColumns : undefined,
+      snapshotBinaryEncoder: (rows) => {
+        currentEncoderCallCount += 1;
+        return encodeBinarySnapshotTable({
+          table: 'tasks',
+          columns: [
+            ...historicalColumns,
+            { name: 'current_only', type: 'string', nullable: true },
+          ],
+          rows: rows as Record<string, unknown>[],
+        });
+      },
+      snapshotBinaryEncoderForVersion: (schemaVersion) =>
+        schemaVersion === 6 ? null : undefined,
+    });
+
+    await pushTask(handlers, 'task-1', 'First Task');
+
+    const res = await pull({
+      db,
+      dialect,
+      handlers,
+      auth: { actorId: 'u1' },
+      request: {
+        clientId: 'c-schema-6',
+        schemaVersion: 6,
+        limitCommits: 10,
+        subscriptions: [
+          {
+            id: 's1',
+            table: 'tasks',
+            scopes: { user_id: 'u1' },
+            cursor: -1,
+            crdtStateVectors: [],
+          },
+        ],
+      },
+    });
+
+    expect(currentEncoderCallCount).toBe(0);
+    const chunkRef = res.response.subscriptions[0]!.snapshots![0]!.chunks![0]!;
+    const chunk = await readSnapshotChunk(db, chunkRef.id);
+    if (!chunk) throw new Error('Expected stored snapshot chunk');
+    const decoded = decodeBinarySnapshotTable(
+      gunzipSync(snapshotBodyBytes(chunk.body))
+    );
+
+    expect(decoded.columns).toEqual([...historicalColumns]);
+    expect(decoded.rows).toEqual([
+      {
+        id: 'task-1',
+        user_id: 'u1',
+        title: 'First Task',
+        server_version: 1,
+      },
+    ]);
+  });
+
+  it('keeps snapshot chunk cache entries separate by gzip level', async () => {
+    const handlers = makeHandlers({
+      snapshotBinaryColumns: [
+        { name: 'id', type: 'string' },
+        { name: 'user_id', type: 'string' },
+        { name: 'title', type: 'string' },
+        { name: 'server_version', type: 'integer' },
+      ],
+    });
+
+    for (let index = 0; index < 40; index += 1) {
+      await pushTask(
+        handlers,
+        `task-${index}`,
+        `Repeated title ${'x'.repeat(512)}`
+      );
+    }
+
+    const pullSnapshot = async (clientId: string, gzipLevel?: number) => {
+      const res = await pull({
+        db,
+        dialect,
+        handlers,
+        auth: { actorId: 'u1' },
+        snapshotChunkGzipLevel: gzipLevel,
+        request: {
+          clientId,
+          schemaVersion: 1,
+          limitCommits: 10,
+          subscriptions: [
+            {
+              id: 's1',
+              table: 'tasks',
+              scopes: { user_id: 'u1' },
+              cursor: -1,
+              crdtStateVectors: [],
+            },
+          ],
+        },
+      });
+      const chunkRef =
+        res.response.subscriptions[0]!.snapshots![0]!.chunks![0]!;
+      const chunk = await readSnapshotChunk(db, chunkRef.id);
+      if (!chunk) throw new Error('Expected stored snapshot chunk');
+      return chunk;
+    };
+
+    const compressed = await pullSnapshot('c-gzip-default');
+    const uncompressedGzip = await pullSnapshot('c-gzip-zero', 0);
+    const snapshotChunkCountRow = await db
+      .selectFrom('sync_snapshot_chunks')
+      .select(({ fn }) => fn.countAll().as('count'))
+      .executeTakeFirstOrThrow();
+
+    expect(Number(snapshotChunkCountRow.count)).toBe(2);
+    const uncompressedBody = snapshotBodyBytes(uncompressedGzip.body);
+    const compressedBody = snapshotBodyBytes(compressed.body);
+    expect(uncompressedBody.length).toBeGreaterThan(compressedBody.length);
+    expect(
+      decodeBinarySnapshotTable(
+        gunzipSync(snapshotBodyBytes(uncompressedGzip.body))
+      ).rows
+    ).toHaveLength(40);
+  });
+
   // -----------------------------------------------------------
   // Bootstrap completion
   // -----------------------------------------------------------
@@ -204,6 +898,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -211,6 +906,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -247,6 +943,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -254,6 +951,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -273,6 +971,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -280,6 +979,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: bootstrapCursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -306,6 +1006,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -313,6 +1014,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -338,6 +1040,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -345,6 +1048,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -368,6 +1072,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -375,6 +1080,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -400,6 +1106,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -407,6 +1114,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -446,6 +1154,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -453,6 +1162,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -478,6 +1188,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -485,6 +1196,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -500,6 +1212,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -507,6 +1220,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -540,6 +1254,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -547,6 +1262,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -601,6 +1317,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -608,6 +1325,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -642,6 +1360,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -649,6 +1368,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -667,6 +1387,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         dedupeRows: true,
         subscriptions: [
@@ -675,6 +1396,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -711,6 +1433,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -718,6 +1441,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -736,6 +1460,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         dedupeRows: false,
         subscriptions: [
@@ -744,6 +1469,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -774,6 +1500,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -781,6 +1508,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -800,6 +1528,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 2,
         subscriptions: [
           {
@@ -807,6 +1536,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -832,6 +1562,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: Number.NaN,
         subscriptions: [
           {
@@ -839,6 +1570,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -853,6 +1585,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: -5,
         subscriptions: [
           {
@@ -860,6 +1593,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -874,6 +1608,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: Number.POSITIVE_INFINITY,
         subscriptions: [
           {
@@ -881,6 +1616,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -929,6 +1665,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -936,12 +1673,14 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
           {
             id: 's2',
             table: 'tasks',
             scopes: { user_id: 'u2' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -982,6 +1721,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -989,6 +1729,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: 999999,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1041,6 +1782,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -1048,6 +1790,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1066,6 +1809,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 50,
         subscriptions: [
           {
@@ -1073,12 +1817,14 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: cursor1,
+            crdtStateVectors: [],
           },
           {
             id: 's2',
             table: 'tasks',
             scopes: { user_id: 'u2' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -1107,6 +1853,7 @@ describe('pull', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -1114,6 +1861,7 @@ describe('pull', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },

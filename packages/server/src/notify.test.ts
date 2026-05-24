@@ -130,7 +130,7 @@ describe('notifyExternalDataChange', () => {
         as_of_commit_seq: 1,
         row_cursor: '',
         row_limit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: 'abc',
         byte_length: 100,
@@ -150,7 +150,7 @@ describe('notifyExternalDataChange', () => {
         as_of_commit_seq: 1,
         row_cursor: '',
         row_limit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: 'def',
         byte_length: 200,
@@ -244,6 +244,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -271,6 +272,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -305,6 +307,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -322,8 +325,8 @@ describe('pull re-bootstrap after external data change', () => {
     const rebootSub = rebootstrapPull.response.subscriptions[0]!;
     expect(rebootSub.bootstrap).toBe(true);
     expect(rebootSub.snapshots?.length).toBeGreaterThan(0);
-    expect(rebootSub.snapshots?.[0]?.rows).toHaveLength(1);
-    expect(rebootSub.snapshots?.[0]?.chunks).toBeUndefined();
+    expect(rebootSub.snapshots?.[0]?.rows).toHaveLength(0);
+    expect(rebootSub.snapshots?.[0]?.chunks).toHaveLength(1);
   });
 
   it('does not force re-bootstrap for unaffected tables', async () => {
@@ -362,6 +365,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -394,6 +398,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -459,6 +464,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -493,6 +499,7 @@ describe('pull re-bootstrap after external data change', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -562,6 +569,7 @@ describe('notifyExternalRowChanges', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -611,6 +619,19 @@ describe('notifyExternalRowChanges', () => {
     expect(result.changeCount).toBe(1);
     expect(result.tables).toEqual(['tasks']);
 
+    const scopeRows = await db
+      .selectFrom('sync_scope_commits')
+      .select(['partition_id', 'table', 'scope_key', 'commit_seq'])
+      .execute();
+    expect(scopeRows).toEqual([
+      {
+        partition_id: 'default',
+        table: 'tasks',
+        scope_key: 'user:u1',
+        commit_seq: result.commitSeq,
+      },
+    ]);
+
     const incrementalPull = await pull({
       db,
       dialect,
@@ -618,6 +639,7 @@ describe('notifyExternalRowChanges', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,

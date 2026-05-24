@@ -3,8 +3,11 @@ import { gunzipSync } from 'node:zlib';
 import {
   configureSyncTelemetry,
   createDatabase,
-  decodeSnapshotRows,
+  decodeBinarySnapshotTable,
+  decodeBinarySyncPack,
   getSyncTelemetry,
+  isBinarySyncPackContentType,
+  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   SyncCombinedResponseSchema,
   type SyncPullResponse,
   type SyncSnapshotChunkRef,
@@ -12,8 +15,11 @@ import {
   type SyncTelemetry,
 } from '@syncular/core';
 import {
+  createScopedSnapshotArtifactScopeCacheKey,
   createServerHandler,
   ensureSyncSchema,
+  insertScopedSnapshotArtifact,
+  type SnapshotArtifactStorage,
   type SnapshotChunkStorage,
   type SyncCoreDb,
 } from '@syncular/server';
@@ -68,11 +74,34 @@ function createExceptionCaptureTelemetry(calls: {
 }
 
 function mustGetFirstChunkId(payload: SyncPullResponse): string {
-  const chunkId = payload.subscriptions[0]?.snapshots?.[0]?.chunks?.[0]?.id;
-  if (!chunkId) {
-    throw new Error('Expected pull bootstrap response to include a chunk id.');
-  }
+  const chunkId = mustGetFirstChunk(payload).id;
   return chunkId;
+}
+
+function mustGetFirstChunk(payload: SyncPullResponse): SyncSnapshotChunkRef {
+  const chunk = payload.subscriptions[0]?.snapshots?.[0]?.chunks?.[0];
+  if (!chunk) {
+    throw new Error('Expected pull bootstrap response to include a chunk.');
+  }
+  return chunk;
+}
+
+function decodeSnapshotChunkRows(
+  bytes: Uint8Array,
+  encoding: SyncSnapshotChunkRef['encoding']
+): Record<string, unknown>[] {
+  const decoded = gunzipSync(bytes);
+  if (encoding === SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1) {
+    return decodeBinarySnapshotTable(decoded).rows;
+  }
+  throw new Error(`Unexpected snapshot encoding: ${encoding}`);
+}
+
+async function readCombinedResponse(response: Response) {
+  if (isBinarySyncPackContentType(response.headers.get('content-type'))) {
+    return decodeBinarySyncPack(new Uint8Array(await response.arrayBuffer()));
+  }
+  return SyncCombinedResponseSchema.parse(await response.json());
 }
 
 async function streamToBytes(
@@ -197,6 +226,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'client-1',
           pull: {
+            schemaVersion: 1,
             limitCommits: 10,
             limitSnapshotRows: 100,
             maxSnapshotPages: 1,
@@ -206,6 +236,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                 table: 'tasks',
                 scopes: { user_id: 'u1' },
                 cursor: -1,
+                crdtStateVectors: [],
               },
             ],
           },
@@ -214,11 +245,10 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
 
     expect(pullResponse.status).toBe(200);
-    const combined = SyncCombinedResponseSchema.parse(
-      await pullResponse.json()
-    );
+    const combined = await readCombinedResponse(pullResponse);
     const parsed = combined.pull!;
-    const chunkId = mustGetFirstChunkId(parsed);
+    const chunkRef = mustGetFirstChunk(parsed);
+    const chunkId = chunkRef.id;
     expect(storeChunkCalls).toBe(1);
     expect(externalChunkBodies.has(chunkId)).toBe(true);
 
@@ -227,7 +257,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
       throw new Error('Expected external chunk body to be stored.');
     }
 
-    const rows = decodeSnapshotRows(gunzipSync(storedExternal));
+    const rows = decodeSnapshotChunkRows(storedExternal, chunkRef.encoding);
 
     const snapshotChunkCountRow = await db
       .selectFrom('sync_snapshot_chunks')
@@ -236,6 +266,116 @@ describe('createSyncRoutes chunkStorage wiring', () => {
 
     expect(Number(snapshotChunkCountRow.count)).toBe(0);
     expect(rows).toEqual([
+      { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },
+    ]);
+  }, 10_000);
+
+  it('returns binary sync packs with snapshot chunk refs only', async () => {
+    await db
+      .insertInto('tasks')
+      .values({
+        id: 't1',
+        user_id: 'u1',
+        title: 'Task 1',
+        server_version: 1,
+      })
+      .execute();
+
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    const routes = createSyncRoutes({
+      db,
+      dialect,
+      handlers: [tasksHandler],
+      authenticate: async (c) => {
+        const actorId = c.req.header('x-user-id');
+        return actorId ? { actorId } : null;
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', routes);
+
+    const pullResponse = await app.request(
+      new Request('http://localhost/sync', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-user-id': 'u1',
+        },
+        body: JSON.stringify({
+          clientId: 'client-1',
+          pull: {
+            schemaVersion: 1,
+            limitCommits: 10,
+            limitSnapshotRows: 100,
+            maxSnapshotPages: 1,
+            subscriptions: [
+              {
+                id: 'sub-1',
+                table: 'tasks',
+                scopes: { user_id: 'u1' },
+                cursor: -1,
+                crdtStateVectors: [],
+              },
+            ],
+          },
+        }),
+      })
+    );
+
+    expect(pullResponse.status).toBe(200);
+    expect(
+      isBinarySyncPackContentType(pullResponse.headers.get('content-type'))
+    ).toBe(true);
+
+    const combined = decodeBinarySyncPack(
+      new Uint8Array(await pullResponse.arrayBuffer())
+    );
+    const parsed = combined.pull!;
+    const chunk = mustGetFirstChunk(parsed);
+
+    expect(chunk.encoding).toBe(SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1);
+    expect('body' in chunk).toBe(false);
+
+    const chunkResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-chunks/${chunk.id}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+        },
+      })
+    );
+
+    expect(chunkResponse.status).toBe(200);
+    const etag = `"sha256:${chunk.sha256}"`;
+    expect(chunkResponse.headers.get('etag')).toBe(etag);
+    expect(chunkResponse.headers.get('x-sync-chunk-id')).toBe(chunk.id);
+    expect(chunkResponse.headers.get('x-sync-chunk-sha256')).toBe(chunk.sha256);
+    expect(chunkResponse.headers.get('x-sync-chunk-encoding')).toBe(
+      SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1
+    );
+
+    const cachedChunkResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-chunks/${chunk.id}`, {
+        headers: {
+          'if-none-match': etag,
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+        },
+      })
+    );
+    expect(cachedChunkResponse.status).toBe(304);
+    expect(cachedChunkResponse.headers.get('etag')).toBe(etag);
+
+    const chunkBytes = gunzipSync(
+      new Uint8Array(await chunkResponse.arrayBuffer())
+    );
+    expect(decodeBinarySnapshotTable(chunkBytes).rows).toEqual([
       { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },
     ]);
   }, 10_000);
@@ -321,6 +461,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'client-1',
           pull: {
+            schemaVersion: 1,
             limitCommits: 10,
             limitSnapshotRows: 1,
             maxSnapshotPages: 2,
@@ -330,6 +471,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                 table: 'tasks',
                 scopes: { user_id: 'u1' },
                 cursor: -1,
+                crdtStateVectors: [],
               },
             ],
           },
@@ -338,11 +480,10 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
 
     expect(pullResponse.status).toBe(200);
-    const combined = SyncCombinedResponseSchema.parse(
-      await pullResponse.json()
-    );
+    const combined = await readCombinedResponse(pullResponse);
     const parsed = combined.pull!;
-    const chunkId = mustGetFirstChunkId(parsed);
+    const chunkRef = mustGetFirstChunk(parsed);
+    const chunkId = chunkRef.id;
 
     expect(storeChunkStreamCalls).toBe(1);
     expect(storeChunkCalls).toBe(0);
@@ -353,7 +494,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
       throw new Error('Expected external chunk body to be stored.');
     }
 
-    const rows = decodeSnapshotRows(gunzipSync(storedExternal));
+    const rows = decodeSnapshotChunkRows(storedExternal, chunkRef.encoding);
     expect(rows).toEqual([
       { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },
       { id: 't2', user_id: 'u1', title: 'Task 2', server_version: 2 },
@@ -400,6 +541,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'client-1',
           pull: {
+            schemaVersion: 1,
             limitCommits: 10,
             limitSnapshotRows: 100,
             maxSnapshotPages: 1,
@@ -409,6 +551,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                 table: 'tasks',
                 scopes: { user_id: 'u1' },
                 cursor: -1,
+                crdtStateVectors: [],
               },
             ],
           },
@@ -417,11 +560,10 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
 
     expect(pullResponse.status).toBe(200);
-    const combined = SyncCombinedResponseSchema.parse(
-      await pullResponse.json()
-    );
+    const combined = await readCombinedResponse(pullResponse);
     const parsed = combined.pull!;
-    const chunkId = mustGetFirstChunkId(parsed);
+    const chunkRef = mustGetFirstChunk(parsed);
+    const chunkId = chunkRef.id;
 
     const noScopesResponse = await app.request(
       new Request(`http://localhost/sync/snapshot-chunks/${chunkId}`, {
@@ -452,10 +594,288 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
     expect(validScopesResponse.status).toBe(200);
     const chunkBytes = new Uint8Array(await validScopesResponse.arrayBuffer());
-    const rows = decodeSnapshotRows(gunzipSync(chunkBytes));
+    const rows = decodeSnapshotChunkRows(chunkBytes, chunkRef.encoding);
     expect(rows).toEqual([
       { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },
     ]);
+  });
+
+  it('rejects oversized snapshot chunk downloads with a stable limit envelope', async () => {
+    await db
+      .insertInto('tasks')
+      .values({
+        id: 't1',
+        user_id: 'u1',
+        title: 'Task 1',
+        server_version: 1,
+      })
+      .execute();
+
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    const routes = createSyncRoutes({
+      db,
+      dialect,
+      handlers: [tasksHandler],
+      authenticate: async (c) => {
+        const actorId = c.req.header('x-user-id');
+        return actorId ? { actorId } : null;
+      },
+      sync: {
+        maxSnapshotChunkResponseBytes: 1,
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', routes);
+
+    const pullResponse = await app.request(
+      new Request('http://localhost/sync', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          'x-user-id': 'u1',
+        },
+        body: JSON.stringify({
+          clientId: 'client-1',
+          pull: {
+            schemaVersion: 1,
+            limitCommits: 10,
+            limitSnapshotRows: 100,
+            maxSnapshotPages: 1,
+            subscriptions: [
+              {
+                id: 'sub-1',
+                table: 'tasks',
+                scopes: { user_id: 'u1' },
+                cursor: -1,
+                crdtStateVectors: [],
+              },
+            ],
+          },
+        }),
+      })
+    );
+
+    expect(pullResponse.status).toBe(200);
+    const combined = await readCombinedResponse(pullResponse);
+    const chunkId = mustGetFirstChunkId(combined.pull!);
+
+    const oversizedResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-chunks/${chunkId}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+        },
+      })
+    );
+
+    expect(oversizedResponse.status).toBe(413);
+    expect(await oversizedResponse.json()).toMatchObject({
+      error: 'runtime.limit_exceeded',
+      details: {
+        limit: 'maxSnapshotChunkResponseBytes',
+        max: 1,
+      },
+    });
+  });
+
+  it('requires scope-bound authorization for scoped snapshot artifact downloads', async () => {
+    const artifactBodies = new Map<string, Uint8Array>();
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const scopeKey = await createScopedSnapshotArtifactScopeCacheKey({
+      partitionId: 'default',
+      subscriptionId: 'sub-1',
+      scopes: { user_id: 'u1' },
+      schemaVersion: 7,
+      features: ['blobs'],
+    });
+
+    const inserted = await insertScopedSnapshotArtifact(db, {
+      artifactId: 'artifact-1',
+      partitionId: 'default',
+      scopeKey,
+      subscriptionId: 'sub-1',
+      table: 'tasks',
+      schemaVersion: 7,
+      asOfCommitSeq: 42,
+      rowCursor: null,
+      rowLimit: 50_000,
+      rowCount: 1,
+      nextRowCursor: null,
+      isFirstPage: true,
+      isLastPage: true,
+      sha256: 'b'.repeat(64),
+      byteLength: body.length,
+      featureSet: ['blobs'],
+      blobHash: 'sha256:artifact-body',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    artifactBodies.set(inserted.id, body);
+
+    const artifactStorage: SnapshotArtifactStorage = {
+      name: 'memory-artifacts',
+      async readArtifact(artifact) {
+        const bytes = artifactBodies.get(artifact.id);
+        return bytes ? new Uint8Array(bytes) : null;
+      },
+    };
+
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    const routes = createSyncRoutes({
+      db,
+      dialect,
+      handlers: [tasksHandler],
+      authenticate: async (c) => {
+        const actorId = c.req.header('x-user-id');
+        return actorId ? { actorId } : null;
+      },
+      snapshotArtifactStorage: artifactStorage,
+    });
+
+    const app = new Hono();
+    app.route('/sync', routes);
+
+    const noScopesResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-artifacts/${inserted.id}`, {
+        headers: {
+          'x-user-id': 'u1',
+        },
+      })
+    );
+    expect(noScopesResponse.status).toBe(400);
+
+    const wrongScopesResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-artifacts/${inserted.id}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u2' }),
+        },
+      })
+    );
+    expect(wrongScopesResponse.status).toBe(403);
+
+    const validScopesResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-artifacts/${inserted.id}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+        },
+      })
+    );
+    expect(validScopesResponse.status).toBe(200);
+    expect(validScopesResponse.headers.get('x-sync-artifact-id')).toBe(
+      inserted.id
+    );
+    expect(
+      validScopesResponse.headers.get('x-sync-artifact-manifest-digest')
+    ).toBe(inserted.manifestDigest);
+    expect(new Uint8Array(await validScopesResponse.arrayBuffer())).toEqual(
+      body
+    );
+
+    const cachedResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-artifacts/${inserted.id}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+          'if-none-match': `"sha256:${inserted.sha256}"`,
+        },
+      })
+    );
+    expect(cachedResponse.status).toBe(304);
+  });
+
+  it('rejects oversized scoped snapshot artifact downloads with a stable limit envelope', async () => {
+    const artifactBodies = new Map<string, Uint8Array>();
+    const body = new Uint8Array([1, 2, 3, 4]);
+    const scopeKey = await createScopedSnapshotArtifactScopeCacheKey({
+      partitionId: 'default',
+      subscriptionId: 'sub-1',
+      scopes: { user_id: 'u1' },
+      schemaVersion: 7,
+      features: ['blobs'],
+    });
+
+    const inserted = await insertScopedSnapshotArtifact(db, {
+      artifactId: 'artifact-limit',
+      partitionId: 'default',
+      scopeKey,
+      subscriptionId: 'sub-1',
+      table: 'tasks',
+      schemaVersion: 7,
+      asOfCommitSeq: 42,
+      rowCursor: null,
+      rowLimit: 50_000,
+      rowCount: 1,
+      nextRowCursor: null,
+      isFirstPage: true,
+      isLastPage: true,
+      sha256: 'c'.repeat(64),
+      byteLength: body.length,
+      featureSet: ['blobs'],
+      blobHash: 'sha256:artifact-limit-body',
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    });
+    artifactBodies.set(inserted.id, body);
+
+    const artifactStorage: SnapshotArtifactStorage = {
+      name: 'memory-artifacts',
+      async readArtifact(artifact) {
+        const bytes = artifactBodies.get(artifact.id);
+        return bytes ? new Uint8Array(bytes) : null;
+      },
+    };
+
+    const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+
+    const routes = createSyncRoutes({
+      db,
+      dialect,
+      handlers: [tasksHandler],
+      authenticate: async (c) => {
+        const actorId = c.req.header('x-user-id');
+        return actorId ? { actorId } : null;
+      },
+      snapshotArtifactStorage: artifactStorage,
+      sync: {
+        maxSnapshotArtifactResponseBytes: 1,
+      },
+    });
+
+    const app = new Hono();
+    app.route('/sync', routes);
+
+    const oversizedResponse = await app.request(
+      new Request(`http://localhost/sync/snapshot-artifacts/${inserted.id}`, {
+        headers: {
+          'x-user-id': 'u1',
+          'x-syncular-snapshot-scopes': JSON.stringify({ user_id: 'u1' }),
+        },
+      })
+    );
+
+    expect(oversizedResponse.status).toBe(413);
+    expect(await oversizedResponse.json()).toMatchObject({
+      error: 'runtime.limit_exceeded',
+      details: {
+        limit: 'maxSnapshotArtifactResponseBytes',
+        max: 1,
+      },
+    });
   });
 
   it('rejects reusing a client id from another actor', async () => {
@@ -554,6 +974,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'shared-client',
           pull: {
+            schemaVersion: 1,
             limitCommits: 10,
             subscriptions: [
               {
@@ -561,6 +982,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                 table: 'tasks',
                 scopes: { user_id: 'u2' },
                 cursor: -1,
+                crdtStateVectors: [],
               },
             ],
           },
@@ -569,8 +991,12 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
 
     expect(reusedClientResponse.status).toBe(400);
-    expect(await reusedClientResponse.json()).toEqual({
-      error: 'INVALID_CLIENT_ID',
+    expect(await reusedClientResponse.json()).toMatchObject({
+      error: 'sync.invalid_client_id',
+      code: 'sync.invalid_client_id',
+      category: 'invalid-request',
+      retryable: false,
+      recommendedAction: 'resetClientId',
       message: 'clientId is already bound to a different actor',
     });
   });
@@ -643,6 +1069,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
         body: JSON.stringify({
           clientId: 'client-1',
           pull: {
+            schemaVersion: 1,
             limitCommits: 10,
             limitSnapshotRows: 1,
             maxSnapshotPages: 3,
@@ -652,6 +1079,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                 table: 'tasks',
                 scopes: { user_id: 'u1' },
                 cursor: -1,
+                crdtStateVectors: [],
               },
             ],
           },
@@ -660,11 +1088,10 @@ describe('createSyncRoutes chunkStorage wiring', () => {
     );
 
     expect(pullResponse.status).toBe(200);
-    const combined = SyncCombinedResponseSchema.parse(
-      await pullResponse.json()
-    );
+    const combined = await readCombinedResponse(pullResponse);
     const parsed = combined.pull!;
-    const chunkId = mustGetFirstChunkId(parsed);
+    const chunkRef = mustGetFirstChunk(parsed);
+    const chunkId = chunkRef.id;
 
     expect(parsed.subscriptions[0]?.snapshots?.length).toBe(1);
     expect(storeChunkCalls).toBe(1);
@@ -674,7 +1101,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
       throw new Error('Expected external chunk body to be stored.');
     }
 
-    const rows = decodeSnapshotRows(gunzipSync(storedExternal));
+    const rows = decodeSnapshotChunkRows(storedExternal, chunkRef.encoding);
 
     expect(rows).toEqual([
       { id: 't1', user_id: 'u1', title: 'Task 1', server_version: 1 },
@@ -754,6 +1181,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
           body: JSON.stringify({
             clientId: 'client-1',
             pull: {
+              schemaVersion: 1,
               limitCommits: 10,
               limitSnapshotRows: 100,
               maxSnapshotPages: 1,
@@ -763,6 +1191,7 @@ describe('createSyncRoutes chunkStorage wiring', () => {
                   table: 'tasks',
                   scopes: { user_id: 'u1' },
                   cursor: -1,
+                  crdtStateVectors: [],
                 },
               ],
             },

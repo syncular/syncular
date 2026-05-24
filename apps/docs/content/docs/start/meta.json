@@ -1,0 +1,18 @@
+{
+  "root": true,
+  "title": "Start",
+  "icon": "BookOpen",
+  "pages": [
+    "index",
+    "---Start Here---",
+    "quick-start",
+    "installation",
+    "basic-setup",
+    "what-is-syncular",
+    "---Evaluate Fit---",
+    "adoption-paths",
+    "good-fit",
+    "testing-and-confidence",
+    "comparison"
+  ]
+}

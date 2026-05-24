@@ -22,6 +22,7 @@ import { ModeManager, type RelayMode } from '../mode-manager';
 import { createRelayWebSocketConnection, RelayRealtime } from '../realtime';
 import { RelayServer } from '../relay';
 import type { RelayDatabase } from '../schema';
+import { createRelayRoutes } from '../server-role';
 import { relayPushCommit } from '../server-role/push';
 
 // Helper to create in-memory SQLite database
@@ -207,6 +208,113 @@ describe('RelayServer health check', () => {
           request.pull.limitCommits === 1
       )
     ).toBe(true);
+  });
+});
+
+describe('createRelayRoutes error envelopes', () => {
+  let db: Kysely<RelayDatabase>;
+  let sqlite: Database;
+
+  beforeEach(() => {
+    const setup = createTestDb();
+    db = setup.db;
+    sqlite = setup.sqlite;
+  });
+
+  afterEach(async () => {
+    await db.destroy();
+    sqlite.close();
+  });
+
+  function createRoutes(options: { authenticated?: boolean } = {}) {
+    return createRelayRoutes({
+      db,
+      dialect: createSqliteServerDialect(),
+      handlers: createServerHandlerCollection<RelayDatabase>([]),
+      realtime: new RelayRealtime({ heartbeatIntervalMs: 0 }),
+      authenticate: async () =>
+        options.authenticated === false ? null : { actorId: 'actor-1' },
+      maxOperationsPerPush: 1,
+    });
+  }
+
+  it('returns a stable auth-required envelope', async () => {
+    const app = createRoutes({ authenticated: false });
+
+    const response = await app.request('http://localhost/pull', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(response.status).toBe(401);
+    expect(await response.json()).toMatchObject({
+      error: 'sync.auth_required',
+      code: 'sync.auth_required',
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+    });
+  });
+
+  it('returns a stable invalid pull request envelope', async () => {
+    const app = createRoutes();
+
+    const response = await app.request('http://localhost/pull', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ subscriptions: [] }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: 'sync.invalid_request',
+      code: 'sync.invalid_request',
+      category: 'invalid-request',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+      message: 'clientId is required',
+    });
+  });
+
+  it('returns a stable push operation-limit envelope', async () => {
+    const app = createRoutes();
+
+    const response = await app.request('http://localhost/push', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        clientId: 'relay-client-1',
+        clientCommitId: 'relay-commit-1',
+        schemaVersion: 1,
+        operations: [
+          {
+            table: 'tasks',
+            row_id: 'task-1',
+            op: 'upsert',
+            payload: { id: 'task-1', title: 'first' },
+            base_version: null,
+          },
+          {
+            table: 'tasks',
+            row_id: 'task-2',
+            op: 'upsert',
+            payload: { id: 'task-2', title: 'second' },
+            base_version: null,
+          },
+        ],
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: 'sync.too_many_operations',
+      code: 'sync.too_many_operations',
+      category: 'invalid-request',
+      retryable: false,
+      recommendedAction: 'splitBatch',
+      message: 'Maximum 1 operations per push',
+    });
   });
 });
 

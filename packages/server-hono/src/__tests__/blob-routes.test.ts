@@ -1,13 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import type { BlobStorageAdapter } from '@syncular/core';
+import type { BlobRef, BlobStorageAdapter } from '@syncular/core';
 import { createDatabase } from '@syncular/core';
 import {
   type BlobTokenSigner,
   createBlobManager,
   createDatabaseBlobStorageAdapter,
   createHmacTokenSigner,
+  createScopedBlobAccessChecker,
+  createServerHandler,
   ensureBlobStorageSchemaSqlite,
   type SyncBlobDb,
+  type SyncCoreDb,
 } from '@syncular/server';
 import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
@@ -27,6 +30,46 @@ interface UrlResponse {
 interface CompleteResponse {
   ok: boolean;
   error?: string;
+}
+
+interface ScopedBlobTasksTable {
+  id: string;
+  user_id: string;
+  image: string | null;
+  server_version: number;
+}
+
+interface ScopedBlobFileVersionsTable {
+  id: string;
+  file_id: string;
+  owner_id: string;
+  blob_ref: string;
+  content_hash: string;
+  byte_size: number;
+  server_version: number;
+}
+
+interface ScopedBlobRouteDb extends SyncBlobDb, SyncCoreDb {
+  tasks: ScopedBlobTasksTable;
+  file_versions: ScopedBlobFileVersionsTable;
+}
+
+interface ScopedBlobClientDb {
+  tasks: {
+    id: string;
+    user_id: string;
+    image: BlobRef | null;
+    server_version: number;
+  };
+  file_versions: {
+    id: string;
+    file_id: string;
+    owner_id: string;
+    blob_ref: BlobRef;
+    content_hash: string;
+    byte_size: number;
+    server_version: number;
+  };
 }
 
 const ACTOR_HEADER = 'x-user-id';
@@ -186,6 +229,7 @@ function buildApp(args: {
     c: Parameters<typeof createBlobRoutes>[0]['authenticate']
   ) => ReturnType<Parameters<typeof createBlobRoutes>[0]['authenticate']>;
   canAccessBlob?: Parameters<typeof createBlobRoutes>[0]['canAccessBlob'];
+  maxUploadSize?: number;
 }): Hono {
   const blobManager = createBlobManager({
     db: args.db,
@@ -207,6 +251,7 @@ function buildApp(args: {
       tokenSigner: args.tokenSigner,
       db: args.db,
       canAccessBlob: args.canAccessBlob ?? (async () => true),
+      maxUploadSize: args.maxUploadSize,
     })
   );
   return app;
@@ -257,6 +302,30 @@ describe('createBlobRoutes', () => {
     await db.destroy();
   });
 
+  it('returns a stable envelope for invalid upload initiation bodies', async () => {
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+    });
+
+    const response = await app.request('http://localhost/sync/blobs/upload', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({}),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: 'blob.invalid_request',
+      code: 'blob.invalid_request',
+      category: 'blob',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+      details: { target: 'json' },
+    });
+  });
+
   it('rejects unauthenticated upload initiation', async () => {
     const app = buildApp({
       db,
@@ -277,7 +346,13 @@ describe('createBlobRoutes', () => {
     });
 
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: 'UNAUTHENTICATED' });
+    expect(await response.json()).toMatchObject({
+      error: 'sync.auth_required',
+      code: 'sync.auth_required',
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+    });
   });
 
   it('rejects invalid direct-upload tokens', async () => {
@@ -296,7 +371,87 @@ describe('createBlobRoutes', () => {
     );
 
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: 'INVALID_TOKEN' });
+    expect(await response.json()).toMatchObject({
+      error: 'blob.invalid_token',
+      code: 'blob.invalid_token',
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+    });
+  });
+
+  it('rejects oversized upload initiation before minting an upload URL', async () => {
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+      maxUploadSize: 3,
+    });
+
+    const content = new Uint8Array([1, 2, 3, 4]);
+    const response = await app.request('http://localhost/sync/blobs/upload', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        [ACTOR_HEADER]: ACTOR_ID,
+      },
+      body: JSON.stringify({
+        hash: await createHash(content),
+        size: content.length,
+        mimeType: 'application/octet-stream',
+      }),
+    });
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: 'blob.too_large',
+      code: 'blob.too_large',
+      category: 'blob',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+    });
+  });
+
+  it('rejects direct upload content-length above the route max size', async () => {
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+      maxUploadSize: 3,
+    });
+
+    const expected = new Uint8Array([1, 2, 3]);
+    const hash = await createHash(expected);
+    await initiateUpload({
+      app,
+      hash,
+      size: expected.length,
+    });
+    const token = await signBlobToken({
+      signer: tokenSigner,
+      hash,
+      action: 'upload',
+      size: expected.length,
+      partitionId: 'default',
+    });
+
+    const response = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/upload?token=${encodeURIComponent(token)}`,
+      {
+        method: 'PUT',
+        headers: { 'content-length': '4' },
+        body: new Uint8Array([1, 2, 3, 4]),
+      }
+    );
+
+    expect(response.status).toBe(400);
+    expect(await response.json()).toMatchObject({
+      error: 'blob.too_large',
+      code: 'blob.too_large',
+      category: 'blob',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+    });
   });
 
   it('rejects direct upload when body size does not match metadata', async () => {
@@ -331,8 +486,13 @@ describe('createBlobRoutes', () => {
     );
 
     expect(response.status).toBe(400);
-    const payload = (await response.json()) as { error: string };
-    expect(payload.error).toBe('SIZE_MISMATCH');
+    expect(await response.json()).toMatchObject({
+      error: 'blob.size_mismatch',
+      code: 'blob.size_mismatch',
+      category: 'blob',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+    });
   });
 
   it('rejects direct upload when body hash does not match route hash', async () => {
@@ -367,8 +527,13 @@ describe('createBlobRoutes', () => {
     );
 
     expect(response.status).toBe(400);
-    const payload = (await response.json()) as { error: string };
-    expect(payload.error).toBe('HASH_MISMATCH');
+    expect(await response.json()).toMatchObject({
+      error: 'blob.hash_mismatch',
+      code: 'blob.hash_mismatch',
+      category: 'integrity-rejected',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+    });
   });
 
   it('returns 404 for invalid hash format and 403 for forbidden actor access', async () => {
@@ -386,7 +551,13 @@ describe('createBlobRoutes', () => {
       }
     );
     expect(invalidHashResponse.status).toBe(404);
-    expect(await invalidHashResponse.json()).toEqual({ error: 'NOT_FOUND' });
+    expect(await invalidHashResponse.json()).toMatchObject({
+      error: 'blob.not_found',
+      code: 'blob.not_found',
+      category: 'blob',
+      retryable: false,
+      recommendedAction: 'fixRequest',
+    });
 
     const validHash = `sha256:${'b'.repeat(64)}`;
     const forbiddenResponse = await app.request(
@@ -396,7 +567,13 @@ describe('createBlobRoutes', () => {
       }
     );
     expect(forbiddenResponse.status).toBe(403);
-    expect(await forbiddenResponse.json()).toEqual({ error: 'FORBIDDEN' });
+    expect(await forbiddenResponse.json()).toMatchObject({
+      error: 'blob.forbidden',
+      code: 'blob.forbidden',
+      category: 'forbidden',
+      retryable: false,
+      recommendedAction: 'checkPermissions',
+    });
   });
 
   it('rejects upload completion from a different actor', async () => {
@@ -431,7 +608,275 @@ describe('createBlobRoutes', () => {
     );
 
     expect(completeResponse.status).toBe(403);
-    expect(await completeResponse.json()).toEqual({ error: 'FORBIDDEN' });
+    expect(await completeResponse.json()).toMatchObject({
+      error: 'blob.forbidden',
+      code: 'blob.forbidden',
+    });
+  });
+
+  it('does not mint download URLs for forbidden blob access', async () => {
+    const baseAdapter = createDefaultAdapter(db, tokenSigner);
+    let signDownloadCalls = 0;
+    const adapter: BlobStorageAdapter = {
+      ...baseAdapter,
+      signDownload: async (options) => {
+        signDownloadCalls += 1;
+        return baseAdapter.signDownload(options);
+      },
+    };
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter,
+      canAccessBlob: async ({ actorId }) => actorId === ACTOR_ID,
+    });
+
+    const content = new TextEncoder().encode('blob-access-boundary');
+    const hash = await createHash(content);
+    const init = await initiateUpload({
+      app,
+      hash,
+      size: content.length,
+      mimeType: 'text/plain',
+      partitionId: 'default',
+    });
+    const uploadResponse = await app.request(init.uploadUrl!, {
+      method: init.uploadMethod ?? 'PUT',
+      headers: { 'content-type': 'text/plain' },
+      body: content,
+    });
+    expect(uploadResponse.status).toBe(200);
+    const completeResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/complete`,
+      {
+        method: 'POST',
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(completeResponse.status).toBe(200);
+
+    const forbiddenUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: 'user-2' },
+      }
+    );
+    expect(forbiddenUrlResponse.status).toBe(403);
+    expect(await forbiddenUrlResponse.json()).toMatchObject({
+      error: 'blob.forbidden',
+      code: 'blob.forbidden',
+    });
+    expect(signDownloadCalls).toBe(0);
+
+    const authorizedUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(authorizedUrlResponse.status).toBe(200);
+    expect(signDownloadCalls).toBe(1);
+  });
+
+  it('can authorize download URLs through scoped row blob references', async () => {
+    const scopedDb = db as unknown as Kysely<ScopedBlobRouteDb>;
+    await scopedDb.schema
+      .createTable('tasks')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('user_id', 'text', (col) => col.notNull())
+      .addColumn('image', 'text')
+      .addColumn('server_version', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .execute();
+
+    const tasksHandler = createServerHandler<
+      ScopedBlobRouteDb,
+      ScopedBlobClientDb,
+      'tasks'
+    >({
+      table: 'tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+    });
+    const canAccessBlob = createScopedBlobAccessChecker({
+      db: scopedDb,
+      handlers: [tasksHandler],
+      references: [{ table: 'tasks', blobColumns: ['image'] }],
+    });
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+      canAccessBlob,
+    });
+
+    const content = new TextEncoder().encode('scoped-reference-blob');
+    const hash = await createHash(content);
+    const init = await initiateUpload({
+      app,
+      hash,
+      size: content.length,
+      mimeType: 'image/png',
+    });
+    const uploadResponse = await app.request(init.uploadUrl!, {
+      method: init.uploadMethod ?? 'PUT',
+      headers: { 'content-type': 'image/png' },
+      body: content,
+    });
+    expect(uploadResponse.status).toBe(200);
+    const completeResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/complete`,
+      {
+        method: 'POST',
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(completeResponse.status).toBe(200);
+
+    await scopedDb
+      .insertInto('tasks')
+      .values({
+        id: 'task-image',
+        user_id: ACTOR_ID,
+        image: JSON.stringify({
+          hash,
+          size: content.length,
+          mimeType: 'image/png',
+        } satisfies BlobRef),
+        server_version: 1,
+      })
+      .execute();
+
+    const authorizedUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(authorizedUrlResponse.status).toBe(200);
+
+    const forbiddenUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: 'user-2' },
+      }
+    );
+    expect(forbiddenUrlResponse.status).toBe(403);
+    expect(await forbiddenUrlResponse.json()).toMatchObject({
+      error: 'blob.forbidden',
+      code: 'blob.forbidden',
+    });
+  });
+
+  it('can authorize file-version blob refs without putting bytes in file rows', async () => {
+    const scopedDb = db as unknown as Kysely<ScopedBlobRouteDb>;
+    await scopedDb.schema
+      .createTable('file_versions')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('file_id', 'text', (col) => col.notNull())
+      .addColumn('owner_id', 'text', (col) => col.notNull())
+      .addColumn('blob_ref', 'text', (col) => col.notNull())
+      .addColumn('content_hash', 'text', (col) => col.notNull())
+      .addColumn('byte_size', 'integer', (col) => col.notNull())
+      .addColumn('server_version', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .execute();
+
+    const fileVersionsHandler = createServerHandler<
+      ScopedBlobRouteDb,
+      ScopedBlobClientDb,
+      'file_versions'
+    >({
+      table: 'file_versions',
+      scopes: ['user:{owner_id}'],
+      resolveScopes: async (ctx) => ({ owner_id: [ctx.actorId] }),
+    });
+    const canAccessBlob = createScopedBlobAccessChecker({
+      db: scopedDb,
+      handlers: [fileVersionsHandler],
+      references: [{ table: 'file_versions', blobColumns: ['blob_ref'] }],
+    });
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+      canAccessBlob,
+    });
+
+    const content = new TextEncoder().encode('file-version-reference-blob');
+    const hash = await createHash(content);
+    const blob = {
+      hash,
+      size: content.length,
+      mimeType: 'text/plain',
+    } satisfies BlobRef;
+    const init = await initiateUpload({
+      app,
+      hash,
+      size: content.length,
+      mimeType: blob.mimeType,
+    });
+    const uploadResponse = await app.request(init.uploadUrl!, {
+      method: init.uploadMethod ?? 'PUT',
+      headers: { 'content-type': blob.mimeType },
+      body: content,
+    });
+    expect(uploadResponse.status).toBe(200);
+    const completeResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/complete`,
+      {
+        method: 'POST',
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(completeResponse.status).toBe(200);
+
+    const unreferencedUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(unreferencedUrlResponse.status).toBe(403);
+    expect(await unreferencedUrlResponse.json()).toMatchObject({
+      error: 'blob.forbidden',
+      code: 'blob.forbidden',
+    });
+
+    await scopedDb
+      .insertInto('file_versions')
+      .values({
+        id: 'version-1',
+        file_id: 'file-1',
+        owner_id: ACTOR_ID,
+        blob_ref: JSON.stringify(blob),
+        content_hash: hash,
+        byte_size: content.length,
+        server_version: 1,
+      })
+      .execute();
+
+    const authorizedUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(authorizedUrlResponse.status).toBe(200);
+
+    const forbiddenUrlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: 'user-2' },
+      }
+    );
+    expect(forbiddenUrlResponse.status).toBe(403);
+    expect(await forbiddenUrlResponse.json()).toMatchObject({
+      error: 'blob.forbidden',
+      code: 'blob.forbidden',
+    });
   });
 
   it('uploads and downloads blobs through adapter put/get branches', async () => {
@@ -555,8 +1000,9 @@ describe('createBlobRoutes', () => {
       }
     );
     expect(uploadResponse.status).toBe(400);
-    expect(await uploadResponse.json()).toEqual({
-      error: 'HASH_MISMATCH',
+    expect(await uploadResponse.json()).toMatchObject({
+      error: 'blob.hash_mismatch',
+      code: 'blob.hash_mismatch',
       message: 'Content hash does not match',
     });
 
@@ -687,6 +1133,9 @@ describe('createBlobRoutes', () => {
       }
     );
     expect(otherPartitionUrl.status).toBe(404);
-    expect(await otherPartitionUrl.json()).toEqual({ error: 'NOT_FOUND' });
+    expect(await otherPartitionUrl.json()).toMatchObject({
+      error: 'blob.not_found',
+      code: 'blob.not_found',
+    });
   });
 });

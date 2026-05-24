@@ -9,6 +9,7 @@ import {
 } from '@syncular/core';
 import type { Insertable, Kysely, SelectQueryBuilder, SqlBool } from 'kysely';
 import { sql } from 'kysely';
+import { finalizeCommitIntegrity } from './commit-integrity';
 import {
   coerceNumber,
   parseJsonValue,
@@ -17,6 +18,10 @@ import {
 import type { DbExecutor, ServerSyncDialect } from './dialect/types';
 import type { ServerHandlerCollection } from './handlers/collection';
 import type { SyncServerAuth } from './handlers/types';
+import {
+  createScopeCommitIndexEntries,
+  scopeKeysFromScopeValues,
+} from './helpers/scope-commit-index';
 import {
   type SyncServerPushPlugin,
   sortServerPushPlugins,
@@ -59,6 +64,29 @@ export interface PushCommitResult {
    */
   commitCreatedAt: string | null;
 }
+
+export interface PushCommitValidationContext<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+> {
+  trx: DbExecutor<DB>;
+  dialect: ServerSyncDialect;
+  auth: Auth;
+  request: SyncPushRequest;
+  partitionId: string;
+  actorId: string;
+  commitSeq: number;
+}
+
+export type PushCommitValidator<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+> = (
+  ctx: PushCommitValidationContext<DB, Auth>
+) =>
+  | Promise<SyncPushResponse['results'][number] | null>
+  | SyncPushResponse['results'][number]
+  | null;
 
 class RejectCommitError extends Error {
   constructor(public readonly response: SyncPushResponse) {
@@ -133,10 +161,8 @@ function scopeKeysFromEmitted(
 ): string[] {
   const keys = new Set<string>();
   for (const c of emitted) {
-    for (const [key, value] of Object.entries(c.scopes)) {
-      if (!value) continue;
-      const prefix = key.replace(/_id$/, '');
-      keys.add(`${prefix}:${value}`);
+    for (const scopeKey of scopeKeysFromScopeValues(c.scopes)) {
+      keys.add(scopeKey);
     }
   }
   return Array.from(keys);
@@ -219,8 +245,8 @@ function validatePushRequest(
     return {
       opIndex: 0,
       status: 'error',
-      error: 'INVALID_REQUEST',
-      code: 'INVALID_REQUEST',
+      error: 'Invalid push request',
+      code: 'sync.invalid_request',
       retriable: false,
     };
   }
@@ -230,8 +256,8 @@ function validatePushRequest(
     return {
       opIndex: 0,
       status: 'error',
-      error: 'EMPTY_COMMIT',
-      code: 'EMPTY_COMMIT',
+      error: 'Empty commit',
+      code: 'sync.empty_commit',
       retriable: false,
     };
   }
@@ -293,6 +319,26 @@ async function persistEmittedChanges<DB extends SyncCoreDb>(args: {
     }));
 
   await syncTrx.insertInto('sync_changes').values(changeRows).execute();
+
+  const scopeEntries = createScopeCommitIndexEntries(args.emittedChanges);
+  if (scopeEntries.length > 0) {
+    await syncTrx
+      .insertInto('sync_scope_commits')
+      .values(
+        scopeEntries.map((entry) => ({
+          partition_id: args.partitionId,
+          table: entry.table,
+          scope_key: entry.scopeKey,
+          commit_seq: args.commitSeq,
+        }))
+      )
+      .onConflict((oc) =>
+        oc
+          .columns(['partition_id', 'table', 'scope_key', 'commit_seq'])
+          .doNothing()
+      )
+      .execute();
+  }
 }
 
 async function persistCommitOutcome<DB extends SyncCoreDb>(args: {
@@ -319,23 +365,28 @@ async function persistCommitOutcome<DB extends SyncCoreDb>(args: {
     .where('commit_seq', '=', args.commitSeq)
     .execute();
 
-  if (args.affectedTables.length === 0) {
-    return;
+  if (args.affectedTables.length > 0) {
+    await syncTrx
+      .insertInto('sync_table_commits')
+      .values(
+        args.affectedTables.map((table) => ({
+          partition_id: args.partitionId,
+          table,
+          commit_seq: args.commitSeq,
+        }))
+      )
+      .onConflict((oc) =>
+        oc.columns(['partition_id', 'table', 'commit_seq']).doNothing()
+      )
+      .execute();
   }
 
-  await syncTrx
-    .insertInto('sync_table_commits')
-    .values(
-      args.affectedTables.map((table) => ({
-        partition_id: args.partitionId,
-        table,
-        commit_seq: args.commitSeq,
-      }))
-    )
-    .onConflict((oc) =>
-      oc.columns(['partition_id', 'table', 'commit_seq']).doNothing()
-    )
-    .execute();
+  await finalizeCommitIntegrity({
+    db: args.trx,
+    dialect: args.dialect,
+    partitionId: args.partitionId,
+    commitSeq: args.commitSeq,
+  });
 }
 
 async function loadExistingCommitResult<DB extends SyncCoreDb>(args: {
@@ -368,8 +419,8 @@ async function loadExistingCommitResult<DB extends SyncCoreDb>(args: {
     return createRejectedPushResult({
       opIndex: 0,
       status: 'error',
-      error: 'IDEMPOTENCY_CACHE_MISS',
-      code: 'INTERNAL',
+      error: 'Idempotency cache miss',
+      code: 'sync.idempotency_cache_miss',
       retriable: true,
     });
   }
@@ -490,6 +541,7 @@ async function applyCommitOperations<
       clientId: args.request.clientId,
       commitId: args.commitId,
       schemaVersion: args.request.schemaVersion,
+      authLease: args.request.authLease,
     };
 
     let transformedOp = op;
@@ -568,8 +620,8 @@ async function applyCommitOperations<
           const error: SyncPushResponse['results'][number] = {
             opIndex: applied.result.opIndex,
             status: 'error',
-            error: 'MISSING_SCOPES',
-            code: 'INVALID_SCOPE',
+            error: 'Missing scopes',
+            code: 'sync.missing_scopes',
             retriable: false,
           };
           results.push(error);
@@ -606,6 +658,7 @@ async function executePushCommitInExecutor<
   pushPlugins: readonly SyncServerPushPlugin<DB, Auth>[];
   auth: Auth;
   request: SyncPushRequest;
+  validateCommit?: PushCommitValidator<DB, Auth>;
 }): Promise<PushCommitResult> {
   const { trx, dialect, handlers, request, pushPlugins } = args;
   const actorId = args.auth.actorId;
@@ -630,7 +683,11 @@ async function executePushCommitInExecutor<
     client_id: request.clientId,
     client_commit_id: request.clientCommitId,
     created_at: commitCreatedAt,
-    meta: null,
+    meta: request.authLease
+      ? toDialectJsonValue(dialect, {
+          authLease: request.authLease,
+        })
+      : null,
     result_json: null,
   };
   let commitSeq =
@@ -666,6 +723,37 @@ async function executePushCommitInExecutor<
   }
 
   const commitId = `${request.clientId}:${request.clientCommitId}`;
+  const validationResult = await args.validateCommit?.({
+    trx,
+    dialect,
+    auth: args.auth,
+    request,
+    partitionId,
+    actorId,
+    commitSeq,
+  });
+  if (validationResult) {
+    const response = createRejectedPushResponse(validationResult, commitSeq);
+    await persistCommitOutcome({
+      trx,
+      dialect,
+      partitionId,
+      commitSeq,
+      response,
+      affectedTables: [],
+      emittedChangeCount: 0,
+    });
+
+    return {
+      response,
+      affectedTables: [],
+      scopeKeys: [],
+      emittedChanges: [],
+      commitActorId: actorId,
+      commitCreatedAt,
+    };
+  }
+
   const savepointName = `sync_apply_${commitSeq}`;
   const useSavepoints = shouldUseSavepoints({
     dialect,
@@ -775,6 +863,7 @@ export async function pushCommit<
   plugins?: readonly SyncServerPushPlugin<DB, Auth>[];
   auth: Auth;
   request: SyncPushRequest;
+  validateCommit?: PushCommitValidator<DB, Auth>;
   suppressTelemetry?: boolean;
 }): Promise<PushCommitResult> {
   const { db, dialect, handlers, request } = args;
@@ -833,6 +922,7 @@ export async function pushCommit<
               pushPlugins,
               auth: args.auth,
               request,
+              validateCommit: args.validateCommit,
             })
           )
         );
@@ -871,6 +961,7 @@ export async function pushCommitBatch<
   plugins?: readonly SyncServerPushPlugin<DB, Auth>[];
   auth: Auth;
   requests: SyncPushRequest[];
+  validateCommit?: PushCommitValidator<DB, Auth>;
   suppressTelemetry?: boolean;
 }): Promise<PushCommitResult[]> {
   const { db, dialect, handlers, requests } = args;
@@ -912,6 +1003,7 @@ export async function pushCommitBatch<
                 pushPlugins,
                 auth: args.auth,
                 request,
+                validateCommit: args.validateCommit,
               })
             );
           }

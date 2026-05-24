@@ -3,8 +3,6 @@
 #hoist = false
 
 [test]
-# Save native fetch before happy-dom replaces it, then preload happy-dom for React tests
-preload = ["./tests/integration/harness/native-fetch.ts", "./packages/client-react/src/__tests__/setup.ts"]
 # Coverage configuration (coverage enabled only via --coverage CLI flag in test:coverage script)
 coverageReporter = ["text", "lcov"]
 coverageDir = "coverage"

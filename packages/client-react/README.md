@@ -1,30 +1,7 @@
-# @syncular/client-react
+# @syncular/react
 
-React bindings for the Syncular client. Provides a typed `SyncProvider` and hooks like `useSyncQuery`, `useSyncSelector`, `useMutations`, and presence helpers.
-
-## Install
-
-```bash
-npm install @syncular/client-react react
-```
-
-## Usage
+React hooks and provider for `@syncular/client`.
 
 ```tsx
-import { createSyncularReact } from '@syncular/client-react';
-
-const { SyncProvider, useSyncQuery, useMutations } = createSyncularReact<MyDb>();
+import { createSyncularReact } from '@syncular/react';
 ```
-
-## Documentation
-
-- React SDK: https://syncular.dev/docs/client-sdk/react
-- Client setup: https://syncular.dev/docs/build/client-setup
-- Presence: https://syncular.dev/docs/build/presence
-
-## Links
-
-- GitHub: https://github.com/syncular/syncular
-- Issues: https://github.com/syncular/syncular/issues
-
-> Status: Alpha. APIs and storage layouts may change between releases.

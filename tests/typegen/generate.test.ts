@@ -61,52 +61,6 @@ describe('generateTypes - SQLite', () => {
     expect(result.code).toContain('  tasks: TasksTable;');
   });
 
-  it('generates with extendsSyncClientDb', async () => {
-    const output = join(tmpDir, 'extends.generated.ts');
-    const result = await generateTypes({
-      migrations: sqliteMigrations,
-      output,
-      extendsSyncClientDb: true,
-    });
-
-    expect(result.code).toContain(
-      "import type { SyncClientDb } from '@syncular/client';"
-    );
-    expect(result.code).toContain('extends SyncClientDb');
-  });
-
-  it('supports umbrella syncular import type', async () => {
-    const output = join(tmpDir, 'extends-umbrella-import.generated.ts');
-    const result = await generateTypes({
-      migrations: sqliteMigrations,
-      output,
-      extendsSyncClientDb: true,
-      syncularImportType: 'umbrella',
-    });
-
-    expect(result.code).toContain(
-      "import type { SyncClientDb } from 'syncular/client';"
-    );
-    expect(result.code).toContain('extends SyncClientDb');
-  });
-
-  it('supports explicit syncular import map', async () => {
-    const output = join(tmpDir, 'extends-mapped-import.generated.ts');
-    const result = await generateTypes({
-      migrations: sqliteMigrations,
-      output,
-      extendsSyncClientDb: true,
-      syncularImportType: {
-        client: 'my-sync/client',
-      },
-    });
-
-    expect(result.code).toContain(
-      "import type { SyncClientDb } from 'my-sync/client';"
-    );
-    expect(result.code).toContain('extends SyncClientDb');
-  });
-
   it('applies codecs ts overrides', async () => {
     const output = join(tmpDir, 'column-codecs.generated.ts');
     const seenColumnSqlTypes = new Map<string, string>();

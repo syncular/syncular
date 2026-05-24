@@ -15,6 +15,7 @@ export async function recordClientCursor<DB extends SyncCoreDb>(
     actorId: string;
     cursor: number;
     effectiveScopes: ScopeValues;
+    realtimeSubscriptions?: unknown;
   }
 ): Promise<void> {
   await dialect.recordClientCursor(db, args);

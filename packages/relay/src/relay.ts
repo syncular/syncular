@@ -274,6 +274,7 @@ export class RelayServer<DB extends RelayDatabase = RelayDatabase> {
         await this.mainServerTransport.sync({
           clientId: this.mainServerClientId,
           pull: {
+            schemaVersion: 1,
             subscriptions: [],
             limitCommits: 1,
           },

@@ -1,0 +1,235 @@
+---
+title: Error Handling
+description: Handle sync errors with diagnostics, lifecycle status, retry behavior, and user-facing recovery actions.
+---
+
+# Error Handling
+
+Syncular reports failures through three layers:
+
+- thrown errors from direct calls such as `syncular.sync()`,
+  `mutations.tasks.insert(...)`, or blob operations;
+- structured diagnostics from the Rust runtime and browser/native workers;
+- aggregate app status from the managed client and React hooks.
+
+Use all three. Direct errors are for the command that failed, diagnostics are
+for logging and operations, and aggregate status is for user-facing UI.
+
+Examples on this page use browser TypeScript and React because they show UI
+handling. Native hosts receive the same stable error codes, diagnostics, and
+lifecycle state through generated Swift/Kotlin/Java wrappers.
+
+## What you'll learn
+
+- How Syncular classifies client and server errors
+- How retry and recovery work in the managed Rust client
+- How to subscribe to diagnostics
+- How to show connection, outbox, and conflict state in React
+- How to handle auth, network, conflict, and migration/schema failures
+
+## Browser TypeScript error shape
+
+Browser and worker errors are normalized to Syncular client errors when
+possible:
+
+```ts
+import { SyncularClientError, toSyncularClientError } from '@syncular/client';
+
+try {
+  await syncular.sync();
+} catch (err) {
+  const error = toSyncularClientError(err);
+  if (error instanceof SyncularClientError) {
+    reportSyncError({
+      code: error.code,
+      category: error.category,
+      retryable: error.retryable,
+      recommendedAction: error.recommendedAction,
+      message: error.message,
+      details: error.details,
+    });
+  }
+}
+```
+
+Server-originated codes use stable `sync.*` names such as
+`sync.forbidden`, `sync.version_conflict`, `sync.invalid_request`, and
+`sync.constraint_violation`. Browser/runtime diagnostics use source-specific
+codes such as `realtime.reconnect_scheduled`, `sync.auth_required`,
+`auth.refresh_failed`, or `blob.upload_failed`.
+
+## Browser TypeScript diagnostics
+
+Pass a diagnostics sink when opening the generated app database or managed
+client:
+
+```ts
+const syncular = await createSyncularAppDatabase({
+  config: {
+    baseUrl: '/sync',
+    actorId: userId,
+    clientId,
+  },
+  diagnostics: (event) => {
+    logger[event.level]({
+      source: event.source,
+      code: event.code,
+      message: event.message,
+      details: event.details,
+    });
+  },
+});
+```
+
+Diagnostics are also what the managed lifecycle uses for resync-required
+recovery. If a subscriber overflows or the runtime reports
+`resyncRequired: true`, generated clients should resubscribe and force a fresh
+bootstrap rather than trying to reason from partial events.
+
+## Retry and recovery
+
+The Rust runtime owns retry scheduling. Retryable outbox, blob, and realtime
+failures are persisted with the next due attempt and woken by the runtime; app
+code should not add a polling loop around sync.
+
+Common recovery paths:
+
+| Failure | Runtime behavior | App behavior |
+|---|---|---|
+| Network offline | local writes stay in SQLite/outbox; realtime stops or reconnects | show offline/pending state |
+| Auth expired | calls `authLifecycle.refreshToken` where configured | sign out or ask user to refresh if auth cannot recover |
+| Subscriber overflow | emits resync-required diagnostics | refresh live views after forced bootstrap |
+| Version conflict | persists conflict records | route user to product conflict UI |
+| Unsupported schema | server rejects with update-required style error | show "please update the app" |
+
+## Managed client status
+
+Use the managed client for non-React hosts:
+
+```ts
+const status = syncular.getStatus();
+
+if (status.hasPendingMutations) {
+  showPendingBadge(status.outbox?.pending ?? 0);
+}
+
+if (status.hasConflicts) {
+  openConflictCenter(status.conflicts?.unresolved ?? 0);
+}
+
+if (!status.isConnected) {
+  showOfflineBanner();
+}
+```
+
+Manual reconnect is just a lifecycle start/sync request:
+
+```ts
+await syncular.start();
+await syncular.sync();
+```
+
+## React status UI
+
+React hooks wrap the same managed client status:
+
+```tsx
+const {
+  SyncProvider,
+  useConflictStats,
+  useOutboxStats,
+  useSyncConnection,
+} = createSyncularReact<AppDb>();
+
+function StatusBar() {
+  const connection = useSyncConnection();
+  const outbox = useOutboxStats();
+  const conflicts = useConflictStats();
+
+  return (
+    <SyncStatus
+      realtime={connection.state.realtime}
+      pending={outbox?.pending ?? 0}
+      conflicts={conflicts?.unresolved ?? 0}
+      onReconnect={connection.reconnect}
+    />
+  );
+}
+
+export function App() {
+  return (
+    <SyncProvider client={syncular}>
+      <StatusBar />
+    </SyncProvider>
+  );
+}
+```
+
+## Mutation errors
+
+Generated mutations reject when the local write cannot be queued, when payload
+limits are exceeded, or when the runtime cannot maintain local/outbox
+coherence.
+
+```ts
+try {
+  await syncular.mutations.tasks.update(taskId, {
+    title: nextTitle,
+  });
+} catch (err) {
+  const error = toSyncularClientError(err);
+  toast.error(error.message);
+}
+```
+
+Server-side conflicts are not the same as local mutation failures. A local
+mutation can queue successfully and later conflict during push. Use
+`syncular.conflicts.list()` or `useConflictStats()` to surface that state.
+
+## Conflict handling
+
+```tsx
+function ConflictBanner() {
+  const stats = useConflictStats();
+
+  if (!stats?.unresolved) return null;
+
+  return (
+    <button onClick={() => openConflictCenter()}>
+      Review {stats.unresolved} conflicts
+    </button>
+  );
+}
+```
+
+Resolution policy is product-specific: keep the server value, retry the local
+intent, or write a merged update through generated mutations.
+
+## Migration and schema failures
+
+The generated client validates the Rust runtime package, required runtime
+features, and generated schema version during `createSyncularAppDatabase(...)`.
+If this fails, do not start sync. Show a blocking app error, clear local state
+only behind an explicit product decision, and ship a fixed app/runtime pair.
+
+For unsupported older clients, reject on the server from a version-aware
+handler and let the app display a "please update" screen.
+
+## Best practices
+
+1. Attach a diagnostics sink in production and forward redacted diagnostics to
+   your monitoring pipeline.
+2. Show connection, outbox, and conflict state in app chrome.
+3. Do not poll around retryable failures; let the runtime wake retries and use
+   `syncular.sync()` only for explicit user actions.
+4. Treat resync-required or event-overflow diagnostics as a live-view refresh
+   boundary.
+5. Keep conflict resolution product-specific and write resolved state through
+   generated mutations.
+
+## Next steps
+
+- [Realtime](/docs/server/realtime-websocket) -- WebSocket wakeups and recovery
+- [Conflict Resolution](/docs/features/conflict-resolution) -- product
+  conflict policies
+- [Troubleshooting](/docs/operate/troubleshooting) -- production issue triage

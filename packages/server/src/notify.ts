@@ -10,8 +10,10 @@
 
 import { randomId, type StoredScopes } from '@syncular/core';
 import type { Insertable, Kysely } from 'kysely';
+import { finalizeCommitIntegrity } from './commit-integrity';
 import { coerceNumber, toDialectJsonValue } from './dialect/helpers';
 import type { ServerSyncDialect } from './dialect/types';
+import { createScopeCommitIndexEntries } from './helpers/scope-commit-index';
 import type { SyncCoreDb } from './schema';
 
 /**
@@ -160,6 +162,13 @@ export async function notifyExternalDataChange<DB extends SyncCoreDb>(
       .executeTakeFirst();
     const deletedChunks = Number(deletedResult?.numDeletedRows ?? 0);
 
+    await finalizeCommitIntegrity({
+      db: trx,
+      dialect,
+      partitionId,
+      commitSeq,
+    });
+
     return {
       commitSeq,
       tables: uniqueTables,
@@ -258,6 +267,31 @@ export async function notifyExternalRowChanges<DB extends SyncCoreDb>(
 
     await syncTrx.insertInto('sync_changes').values(changeRows).execute();
 
+    const scopeEntries = createScopeCommitIndexEntries(
+      normalizedChanges.map((change) => ({
+        table: change.table,
+        scopes: change.scopes,
+      }))
+    );
+    if (scopeEntries.length > 0) {
+      await syncTrx
+        .insertInto('sync_scope_commits')
+        .values(
+          scopeEntries.map((entry) => ({
+            partition_id: partitionId,
+            table: entry.table,
+            scope_key: entry.scopeKey,
+            commit_seq: commitSeq,
+          }))
+        )
+        .onConflict((oc) =>
+          oc
+            .columns(['partition_id', 'table', 'scope_key', 'commit_seq'])
+            .doNothing()
+        )
+        .execute();
+    }
+
     const affectedTables = Array.from(
       new Set(normalizedChanges.map((change) => change.table))
     ).sort();
@@ -290,6 +324,13 @@ export async function notifyExternalRowChanges<DB extends SyncCoreDb>(
       })
       .where('commit_seq', '=', commitSeq)
       .execute();
+
+    await finalizeCommitIntegrity({
+      db: trx,
+      dialect,
+      partitionId,
+      commitSeq,
+    });
 
     return {
       commitSeq,

@@ -16,7 +16,7 @@ interface SyncRequestEventsTable {
   request_id: string | null;
   trace_id: string | null;
   span_id: string | null;
-  event_type: 'push' | 'pull';
+  event_type: 'sync' | 'push' | 'pull';
   sync_path: 'http-combined' | 'ws-push';
   actor_id: string;
   client_id: string;
@@ -31,6 +31,7 @@ interface SyncRequestEventsTable {
   row_count: number | null;
   subscription_count: number | null;
   scopes_summary: unknown | null;
+  response_summary?: unknown | null;
   tables: string[];
   error_message: string | null;
   payload_ref: string | null;
@@ -56,6 +57,44 @@ interface SyncOperationEventsTable {
   created_at: Generated<string>;
 }
 
+interface SyncRealtimeEventsTable {
+  event_id: Generated<number>;
+  partition_id: string;
+  actor_id: string;
+  client_id: string;
+  transport_path: 'direct' | 'relay';
+  event_type: string;
+  reason: string | null;
+  cursor: number | null;
+  latest_cursor: number | null;
+  commit_seq: number | null;
+  scope_count: number | null;
+  skipped_count: number | null;
+  sync_pack_encoding: string | null;
+  created_at: Generated<string>;
+}
+
+interface SyncClientDiagnosticSnapshotsTable {
+  snapshot_id: Generated<number>;
+  partition_id: string;
+  client_id: string;
+  actor_id: string | null;
+  runtime_kind: string | null;
+  runtime_version: string | null;
+  schema_version: number | null;
+  reported_at: string;
+  received_at: Generated<string>;
+  lifecycle_phase: string | null;
+  connection_state: string | null;
+  freshness_state: string;
+  health_max_severity: string | null;
+  diagnostic_codes_summary: unknown | null;
+  queue_summary: unknown | null;
+  timing_summary: unknown | null;
+  redaction_summary: unknown | null;
+  snapshot_json: unknown;
+}
+
 interface SyncApiKeysTable {
   key_id: string;
   key_hash: string;
@@ -74,6 +113,8 @@ interface TestDb extends SyncCoreDb {
   sync_request_events: SyncRequestEventsTable;
   sync_request_payloads: SyncRequestPayloadsTable;
   sync_operation_events: SyncOperationEventsTable;
+  sync_realtime_events: SyncRealtimeEventsTable;
+  sync_client_diagnostic_snapshots: SyncClientDiagnosticSnapshotsTable;
   sync_api_keys: SyncApiKeysTable;
 }
 
@@ -91,10 +132,21 @@ type TimelineResponse = {
       eventId: number;
       actorId: string;
       clientId: string;
-      eventType: 'push' | 'pull';
+      eventType: 'sync' | 'push' | 'pull';
       outcome: string;
       tables: string[];
     } | null;
+  }>;
+  total: number;
+  offset: number;
+  limit: number;
+};
+
+type EventsResponse = {
+  items: Array<{
+    eventId: number;
+    eventType: 'sync' | 'push' | 'pull';
+    traceId: string | null;
   }>;
   total: number;
   offset: number;
@@ -129,6 +181,39 @@ type ApiKeysResponse = {
     expiresAt: string | null;
     lastUsedAt: string | null;
     revokedAt: string | null;
+  }>;
+  total: number;
+  offset: number;
+  limit: number;
+};
+
+type ClientDiagnosticsResponse = {
+  items: Array<{
+    clientId: string;
+    actorId: string | null;
+    partitionId: string;
+    reportedAt: string;
+    receivedAt: string;
+    freshnessState: 'active' | 'idle' | 'stale';
+    healthMaxSeverity: 'debug' | 'info' | 'warn' | 'error' | null;
+    diagnosticCodesSummary: Array<{
+      code: string;
+      count: number;
+      maxLevel: 'debug' | 'info' | 'warn' | 'error';
+    }>;
+    runtime: {
+      packageName?: string;
+      rust?: { crateName?: string; schemaVersion?: number };
+    } | null;
+    lifecycle: Record<string, unknown> | null;
+    transportStats: Record<string, unknown> | null;
+    subscriptions: Array<{ id: string; table: string; scopeKeys: string[] }>;
+    recentDiagnostics: Array<{
+      level: 'debug' | 'info' | 'warn' | 'error';
+      source: string;
+      code: string;
+      syncAttemptId?: string;
+    }>;
   }>;
   total: number;
   offset: number;
@@ -270,6 +355,58 @@ describe('console timeline route filters', () => {
     );
   }
 
+  async function postClientDiagnostic(body: unknown): Promise<Response> {
+    return app.request('http://localhost/console/client-diagnostics', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${CONSOLE_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
+  async function readClientDiagnostics(
+    query: Record<string, string | number | undefined> = {},
+    targetApp: Hono = app
+  ): Promise<ClientDiagnosticsResponse> {
+    const params = new URLSearchParams({ limit: '50', offset: '0' });
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+
+    const response = await targetApp.request(
+      `http://localhost/console/client-diagnostics?${params.toString()}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(response.status).toBe(200);
+    return (await response.json()) as ClientDiagnosticsResponse;
+  }
+
+  async function readClientDiagnosticHistory(
+    clientId: string,
+    query: Record<string, string | number | undefined> = {},
+    targetApp: Hono = app
+  ): Promise<ClientDiagnosticsResponse> {
+    const params = new URLSearchParams({ limit: '50', offset: '0' });
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+
+    const response = await targetApp.request(
+      `http://localhost/console/client-diagnostics/${clientId}/history?${params.toString()}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(response.status).toBe(200);
+    return (await response.json()) as ClientDiagnosticsResponse;
+  }
+
   async function requestEvents(
     args: {
       query?: Record<string, string | number | undefined>;
@@ -288,6 +425,14 @@ describe('console timeline route filters', () => {
         headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
       }
     );
+  }
+
+  async function readEvents(
+    query: Record<string, string | number | undefined> = {}
+  ): Promise<EventsResponse> {
+    const response = await requestEvents({ query });
+    expect(response.status).toBe(200);
+    return (await response.json()) as EventsResponse;
   }
 
   async function requestClearEvents(): Promise<Response> {
@@ -365,6 +510,64 @@ describe('console timeline route filters', () => {
 
     return app.request(
       `http://localhost/console/commits/${seq}${queryString ? `?${queryString}` : ''}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+  }
+
+  async function requestRowHistory(
+    table: string,
+    rowId: string,
+    query: Record<string, string | number | undefined> = {}
+  ): Promise<Response> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+    const queryString = params.toString();
+
+    return app.request(
+      `http://localhost/console/row-history/${table}/${rowId}${queryString ? `?${queryString}` : ''}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+  }
+
+  async function requestRowInvestigation(
+    table: string,
+    rowId: string,
+    query: Record<string, string | number | undefined> = {}
+  ): Promise<Response> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+    const queryString = params.toString();
+
+    return app.request(
+      `http://localhost/console/row-investigation/${table}/${rowId}${queryString ? `?${queryString}` : ''}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+  }
+
+  async function requestDebugExport(
+    query: Record<string, string | number | undefined> = {}
+  ): Promise<Response> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+    const queryString = params.toString();
+
+    return app.request(
+      `http://localhost/console/debug/export${queryString ? `?${queryString}` : ''}`,
       {
         headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
       }
@@ -535,6 +738,31 @@ describe('console timeline route filters', () => {
       .values([
         {
           partition_id: 'default',
+          request_id: 'req-sync-limit',
+          trace_id: 'trace-sync-limit',
+          span_id: null,
+          event_type: 'sync',
+          sync_path: 'http-combined',
+          actor_id: 'actor-z',
+          client_id: 'client-sync-limit',
+          transport_path: 'direct',
+          status_code: 413,
+          outcome: 'rejected',
+          response_status: 'client_error',
+          error_code: 'runtime.limit_exceeded',
+          duration_ms: 3,
+          commit_seq: null,
+          operation_count: null,
+          row_count: null,
+          subscription_count: null,
+          scopes_summary: null,
+          tables: [],
+          error_message: 'maxSyncRequestJsonBytes exceeded',
+          payload_ref: null,
+          created_at: atIso(5),
+        },
+        {
+          partition_id: 'default',
           request_id: 'req-1',
           trace_id: 'trace-1',
           span_id: 'span-1',
@@ -659,6 +887,171 @@ describe('console timeline route filters', () => {
     await db.destroy();
   });
 
+  it('includes snapshot cache pressure in stats', async () => {
+    await db
+      .insertInto('sync_snapshot_chunks')
+      .values([
+        {
+          chunk_id: 'chunk-active-default',
+          partition_id: 'default',
+          scope_key: 'scope-a',
+          scope: 'tasks:user-a',
+          as_of_commit_seq: 2,
+          row_cursor: '',
+          row_limit: 100,
+          next_row_cursor: null,
+          is_last_page: 1,
+          encoding: 'binary-table-v1',
+          compression: 'gzip',
+          sha256: 'chunk-active-hash',
+          byte_length: 100,
+          blob_hash: 'blob:chunk-active',
+          expires_at: atIso(200),
+        },
+        {
+          chunk_id: 'chunk-expired-default',
+          partition_id: 'default',
+          scope_key: 'scope-a',
+          scope: 'tasks:user-a',
+          as_of_commit_seq: 2,
+          row_cursor: 'cursor-1',
+          row_limit: 100,
+          next_row_cursor: null,
+          is_last_page: 1,
+          encoding: 'binary-table-v1',
+          compression: 'gzip',
+          sha256: 'chunk-expired-hash',
+          byte_length: 40,
+          blob_hash: 'blob:chunk-expired',
+          expires_at: atIso(-10),
+        },
+        {
+          chunk_id: 'chunk-other-partition',
+          partition_id: 'other',
+          scope_key: 'scope-b',
+          scope: 'tasks:user-b',
+          as_of_commit_seq: 2,
+          row_cursor: '',
+          row_limit: 100,
+          next_row_cursor: null,
+          is_last_page: 1,
+          encoding: 'binary-table-v1',
+          compression: 'gzip',
+          sha256: 'chunk-other-hash',
+          byte_length: 200,
+          blob_hash: 'blob:chunk-other',
+          expires_at: atIso(200),
+        },
+      ])
+      .execute();
+
+    await db
+      .insertInto('sync_snapshot_artifacts')
+      .values([
+        {
+          artifact_id: 'artifact-active-default',
+          partition_id: 'default',
+          scope_key: 'scope-a',
+          subscription_id: 'sub-tasks',
+          table: 'tasks',
+          artifact_kind: 'sqlite-snapshot-v1',
+          schema_version: '1',
+          as_of_commit_seq: 2,
+          row_cursor: '',
+          row_limit: 100,
+          row_count: 100,
+          next_row_cursor: null,
+          is_first_page: 1,
+          is_last_page: 1,
+          compression: 'gzip',
+          sha256: 'artifact-active-hash',
+          byte_length: 1000,
+          manifest_digest: 'artifact-active-manifest',
+          feature_set_json: JSON.stringify([]),
+          manifest_json: JSON.stringify({ digest: 'artifact-active-manifest' }),
+          blob_hash: 'blob:artifact-active',
+          expires_at: atIso(200),
+        },
+        {
+          artifact_id: 'artifact-expired-default',
+          partition_id: 'default',
+          scope_key: 'scope-a',
+          subscription_id: 'sub-tasks',
+          table: 'tasks',
+          artifact_kind: 'sqlite-snapshot-v1',
+          schema_version: '1',
+          as_of_commit_seq: 2,
+          row_cursor: 'cursor-1',
+          row_limit: 100,
+          row_count: 40,
+          next_row_cursor: null,
+          is_first_page: 0,
+          is_last_page: 1,
+          compression: 'gzip',
+          sha256: 'artifact-expired-hash',
+          byte_length: 300,
+          manifest_digest: 'artifact-expired-manifest',
+          feature_set_json: JSON.stringify([]),
+          manifest_json: JSON.stringify({
+            digest: 'artifact-expired-manifest',
+          }),
+          blob_hash: 'blob:artifact-expired',
+          expires_at: atIso(-10),
+        },
+        {
+          artifact_id: 'artifact-other-partition',
+          partition_id: 'other',
+          scope_key: 'scope-b',
+          subscription_id: 'sub-tasks',
+          table: 'tasks',
+          artifact_kind: 'sqlite-snapshot-v1',
+          schema_version: '1',
+          as_of_commit_seq: 2,
+          row_cursor: '',
+          row_limit: 100,
+          row_count: 100,
+          next_row_cursor: null,
+          is_first_page: 1,
+          is_last_page: 1,
+          compression: 'gzip',
+          sha256: 'artifact-other-hash',
+          byte_length: 500,
+          manifest_digest: 'artifact-other-manifest',
+          feature_set_json: JSON.stringify([]),
+          manifest_json: JSON.stringify({ digest: 'artifact-other-manifest' }),
+          blob_hash: 'blob:artifact-other',
+          expires_at: atIso(200),
+        },
+      ])
+      .execute();
+
+    const response = await app.request(
+      'http://localhost/console/stats?partitionId=default',
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      snapshotChunkCount: number;
+      snapshotChunkBytes: number;
+      expiredSnapshotChunkCount: number;
+      expiredSnapshotChunkBytes: number;
+      snapshotArtifactCount: number;
+      snapshotArtifactBytes: number;
+      expiredSnapshotArtifactCount: number;
+      expiredSnapshotArtifactBytes: number;
+    };
+    expect(body.snapshotChunkCount).toBe(2);
+    expect(body.snapshotChunkBytes).toBe(140);
+    expect(body.expiredSnapshotChunkCount).toBe(1);
+    expect(body.expiredSnapshotChunkBytes).toBe(40);
+    expect(body.snapshotArtifactCount).toBe(2);
+    expect(body.snapshotArtifactBytes).toBe(1300);
+    expect(body.expiredSnapshotArtifactCount).toBe(1);
+    expect(body.expiredSnapshotArtifactBytes).toBe(300);
+  });
+
   it('filters by actor, client, and table across merged timeline rows', async () => {
     const actorFiltered = await readTimeline({ actorId: 'actor-a' });
     expect(actorFiltered.total).toBe(3);
@@ -695,9 +1088,14 @@ describe('console timeline route filters', () => {
     expect(eventTypeFiltered.total).toBe(1);
     expect(eventTypeFiltered.items[0]?.type).toBe('event');
     expect(eventTypeFiltered.items[0]?.event?.eventType).toBe('push');
+
+    const syncTypeFiltered = await readTimeline({ eventType: 'sync' });
+    expect(syncTypeFiltered.total).toBe(1);
+    expect(syncTypeFiltered.items[0]?.type).toBe('event');
+    expect(syncTypeFiltered.items[0]?.event?.eventType).toBe('sync');
   });
 
-  it('applies request-id and trace-id filters to event rows', async () => {
+  it('applies request-id, trace-id, and sync-attempt filters to event rows', async () => {
     const requestIdFiltered = await readTimeline({ requestId: 'req-2' });
     expect(requestIdFiltered.total).toBe(1);
     expect(requestIdFiltered.items[0]?.type).toBe('event');
@@ -707,6 +1105,20 @@ describe('console timeline route filters', () => {
     expect(traceIdFiltered.total).toBe(1);
     expect(traceIdFiltered.items[0]?.type).toBe('event');
     expect(traceIdFiltered.items[0]?.event?.eventType).toBe('push');
+
+    const syncAttemptTimelineFiltered = await readTimeline({
+      syncAttemptId: 'trace-1',
+    });
+    expect(syncAttemptTimelineFiltered.total).toBe(1);
+    expect(syncAttemptTimelineFiltered.items[0]?.type).toBe('event');
+    expect(syncAttemptTimelineFiltered.items[0]?.event?.eventType).toBe('push');
+
+    const syncAttemptEventsFiltered = await readEvents({
+      syncAttemptId: 'trace-1',
+    });
+    expect(syncAttemptEventsFiltered.total).toBe(1);
+    expect(syncAttemptEventsFiltered.items[0]?.traceId).toBe('trace-1');
+    expect(syncAttemptEventsFiltered.items[0]?.eventType).toBe('push');
   });
 
   it('applies time-window and search filtering', async () => {
@@ -724,8 +1136,8 @@ describe('console timeline route filters', () => {
     const pageOne = await readTimeline({ limit: 2, offset: 0 });
     const pageTwo = await readTimeline({ limit: 2, offset: 2 });
 
-    expect(pageOne.total).toBe(5);
-    expect(pageTwo.total).toBe(5);
+    expect(pageOne.total).toBe(6);
+    expect(pageTwo.total).toBe(6);
     expect(pageOne.items.length).toBe(2);
     expect(pageTwo.items.length).toBe(2);
 
@@ -762,6 +1174,568 @@ describe('console timeline route filters', () => {
     });
 
     expect(response.status).toBe(400);
+  });
+
+  it('returns redacted console row history linked to request events', async () => {
+    const commitRow = await db
+      .selectFrom('sync_commits')
+      .select(['commit_seq'])
+      .where('partition_id', '=', 'default')
+      .where('client_commit_id', '=', 'commit-a')
+      .executeTakeFirst();
+    const commitSeq = Number(commitRow?.commit_seq);
+    expect(Number.isFinite(commitSeq)).toBe(true);
+
+    await db
+      .insertInto('sync_changes')
+      .values({
+        partition_id: 'default',
+        commit_seq: commitSeq,
+        table: 'tasks',
+        row_id: 'row-a',
+        op: 'upsert',
+        row_json: JSON.stringify({
+          id: 'row-a',
+          title: 'Hidden payload title',
+          user_id: 'actor-a',
+        }),
+        row_version: 7,
+        scopes: JSON.stringify({ user_id: 'actor-a' }),
+      })
+      .execute();
+
+    const response = await requestRowHistory('tasks', 'row-a', {
+      partitionId: 'default',
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      table: string;
+      rowId: string;
+      partitionId: string;
+      history: Array<{
+        commitSeq: number;
+        clientCommitId: string;
+        fields: string[];
+        scopeFields: string[];
+        changeKind: string;
+        sensitiveFields: string[];
+        redaction: { payload: string; reason: string };
+        requestEventIds: number[];
+        requestIds: string[];
+        traceIds: string[];
+        rowJson?: unknown;
+      }>;
+      nextCursor: number | null;
+    };
+
+    expect(payload).toMatchObject({
+      table: 'tasks',
+      rowId: 'row-a',
+      partitionId: 'default',
+      nextCursor: null,
+    });
+    expect(payload.history).toHaveLength(1);
+    expect(payload.history[0]).toMatchObject({
+      commitSeq,
+      clientCommitId: 'commit-a',
+      fields: ['id', 'title', 'user_id'],
+      scopeFields: ['user_id'],
+      changeKind: 'app_row',
+      sensitiveFields: [],
+      redaction: {
+        payload: 'omitted',
+        reason: 'audit_redacted_by_default',
+      },
+      requestIds: ['req-1'],
+      traceIds: ['trace-1'],
+    });
+    expect(payload.history[0]?.requestEventIds).toHaveLength(1);
+    expect(payload.history[0]).not.toHaveProperty('rowJson');
+    expect(JSON.stringify(payload)).not.toContain('Hidden payload title');
+
+    const wrongPartition = await requestRowHistory('tasks', 'row-a', {
+      partitionId: 'tenant-b',
+    });
+    expect(wrongPartition.status).toBe(404);
+  });
+
+  it('returns redacted row investigation hints for client visibility', async () => {
+    const commitRow = await db
+      .selectFrom('sync_commits')
+      .select(['commit_seq'])
+      .where('partition_id', '=', 'default')
+      .where('client_commit_id', '=', 'commit-a')
+      .executeTakeFirst();
+    const commitSeq = Number(commitRow?.commit_seq);
+    expect(Number.isFinite(commitSeq)).toBe(true);
+
+    await db
+      .insertInto('sync_changes')
+      .values({
+        partition_id: 'default',
+        commit_seq: commitSeq,
+        table: 'tasks',
+        row_id: 'row-investigate',
+        op: 'upsert',
+        row_json: JSON.stringify({
+          id: 'row-investigate',
+          title: 'Investigation Secret',
+          org_id: 'org-visible',
+        }),
+        row_version: 3,
+        scopes: JSON.stringify({ org_id: 'org-visible' }),
+      })
+      .execute();
+
+    await db
+      .insertInto('sync_client_cursors')
+      .values({
+        partition_id: 'default',
+        client_id: 'client-investigate',
+        actor_id: 'actor-investigate',
+        cursor: commitSeq - 1,
+        effective_scopes: JSON.stringify({ org_id: 'org-other' }),
+        updated_at: atIso(57),
+      })
+      .execute();
+
+    await db
+      .insertInto('sync_request_events')
+      .values({
+        partition_id: 'default',
+        request_id: 'req-investigate',
+        trace_id: 'trace-investigate',
+        span_id: null,
+        event_type: 'pull',
+        sync_path: 'http-combined',
+        actor_id: 'actor-investigate',
+        client_id: 'client-investigate',
+        transport_path: 'direct',
+        status_code: 200,
+        outcome: 'applied',
+        response_status: 'success',
+        error_code: null,
+        duration_ms: 11,
+        commit_seq: null,
+        operation_count: null,
+        row_count: 0,
+        subscription_count: 1,
+        scopes_summary: JSON.stringify({ org_id: 'org-other' }),
+        response_summary: JSON.stringify({
+          subscriptionCount: 1,
+          activeSubscriptionCount: 0,
+          revokedSubscriptionCount: 1,
+          bootstrapSubscriptionCount: 0,
+          commitCount: 0,
+          changeCount: 0,
+          snapshotPageCount: 2,
+          snapshotInlineRowCount: 0,
+          snapshotChunkCount: 1,
+          snapshotChunkBytes: 256,
+          snapshotArtifactCount: 1,
+          snapshotArtifactBytes: 1024,
+        }),
+        tables: ['tasks'],
+        error_message: null,
+        payload_ref: null,
+        created_at: atIso(58),
+      })
+      .execute();
+    await db
+      .insertInto('sync_request_events')
+      .values({
+        partition_id: 'default',
+        request_id: 'req-investigate-rejected',
+        trace_id: 'trace-investigate-rejected',
+        span_id: null,
+        event_type: 'push',
+        sync_path: 'http-combined',
+        actor_id: 'actor-investigate',
+        client_id: 'client-investigate',
+        transport_path: 'direct',
+        status_code: 401,
+        outcome: 'rejected',
+        response_status: 'client_error',
+        error_code: 'sync.auth_required',
+        duration_ms: 3,
+        commit_seq: null,
+        operation_count: null,
+        row_count: null,
+        subscription_count: null,
+        scopes_summary: null,
+        response_summary: null,
+        tables: ['tasks'],
+        error_message: 'Authentication is required',
+        payload_ref: null,
+        created_at: atIso(59),
+      })
+      .execute();
+    await db
+      .insertInto('sync_realtime_events')
+      .values([
+        {
+          partition_id: 'default',
+          actor_id: 'actor-investigate',
+          client_id: 'client-investigate',
+          transport_path: 'direct',
+          event_type: 'connected',
+          reason: 'requires_sync',
+          cursor: commitSeq - 2,
+          latest_cursor: commitSeq,
+          commit_seq: null,
+          scope_count: 1,
+          skipped_count: null,
+          sync_pack_encoding: 'binary-sync-pack-v1',
+          created_at: atIso(60),
+        },
+        {
+          partition_id: 'default',
+          actor_id: 'actor-investigate',
+          client_id: 'client-investigate',
+          transport_path: 'direct',
+          event_type: 'pull_required',
+          reason: 'reconnect-catchup',
+          cursor: commitSeq - 2,
+          latest_cursor: commitSeq,
+          commit_seq: commitSeq,
+          scope_count: 1,
+          skipped_count: null,
+          sync_pack_encoding: 'binary-sync-pack-v1',
+          created_at: atIso(61),
+        },
+        {
+          partition_id: 'default',
+          actor_id: 'actor-investigate',
+          client_id: 'client-investigate',
+          transport_path: 'direct',
+          event_type: 'ack',
+          reason: null,
+          cursor: commitSeq,
+          latest_cursor: commitSeq,
+          commit_seq: null,
+          scope_count: 1,
+          skipped_count: null,
+          sync_pack_encoding: 'binary-sync-pack-v1',
+          created_at: atIso(62),
+        },
+      ])
+      .execute();
+
+    const response = await requestRowInvestigation('tasks', 'row-investigate', {
+      partitionId: 'default',
+      clientId: 'client-investigate',
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      rowKnown: boolean;
+      latestCommitSeq: number | null;
+      client: { cursor: number; effectiveScopeKeys: string[] } | null;
+      scopeEligibility: {
+        status: string;
+        requiredScopeKeys: string[];
+        missingScopeKeys: string[];
+      };
+      subscriptionEvidence: {
+        status: string;
+        matchingEventCount: number;
+        latestRequestId: string | null;
+        latestSubscriptionCount: number | null;
+        observedScopeKeys: string[];
+      };
+      requestEvidence: {
+        matchingEventCount: number;
+        successEventCount: number;
+        nonSuccessEventCount: number;
+        latestRequestId: string | null;
+        latestResponseStatus: string | null;
+        latestErrorCode: string | null;
+        latestNonSuccessRequestId: string | null;
+      };
+      snapshotEvidence: {
+        pageCount: number;
+        inlineRowCount: number;
+        chunkCount: number;
+        chunkBytes: number;
+        artifactCount: number;
+        artifactBytes: number;
+      };
+      realtimeEvidence: {
+        matchingEventCount: number;
+        connectedEventCount: number;
+        pullRequiredEventCount: number;
+        ackEventCount: number;
+        latestEventType: string | null;
+        latestCursor: number | null;
+        latestServerCursor: number | null;
+        latestPullRequiredReason: string | null;
+      };
+      findings: Array<{ code: string }>;
+      history: Array<{ fields: string[]; rowJson?: unknown }>;
+      relevantEvents: Array<{ requestId: string }>;
+    };
+
+    expect(payload.rowKnown).toBe(true);
+    expect(payload.latestCommitSeq).toBe(commitSeq);
+    expect(payload.client).toMatchObject({
+      cursor: commitSeq - 1,
+      effectiveScopeKeys: ['org_id'],
+    });
+    expect(payload.scopeEligibility).toMatchObject({
+      status: 'not_eligible',
+      requiredScopeKeys: ['org_id'],
+      missingScopeKeys: ['org_id'],
+    });
+    expect(payload.subscriptionEvidence).toMatchObject({
+      status: 'revoked',
+      matchingEventCount: 1,
+      latestRequestId: 'req-investigate',
+      latestSubscriptionCount: 1,
+      observedScopeKeys: ['org_id'],
+    });
+    expect(payload.requestEvidence).toMatchObject({
+      matchingEventCount: 2,
+      successEventCount: 1,
+      nonSuccessEventCount: 1,
+      latestRequestId: 'req-investigate-rejected',
+      latestResponseStatus: 'client_error',
+      latestErrorCode: 'sync.auth_required',
+      latestNonSuccessRequestId: 'req-investigate-rejected',
+    });
+    expect(payload.snapshotEvidence).toMatchObject({
+      pageCount: 2,
+      inlineRowCount: 0,
+      chunkCount: 1,
+      chunkBytes: 256,
+      artifactCount: 1,
+      artifactBytes: 1024,
+    });
+    expect(payload.realtimeEvidence).toMatchObject({
+      matchingEventCount: 3,
+      connectedEventCount: 1,
+      pullRequiredEventCount: 1,
+      ackEventCount: 1,
+      latestEventType: 'ack',
+      latestCursor: commitSeq,
+      latestServerCursor: commitSeq,
+      latestPullRequiredReason: 'reconnect-catchup',
+    });
+    expect(payload.findings.map((finding) => finding.code)).toEqual(
+      expect.arrayContaining([
+        'client.cursor_behind',
+        'scope.not_eligible',
+        'subscription.revoked',
+        'events.latest_not_success',
+      ])
+    );
+    expect(payload.history[0]?.fields).toEqual(['id', 'org_id', 'title']);
+    expect(payload.history[0]).not.toHaveProperty('rowJson');
+    expect(payload.relevantEvents[0]?.requestId).toBe(
+      'req-investigate-rejected'
+    );
+    expect(JSON.stringify(payload)).not.toContain('Investigation Secret');
+    expect(JSON.stringify(payload)).not.toContain('org-visible');
+
+    const missingResponse = await requestRowInvestigation(
+      'tasks',
+      'missing-row',
+      {
+        partitionId: 'default',
+        clientId: 'client-investigate',
+      }
+    );
+    expect(missingResponse.status).toBe(200);
+    const missingPayload = (await missingResponse.json()) as {
+      rowKnown: boolean;
+      findings: Array<{ code: string }>;
+    };
+    expect(missingPayload.rowKnown).toBe(false);
+    expect(missingPayload.findings.map((finding) => finding.code)).toContain(
+      'row.not_found'
+    );
+  });
+
+  it('classifies blob refs and encrypted CRDT evidence in row history', async () => {
+    const commitRow = await db
+      .selectFrom('sync_commits')
+      .select(['commit_seq'])
+      .where('partition_id', '=', 'default')
+      .where('client_commit_id', '=', 'commit-b')
+      .executeTakeFirst();
+    const commitSeq = Number(commitRow?.commit_seq);
+    expect(Number.isFinite(commitSeq)).toBe(true);
+
+    await db
+      .insertInto('sync_changes')
+      .values([
+        {
+          partition_id: 'default',
+          commit_seq: commitSeq,
+          table: 'tasks',
+          row_id: 'row-blob',
+          op: 'upsert',
+          row_json: JSON.stringify({
+            id: 'row-blob',
+            file: JSON.stringify({
+              hash: 'blob-hash',
+              size: 42,
+              mimeType: 'text/plain',
+            }),
+          }),
+          row_version: 1,
+          scopes: JSON.stringify({ user_id: 'actor-b' }),
+        },
+        {
+          partition_id: 'default',
+          commit_seq: commitSeq,
+          table: 'sync_crdt_updates',
+          row_id: 'update-1',
+          op: 'upsert',
+          row_json: JSON.stringify({
+            stream_id: 'tasks:task-1:body',
+            row_id: 'task-1',
+            field_name: 'body',
+            update_id: 'update-1',
+            key_id: 'kid-1',
+            ciphertext: 'encrypted-bytes',
+          }),
+          row_version: 1,
+          scopes: JSON.stringify({ user_id: 'actor-b' }),
+        },
+      ])
+      .execute();
+
+    const blobResponse = await requestRowHistory('tasks', 'row-blob', {
+      partitionId: 'default',
+    });
+    expect(blobResponse.status).toBe(200);
+    const blobPayload = (await blobResponse.json()) as {
+      history: Array<{ changeKind: string; sensitiveFields: string[] }>;
+    };
+    expect(blobPayload.history[0]).toMatchObject({
+      changeKind: 'blob_reference',
+      sensitiveFields: ['file'],
+    });
+    expect(JSON.stringify(blobPayload)).not.toContain('blob-hash');
+
+    const crdtResponse = await requestRowHistory(
+      'sync_crdt_updates',
+      'update-1',
+      { partitionId: 'default' }
+    );
+    expect(crdtResponse.status).toBe(200);
+    const crdtPayload = (await crdtResponse.json()) as {
+      history: Array<{ changeKind: string; sensitiveFields: string[] }>;
+    };
+    expect(crdtPayload.history[0]).toMatchObject({
+      changeKind: 'encrypted_crdt_update',
+      sensitiveFields: ['ciphertext', 'key_id'],
+    });
+    expect(JSON.stringify(crdtPayload)).not.toContain('encrypted-bytes');
+  });
+
+  it('exports bounded redacted debug bundles without payload snapshots', async () => {
+    const commitRow = await db
+      .selectFrom('sync_commits')
+      .select(['commit_seq'])
+      .where('partition_id', '=', 'default')
+      .where('client_commit_id', '=', 'commit-b')
+      .executeTakeFirst();
+    const commitSeq = Number(commitRow?.commit_seq);
+    expect(Number.isFinite(commitSeq)).toBe(true);
+
+    await db
+      .insertInto('sync_changes')
+      .values({
+        partition_id: 'default',
+        commit_seq: commitSeq,
+        table: 'notes',
+        row_id: 'debug-row',
+        op: 'upsert',
+        row_json: JSON.stringify({
+          id: 'debug-row',
+          body: 'Debug Export Secret',
+        }),
+        row_version: 1,
+        scopes: JSON.stringify({ user_id: 'actor-b' }),
+      })
+      .execute();
+
+    await db
+      .insertInto('sync_request_events')
+      .values({
+        partition_id: 'default',
+        request_id: 'req-debug',
+        trace_id: 'trace-debug',
+        span_id: null,
+        event_type: 'push',
+        sync_path: 'http-combined',
+        actor_id: 'actor-b',
+        client_id: 'client-b',
+        transport_path: 'direct',
+        status_code: 500,
+        outcome: 'error',
+        response_status: 'server_error',
+        error_code: 'debug.failure',
+        duration_ms: 9,
+        commit_seq: commitSeq,
+        operation_count: 1,
+        row_count: 1,
+        subscription_count: null,
+        scopes_summary: JSON.stringify({ user_id: 'actor-b' }),
+        tables: ['notes'],
+        error_message: 'Debug Export Error Secret',
+        payload_ref: 'payload-debug-secret',
+        created_at: atIso(60),
+      })
+      .execute();
+
+    const response = await requestDebugExport({
+      partitionId: 'default',
+      limitCommits: 1,
+      limitEvents: 1,
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as {
+      partitionId: string;
+      limits: { commits: number; requestEvents: number };
+      truncated: { commits: boolean; requestEvents: boolean };
+      commits: Array<{
+        commitSeq: number;
+        changes: Array<{
+          fields: string[];
+          redaction: { payload: string; reason: string };
+          rowJson?: unknown;
+        }>;
+      }>;
+      requestEvents: Array<{
+        requestId: string;
+        errorMessage?: string;
+        payloadRef?: string;
+      }>;
+    };
+
+    expect(payload.partitionId).toBe('default');
+    expect(payload.limits).toEqual({ commits: 1, requestEvents: 1 });
+    expect(payload.truncated.commits).toBe(true);
+    expect(payload.truncated.requestEvents).toBe(true);
+    expect(payload.commits).toHaveLength(1);
+    expect(payload.commits[0]?.commitSeq).toBe(commitSeq);
+    expect(payload.commits[0]?.changes[0]).toMatchObject({
+      fields: ['body', 'id'],
+      redaction: {
+        payload: 'omitted',
+        reason: 'audit_redacted_by_default',
+      },
+    });
+    expect(payload.commits[0]?.changes[0]).not.toHaveProperty('rowJson');
+    expect(payload.requestEvents).toHaveLength(1);
+    expect(payload.requestEvents[0]?.requestId).toBe('req-debug');
+    expect(payload.requestEvents[0]).not.toHaveProperty('errorMessage');
+    expect(payload.requestEvents[0]).not.toHaveProperty('payloadRef');
+    const serialized = JSON.stringify(payload);
+    expect(serialized).not.toContain('Debug Export Secret');
+    expect(serialized).not.toContain('Debug Export Error Secret');
+    expect(serialized).not.toContain('payload-debug-secret');
   });
 
   it('lists operation audit events and filters by operation type', async () => {
@@ -1024,6 +1998,270 @@ describe('console timeline route filters', () => {
     expect(tenantOps.items[0]?.operationType).toBe('notify_data_change');
   });
 
+  it('ingests and lists redacted Rust client diagnostic snapshots', async () => {
+    const response = await postClientDiagnostic({
+      clientId: 'client-rust',
+      actorId: 'actor-rust',
+      partitionId: 'default',
+      lifecycle: {
+        phase: 'complete',
+        realtime: 'connected',
+        online: true,
+        requiresAction: false,
+        pendingRequests: 0,
+      },
+      snapshot: {
+        generatedAt: Date.now(),
+        runtime: {
+          packageName: '@syncular/client',
+          packageVersion: '0.0.0',
+          workerProtocolVersion: 2,
+          storage: 'indexedDb',
+          rust: {
+            crateName: 'syncular-runtime',
+            crateVersion: '0.0.0',
+            schemaVersion: 3,
+            features: ['web-owned-sqlite', 'realtime'],
+          },
+        },
+        connection: {
+          closed: false,
+          pendingRequests: 0,
+          realtime: 'connected',
+        },
+        subscriptions: [
+          {
+            id: 'tasks:owner',
+            table: 'tasks',
+            scopeKeys: ['user_id'],
+            scopeValueCount: 1,
+            paramsKeys: ['actorId'],
+            paramsValueCount: 1,
+            status: 'active',
+            ready: true,
+            phase: 'complete',
+            progressPercent: 100,
+            cursor: 2,
+            bootstrapPhase: 0,
+            bootstrapState: null,
+          },
+        ],
+        recentDiagnostics: [
+          {
+            at: baseTimeMs,
+            level: 'info',
+            source: 'sync',
+            code: 'sync.pull.applied',
+            message: 'pull applied',
+            syncAttemptId: 'attempt-1',
+          },
+        ],
+        recentSyncTimings: [{ totalMs: 12, pullApplyMs: 4 }],
+        transportStats: {
+          requestCount: 2,
+          responseBytes: 512,
+          snapshotArtifactCount: 1,
+        },
+      },
+    });
+
+    expect(response.status).toBe(202);
+    const accepted =
+      (await response.json()) as ClientDiagnosticsResponse['items'][number];
+    expect(accepted.clientId).toBe('client-rust');
+    expect(accepted.runtime?.rust?.crateName).toBe('syncular-runtime');
+    expect(accepted.subscriptions[0]?.scopeKeys).toEqual(['user_id']);
+    expect(accepted.recentDiagnostics[0]?.syncAttemptId).toBe('attempt-1');
+    expect(accepted.freshnessState).toBe('active');
+    expect(accepted.healthMaxSeverity).toBe('info');
+    expect(accepted.diagnosticCodesSummary).toEqual([
+      { code: 'sync.pull.applied', count: 1, maxLevel: 'info' },
+    ]);
+
+    const list = await readClientDiagnostics({ clientId: 'client-rust' });
+    expect(list.total).toBe(1);
+    expect(list.items[0]?.transportStats?.responseBytes).toBe(512);
+
+    const diagnosticRows = await db
+      .selectFrom('sync_client_diagnostic_snapshots')
+      .select([
+        'client_id',
+        'runtime_kind',
+        'schema_version',
+        'freshness_state',
+        'health_max_severity',
+      ])
+      .where('client_id', '=', 'client-rust')
+      .execute();
+    expect(diagnosticRows).toEqual([
+      {
+        client_id: 'client-rust',
+        runtime_kind: 'syncular-runtime',
+        schema_version: 3,
+        freshness_state: 'active',
+        health_max_severity: 'info',
+      },
+    ]);
+
+    const restartedApp = createTestApp();
+    const persistedList = await readClientDiagnostics(
+      { clientId: 'client-rust' },
+      restartedApp
+    );
+    expect(persistedList.total).toBe(1);
+    expect(persistedList.items[0]?.clientId).toBe('client-rust');
+
+    const detail = await app.request(
+      'http://localhost/console/client-diagnostics/client-rust',
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(detail.status).toBe(200);
+    const detailPayload =
+      (await detail.json()) as ClientDiagnosticsResponse['items'][number];
+    expect(detailPayload.lifecycle?.phase).toBe('complete');
+  });
+
+  it('retains diagnostic history and prunes oldest snapshots by count', async () => {
+    const retainedApp = createTestApp({
+      maintenance: { clientDiagnosticsMaxRows: 2 },
+    });
+
+    for (let index = 0; index < 3; index++) {
+      const response = await retainedApp.request(
+        'http://localhost/console/client-diagnostics',
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${CONSOLE_TOKEN}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            clientId: 'client-history',
+            actorId: 'actor-history',
+            partitionId: 'default',
+            lifecycle: {
+              phase: index === 2 ? 'complete' : 'bootstrapping',
+              realtime: index === 2 ? 'connected' : 'connecting',
+              online: true,
+              requiresAction: false,
+              pendingRequests: 0,
+            },
+            snapshot: {
+              generatedAt: baseTimeMs + index * 60_000,
+              runtime: {
+                packageName: '@syncular/client',
+                packageVersion: `0.0.${index}`,
+                rust: {
+                  crateName: 'syncular-runtime',
+                  crateVersion: `0.0.${index}`,
+                  schemaVersion: 3,
+                },
+              },
+              connection: {
+                realtime: index === 2 ? 'connected' : 'connecting',
+                pendingRequests: 0,
+              },
+              subscriptions: [],
+              recentDiagnostics: [
+                {
+                  at: baseTimeMs + index * 60_000,
+                  level: index === 2 ? 'warn' : 'info',
+                  source: 'sync',
+                  code: index === 2 ? 'sync.recovered' : 'sync.started',
+                  message: 'redacted diagnostic event',
+                },
+              ],
+              recentSyncTimings: [{ totalMs: 10 + index }],
+            },
+          }),
+        }
+      );
+      expect(response.status).toBe(202);
+    }
+
+    const latest = await readClientDiagnostics(
+      { clientId: 'client-history' },
+      retainedApp
+    );
+    expect(latest.total).toBe(1);
+    expect(latest.items[0]?.runtime?.packageVersion).toBe('0.0.2');
+    expect(latest.items[0]?.healthMaxSeverity).toBe('warn');
+
+    const history = await readClientDiagnosticHistory(
+      'client-history',
+      {},
+      retainedApp
+    );
+    expect(history.total).toBe(2);
+    expect(history.items.map((item) => item.runtime?.packageVersion)).toEqual([
+      '0.0.2',
+      '0.0.1',
+    ]);
+
+    const rowCount = await db
+      .selectFrom('sync_client_diagnostic_snapshots')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('client_id', '=', 'client-history')
+      .executeTakeFirst();
+    expect(Number(rowCount?.total ?? 0)).toBe(2);
+  });
+
+  it('rejects oversized or sensitive client diagnostic snapshots', async () => {
+    const sensitiveResponse = await postClientDiagnostic({
+      clientId: 'client-sensitive',
+      actorId: 'actor-sensitive',
+      partitionId: 'default',
+      snapshot: {
+        generatedAt: baseTimeMs,
+        runtime: { packageName: '@syncular/client' },
+        connection: { realtime: 'connected' },
+        subscriptions: [],
+        recentDiagnostics: [
+          {
+            at: baseTimeMs,
+            level: 'error',
+            source: 'sync',
+            code: 'sync.auth.failed',
+            message: 'redacted auth failure',
+            details: { authToken: 'should-not-be-stored' },
+          },
+        ],
+      },
+    });
+    expect(sensitiveResponse.status).toBe(400);
+
+    const oversizedResponse = await postClientDiagnostic({
+      clientId: 'client-oversized',
+      actorId: 'actor-oversized',
+      partitionId: 'default',
+      snapshot: {
+        generatedAt: baseTimeMs,
+        runtime: { packageName: '@syncular/client' },
+        connection: { realtime: 'connected' },
+        subscriptions: [],
+        recentDiagnostics: [
+          {
+            at: baseTimeMs,
+            level: 'info',
+            source: 'sync',
+            code: 'sync.large',
+            message: 'x'.repeat(70_000),
+          },
+        ],
+      },
+    });
+    expect(oversizedResponse.status).toBe(400);
+
+    const rows = await db
+      .selectFrom('sync_client_diagnostic_snapshots')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .where('client_id', 'in', ['client-sensitive', 'client-oversized'])
+      .executeTakeFirst();
+    expect(Number(rows?.total ?? 0)).toBe(0);
+  });
+
   it('guards detail endpoints and client eviction with partition filters', async () => {
     await db
       .insertInto('sync_commits')
@@ -1137,6 +2375,18 @@ describe('console timeline route filters', () => {
       partitionId: 'tenant-b',
     });
     expect(commitDetailOk.status).toBe(200);
+    const commitDetailPayload = (await commitDetailOk.json()) as {
+      changes: Array<{
+        fields: string[];
+        changeKind: string;
+        rowJson?: unknown;
+      }>;
+    };
+    expect(commitDetailPayload.changes[0]).toMatchObject({
+      fields: ['id'],
+      changeKind: 'app_row',
+    });
+    expect(commitDetailPayload.changes[0]).not.toHaveProperty('rowJson');
 
     const commitDetailWrongPartition = await requestCommitDetail(
       tenantCommitSeq,
@@ -1511,7 +2761,13 @@ describe('console timeline route filters', () => {
   it('rejects unauthenticated timeline requests', async () => {
     const response = await requestTimeline({ authenticated: false });
     expect(response.status).toBe(401);
-    expect(await response.json()).toEqual({ error: 'UNAUTHENTICATED' });
+    expect(await response.json()).toMatchObject({
+      error: 'console.auth_required',
+      code: 'console.auth_required',
+      category: 'auth-required',
+      retryable: true,
+      recommendedAction: 'refreshAuth',
+    });
   });
 
   it('returns payload snapshots for events with payload refs', async () => {
@@ -1608,6 +2864,40 @@ describe('console timeline route filters', () => {
       .select(({ fn }) => fn.countAll().as('total'))
       .executeTakeFirst();
     expect(Number(operationCountRow?.total ?? 0)).toBe(2);
+  });
+
+  it('prunes realtime events during /events/prune retention', async () => {
+    await db
+      .insertInto('sync_realtime_events')
+      .values({
+        partition_id: 'default',
+        actor_id: 'actor-old',
+        client_id: 'client-old',
+        transport_path: 'direct',
+        event_type: 'pull_required',
+        reason: 'reconnect-catchup',
+        cursor: 1,
+        latest_cursor: 2,
+        commit_seq: 2,
+        scope_count: 1,
+        skipped_count: null,
+        sync_pack_encoding: 'binary-sync-pack-v1',
+        created_at: '2000-01-01T00:00:00.000Z',
+      })
+      .execute();
+
+    const response = await requestPruneEvents();
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      realtimeEventsDeleted: 1,
+    });
+
+    const oldRealtime = await db
+      .selectFrom('sync_realtime_events')
+      .select(['event_id'])
+      .where('client_id', '=', 'client-old')
+      .executeTakeFirst();
+    expect(oldRealtime).toBeUndefined();
   });
 
   it('runs automatic event pruning cadence using maintenance config', async () => {

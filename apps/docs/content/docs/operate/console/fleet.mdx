@@ -5,7 +5,7 @@ description: Monitor per-client sync state, lag, and eviction actions
 
 # Fleet
 
-Fleet is the client-centric operational view. Use it to identify which clients are behind, stale, or disconnected.
+Fleet is the client-centric operational view. Use it to identify which clients are behind, stale, disconnected, or reporting unhealthy Rust runtime diagnostics.
 
 ## Key concepts
 
@@ -13,13 +13,31 @@ Fleet is the client-centric operational view. Use it to identify which clients a
 - **Cursor**: last commit sequence acknowledged by a client.
 - **Lag**: `head - cursor` for each client.
 - **Activity state**: online, syncing, or stale/offline.
+- **Runtime freshness**: age of the latest retained redacted Rust client diagnostic snapshot.
+- **Runtime health**: highest diagnostic severity reported by the latest retained snapshot.
 
 ## What to check
 
 1. **Max lag** trend over time.
 2. **Which clients are behind** and by how much.
 3. **Connection mode** (`realtime` vs `polling`) and path (`direct` vs `relay`).
-4. **Effective scopes** for clients that appear missing data.
+4. **Runtime freshness and health** for stale snapshots, warnings, and errors.
+5. **Effective scopes** for clients that appear missing data.
+
+## Runtime diagnostics
+
+Rust browser/native clients can post redacted diagnostic snapshots to
+`POST /console/client-diagnostics`. Console stores normalized, size-bounded
+records in `sync_client_diagnostic_snapshots` and uses them to show:
+
+- latest runtime package/crate/schema evidence;
+- lifecycle, realtime, queue, conflict, blob-upload, and timing summaries;
+- stable diagnostic code summaries and highest severity;
+- retained snapshot history in the client drilldown.
+
+Snapshots reject common sensitive-key fields such as tokens, passwords, secrets,
+and plaintext payloads. The Console UI labels the retained evidence as redacted
+runtime state; it is investigation context, not an authorization source.
 
 ## Evicting a client
 
@@ -37,4 +55,7 @@ Use partition filters before eviction in multi-tenant setups.
 
 - [Clients](/docs/reference/api/getConsoleClients)
 - [Evict client](/docs/reference/api/deleteConsoleClientsById)
+- [Ingest client diagnostics](/docs/reference/api/postConsoleClientDiagnostics)
+- [Latest client diagnostics](/docs/reference/api/getConsoleClientDiagnostics)
+- [Client diagnostic history](/docs/reference/api/getConsoleClientDiagnosticsByIdHistory)
 - [Operations log](/docs/reference/api/getConsoleOperations)

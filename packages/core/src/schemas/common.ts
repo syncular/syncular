@@ -8,13 +8,57 @@ import { z } from 'zod';
 // Error Response Schemas
 // ============================================================================
 
+export const SyncularErrorCategorySchema = z.enum([
+  'auth-required',
+  'forbidden',
+  'conflict',
+  'scope-revoked',
+  'offline',
+  'invalid-request',
+  'not-found',
+  'schema-mismatch',
+  'integrity-rejected',
+  'rate-limited',
+  'limit-exceeded',
+  'transport',
+  'storage',
+  'blob',
+  'server',
+  'internal',
+]);
+
+export const SyncularErrorRecommendedActionSchema = z.enum([
+  'refreshAuth',
+  'checkPermissions',
+  'fixRequest',
+  'resetClientId',
+  'splitBatch',
+  'reduceInput',
+  'retryLater',
+  'forceResync',
+  'regenerateClient',
+  'upgradeClient',
+  'inspectStorage',
+  'inspectServer',
+  'resolveConflict',
+  'recreateClient',
+]);
+
 export const ErrorResponseSchema = z.object({
   error: z.string(),
   message: z.string().optional(),
   code: z.string().optional(),
+  category: SyncularErrorCategorySchema.optional(),
+  retryable: z.boolean().optional(),
+  recommendedAction: SyncularErrorRecommendedActionSchema.optional(),
+  details: z.record(z.string(), z.unknown()).optional(),
 });
 
 export type ErrorResponse = z.infer<typeof ErrorResponseSchema>;
+export type SyncularErrorCategory = z.infer<typeof SyncularErrorCategorySchema>;
+export type SyncularErrorRecommendedAction = z.infer<
+  typeof SyncularErrorRecommendedActionSchema
+>;
 
 // ============================================================================
 // Pagination Schemas

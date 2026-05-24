@@ -3,7 +3,10 @@ title: Realtime Bridge
 description: Multi-instance realtime with broadcasters
 ---
 
-For multiple server instances, use a broadcaster to coordinate WebSocket wake-ups across instances.
+For multiple server instances, use a broadcaster to coordinate realtime
+notifications across instances. The websocket connection manager can deliver
+bounded realtime sync-pack deltas when safe, or a pull-required wake-up when the
+client should recover through HTTP pull.
 
 ## WebSocketConnectionManager
 
@@ -73,7 +76,7 @@ For production, use Redis/NATS/Postgres NOTIFY/etc. as the transport and impleme
 ## How It Works
 
 1. When a commit is pushed, the server emits affected scopes
-2. The broadcaster publishes a commit wake-up event to all instances
+2. The broadcaster publishes a commit realtime event to all instances
 3. All server instances receive the notification
 4. Each instance notifies relevant WebSocket connections
 5. Clients receive realtime updates
@@ -98,7 +101,7 @@ flowchart TB
   ABroadcaster <--> Bus["Postgres NOTIFY / Redis / NATS"]
   BBroadcaster <--> Bus
 `}
-  caption="Each server instance manages its own WebSocket clients. A shared broadcaster fan-outs wake-up events so every instance can notify the right connections."
+  caption="Each server instance manages its own WebSocket clients. A shared broadcaster fan-outs realtime events so every instance can notify the right connections."
 />
 
 ## Single Instance
@@ -120,5 +123,5 @@ const syncRoutes = createSyncRoutes({
 
 ## Next Steps
 
-- [Realtime Guide](/docs/build/realtime) - Complete realtime setup
+- [Realtime WebSocket](/docs/server/realtime-websocket) - Complete realtime setup
 - [Hono Adapter](/docs/reference/server/hono-adapter) - Route configuration

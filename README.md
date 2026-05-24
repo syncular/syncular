@@ -12,7 +12,6 @@
 
 <p align="center">
   <a href="https://syncular.dev">Docs</a> &nbsp;·&nbsp;
-  <a href="https://demo.syncular.dev">Live Demo</a> &nbsp;·&nbsp;
   <a href="https://console.syncular.dev">Console</a> &nbsp;·&nbsp;
   <a href="https://www.npmjs.com/org/syncular">npm</a>
 </p>
@@ -23,12 +22,12 @@
 
 Syncular is for apps that want local SQL on every client without giving up server authority. Reads and optimistic writes hit local SQL first. The server validates writes, stores them in an append-only commit log, tags them with scopes, and clients pull only what they are allowed to see. When something goes wrong, you inspect commits, clients, and events instead of reverse-engineering replication state.
 
-- **Local SQL is the hot path** — queries, joins, aggregates, and optimistic writes run against local SQLite or PGlite, not a remote cache
+- **Local SQL is the hot path** — queries, joins, aggregates, and optimistic writes run against local SQLite, not a remote cache
 - **The server stays authoritative** — pushes are validated, idempotent, conflict-aware, and auditable
 - **Commit-log sync is explicit** — ordered, append-only history is easier to reason about than opaque replication
 - **Scopes make auth inspectable** — authorization is code, and every synced change carries the scope data used to gate it
 - **Client and server schemas stay independent** — shape each side for its job and bridge them with table handlers
-- **Realtime stays simple** — WebSocket is only a wake-up signal; data flows over HTTP where retries, caching, and debugging are straightforward
+- **Realtime stays verified** — WebSocket wakes the Rust client and delivers verified binary sync packs where available
 - **Production ops are part of the product** — Console, audit endpoints, prune/compact, blob inspection, and telemetry are built in
 
 ## What Syncular is not
@@ -38,20 +37,19 @@ Syncular is for apps that want local SQL on every client without giving up serve
 - **Not a read-only sync layer.** Syncular owns the full write path. If you only need to stream Postgres changes to clients at CDN scale, [Electric SQL](https://electric-sql.com) may be a better fit.
 - **Conflict resolution is not automatic.** You get version-based detection, field-level merge utilities, and resolution primitives — but you implement the strategy and any resolution UI. There is no silent auto-merge.
 - **Not built for multiplayer games.** Syncular is good for durable game data like accounts, inventory, progression, or async/shared world state. It is not the right transport for frame-by-frame gameplay, physics replication, rollback netcode, or latency-critical entity sync.
-- **JavaScript/TypeScript only.** React Native is supported via JS (Expo SQLite, Nitro SQLite), but there are no native Swift or Kotlin SDKs. If first-class native mobile SDKs are a requirement, [PowerSync](https://www.powersync.com) is worth evaluating.
+- **Not a JavaScript-owned runtime.** The client runtime is Rust-first, with TypeScript bindings for browser and React apps.
 
 ## Quick start
 
-The fastest way to evaluate Syncular is to run the demo:
+The fastest way to evaluate Syncular is to install dependencies and run the Rust client checks:
 
 ```bash
 git clone https://github.com/syncular/syncular.git
 cd syncular
 bun install
-bun --cwd apps/demo dev
+bun run client:test
+bun run client:tsgo
 ```
-
-Open `http://localhost:9811` for the app and `http://localhost:9811/console` for the built-in Console.
 
 Building your own app instead?
 
@@ -64,16 +62,11 @@ npm install @syncular/server @syncular/server-hono @syncular/server-dialect-post
 **Client (React + browser)**
 
 ```bash
-npm install @syncular/client @syncular/client-react @syncular/transport-http @syncular/dialect-wa-sqlite kysely
+npm install @syncular/client @syncular/react kysely
 ```
 
-React Native / Expo clients should use the `createReactNativeHttpTransport(...)`
-preset from `@syncular/transport-http` so snapshot fetch, gzip handling, and
-bootstrap apply strategy are tuned for Hermes-style runtimes.
-
 If your server runtime is Neon-backed, pair `@syncular/dialect-neon` with
-`createNeonServerDialect()` from `@syncular/server-dialect-postgres` (or
-`syncular/server-dialect-neon` when using the umbrella package).
+`createNeonServerDialect()` from `@syncular/server-dialect-postgres`.
 
 If startup-critical data should bootstrap before large background tables, assign
 `bootstrapPhase` on client subscriptions. Lower phases bootstrap first, while
@@ -82,7 +75,7 @@ later phases stay deferred until earlier phases are ready.
 For pull/apply diagnostics, enable `traceEnabled: true` on the client and
 inspect the emitted `sync:trace` events or inspector snapshot.
 
-See the [Quick Start guide](https://syncular.dev/docs/introduction/quick-start) for the walkthrough, the [Installation guide](https://syncular.dev/docs/introduction/installation) for the package/runtime matrix, and [Build](https://syncular.dev/docs/build) for the implementation path.
+See the [Quick Start guide](https://syncular.dev/docs/start/quick-start) for the walkthrough, the [Installation guide](https://syncular.dev/docs/start/installation) for the package/runtime matrix, [Client](https://syncular.dev/docs/client) for app runtimes, and [Server](https://syncular.dev/docs/server) for the authoritative sync surface.
 
 ## How it works
 
@@ -93,7 +86,7 @@ See the [Quick Start guide](https://syncular.dev/docs/introduction/quick-start) 
 │  Writes → Outbox (durable, survives restart)         │
 └──────────────────┬───────────────────────────────────┘
                    │  push / pull (HTTP)
-                   │  wake-up signal (WebSocket only)
+                   │  realtime deltas / recovery wake-ups (WebSocket)
                    ▼
 ┌──────────────────────────────────────────────────────┐
 │  SERVER  (Node · Bun · Cloudflare Workers …)         │
@@ -105,7 +98,7 @@ See the [Quick Start guide](https://syncular.dev/docs/introduction/quick-start) 
 1. **Local write** — the app writes to local SQL immediately and queues the commit in the outbox
 2. **Push** — the server validates the write, resolves scopes, applies domain logic, and appends to the commit log
 3. **Pull** — clients fetch snapshots or commits since their cursor, filtered to the intersection of requested and allowed scopes
-4. **Realtime** — WebSocket sends a wake-up signal; clients still pull data over HTTP
+4. **Realtime** — WebSocket carries verified sync-pack deltas when safe; pull-required wake-ups use HTTP recovery
 
 That separation is intentional: your server schema models the domain, your client schema models local UX, and table handlers plus `resolveScopes` are where the mapping lives.
 
@@ -113,40 +106,30 @@ That separation is intentional: your server schema models the domain, your clien
 
 New sync systems should be met with skepticism. Syncular is tested across multiple layers so you can validate behavior before trusting it in an app.
 
-- **Runner-agnostic testkit** — `@syncular/testkit` gives you in-process fixtures, real HTTP fixtures, engine-mode clients, assertions, deterministic clocks/IDs, realtime helpers, and fault injection utilities
-- **Core protocol and handler coverage** — `bun test` runs package tests plus unit, integration, dialect, and typegen suites
-- **Runtime matrix coverage** — `bun test:runtime` exercises real runtime paths across browser/demo, Cloudflare, D1, Node, Deno, Electron, and relay flows
-- **Performance and stress checks** — dedicated perf, latency, and load suites cover bootstrap behavior, reconnect storms, mixed workloads, and demo responsiveness
+- **Rust browser gates** — `bun run client:test`, `bun run client:tsgo`, and `bun run javascript-bindings:build:wasm` cover the canonical browser client package
+- **Rust conformance** — `bun run rust:conformance:fast` covers the shared client/server protocol scenarios
+- **Server and package tests** — `bun test` covers remaining TypeScript server, core, dialect, migration, and typegen packages
 
 Start here:
 
 ```bash
 bun test
-bun test:runtime
-bun test:perf
+bun run client:test
+bun run rust:conformance:fast
 ```
 
 See the [Testing docs](https://syncular.dev/docs/testing) for the full testkit API, fault injection patterns, and runtime examples.
 
 ## Supported platforms
 
-Mix and match any client dialect with any server dialect. The sync protocol is the same everywhere.
+Use the canonical Rust-backed client with the server runtime/dialect that fits
+your deployment. The sync protocol is the same everywhere.
 
 ### Client
 
-| Dialect | Runtime | Package |
-|---|---|---|
-| wa-sqlite | Browser (WASM) | `@syncular/dialect-wa-sqlite` |
-| PGlite | Browser (WASM) | `@syncular/dialect-pglite` |
-| better-sqlite3 | Node.js / Electron | `@syncular/dialect-better-sqlite3` |
-| sqlite3 | Node.js | `@syncular/dialect-sqlite3` |
-| Electron IPC SQLite | Electron (renderer + main process) | `@syncular/dialect-electron-sqlite` |
-| Bun SQLite | Bun | `@syncular/dialect-bun-sqlite` |
-| Expo SQLite | React Native | `@syncular/dialect-expo-sqlite` |
-| Nitro SQLite | React Native | `@syncular/dialect-react-native-nitro-sqlite` |
-| LibSQL | Turso / LibSQL | `@syncular/dialect-libsql` |
-| Neon | Neon serverless | `@syncular/dialect-neon` |
-| D1 | Cloudflare Workers | `@syncular/dialect-d1` |
+The canonical app client is `@syncular/client`, backed by the Rust
+browser/native runtime and generated TypeScript bindings. Older pure TypeScript
+client implementations are no longer a product path.
 
 ### Server
 
@@ -168,41 +151,25 @@ Most packages are published under the `@syncular` scope on npm. The umbrella pac
 | `@syncular/server` | Server sync engine (push, pull, pruning, snapshots, blobs) |
 | `@syncular/server-hono` | Hono adapter with HTTP routes, OpenAPI, WebSocket, and console routes |
 | `@syncular/server-cloudflare` | Cloudflare adapter for Workers and Durable Objects |
-| `@syncular/client` | Client sync engine (outbox, conflicts, plugins, realtime, push/pull) |
-| `@syncular/client-plugin-blob` | Optional client blob storage plugin (`client.blobs`, local cache, upload queue) |
-| `@syncular/client-react` | React bindings, typed hooks, queries, mutations, presence |
+| `@syncular/client` | Rust-owned browser client package with TypeScript runtime bindings |
+| `@syncular/react` | React hooks and provider for the Rust-owned client |
+| `@syncular/client-tauri` | Tauri JS/React bridge facade over a Rust Syncular host |
+| `@syncular/client-react-native` | React Native/Nitro bridge facade over a native Syncular host |
 | `@syncular/transport-http` | HTTP push/pull transport |
-| `@syncular/transport-ws` | WebSocket wake-up and presence transport |
 | `@syncular/console` | Embeddable console UI for commits, clients, events, and operations |
-| `@syncular/testkit` | Runner-agnostic fixtures, assertions, HTTP/runtime helpers, and fault injection |
+| `@syncular/testkit` | Server fixtures, protocol request builders, realtime helpers, and fault injection |
 | `@syncular/migrations` | Versioned migrations with checksum tracking |
 | `@syncular/typegen` | Generate database types from migrations |
 
-Need more? Optional packages cover blob storage adapters, runtime dialects, relay, Yjs, encryption, offline auth, observability, and test tooling. See the [Installation guide](https://syncular.dev/docs/introduction/installation) for the full matrix.
+Need more? Optional packages cover server blob storage adapters, server CRDT handling, relay, observability, and tooling. See the [Installation guide](https://syncular.dev/docs/start/installation) for the full matrix.
 
 ## Run locally
 
 ```bash
 bun install
-bun --cwd apps/demo dev     # demo + built-in console at http://localhost:9811 and /console
 bun --cwd apps/docs dev     # docs site (Next dev, typically http://localhost:3000)
 bun --cwd apps/console dev  # standalone console app; run separately and use the URL printed at startup
 ```
-
-## Latency checks
-
-```bash
-bun run test:runtime:demo-latency
-bun run test:runtime:demo-toggle-latency
-```
-
-`test:runtime:demo-toggle-latency` reports split-screen checkbox toggle latency for:
-- `samePaneMs` (click -> left pane update)
-- `mirrorPaneMs` (click -> right pane update)
-
-Optional thresholds can be set via env vars:
-- `LOCAL_P95_BUDGET_MS`
-- `MIRROR_P95_BUDGET_MS`
 
 ## License
 

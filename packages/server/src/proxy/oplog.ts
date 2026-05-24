@@ -6,8 +6,10 @@
 
 import { randomId, type SyncOp } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
+import { finalizeCommitIntegrity } from '../commit-integrity';
 import { toDialectJsonValue } from '../dialect/helpers';
 import type { ServerSyncDialect } from '../dialect/types';
+import { createScopeCommitIndexEntries } from '../helpers/scope-commit-index';
 import type { SyncCoreDb } from '../schema';
 import type { ProxyTableHandler } from './types';
 
@@ -80,6 +82,7 @@ export async function createOplogEntries<DB extends SyncCoreDb>(args: {
       row_json:
         operation === 'delete' ? null : toDialectJsonValue(dialect, row),
       row_version: row[versionCol] != null ? Number(row[versionCol]) : null,
+      raw_scopes: scopes,
       scopes: dialect.scopesToDb(scopes),
     };
   });
@@ -113,6 +116,35 @@ export async function createOplogEntries<DB extends SyncCoreDb>(args: {
     )}
   `.execute(trx);
 
+  const scopeEntries = createScopeCommitIndexEntries(
+    changes.map((change) => ({
+      table: change.table,
+      scopes: change.raw_scopes,
+    }))
+  );
+  if (scopeEntries.length > 0) {
+    await sql`
+      insert into ${sql.table('sync_scope_commits')} (
+        partition_id,
+        "table",
+        scope_key,
+        commit_seq
+      )
+      values ${sql.join(
+        scopeEntries.map(
+          (entry) => sql`(
+            ${partitionId},
+            ${entry.table},
+            ${entry.scopeKey},
+            ${commitSeq}
+          )`
+        ),
+        sql`, `
+      )}
+      on conflict (partition_id, "table", scope_key, commit_seq) do nothing
+    `.execute(trx);
+  }
+
   // Update commit with affected tables
   const affectedTables = Array.from(affectedTablesSet);
   const sortedAffectedTables = affectedTables.sort();
@@ -135,8 +167,15 @@ export async function createOplogEntries<DB extends SyncCoreDb>(args: {
           sql`, `
         )}
 	      on conflict (partition_id, "table", commit_seq) do nothing
-	    `.execute(trx);
+    `.execute(trx);
   }
+
+  await finalizeCommitIntegrity({
+    db: trx,
+    dialect,
+    partitionId,
+    commitSeq,
+  });
 
   return { commitSeq, affectedTables };
 }

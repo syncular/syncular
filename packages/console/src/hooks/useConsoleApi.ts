@@ -10,6 +10,7 @@ import type {
   ConsoleApiKeyBulkRevokeResponse,
   ConsoleBlobListResponse,
   ConsoleClient,
+  ConsoleClientDiagnosticRecord,
   ConsoleCommitDetail,
   ConsoleCommitListItem,
   ConsoleHandler,
@@ -18,6 +19,7 @@ import type {
   ConsoleOperationType,
   ConsoleRequestEvent,
   ConsoleRequestPayload,
+  ConsoleRowInvestigationResponse,
   ConsoleTimelineItem,
   LatencyStatsResponse,
   PaginatedResponse,
@@ -50,13 +52,17 @@ type ListParams = {
   partitionId?: string;
   instanceId?: string;
 };
+type ClientDiagnosticsParams = ListParams & {
+  clientId?: string;
+};
 type TimelineParams = ListParams & {
   view?: 'all' | 'commits' | 'events';
-  eventType?: 'push' | 'pull';
+  eventType?: 'sync' | 'push' | 'pull';
   actorId?: string;
   clientId?: string;
   requestId?: string;
   traceId?: string;
+  syncAttemptId?: string;
   table?: string;
   outcome?: string;
   search?: string;
@@ -65,6 +71,14 @@ type TimelineParams = ListParams & {
 };
 type EntityLookupOptions = {
   enabled?: boolean;
+  partitionId?: string;
+  instanceId?: string;
+};
+type RowInvestigationParams = {
+  table?: string;
+  rowId?: string;
+  clientId?: string;
+  limit?: number;
   partitionId?: string;
   instanceId?: string;
 };
@@ -109,6 +123,10 @@ const queryKeys = {
   timeline: (params?: TimelineParams) =>
     ['console', 'timeline', params] as const,
   clients: (params?: ListParams) => ['console', 'clients', params] as const,
+  clientDiagnostics: (params?: ClientDiagnosticsParams) =>
+    ['console', 'client-diagnostics', params] as const,
+  clientDiagnosticHistory: (params?: ClientDiagnosticsParams) =>
+    ['console', 'client-diagnostics', 'history', params] as const,
   eventDetail: (
     id?: string | number,
     partitionId?: string,
@@ -119,6 +137,8 @@ const queryKeys = {
     partitionId?: string,
     instanceId?: string
   ) => ['console', 'event-payload', id, partitionId, instanceId] as const,
+  rowInvestigation: (params?: RowInvestigationParams) =>
+    ['console', 'row-investigation', params] as const,
   handlers: (instanceId?: string) =>
     ['console', 'handlers', instanceId] as const,
   prunePreview: (instanceId?: string) =>
@@ -446,6 +466,7 @@ export function useTimeline(
       clientId: params.clientId,
       requestId: params.requestId,
       traceId: params.traceId,
+      syncAttemptId: params.syncAttemptId,
       table: params.table,
       outcome: params.outcome,
       search: params.search,
@@ -476,6 +497,54 @@ export function useClients(
     },
     errorMessage: 'Failed to fetch clients',
     enabled: options.enabled,
+    refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
+  });
+}
+
+export function useClientDiagnostics(
+  params: ClientDiagnosticsParams = {},
+  options: RefetchableQueryOptions = {}
+) {
+  const instanceId = useEffectiveInstanceId(params.instanceId);
+
+  return useConsoleJsonQuery<PaginatedResponse<ConsoleClientDiagnosticRecord>>({
+    queryKey: queryKeys.clientDiagnostics({ ...params, instanceId }),
+    path: '/console/client-diagnostics',
+    query: {
+      limit: params.limit,
+      offset: params.offset,
+      partitionId: params.partitionId,
+      clientId: params.clientId,
+      instanceId,
+    },
+    errorMessage: 'Failed to fetch client diagnostics',
+    enabled: options.enabled,
+    refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
+  });
+}
+
+export function useClientDiagnosticHistory(
+  clientId: string | undefined,
+  params: ClientDiagnosticsParams = {},
+  options: RefetchableQueryOptions = {}
+) {
+  const instanceId = useEffectiveInstanceId(params.instanceId);
+
+  return useConsoleJsonQuery<PaginatedResponse<ConsoleClientDiagnosticRecord>>({
+    queryKey: queryKeys.clientDiagnosticHistory({
+      ...params,
+      clientId,
+      instanceId,
+    }),
+    path: `/console/client-diagnostics/${encodeURIComponent(clientId ?? '')}/history`,
+    query: {
+      limit: params.limit,
+      offset: params.offset,
+      partitionId: params.partitionId,
+      instanceId,
+    },
+    errorMessage: 'Failed to fetch client diagnostic history',
+    enabled: Boolean(clientId) && options.enabled !== false,
     refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
   });
 }
@@ -518,6 +587,32 @@ export function useRequestEventPayload(
     },
     errorMessage: 'Failed to fetch event payload',
     enabled: options.enabled,
+  });
+}
+
+export function useRowInvestigation(
+  params: RowInvestigationParams = {},
+  options: RefetchableQueryOptions = {}
+) {
+  const instanceId = useEffectiveInstanceId(params.instanceId);
+  const enabled =
+    (options.enabled ?? true) && Boolean(params.table) && Boolean(params.rowId);
+
+  return useConsoleJsonQuery<ConsoleRowInvestigationResponse>({
+    queryKey: queryKeys.rowInvestigation({ ...params, instanceId }),
+    path:
+      params.table && params.rowId
+        ? `/console/row-investigation/${encodeURIComponent(params.table)}/${encodeURIComponent(params.rowId)}`
+        : '/console/row-investigation',
+    query: {
+      partitionId: params.partitionId,
+      clientId: params.clientId,
+      limit: params.limit,
+      instanceId,
+    },
+    errorMessage: 'Failed to investigate row',
+    enabled,
+    refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
   });
 }
 

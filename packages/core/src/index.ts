@@ -20,6 +20,8 @@ export * from './conflict';
 export * from './database';
 // Database dialect descriptors
 export * from './dialect';
+// Public error response envelopes
+export * from './error-responses';
 // Kysely plugin for applying column codecs in generic queries
 export * from './kysely-column-codecs';
 // Logging utilities
@@ -32,6 +34,8 @@ export * from './schemas';
 export * from './scopes';
 // Snapshot chunk encoding helpers
 export * from './snapshot-chunks';
+// Sync response pack encoding helpers
+export * from './sync-packs';
 // Telemetry abstraction
 export * from './telemetry';
 // Data transformation hooks

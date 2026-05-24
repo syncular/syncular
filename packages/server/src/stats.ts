@@ -19,6 +19,35 @@ export interface SyncStats {
   activeClientCount: number;
   minActiveClientCursor: number | null;
   maxActiveClientCursor: number | null;
+  snapshotChunkCount: number;
+  snapshotChunkBytes: number;
+  expiredSnapshotChunkCount: number;
+  expiredSnapshotChunkBytes: number;
+  snapshotArtifactCount: number;
+  snapshotArtifactBytes: number;
+  expiredSnapshotArtifactCount: number;
+  expiredSnapshotArtifactBytes: number;
+}
+
+interface CachePressureRow {
+  total_count: unknown;
+  total_bytes: unknown;
+  expired_count: unknown;
+  expired_bytes: unknown;
+}
+
+function mapCachePressure(row: CachePressureRow | undefined): {
+  count: number;
+  bytes: number;
+  expiredCount: number;
+  expiredBytes: number;
+} {
+  return {
+    count: coerceNumber(row?.total_count) ?? 0,
+    bytes: coerceNumber(row?.total_bytes) ?? 0,
+    expiredCount: coerceNumber(row?.expired_count) ?? 0,
+    expiredBytes: coerceNumber(row?.expired_bytes) ?? 0,
+  };
 }
 
 export async function readSyncStats<DB extends SyncCoreDb>(
@@ -30,6 +59,7 @@ export async function readSyncStats<DB extends SyncCoreDb>(
 
   const activeWindowMs = options.activeWindowMs ?? 14 * 24 * 60 * 60 * 1000;
   const cutoffIso = new Date(Date.now() - activeWindowMs).toISOString();
+  const nowIso = new Date().toISOString();
   const partitionId = options.partitionId;
 
   let commitQuery = (
@@ -86,12 +116,48 @@ export async function readSyncStats<DB extends SyncCoreDb>(
     );
   }
 
-  const [commitRow, changeRow, clientRow, activeClientRow] = await Promise.all([
+  const partitionFilter = partitionId
+    ? sql`where partition_id = ${partitionId}`
+    : sql``;
+
+  const [
+    commitRow,
+    changeRow,
+    clientRow,
+    activeClientRow,
+    chunkPressureRow,
+    artifactPressureRow,
+  ] = await Promise.all([
     commitQuery.executeTakeFirst(),
     changeQuery.executeTakeFirst(),
     clientQuery.executeTakeFirst(),
     activeClientQuery.executeTakeFirst(),
+    sql<CachePressureRow>`
+      select
+        count(*) as total_count,
+        coalesce(sum(byte_length), 0) as total_bytes,
+        coalesce(sum(case when expires_at <= ${nowIso} then 1 else 0 end), 0) as expired_count,
+        coalesce(sum(case when expires_at <= ${nowIso} then byte_length else 0 end), 0) as expired_bytes
+      from ${sql.table('sync_snapshot_chunks')}
+      ${partitionFilter}
+    `
+      .execute(db)
+      .then((result) => result.rows[0]),
+    sql<CachePressureRow>`
+      select
+        count(*) as total_count,
+        coalesce(sum(byte_length), 0) as total_bytes,
+        coalesce(sum(case when expires_at <= ${nowIso} then 1 else 0 end), 0) as expired_count,
+        coalesce(sum(case when expires_at <= ${nowIso} then byte_length else 0 end), 0) as expired_bytes
+      from ${sql.table('sync_snapshot_artifacts')}
+      ${partitionFilter}
+    `
+      .execute(db)
+      .then((result) => result.rows[0]),
   ]);
+
+  const chunkPressure = mapCachePressure(chunkPressureRow);
+  const artifactPressure = mapCachePressure(artifactPressureRow);
 
   return {
     commitCount: coerceNumber(commitRow?.commitCount) ?? 0,
@@ -102,5 +168,13 @@ export async function readSyncStats<DB extends SyncCoreDb>(
     activeClientCount: coerceNumber(activeClientRow?.activeClientCount) ?? 0,
     minActiveClientCursor: coerceNumber(activeClientRow?.minActiveClientCursor),
     maxActiveClientCursor: coerceNumber(activeClientRow?.maxActiveClientCursor),
+    snapshotChunkCount: chunkPressure.count,
+    snapshotChunkBytes: chunkPressure.bytes,
+    expiredSnapshotChunkCount: chunkPressure.expiredCount,
+    expiredSnapshotChunkBytes: chunkPressure.expiredBytes,
+    snapshotArtifactCount: artifactPressure.count,
+    snapshotArtifactBytes: artifactPressure.bytes,
+    expiredSnapshotArtifactCount: artifactPressure.expiredCount,
+    expiredSnapshotArtifactBytes: artifactPressure.expiredBytes,
   };
 }

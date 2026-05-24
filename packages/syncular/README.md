@@ -1,15 +1,20 @@
 # syncular
 
-Umbrella package that re-exports the `@syncular/*` packages under a single import namespace.
+Umbrella package that exposes the `@syncular/*` packages under a single import namespace.
+
+The root `syncular` import re-exports `@syncular/core`. Runtime-specific
+helpers use explicit subpaths.
 
 If you prefer, you can write imports like `syncular/client` instead of
 `@syncular/client`. Both are supported.
 
 For plugins and runtime-specific helpers, use explicit umbrella subpaths. Examples:
 
-- `syncular/client-plugin-yjs`
+- `syncular`
+- `syncular/client`
+- `syncular/react`
 - `syncular/dialect-neon`
-- `syncular/server-dialect-neon`
+- `syncular/server-dialect-postgres`
 
 ## Install
 

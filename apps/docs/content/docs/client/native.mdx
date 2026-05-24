@@ -1,0 +1,279 @@
+---
+title: Native Lifecycle
+description: Run the shared native worker, event stream, lifecycle, realtime, presence, CRDT, and blob model.
+---
+
+# Native Lifecycle
+
+Native apps use the same Rust runtime foundation as browser apps, but access it
+through the Rust SDK or generated BoltFFI bindings. Use this page for the
+shared runtime model. Use the binding pages for host-language query and
+mutation syntax.
+
+<Cards>
+  <Card title="Rust" href="/docs/client/rust">
+    Diesel reads, generated mutations, conflicts, and live queries
+  </Card>
+  <Card title="Swift" href="/docs/client/swift">
+    Generated Swift query DSLs, mutations, subscriptions, and event streams
+  </Card>
+  <Card title="Kotlin / Android" href="/docs/client/kotlin-android">
+    Generated Kotlin query DSLs, Android lifecycle, and coroutine event flows
+  </Card>
+  <Card title="JVM" href="/docs/client/jvm">
+    Java/JVM binding and native runtime packaging
+  </Card>
+</Cards>
+
+## UI lifecycle
+
+UI shells should keep one hot native runtime per app/session. Prefer queued
+APIs for work that can block:
+
+- `enqueueMutationJson`
+- `enqueueSyncNow`
+- `enqueueSyncWebsocket`
+- queued CRDT field updates and compaction
+- queued blob upload/cache/compaction work
+
+Start the native event stream once, read `nextEventJson()` from a background
+task, and route updates by `eventSeq`, `commandId`, `changedRows`, and query
+ids. The native worker owns backpressure for queued local writes and CRDT
+bursts. If the stream emits `EventsOverflowed`, that subscription is no longer
+trusted and closes after the overflow event. Discard it, start a new event
+stream, trigger sync if appropriate, and force a full live-query/bootstrap
+refresh from SQLite before processing incremental events again. The event
+includes top-level `droppedCount` and `resyncRequired: true`. During teardown,
+close the event stream and then call `shutdown()`.
+
+Treat realtime as the normal native lifecycle. After auth headers are available,
+start the persistent realtime worker and keep it hot for the session. The
+runtime owns websocket reconnect/backoff and feeds wakeups into the sync worker.
+BoltFFI hosts call `startRealtimeWorker()` and `stopRealtimeWorker()`. C hosts
+call `syncular_native_client_start_realtime_worker(...)` and
+`syncular_native_client_stop_realtime_worker(...)`.
+
+Native presence uses the same websocket session. Swift/Kotlin call
+`joinPresence(scopeKey:metadataJson:)`, `updatePresenceMetadata(...)`,
+`leavePresence(...)`, and `presenceJson(scopeKey:)`; C hosts use the matching
+`syncular_native_client_*presence*` functions. Presence updates emit
+`PresenceChanged` events with `payload_json.scopeKey` and
+`payload_json.presence`.
+Joined scopes are remembered and re-sent after realtime reconnect.
+
+Rust, Swift, and Kotlin also expose presence handles for component/screen
+lifecycles. Closing or dropping the handle leaves the scope:
+
+```rust
+let mut presence = client.join_presence_handle(
+    "user:user-rust",
+    Some(serde_json::json!({ "view": "tasks" })),
+)?;
+presence.update_metadata(serde_json::json!({ "view": "task-detail" }))?;
+drop(presence);
+```
+
+```swift
+let presence = try client.joinPresenceHandle(
+    scopeKey: "user:user-rust",
+    metadataJson: #"{"view":"tasks"}"#
+)
+try presence.update(metadataJson: #"{"view":"task-detail"}"#)
+try presence.close()
+```
+
+```kotlin
+client.joinPresenceHandle("user:user-rust", """{"view":"tasks"}""").use { presence ->
+    presence.update("""{"view":"task-detail"}""")
+}
+```
+
+C hosts can use an opaque presence token when ownership should survive across
+callbacks:
+
+```c
+SyncularNativePresenceHandle *presence =
+    syncular_native_client_join_presence_handle(
+        client,
+        "user:user-rust",
+        "{\"view\":\"tasks\"}",
+        &error
+    );
+syncular_native_presence_handle_update_metadata(
+    presence,
+    "{\"view\":\"task-detail\"}",
+    &error
+);
+syncular_native_presence_handle_close(presence, &error);
+```
+
+App-specific Rust wrappers can subscribe at the worker layer instead of polling
+or rebuilding their own event hub:
+
+```rust
+let worker = SyncWorker::start(client);
+let events = worker.subscribe_events(256);
+let converter = NativeWorkerEventConverter::new();
+
+while let Some(event) = events.next_event() {
+    for json in converter.convert_json(event)? {
+        // Forward the same NativeEvent JSON shape used by Swift/Kotlin/JS hosts.
+    }
+}
+```
+
+Swift:
+
+```swift
+try client.start()
+extension SyncularBoltClient: SyncularNativeEventJsonSource {}
+
+for try await event in syncularNativeEventStream(from: client) {
+    await viewModel.apply(syncularEvent: event)
+}
+```
+
+Kotlin:
+
+```kotlin
+client.start()
+val eventSource = object : SyncularNativeEventJsonSource {
+    override fun forEachEventJson(capacity: ULong, handler: (String) -> Boolean) {
+        client.forEachEventJson(capacity, handler)
+    }
+}
+
+scope.launch(Dispatchers.IO) {
+    eventSource.forEachNativeEvent(256uL) { event ->
+        withContext(Dispatchers.Main) {
+            viewModel.applySyncularEvent(event)
+        }
+        true
+    }
+}
+```
+
+Java:
+
+```java
+client.start();
+client.forEachEventJson(256, eventJson -> {
+    viewModel.applySyncularEventJson(eventJson);
+});
+```
+
+Optional app-framework adapters sit beside the core bindings:
+
+```swift
+import SyncularUI
+
+@StateObject private var events = SyncularDecodedEventStore<SyncularNativeEvent>()
+
+events.start(source: client, decode: syncularDecodeNativeEvent) { event in
+    viewModel.apply(syncularEvent: event)
+}
+```
+
+```kotlin
+val events = client.nativeEventFlow(decode = ::syncularDecodeNativeEvent)
+
+@Composable
+fun TaskScreen() {
+    val state = rememberSyncularEventState(events)
+    state.value.latestEvent?.let(viewModel::applySyncularEvent)
+}
+```
+
+## Generated Rust app pattern
+
+A Rust native app should wire the generated schema once, keep realtime hot, and
+let events drive projection refresh:
+
+```rust
+let mut client = NativeSyncularClient::builder(config)
+    .auto_sync_local_writes(false)
+    .open()?;
+
+client.set_auth_headers(headers)?;
+client.set_subscriptions(vec![task_subscription(actor_id)])?;
+client.join_presence(&format!("user:{actor_id}"), Some(serde_json::json!({ "view": "tasks" })))?;
+
+let task = NewTask::new("task-1", "Realtime native task", actor_id, Some(project_id));
+let operation_json = serde_json::to_string(&task.sync_operation())?;
+let local_row_json = serde_json::to_string(&task.row_json())?;
+let events = client.event_receiver(32);
+let command_id = client.enqueue_mutation_json(&operation_json, Some(&local_row_json))?;
+
+while let Some(event) = events.recv_timeout(Duration::from_millis(250)) {
+    if event.resync_required.unwrap_or(false)
+        || matches!(event.kind, NativeEventKind::EventsOverflowed)
+    {
+        refresh_all_projections(&mut client)?;
+        continue;
+    }
+    for task in task_changed_rows(&event.changed_rows) {
+        if let Some(row_id) = task.row_id() {
+            refresh_task_projection(&mut client, row_id)?;
+        }
+    }
+    if event.command_id.as_deref() == Some(command_id.as_str()) {
+        break;
+    }
+}
+
+client.update_presence_metadata(&format!("user:{actor_id}"), serde_json::json!({ "view": "done" }))?;
+client.leave_presence(&format!("user:{actor_id}"))?;
+client.shutdown()?;
+```
+
+## Realtime and sync
+
+HTTP sync is the normal path. WebSocket sync is available for native hosts
+through `enqueueSyncWebsocket` when the server route supports Syncular's
+WebSocket transport. Scoped row deltas can apply directly when the server can
+send them safely; cursor-only and recovery messages trigger the normal sync
+path.
+
+## Rich editors
+
+For rich editor fields, the canonical state is the Yjs document stored by the
+Rust client. App columns such as ProseMirror JSON, title, preview, outline, and
+search text are derived read models and should be refreshed after CRDT
+changed-row events, remote apply, or compaction.
+
+Native bindings expose `crdtDocumentSnapshotJson` and `crdtUpdateLogJson`.
+The snapshot includes the compact binary Yjs state, state vector, sync mode,
+and pending/flushed/acked queue counts. The update log is append-only and
+tracks each binary Yjs update through `pending`, `flushed`, and `acked`.
+`compactCrdtFieldJson` refreshes the compact state, and storage compaction can
+prune old acked CRDT update-log entries with `pruneCrdtUpdateLog`.
+
+For WebView-hosted editors, keep Rust/Syncular in the native shell as the only
+persistence path. The WebView can use
+`@syncular/client-crdt-adapters` with
+`createSyncularCrdtWebViewHost()` and `createSyncularCrdtJsonTransport()` to
+present the editor adapter with an async host, while native/Flutter handles the
+`syncular.crdt.host.v1` JSON messages by calling the real native APIs:
+
+- `openCrdtFieldJson`
+- `enqueueCrdtFieldYjsUpdateJson`
+- `applyCrdtFieldYjsUpdateJson`
+- `materializeCrdtFieldJson`
+- `crdtDocumentSnapshotJson`
+- `crdtUpdateLogJson`
+- `snapshotCrdtFieldStateVectorJson`
+- `compactCrdtFieldJson`
+
+Forward native `RowsChanged` events back to the WebView with
+`type: "syncular.crdt.host.rowsChanged"`. Projection materializers in the
+WebView then rebuild derived title, preview, outline, search text, and
+ProseMirror JSON from canonical CRDT state after local writes, remote sync, and
+compaction. Do not also open a browser-side Syncular client for the same editor
+field.
+
+If the host layer has JavaScript available, the adapter package also exports
+`createSyncularCrdtHostResponseMessage()` for request handling and
+`syncularCrdtRowsChangedMessageFromNativeEventJson()` for forwarding
+`nextEventJson()` rows-changed events to the WebView. Swift, Kotlin, and Dart
+hosts can mirror those small helpers directly: switch on `method`, call the
+matching native JSON API above, then reply with the original request `id`.

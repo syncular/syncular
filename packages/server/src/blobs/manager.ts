@@ -316,7 +316,11 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
 
       // Validate hash format
       if (!parseBlobHash(hash)) {
-        return { ok: false, error: 'Invalid blob hash format' };
+        return {
+          ok: false,
+          error: 'Invalid blob hash format',
+          code: 'blob.invalid_request',
+        };
       }
 
       // Check upload record exists
@@ -336,14 +340,14 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       const upload = uploadResult.rows[0];
 
       if (!upload) {
-        return { ok: false, error: 'Upload not found' };
+        return { ok: false, error: 'Upload not found', code: 'blob.not_found' };
       }
 
       if (
         options?.actorId !== undefined &&
         upload.actor_id !== options.actorId
       ) {
-        return { ok: false, error: 'FORBIDDEN' };
+        return { ok: false, error: 'Forbidden', code: 'blob.forbidden' };
       }
 
       if (upload.status === 'complete') {
@@ -364,7 +368,11 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
       // Verify blob exists in storage
       const exists = await adapter.exists(hash, storagePartitionOptions);
       if (!exists) {
-        return { ok: false, error: 'Blob not found in storage' };
+        return {
+          ok: false,
+          error: 'Blob not found in storage',
+          code: 'blob.not_found',
+        };
       }
 
       // Optionally verify size matches
@@ -375,6 +383,7 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
           return {
             ok: false,
             error: `Size mismatch: expected ${uploadSize}, got ${meta.size}`,
+            code: 'blob.size_mismatch',
           };
         }
       }

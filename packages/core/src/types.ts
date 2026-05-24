@@ -82,6 +82,7 @@ export interface SyncIdentityBase {
  */
 export type SyncAuthOperation =
   | 'sync'
+  | 'authLeaseIssue'
   | 'snapshotChunk'
   | 'snapshotChunkStream'
   | 'blobInitiateUpload'
@@ -118,12 +119,6 @@ export interface SyncAuthLifecycle {
 }
 
 export interface SyncTransportOptions {
-  /**
-   * Legacy per-call auth retry callback.
-   * Return true to retry once after refreshing auth.
-   * If provided, this takes precedence over `authLifecycle`.
-   */
-  onAuthError?: () => Promise<boolean>;
   /**
    * First-class auth lifecycle callbacks.
    * Use this to centralize auth refresh behavior.

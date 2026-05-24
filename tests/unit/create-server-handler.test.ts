@@ -3,7 +3,8 @@ import { gunzipSync } from 'node:zlib';
 import {
   codecs,
   createDatabase,
-  decodeSnapshotRows,
+  decodeBinarySnapshotTable,
+  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   type SyncPullRequest,
 } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
@@ -63,13 +64,18 @@ interface ClientDb {
   task_codecs: TaskCodecsClientTable;
 }
 
-function decodeSnapshotRowsGzip(
-  bytes: Uint8Array | ReadableStream<Uint8Array>
+function decodeSnapshotChunkRowsGzip(
+  bytes: Uint8Array | ReadableStream<Uint8Array>,
+  encoding: string
 ): unknown[] {
   if (!(bytes instanceof Uint8Array)) {
     throw new Error('Expected Uint8Array snapshot body in this test');
   }
-  return decodeSnapshotRows(gunzipSync(bytes));
+  const decoded = gunzipSync(bytes);
+  if (encoding === SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1) {
+    return decodeBinarySnapshotTable(decoded).rows;
+  }
+  throw new Error(`Unexpected snapshot encoding: ${encoding}`);
 }
 
 async function readSnapshotRows(
@@ -90,7 +96,7 @@ async function readSnapshotRows(
     throw new Error('Expected stored snapshot chunk');
   }
 
-  return decodeSnapshotRowsGzip(chunk.body);
+  return decodeSnapshotChunkRowsGzip(chunk.body, chunkRef.encoding);
 }
 
 describe('createServerHandler', () => {
@@ -165,9 +171,16 @@ describe('createServerHandler', () => {
 
     const request: SyncPullRequest = {
       clientId: 'c1',
+      schemaVersion: 1,
       limitCommits: 10,
       subscriptions: [
-        { id: 's1', table: 'tasks', scopes: { user_id: 'u1' }, cursor: -1 },
+        {
+          id: 's1',
+          table: 'tasks',
+          scopes: { user_id: 'u1' },
+          cursor: -1,
+          crdtStateVectors: [],
+        },
       ],
     };
 
@@ -215,6 +228,7 @@ describe('createServerHandler', () => {
 
     const request: SyncPullRequest = {
       clientId: 'c1',
+      schemaVersion: 1,
       limitCommits: 10,
       subscriptions: [
         {
@@ -222,6 +236,7 @@ describe('createServerHandler', () => {
           table: 'catalog_items',
           scopes: { catalog_id: 'demo' },
           cursor: -1,
+          crdtStateVectors: [],
         },
       ],
     };
@@ -309,6 +324,7 @@ describe('createServerHandler', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'c1',
+        schemaVersion: 1,
         limitCommits: 10,
         subscriptions: [
           {
@@ -316,6 +332,7 @@ describe('createServerHandler', () => {
             table: 'task_codecs',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       },
@@ -417,6 +434,7 @@ describe('createServerHandler', () => {
         auth: { actorId: 'u1' },
         request: {
           clientId: 'c1',
+          schemaVersion: 1,
           limitCommits: 10,
           subscriptions: [
             {
@@ -424,6 +442,7 @@ describe('createServerHandler', () => {
               table: 'tasks',
               scopes: { team_id: 't1' },
               cursor: -1,
+              crdtStateVectors: [],
             },
           ],
         },
@@ -461,6 +480,7 @@ describe('createServerHandler', () => {
         auth: { actorId: 'u1' },
         request: {
           clientId: 'c1',
+          schemaVersion: 1,
           limitCommits: 10,
           subscriptions: [
             {
@@ -468,6 +488,7 @@ describe('createServerHandler', () => {
               table: 'tasks',
               scopes: { user_id: 'u1' },
               cursor: -1,
+              crdtStateVectors: [],
             },
           ],
         },
@@ -506,7 +527,7 @@ describe('createServerHandler', () => {
             table: 'tasks',
             row_id: 'missing-row',
             op: 'upsert',
-            payload: { completed: 1 },
+            payload: { completed: 1, user_id: 'u1' },
             base_version: 2,
           },
         ],
@@ -518,8 +539,8 @@ describe('createServerHandler', () => {
       {
         opIndex: 0,
         status: 'error',
-        error: 'ROW_NOT_FOUND_FOR_BASE_VERSION',
-        code: 'ROW_MISSING',
+        error: 'Row not found for base version',
+        code: 'sync.row_missing',
         retriable: false,
       },
     ]);
@@ -598,7 +619,7 @@ describe('createServerHandler', () => {
             table: 'tasks',
             row_id: 'new-row',
             op: 'upsert',
-            payload: { title: null },
+            payload: { title: null, user_id: 'u1' },
             base_version: null,
           },
         ],
@@ -611,7 +632,7 @@ describe('createServerHandler', () => {
       pushed.response.results[0] && 'code' in pushed.response.results[0]
         ? pushed.response.results[0].code
         : undefined
-    ).toBe('NOT_NULL_CONSTRAINT');
+    ).toBe('sync.constraint_violation');
   });
 
   it('advances nextCursor when scanned commits do not match requested scopes', async () => {
@@ -678,6 +699,7 @@ describe('createServerHandler', () => {
       auth: { actorId: 'u1' },
       request: {
         clientId: 'client-u1',
+        schemaVersion: 1,
         limitCommits: 2,
         subscriptions: [
           {
@@ -685,6 +707,7 @@ describe('createServerHandler', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: 1,
+            crdtStateVectors: [],
           },
         ],
       },

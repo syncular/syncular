@@ -1,0 +1,65 @@
+---
+title: Local Read Models
+description: Add generated local tables for fast app-specific projections.
+---
+
+# Local Read Models
+
+Local read models are generated SQLite projections for views that are expensive
+to compute repeatedly from synced rows. Use them for dashboards, counts,
+materialized summaries, and app-local indexes.
+
+## Recommended shape
+
+- Keep canonical data in synced app tables.
+- Declare local-only tables or local read models in the app contract.
+- Let codegen install setup SQL and rebuild SQL.
+- Refresh projections after row-delta events or during startup when schema
+  versions change.
+- Use read models for measured hotspots, not as the default for every query.
+
+## App contract example
+
+Local read models are declared in the generated app contract. Today that
+contract is TypeScript-authored, then consumed by Rust, browser TypeScript,
+Swift, Kotlin, and JVM generated outputs.
+
+```ts
+import { countByReadModel, defineSyncularClient } from '@syncular/typegen';
+
+export const app = defineSyncularClient({
+  localOnlyTables: ['local_preferences'],
+  localReadModels: [
+    countByReadModel({
+      name: 'taskCountsByUserCompletion',
+      sourceTable: 'tasks',
+      outputTable: 'syncular_task_counts',
+      dimensions: ['user_id', 'completed'],
+      countColumn: 'task_count',
+    }),
+  ],
+  tables,
+});
+```
+
+## When to use one
+
+Use a local read model when a benchmark or trace shows repeated aggregation,
+search, or join work dominates user-visible latency. For normal list/detail
+screens, a typed query builder over the local SQLite replica is usually enough.
+
+## Watch-outs
+
+- Keep read models derived and rebuildable.
+- Include schema-version rebuild behavior in tests.
+- Do not optimize for one full-partition bootstrap if the product contract is
+  scoped access per user/project/team.
+- Measure before and after; keep read models that materially reduce real app
+  latency.
+
+## Related docs
+
+- [Performance Patterns](/docs/features/performance-patterns)
+- [Browser TypeScript](/docs/client/browser)
+- [Rust Client](/docs/client/rust)
+- [Operate: Performance](/docs/operate/performance)

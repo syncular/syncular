@@ -1,0 +1,102 @@
+---
+title: Kotlin / Android
+description: Use generated Kotlin query DSLs, Android lifecycle integration, and coroutine event flows.
+---
+
+# Kotlin / Android
+
+Kotlin and Android apps use generated app helpers over the schema-agnostic
+native binding. The generated layer gives Kotlin code table-specific query
+builders, rows, mutations, subscriptions, CRDT helpers, and row-delta helpers.
+
+## Open the native runtime
+
+```kotlin
+val config = SyncularBoltClientConfig(
+    dbPath = dbPath,
+    baseUrl = "https://api.example.com/sync",
+    clientId = "android-device-1",
+    actorId = "user-1",
+    projectId = Optional.of("project-1"),
+    appSchemaJson = Optional.of(syncularNativeGeneratedAppSchemaJson),
+    autoSyncLocalWrites = false,
+)
+
+SyncularBoltClient(config).use { client ->
+    client.startEventStream(256uL)
+    client.setAuthHeadersJson("""{"authorization":"Bearer token"}""")
+}
+```
+
+## Query
+
+Generated query DSLs stay close to normal query-builder semantics:
+
+```kotlin
+val rows = TaskQuery
+    .select()
+    .filter(TaskQuery.userId.eq("user-1"))
+    .orderBy(TaskQuery.serverVersion.desc())
+    .limit(20)
+    .fetch(client)
+```
+
+Advanced predicates are composable:
+
+```kotlin
+val query = TaskQuery
+    .select()
+    .filter(
+        (TaskQuery.userId.eq("user-1") and TaskQuery.serverVersion.gte(3L)) or
+            TaskQuery.projectId.isNull(),
+    )
+    .filter(TaskQuery.completed.notEq(0L))
+    .orderBy(TaskQuery.title.asc())
+```
+
+## Mutate
+
+Generated mutation helpers call the native Syncular mutation path:
+
+```kotlin
+val commitId = client.mutations.tasks.insert(
+    NewTask(
+        id = UUID.randomUUID().toString(),
+        title = "Android task",
+        completed = 0,
+        userId = "user-1",
+        projectId = "project-1",
+    ),
+)
+
+client.mutations.tasks.update(
+    rowId = taskId,
+    patch = TaskPatch(completed = 1),
+    baseVersion = 11,
+)
+```
+
+For UI work, prefer queued mutations and route completion through native
+events.
+
+## Events and lifecycle
+
+Use coroutine event flows when an app wants structured event processing:
+
+```kotlin
+val events = client.nativeEventFlow(decode = ::syncularDecodeNativeEvent)
+
+scope.launch(Dispatchers.IO) {
+    events.collect { event ->
+        withContext(Dispatchers.Main) {
+            viewModel.applySyncularEvent(event)
+        }
+    }
+}
+```
+
+Android shells should connect foreground/background transitions to the native
+runtime with `resumeFromBackground`, realtime start/stop policy, and shutdown.
+Use [Native lifecycle](/docs/client/native) for the shared worker, event
+overflow, presence, CRDT, and blob policy.
+

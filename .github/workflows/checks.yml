@@ -21,6 +21,7 @@ jobs:
       expo: ${{ steps.filter.outputs.expo }}
       demo: ${{ steps.filter.outputs.demo }}
       load: ${{ steps.filter.outputs.load }}
+      rust: ${{ steps.filter.outputs.rust }}
       sync_matrix: ${{ steps.filter.outputs.sync_matrix }}
     steps:
       - uses: actions/checkout@v4
@@ -29,7 +30,6 @@ jobs:
         with:
           filters: |
             runtime:
-              - 'tests/runtime/**'
               - 'packages/core/**'
               - 'packages/testkit/**'
               - 'packages/dialect-wa-sqlite/**'
@@ -39,25 +39,19 @@ jobs:
               - 'packages/server-hono/**'
               - 'packages/server-cloudflare/**'
               - 'packages/server-dialect-sqlite/**'
-              - 'packages/client/**'
               - 'packages/transport-http/**'
             runtime_relay:
-              - 'tests/runtime/**'
               - 'packages/core/**'
               - 'packages/testkit/**'
               - 'packages/dialect-bun-sqlite/**'
-              - 'packages/client/**'
               - 'packages/relay/**'
               - 'packages/server/**'
               - 'packages/server-hono/**'
               - 'packages/server-dialect-sqlite/**'
               - 'packages/transport-http/**'
             runtime_electron:
-              - 'tests/runtime/**'
-              - 'tests/runtime/__tests__/electron.runtime.test.ts'
               - 'packages/core/**'
               - 'packages/testkit/**'
-              - 'packages/client/**'
               - 'packages/server/**'
               - 'packages/server-hono/**'
               - 'packages/transport-http/**'
@@ -68,11 +62,8 @@ jobs:
               - 'packages/dialect-expo-sqlite/**'
               - 'packages/core/src/kysely-serialize.ts'
             demo:
-              - 'apps/demo/**'
               - 'packages/core/**'
               - 'packages/testkit/**'
-              - 'packages/client/**'
-              - 'packages/client-react/**'
               - 'packages/dialect-pglite/**'
               - 'packages/dialect-wa-sqlite/**'
               - 'packages/server/**'
@@ -82,18 +73,26 @@ jobs:
               - 'packages/transport-http/**'
               - 'packages/transport-ws/**'
               - 'packages/observability-sentry/**'
-              - 'tests/runtime/**'
             load:
               - 'tests/load/**'
               - 'packages/core/**'
               - 'packages/testkit/**'
-              - 'packages/client/**'
               - 'packages/server/**'
               - 'packages/server-hono/**'
               - 'packages/server-dialect-postgres/**'
               - 'packages/server-dialect-sqlite/**'
               - 'packages/transport-http/**'
               - 'packages/transport-ws/**'
+            rust:
+              - 'rust/**'
+              - '.github/workflows/checks.yml'
+              - '.github/actions/setup-environment/action.yml'
+              - 'package.json'
+              - 'bun.lock'
+              - 'packages/core/**'
+              - 'packages/server/**'
+              - 'packages/server-hono/**'
+              - 'packages/testkit/**'
             sync_matrix:
               - 'packages/core/**'
               - 'packages/testkit/**'
@@ -103,12 +102,9 @@ jobs:
               - 'packages/server-hono/**'
               - 'packages/server-dialect-postgres/**'
               - 'packages/server-dialect-sqlite/**'
-              - 'packages/client/**'
-              - 'packages/client-react/**'
               - 'packages/transport-http/**'
               - 'packages/transport-ws/**'
               - 'packages/relay/**'
-              - 'tests/integration/**'
 
   test:
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -146,6 +142,219 @@ jobs:
           files: ./coverage/lcov.info
           fail_ci_if_error: false
 
+  rust-native:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Run Rust native checks
+        run: |
+          cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+          cargo test --manifest-path rust/Cargo.toml --workspace
+          cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features
+          cargo check --manifest-path rust/Cargo.toml -p syncular-client --no-default-features --features native,crdt-yjs
+          cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check
+          cargo publish --manifest-path rust/crates/syncular/Cargo.toml --dry-run
+          cargo publish --manifest-path rust/crates/protocol/Cargo.toml --dry-run
+          cargo publish --manifest-path rust/crates/codegen/Cargo.toml --dry-run
+          cargo publish --manifest-path rust/crates/runtime/Cargo.toml --dry-run
+          cargo publish --manifest-path rust/crates/testkit/Cargo.toml --dry-run
+          cargo publish --manifest-path rust/crates/client/Cargo.toml --dry-run
+
+  rust-browser-wasm:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Setup wasm-pack
+        uses: jetli/wasm-pack-action@v0.4.0
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - uses: ./.github/actions/setup-environment
+
+      - name: Run browser Rust package checks
+        env:
+          CC_wasm32_unknown_unknown: clang
+        run: |
+          bun --cwd packages/client test
+          bun --cwd packages/client tsgo
+          bun --cwd rust/bindings/javascript tsgo
+          bun --cwd rust/bindings/javascript build:wasm:dev
+          bun --cwd rust/bindings/javascript size:wasm
+
+      - name: Upload browser WASM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: syncular-rust-browser-wasm-${{ github.run_id }}
+          path: rust/bindings/javascript/dist/wasm
+
+  rust-native-package:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
+    name: rust-native-package / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Build native library package surface
+        run: cargo build --manifest-path rust/Cargo.toml -p syncular-runtime --release --lib
+
+      - name: Upload native library artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: syncular-native-${{ runner.os }}-${{ github.run_id }}
+          if-no-files-found: error
+          path: |
+            rust/target/release/libsyncular_runtime.a
+            rust/target/release/libsyncular_runtime.so
+            rust/target/release/syncular_runtime.dll
+            rust/target/release/syncular_runtime.dll.lib
+            rust/target/release/syncular_runtime.lib
+
+  rust-boltffi-package:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
+    name: rust-boltffi-package / ${{ matrix.boltffi-target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - boltffi-target: apple
+            os: macos-15
+            rust-targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-apple-ios,aarch64-apple-ios-sim,x86_64-apple-ios
+          - boltffi-target: android
+            os: ubuntu-latest
+            rust-targets: aarch64-linux-android,x86_64-linux-android
+          - boltffi-target: java
+            os: ubuntu-latest
+            rust-targets: x86_64-unknown-linux-gnu
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Xcode
+        if: matrix.boltffi-target == 'apple'
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16.3'
+
+      - name: Setup Java
+        if: matrix.boltffi-target == 'android' || matrix.boltffi-target == 'java'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        if: matrix.boltffi-target == 'android'
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        if: matrix.boltffi-target == 'android'
+        run: |
+          yes | sdkmanager --licenses >/dev/null
+          sdkmanager "ndk;28.2.13676358"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust-targets }}
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Install BoltFFI CLI
+        run: cargo install boltffi_cli --version 0.24.1 --locked
+
+      - name: Run BoltFFI package smoke
+        if: matrix.boltffi-target != 'android'
+        working-directory: rust/crates/runtime
+        run: boltffi pack ${{ matrix.boltffi-target }}
+
+      - name: Run Android BoltFFI package smoke
+        if: matrix.boltffi-target == 'android'
+        working-directory: rust/crates/runtime
+        run: |
+          export ANDROID_NDK_HOME="${ANDROID_SDK_ROOT}/ndk/28.2.13676358"
+          boltffi pack android
+
+  rust-windows-jvm-package:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.rust == 'true'
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: rust -> target
+
+      - name: Install BoltFFI CLI
+        run: cargo install boltffi_cli --version 0.24.1 --locked
+
+      - name: Package Windows JVM binding
+        shell: bash
+        run: bash rust/scripts/package-native-bindings.sh --java-windows-x86_64
+
+      - name: Upload Windows JVM binding
+        uses: actions/upload-artifact@v4
+        with:
+          name: syncular-jvm-windows-${{ github.run_id }}
+          if-no-files-found: error
+          path: .context/native-packages/java/native/windows-x86_64/syncular_runtime_jni.dll
+
   integration-load:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 20
@@ -167,34 +376,6 @@ jobs:
           if [ "$exit_code" -eq 132 ] || [ "$exit_code" -eq 133 ]; then
             echo "Bun crashed with exit code $exit_code; retrying once..."
             bun run test:load
-            exit $?
-          fi
-
-          exit "$exit_code"
-
-  integration-full:
-    needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.sync_matrix == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-environment
-
-      - name: Run full integration matrix
-        run: |
-          set +e
-          bun run test:integration:full
-          exit_code=$?
-          set -e
-
-          if [ "$exit_code" -eq 0 ]; then
-            exit 0
-          fi
-
-          if [ "$exit_code" -eq 132 ] || [ "$exit_code" -eq 133 ]; then
-            echo "Bun crashed with exit code $exit_code; retrying once..."
-            bun run test:integration:full
             exit $?
           fi
 
@@ -247,374 +428,6 @@ jobs:
             load-pr-results.txt
             load-pr-summary.json
             .tmp/load-pr
-
-  perf:
-    if: github.event_name == 'pull_request' || github.event_name == 'push' || github.event_name == 'workflow_dispatch'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 25
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-environment
-
-      - name: Run stable performance tests (5 runs)
-        id: perf
-        env:
-          PERF_STABLE_RUNS: 5
-          PERF_STABLE_OUTPUT_JSON: perf-summary.json
-        run: |
-          set +e
-          bun --cwd tests/perf stable-ci 2>&1 | tee perf-results.txt
-          exit_code=${PIPESTATUS[0]}
-          set -e
-          echo "exit_code=$exit_code" >> "$GITHUB_OUTPUT"
-
-      - name: Extract regression report
-        id: report
-        run: |
-          if ! grep -q "PERF_GATE_SYNC_REGRESSION=" perf-results.txt; then
-            echo "execution_failed=true" >> $GITHUB_OUTPUT
-          else
-            echo "execution_failed=false" >> $GITHUB_OUTPUT
-          fi
-
-          if grep -q "PERF_GATE_SYNC_REGRESSION=true" perf-results.txt; then
-            echo "has_regression=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_regression=false" >> $GITHUB_OUTPUT
-          fi
-
-          if grep -q "PERF_GATE_SYNC_MISSING_BASELINE=true" perf-results.txt; then
-            echo "has_missing_baseline=true" >> $GITHUB_OUTPUT
-          else
-            echo "has_missing_baseline=false" >> $GITHUB_OUTPUT
-          fi
-
-      - name: Upload perf artifacts
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: perf-results-${{ github.run_id }}
-          path: |
-            perf-results.txt
-            perf-summary.json
-
-      - name: Publish perf run summary
-        if: always()
-        run: |
-          if [ ! -f perf-summary.json ]; then
-            exit 0
-          fi
-
-          node - <<'NODE'
-          const fs = require('fs');
-          const summaryPath = process.env.GITHUB_STEP_SUMMARY;
-          const report = JSON.parse(fs.readFileSync('perf-summary.json', 'utf8'));
-
-          const lines = [];
-          lines.push('## Perf Summary');
-          lines.push('');
-          lines.push(`- Runs: ${report.runCount}`);
-          lines.push(`- Commit: ${report.commit ?? 'unknown'}`);
-          lines.push(`- Regression: ${report.hasRegression ? 'yes' : 'no'}`);
-          lines.push(`- Missing baseline: ${report.hasMissingBaseline ? 'yes' : 'no'}`);
-          if (Array.isArray(report.baselineCommits) && report.baselineCommits.length > 0) {
-            lines.push(`- Baseline commits: ${report.baselineCommits.join(', ')}`);
-          }
-          if (report.runEnvironment) {
-            const env = report.runEnvironment;
-            const envLabel = [env.platform, env.arch, `bun ${env.bunVersion}`]
-              .filter(Boolean)
-              .join(' / ');
-            lines.push(`- Environment: ${env.source ?? 'unknown'} (${envLabel})`);
-          }
-          if (report.resources?.durationMs && report.resources?.cpuTotalMicros && report.resources?.maxRssBytes) {
-            lines.push(
-              `- Run resources (median): duration ${Number(report.resources.durationMs.median).toFixed(1)}ms, CPU ${(
-                Number(report.resources.cpuTotalMicros.median) / 1000
-              ).toFixed(1)}ms, max RSS ${(
-                Number(report.resources.maxRssBytes.median) /
-                (1024 * 1024)
-              ).toFixed(1)} MiB`
-            );
-          }
-          lines.push('');
-          lines.push('| Metric | Baseline | Median | Change |');
-          lines.push('|--------|----------|--------|--------|');
-
-          for (const metric of report.metrics) {
-            const baseline =
-              metric.baseline === null ? 'N/A' : `${Number(metric.baseline).toFixed(1)}ms`;
-            const median = `${Number(metric.aggregatedMedian).toFixed(1)}ms`;
-            const change =
-              metric.changePercent === null
-                ? 'N/A'
-                : `${metric.changePercent >= 0 ? '+' : ''}${Number(metric.changePercent).toFixed(1)}%`;
-            lines.push(`| ${metric.metric} | ${baseline} | ${median} | ${change} |`);
-          }
-
-          fs.appendFileSync(summaryPath, `${lines.join('\n')}\n`);
-          NODE
-
-      - name: Comment PR with performance results
-        if: always() && github.event_name == 'pull_request'
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const fs = require('fs');
-            const results = fs.readFileSync('perf-results.txt', 'utf8');
-
-            const lines = results.split('\n');
-            const tableStart = lines.findIndex(l => l.includes('| Benchmark |'));
-            const reportStart = lines.findIndex(l => l.includes('Performance'));
-
-            let body = '## Performance Test Results\n\n';
-
-            if (tableStart >= 0) {
-              let tableEnd = tableStart;
-              while (tableEnd < lines.length && lines[tableEnd].startsWith('|')) {
-                tableEnd++;
-              }
-              body += lines.slice(tableStart, tableEnd).join('\n') + '\n\n';
-            }
-
-            if (reportStart >= 0) {
-              body += lines.slice(reportStart).join('\n');
-            }
-
-            const { data: comments } = await github.rest.issues.listComments({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-            });
-
-            const botComment = comments.find(c =>
-              c.user.type === 'Bot' &&
-              c.body.includes('Performance Test Results')
-            );
-
-            if (botComment) {
-              await github.rest.issues.updateComment({
-                comment_id: botComment.id,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body
-              });
-            } else {
-              await github.rest.issues.createComment({
-                issue_number: context.issue.number,
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                body
-              });
-            }
-
-      - name: Check previous perf job conclusion
-        if: steps.report.outputs.has_regression == 'true'
-        id: previous
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const branch =
-              context.eventName === 'pull_request'
-                ? context.payload.pull_request.head.ref
-                : context.ref.replace('refs/heads/', '');
-            const { owner, repo } = context.repo;
-
-            const runs = await github.rest.actions.listWorkflowRuns({
-              owner,
-              repo,
-              workflow_id: 'checks.yml',
-              branch,
-              event: context.eventName,
-              per_page: 20,
-            });
-
-            const previousRun = runs.data.workflow_runs.find(
-              (run) => run.id !== context.runId && run.status === 'completed'
-            );
-
-            if (!previousRun) {
-              core.setOutput('previous_regression', 'false');
-              return;
-            }
-
-            const jobs = await github.rest.actions.listJobsForWorkflowRun({
-              owner,
-              repo,
-              run_id: previousRun.id,
-              per_page: 100,
-            });
-
-            const perfJob = jobs.data.jobs.find((job) => job.name === 'perf');
-            const previousRegression = perfJob?.conclusion === 'failure';
-
-            core.setOutput(
-              'previous_regression',
-              previousRegression ? 'true' : 'false'
-            );
-            core.setOutput('previous_run_url', previousRun.html_url ?? '');
-
-      - name: Fail on perf runner execution error
-        if: steps.report.outputs.execution_failed == 'true'
-        run: |
-          echo "Perf runner did not emit PERF_GATE markers. See perf-results.txt for details."
-          exit 1
-
-      - name: Fail on missing performance baseline
-        if: steps.report.outputs.has_missing_baseline == 'true'
-        run: |
-          echo "Performance baseline missing for one or more metrics. Run bun test:perf:update-baseline and commit tests/perf/baseline.json."
-          exit 1
-
-      - name: Warn on first detected perf regression
-        if: steps.report.outputs.has_regression == 'true' && steps.previous.outputs.previous_regression != 'true'
-        run: |
-          echo "::warning::Perf regression detected, but previous run did not fail perf gating. Soft-failing this run."
-          if [ -n "${{ steps.previous.outputs.previous_run_url }}" ]; then
-            echo "Previous run: ${{ steps.previous.outputs.previous_run_url }}"
-          fi
-
-      - name: Warn on consecutive performance regressions (push/manual)
-        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && steps.report.outputs.has_regression == 'true' && steps.previous.outputs.previous_regression == 'true'
-        run: |
-          echo "::warning::Consecutive perf regressions detected on push/manual run."
-          echo "Current run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "Previous run: ${{ steps.previous.outputs.previous_run_url }}"
-
-      - name: Fail on consecutive performance regressions (PR)
-        if: github.event_name == 'pull_request' && steps.report.outputs.has_regression == 'true' && steps.previous.outputs.previous_regression == 'true'
-        run: |
-          echo "Sync performance regression detected in two consecutive runs."
-          echo "Current run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          echo "Previous run: ${{ steps.previous.outputs.previous_run_url }}"
-          exit 1
-
-  runtime-browser:
-    needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.runtime == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 15
-    strategy:
-      matrix:
-        browser: [chromium, firefox]
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-environment
-
-      - name: Install Playwright ${{ matrix.browser }}
-        run: bunx playwright install --with-deps ${{ matrix.browser }}
-
-      - name: Run browser runtime tests
-        env:
-          PLAYWRIGHT_BROWSER: ${{ matrix.browser }}
-        run: bun test:runtime:browser
-
-  demo-smoke:
-    name: demo-smoke / ${{ matrix.scenario.name }}
-    needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.demo == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 12
-    strategy:
-      fail-fast: false
-      max-parallel: 3
-      matrix:
-        scenario:
-          - name: todo-mirror
-            file: __tests__/demo-smoke/todo-mirror.smoke.test.ts
-          - name: reload
-            file: __tests__/demo-smoke/reload.smoke.test.ts
-          - name: multi-tab
-            file: __tests__/demo-smoke/multi-tab.smoke.test.ts
-          - name: media
-            file: __tests__/demo-smoke/media.smoke.test.ts
-          - name: toggle-latency
-            file: __tests__/demo-smoke/toggle-latency.smoke.test.ts
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-environment
-
-      - name: Install Playwright Chromium
-        run: bunx playwright install --with-deps chromium
-
-      - name: Run demo smoke scenario (${{ matrix.scenario.name }})
-        run: bun test tests/runtime/${{ matrix.scenario.file }}
-
-  runtime-cloudflare:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-environment
-
-      - name: Run Cloudflare Worker runtime tests
-        run: bun test:runtime:cloudflare
-
-  runtime-d1:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-environment
-
-      - name: Run D1 runtime tests
-        run: bun test:runtime:d1
-
-  runtime-node:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-environment
-
-      - name: Install better-sqlite3 for Node
-        run: |
-          mkdir -p /tmp/better-sqlite3 && cd /tmp/better-sqlite3
-          npm init -y > /dev/null 2>&1
-          npm install better-sqlite3
-          ln -sf /tmp/better-sqlite3/node_modules/better-sqlite3 $GITHUB_WORKSPACE/node_modules/better-sqlite3
-
-      - name: Run Node.js runtime tests
-        run: bun test:runtime:node
-
-  runtime-relay:
-    needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.runtime_relay == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-environment
-
-      - name: Run relay runtime tests
-        run: bun test:runtime:relay
-
-  runtime-deno:
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-environment
-
-      - name: Install Deno
-        uses: denoland/setup-deno@v2
-        with:
-          deno-version: v2.x
-
-      - name: Run Deno runtime tests
-        run: bun test:runtime:deno
-
-  runtime-electron:
-    needs: changes
-    if: github.event_name != 'pull_request' || needs.changes.outputs.runtime_electron == 'true'
-    runs-on: blacksmith-4vcpu-ubuntu-2404
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-environment
-
-      - name: Run Electron runtime bridge tests
-        run: bun test:runtime:electron
 
   maestro-ios:
     needs: changes

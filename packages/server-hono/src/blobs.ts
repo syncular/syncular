@@ -16,6 +16,7 @@ import {
   createIncrementalSha256,
   ErrorResponseSchema,
   parseBlobHash,
+  type SyncularErrorCode,
   sha256Hex,
 } from '@syncular/core';
 import type {
@@ -31,9 +32,11 @@ import {
 } from '@syncular/server';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
-import { describeRoute, resolver, validator as zValidator } from 'hono-openapi';
+import { describeRoute, resolver } from 'hono-openapi';
 import type { Kysely } from 'kysely';
 import { z } from 'zod';
+import { syncError } from './errors';
+import { blobValidator as zValidator } from './validation';
 
 interface BlobAuthResult {
   actorId: string;
@@ -153,18 +156,17 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
     zValidator('json', BlobUploadInitRequestSchema),
     async (c) => {
       const auth = await authenticate(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      if (!auth) return syncError(c, 401, 'sync.auth_required');
 
       const body = c.req.valid('json');
 
       // Validate size
       if (body.size > maxUploadSize) {
-        return c.json(
-          {
-            error: 'BLOB_TOO_LARGE',
-            message: `Maximum upload size is ${maxUploadSize} bytes`,
-          },
-          400
+        return syncError(
+          c,
+          400,
+          'blob.too_large',
+          `Maximum upload size is ${maxUploadSize} bytes`
         );
       }
 
@@ -181,10 +183,7 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
         return c.json(result, 200);
       } catch (err) {
         if (isBlobValidationError(err)) {
-          return c.json(
-            { error: 'INVALID_REQUEST', message: err.message },
-            400
-          );
+          return syncError(c, 400, 'blob.invalid_request', err.message);
         }
         throw err;
       }
@@ -228,15 +227,17 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
     zValidator('param', hashParamsSchema),
     async (c) => {
       const auth = await authenticate(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      if (!auth) return syncError(c, 401, 'sync.auth_required');
 
       const { hash } = c.req.valid('param');
 
       // Validate hash format
       if (!parseBlobHash(hash)) {
-        return c.json(
-          { error: 'INVALID_REQUEST', message: 'Invalid blob hash format' },
-          400
+        return syncError(
+          c,
+          400,
+          'blob.invalid_request',
+          'Invalid blob hash format'
         );
       }
 
@@ -247,10 +248,9 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
       });
 
       if (!result.ok) {
-        if (result.error === 'FORBIDDEN') {
-          return c.json({ error: 'FORBIDDEN' }, 403);
-        }
-        return c.json({ error: 'UPLOAD_FAILED', message: result.error }, 400);
+        const code = result.code ?? 'blob.upload_failed';
+        const status = code === 'blob.forbidden' ? 403 : 400;
+        return syncError(c, status, code, result.error);
       }
 
       return c.json(result, 200);
@@ -311,13 +311,13 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
     zValidator('param', hashParamsSchema),
     async (c) => {
       const auth = await authenticate(c);
-      if (!auth) return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      if (!auth) return syncError(c, 401, 'sync.auth_required');
 
       const { hash } = c.req.valid('param');
 
       // Validate hash format
       if (!parseBlobHash(hash)) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return syncError(c, 404, 'blob.not_found');
       }
 
       const partitionId = auth.partitionId ?? 'default';
@@ -327,7 +327,7 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
         partitionId,
       });
       if (!canAccess) {
-        return c.json({ error: 'FORBIDDEN' }, 403);
+        return syncError(c, 403, 'blob.forbidden');
       }
 
       try {
@@ -339,7 +339,7 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
         return c.json(result, 200);
       } catch (err) {
         if (isBlobNotFoundError(err)) {
-          return c.json({ error: 'NOT_FOUND' }, 404);
+          return syncError(c, 404, 'blob.not_found');
         }
         throw err;
       }
@@ -385,28 +385,32 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
         // Verify token
         const payload = await tokenSigner.verify(token);
         if (!payload || payload.action !== 'upload' || payload.hash !== hash) {
-          return c.json({ error: 'INVALID_TOKEN' }, 401);
+          return syncError(c, 401, 'blob.invalid_token');
         }
 
         const uploadRecord = await blobManager.getUploadRecord(hash, {
           partitionId: payload.partitionId,
         });
         if (!uploadRecord) {
-          return c.json({ error: 'UPLOAD_NOT_FOUND' }, 404);
+          return syncError(c, 404, 'blob.not_found', 'Upload record not found');
         }
         if (uploadRecord.status !== 'pending') {
-          return c.json({ error: 'UPLOAD_NOT_PENDING' }, 409);
+          return syncError(
+            c,
+            409,
+            'blob.upload_failed',
+            'Upload is not pending'
+          );
         }
         if (payload.size !== uploadRecord.size) {
-          return c.json({ error: 'INVALID_TOKEN' }, 401);
+          return syncError(c, 401, 'blob.invalid_token');
         }
         if (uploadRecord.size > maxUploadSize) {
-          return c.json(
-            {
-              error: 'BLOB_TOO_LARGE',
-              message: `Maximum upload size is ${maxUploadSize} bytes`,
-            },
-            400
+          return syncError(
+            c,
+            400,
+            'blob.too_large',
+            `Maximum upload size is ${maxUploadSize} bytes`
           );
         }
 
@@ -414,27 +418,27 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
         if (contentLengthHeader) {
           const contentLength = Number(contentLengthHeader);
           if (!Number.isFinite(contentLength) || contentLength < 0) {
-            return c.json(
-              { error: 'INVALID_REQUEST', message: 'Invalid Content-Length' },
-              400
+            return syncError(
+              c,
+              400,
+              'blob.invalid_request',
+              'Invalid Content-Length'
             );
           }
           if (contentLength > maxUploadSize) {
-            return c.json(
-              {
-                error: 'BLOB_TOO_LARGE',
-                message: `Maximum upload size is ${maxUploadSize} bytes`,
-              },
-              400
+            return syncError(
+              c,
+              400,
+              'blob.too_large',
+              `Maximum upload size is ${maxUploadSize} bytes`
             );
           }
           if (contentLength !== uploadRecord.size) {
-            return c.json(
-              {
-                error: 'SIZE_MISMATCH',
-                message: `Expected ${uploadRecord.size} bytes, got ${contentLength}`,
-              },
-              400
+            return syncError(
+              c,
+              400,
+              'blob.size_mismatch',
+              `Expected ${uploadRecord.size} bytes, got ${contentLength}`
             );
           }
         }
@@ -463,12 +467,11 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
           } catch (err) {
             if (isBlobUploadBodyError(err)) {
               void streamingUpload.hashHex.catch(() => {});
-              return c.json(
-                {
-                  error: err.code,
-                  message: err.message,
-                },
-                400
+              return syncError(
+                c,
+                400,
+                uploadBodyErrorCode(err.code),
+                err.message
               );
             }
             void streamingUpload.hashHex.catch(() => {});
@@ -481,12 +484,11 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
             await deleteUploadedBlobBestEffort(blobManager, hash, {
               partitionId: payload.partitionId,
             });
-            return c.json(
-              {
-                error: 'HASH_MISMATCH',
-                message: 'Content hash does not match',
-              },
-              400
+            return syncError(
+              c,
+              400,
+              'blob.hash_mismatch',
+              'Content hash does not match'
             );
           }
 
@@ -501,12 +503,11 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
           });
         } catch (err) {
           if (isBlobUploadBodyError(err)) {
-            return c.json(
-              {
-                error: err.code,
-                message: err.message,
-              },
-              400
+            return syncError(
+              c,
+              400,
+              uploadBodyErrorCode(err.code),
+              err.message
             );
           }
           throw err;
@@ -516,12 +517,11 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
         const computedHash = await computeSha256Hash(bodyBytes);
         const expectedHex = parseBlobHash(hash);
         if (!expectedHex || computedHash !== expectedHex) {
-          return c.json(
-            {
-              error: 'HASH_MISMATCH',
-              message: 'Content hash does not match',
-            },
-            400
+          return syncError(
+            c,
+            400,
+            'blob.hash_mismatch',
+            'Content hash does not match'
           );
         }
 
@@ -588,7 +588,7 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
           payload.action !== 'download' ||
           payload.hash !== hash
         ) {
-          return c.json({ error: 'INVALID_TOKEN' }, 401);
+          return syncError(c, 401, 'blob.invalid_token');
         }
 
         // Read via the blob adapter (R2, database, etc.)
@@ -597,7 +597,7 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
             partitionId: payload.partitionId,
           });
           if (!data) {
-            return c.json({ error: 'NOT_FOUND' }, 404);
+            return syncError(c, 404, 'blob.not_found');
           }
           const meta = blobManager.adapter.getMetadata
             ? await blobManager.adapter.getMetadata(hash, {
@@ -619,7 +619,7 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
           partitionId: payload.partitionId,
         });
         if (!blob) {
-          return c.json({ error: 'NOT_FOUND' }, 404);
+          return syncError(c, 404, 'blob.not_found');
         }
 
         return new Response(blob.body as BodyInit, {
@@ -659,7 +659,7 @@ function isBlobNotFoundError(err: unknown): err is BlobNotFoundError {
 
 class BlobUploadBodyError extends Error {
   constructor(
-    public readonly code: 'BLOB_TOO_LARGE' | 'SIZE_MISMATCH',
+    public readonly code: 'blob.too_large' | 'blob.size_mismatch',
     message: string
   ) {
     super(message);
@@ -673,6 +673,12 @@ function isBlobUploadBodyError(err: unknown): err is BlobUploadBodyError {
     err !== null &&
     (err as { name?: string }).name === 'BlobUploadBodyError'
   );
+}
+
+function uploadBodyErrorCode(
+  code: BlobUploadBodyError['code']
+): SyncularErrorCode {
+  return code;
 }
 
 async function deleteUploadedBlobBestEffort(
@@ -725,7 +731,7 @@ async function createValidatedUploadStream(
         if (done) {
           if (totalSize !== args.expectedSize) {
             const sizeError = new BlobUploadBodyError(
-              'SIZE_MISMATCH',
+              'blob.size_mismatch',
               `Expected ${args.expectedSize} bytes, got ${totalSize}`
             );
             fail(sizeError);
@@ -758,7 +764,7 @@ async function createValidatedUploadStream(
         totalSize += value.length;
         if (totalSize > args.maxSize) {
           const limitError = new BlobUploadBodyError(
-            'BLOB_TOO_LARGE',
+            'blob.too_large',
             `Maximum upload size is ${args.maxSize} bytes`
           );
           fail(limitError);
@@ -767,7 +773,7 @@ async function createValidatedUploadStream(
         }
         if (totalSize > args.expectedSize) {
           const mismatchError = new BlobUploadBodyError(
-            'SIZE_MISMATCH',
+            'blob.size_mismatch',
             `Expected ${args.expectedSize} bytes, got more than expected`
           );
           fail(mismatchError);
@@ -800,7 +806,7 @@ async function readRequestBodyWithLimit(
   if (!body) {
     if (args.expectedSize === 0) return new Uint8Array();
     throw new BlobUploadBodyError(
-      'SIZE_MISMATCH',
+      'blob.size_mismatch',
       `Expected ${args.expectedSize} bytes, got 0`
     );
   }
@@ -817,13 +823,13 @@ async function readRequestBodyWithLimit(
     totalSize += value.length;
     if (totalSize > args.maxSize) {
       throw new BlobUploadBodyError(
-        'BLOB_TOO_LARGE',
+        'blob.too_large',
         `Maximum upload size is ${args.maxSize} bytes`
       );
     }
     if (totalSize > args.expectedSize) {
       throw new BlobUploadBodyError(
-        'SIZE_MISMATCH',
+        'blob.size_mismatch',
         `Expected ${args.expectedSize} bytes, got more than expected`
       );
     }
@@ -832,7 +838,7 @@ async function readRequestBodyWithLimit(
 
   if (totalSize !== args.expectedSize) {
     throw new BlobUploadBodyError(
-      'SIZE_MISMATCH',
+      'blob.size_mismatch',
       `Expected ${args.expectedSize} bytes, got ${totalSize}`
     );
   }

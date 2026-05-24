@@ -141,11 +141,14 @@ const tasksHandler: ServerTableHandler = {
 Clients request subscriptions by table and scopes:
 
 ```typescript
-<SyncProvider
-  sync={sync}
-  identity={{ actorId: userId }}
-  ...
-/>
+await syncular.client.setSubscriptions([
+  {
+    id: `tasks:user:${userId}`,
+    table: 'tasks',
+    scopes: { user_id: userId },
+    params: {},
+  },
+]);
 ```
 
 ## Authorization Flow
@@ -179,4 +182,4 @@ const { syncRoutes } = createSyncServer({
 ## Next Steps
 
 - [Hono Adapter](/docs/reference/server/hono-adapter) - Route configuration
-- [Scopes](/docs/concepts/scopes) - Understanding scopes
+- [Scopes](/docs/learn/scopes) - Understanding scopes

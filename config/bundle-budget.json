@@ -1,11 +1,14 @@
 {
   "target": {
-    "label": "@syncular/client canonical browser client",
+    "label": "@syncular/client Rust browser client",
     "entrypoint": "./packages/client/src/index.ts",
-    "namedImports": ["createClient", "createClientHandler"],
-    "baselineRawKb": 829.84,
-    "baselineGzipKb": 238.32,
-    "maxRawKb": 845,
-    "maxGzipKb": 245
+    "namedImports": [
+      "createSyncularClient",
+      "createSyncularDatabase"
+    ],
+    "baselineRawKb": 0,
+    "baselineGzipKb": 0,
+    "maxRawKb": 1200,
+    "maxGzipKb": 400
   }
 }

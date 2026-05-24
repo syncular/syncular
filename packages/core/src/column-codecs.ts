@@ -163,16 +163,15 @@ export function applyCodecsFromDbRow(
 ): Record<string, unknown> {
   if (!hasCodecs(tableCodecs)) return { ...row };
 
-  const transformed: Record<string, unknown> = { ...row };
+  let transformed: Record<string, unknown> | null = null;
   for (const [column, codec] of Object.entries(tableCodecs)) {
-    if (!(column in transformed)) continue;
-    transformed[column] = applyCodecFromDbValue(
-      codec,
-      transformed[column],
-      dialect
-    );
+    if (!(column in row)) continue;
+    const value = row[column];
+    if (value === null || value === undefined) continue;
+    transformed ??= { ...row };
+    transformed[column] = applyCodecFromDbValue(codec, value, dialect);
   }
-  return transformed;
+  return transformed ?? row;
 }
 
 function parseBooleanValue(value: unknown): boolean {

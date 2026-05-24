@@ -24,6 +24,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/sync/audit/debug/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export a redacted sync debug bundle
+         * @description Returns a size-bounded support bundle for the authenticated actor with visible redacted commit changes and own request events.
+         */
+        get: operations["getSyncAuditDebugExport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/sync/audit/commits/{commitSeq}": {
         parameters: {
             query?: never;
@@ -36,6 +56,26 @@ export interface paths {
          * @description Returns commit metadata and change rows for one commit within the authenticated partition.
          */
         get: operations["getSyncAuditCommitsByCommitSeq"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sync/audit/rows/{table}/{rowId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read scoped row audit history
+         * @description Returns redacted row-level audit history for one row within the authenticated partition and allowed scopes.
+         */
+        get: operations["getSyncAuditRowsByTableByRowId"];
         put?: never;
         post?: never;
         delete?: never;
@@ -76,6 +116,26 @@ export interface paths {
          * @description Download an encoded bootstrap snapshot chunk
          */
         get: operations["getSyncSnapshotChunksByChunkId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/sync/snapshot-artifacts/{artifactId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Download scoped snapshot artifact
+         * @description Download a verified, scoped bootstrap snapshot artifact
+         */
+        get: operations["getSyncSnapshotArtifactsByArtifactId"];
         put?: never;
         post?: never;
         delete?: never;
@@ -186,6 +246,57 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/console/row-history/{table}/{rowId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get redacted row history */
+        get: operations["getConsoleRowHistoryByTableByRowId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/console/row-investigation/{table}/{rowId}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Investigate row visibility */
+        get: operations["getConsoleRowInvestigationByTableByRowId"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/console/debug/export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Export a redacted debug bundle */
+        get: operations["getConsoleDebugExport"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/console/clients": {
         parameters: {
             query?: never;
@@ -195,6 +306,58 @@ export interface paths {
         };
         /** List clients */
         get: operations["getConsoleClients"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/console/client-diagnostics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List latest redacted Rust client diagnostic snapshots */
+        get: operations["getConsoleClientDiagnostics"];
+        put?: never;
+        /** Ingest a redacted Rust client diagnostic snapshot */
+        post: operations["postConsoleClientDiagnostics"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/console/client-diagnostics/{id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List retained redacted Rust client diagnostic snapshots */
+        get: operations["getConsoleClientDiagnosticsByIdHistory"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/console/client-diagnostics/{id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get latest redacted Rust client diagnostic snapshot */
+        get: operations["getConsoleClientDiagnosticsById"];
         put?: never;
         post?: never;
         delete?: never;
@@ -652,6 +815,130 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getSyncAuditDebugExport: {
+        parameters: {
+            query?: {
+                limitCommits?: number;
+                limitEvents?: number;
+                from?: string;
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redacted sync debug export */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        ok: true;
+                        generatedAt: string;
+                        partitionId: string;
+                        limits: {
+                            commits: number;
+                            requestEvents: number;
+                        };
+                        truncated: {
+                            commits: boolean;
+                            requestEvents: boolean;
+                        };
+                        commits: {
+                            commitSeq: number;
+                            actorId: string;
+                            clientId: string;
+                            clientCommitId: string;
+                            createdAt: string;
+                            changeCount: number;
+                            affectedTables: string[];
+                            changes: {
+                                changeId: number;
+                                table: string;
+                                rowId: string;
+                                /** @enum {string} */
+                                op: "upsert" | "delete";
+                                rowVersion: number | null;
+                                fields: string[];
+                                scopeFields: string[];
+                                /** @enum {string} */
+                                changeKind: "app_row" | "delete" | "blob_reference" | "encrypted_field_envelope" | "encrypted_crdt_update" | "encrypted_crdt_checkpoint";
+                                sensitiveFields: string[];
+                                redaction: {
+                                    /** @constant */
+                                    payload: "omitted";
+                                    /** @constant */
+                                    reason: "audit_redacted_by_default";
+                                };
+                            }[];
+                        }[];
+                        requestEvents: {
+                            eventId: number;
+                            partitionId: string;
+                            requestId: string;
+                            traceId: string | null;
+                            spanId: string | null;
+                            /** @enum {string} */
+                            eventType: "sync" | "push" | "pull";
+                            /** @enum {string} */
+                            syncPath: "http-combined" | "ws-push";
+                            /** @enum {string} */
+                            transportPath: "direct" | "relay";
+                            actorId: string;
+                            clientId: string;
+                            statusCode: number;
+                            outcome: string;
+                            responseStatus: string;
+                            errorCode: string | null;
+                            durationMs: number;
+                            commitSeq: number | null;
+                            operationCount: number | null;
+                            rowCount: number | null;
+                            subscriptionCount: number | null;
+                            scopesSummary: {
+                                [key: string]: string | string[];
+                            } | null;
+                            tables: string[];
+                            createdAt: string;
+                        }[];
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -693,8 +980,17 @@ export interface operations {
                             /** @enum {string} */
                             op: "upsert" | "delete";
                             rowVersion: number | null;
-                            rowJson: unknown | null;
-                            scopes: unknown;
+                            fields: string[];
+                            scopeFields: string[];
+                            /** @enum {string} */
+                            changeKind: "app_row" | "delete" | "blob_reference" | "encrypted_field_envelope" | "encrypted_crdt_update" | "encrypted_crdt_checkpoint";
+                            sensitiveFields: string[];
+                            redaction: {
+                                /** @constant */
+                                payload: "omitted";
+                                /** @constant */
+                                reason: "audit_redacted_by_default";
+                            };
                         }[];
                     };
                 };
@@ -709,6 +1005,14 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -722,6 +1026,113 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getSyncAuditRowsByTableByRowId: {
+        parameters: {
+            query?: {
+                limit?: number;
+                beforeCommitSeq?: number;
+                afterCommitSeq?: number;
+            };
+            header?: never;
+            path: {
+                table: string;
+                rowId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Scoped row audit history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @constant */
+                        ok: true;
+                        table: string;
+                        rowId: string;
+                        history: {
+                            commitSeq: number;
+                            actorId: string;
+                            clientId: string;
+                            clientCommitId: string;
+                            createdAt: string;
+                            changeId: number;
+                            table: string;
+                            rowId: string;
+                            /** @enum {string} */
+                            op: "upsert" | "delete";
+                            rowVersion: number | null;
+                            fields: string[];
+                            scopeFields: string[];
+                            /** @enum {string} */
+                            changeKind: "app_row" | "delete" | "blob_reference" | "encrypted_field_envelope" | "encrypted_crdt_update" | "encrypted_crdt_checkpoint";
+                            sensitiveFields: string[];
+                            redaction: {
+                                /** @constant */
+                                payload: "omitted";
+                                /** @constant */
+                                reason: "audit_redacted_by_default";
+                            };
+                        }[];
+                        nextCursor: number | null;
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Row history not found in the authenticated scopes */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -734,49 +1145,10 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
-                    clientId: string;
-                    push?: {
-                        commits: {
-                            clientCommitId: string;
-                            operations: {
-                                table: string;
-                                row_id: string;
-                                /** @enum {string} */
-                                op: "upsert" | "delete";
-                                payload: {
-                                    [key: string]: unknown;
-                                } | null;
-                                base_version?: number | null;
-                            }[];
-                            schemaVersion: number;
-                        }[];
-                    };
-                    pull?: {
-                        limitCommits: number;
-                        limitSnapshotRows?: number;
-                        maxSnapshotPages?: number;
-                        dedupeRows?: boolean;
-                        subscriptions: {
-                            id: string;
-                            table: string;
-                            scopes: {
-                                [key: string]: string | string[];
-                            };
-                            params?: {
-                                [key: string]: unknown;
-                            };
-                            cursor: number;
-                            bootstrapState?: {
-                                asOfCommitSeq: number;
-                                tables: string[];
-                                tableIndex: number;
-                                rowCursor: string | null;
-                            } | null;
-                        }[];
-                    };
+                    [key: string]: unknown;
                 };
             };
         };
@@ -790,6 +1162,8 @@ export interface operations {
                     "application/json": {
                         /** @constant */
                         ok: true;
+                        requiredSchemaVersion?: number;
+                        latestSchemaVersion?: number;
                         push?: {
                             /** @constant */
                             ok: true;
@@ -808,6 +1182,7 @@ export interface operations {
                                     /** @constant */
                                     status: "conflict";
                                     message: string;
+                                    code?: string;
                                     server_version: number;
                                     server_row: unknown;
                                 } | {
@@ -839,6 +1214,12 @@ export interface operations {
                                     rowCursor: string | null;
                                 } | null;
                                 nextCursor: number;
+                                integrity?: {
+                                    partitionId: string;
+                                    previousChainRoot: string;
+                                    commitChainRoot: string;
+                                    commitSeq: number;
+                                };
                                 commits: {
                                     commitSeq: number;
                                     createdAt: string;
@@ -862,17 +1243,82 @@ export interface operations {
                                         id: string;
                                         byteLength: number;
                                         sha256: string;
-                                        /** @constant */
-                                        encoding: "json-row-frame-v1";
+                                        /** @enum {string} */
+                                        encoding: "binary-table-v1";
                                         /** @constant */
                                         compression: "gzip";
                                     }[];
+                                    manifest?: {
+                                        /** @constant */
+                                        version: 1;
+                                        digest: string;
+                                        table: string;
+                                        asOfCommitSeq: number;
+                                        scopeDigest: string;
+                                        rowCursor: string | null;
+                                        rowLimit: number;
+                                        nextRowCursor: string | null;
+                                        isFirstPage: boolean;
+                                        isLastPage: boolean;
+                                        chunks: {
+                                            id: string;
+                                            byteLength: number;
+                                            sha256: string;
+                                            /** @enum {string} */
+                                            encoding: "binary-table-v1";
+                                            /** @constant */
+                                            compression: "gzip";
+                                        }[];
+                                    };
+                                    artifacts?: {
+                                        id: string;
+                                        byteLength: number;
+                                        sha256: string;
+                                        manifestDigest: string;
+                                        /** @constant */
+                                        artifactKind: "sqlite-snapshot-v1";
+                                        compression: "none" | "gzip";
+                                        rowCount: number;
+                                        nextRowCursor: string | null;
+                                        isFirstPage: boolean;
+                                        isLastPage: boolean;
+                                        manifest: {
+                                            /** @constant */
+                                            version: 1;
+                                            /** @constant */
+                                            artifactKind: "sqlite-snapshot-v1";
+                                            digest: string;
+                                            partitionId: string;
+                                            subscriptionId: string;
+                                            table: string;
+                                            schemaVersion: string;
+                                            asOfCommitSeq: number;
+                                            scopeDigest: string;
+                                            rowCursor: string | null;
+                                            rowLimit: number;
+                                            rowCount: number;
+                                            nextRowCursor: string | null;
+                                            isFirstPage: boolean;
+                                            isLastPage: boolean;
+                                            compression: "none" | "gzip";
+                                            byteLength: number;
+                                            sha256: string;
+                                            featureSet: string[];
+                                        };
+                                    }[];
                                     isFirstPage: boolean;
                                     isLastPage: boolean;
+                                    bootstrapStateAfter?: {
+                                        asOfCommitSeq: number;
+                                        tables: string[];
+                                        tableIndex: number;
+                                        rowCursor: string | null;
+                                    } | null;
                                 }[];
                             }[];
                         };
                     };
+                    "application/vnd.syncular.sync-pack.v1": string;
                 };
             };
             /** @description Invalid request */
@@ -885,6 +1331,14 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -898,6 +1352,14 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -942,6 +1404,14 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -955,6 +1425,14 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -968,6 +1446,108 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getSyncSnapshotArtifactsByArtifactId: {
+        parameters: {
+            query?: {
+                scopes?: string;
+            };
+            header?: never;
+            path: {
+                artifactId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Scoped snapshot artifact bytes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/octet-stream": string;
+                };
+            };
+            /** @description Not modified (cached) */
+            304: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Forbidden */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -999,6 +1579,14 @@ export interface operations {
                         activeClientCount: number;
                         minActiveClientCursor: number | null;
                         maxActiveClientCursor: number | null;
+                        snapshotChunkCount: number;
+                        snapshotChunkBytes: number;
+                        expiredSnapshotChunkCount: number;
+                        expiredSnapshotChunkBytes: number;
+                        snapshotArtifactCount: number;
+                        snapshotArtifactBytes: number;
+                        expiredSnapshotArtifactCount: number;
+                        expiredSnapshotArtifactBytes: number;
                     };
                 };
             };
@@ -1011,6 +1599,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1059,6 +1656,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1107,6 +1713,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1119,11 +1734,12 @@ export interface operations {
                 offset?: number;
                 partitionId?: string;
                 view?: "all" | "commits" | "events";
-                eventType?: "push" | "pull";
+                eventType?: "sync" | "push" | "pull";
                 actorId?: string;
                 clientId?: string;
                 requestId?: string;
                 traceId?: string;
+                syncAttemptId?: string;
                 table?: string;
                 outcome?: string;
                 search?: string;
@@ -1163,7 +1779,7 @@ export interface operations {
                                 traceId: string | null;
                                 spanId: string | null;
                                 /** @enum {string} */
-                                eventType: "push" | "pull";
+                                eventType: "sync" | "push" | "pull";
                                 /** @enum {string} */
                                 syncPath: "http-combined" | "ws-push";
                                 /** @enum {string} */
@@ -1182,6 +1798,22 @@ export interface operations {
                                 scopesSummary: {
                                     [key: string]: string | string[];
                                 } | null;
+                                responseSummary: ({
+                                    subscriptionCount?: number;
+                                    activeSubscriptionCount?: number;
+                                    revokedSubscriptionCount?: number;
+                                    bootstrapSubscriptionCount?: number;
+                                    commitCount?: number;
+                                    changeCount?: number;
+                                    snapshotPageCount?: number;
+                                    snapshotInlineRowCount?: number;
+                                    snapshotChunkCount?: number;
+                                    snapshotChunkBytes?: number;
+                                    snapshotArtifactCount?: number;
+                                    snapshotArtifactBytes?: number;
+                                } & {
+                                    [key: string]: unknown;
+                                }) | null;
                                 tables: string[];
                                 errorMessage: string | null;
                                 payloadRef: string | null;
@@ -1203,6 +1835,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1252,6 +1893,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1290,10 +1940,17 @@ export interface operations {
                             rowId: string;
                             /** @enum {string} */
                             op: "upsert" | "delete";
-                            rowJson: unknown | null;
                             rowVersion: number | null;
-                            scopes: {
-                                [key: string]: unknown;
+                            fields: string[];
+                            scopeFields: string[];
+                            /** @enum {string} */
+                            changeKind: "app_row" | "delete" | "blob_reference" | "encrypted_field_envelope" | "encrypted_crdt_update" | "encrypted_crdt_checkpoint";
+                            sensitiveFields: string[];
+                            redaction: {
+                                /** @constant */
+                                payload: "omitted";
+                                /** @constant */
+                                reason: "audit_redacted_by_default";
                             };
                         }[];
                     };
@@ -1308,6 +1965,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1320,6 +1986,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1332,6 +2007,515 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleRowHistoryByTableByRowId: {
+        parameters: {
+            query?: {
+                partitionId?: string;
+                limit?: number;
+                beforeCommitSeq?: number;
+                afterCommitSeq?: number;
+            };
+            header?: never;
+            path: {
+                table: string;
+                rowId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redacted row history with request-event links */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        table: string;
+                        rowId: string;
+                        partitionId: string;
+                        history: {
+                            commitSeq: number;
+                            actorId: string;
+                            clientId: string;
+                            clientCommitId: string;
+                            createdAt: string;
+                            changeId: number;
+                            table: string;
+                            rowId: string;
+                            /** @enum {string} */
+                            op: "upsert" | "delete";
+                            rowVersion: number | null;
+                            fields: string[];
+                            scopeFields: string[];
+                            /** @enum {string} */
+                            changeKind: "app_row" | "delete" | "blob_reference" | "encrypted_field_envelope" | "encrypted_crdt_update" | "encrypted_crdt_checkpoint";
+                            sensitiveFields: string[];
+                            redaction: {
+                                /** @constant */
+                                payload: "omitted";
+                                /** @constant */
+                                reason: "audit_redacted_by_default";
+                            };
+                            requestEventIds: number[];
+                            requestIds: string[];
+                            traceIds: string[];
+                        }[];
+                        nextCursor: number | null;
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleRowInvestigationByTableByRowId: {
+        parameters: {
+            query?: {
+                partitionId?: string;
+                limit?: number;
+                beforeCommitSeq?: number;
+                afterCommitSeq?: number;
+                clientId?: string;
+            };
+            header?: never;
+            path: {
+                table: string;
+                rowId: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redacted row investigation with client/event hints */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        table: string;
+                        rowId: string;
+                        partitionId: string;
+                        clientId: string | null;
+                        rowKnown: boolean;
+                        latestCommitSeq: number | null;
+                        latestOp: ("upsert" | "delete") | null;
+                        client: {
+                            clientId: string;
+                            actorId: string;
+                            cursor: number;
+                            effectiveScopeKeys: string[];
+                            updatedAt: string;
+                            lastRequestAt: string | null;
+                            lastRequestType: ("sync" | "push" | "pull") | null;
+                            lastRequestOutcome: string | null;
+                        } | null;
+                        scopeEligibility: {
+                            /** @enum {string} */
+                            status: "eligible" | "not_eligible" | "unknown" | "no_client";
+                            requiredScopeKeys: string[];
+                            matchedScopeKeys: string[];
+                            missingScopeKeys: string[];
+                        };
+                        subscriptionEvidence: {
+                            /** @enum {string} */
+                            status: "observed" | "revoked" | "not_observed" | "unknown";
+                            matchingEventCount: number;
+                            latestEventId: number | null;
+                            latestRequestId: string | null;
+                            latestEventOutcome: string | null;
+                            latestSubscriptionCount: number | null;
+                            requestedTableObserved: boolean;
+                            observedScopeKeys: string[];
+                        };
+                        requestEvidence: {
+                            matchingEventCount: number;
+                            successEventCount: number;
+                            nonSuccessEventCount: number;
+                            latestEventId: number | null;
+                            latestRequestId: string | null;
+                            latestOutcome: string | null;
+                            latestResponseStatus: string | null;
+                            latestErrorCode: string | null;
+                            latestErrorMessage: string | null;
+                            latestSuccessRequestId: string | null;
+                            latestNonSuccessRequestId: string | null;
+                            latestNonSuccessResponseStatus: string | null;
+                            latestNonSuccessErrorCode: string | null;
+                        };
+                        snapshotEvidence: {
+                            pageCount: number;
+                            inlineRowCount: number;
+                            chunkCount: number;
+                            chunkBytes: number;
+                            artifactCount: number;
+                            artifactBytes: number;
+                        };
+                        realtimeEvidence: {
+                            matchingEventCount: number;
+                            connectedEventCount: number;
+                            pullRequiredEventCount: number;
+                            ackEventCount: number;
+                            rejectedEventCount: number;
+                            errorEventCount: number;
+                            latestEventId: number | null;
+                            latestEventType: string | null;
+                            latestReason: string | null;
+                            latestCursor: number | null;
+                            latestServerCursor: number | null;
+                            latestPullRequiredReason: string | null;
+                        };
+                        history: {
+                            commitSeq: number;
+                            actorId: string;
+                            clientId: string;
+                            clientCommitId: string;
+                            createdAt: string;
+                            changeId: number;
+                            table: string;
+                            rowId: string;
+                            /** @enum {string} */
+                            op: "upsert" | "delete";
+                            rowVersion: number | null;
+                            fields: string[];
+                            scopeFields: string[];
+                            /** @enum {string} */
+                            changeKind: "app_row" | "delete" | "blob_reference" | "encrypted_field_envelope" | "encrypted_crdt_update" | "encrypted_crdt_checkpoint";
+                            sensitiveFields: string[];
+                            redaction: {
+                                /** @constant */
+                                payload: "omitted";
+                                /** @constant */
+                                reason: "audit_redacted_by_default";
+                            };
+                            requestEventIds: number[];
+                            requestIds: string[];
+                            traceIds: string[];
+                        }[];
+                        relevantEvents: {
+                            eventId: number;
+                            partitionId: string;
+                            requestId: string;
+                            traceId: string | null;
+                            spanId: string | null;
+                            /** @enum {string} */
+                            eventType: "sync" | "push" | "pull";
+                            /** @enum {string} */
+                            syncPath: "http-combined" | "ws-push";
+                            /** @enum {string} */
+                            transportPath: "direct" | "relay";
+                            actorId: string;
+                            clientId: string;
+                            statusCode: number;
+                            outcome: string;
+                            responseStatus: string;
+                            errorCode: string | null;
+                            durationMs: number;
+                            commitSeq: number | null;
+                            operationCount: number | null;
+                            rowCount: number | null;
+                            subscriptionCount: number | null;
+                            scopesSummary: {
+                                [key: string]: string | string[];
+                            } | null;
+                            responseSummary: ({
+                                subscriptionCount?: number;
+                                activeSubscriptionCount?: number;
+                                revokedSubscriptionCount?: number;
+                                bootstrapSubscriptionCount?: number;
+                                commitCount?: number;
+                                changeCount?: number;
+                                snapshotPageCount?: number;
+                                snapshotInlineRowCount?: number;
+                                snapshotChunkCount?: number;
+                                snapshotChunkBytes?: number;
+                                snapshotArtifactCount?: number;
+                                snapshotArtifactBytes?: number;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            tables: string[];
+                            errorMessage: string | null;
+                            payloadRef: string | null;
+                            createdAt: string;
+                        }[];
+                        findings: {
+                            /** @enum {string} */
+                            severity: "info" | "warning" | "error";
+                            code: string;
+                            message: string;
+                        }[];
+                        nextCursor: number | null;
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleDebugExport: {
+        parameters: {
+            query?: {
+                partitionId?: string;
+                limitCommits?: number;
+                limitEvents?: number;
+                from?: string;
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Size-bounded redacted debug export */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        generatedAt: string;
+                        partitionId: string;
+                        limits: {
+                            commits: number;
+                            requestEvents: number;
+                        };
+                        truncated: {
+                            commits: boolean;
+                            requestEvents: boolean;
+                        };
+                        commits: {
+                            commitSeq: number;
+                            actorId: string;
+                            clientId: string;
+                            clientCommitId: string;
+                            createdAt: string;
+                            changeCount: number;
+                            affectedTables: string[];
+                            changes: {
+                                changeId: number;
+                                table: string;
+                                rowId: string;
+                                /** @enum {string} */
+                                op: "upsert" | "delete";
+                                rowVersion: number | null;
+                                fields: string[];
+                                scopeFields: string[];
+                                /** @enum {string} */
+                                changeKind: "app_row" | "delete" | "blob_reference" | "encrypted_field_envelope" | "encrypted_crdt_update" | "encrypted_crdt_checkpoint";
+                                sensitiveFields: string[];
+                                redaction: {
+                                    /** @constant */
+                                    payload: "omitted";
+                                    /** @constant */
+                                    reason: "audit_redacted_by_default";
+                                };
+                            }[];
+                        }[];
+                        requestEvents: {
+                            eventId: number;
+                            partitionId: string;
+                            requestId: string;
+                            traceId: string | null;
+                            spanId: string | null;
+                            /** @enum {string} */
+                            eventType: "sync" | "push" | "pull";
+                            /** @enum {string} */
+                            syncPath: "http-combined" | "ws-push";
+                            /** @enum {string} */
+                            transportPath: "direct" | "relay";
+                            actorId: string;
+                            clientId: string;
+                            statusCode: number;
+                            outcome: string;
+                            responseStatus: string;
+                            errorCode: string | null;
+                            durationMs: number;
+                            commitSeq: number | null;
+                            operationCount: number | null;
+                            rowCount: number | null;
+                            subscriptionCount: number | null;
+                            scopesSummary: {
+                                [key: string]: string | string[];
+                            } | null;
+                            responseSummary: ({
+                                subscriptionCount?: number;
+                                activeSubscriptionCount?: number;
+                                revokedSubscriptionCount?: number;
+                                bootstrapSubscriptionCount?: number;
+                                commitCount?: number;
+                                changeCount?: number;
+                                snapshotPageCount?: number;
+                                snapshotInlineRowCount?: number;
+                                snapshotChunkCount?: number;
+                                snapshotChunkBytes?: number;
+                                snapshotArtifactCount?: number;
+                                snapshotArtifactBytes?: number;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            tables: string[];
+                            createdAt: string;
+                        }[];
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1370,8 +2554,11 @@ export interface operations {
                             isRealtimeConnected: boolean;
                             /** @enum {string} */
                             activityState: "active" | "idle" | "stale";
+                            diagnosticFreshnessState: ("active" | "idle" | "stale") | null;
+                            diagnosticHealthMaxSeverity: ("debug" | "info" | "warn" | "error") | null;
+                            diagnosticReceivedAt: string | null;
                             lastRequestAt: string | null;
-                            lastRequestType: ("push" | "pull") | null;
+                            lastRequestType: ("sync" | "push" | "pull") | null;
                             lastRequestOutcome: string | null;
                             effectiveScopes: {
                                 [key: string]: unknown;
@@ -1393,6 +2580,938 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleClientDiagnostics: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                partitionId?: string;
+                clientId?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paginated client diagnostic snapshots */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: {
+                            clientId: string;
+                            actorId: string | null;
+                            partitionId: string;
+                            reportedAt: string;
+                            receivedAt: string;
+                            /** @enum {string} */
+                            freshnessState: "active" | "idle" | "stale";
+                            healthMaxSeverity: ("debug" | "info" | "warn" | "error") | null;
+                            diagnosticCodesSummary: {
+                                code: string;
+                                count: number;
+                                /** @enum {string} */
+                                maxLevel: "debug" | "info" | "warn" | "error";
+                            }[];
+                            queueSummary: {
+                                [key: string]: unknown;
+                            } | null;
+                            timingSummary: {
+                                [key: string]: unknown;
+                            } | null;
+                            redactionSummary: {
+                                [key: string]: unknown;
+                            };
+                            runtime: ({
+                                packageName?: string;
+                                packageVersion?: string;
+                                workerProtocolVersion?: number;
+                                storage?: string;
+                                storageFallback?: {
+                                    from?: string;
+                                    to?: string;
+                                    reason?: string;
+                                } & {
+                                    [key: string]: unknown;
+                                };
+                                workerUrl?: string;
+                                wasmGlueUrl?: string;
+                                wasmUrl?: string;
+                                rust?: {
+                                    crateName?: string;
+                                    crateVersion?: string;
+                                    schemaVersion?: number;
+                                    features?: string[];
+                                } & {
+                                    [key: string]: unknown;
+                                };
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            connection: ({
+                                closed?: boolean;
+                                pendingRequests?: number;
+                                realtime?: string;
+                                storageFallback?: unknown;
+                                lastDiagnostic?: unknown;
+                                lastError?: unknown;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            lifecycle: ({
+                                phase?: string;
+                                realtime?: string;
+                                online?: boolean;
+                                requiresAction?: boolean;
+                                pendingRequests?: number;
+                                bootstrap?: unknown;
+                                outbox?: unknown;
+                                conflicts?: unknown;
+                                blobUploads?: unknown;
+                                lastDiagnostic?: unknown;
+                                lastError?: unknown;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            bootstrap: {
+                                [key: string]: unknown;
+                            } | null;
+                            transportStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            outboxStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            conflictStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            blobUploadStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            subscriptions: ({
+                                id: string;
+                                table: string;
+                                /** @default [] */
+                                scopeKeys: string[];
+                                /** @default 0 */
+                                scopeValueCount: number;
+                                /** @default [] */
+                                paramsKeys: string[];
+                                /** @default 0 */
+                                paramsValueCount: number;
+                                /** @default null */
+                                status: string | null;
+                                /** @default false */
+                                ready: boolean;
+                                phase?: string;
+                                /** @default 0 */
+                                progressPercent: number;
+                                /** @default null */
+                                cursor: (number | string) | null;
+                                /** @default 0 */
+                                bootstrapPhase: number;
+                                /** @default null */
+                                bootstrapState: unknown | null;
+                            } & {
+                                [key: string]: unknown;
+                            })[];
+                            recentDiagnostics: ({
+                                at: number;
+                                /**
+                                 * @default info
+                                 * @enum {string}
+                                 */
+                                level: "debug" | "info" | "warn" | "error";
+                                source: string;
+                                code: string;
+                                message: string;
+                                syncAttemptId?: string;
+                                traceId?: string;
+                                spanId?: string;
+                                clientId?: string;
+                                subscriptionId?: string;
+                                table?: string;
+                                rowId?: string;
+                                cursor?: (number | string) | null;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                            } & {
+                                [key: string]: unknown;
+                            })[];
+                            recentSyncTimings: {
+                                [key: string]: unknown;
+                            }[];
+                        }[];
+                        total: number;
+                        offset: number;
+                        limit: number;
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    postConsoleClientDiagnostics: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    clientId: string;
+                    actorId?: string;
+                    /** @default default */
+                    partitionId?: string;
+                    lifecycle?: {
+                        phase?: string;
+                        realtime?: string;
+                        online?: boolean;
+                        requiresAction?: boolean;
+                        pendingRequests?: number;
+                        bootstrap?: unknown;
+                        outbox?: unknown;
+                        conflicts?: unknown;
+                        blobUploads?: unknown;
+                        lastDiagnostic?: unknown;
+                        lastError?: unknown;
+                    } & {
+                        [key: string]: unknown;
+                    };
+                    snapshot: {
+                        generatedAt?: number;
+                        runtime?: {
+                            packageName?: string;
+                            packageVersion?: string;
+                            workerProtocolVersion?: number;
+                            storage?: string;
+                            storageFallback?: {
+                                from?: string;
+                                to?: string;
+                                reason?: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                            workerUrl?: string;
+                            wasmGlueUrl?: string;
+                            wasmUrl?: string;
+                            rust?: {
+                                crateName?: string;
+                                crateVersion?: string;
+                                schemaVersion?: number;
+                                features?: string[];
+                            } & {
+                                [key: string]: unknown;
+                            };
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        connection?: {
+                            closed?: boolean;
+                            pendingRequests?: number;
+                            realtime?: string;
+                            storageFallback?: unknown;
+                            lastDiagnostic?: unknown;
+                            lastError?: unknown;
+                        } & {
+                            [key: string]: unknown;
+                        };
+                        /** @default [] */
+                        subscriptions?: ({
+                            id: string;
+                            table: string;
+                            /** @default [] */
+                            scopeKeys?: string[];
+                            /** @default 0 */
+                            scopeValueCount?: number;
+                            /** @default [] */
+                            paramsKeys?: string[];
+                            /** @default 0 */
+                            paramsValueCount?: number;
+                            /** @default null */
+                            status?: string | null;
+                            /** @default false */
+                            ready?: boolean;
+                            phase?: string;
+                            /** @default 0 */
+                            progressPercent?: number;
+                            /** @default null */
+                            cursor?: (number | string) | null;
+                            /** @default 0 */
+                            bootstrapPhase?: number;
+                            /** @default null */
+                            bootstrapState?: unknown | null;
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        /** @default [] */
+                        recentDiagnostics?: ({
+                            at: number;
+                            /**
+                             * @default info
+                             * @enum {string}
+                             */
+                            level: "debug" | "info" | "warn" | "error";
+                            source: string;
+                            code: string;
+                            message: string;
+                            syncAttemptId?: string;
+                            traceId?: string;
+                            spanId?: string;
+                            clientId?: string;
+                            subscriptionId?: string;
+                            table?: string;
+                            rowId?: string;
+                            cursor?: (number | string) | null;
+                            details?: {
+                                [key: string]: unknown;
+                            };
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        /** @default [] */
+                        recentSyncTimings?: {
+                            [key: string]: unknown;
+                        }[];
+                        bootstrap?: {
+                            [key: string]: unknown;
+                        };
+                        transportStats?: {
+                            [key: string]: unknown;
+                        };
+                        outboxStats?: {
+                            [key: string]: unknown;
+                        };
+                        conflictStats?: {
+                            [key: string]: unknown;
+                        };
+                        blobUploadStats?: {
+                            [key: string]: unknown;
+                        };
+                    } & {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+        responses: {
+            /** @description Accepted client diagnostic snapshot */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        clientId: string;
+                        actorId: string | null;
+                        partitionId: string;
+                        reportedAt: string;
+                        receivedAt: string;
+                        /** @enum {string} */
+                        freshnessState: "active" | "idle" | "stale";
+                        healthMaxSeverity: ("debug" | "info" | "warn" | "error") | null;
+                        diagnosticCodesSummary: {
+                            code: string;
+                            count: number;
+                            /** @enum {string} */
+                            maxLevel: "debug" | "info" | "warn" | "error";
+                        }[];
+                        queueSummary: {
+                            [key: string]: unknown;
+                        } | null;
+                        timingSummary: {
+                            [key: string]: unknown;
+                        } | null;
+                        redactionSummary: {
+                            [key: string]: unknown;
+                        };
+                        runtime: ({
+                            packageName?: string;
+                            packageVersion?: string;
+                            workerProtocolVersion?: number;
+                            storage?: string;
+                            storageFallback?: {
+                                from?: string;
+                                to?: string;
+                                reason?: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                            workerUrl?: string;
+                            wasmGlueUrl?: string;
+                            wasmUrl?: string;
+                            rust?: {
+                                crateName?: string;
+                                crateVersion?: string;
+                                schemaVersion?: number;
+                                features?: string[];
+                            } & {
+                                [key: string]: unknown;
+                            };
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
+                        connection: ({
+                            closed?: boolean;
+                            pendingRequests?: number;
+                            realtime?: string;
+                            storageFallback?: unknown;
+                            lastDiagnostic?: unknown;
+                            lastError?: unknown;
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
+                        lifecycle: ({
+                            phase?: string;
+                            realtime?: string;
+                            online?: boolean;
+                            requiresAction?: boolean;
+                            pendingRequests?: number;
+                            bootstrap?: unknown;
+                            outbox?: unknown;
+                            conflicts?: unknown;
+                            blobUploads?: unknown;
+                            lastDiagnostic?: unknown;
+                            lastError?: unknown;
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
+                        bootstrap: {
+                            [key: string]: unknown;
+                        } | null;
+                        transportStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        outboxStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        conflictStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        blobUploadStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        subscriptions: ({
+                            id: string;
+                            table: string;
+                            /** @default [] */
+                            scopeKeys: string[];
+                            /** @default 0 */
+                            scopeValueCount: number;
+                            /** @default [] */
+                            paramsKeys: string[];
+                            /** @default 0 */
+                            paramsValueCount: number;
+                            /** @default null */
+                            status: string | null;
+                            /** @default false */
+                            ready: boolean;
+                            phase?: string;
+                            /** @default 0 */
+                            progressPercent: number;
+                            /** @default null */
+                            cursor: (number | string) | null;
+                            /** @default 0 */
+                            bootstrapPhase: number;
+                            /** @default null */
+                            bootstrapState: unknown | null;
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        recentDiagnostics: ({
+                            at: number;
+                            /**
+                             * @default info
+                             * @enum {string}
+                             */
+                            level: "debug" | "info" | "warn" | "error";
+                            source: string;
+                            code: string;
+                            message: string;
+                            syncAttemptId?: string;
+                            traceId?: string;
+                            spanId?: string;
+                            clientId?: string;
+                            subscriptionId?: string;
+                            table?: string;
+                            rowId?: string;
+                            cursor?: (number | string) | null;
+                            details?: {
+                                [key: string]: unknown;
+                            };
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        recentSyncTimings: {
+                            [key: string]: unknown;
+                        }[];
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleClientDiagnosticsByIdHistory: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+                partitionId?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Paginated client diagnostic snapshot history */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        items: {
+                            clientId: string;
+                            actorId: string | null;
+                            partitionId: string;
+                            reportedAt: string;
+                            receivedAt: string;
+                            /** @enum {string} */
+                            freshnessState: "active" | "idle" | "stale";
+                            healthMaxSeverity: ("debug" | "info" | "warn" | "error") | null;
+                            diagnosticCodesSummary: {
+                                code: string;
+                                count: number;
+                                /** @enum {string} */
+                                maxLevel: "debug" | "info" | "warn" | "error";
+                            }[];
+                            queueSummary: {
+                                [key: string]: unknown;
+                            } | null;
+                            timingSummary: {
+                                [key: string]: unknown;
+                            } | null;
+                            redactionSummary: {
+                                [key: string]: unknown;
+                            };
+                            runtime: ({
+                                packageName?: string;
+                                packageVersion?: string;
+                                workerProtocolVersion?: number;
+                                storage?: string;
+                                storageFallback?: {
+                                    from?: string;
+                                    to?: string;
+                                    reason?: string;
+                                } & {
+                                    [key: string]: unknown;
+                                };
+                                workerUrl?: string;
+                                wasmGlueUrl?: string;
+                                wasmUrl?: string;
+                                rust?: {
+                                    crateName?: string;
+                                    crateVersion?: string;
+                                    schemaVersion?: number;
+                                    features?: string[];
+                                } & {
+                                    [key: string]: unknown;
+                                };
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            connection: ({
+                                closed?: boolean;
+                                pendingRequests?: number;
+                                realtime?: string;
+                                storageFallback?: unknown;
+                                lastDiagnostic?: unknown;
+                                lastError?: unknown;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            lifecycle: ({
+                                phase?: string;
+                                realtime?: string;
+                                online?: boolean;
+                                requiresAction?: boolean;
+                                pendingRequests?: number;
+                                bootstrap?: unknown;
+                                outbox?: unknown;
+                                conflicts?: unknown;
+                                blobUploads?: unknown;
+                                lastDiagnostic?: unknown;
+                                lastError?: unknown;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
+                            bootstrap: {
+                                [key: string]: unknown;
+                            } | null;
+                            transportStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            outboxStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            conflictStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            blobUploadStats: {
+                                [key: string]: unknown;
+                            } | null;
+                            subscriptions: ({
+                                id: string;
+                                table: string;
+                                /** @default [] */
+                                scopeKeys: string[];
+                                /** @default 0 */
+                                scopeValueCount: number;
+                                /** @default [] */
+                                paramsKeys: string[];
+                                /** @default 0 */
+                                paramsValueCount: number;
+                                /** @default null */
+                                status: string | null;
+                                /** @default false */
+                                ready: boolean;
+                                phase?: string;
+                                /** @default 0 */
+                                progressPercent: number;
+                                /** @default null */
+                                cursor: (number | string) | null;
+                                /** @default 0 */
+                                bootstrapPhase: number;
+                                /** @default null */
+                                bootstrapState: unknown | null;
+                            } & {
+                                [key: string]: unknown;
+                            })[];
+                            recentDiagnostics: ({
+                                at: number;
+                                /**
+                                 * @default info
+                                 * @enum {string}
+                                 */
+                                level: "debug" | "info" | "warn" | "error";
+                                source: string;
+                                code: string;
+                                message: string;
+                                syncAttemptId?: string;
+                                traceId?: string;
+                                spanId?: string;
+                                clientId?: string;
+                                subscriptionId?: string;
+                                table?: string;
+                                rowId?: string;
+                                cursor?: (number | string) | null;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                            } & {
+                                [key: string]: unknown;
+                            })[];
+                            recentSyncTimings: {
+                                [key: string]: unknown;
+                            }[];
+                        }[];
+                        total: number;
+                        offset: number;
+                        limit: number;
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleClientDiagnosticsById: {
+        parameters: {
+            query?: {
+                partitionId?: string;
+            };
+            header?: never;
+            path: {
+                id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Client diagnostic snapshot */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        clientId: string;
+                        actorId: string | null;
+                        partitionId: string;
+                        reportedAt: string;
+                        receivedAt: string;
+                        /** @enum {string} */
+                        freshnessState: "active" | "idle" | "stale";
+                        healthMaxSeverity: ("debug" | "info" | "warn" | "error") | null;
+                        diagnosticCodesSummary: {
+                            code: string;
+                            count: number;
+                            /** @enum {string} */
+                            maxLevel: "debug" | "info" | "warn" | "error";
+                        }[];
+                        queueSummary: {
+                            [key: string]: unknown;
+                        } | null;
+                        timingSummary: {
+                            [key: string]: unknown;
+                        } | null;
+                        redactionSummary: {
+                            [key: string]: unknown;
+                        };
+                        runtime: ({
+                            packageName?: string;
+                            packageVersion?: string;
+                            workerProtocolVersion?: number;
+                            storage?: string;
+                            storageFallback?: {
+                                from?: string;
+                                to?: string;
+                                reason?: string;
+                            } & {
+                                [key: string]: unknown;
+                            };
+                            workerUrl?: string;
+                            wasmGlueUrl?: string;
+                            wasmUrl?: string;
+                            rust?: {
+                                crateName?: string;
+                                crateVersion?: string;
+                                schemaVersion?: number;
+                                features?: string[];
+                            } & {
+                                [key: string]: unknown;
+                            };
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
+                        connection: ({
+                            closed?: boolean;
+                            pendingRequests?: number;
+                            realtime?: string;
+                            storageFallback?: unknown;
+                            lastDiagnostic?: unknown;
+                            lastError?: unknown;
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
+                        lifecycle: ({
+                            phase?: string;
+                            realtime?: string;
+                            online?: boolean;
+                            requiresAction?: boolean;
+                            pendingRequests?: number;
+                            bootstrap?: unknown;
+                            outbox?: unknown;
+                            conflicts?: unknown;
+                            blobUploads?: unknown;
+                            lastDiagnostic?: unknown;
+                            lastError?: unknown;
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
+                        bootstrap: {
+                            [key: string]: unknown;
+                        } | null;
+                        transportStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        outboxStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        conflictStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        blobUploadStats: {
+                            [key: string]: unknown;
+                        } | null;
+                        subscriptions: ({
+                            id: string;
+                            table: string;
+                            /** @default [] */
+                            scopeKeys: string[];
+                            /** @default 0 */
+                            scopeValueCount: number;
+                            /** @default [] */
+                            paramsKeys: string[];
+                            /** @default 0 */
+                            paramsValueCount: number;
+                            /** @default null */
+                            status: string | null;
+                            /** @default false */
+                            ready: boolean;
+                            phase?: string;
+                            /** @default 0 */
+                            progressPercent: number;
+                            /** @default null */
+                            cursor: (number | string) | null;
+                            /** @default 0 */
+                            bootstrapPhase: number;
+                            /** @default null */
+                            bootstrapState: unknown | null;
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        recentDiagnostics: ({
+                            at: number;
+                            /**
+                             * @default info
+                             * @enum {string}
+                             */
+                            level: "debug" | "info" | "warn" | "error";
+                            source: string;
+                            code: string;
+                            message: string;
+                            syncAttemptId?: string;
+                            traceId?: string;
+                            spanId?: string;
+                            clientId?: string;
+                            subscriptionId?: string;
+                            table?: string;
+                            rowId?: string;
+                            cursor?: (number | string) | null;
+                            details?: {
+                                [key: string]: unknown;
+                            };
+                        } & {
+                            [key: string]: unknown;
+                        })[];
+                        recentSyncTimings: {
+                            [key: string]: unknown;
+                        }[];
+                    };
+                };
+            };
+            /** @description Diagnostic snapshot not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1431,6 +3550,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1483,6 +3611,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1518,6 +3655,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1552,6 +3698,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1586,6 +3741,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1598,7 +3762,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
                     tables: string[];
@@ -1629,6 +3793,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1641,6 +3814,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1679,6 +3861,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1691,6 +3882,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1702,11 +3902,12 @@ export interface operations {
                 limit?: number;
                 offset?: number;
                 partitionId?: string;
-                eventType?: "push" | "pull";
+                eventType?: "sync" | "push" | "pull";
                 actorId?: string;
                 clientId?: string;
                 requestId?: string;
                 traceId?: string;
+                syncAttemptId?: string;
                 outcome?: string;
             };
             header?: never;
@@ -1729,7 +3930,7 @@ export interface operations {
                             traceId: string | null;
                             spanId: string | null;
                             /** @enum {string} */
-                            eventType: "push" | "pull";
+                            eventType: "sync" | "push" | "pull";
                             /** @enum {string} */
                             syncPath: "http-combined" | "ws-push";
                             /** @enum {string} */
@@ -1748,6 +3949,22 @@ export interface operations {
                             scopesSummary: {
                                 [key: string]: string | string[];
                             } | null;
+                            responseSummary: ({
+                                subscriptionCount?: number;
+                                activeSubscriptionCount?: number;
+                                revokedSubscriptionCount?: number;
+                                bootstrapSubscriptionCount?: number;
+                                commitCount?: number;
+                                changeCount?: number;
+                                snapshotPageCount?: number;
+                                snapshotInlineRowCount?: number;
+                                snapshotChunkCount?: number;
+                                snapshotChunkBytes?: number;
+                                snapshotArtifactCount?: number;
+                                snapshotArtifactBytes?: number;
+                            } & {
+                                [key: string]: unknown;
+                            }) | null;
                             tables: string[];
                             errorMessage: string | null;
                             payloadRef: string | null;
@@ -1768,6 +3985,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1802,6 +4028,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1833,7 +4068,7 @@ export interface operations {
                         traceId: string | null;
                         spanId: string | null;
                         /** @enum {string} */
-                        eventType: "push" | "pull";
+                        eventType: "sync" | "push" | "pull";
                         /** @enum {string} */
                         syncPath: "http-combined" | "ws-push";
                         /** @enum {string} */
@@ -1852,6 +4087,22 @@ export interface operations {
                         scopesSummary: {
                             [key: string]: string | string[];
                         } | null;
+                        responseSummary: ({
+                            subscriptionCount?: number;
+                            activeSubscriptionCount?: number;
+                            revokedSubscriptionCount?: number;
+                            bootstrapSubscriptionCount?: number;
+                            commitCount?: number;
+                            changeCount?: number;
+                            snapshotPageCount?: number;
+                            snapshotInlineRowCount?: number;
+                            snapshotChunkCount?: number;
+                            snapshotChunkBytes?: number;
+                            snapshotArtifactCount?: number;
+                            snapshotArtifactBytes?: number;
+                        } & {
+                            [key: string]: unknown;
+                        }) | null;
                         tables: string[];
                         errorMessage: string | null;
                         payloadRef: string | null;
@@ -1868,6 +4119,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1880,6 +4140,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1892,6 +4161,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1934,6 +4212,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1946,6 +4233,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1958,6 +4254,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -1980,6 +4285,10 @@ export interface operations {
                 content: {
                     "application/json": {
                         deletedCount: number;
+                        requestEventsDeleted: number;
+                        operationEventsDeleted: number;
+                        realtimeEventsDeleted: number;
+                        payloadDeletedCount: number;
                     };
                 };
             };
@@ -1992,6 +4301,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2047,6 +4365,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2059,7 +4386,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
                     name: string;
@@ -2105,6 +4432,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2117,6 +4453,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2163,6 +4508,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2175,6 +4529,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2211,6 +4574,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2223,7 +4595,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
                     keyIds: string[];
@@ -2257,6 +4629,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2269,6 +4650,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2318,6 +4708,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2330,6 +4729,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2379,6 +4787,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2391,6 +4808,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2438,6 +4864,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2470,6 +4905,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2482,6 +4926,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2518,6 +4971,15 @@ export interface operations {
                     "application/json": {
                         error: string;
                         message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2530,7 +4992,7 @@ export interface operations {
             path?: never;
             cookie?: never;
         };
-        requestBody?: {
+        requestBody: {
             content: {
                 "application/json": {
                     hash: string;
@@ -2570,6 +5032,14 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2583,6 +5053,14 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2616,6 +5094,7 @@ export interface operations {
                             uploadComplete: boolean;
                         };
                         error?: string;
+                        code?: string;
                     };
                 };
             };
@@ -2629,6 +5108,14 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2642,6 +5129,14 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2688,6 +5183,14 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2701,6 +5204,14 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };
@@ -2714,6 +5225,14 @@ export interface operations {
                         error: string;
                         message?: string;
                         code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };

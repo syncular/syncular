@@ -41,7 +41,7 @@ await ensureSyncSchema(db, dialect);
 
 ```ts
 import { ensureSyncSchema } from 'syncular/server';
-import { createNeonServerDialect } from 'syncular/server-dialect-neon';
+import { createNeonServerDialect } from 'syncular/server-dialect-postgres';
 
 const dialect = createNeonServerDialect();
 await ensureSyncSchema(db, dialect);

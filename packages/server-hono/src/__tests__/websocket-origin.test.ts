@@ -28,7 +28,7 @@ describe('websocket origin policy', () => {
     ).toBe(true);
   });
 
-  it('requires an exact match when allowedOrigins is configured', () => {
+  it('requires an exact match for browser origins when allowedOrigins is configured', () => {
     expect(
       isRequestOriginAllowed({
         requestUrl: 'http://localhost/sync/realtime?clientId=client-1',
@@ -44,13 +44,15 @@ describe('websocket origin policy', () => {
         allowedOrigins: ['https://app.syncular.test'],
       })
     ).toBe(false);
+  });
 
+  it('allows origin-less non-browser requests when allowedOrigins is configured', () => {
     expect(
       isRequestOriginAllowed({
         requestUrl: 'http://localhost/sync/realtime?clientId=client-1',
         allowedOrigins: ['https://app.syncular.test'],
       })
-    ).toBe(false);
+    ).toBe(true);
   });
 
   it('supports wildcard ports for loopback origins', () => {

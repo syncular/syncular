@@ -1,0 +1,109 @@
+---
+title: Scopes And Auth
+description: Authenticate actors and resolve the scopes they can sync.
+---
+
+# Scopes And Auth
+
+Syncular clients request subscriptions, but the server decides what those
+requests mean for the current actor. Authentication produces an actor context;
+`resolveScopes` turns that context into the scope values the actor can access.
+
+## Authenticate requests
+
+`createSyncServer` expects a `sync.authenticate` function. Return `null` to
+reject the request, or return an auth object with at least `actorId`.
+
+```typescript
+import type { SyncServerAuth } from '@syncular/server';
+
+interface AppAuth extends SyncServerAuth {
+  workspaceIds: string[];
+  role: 'member' | 'admin';
+}
+
+export async function authenticate(request: Request): Promise<AppAuth | null> {
+  const token = request.headers.get('authorization')?.replace('Bearer ', '');
+  if (!token) return null;
+
+  const session = await verifyToken(token);
+  if (!session) return null;
+
+  return {
+    actorId: session.userId,
+    workspaceIds: session.workspaceIds,
+    role: session.role,
+  };
+}
+```
+
+That object is available as `ctx.auth` in table handlers.
+
+## Resolve allowed scopes
+
+`resolveScopes` must return the scope values the actor is allowed to access at
+request time. The effective subscription is the intersection of client-requested
+scopes and these allowed scopes.
+
+```typescript
+const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks', AppAuth>({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+
+  resolveScopes: async (ctx) => ({
+    user_id: [ctx.actorId],
+    project_id: ctx.auth.workspaceIds,
+  }),
+});
+```
+
+If the intersection is empty, the client subscription is revoked. The client
+runtime removes matching local rows and stops syncing that subscription.
+
+## Keep authorization server-owned
+
+Do not trust client-provided scope values, row fields, or mutation payloads as
+authorization. Use them as requests. The handler should still check current
+server state and membership before returning rows or applying writes.
+
+For push paths, validate the mutation against current auth:
+
+```typescript
+async applyOperation(ctx, op, opIndex) {
+  const projectId = readProjectIdFromPayload(op.payload);
+
+  if (!ctx.auth.workspaceIds.includes(projectId)) {
+    return {
+      result: {
+        opIndex,
+        status: 'rejected',
+        code: 'forbidden',
+        message: 'Actor cannot write this project.',
+      },
+      emittedChanges: [],
+    };
+  }
+
+  // Apply the write and emit the committed change.
+}
+```
+
+Auth leases can help a native client queue offline work with recorded auth
+provenance, but the server still evaluates the current actor and current
+membership before accepting the push.
+
+## Scope shape guidelines
+
+- Use stable IDs, not display names.
+- Model user-owned rows with `user_id`.
+- Model shared data with team, workspace, tenant, or project IDs.
+- Return arrays for multi-membership scopes.
+- Keep scopes coarse enough for efficient pull planning, but specific enough to
+  avoid over-syncing.
+
+## Next steps
+
+- [Scopes](/docs/learn/scopes)
+- [Subscriptions](/docs/learn/subscriptions)
+- [Table Handlers](/docs/server/table-handlers)
+- [Offline Auth Leases](/docs/features/offline-auth-leases)

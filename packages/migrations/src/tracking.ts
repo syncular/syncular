@@ -3,21 +3,7 @@
  */
 
 import { type Kysely, sql } from 'kysely';
-import { LEGACY_SOURCE_MIGRATION_CHECKSUM_ALGORITHM } from './checksum';
 import type { MigrationStateRow } from './types';
-
-function isDuplicateColumnError(error: unknown): boolean {
-  if (!(error instanceof Error)) {
-    return false;
-  }
-
-  const message = error.message.toLowerCase();
-  return (
-    message.includes('duplicate column') ||
-    message.includes('already exists') ||
-    (message.includes('column') && message.includes('exists'))
-  );
-}
 
 /**
  * Ensure the migration tracking table exists.
@@ -35,17 +21,6 @@ export async function ensureTrackingTable<DB>(
     .addColumn('checksum', 'text', (col) => col.notNull())
     .addColumn('checksum_algorithm', 'text', (col) => col.notNull())
     .execute();
-
-  try {
-    await sql`
-      alter table ${sql.table(tableName)}
-      add column checksum_algorithm text not null default ${sql.raw(`'${LEGACY_SOURCE_MIGRATION_CHECKSUM_ALGORITHM}'`)}
-    `.execute(db);
-  } catch (error) {
-    if (!isDuplicateColumnError(error)) {
-      throw error;
-    }
-  }
 }
 
 /**

@@ -1,0 +1,63 @@
+---
+title: Learn
+description: Learn the mental model behind Syncular before you implement or operate it.
+---
+
+# Learn
+
+Use this section to understand how Syncular works before diving into implementation details.
+
+> **You are here:** Learn (mental model and semantics).
+>
+> **If you're implementing:** continue with [Client](/docs/client), [Server](/docs/server), and [Features](/docs/features).
+
+Recommended reading order:
+
+1. [Architecture](/docs/learn/architecture)
+2. [First Sync](/docs/learn/first-sync)
+3. [Scopes](/docs/learn/scopes)
+4. [Subscriptions](/docs/learn/subscriptions)
+5. [Conflict Resolution](/docs/learn/conflict-resolution)
+
+## Core model
+
+<Cards>
+  <Card title="Architecture" href="/docs/learn/architecture">
+    The push/pull lifecycle, bootstrap, commit log, and client/server roles
+  </Card>
+  <Card title="First Sync" href="/docs/learn/first-sync">
+    How snapshots, chunking, and bootstrap behave on a new subscription
+  </Card>
+  <Card title="Commits" href="/docs/learn/commits">
+    The atomic unit of change and why Syncular centers everything on commits
+  </Card>
+</Cards>
+
+## Access and sync semantics
+
+<Cards>
+  <Card title="Scopes" href="/docs/learn/scopes">
+    How authorization is represented, extracted, and enforced
+  </Card>
+  <Card title="Subscriptions" href="/docs/learn/subscriptions">
+    How clients ask for data and how partial sync is shaped
+  </Card>
+  <Card title="Conflicts" href="/docs/learn/conflict-resolution">
+    Version conflicts, merge strategies, and when to surface resolution UI
+  </Card>
+</Cards>
+
+## Language
+
+<Cards>
+  <Card title="Glossary" href="/docs/learn/glossary">
+    Terminology and recurring Syncular concepts
+  </Card>
+</Cards>
+
+## Continue with
+
+- Ready to implement? Go to [Client](/docs/client) and [Server](/docs/server)
+- Want runnable app shapes? Start with [Common Architectures](/docs/features/recipes)
+- Want to test the model under failure and churn? Go to [Testing](/docs/testing)
+- Need exact APIs after learning the model? Use [Reference](/docs/reference)

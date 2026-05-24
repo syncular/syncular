@@ -3,6 +3,8 @@
  */
 
 import type {
+  BinarySnapshotColumn,
+  BinarySnapshotRowsEncoder,
   ScopeValues,
   ScopeValuesFromPatterns,
   ScopeDefinition as SimpleScopeDefinition,
@@ -16,6 +18,8 @@ import {
   type ColumnCodecSource,
   createSingleVariableScopeMetadata,
   createTableColumnCodecsResolver,
+  type SyncularErrorCode,
+  toTableColumnCodecs,
 } from '@syncular/core';
 import type {
   DeleteQueryBuilder,
@@ -30,6 +34,8 @@ import type {
   UpdateResult,
 } from 'kysely';
 import { sql } from 'kysely';
+import { coerceNumber } from '../dialect/helpers';
+import { rowScopesAllowed } from '../helpers/scope-authorization';
 import type { SyncCoreDb } from '../schema';
 import type {
   ApplyOperationResult,
@@ -47,14 +53,10 @@ import type {
  */
 type AuthorizeResult =
   | true
-  | { error: string; code: string; retriable?: boolean };
+  | { error: string; code: SyncularErrorCode; retriable?: boolean };
 
-function classifyConstraintViolationCode(message: string): string {
-  const normalized = message.toLowerCase();
-  if (normalized.includes('not null')) return 'NOT_NULL_CONSTRAINT';
-  if (normalized.includes('unique')) return 'UNIQUE_CONSTRAINT';
-  if (normalized.includes('foreign key')) return 'FOREIGN_KEY_CONSTRAINT';
-  return 'CONSTRAINT_VIOLATION';
+function classifyConstraintViolationCode(_message: string): SyncularErrorCode {
+  return 'sync.constraint_violation';
 }
 
 function isConstraintViolationError(message: string): boolean {
@@ -73,6 +75,37 @@ function isMissingColumnReferenceError(message: string): boolean {
     normalized.includes('no such column') ||
     (normalized.includes('column') && normalized.includes('does not exist'))
   );
+}
+
+function readSafeVersionColumn(
+  row: Record<string, unknown>,
+  versionColumn: string,
+  defaultValue: number
+): number {
+  const value = row[versionColumn];
+  if (value === null || value === undefined) return defaultValue;
+  const version = coerceNumber(value);
+  if (version === null || !Number.isSafeInteger(version)) {
+    throw new Error(`Version column "${versionColumn}" must be a safe integer`);
+  }
+  return version;
+}
+
+function normalizeOutboundVersionColumn<Row>(
+  row: Row,
+  versionColumn: string,
+  version: number
+): Row {
+  if (row === null || typeof row !== 'object' || Array.isArray(row)) {
+    return row;
+  }
+  if (!Object.hasOwn(row, versionColumn)) {
+    return row;
+  }
+  return {
+    ...(row as Record<string, unknown>),
+    [versionColumn]: version,
+  } as Row;
 }
 
 /**
@@ -119,11 +152,32 @@ export interface CreateServerHandlerOptions<
   snapshotChunkTtlMs?: number;
 
   /**
-   * Maximum uncompressed row-frame bytes to group into a cached snapshot bundle.
-   * Larger values reduce chunk/request overhead for large bootstraps at the
-   * cost of higher transient memory and chunk sizes.
+   * Stable binary snapshot column metadata used by binary bootstrap chunks.
    */
-  snapshotBundleMaxBytes?: number;
+  snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
+
+  /**
+   * Version-aware binary snapshot column metadata. Returning null intentionally
+   * disables fallback to current metadata.
+   */
+  snapshotBinaryColumnsForVersion?: (
+    schemaVersion: number
+  ) => readonly BinarySnapshotColumn[] | null | undefined;
+
+  /**
+   * Optional generated binary snapshot encoder used by binary bootstrap chunks.
+   */
+  snapshotBinaryEncoder?: BinarySnapshotRowsEncoder<
+    Selectable<ClientDB[TableName]>
+  >;
+
+  /**
+   * Version-aware generated binary snapshot encoder. Returning null
+   * intentionally disables fallback to the current encoder.
+   */
+  snapshotBinaryEncoderForVersion?: (
+    schemaVersion: number
+  ) => BinarySnapshotRowsEncoder<Selectable<ClientDB[TableName]>> | null | undefined;
 
   /**
    * Resolve allowed scope values for the current actor.
@@ -266,7 +320,10 @@ export function createServerHandler<
     versionColumn = 'server_version',
     dependsOn,
     snapshotChunkTtlMs,
-    snapshotBundleMaxBytes,
+    snapshotBinaryColumns,
+    snapshotBinaryColumnsForVersion,
+    snapshotBinaryEncoder,
+    snapshotBinaryEncoderForVersion,
     resolveScopes,
     transformInbound,
     transformOutbound,
@@ -287,6 +344,7 @@ export function createServerHandler<
   const { scopePatterns, scopeColumnsByVariable: scopeColumns } =
     createSingleVariableScopeMetadata(scopeDefs);
   const scopeColumnEntries = Object.entries(scopeColumns);
+  const requiredScopeKeys = Object.keys(scopeColumns);
 
   // Default extractScopes from scope columns
   const defaultExtractScopes = (row: Record<string, unknown>): StoredScopes => {
@@ -316,6 +374,69 @@ export function createServerHandler<
     }
     return normalized;
   };
+  const writeScopeCache = new WeakMap<
+    ServerApplyOperationContext<ServerDB, Auth>,
+    Promise<ScopeValues>
+  >();
+
+  const resolveWriteScopes = (
+    ctx: ServerApplyOperationContext<ServerDB, Auth>
+  ): Promise<ScopeValues> => {
+    const cached = writeScopeCache.get(ctx);
+    if (cached) return cached;
+    const loaded = resolveScopesImpl(ctx);
+    writeScopeCache.set(ctx, loaded);
+    return loaded;
+  };
+
+  const authorizeRowScopes = async (
+    ctx: ServerApplyOperationContext<ServerDB, Auth>,
+    row: Record<string, unknown>
+  ): Promise<AuthorizeResult> => {
+    if (requiredScopeKeys.length === 0) return true;
+
+    let allowedScopes: ScopeValues;
+    try {
+      allowedScopes = await resolveWriteScopes(ctx);
+    } catch {
+      return {
+        error: 'Forbidden',
+        code: 'sync.forbidden',
+        retriable: false,
+      };
+    }
+
+    const rowScopes = extractScopesImpl(row);
+    if (
+      rowScopesAllowed({
+        rowScopes,
+        allowedScopes,
+        requiredScopeKeys,
+      })
+    ) {
+      return true;
+    }
+
+    return {
+      error: 'Forbidden',
+      code: 'sync.forbidden',
+      retriable: false,
+    };
+  };
+
+  const rejectionResult = (
+    opIndex: number,
+    rejection: Exclude<AuthorizeResult, true>
+  ): ApplyOperationResult => ({
+    result: {
+      opIndex,
+      status: 'error',
+      error: rejection.error,
+      code: rejection.code,
+      retriable: rejection.retriable ?? false,
+    },
+    emittedChanges: [],
+  });
 
   const applyOutboundTransform = (
     row: Selectable<ServerDB[TableName]>
@@ -410,9 +531,30 @@ export function createServerHandler<
           | undefined)
       : null;
 
-    const outputRows = pageRows.map((r) =>
-      applyOutboundTransform(r as Selectable<ServerDB[TableName]>)
-    );
+    let outputRows: unknown[];
+    if (transformOutbound) {
+      outputRows = pageRows.map((r) =>
+        applyOutboundTransform(r as Selectable<ServerDB[TableName]>)
+      );
+    } else {
+      const firstRow = pageRows[0] as Record<string, unknown> | undefined;
+      const tableCodecs = firstRow
+        ? toTableColumnCodecs(table, codecs, Object.keys(firstRow), {
+            dialect: codecDialect,
+          })
+        : {};
+      if (Object.keys(tableCodecs).length === 0) {
+        outputRows = pageRows;
+      } else {
+        outputRows = pageRows.map((r) =>
+          applyCodecsFromDbRow(
+            r as Record<string, unknown>,
+            tableCodecs,
+            codecDialect
+          )
+        );
+      }
+    }
 
     return {
       rows: outputRows,
@@ -437,8 +579,8 @@ export function createServerHandler<
         result: {
           opIndex,
           status: 'error',
-          error: `UNKNOWN_TABLE:${op.table}`,
-          code: 'UNKNOWN_TABLE',
+          error: `Unknown table: ${op.table}`,
+          code: 'sync.unknown_table',
           retriable: false,
         },
         emittedChanges: [],
@@ -464,6 +606,25 @@ export function createServerHandler<
 
     // Handle delete
     if (op.op === 'delete') {
+      const existingRow = (await (
+        trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+          ServerDB,
+          keyof ServerDB & string,
+          Record<string, unknown>
+        >
+      )
+        .where(ref<string>(primaryKey), '=', op.row_id)
+        .executeTakeFirst()) as Record<string, unknown> | undefined;
+
+      if (!existingRow) {
+        return { result: { opIndex, status: 'applied' }, emittedChanges: [] };
+      }
+
+      const scopeAuth = await authorizeRowScopes(ctx, existingRow);
+      if (scopeAuth !== true) {
+        return rejectionResult(opIndex, scopeAuth);
+      }
+
       const deleted = await (
         trx.deleteFrom(table) as DeleteQueryBuilder<
           ServerDB,
@@ -476,9 +637,8 @@ export function createServerHandler<
         .executeTakeFirst();
 
       const deletedRow = deleted as Record<string, unknown> | undefined;
-      if (!deletedRow) {
+      if (!deletedRow)
         return { result: { opIndex, status: 'applied' }, emittedChanges: [] };
-      }
 
       // Extract scopes from existing row for the delete emission
       const scopes = extractScopesImpl(deletedRow);
@@ -505,6 +665,29 @@ export function createServerHandler<
         ? (rawPayload as Record<string, unknown>)
         : {};
     const payload = applyInboundTransform(payloadRecord, ctx.schemaVersion);
+    const rowForInsertScopeCheck: Record<string, unknown> = {
+      ...payload,
+      [primaryKey]: op.row_id,
+      [versionColumn]: 1,
+    };
+
+    const existingRowBeforeWrite = (await (
+      trx.selectFrom(table).selectAll() as SelectQueryBuilder<
+        ServerDB,
+        keyof ServerDB & string,
+        Record<string, unknown>
+      >
+    )
+      .where(ref<string>(primaryKey), '=', op.row_id)
+      .executeTakeFirst()) as Record<string, unknown> | undefined;
+
+    const rowScopeAuth = await authorizeRowScopes(
+      ctx,
+      existingRowBeforeWrite ?? rowForInsertScopeCheck
+    );
+    if (rowScopeAuth !== true) {
+      return rejectionResult(opIndex, rowScopeAuth);
+    }
 
     let updated: Record<string, unknown> | undefined;
     let constraintError: { message: string; code: string } | null = null;
@@ -586,8 +769,8 @@ export function createServerHandler<
               result: {
                 opIndex,
                 status: 'error',
-                error: 'ROW_NOT_FOUND_FOR_BASE_VERSION',
-                code: 'ROW_MISSING',
+                error: 'Row not found for base version',
+                code: 'sync.row_missing',
                 retriable: false,
               },
               emittedChanges: [],
@@ -595,16 +778,32 @@ export function createServerHandler<
           }
 
           if (!updated && conflictRow) {
-            const existingVersion =
-              (conflictRow[versionColumn] as number | undefined) ?? 0;
+            const conflictScopeAuth = await authorizeRowScopes(
+              ctx,
+              conflictRow
+            );
+            if (conflictScopeAuth !== true) {
+              return rejectionResult(opIndex, conflictScopeAuth);
+            }
+
+            const existingVersion = readSafeVersionColumn(
+              conflictRow,
+              versionColumn,
+              0
+            );
             return {
               result: {
                 opIndex,
                 status: 'conflict',
                 message: `Version conflict: server=${existingVersion}, base=${expectedVersion}`,
+                code: 'sync.version_conflict',
                 server_version: existingVersion,
-                server_row: applyOutboundTransform(
-                  conflictRow as Selectable<ServerDB[TableName]>
+                server_row: normalizeOutboundVersionColumn(
+                  applyOutboundTransform(
+                    conflictRow as Selectable<ServerDB[TableName]>
+                  ),
+                  versionColumn,
+                  existingVersion
                 ),
               },
               emittedChanges: [],
@@ -660,8 +859,8 @@ export function createServerHandler<
             result: {
               opIndex,
               status: 'error',
-              error: 'ROW_NOT_FOUND_FOR_BASE_VERSION',
-              code: 'ROW_MISSING',
+              error: 'Row not found for base version',
+              code: 'sync.row_missing',
               retriable: false,
             },
             emittedChanges: [],
@@ -697,14 +896,16 @@ export function createServerHandler<
     }
 
     const updatedRow = updated;
-    const rowVersion = (updatedRow[versionColumn] as number) ?? 1;
+    const rowVersion = readSafeVersionColumn(updatedRow, versionColumn, 1);
 
     // Extract scopes from updated row
     const scopes = extractScopesImpl(updatedRow);
 
     // Transform outbound for emitted change
-    const rowJson = applyOutboundTransform(
-      updated as Selectable<ServerDB[TableName]>
+    const rowJson = normalizeOutboundVersionColumn(
+      applyOutboundTransform(updated as Selectable<ServerDB[TableName]>),
+      versionColumn,
+      rowVersion
     );
 
     const emitted: EmittedChange = {
@@ -744,7 +945,7 @@ export function createServerHandler<
       return sequential;
     };
 
-    if (operations.length === 1 || authorize) {
+    if (operations.length === 1 || authorize || requiredScopeKeys.length > 0) {
       return runSequentialFallback();
     }
 
@@ -840,10 +1041,12 @@ export function createServerHandler<
           return runSequentialFallback();
         }
 
-        const rowVersion = (updated[versionColumn] as number) ?? 1;
+        const rowVersion = readSafeVersionColumn(updated, versionColumn, 1);
         const scopes = extractScopesImpl(updated);
-        const rowJson = applyOutboundTransform(
-          updated as Selectable<ServerDB[TableName]>
+        const rowJson = normalizeOutboundVersionColumn(
+          applyOutboundTransform(updated as Selectable<ServerDB[TableName]>),
+          versionColumn,
+          rowVersion
         );
 
         results.push({
@@ -873,10 +1076,18 @@ export function createServerHandler<
 
   return {
     table,
+    primaryKeyColumn,
     scopePatterns,
     dependsOn,
     snapshotChunkTtlMs,
-    snapshotBundleMaxBytes,
+    snapshotBinaryColumns,
+    snapshotBinaryColumnsForVersion,
+    snapshotBinaryEncoder: snapshotBinaryEncoder as
+      | BinarySnapshotRowsEncoder
+      | undefined,
+    snapshotBinaryEncoderForVersion: snapshotBinaryEncoderForVersion as
+      | ((schemaVersion: number) => BinarySnapshotRowsEncoder | null | undefined)
+      | undefined,
     canRejectSingleOperationWithoutSavepoint:
       options.canRejectSingleOperationWithoutSavepoint ??
       options.applyOperation === undefined,

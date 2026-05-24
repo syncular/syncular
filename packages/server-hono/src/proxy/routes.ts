@@ -10,7 +10,7 @@ import type {
   ProxyMessage,
   ProxyResponse,
 } from '@syncular/core';
-import { logSyncEvent } from '@syncular/core';
+import { createSyncularErrorResponse, logSyncEvent } from '@syncular/core';
 import type {
   ProxyHandlerCollection,
   ServerSyncDialect,
@@ -119,13 +119,13 @@ export function createProxyRoutes<DB extends SyncCoreDb>(
   // WebSocket upgrade endpoint - using regular route since WebSocket doesn't fit OpenAPI well
   app.get('/', async (c) => {
     if (!isWebSocketOriginAllowed(c, config.allowedOrigins)) {
-      return c.json({ error: 'FORBIDDEN_ORIGIN' }, 403);
+      return c.json(createSyncularErrorResponse('proxy.forbidden_origin'), 403);
     }
 
     // Authenticate before upgrade
     const auth = await config.authenticate(c);
     if (!auth) {
-      return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      return c.json(createSyncularErrorResponse('proxy.auth_required'), 401);
     }
 
     // Check connection limit
@@ -135,7 +135,7 @@ export function createProxyRoutes<DB extends SyncCoreDb>(
         userId: auth.actorId,
         reason: 'max_connections',
       });
-      return c.json({ error: 'PROXY_CONNECTION_LIMIT' }, 429);
+      return c.json(createSyncularErrorResponse('proxy.connection_limit'), 429);
     }
 
     logSyncEvent({

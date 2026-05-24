@@ -1,12 +1,12 @@
 {
-  "extends": "@syncular/config/tsconfig.react.json",
+  "extends": "@syncular/config/tsconfig.bun.json",
+  "include": [
+    "src/**/*"
+  ],
   "compilerOptions": {
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": [
-    "src/**/*"
-  ],
   "exclude": [
     "src/**/*.test.ts",
     "src/**/*.test.tsx",

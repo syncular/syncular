@@ -63,7 +63,7 @@ describe('pushCommit', () => {
   // Validation
   // -----------------------------------------------------------
 
-  it('rejects missing clientId with INVALID_REQUEST', async () => {
+  it('rejects missing clientId with sync.invalid_request', async () => {
     const handlers = makeHandlers();
     const result = await pushCommit({
       db,
@@ -91,13 +91,13 @@ describe('pushCommit', () => {
     expect(result.response.results[0]).toEqual({
       opIndex: 0,
       status: 'error',
-      error: 'INVALID_REQUEST',
-      code: 'INVALID_REQUEST',
+      error: 'Invalid push request',
+      code: 'sync.invalid_request',
       retriable: false,
     });
   });
 
-  it('rejects missing clientCommitId with INVALID_REQUEST', async () => {
+  it('rejects missing clientCommitId with sync.invalid_request', async () => {
     const handlers = makeHandlers();
     const result = await pushCommit({
       db,
@@ -125,13 +125,13 @@ describe('pushCommit', () => {
     expect(result.response.results[0]).toEqual({
       opIndex: 0,
       status: 'error',
-      error: 'INVALID_REQUEST',
-      code: 'INVALID_REQUEST',
+      error: 'Invalid push request',
+      code: 'sync.invalid_request',
       retriable: false,
     });
   });
 
-  it('rejects empty operations with EMPTY_COMMIT', async () => {
+  it('rejects empty operations with sync.empty_commit', async () => {
     const handlers = makeHandlers();
     const result = await pushCommit({
       db,
@@ -151,13 +151,13 @@ describe('pushCommit', () => {
     expect(result.response.results[0]).toEqual({
       opIndex: 0,
       status: 'error',
-      error: 'EMPTY_COMMIT',
-      code: 'EMPTY_COMMIT',
+      error: 'Empty commit',
+      code: 'sync.empty_commit',
       retriable: false,
     });
   });
 
-  it('rejects non-array operations with EMPTY_COMMIT', async () => {
+  it('rejects non-array operations with sync.empty_commit', async () => {
     const handlers = makeHandlers();
     const result = await pushCommit({
       db,
@@ -177,8 +177,8 @@ describe('pushCommit', () => {
     expect(result.response.results[0]).toEqual({
       opIndex: 0,
       status: 'error',
-      error: 'EMPTY_COMMIT',
-      code: 'EMPTY_COMMIT',
+      error: 'Empty commit',
+      code: 'sync.empty_commit',
       retriable: false,
     });
   });
@@ -919,7 +919,7 @@ describe('pushCommit', () => {
       authorize: async (_ctx, op) => {
         if (op.op !== 'upsert') return true;
         return op.row_id === 'blocked-task'
-          ? { error: 'BLOCKED', code: 'BLOCKED' }
+          ? { error: 'Blocked by test authorization', code: 'sync.forbidden' }
           : true;
       },
     });

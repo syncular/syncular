@@ -1,0 +1,23 @@
+{
+  "root": true,
+  "title": "Server",
+  "icon": "Server",
+  "pages": [
+    "index",
+    "---Core Server---",
+    "setup-with-hono",
+    "table-handlers",
+    "scopes-and-auth",
+    "snapshot-pull",
+    "apply-push",
+    "realtime-websocket",
+    "blobs",
+    "external-changes",
+    "---Deployment Targets---",
+    "cloudflare",
+    "service-worker-server",
+    "---Advanced Server Shapes---",
+    "edge-relay",
+    "admin-proxy"
+  ]
+}

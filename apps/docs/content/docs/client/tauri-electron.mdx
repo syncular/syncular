@@ -1,0 +1,82 @@
+---
+title: Tauri / Electron
+description: Rust-owned local storage, renderer/main boundaries, and packaging notes for desktop apps.
+---
+
+# Tauri / Electron
+
+Desktop apps are a good fit for Syncular: you get durable local SQLite,
+instant UI reads/writes, and background sync without putting raw app-table
+writes in the renderer.
+
+## Recommended Shape
+
+Use the Rust client runtime as the owner of local SQLite, sync, outbox,
+realtime, blobs, CRDT fields, and encryption. The renderer should talk to a
+small host bridge for app-specific commands and events, while normal
+browser-style TypeScript apps can still use the generated Kysely surface from
+the Rust-owned client.
+
+For most desktop apps:
+
+- Keep the Syncular runtime hot in the main process or a dedicated native host.
+- Expose only generated mutations, generated reads, lifecycle commands, blob
+  APIs, and event subscriptions through preload IPC.
+- Keep raw synced table writes disallowed; writes go through generated Syncular
+  mutations so the outbox, conflict handling, and encryption stay coherent.
+- Use the browser TypeScript client shape when the renderer owns the UI query
+  code and a native-host shape when app lifecycle/background work should stay
+  outside the renderer.
+
+## Tauri bridge
+
+Tauri apps can adapt `invoke` and `listen` to the shared TypeScript client
+shape:
+
+```ts
+import { createSyncularTauriClient } from '@syncular/client-tauri';
+
+const syncular = await createSyncularTauriClient<AppDb>({
+  invoke,
+  listen,
+});
+```
+
+The default command names use the `syncular_*` prefix, such as
+`syncular_execute_sql`, `syncular_apply_mutations_commit`,
+`syncular_sync`, and `syncular_set_subscriptions`. Override them with the
+`commands` option if your Tauri host exposes different command names.
+
+## Electron bridge
+
+Electron apps should expose the same small bridge from preload IPC or a native
+host. The renderer gets Kysely reads and generated mutations; the host owns
+SQLite, sync, outbox, realtime, blobs, CRDT fields, encryption, and events.
+
+## Query and mutation model
+
+Renderer reads stay query-builder based through generated Kysely types, or
+through an app-specific IPC method that runs a generated query on the host.
+Renderer writes call generated mutation helpers:
+
+```ts
+await syncular.mutations.tasks.insert({
+  id: crypto.randomUUID(),
+  title: 'Electron task',
+  user_id: actorId,
+});
+
+const rows = await syncular.db
+  .selectFrom('tasks')
+  .selectAll()
+  .where('user_id', '=', actorId)
+  .execute();
+```
+
+## Next steps
+
+- [Client quick start](/docs/client/quick-start)
+- [Browser TypeScript client](/docs/client/browser)
+- [React](/docs/client/react)
+- [Native lifecycle](/docs/client/native)
+- [Installation](/docs/start/installation) (package selection)
