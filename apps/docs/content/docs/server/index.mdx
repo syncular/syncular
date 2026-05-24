@@ -18,11 +18,26 @@ HTTP endpoint details stay in [Reference](/docs/reference).
   <Card title="Setup With Hono" href="/docs/server/setup-with-hono">
     Mount Syncular routes, configure table handlers, and expose sync APIs
   </Card>
+  <Card title="Table Handlers" href="/docs/server/table-handlers">
+    Define the authoritative behavior for each synced table
+  </Card>
+  <Card title="Scopes And Auth" href="/docs/server/scopes-and-auth">
+    Authenticate actors and resolve the scopes they can access
+  </Card>
+  <Card title="Snapshot / Pull" href="/docs/server/snapshot-pull">
+    Serve bootstrap snapshots and incremental pulls
+  </Card>
+  <Card title="Apply Operations / Push" href="/docs/server/apply-push">
+    Apply generated client mutations on the authoritative server
+  </Card>
+  <Card title="Realtime WebSocket" href="/docs/server/realtime-websocket">
+    Wake clients through persistent realtime connections
+  </Card>
+  <Card title="Blobs" href="/docs/server/blobs">
+    Serve file and media sync routes
+  </Card>
   <Card title="External Changes" href="/docs/server/external-changes">
     Feed app-side database changes back into Syncular's commit stream
-  </Card>
-  <Card title="Table Handler Reference" href="/docs/reference/server/table-handlers-reference">
-    Look up exact table-handler APIs after reading the server guide
   </Card>
 </Cards>
 
@@ -46,7 +61,15 @@ HTTP endpoint details stay in [Reference](/docs/reference).
   <Card title="Admin Proxy" href="/docs/server/admin-proxy">
     Provide controlled SQL access while preserving sync integration
   </Card>
-  <Card title="Realtime Bridge Reference" href="/docs/reference/server/realtime-bridge">
-    Connect server-side realtime fanout to Syncular clients
+</Cards>
+
+## Exact APIs
+
+<Cards>
+  <Card title="Server Reference" href="/docs/reference/server">
+    Look up exact handler, adapter, realtime, and dialect APIs
+  </Card>
+  <Card title="HTTP API" href="/docs/reference/api">
+    Inspect the generated HTTP and protocol contract
   </Card>
 </Cards>

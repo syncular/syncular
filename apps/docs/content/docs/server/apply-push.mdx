@@ -1,0 +1,112 @@
+---
+title: Apply Operations / Push
+description: Apply generated client mutations on the authoritative server.
+---
+
+# Apply Operations / Push
+
+Push sends local client operations to the server. The server validates the
+request, applies each operation through the table handler, records accepted
+changes, and returns per-operation results.
+
+## Push flow
+
+1. The client queues generated mutations locally.
+2. The runtime pushes a commit with operations, client ID, idempotency key, and
+   client schema version.
+3. The server authenticates the request.
+4. The handler validates authorization and payload shape.
+5. The handler writes the authoritative server database.
+6. The handler emits committed changes with row versions and scopes.
+7. The server stores the commit and wakes affected realtime subscribers.
+
+## Apply a generated operation
+
+The generated client uses table-specific mutation types, but the server handler
+receives protocol operations. Decode them at the handler boundary and translate
+them into the server database shape.
+
+```typescript
+async applyOperation(ctx, op, opIndex) {
+  if (op.op === 'delete') {
+    const deleted = await repo.deleteTask({
+      rowId: op.row_id,
+      actorId: ctx.actorId,
+    });
+
+    return {
+      result: { opIndex, status: 'applied' },
+      emittedChanges: [
+        {
+          table: 'tasks',
+          row_id: deleted.rowId,
+          op: 'delete',
+          row_json: null,
+          row_version: deleted.revision,
+          scopes: { user_id: ctx.actorId },
+        },
+      ],
+    };
+  }
+
+  const stored = await repo.upsertTask({
+    rowId: op.row_id,
+    actorId: ctx.actorId,
+    payload: op.payload,
+    schemaVersion: ctx.schemaVersion,
+  });
+
+  const row = documentToTaskRow(stored);
+  return {
+    result: { opIndex, status: 'applied' },
+    emittedChanges: [
+      {
+        table: 'tasks',
+        row_id: row.id,
+        op: 'upsert',
+        row_json: row,
+        row_version: row.server_version,
+        scopes: { user_id: row.user_id },
+      },
+    ],
+  };
+}
+```
+
+The emitted `row_json` should be the generated client row shape for that table,
+not necessarily the raw server table row.
+
+## Conflicts and rejections
+
+Return structured operation results. Use conflicts when the write is valid but
+cannot be applied against the current server version. Use rejections for
+authorization, validation, unsupported schema versions, or invariant failures.
+
+```typescript
+return {
+  result: {
+    opIndex,
+    status: 'conflict',
+    serverVersion: current.server_version,
+    serverRow: current,
+  },
+  emittedChanges: [],
+};
+```
+
+Do not emit changes for rejected or conflicted operations.
+
+## Version-aware pushes
+
+Use `ctx.schemaVersion` when older clients can still push valid operations.
+Generated server helpers can validate whether the version is supported and can
+provide older mutation payload types. If a version is outside your support
+window, throw a typed update-required error instead of attempting a partial
+write.
+
+## Next steps
+
+- [Table Handlers](/docs/server/table-handlers)
+- [Scopes And Auth](/docs/server/scopes-and-auth)
+- [Conflict Resolution](/docs/learn/conflict-resolution)
+- [Table Handlers Reference](/docs/reference/server/table-handlers-reference)

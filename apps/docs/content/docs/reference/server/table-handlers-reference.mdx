@@ -18,8 +18,10 @@ const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
 const { syncRoutes } = createSyncServer({
   db,
   dialect,
-  handlers: [tasksHandler, projectsHandler],
-  authenticate,
+  sync: {
+    handlers: [tasksHandler, projectsHandler],
+    authenticate,
+  },
 });
 ```
 
@@ -143,5 +145,5 @@ emittedChanges.push({
 
 ## Next Steps
 
-- [Table Handlers Guide](/docs/reference/server/table-handlers-reference) -- Patterns and authorization
+- [Table Handlers Guide](/docs/server/table-handlers) -- Patterns and authorization
 - [Subscription Registry](/docs/reference/server/subscription-registry) -- Configure scopes
