@@ -70,8 +70,8 @@ read-only review:
 
 ## Now
 
-- `[~]` [`WP-34 Rust-First Docs Information Architecture`](work-packages/WP-34-rust-first-docs-information-architecture.md)
-  - Batches 1, 2, 3, and 4 complete. Public docs moved from the old
+- `[x]` [`WP-34 Rust-First Docs Information Architecture`](work-packages/WP-34-rust-first-docs-information-architecture.md)
+  - Accepted. Public docs moved from the old
     `Build`/`Rust Client` split to a Rust-first structure:
     `Start`, `Learn`, `Client`, `Server`, `Features`, `Testing`, `Operate`,
     and `Reference`. Binding-specific docs now live under `Client` so browser
@@ -83,8 +83,9 @@ read-only review:
     stay under `Reference`. The `Features` section now has cross-platform
     capability guides for blobs, CRDT fields, field encryption, presence,
     conflict resolution, offline auth leases, undo/redo, local read models,
-    audit/history, errors, migrations, and performance patterns. Next: Batch 5
-    final stale-link and redirect-decision cleanup.
+    audit/history, errors, migrations, and performance patterns. Final
+    stale-link, old-client, and redirect-decision scans are clean; no old
+    public docs redirects were retained.
 - `[x]` [`WP-30 Foundation Cleanup And Complexity Reduction`](work-packages/WP-30-foundation-cleanup-complexity.md)
   - New cross-cutting cleanup WP for polishing, removing unnecessary code,
     deleting stale aliases/backwards-compatibility paths, and reducing

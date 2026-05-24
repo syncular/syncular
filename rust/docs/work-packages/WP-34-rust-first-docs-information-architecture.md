@@ -1,6 +1,6 @@
 # WP-34 Rust-First Docs Information Architecture
 
-Status: `[~]` in progress
+Status: `[x]` accepted
 
 ## Goal
 
@@ -334,11 +334,11 @@ when clearly historical.
 
 ### Batch 5: Link Cleanup And Redirect Decision
 
-- Run stale-link scans.
-- Decide whether to keep any temporary docs redirects.
-- If redirects are kept, record them in `COMPATIBILITY_REGISTER.md`; otherwise
+- `[x]` Run stale-link scans.
+- `[x]` Decide whether to keep any temporary docs redirects.
+- `[x]` If redirects are kept, record them in `COMPATIBILITY_REGISTER.md`; otherwise
   delete old public routes cleanly.
-- Run full docs build.
+- `[x]` Run full docs build.
 
 ## Accept / Reject Rule
 
@@ -394,9 +394,25 @@ establishing the new IA skeleton.
     `/docs/features/offline-auth-leases`, `/docs/features/undo-redo`,
     `/docs/features/local-read-models`, and
     `/docs/features/performance-patterns`.
+- Batch 5 final cleanup passes:
+  - Custom internal `/docs` link checker: checked `254` source files and
+    `197` docs pages with no missing `/docs` links.
+  - Removed-route scan for old `Build`, `Concepts`, `Introduction`,
+    `Rust Client`, demo, blob, and rust-plan paths returned no hits.
+  - Focused old-client scan returned no hits for legacy JavaScript client,
+    client dialect, removed transport/package names, or hand-authored
+    `syncular.codegen.json` guidance.
+  - Redirect scan found only the canonical root `/` to `/docs` redirect and
+    the docs markdown LLM rewrite; no old public route redirects are retained,
+    so `COMPATIBILITY_REGISTER.md` did not need a docs-redirect exception.
+  - `git diff --check`
+  - `bun --cwd apps/docs types:check`
+  - `bun --cwd apps/docs build`
+  - Browser smoke for `/docs`, `/docs/start`, `/docs/learn`, `/docs/client`,
+    `/docs/server`, `/docs/features`, `/docs/testing`, `/docs/operate`, and
+    `/docs/reference`.
 
 ## Next Action
 
-Start Batch 5: run the final stale-link and removed-route cleanup pass, then
-decide whether any docs redirects are still necessary. The default is no
-redirects unless the docs framework requires one.
+WP-34 is complete. Return to the roadmap order and pick the next non-accepted
+work package before making further docs or runtime changes.
