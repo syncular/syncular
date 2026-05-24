@@ -1,6 +1,6 @@
 # WP-34 Rust-First Docs Information Architecture
 
-Status: `[ ]` planned
+Status: `[~]` in progress
 
 ## Goal
 
@@ -272,7 +272,7 @@ rg -n '/docs/build/(client-setup|table-handlers|auth|offline-auth|realtime|prese
 - Focused old-client scan:
 
 ```bash
-rg -n 'legacy JavaScript client|pure TypeScript client dialect|client dialect|dialect-wa-sqlite|transport-ws|./syncular.codegen.json|--out ./syncular.codegen.json' apps/docs/content/docs README.md packages/typegen
+rg -n 'legacy JavaScript client|pure TypeScript client dialect|client dialect|dialect-wa-sqlite|transport-ws|\\./syncular.codegen.json|--out \\./syncular.codegen.json' apps/docs/content/docs README.md packages/typegen
 ```
 
 Expected result for both scans: no active public guidance hits. Historical
@@ -283,11 +283,17 @@ when clearly historical.
 
 ### Batch 1: Navigation Skeleton
 
-- Create the new top-level folders/meta files.
-- Move only landing/index pages first.
-- Add or update `meta.json` so docs navigation renders the intended shape.
-- Keep old content bodies mostly intact.
-- Run docs typecheck/build.
+- `[x]` Create the new top-level folders/meta files.
+- `[x]` Move the obvious current docs into the new root sections:
+  `start`, `learn`, `client`, `server`, `features`, `testing`, `operate`,
+  and `reference`.
+- `[x]` Remove the old `build`, `concepts`, `introduction`, and
+  `rust-client` public section roots from navigation and content paths.
+- `[x]` Add or update `meta.json` so docs navigation renders the intended
+  shape.
+- `[x]` Keep content bodies mostly intact except for route/link cleanup and
+  new section landing pages.
+- `[x]` Run docs typecheck/build.
 
 ### Batch 2: Client Section
 
@@ -331,14 +337,21 @@ establishing the new IA skeleton.
 
 ## Current Evidence
 
-- Existing public docs build passes after prior cleanup:
-  `bun --cwd apps/docs types:check` and `bun --cwd apps/docs build`.
-- Current top-level docs still expose `Build` and `Rust Client` as separate
-  root sections, which no longer matches the product model.
-- Recent link cleanup removed known stale links to deleted Build pages, but the
-  IA still deserves a deliberate restructure rather than incremental patching.
+- Batch 1 docs skeleton passes:
+  - `git diff --check`
+  - focused stale Build-route scan
+  - focused old-client scan
+  - `bun --cwd apps/docs types:check`
+  - `bun --cwd apps/docs build`
+- The public docs top-level navigation now uses:
+  `Start`, `Learn`, `Client`, `Server`, `Features`, `Testing`, `Operate`,
+  and `Reference`.
+- `Build` and `Rust Client` are no longer public root sections. Current docs
+  were moved into the new section folders instead of preserving compatibility
+  routes.
 
 ## Next Action
 
-Start Batch 1: implement the new navigation skeleton with minimal content moves,
-then run the docs gates before deeper rewrites.
+Start Batch 2: polish the `Client` section into binding-specific pages and
+make sure shared capabilities link outward to `Features` instead of being
+duplicated deeply in each binding page.

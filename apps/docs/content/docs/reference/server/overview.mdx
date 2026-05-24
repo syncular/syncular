@@ -7,7 +7,7 @@ description: Server-side sync infrastructure for Syncular
 
 This page describes the server-side surfaces that make up a Syncular deployment.
 
-Use [Server Setup](/docs/build/server-setup) for first-time implementation. Use this section when you need to know which package, route, or extension point owns a piece of server behavior.
+Use [Server Setup](/docs/server/setup-with-hono) for first-time implementation. Use this section when you need to know which package, route, or extension point owns a piece of server behavior.
 
 ## Package map
 
@@ -27,7 +27,7 @@ Use [Server Setup](/docs/build/server-setup) for first-time implementation. Use 
 
 This split is intentional:
 
-- guides in [Build](/docs/build) explain how to wire the server
+- guides in [Server](/docs/server) explain how to wire the server
 - pages in [Reference](/docs/reference/server) document the server API surface and extension points
 
 ## Sync Tables
@@ -84,11 +84,11 @@ See [Realtime Bridge](/docs/reference/server/realtime-bridge) and the [Realtime 
 
 Blob support is separate from core row sync. The server tracks blob metadata and issues authenticated upload/download flows through dedicated routes.
 
-See [Blob Storage](/docs/build/recipes/blobs-and-media).
+See [Blob Storage](/docs/features/recipes/blobs-and-media).
 
 ## Use the right doc
 
-- Implementing a new server: [Server Setup](/docs/build/server-setup)
+- Implementing a new server: [Server Setup](/docs/server/setup-with-hono)
 - Designing authorization and row sync behavior: [Table Handlers](/docs/reference/server/table-handlers-reference)
 - Wiring Hono routes: [Hono Adapter](/docs/reference/server/hono-adapter)
 - Running operators workflows: [Operate](/docs/operate)

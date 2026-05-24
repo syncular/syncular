@@ -2,10 +2,11 @@
   "title": "Syncular",
   "pages": [
     "index",
-    "introduction",
-    "concepts",
-    "build",
-    "rust-client",
+    "start",
+    "learn",
+    "client",
+    "server",
+    "features",
     "testing",
     "operate",
     "reference"

@@ -1,0 +1,92 @@
+---
+title: Installation
+description: Install Syncular packages for server and client
+---
+
+# Installation
+
+> **Status:** Syncular is **alpha**. Packages are published on npm under the `@syncular` scope. If you want to run the full demo locally, clone the monorepo and follow the [Quick Start](/docs/start/quick-start). This page documents the packages you'll use.
+
+Not sure which runtime/dialect you need? Start with [Runtimes](/docs/client/app-targets).
+
+## Recommended starting point
+
+For web apps with a Postgres backend:
+
+```bash
+# Server
+npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
+npm install kysely pg hono
+
+# Client (Rust browser package + React hooks)
+npm install @syncular/client @syncular/react kysely
+```
+
+For Neon-backed server runtimes:
+
+```bash
+npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
+npm install @syncular/dialect-neon hono
+```
+
+## Server packages
+
+| Package | Description |
+|---------|-------------|
+| `@syncular/server` | Core sync engine (push, pull, pruning, compaction) |
+| `@syncular/server-hono` | Hono adapter with HTTP routes, WebSocket, and console |
+| `@syncular/server-dialect-postgres` | Postgres and Neon-backed Postgres dialect for sync SQL (`createPostgresServerDialect()` / `createNeonServerDialect()`) |
+| `@syncular/server-dialect-sqlite` | SQLite dialect for sync SQL |
+| `@syncular/server-cloudflare` | Cloudflare Workers + Durable Objects adapter |
+
+### Server database
+
+You need Kysely + a database driver:
+
+```bash
+# Postgres (production)
+npm install kysely pg
+
+# SQLite (development/testing)
+npm install @syncular/dialect-better-sqlite3
+```
+
+## Client packages
+
+| Package | Description |
+|---------|-------------|
+| `@syncular/client` | Rust-owned browser client package with TypeScript bindings, worker runtime, Kysely local DB, blob APIs, encryption configuration, and CRDT integration |
+| `@syncular/react` | React hooks and provider for the Rust-owned client |
+| `@syncular/client-crdt-adapters` | Optional Yjs/editor adapters above the Rust client CRDT field APIs |
+
+## Optional packages
+
+```bash
+# Yjs CRDT server support and optional client editor adapters
+npm install @syncular/server-plugin-yjs @syncular/client-crdt-adapters yjs
+
+# Edge relay server
+npm install @syncular/relay
+
+# Type generation from server schema
+npm install @syncular/typegen
+```
+
+## TypeScript setup
+
+Syncular is written in TypeScript and ships full type definitions. For best results, enable strict mode:
+
+```json
+{
+  "compilerOptions": {
+    "strict": true,
+    "skipLibCheck": true
+  }
+}
+```
+
+## Next steps
+
+- [Quick Start](/docs/start/quick-start) — build your first sync app
+- [Server Setup](/docs/server/setup-with-hono) — full server configuration
+- [Client](/docs/client) — browser, React, native, and testing guides

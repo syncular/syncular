@@ -1,0 +1,52 @@
+---
+title: Server
+description: Build and operate the authoritative Syncular server surface.
+---
+
+# Server
+
+The server is the authoritative sync surface. It owns authentication, table
+handlers, scope resolution, snapshot/pull behavior, push/apply behavior,
+realtime wakeups, blob routes, audit APIs, and deployment-specific adapters.
+
+Use this section for implementation guides. Exact API signatures and generated
+HTTP endpoint details stay in [Reference](/docs/reference).
+
+## Core server path
+
+<Cards>
+  <Card title="Setup With Hono" href="/docs/server/setup-with-hono">
+    Mount Syncular routes, configure table handlers, and expose sync APIs
+  </Card>
+  <Card title="External Changes" href="/docs/server/external-changes">
+    Feed app-side database changes back into Syncular's commit stream
+  </Card>
+  <Card title="Table Handler Reference" href="/docs/reference/server/table-handlers-reference">
+    Look up exact table-handler APIs after reading the server guide
+  </Card>
+</Cards>
+
+## Deployment targets
+
+<Cards>
+  <Card title="Cloudflare" href="/docs/server/cloudflare">
+    Run the server on Workers and Durable Objects
+  </Card>
+  <Card title="Service Worker Server" href="/docs/server/service-worker-server">
+    Run Syncular server APIs in-browser for local-only and demo setups
+  </Card>
+</Cards>
+
+## Advanced server shapes
+
+<Cards>
+  <Card title="Edge Relay" href="/docs/server/edge-relay">
+    Run a relay for offline-heavy or edge-heavy environments
+  </Card>
+  <Card title="Admin Proxy" href="/docs/server/admin-proxy">
+    Provide controlled SQL access while preserving sync integration
+  </Card>
+  <Card title="Realtime Bridge Reference" href="/docs/reference/server/realtime-bridge">
+    Connect server-side realtime fanout to Syncular clients
+  </Card>
+</Cards>

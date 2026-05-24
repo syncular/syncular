@@ -22,7 +22,7 @@
 
 Syncular is for apps that want local SQL on every client without giving up server authority. Reads and optimistic writes hit local SQL first. The server validates writes, stores them in an append-only commit log, tags them with scopes, and clients pull only what they are allowed to see. When something goes wrong, you inspect commits, clients, and events instead of reverse-engineering replication state.
 
-- **Local SQL is the hot path** — queries, joins, aggregates, and optimistic writes run against local SQLite or PGlite, not a remote cache
+- **Local SQL is the hot path** — queries, joins, aggregates, and optimistic writes run against local SQLite, not a remote cache
 - **The server stays authoritative** — pushes are validated, idempotent, conflict-aware, and auditable
 - **Commit-log sync is explicit** — ordered, append-only history is easier to reason about than opaque replication
 - **Scopes make auth inspectable** — authorization is code, and every synced change carries the scope data used to gate it
@@ -37,7 +37,7 @@ Syncular is for apps that want local SQL on every client without giving up serve
 - **Not a read-only sync layer.** Syncular owns the full write path. If you only need to stream Postgres changes to clients at CDN scale, [Electric SQL](https://electric-sql.com) may be a better fit.
 - **Conflict resolution is not automatic.** You get version-based detection, field-level merge utilities, and resolution primitives — but you implement the strategy and any resolution UI. There is no silent auto-merge.
 - **Not built for multiplayer games.** Syncular is good for durable game data like accounts, inventory, progression, or async/shared world state. It is not the right transport for frame-by-frame gameplay, physics replication, rollback netcode, or latency-critical entity sync.
-- **Not a legacy JavaScript client.** The client runtime is Rust-first, with TypeScript bindings for browser and React apps.
+- **Not a JavaScript-owned runtime.** The client runtime is Rust-first, with TypeScript bindings for browser and React apps.
 
 ## Quick start
 
@@ -75,7 +75,7 @@ later phases stay deferred until earlier phases are ready.
 For pull/apply diagnostics, enable `traceEnabled: true` on the client and
 inspect the emitted `sync:trace` events or inspector snapshot.
 
-See the [Quick Start guide](https://syncular.dev/docs/introduction/quick-start) for the walkthrough, the [Installation guide](https://syncular.dev/docs/introduction/installation) for the package/runtime matrix, and [Build](https://syncular.dev/docs/build) for the implementation path.
+See the [Quick Start guide](https://syncular.dev/docs/start/quick-start) for the walkthrough, the [Installation guide](https://syncular.dev/docs/start/installation) for the package/runtime matrix, [Client](https://syncular.dev/docs/client) for app runtimes, and [Server](https://syncular.dev/docs/server) for the authoritative sync surface.
 
 ## How it works
 
@@ -161,7 +161,7 @@ Most packages are published under the `@syncular` scope on npm. The umbrella pac
 | `@syncular/migrations` | Versioned migrations with checksum tracking |
 | `@syncular/typegen` | Generate database types from migrations |
 
-Need more? Optional packages cover server blob storage adapters, server CRDT handling, relay, observability, and tooling. See the [Installation guide](https://syncular.dev/docs/introduction/installation) for the full matrix.
+Need more? Optional packages cover server blob storage adapters, server CRDT handling, relay, observability, and tooling. See the [Installation guide](https://syncular.dev/docs/start/installation) for the full matrix.
 
 ## Run locally
 
