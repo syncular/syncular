@@ -18,19 +18,48 @@ understand the model and want to build a specific capability.
   <Card title="Migrations" href="/docs/features/migrations">
     Evolve client and server schema versions with generated handoffs
   </Card>
+  <Card title="Field Encryption" href="/docs/features/field-encryption">
+    Encrypt selected fields, CRDT streams, and blobs in the Rust runtime
+  </Card>
+  <Card title="Local Read Models" href="/docs/features/local-read-models">
+    Add generated local projections for measured query hotspots
+  </Card>
 </Cards>
 
 ## Sync behavior
 
 <Cards>
+  <Card title="Conflict Resolution" href="/docs/features/conflict-resolution">
+    Build user-facing resolution flows for concurrent writes
+  </Card>
+  <Card title="Offline Auth Leases" href="/docs/features/offline-auth-leases">
+    Queue offline writes with bounded auth provenance
+  </Card>
+  <Card title="Undo / Redo" href="/docs/features/undo-redo">
+    Replay generated mutations from command history
+  </Card>
   <Card title="Error Handling" href="/docs/features/error-handling">
     Handle sync errors, retries, and user-facing recovery states
   </Card>
   <Card title="Audit And History" href="/docs/features/audit-and-history">
     Build product-facing history views on top of Syncular commits
   </Card>
-  <Card title="Conflict Resolution" href="/docs/learn/conflict-resolution">
-    Learn the conflict model and resolution surface
+  <Card title="Performance Patterns" href="/docs/features/performance-patterns">
+    Keep performance work tied to measured product behavior
+  </Card>
+</Cards>
+
+## Collaboration and media
+
+<Cards>
+  <Card title="File / Blob Sync" href="/docs/features/blobs">
+    Sync files and media without putting binary data into row commits
+  </Card>
+  <Card title="CRDT Fields" href="/docs/features/crdt-fields">
+    Use Yjs-backed fields for rich collaborative subdocuments
+  </Card>
+  <Card title="Presence" href="/docs/features/presence">
+    Show online, viewing, and editing state over realtime
   </Card>
 </Cards>
 

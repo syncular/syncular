@@ -1,0 +1,88 @@
+---
+title: Field Encryption
+description: Encrypt selected fields, CRDT updates, and blobs in the Rust runtime.
+---
+
+# Field Encryption
+
+Field encryption protects selected app fields before they leave the client
+runtime. The Rust runtime owns encryption and decryption so generated mutations,
+outbox rows, blob uploads, CRDT updates, and retries stay coherent across
+bindings.
+
+## What Syncular encrypts
+
+- selected row fields declared in the generated app contract;
+- encrypted CRDT update streams and checkpoints;
+- blob bodies when blob encryption is configured.
+
+The runtime uses authenticated encryption for payloads and exposes helper
+methods for symmetric keys, passphrase-derived keys, and asymmetric key sharing.
+
+## Declare encrypted fields
+
+```ts
+import { encryptedField, syncedTable } from '@syncular/typegen';
+
+tasks: syncedTable({
+  table: 'tasks',
+  subscriptionId: 'sub-tasks',
+  serverVersion: 'server_version',
+  encryptedFields: [
+    encryptedField('description', { scope: 'tasks' }),
+  ],
+});
+```
+
+## Configure runtime keys
+
+Configure keys before applying encrypted mutations or processing encrypted
+pulls.
+
+```ts
+const key = await syncular.client.encryptionHelper(
+  'generateSymmetricKey',
+  {}
+);
+
+syncular.client.setFieldEncryption({
+  rules: [
+    {
+      scope: 'tasks',
+      table: 'tasks',
+      fields: ['description'],
+      rowIdField: 'id',
+    },
+  ],
+  keys: { default: key },
+  encryptionKid: 'default',
+});
+```
+
+Native hosts call the generated JSON equivalents, such as
+`setFieldEncryptionJson`, `setEncryptedCrdtJson`, `setBlobEncryptionJson`, and
+`encryptionHelperJson`.
+
+## Server boundary
+
+The server should treat encrypted field values as opaque payloads. Keep auth,
+scope checks, conflict/version checks, audit metadata, and row lifecycle on the
+server, but do not make server handlers depend on plaintext.
+
+## Watch-outs
+
+- Store and rotate keys outside Syncular's synced database.
+- Decide whether decryption failures should throw or keep ciphertext visible to
+  recovery UI.
+- Test key rotation, new-device key sharing, offline writes, conflict handling,
+  and encrypted CRDT convergence.
+- Keep searchable derived fields either unencrypted by design or derived
+  locally after decryption.
+
+## Related docs
+
+- [Client Quick Start](/docs/client/quick-start)
+- [Browser TypeScript](/docs/client/browser)
+- [Native Lifecycle](/docs/client/native)
+- [CRDT Fields](/docs/features/crdt-fields)
+- [Operate](/docs/operate)

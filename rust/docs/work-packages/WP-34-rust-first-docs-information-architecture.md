@@ -323,12 +323,14 @@ when clearly historical.
 
 ### Batch 4: Features Section
 
-- Move product-capability guides out of the overloaded `Build` area.
-- Add feature landing pages for blobs, CRDT/Yjs, encryption, presence, conflict
+- `[x]` Move product-capability guides out of the overloaded `Build` area.
+- `[x]` Add feature landing pages for blobs, CRDT/Yjs, encryption, presence, conflict
   resolution, offline auth leases, local read models, undo/redo, audit/history,
   and performance patterns.
-- Keep each page cross-platform and link to binding-specific details where
+- `[x]` Keep each page cross-platform and link to binding-specific details where
   needed.
+- `[x]` Update feature recipes so they point at the cross-platform feature
+  pages before binding-specific details.
 
 ### Batch 5: Link Cleanup And Redirect Decision
 
@@ -380,10 +382,21 @@ establishing the new IA skeleton.
     `/docs/server/table-handlers`, `/docs/server/scopes-and-auth`,
     `/docs/server/snapshot-pull`, `/docs/server/apply-push`,
     `/docs/server/realtime-websocket`, and `/docs/server/blobs`.
+- Batch 4 feature section passes:
+  - `git diff --check`
+  - old moved-route scan across docs/README/typegen
+  - focused old-client scan
+  - `bun --cwd apps/docs types:check`
+  - `bun --cwd apps/docs build`
+  - Browser smoke for `/docs/features`, `/docs/features/blobs`,
+    `/docs/features/crdt-fields`, `/docs/features/field-encryption`,
+    `/docs/features/presence`, `/docs/features/conflict-resolution`,
+    `/docs/features/offline-auth-leases`, `/docs/features/undo-redo`,
+    `/docs/features/local-read-models`, and
+    `/docs/features/performance-patterns`.
 
 ## Next Action
 
-Start Batch 4: move and polish cross-platform feature guides so blobs,
-CRDT/Yjs, encryption, presence, conflicts, offline auth leases, local read
-models, undo/redo, audit/history, and performance patterns read as one product
-capability surface instead of binding-specific implementation notes.
+Start Batch 5: run the final stale-link and removed-route cleanup pass, then
+decide whether any docs redirects are still necessary. The default is no
+redirects unless the docs framework requires one.
