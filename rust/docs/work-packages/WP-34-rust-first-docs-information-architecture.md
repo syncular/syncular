@@ -310,10 +310,16 @@ when clearly historical.
 
 ### Batch 3: Server Section
 
-- Move server setup/reference implementation content into `Server`.
-- Keep generated HTTP API details under `Reference`.
-- Make table handlers, scopes/auth, realtime bridge, blobs, Cloudflare, service
+- `[x]` Move server setup/reference implementation content into `Server`.
+- `[x]` Keep generated HTTP API details under `Reference`.
+- `[x]` Make table handlers, scopes/auth, realtime bridge, blobs, Cloudflare, service
   worker server, and external changes discoverable from one server landing page.
+- `[x]` Add implementation pages for table handlers, scopes/auth,
+  snapshot/pull, apply/push, realtime WebSocket, and blobs.
+- `[x]` Update server setup examples to the current
+  `createSyncServer({ sync: { handlers, authenticate } })` shape.
+- `[x]` Keep exact handler, adapter, and HTTP option details under Reference
+  and route implementation links to Server guides.
 
 ### Batch 4: Features Section
 
@@ -363,9 +369,21 @@ establishing the new IA skeleton.
 - `Build` and `Rust Client` are no longer public root sections. Current docs
   were moved into the new section folders instead of preserving compatibility
   routes.
+- Batch 3 server section passes:
+  - `git diff --check`
+  - focused stale Build-route scan
+  - old moved-route scan across docs/README/typegen
+  - focused old-client scan
+  - `bun --cwd apps/docs types:check`
+  - `bun --cwd apps/docs build`
+  - Browser smoke for `/docs/server`, `/docs/server/setup-with-hono`,
+    `/docs/server/table-handlers`, `/docs/server/scopes-and-auth`,
+    `/docs/server/snapshot-pull`, `/docs/server/apply-push`,
+    `/docs/server/realtime-websocket`, and `/docs/server/blobs`.
 
 ## Next Action
 
-Start Batch 3: polish the `Server` section so setup, table handlers, scopes,
-snapshot/pull, apply/push, realtime, blobs, Cloudflare, service worker server,
-and external changes are discoverable from one server landing page.
+Start Batch 4: move and polish cross-platform feature guides so blobs,
+CRDT/Yjs, encryption, presence, conflicts, offline auth leases, local read
+models, undo/redo, audit/history, and performance patterns read as one product
+capability surface instead of binding-specific implementation notes.

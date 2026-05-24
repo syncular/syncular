@@ -1,0 +1,186 @@
+---
+title: Table Handlers
+description: Define the authoritative server behavior for synced tables.
+---
+
+# Table Handlers
+
+A table handler is the server boundary for one synced table. It decides which
+rows an actor can read, how a client mutation becomes an authoritative write,
+and which committed changes should wake subscribed clients.
+
+Use this guide for implementation shape. Use
+[Table Handlers Reference](/docs/reference/server/table-handlers-reference) for
+the complete option and interface list.
+
+## Choose the handler shape
+
+Most apps use one of two shapes.
+
+### Same client and server table shape
+
+When the client table is the same table shape the server stores, use
+`createServerHandler`:
+
+```typescript
+import { createServerHandler } from '@syncular/server';
+
+export const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+  resolveScopes: async (ctx) => ({
+    user_id: [ctx.actorId],
+    project_id: ctx.auth.workspaceIds,
+  }),
+});
+```
+
+The default handler can snapshot rows, apply generated client operations,
+increment `server_version`, extract scopes, and classify conflicts.
+
+### Different client and server table shape
+
+When the server database shape differs from the generated client schema, use the
+generated app server helper. It keeps the public client contract typed while
+letting the server read and write its own tables.
+
+```typescript
+import {
+  createSyncularAppServerHandler,
+  syncularGeneratedApp,
+  type TaskMutationPayloadV6,
+  type TaskMutationPayloadV7,
+  type TaskRow,
+} from './generated/typescript/syncular.server.generated';
+import type { SyncCoreDb, SyncServerAuth } from '@syncular/server';
+
+interface Auth extends SyncServerAuth {
+  workspaceIds: string[];
+}
+
+interface ServerDb extends SyncCoreDb {
+  documents: {
+    id: string;
+    content: string;
+    done: number;
+    owner_id: string;
+    workspace_id: string | null;
+    revision: number;
+  };
+}
+
+type TaskMutationPayload =
+  | TaskMutationPayloadV6
+  | TaskMutationPayloadV7
+  | Partial<Omit<TaskRow, 'id' | 'server_version'>>;
+
+export function createTaskHandler(repo: TaskRepository) {
+  return createSyncularAppServerHandler<ServerDb, Auth>({
+    table: syncularGeneratedApp.tables.tasks,
+
+    resolveScopes: (ctx) => ({
+      user_id: [ctx.actorId],
+      project_id: ctx.auth.workspaceIds,
+    }),
+
+    async snapshot(ctx) {
+      const rows = await repo.snapshotTasks(ctx);
+      return {
+        rows: rows.map((row) =>
+          syncularGeneratedApp.projectClientRowForVersion(
+            'tasks',
+            documentToTaskRow(row),
+            ctx.schemaVersion
+          )
+        ),
+        nextCursor: null,
+      };
+    },
+
+    async applyOperation(ctx, op, opIndex) {
+      if (op.op === 'delete') {
+        const deleted = await repo.deleteTask({
+          rowId: op.row_id,
+          actorId: ctx.actorId,
+        });
+
+        return {
+          result: { opIndex, status: 'applied' },
+          emittedChanges: [
+            {
+              table: 'tasks',
+              row_id: deleted.rowId,
+              op: 'delete',
+              row_json: null,
+              row_version: deleted.revision,
+              scopes: { user_id: ctx.actorId },
+            },
+          ],
+        };
+      }
+
+      const stored = await repo.upsertTask({
+        rowId: op.row_id,
+        actorId: ctx.actorId,
+        payload: op.payload as TaskMutationPayload,
+        schemaVersion: ctx.schemaVersion,
+      });
+
+      const row = documentToTaskRow(stored);
+      return {
+        result: { opIndex, status: 'applied' },
+        emittedChanges: [
+          {
+            table: 'tasks',
+            row_id: row.id,
+            op: 'upsert',
+            row_json: row,
+            row_version: row.server_version,
+            scopes: {
+              user_id: row.user_id,
+              ...(row.project_id == null ? {} : { project_id: row.project_id }),
+            },
+          },
+        ],
+      };
+    },
+  });
+}
+```
+
+## Handler responsibilities
+
+Handlers own these decisions:
+
+- **`resolveScopes`**: return the scope values the authenticated actor may
+  access now.
+- **`snapshot`**: return the client row shape for the requested table, scopes,
+  cursor, limit, and client schema version.
+- **`applyOperation`**: translate a generated client mutation into an
+  authoritative server write.
+- **`emittedChanges`**: record the committed row, version, operation, and scopes
+  so later pulls and realtime wakeups see the change.
+
+The server stores operation changes as `upsert` or `delete`. Client runtime
+events can then report row-level deltas as `insert`, `update`, or `delete` after
+the local replica applies the change.
+
+## Version-aware handlers
+
+Every pull and push includes the client schema version. Generated server helpers
+validate supported versions and expose `ctx.schemaVersion` in `snapshot` and
+`applyOperation`.
+
+Use `ctx.schemaVersion` when you need to:
+
+- project current server rows into an older generated client row shape;
+- decode mutation payloads from older app versions;
+- reject a version your server no longer supports with an explicit update
+  required error.
+
+## Next steps
+
+- [Scopes And Auth](/docs/server/scopes-and-auth)
+- [Snapshot / Pull](/docs/server/snapshot-pull)
+- [Apply Operations / Push](/docs/server/apply-push)
+- [Table Handlers Reference](/docs/reference/server/table-handlers-reference)

@@ -1,0 +1,67 @@
+---
+title: Blobs
+description: Serve file and media sync routes from the Syncular server.
+---
+
+# Blobs
+
+Blob sync keeps large binary bodies out of row commits. Rows store metadata and
+blob references; the server owns authenticated upload, download, and state
+tracking for the binary payloads.
+
+## Server responsibilities
+
+The server should own:
+
+- blob metadata tables and lifecycle state;
+- authenticated upload and download routes;
+- storage adapter wiring for local disk, S3, R2, or another object store;
+- row-level authorization checks through table handlers and scopes;
+- sync wakeups when blob state changes affect subscribed rows.
+
+## Route shape
+
+Blob routes are mounted next to the sync routes. They should call the same
+authentication function as push and pull.
+
+```typescript
+import { createBlobManager } from '@syncular/server';
+import { createBlobRoutes } from '@syncular/server-hono';
+
+const blobManager = createBlobManager({
+  db,
+  adapter: blobStorageAdapter,
+});
+
+const blobRoutes = createBlobRoutes({
+  db,
+  blobManager,
+  authenticate: async (c) => authenticate(c.req.raw),
+  maxUploadSize: 25 * 1024 * 1024,
+  canAccessBlob: async ({ actorId, hash, partitionId }) => {
+    return canActorAccessBlob({ actorId, hash, partitionId });
+  },
+});
+
+app.route('/api/sync', syncRoutes);
+app.route('/api/sync', blobRoutes);
+```
+
+Use platform storage in production. For Cloudflare, wire blob bodies to R2 and
+keep Syncular's metadata in the server database.
+
+## Client interaction
+
+Client bindings expose blob operations as part of the generated client/runtime
+surface. Apps should store blob references in normal synced rows, then let the
+runtime upload, download, retry, and surface progress events.
+
+Keep UI-specific concepts such as image resizing, preview generation, and file
+pickers in the app layer.
+
+## Next steps
+
+- [File / Blob Sync](/docs/features/recipes/blobs-and-media)
+- [Cloudflare](/docs/server/cloudflare)
+- [Client Blobs](/docs/client/blobs)
+- [API Reference](/docs/reference/api)

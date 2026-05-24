@@ -1,0 +1,97 @@
+---
+title: Realtime WebSocket
+description: Wire realtime wakeups for Syncular clients.
+---
+
+# Realtime WebSocket
+
+Syncular realtime is a wakeup channel. It does not replace pull and it does not
+stream arbitrary row data from the server to the app. The server sends verified
+deltas when it can, or a pull-required wakeup when the client should recover by
+running the normal pull flow.
+
+## Enable WebSocket routes
+
+Pass your Hono WebSocket upgrader to `createSyncServer`:
+
+```typescript
+import { createBunWebSocket } from 'hono/bun';
+import { createSyncServer } from '@syncular/server-hono';
+
+const { upgradeWebSocket } = createBunWebSocket();
+
+const { syncRoutes } = createSyncServer({
+  db,
+  dialect,
+  sync: {
+    handlers: [tasksHandler],
+    authenticate,
+  },
+  upgradeWebSocket,
+});
+```
+
+The realtime endpoint is mounted with the sync routes, typically at
+`/api/sync/realtime`.
+
+## How clients use it
+
+The Rust-first client runtime owns a persistent realtime worker. Host apps
+should not babysit reconnect loops. The runtime handles:
+
+- connect and reconnect;
+- auth refresh handoff;
+- verified realtime delta handling;
+- pull-required recovery;
+- event fanout to live queries and native bindings.
+
+## Multi-instance servers
+
+For multiple server instances, add a broadcaster so the instance that accepts a
+push can wake WebSocket clients connected to other instances.
+
+```typescript
+import { InMemorySyncRealtimeBroadcaster } from '@syncular/server';
+
+const broadcaster = new InMemorySyncRealtimeBroadcaster();
+
+const { syncRoutes } = createSyncServer({
+  db,
+  dialect,
+  sync: {
+    handlers: [tasksHandler],
+    authenticate,
+  },
+  routes: {
+    realtime: {
+      broadcaster,
+    },
+  },
+  upgradeWebSocket,
+});
+```
+
+Use the in-memory broadcaster only for tests and single-process deployments.
+Production deployments should use a shared bus such as Redis, NATS, Postgres
+NOTIFY, or the platform-native pub/sub layer.
+
+## Recovery contract
+
+Realtime delivery is best-effort. The client must be able to recover by pulling
+from the server cursor. This is why row durability, conflict detection, and
+snapshot recovery stay in the HTTP pull/push protocol.
+
+Server-side realtime should wake clients after:
+
+- accepted pushed commits;
+- external changes recorded into Syncular;
+- blob state changes that affect subscribed rows;
+- CRDT/Yjs materialization changes;
+- access revocation.
+
+## Next steps
+
+- [Realtime Bridge Reference](/docs/reference/server/realtime-bridge)
+- [External Changes](/docs/server/external-changes)
+- [Lifecycle And Realtime](/docs/client/native)
+- [Operate: Troubleshooting](/docs/operate/troubleshooting)

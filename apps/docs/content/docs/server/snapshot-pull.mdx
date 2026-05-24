@@ -1,0 +1,99 @@
+---
+title: Snapshot / Pull
+description: Implement bootstrap snapshots and incremental pulls.
+---
+
+# Snapshot / Pull
+
+Pull is how a client catches up. The server resolves the actor's effective
+subscriptions, returns newer commits when possible, and serves a snapshot when a
+client needs a table bootstrap.
+
+## Pull flow
+
+1. The client sends its cursor, subscriptions, and client schema version.
+2. The server authenticates the request.
+3. Each table handler resolves allowed scopes.
+4. The server intersects requested and allowed scopes.
+5. The server returns committed changes or asks the handler for a snapshot.
+6. Large snapshots are delivered as binary snapshot chunks.
+
+Realtime does not change this flow. WebSocket messages only wake the client so
+it pulls again.
+
+## Default snapshots
+
+For same-shape tables, `createServerHandler` can build a paginated snapshot from
+the table, primary key, version column, and scope columns:
+
+```typescript
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+});
+```
+
+Use the default when the server row is already the generated client row.
+
+## Custom snapshots
+
+Use a custom `snapshot` when the server stores a different shape, needs joins,
+or must project the row to the requesting client's schema version.
+
+```typescript
+const tasksHandler = createSyncularAppServerHandler<ServerDb, AppAuth>({
+  table: syncularGeneratedApp.tables.tasks,
+  resolveScopes,
+
+  async snapshot(ctx) {
+    const documents = await ctx.db
+      .selectFrom('documents')
+      .select([
+        'id',
+        'content',
+        'done',
+        'owner_id',
+        'workspace_id',
+        'revision',
+      ])
+      .where('owner_id', 'in', ctx.scopeValues.user_id)
+      .orderBy('id')
+      .limit(ctx.limit)
+      .execute();
+
+    return {
+      rows: documents.map((row) =>
+        syncularGeneratedApp.projectClientRowForVersion(
+          'tasks',
+          documentToTaskRow(row),
+          ctx.schemaVersion
+        )
+      ),
+      nextCursor:
+        documents.length === ctx.limit
+          ? documents[documents.length - 1]!.id
+          : null,
+    };
+  },
+});
+```
+
+Honor `ctx.limit` and `ctx.cursor` for large tables. Return `nextCursor` until
+the snapshot is complete.
+
+## Binary snapshot chunks
+
+Generated app handlers can expose generated binary table encoders. The server
+uses them to produce table-shaped binary chunks instead of JSON row frames.
+
+This is the current snapshot path for the Rust-first client. If the server
+cannot produce a supported client schema version, fail clearly so the app can
+show an update-required screen.
+
+## Next steps
+
+- [Table Handlers](/docs/server/table-handlers)
+- [Apply Operations / Push](/docs/server/apply-push)
+- [Performance](/docs/operate/performance)
+- [HTTP API](/docs/reference/api)
