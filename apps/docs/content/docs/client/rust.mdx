@@ -1,0 +1,139 @@
+---
+title: Rust
+description: Use Diesel reads and generated Syncular mutations from the Rust SDK.
+---
+
+# Rust
+
+Rust is the canonical SDK surface for native apps. The `syncular-client` crate
+uses Diesel for typed reads and generated Syncular mutation namespaces for
+writes.
+
+Native app profiles should depend on the SDK with explicit features:
+
+```toml
+syncular-client = { default-features = false, features = ["native", "crdt-yjs"] }
+```
+
+## Generate the app client
+
+The generator emits Diesel schema, row structs, migrations, table metadata,
+subscriptions, mutations, conflicts, and live-query helpers:
+
+```rust
+mod generated {
+    pub mod schema {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/generated/rust/schema.rs"));
+    }
+    pub mod syncular {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/generated/rust/syncular.rs"));
+    }
+    pub mod diesel_tables {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/generated/rust/diesel_tables.rs"));
+    }
+    pub mod migrations {
+        include!(concat!(env!("CARGO_MANIFEST_DIR"), "/generated/rust/migrations.rs"));
+    }
+}
+```
+
+Wire generated metadata once when opening the client:
+
+```rust
+use syncular_client::app_schema::AppSchema;
+use syncular_client::client::{SyncularClient, SyncularClientConfig};
+
+fn app_schema() -> AppSchema {
+    AppSchema {
+        app_tables: generated::syncular::APP_TABLES,
+        app_table_metadata: generated::syncular::APP_TABLE_METADATA,
+        migrations: generated::migrations::MIGRATIONS,
+        default_subscriptions: generated::syncular::default_subscriptions,
+        adapter_for: generated::diesel_tables::adapter_for,
+    }
+}
+
+let mut client = SyncularClient::open_with_schema(config, app_schema())?;
+```
+
+## Query
+
+Reads are regular Diesel query-builder expressions. The SDK owns the
+connection, so callers pass the query, not a `db` handle:
+
+```rust
+use diesel::prelude::*;
+use generated::{diesel_tables::TaskRow, schema, syncular};
+
+let tasks: Vec<TaskRow> = client.read(
+    schema::tasks::dsl::tasks
+        .filter(schema::tasks::dsl::user_id.eq("user-rust"))
+        .order(schema::tasks::dsl::server_version.desc())
+        .select(TaskRow::as_select()),
+)?;
+```
+
+## Mutate
+
+Writes go through generated Syncular mutations:
+
+```rust
+use syncular::prelude::SyncularGeneratedMutationsExt;
+
+let inserted = client.mutations().tasks().insert(
+    syncular::NewTask::with_generated_id(
+        "Ship Rust",
+        "user-rust",
+        Some("project-rust"),
+    ),
+)?;
+
+client
+    .mutations()
+    .tasks()
+    .update(syncular::TaskPatch::new(&inserted.id).completed(1))?;
+```
+
+Batch related writes in one commit:
+
+```rust
+let id = client.commit(|tx| {
+    let id = tx.tasks().insert(syncular::NewTask::with_generated_id(
+        "Batched task",
+        "user-rust",
+        Some("project-rust"),
+    ))?;
+    tx.tasks().update(syncular::TaskPatch::new(&id).completed(1))?;
+    Ok(id)
+})?;
+```
+
+## Conflicts and live queries
+
+```rust
+for conflict in client.conflicts().pending()? {
+    client.conflicts().keep_local(&conflict.id)?;
+}
+```
+
+Typed live queries keep Diesel semantics and refresh from sync/local change
+reports:
+
+```rust
+let mut live_tasks = client.live_query(["tasks"], || {
+    schema::tasks::dsl::tasks
+        .filter(schema::tasks::dsl::user_id.eq("user-rust"))
+        .order(schema::tasks::dsl::server_version.desc())
+        .select(TaskRow::as_select())
+})?;
+
+let report = client.sync_http()?;
+if live_tasks.refresh_if_changed(&mut client, &report)? {
+    render(live_tasks.rows());
+}
+```
+
+Use [Native lifecycle](/docs/client/native) when a Rust app wants the UI worker,
+event stream, queued commands, presence handles, and realtime lifecycle used by
+Swift/Kotlin/JVM hosts.
+

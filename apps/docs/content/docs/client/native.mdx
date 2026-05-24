@@ -1,77 +1,29 @@
 ---
-title: Native Apps
-description: Use the Rust client and generated Swift, Kotlin, Android, and JVM bindings.
+title: Native Lifecycle
+description: Run the shared native worker, event stream, lifecycle, realtime, presence, CRDT, and blob model.
 ---
 
-# Native Apps
+# Native Lifecycle
 
 Native apps use the same Rust runtime foundation as browser apps, but access it
-through the Rust SDK or generated BoltFFI bindings.
+through the Rust SDK or generated BoltFFI bindings. Use this page for the
+shared runtime model. Use the binding pages for host-language query and
+mutation syntax.
 
-## Rust
-
-Rust is the canonical native SDK surface. Reads use Diesel, and writes use
-generated Syncular mutations:
-
-```rust
-let mut client = NativeSyncularClient::builder(config)
-    .auto_sync_local_writes(true)
-    .open()?;
-
-let rows = client.read(
-    schema::tasks::dsl::tasks
-        .filter(schema::tasks::dsl::user_id.eq("user-rust"))
-        .order(schema::tasks::dsl::server_version.desc())
-        .select(diesel_tables::TaskRow::as_select()),
-)?;
-
-client
-    .mutations()
-    .tasks()
-    .update(syncular::TaskPatch::new(task_id).completed(1))?;
-```
-
-The builder starts realtime by default. Use `.realtime(false)` only for a host
-policy that cannot keep a websocket open.
-
-## Swift and Kotlin
-
-Swift and Kotlin get generated app helpers over the schema-agnostic native
-binding:
-
-- query DSLs for typed read SQL
-- generated mutation builders
-- generated subscription helpers
-- typed CRDT field helpers
-- typed row-delta helpers
-
-Swift:
-
-```swift
-let rows = try TaskQuery
-    .select()
-    .filter(TaskQuery.userId.eq("user-rust"))
-    .orderBy(TaskQuery.serverVersion.desc())
-    .fetch(on: client)
-
-for task in taskChangedRows(in: event) {
-    if task.changed.title { refreshTask(task.rowId) }
-}
-```
-
-Kotlin:
-
-```kotlin
-val rows = TaskQuery
-    .select()
-    .filter(TaskQuery.userId.eq("user-rust"))
-    .orderBy(TaskQuery.serverVersion.desc())
-    .fetch(client)
-
-for (task in taskChangedRows(event)) {
-    if (task.changed.title) refreshTask(task.rowId)
-}
-```
+<Cards>
+  <Card title="Rust" href="/docs/client/rust">
+    Diesel reads, generated mutations, conflicts, and live queries
+  </Card>
+  <Card title="Swift" href="/docs/client/swift">
+    Generated Swift query DSLs, mutations, subscriptions, and event streams
+  </Card>
+  <Card title="Kotlin / Android" href="/docs/client/kotlin-android">
+    Generated Kotlin query DSLs, Android lifecycle, and coroutine event flows
+  </Card>
+  <Card title="JVM" href="/docs/client/jvm">
+    Java/JVM binding and native runtime packaging
+  </Card>
+</Cards>
 
 ## UI lifecycle
 
@@ -95,12 +47,11 @@ includes top-level `droppedCount` and `resyncRequired: true`. During teardown,
 close the event stream and then call `shutdown()`.
 
 Treat realtime as the normal native lifecycle. After auth headers are available,
-call `start()` and keep the persistent realtime worker hot for the session. The
+start the persistent realtime worker and keep it hot for the session. The
 runtime owns websocket reconnect/backoff and feeds wakeups into the sync worker.
-BoltFFI hosts can still call the explicit `startRealtimeWorker()` and
-`stopRealtimeWorker()` names; C hosts can use either
-`syncular_native_client_start(...)` / `syncular_native_client_stop(...)` or the
-longer realtime-worker functions.
+BoltFFI hosts call `startRealtimeWorker()` and `stopRealtimeWorker()`. C hosts
+call `syncular_native_client_start_realtime_worker(...)` and
+`syncular_native_client_stop_realtime_worker(...)`.
 
 Native presence uses the same websocket session. Swift/Kotlin call
 `joinPresence(scopeKey:metadataJson:)`, `updatePresenceMetadata(...)`,

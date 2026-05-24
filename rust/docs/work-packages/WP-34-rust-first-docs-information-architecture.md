@@ -297,13 +297,16 @@ when clearly historical.
 
 ### Batch 2: Client Section
 
-- Rename/move current `rust-client` content to `client`.
-- Split binding pages into Browser TypeScript, React, React Native/Expo,
-  Tauri/Electron, Rust, Swift, Kotlin/Android, and JVM where content exists.
-- Add placeholder pages only when they route to concrete existing docs or
-  explicitly state the current supported path.
-- Ensure shared client features link to `Features`, not duplicated deeply in
-  every binding page.
+- `[x]` Rename/move current `rust-client` content to `client`.
+- `[x]` Split binding pages into Browser TypeScript, React, React Native/Expo,
+  Tauri/Electron, Rust, Swift, Kotlin/Android, and JVM.
+- `[x]` Keep `Native Lifecycle` as the shared worker/event/realtime/presence
+  model instead of making it the only native binding page.
+- `[x]` Remove client-side references to removed public routes and old
+  compatibility/alias wording in the touched pages.
+- `[x]` Add concrete current-path pages only; no compatibility redirects or
+  deprecated client dialect recommendations.
+- `[x]` Run docs gates and browser-smoke all new binding pages.
 
 ### Batch 3: Server Section
 
@@ -343,6 +346,17 @@ establishing the new IA skeleton.
   - focused old-client scan
   - `bun --cwd apps/docs types:check`
   - `bun --cwd apps/docs build`
+- Batch 2 client binding split passes:
+  - `git diff --check`
+  - old moved-route scan across docs/README/typegen
+  - focused old-client scan
+  - `bun --cwd apps/docs types:check`
+  - `bun --cwd apps/docs build`
+  - Browser smoke for `/docs/client`, `/docs/client/browser`,
+    `/docs/client/react`, `/docs/client/react-native-expo`,
+    `/docs/client/tauri-electron`, `/docs/client/native`,
+    `/docs/client/rust`, `/docs/client/swift`,
+    `/docs/client/kotlin-android`, and `/docs/client/jvm`.
 - The public docs top-level navigation now uses:
   `Start`, `Learn`, `Client`, `Server`, `Features`, `Testing`, `Operate`,
   and `Reference`.
@@ -352,6 +366,6 @@ establishing the new IA skeleton.
 
 ## Next Action
 
-Start Batch 2: polish the `Client` section into binding-specific pages and
-make sure shared capabilities link outward to `Features` instead of being
-duplicated deeply in each binding page.
+Start Batch 3: polish the `Server` section so setup, table handlers, scopes,
+snapshot/pull, apply/push, realtime, blobs, Cloudflare, service worker server,
+and external changes are discoverable from one server landing page.
