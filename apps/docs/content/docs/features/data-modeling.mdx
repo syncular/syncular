@@ -58,7 +58,7 @@ Avoid scopes that are:
 - **volatile** (rows frequently “move” between scopes)
 - **row-level** (`row_id` as a scope is almost always a mistake)
 
-## Example: project membership (recommended pattern)
+## Server handler example: project membership
 
 Use a membership table for authorization, and store the stable scope on the row:
 
@@ -82,7 +82,7 @@ export const tasksHandler = createServerHandler({
 });
 ```
 
-Client subscriptions are now predictable:
+Client subscriptions are now predictable across bindings:
 
 ```ts
 { id: 'project-a', table: 'tasks', scopes: { project_id: 'proj-a' } }
@@ -94,7 +94,7 @@ Client subscriptions are now predictable:
 - Membership changes are handled by `resolveScopes` and subscription changes.
 - Bootstrap/snapshot size scales with the project, not with global data.
 
-## Example: per-user private data
+## Server handler example: per-user private data
 
 ```ts
 export const draftsHandler = createServerHandler({

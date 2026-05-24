@@ -70,6 +70,14 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-36 Binding Example Clarity`](work-packages/WP-36-binding-example-clarity.md)
+  - Accepted. Feature docs now state that product semantics are binding-neutral
+    and binding-specific snippets are examples, not defaults. Presence,
+    blobs, offline auth leases, and undo/redo now label TypeScript/browser,
+    Rust, and native host examples explicitly. Testing docs now distinguish
+    the TypeScript/server/browser `@syncular/testkit` from the Rust/native
+    `syncular-testkit` and link between those paths. Docs link/type/build
+    gates passed.
 - `[x]` [`WP-35 Rust-First Public Docs API Cleanup`](work-packages/WP-35-rust-first-public-docs-api-cleanup.md)
   - Accepted. Public docs that still taught pre-Rust client APIs now use the
     generated app contract, Rust-owned SQLite runtime, generated

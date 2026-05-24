@@ -19,6 +19,12 @@ They are not a replacement for the whole relational data model.
 - Let Syncular own Yjs update persistence, merge/materialization, compaction,
   realtime wakeups, and sync retries.
 
+## App contract example
+
+CRDT fields are declared once in the generated app contract. The generated
+metadata then drives browser TypeScript, Rust, Swift, Kotlin, JVM, and native
+runtime behavior.
+
 ```ts
 tasks: syncedTable({
   table: 'tasks',

@@ -1,13 +1,17 @@
 ---
-title: Testing
-description: Test Rust-first Syncular apps with real SQLite clients and the Rust testkit.
+title: Rust / Native Testkit
+description: Test Rust and native Syncular apps with real SQLite clients and syncular-testkit.
 ---
 
-# Testing
+# Rust / Native Testkit
 
-Use `syncular-testkit` for Rust-first app tests. The goal is the same as the
-older JavaScript testkit: avoid mocking Syncular internals while still keeping
-tests local, deterministic, and fast.
+Use `syncular-testkit` for Rust and native app tests. It is the Rust-side
+counterpart to the TypeScript `@syncular/testkit`: avoid mocking Syncular
+internals while still keeping tests local, deterministic, and fast.
+
+Use [Testing](/docs/testing) for TypeScript/server/browser testkit APIs. Use
+this page when the test opens generated Rust/native clients or validates native
+runtime behavior.
 
 ## Add the testkit
 
@@ -70,7 +74,7 @@ fn two_clients_sync_through_stateful_server() {
 }
 ```
 
-## What the testkit covers
+## What the Rust testkit covers
 
 The Rust testkit includes:
 

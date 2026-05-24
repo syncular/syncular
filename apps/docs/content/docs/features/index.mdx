@@ -5,9 +5,17 @@ description: Cross-platform Syncular capabilities independent of any one host bi
 
 # Features
 
-Feature guides describe product capabilities once, then link to binding- or
-server-specific details where needed. Use this section when you already
-understand the model and want to build a specific capability.
+Feature guides describe product capabilities once. Syncular's semantics are the
+same across browser TypeScript, Rust, Swift, Kotlin, JVM, React Native, and
+desktop hosts: typed local reads, generated mutations, scoped sync, realtime
+events, blobs, CRDT fields, encryption, and recovery all come from the same
+Rust runtime foundation.
+
+When a feature page includes code, the snippet is labeled by host surface. A
+TypeScript snippet usually means one of two things: app-contract/server
+configuration, or the browser/React binding. It is not the default client model
+for every app. Use [Client](/docs/client) for binding-specific setup and API
+details.
 
 ## Schema and data
 

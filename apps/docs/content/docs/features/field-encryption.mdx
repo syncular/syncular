@@ -19,7 +19,7 @@ bindings.
 The runtime uses authenticated encryption for payloads and exposes helper
 methods for symmetric keys, passphrase-derived keys, and asymmetric key sharing.
 
-## Declare encrypted fields
+## App contract example
 
 ```ts
 import { encryptedField, syncedTable } from '@syncular/typegen';
@@ -34,7 +34,10 @@ tasks: syncedTable({
 });
 ```
 
-## Configure runtime keys
+The TypeScript app contract is the authored source for generated metadata; the
+Rust runtime and all bindings consume the generated encryption rules.
+
+## Browser TypeScript runtime keys
 
 Configure keys before applying encrypted mutations or processing encrypted
 pulls.

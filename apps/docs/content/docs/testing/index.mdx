@@ -1,17 +1,29 @@
 ---
 title: Testing
-description: Runner-agnostic testing for Syncular with @syncular/testkit.
+description: Test Syncular apps with TypeScript and Rust testkits instead of broad mocks.
 ---
 
 # Testing
 
-Use `@syncular/testkit` to test Syncular behavior across:
+Syncular has two public testkit surfaces:
+
+- `@syncular/testkit` for TypeScript, server, browser, and package-level tests.
+- `syncular-testkit` for Rust/native app tests against generated schemas and
+  the Rust runtime.
+
+Use these instead of mocking Syncular internals. Both testkits aim for the same
+shape: real local SQLite behavior, real sync semantics, deterministic fixtures,
+and app-owned domain assertions.
+
+Use `@syncular/testkit` to test TypeScript/server/browser behavior across:
 
 - fast in-process tests
 - real HTTP integration tests
 - runtime-oriented tests (node, deno, cloudflare)
 
-The API is test-runner agnostic. You can use Bun, Vitest, Jest, or other runners without changing testkit code.
+The TypeScript API is test-runner agnostic. You can use Bun, Vitest, Jest, or
+other runners without changing testkit code. For Rust/native generated clients,
+use [Rust / Native Testkit](/docs/client/testing).
 
 If you are still evaluating whether Syncular is trustworthy enough to adopt, start with [Testing & Confidence](/docs/start/testing-and-confidence).
 
@@ -35,6 +47,9 @@ If you are still wiring the system itself, use [Client](/docs/client), [Server](
   <Card title="Runtime Patterns" href="/docs/testing/runtime">
     Share server handlers and runtime helpers across node/deno/cloudflare tests
   </Card>
+  <Card title="Rust / Native Testkit" href="/docs/client/testing">
+    Test generated Rust/native clients with `syncular-testkit` and real runtime clients
+  </Card>
   <Card title="Real-World Examples" href="/docs/testing/examples-offline-reconnect">
     Production-style flows for offline reconnect, realtime collaboration, and runtime release smoke checks
   </Card>
@@ -44,6 +59,8 @@ If you are still wiring the system itself, use [Client](/docs/client), [Server](
 </Cards>
 
 ## API groups
+
+These groups refer to the TypeScript `@syncular/testkit` package:
 
 | Group | Main exports |
 |---|---|

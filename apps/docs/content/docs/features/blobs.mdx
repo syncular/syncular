@@ -19,11 +19,13 @@ and storage adapters.
 - Keep image resizing, thumbnail generation, and file picker behavior in the
   app layer.
 
-## Client flow
+## Binding examples
 
 Browser and native clients expose blob operations through the generated runtime
 surface. The app stores the blob locally first, writes a generated mutation that
 references the blob, then lets the runtime upload and retry.
+
+### Browser TypeScript
 
 ```ts
 const ref = await syncular.blobs.store(file, {
@@ -34,6 +36,11 @@ await syncular.mutations.tasks.update(taskId, {
   image: ref,
 });
 ```
+
+Rust, Swift, Kotlin, JVM, React Native, and desktop hosts use the same blob
+lifecycle through their generated clients or native bindings. Keep host-specific
+file picker, byte stream, and background-upload policy in the app shell; keep
+blob refs in synced rows.
 
 Queued blob uploads are part of the same runtime event model as rows, outbox,
 conflicts, and presence. UI shells should subscribe to blob events instead of

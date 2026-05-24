@@ -15,6 +15,10 @@ Syncular reports failures through three layers:
 Use all three. Direct errors are for the command that failed, diagnostics are
 for logging and operations, and aggregate status is for user-facing UI.
 
+Examples on this page use browser TypeScript and React because they show UI
+handling. Native hosts receive the same stable error codes, diagnostics, and
+lifecycle state through generated Swift/Kotlin/Java wrappers.
+
 ## What you'll learn
 
 - How Syncular classifies client and server errors
@@ -23,7 +27,7 @@ for logging and operations, and aggregate status is for user-facing UI.
 - How to show connection, outbox, and conflict state in React
 - How to handle auth, network, conflict, and migration/schema failures
 
-## Error shape
+## Browser TypeScript error shape
 
 Browser and worker errors are normalized to Syncular client errors when
 possible:
@@ -54,7 +58,7 @@ Server-originated codes use stable `sync.*` names such as
 codes such as `realtime.reconnect_scheduled`, `sync.auth_required`,
 `auth.refresh_failed`, or `blob.upload_failed`.
 
-## Runtime diagnostics
+## Browser TypeScript diagnostics
 
 Pass a diagnostics sink when opening the generated app database or managed
 client:

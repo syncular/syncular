@@ -19,7 +19,13 @@ through the same Syncular write path.
 - Refuse undo when the current local row no longer matches the recorded command
   precondition.
 
-## Rust flow
+## Binding examples
+
+Command history is generated-client behavior. Rust and browser TypeScript expose
+it today; Swift/Kotlin wrappers should follow the same command-history
+semantics when their generated mutation APIs are mature enough.
+
+### Rust
 
 ```rust
 client.commit_with_history("rename-task", |mutations| {
@@ -35,8 +41,22 @@ if client.command_history().can_redo()? {
 }
 ```
 
-Browser generated clients expose the same concept through wrapped mutation
-surfaces when command history is enabled.
+### Browser TypeScript
+
+```ts
+await syncular.mutations.tasks.update(taskId, {
+  title: 'Next title',
+});
+
+if (await syncular.commandHistory.canUndo()) {
+  await syncular.commandHistory.undoLast();
+}
+
+await syncular.commandHistory.redoLast();
+```
+
+Browser generated clients wrap mutation surfaces with command-history capture
+when command history is available on the generated app database.
 
 ## Watch-outs
 
