@@ -1,11 +1,15 @@
 #[cfg(feature = "native")]
 use crate::app_schema::validate_app_schema_runtime_features;
 use crate::app_schema::{
-    default_app_schema, validate_auth_lease_issue_request_against_app_schema,
-    validate_auth_lease_issue_response_against_app_schema,
-    validate_auth_lease_payload_against_app_schema, validate_blob_encryption_against_app_schema,
-    validate_blob_runtime_against_app_schema, validate_encrypted_crdt_against_app_schema,
+    default_app_schema, validate_auth_lease_payload_against_app_schema,
+    validate_blob_encryption_against_app_schema, validate_encrypted_crdt_against_app_schema,
     validate_field_encryption_rules_against_app_schema, AppSchema, AppTableMetadata,
+};
+#[cfg(feature = "native")]
+use crate::app_schema::{
+    validate_auth_lease_issue_request_against_app_schema,
+    validate_auth_lease_issue_response_against_app_schema,
+    validate_blob_runtime_against_app_schema,
 };
 use crate::binary_snapshot::{
     BinarySnapshotCell, BinarySnapshotPayload, BorrowedBinarySnapshotCell,
@@ -47,10 +51,12 @@ use crate::limits::{
 };
 use crate::protocol::*;
 #[cfg(feature = "native")]
+use crate::store::next_blob_upload_retry_at;
+#[cfg(feature = "native")]
 use crate::store::MAX_BLOB_UPLOAD_RETRIES;
 use crate::store::{
-    next_blob_upload_retry_at, next_retry_at, now_ms, OutboxCommit, SubscriptionState,
-    SyncStateStore, SyncStore, SyncStoreTx, VerifiedRoot, MAX_SYNC_RETRIES,
+    next_retry_at, now_ms, OutboxCommit, SubscriptionState, SyncStateStore, SyncStore, SyncStoreTx,
+    VerifiedRoot, MAX_SYNC_RETRIES,
 };
 #[cfg(feature = "demo-todo-fixture")]
 use crate::store::{DemoTaskStore, Task};

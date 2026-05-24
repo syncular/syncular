@@ -2,7 +2,13 @@
 name = "syncular-protocol"
 version = "0.1.0"
 edition = "2021"
-publish = false
+description = "Wire protocol and integrity types for Rust-first Syncular clients."
+license = "Apache-2.0"
+repository = "https://github.com/syncular/syncular"
+homepage = "https://syncular.dev"
+readme = "README.md"
+keywords = ["syncular", "sync", "offline", "protocol"]
+categories = ["data-structures", "encoding"]
 
 [dependencies]
 hex = "0.4"

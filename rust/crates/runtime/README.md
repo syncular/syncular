@@ -275,7 +275,7 @@ The CLI and native facade default to the Diesel store. Use `--store rusqlite`
 only when validating the alternate storage backend:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --store rusqlite \
   --base-url http://127.0.0.1:65024/sync \
   --db .context/syncular-rusqlite-poc.sqlite \
@@ -288,7 +288,7 @@ Both stores apply embedded SQL migrations and record applied versions in the
 local `sync_migrations` table. Inspect migration state with:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --store rusqlite \
   --db .context/syncular-rusqlite-poc.sqlite \
   migrations
@@ -298,7 +298,7 @@ New local writes also stamp each outbox commit with the embedded schema version
 from `src/migrations.rs`. Inspect queued commits with:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --store rusqlite \
   --db .context/syncular-rusqlite-poc.sqlite \
   outbox
@@ -322,7 +322,7 @@ Rejected operations that return conflict or error results are stored in
 `sync_conflicts`. Inspect them with:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --store rusqlite \
   --db .context/syncular-rusqlite-poc.sqlite \
   conflicts
@@ -331,7 +331,7 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
 Resolve a pending conflict by marking it with a strategy string:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --store rusqlite \
   --db .context/syncular-rusqlite-poc.sqlite \
   resolve-conflict <conflict-id> keep-server
@@ -341,7 +341,7 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
 `keep-local`, use the retry helper:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --store rusqlite \
   --db .context/syncular-rusqlite-poc.sqlite \
   retry-conflict-keep-local <conflict-id>
@@ -387,21 +387,21 @@ bash rust/examples/todo-app/native-smokes/run-local.sh
 Then, from the repo root:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --base-url http://127.0.0.1:65024/sync \
   --db .context/syncular-client.sqlite \
   --actor-id user-rust \
   --project-id p0 \
   add-task "Rust task"
 
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --base-url http://127.0.0.1:65024/sync \
   --db .context/syncular-client.sqlite \
   --actor-id user-rust \
   --project-id p0 \
   sync
 
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --db .context/syncular-client.sqlite \
   list-tasks
 ```
@@ -409,7 +409,7 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
 To exercise a generated partial upsert helper through the demo CLI:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --base-url http://127.0.0.1:65024/sync \
   --db .context/syncular-client.sqlite \
   --actor-id user-rust \
@@ -425,7 +425,7 @@ falls back to cursor sync when the payload is too large or a full recovery is
 required. To watch for realtime events:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --base-url http://127.0.0.1:65024/sync \
   --db .context/syncular-watch.sqlite \
   --client-id rust-watch \
@@ -433,7 +433,7 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
   --project-id p0 \
   sync
 
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --base-url http://127.0.0.1:65024/sync \
   --db .context/syncular-watch.sqlite \
   --client-id rust-watch \
@@ -450,7 +450,7 @@ effective scopes to route scoped realtime messages.
 The Rust client also supports Syncular's optional WebSocket push path:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --base-url http://127.0.0.1:65024/sync \
   --db .context/syncular-ws-push.sqlite \
   --client-id rust-ws-push \
@@ -458,7 +458,7 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
   --project-id p0 \
   add-task "WS push task"
 
-cargo run --manifest-path rust/Cargo.toml -p syncular-client -- \
+cargo run --manifest-path rust/Cargo.toml -p syncular-client --features cli -- \
   --base-url http://127.0.0.1:65024/sync \
   --db .context/syncular-ws-push.sqlite \
   --client-id rust-ws-push \

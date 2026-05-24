@@ -2,14 +2,20 @@
 name = "syncular-testkit"
 version = "0.1.0"
 edition = "2021"
-publish = false
+description = "Rust-first test fixtures, in-memory app server, and assertions for Syncular apps."
+license = "Apache-2.0"
+repository = "https://github.com/syncular/syncular"
+homepage = "https://syncular.dev"
+readme = "README.md"
+keywords = ["syncular", "testkit", "sqlite", "offline"]
+categories = ["development-tools::testing"]
 
 [dependencies]
 base64 = "0.22"
 p256 = { version = "0.13", features = ["ecdsa"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-syncular-runtime = { path = "../runtime", default-features = false, features = [
+syncular-runtime = { version = "0.1.0", path = "../runtime", default-features = false, features = [
     "native",
     "demo-todo-native-fixture",
     "crdt-yjs",

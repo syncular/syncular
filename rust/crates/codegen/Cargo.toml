@@ -2,7 +2,13 @@
 name = "syncular-codegen"
 version = "0.1.0"
 edition = "2021"
-publish = false
+description = "Schema introspection and Rust code generator for Syncular app clients."
+license = "Apache-2.0"
+repository = "https://github.com/syncular/syncular"
+homepage = "https://syncular.dev"
+readme = "README.md"
+keywords = ["syncular", "codegen", "sqlite", "diesel"]
+categories = ["development-tools"]
 
 [[bin]]
 name = "syncular-codegen"

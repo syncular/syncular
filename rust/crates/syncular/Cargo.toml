@@ -1,0 +1,11 @@
+[package]
+name = "syncular"
+version = "0.1.0"
+edition = "2021"
+description = "Reserved canonical crate name for the Rust-first Syncular client SDK."
+license = "Apache-2.0"
+repository = "https://github.com/syncular/syncular"
+homepage = "https://syncular.dev"
+readme = "README.md"
+keywords = ["syncular", "sqlite", "offline", "sync"]
+categories = ["database"]
