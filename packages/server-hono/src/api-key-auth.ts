@@ -9,6 +9,7 @@ import type { ServerSyncDialect } from '@syncular/server';
 import type { Context } from 'hono';
 import { type Kysely, sql } from 'kysely';
 import { type ApiKeyType, ApiKeyTypeSchema } from './console/schemas';
+import { syncError } from './errors';
 
 interface SyncApiKeysTable {
   key_id: string;
@@ -156,11 +157,11 @@ export function apiKeyAuthMiddleware<DB extends ApiKeyDb>(
     const result = await validateApiKey(db, dialect, authHeader);
 
     if (!result) {
-      return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      return syncError(c, 401, 'sync.auth_required');
     }
 
     if (!allowedTypes.includes(result.keyType)) {
-      return c.json({ error: 'FORBIDDEN', message: 'Invalid key type' }, 403);
+      return syncError(c, 403, 'sync.forbidden', 'Invalid key type');
     }
 
     // Attach to context for downstream handlers

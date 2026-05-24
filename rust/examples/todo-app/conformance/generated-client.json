@@ -1,0 +1,84 @@
+{
+  "task": {
+    "newInput": {
+      "id": "task-native",
+      "title": "Native smoke",
+      "completed": 1,
+      "user_id": "user-rust",
+      "project_id": "project-rust"
+    },
+    "newOperation": {
+      "table": "tasks",
+      "row_id": "task-native",
+      "op": "upsert",
+      "payload": {
+        "title": "Native smoke",
+        "completed": 1,
+        "user_id": "user-rust",
+        "project_id": "project-rust"
+      },
+      "base_version": 0
+    },
+    "patchOperation": {
+      "table": "tasks",
+      "row_id": "task-native",
+      "op": "upsert",
+      "payload": {
+        "completed": 0
+      },
+      "base_version": 11
+    },
+    "deleteOperation": {
+      "table": "tasks",
+      "row_id": "task-native",
+      "op": "delete",
+      "payload": null,
+      "base_version": 12
+    },
+    "subscription": {
+      "id": "sub-tasks",
+      "table": "tasks",
+      "scopes": {
+        "user_id": "user-rust",
+        "project_id": "project-rust"
+      },
+      "params": {},
+      "bootstrapPhase": 0
+    },
+    "nativeQuery": {
+      "sql": "select \"id\", \"title\", \"completed\", \"user_id\", \"project_id\", \"server_version\", \"image\", \"title_yjs_state\", \"description\" from \"tasks\" where \"user_id\" = ? order by \"server_version\" desc limit 5",
+      "params": ["user-rust"],
+      "tables": ["tasks"]
+    },
+    "typescriptKyselyQuery": {
+      "sql": "select \"id\", \"title\", \"completed\", \"user_id\", \"project_id\", \"server_version\", \"image\", \"title_yjs_state\", \"description\" from \"tasks\" where \"user_id\" = ? order by \"server_version\" desc limit ?",
+      "params": ["user-rust", 5],
+      "tables": ["tasks"]
+    }
+  },
+  "crdt": {
+    "field": {
+      "table": "tasks",
+      "rowId": "task-native",
+      "field": "title"
+    },
+    "applyTextRequest": {
+      "table": "tasks",
+      "rowId": "task-native",
+      "field": "title",
+      "nextText": "Native CRDT smoke"
+    },
+    "enqueueTextRequest": {
+      "table": "tasks",
+      "rowId": "task-native",
+      "field": "title",
+      "nextText": "Queued Native CRDT smoke"
+    },
+    "compactionRequest": {
+      "table": "tasks",
+      "rowId": "task-native",
+      "field": "title",
+      "minUncheckpointedUpdates": 1
+    }
+  }
+}

@@ -1,0 +1,53 @@
+---
+title: Client
+description: Rust-first Syncular client docs for Rust, browser TypeScript, Swift, Kotlin, and JVM apps.
+---
+
+# Client
+
+This section covers the canonical Syncular client runtime and its host
+bindings. The Rust runtime owns SQLite, sync state, outbox, conflicts, blobs,
+CRDT persistence, encryption, and native bindings.
+
+The current public shape is:
+
+- Rust reads use Diesel query-builder semantics.
+- Browser TypeScript reads use Kysely over a Rust-owned SQLite Worker.
+- Swift and Kotlin use generated small query DSLs over generic native bindings.
+- Writes go through generated Syncular mutations, not raw app-table SQL.
+- App-specific code is generated from migrations plus a typed app contract that
+  produces `generated/syncular.codegen.json` as the Rust-codegen handoff.
+
+<Cards>
+  <Card title="Quick Start" href="/docs/client/quick-start" description="Generate app clients from migrations and schema config" />
+  <Card title="App Targets" href="/docs/client/app-targets" description="Choose browser, native, desktop, React Native, or server runtime targets" />
+  <Card title="Browser TypeScript" href="/docs/client/browser" description="Use Kysely against Rust-owned SQLite in a Worker" />
+  <Card title="React" href="/docs/client/react" description="Use SyncProvider, useSyncQuery, mutations, presence, and status hooks" />
+  <Card title="React Native / Expo" href="/docs/client/react-native-expo" description="Use the native module bridge from React Native shells" />
+  <Card title="Tauri / Electron" href="/docs/client/tauri-electron" description="Use generated clients from desktop shells without raw synced-table writes" />
+  <Card title="Native Lifecycle" href="/docs/client/native" description="Run the shared native worker, event stream, presence, CRDT, and blob lifecycle" />
+  <Card title="Rust" href="/docs/client/rust" description="Use Diesel reads and generated mutations from the Rust SDK" />
+  <Card title="Swift" href="/docs/client/swift" description="Use generated Swift query DSLs, mutations, and native event streams" />
+  <Card title="Kotlin / Android" href="/docs/client/kotlin-android" description="Use generated Kotlin query DSLs, Android lifecycle, and event flows" />
+  <Card title="JVM" href="/docs/client/jvm" description="Use the Java/JVM binding and packaged native runtime" />
+  <Card title="Rust / Native Testkit" href="/docs/client/testing" description="Use syncular-testkit for Rust and native app tests" />
+  <Card title="Packaging" href="/docs/client/packaging" description="Build local Apple, Android, and JVM native packages" />
+</Cards>
+
+## What stays generic
+
+Low-level runtime and binding APIs are schema-agnostic. They expose SQLite,
+sync, events, blobs, CRDT fields, encryption, conflict resolution, and worker
+queues without knowing app table names.
+
+## What gets generated
+
+Generated app code provides the type-safe table layer:
+
+- table metadata and migration-derived schemas
+- Rust Diesel row types and Syncular mutation builders
+- TypeScript Kysely DB types, mutation helpers, subscriptions, and row deltas
+- Swift/Kotlin rows, query DSLs, mutations, subscriptions, CRDT helpers, and
+  row-delta helpers
+
+This keeps the framework reusable while still giving app code concrete types.

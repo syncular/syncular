@@ -1,7 +1,7 @@
 /**
  * @syncular/server-hono - WebSocket helpers for realtime sync wake-ups
  *
- * WebSockets are used only as a "wake up" mechanism; clients must still pull.
+ * WebSockets deliver binary sync-pack deltas or explicit pull-required wake-ups.
  * Also supports presence tracking for collaborative features.
  */
 
@@ -37,20 +37,97 @@ export interface WsPushResponseData {
   results: Array<{ opIndex: number; status: string; [k: string]: unknown }>;
 }
 
+export type WebSocketSyncPackEncoding = 'binary-sync-pack-v1';
+
+export interface WsHelloData {
+  protocolVersion: 1;
+  sessionId: string;
+  shardKey: string;
+  actorId: string;
+  clientId: string;
+  transportPath: 'direct' | 'relay';
+  syncPackEncoding: WebSocketSyncPackEncoding | null;
+  cursor: number;
+  latestCursor: number;
+  scopeCount: number;
+  requiresSync: boolean;
+}
+
+export type WebSocketSyncReason =
+  | 'payload-too-large'
+  | 'reconnect-catchup'
+  | 'resync-required'
+  | 'server-wakeup';
+
+export const DEFAULT_WS_SYNC_PACK_MAX_BYTES = 64 * 1024;
+
+export interface WebSocketSyncMetadata {
+  reason?: WebSocketSyncReason;
+  requiresPull?: boolean;
+  droppedCount?: number;
+  payloadBytes?: number;
+}
+
+interface WebSocketReplayRecord {
+  scopeKeys: string[];
+  cursor: number;
+  syncPack?: Uint8Array;
+  payloadBytes?: number;
+  syncPackForConnection?: (
+    connection: WebSocketConnection
+  ) => Uint8Array | undefined;
+  hasSharedPayload: boolean;
+}
+
+export interface WebSocketRealtimeSubscription {
+  id: string;
+  table: string;
+  scopes: Record<string, string | string[]>;
+  scopeKeys: string[];
+  cursor: number;
+  verifiedRoot?: string | null;
+}
+
 /**
  * WebSocket event data for sync notifications
  */
 export interface SyncWebSocketEvent {
   /** Event type */
-  event: 'sync' | 'heartbeat' | 'error' | 'presence' | 'push-response';
+  event:
+    | 'hello'
+    | 'sync'
+    | 'heartbeat'
+    | 'error'
+    | 'presence'
+    | 'push-response';
   /** Data payload */
   data: {
+    /** Realtime protocol version (for hello events) */
+    protocolVersion?: number;
+    /** Server-generated websocket session id (for hello events) */
+    sessionId?: string;
+    /** Stable sequencer/fanout shard key (for hello events) */
+    shardKey?: string;
     /** New cursor position (for sync events) */
     cursor?: number;
-    /** Commit actor metadata (for sync events with inline changes) */
-    actorId?: string;
-    /** Commit timestamp metadata (for sync events with inline changes) */
-    createdAt?: string;
+    /** Latest server cursor known when the session was accepted */
+    latestCursor?: number;
+    /** Number of effective scope keys attached to this connection */
+    scopeCount?: number;
+    /** Whether the client should run catch-up sync */
+    requiresSync?: boolean;
+    /** Whether this notification intentionally requires HTTP pull recovery */
+    requiresPull?: boolean;
+    /** Number of realtime payload notifications skipped while waiting for ACK */
+    droppedCount?: number;
+    /** Why the server sent this sync notification */
+    reason?: WebSocketSyncReason;
+    /** Negotiated binary sync-pack encoding, if any */
+    syncPackEncoding?: WebSocketSyncPackEncoding | null;
+    /** Client/device id (for hello events) */
+    clientId?: string;
+    /** Transport path used by this connection */
+    transportPath?: 'direct' | 'relay';
     /** Error message (for error events) */
     error?: string;
     /** Presence data (for presence events) */
@@ -78,12 +155,12 @@ export interface SyncWebSocketEvent {
  * WebSocket connection controller for managing active connections
  */
 export interface WebSocketConnection {
-  /** Send a sync notification, optionally with inline change data */
-  sendSync(
-    cursor: number,
-    changes?: unknown[],
-    metadata?: { actorId?: string; createdAt?: string }
-  ): void;
+  /** Send session/capability handshake metadata */
+  sendHello(data: WsHelloData): void;
+  /** Send a sync wake-up notification. */
+  sendSync(cursor: number, metadata?: WebSocketSyncMetadata): void;
+  /** Send an encoded binary sync-pack delta */
+  sendSyncPack(bytes: Uint8Array): void;
   /** Send a heartbeat */
   sendHeartbeat(): void;
   /** Send a presence event */
@@ -112,15 +189,23 @@ export interface WebSocketConnection {
   ownerKey: string;
   /** Transport path used by this connection. */
   transportPath: 'direct' | 'relay';
+  /** Optional binary sync-pack encoding negotiated by the client. */
+  syncPackEncoding?: WebSocketSyncPackEncoding | null;
 }
 
-function safeSend(ws: WSContext, message: string): boolean {
+function safeSend(ws: WSContext, message: string | ArrayBuffer): boolean {
   try {
     ws.send(message);
     return true;
   } catch {
     return false;
   }
+}
+
+export function createRealtimeSessionId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.();
+  if (randomUuid) return randomUuid;
+  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 export function createWebSocketConnection(
@@ -130,6 +215,7 @@ export function createWebSocketConnection(
     clientId: string;
     ownerKey: string;
     transportPath: 'direct' | 'relay';
+    syncPackEncoding?: WebSocketSyncPackEncoding | null;
   }
 ): WebSocketConnection {
   let closed = false;
@@ -143,26 +229,46 @@ export function createWebSocketConnection(
     clientId: args.clientId,
     ownerKey: args.ownerKey,
     transportPath: args.transportPath,
-    sendSync(
-      cursor: number,
-      changes?: unknown[],
-      metadata?: { actorId?: string; createdAt?: string }
-    ) {
+    syncPackEncoding: args.syncPackEncoding ?? null,
+    sendHello(data: WsHelloData) {
+      if (!connection.isOpen) return;
+      const ok = safeSend(
+        ws,
+        JSON.stringify({
+          event: 'hello',
+          data: { ...data, timestamp: Date.now() },
+        })
+      );
+      if (!ok) closed = true;
+    },
+    sendSync(cursor: number, metadata?: WebSocketSyncMetadata) {
       if (!connection.isOpen) return;
       const payload: Record<string, unknown> = {
         cursor,
         timestamp: Date.now(),
       };
-      if (changes && changes.length > 0) {
-        payload.changes = changes;
+      if (metadata?.reason) {
+        payload.reason = metadata.reason;
       }
-      if (metadata?.actorId) {
-        payload.actorId = metadata.actorId;
+      if (metadata?.requiresPull) {
+        payload.requiresPull = true;
       }
-      if (metadata?.createdAt) {
-        payload.createdAt = metadata.createdAt;
+      if (metadata?.droppedCount !== undefined) {
+        payload.droppedCount = metadata.droppedCount;
+      }
+      if (metadata?.payloadBytes !== undefined) {
+        payload.payloadBytes = metadata.payloadBytes;
       }
       const ok = safeSend(ws, JSON.stringify({ event: 'sync', data: payload }));
+      if (!ok) closed = true;
+    },
+    sendSyncPack(bytes: Uint8Array) {
+      if (!connection.isOpen) return;
+      const body = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength
+      ) as ArrayBuffer;
+      const ok = safeSend(ws, body);
       if (!ok) closed = true;
     },
     sendHeartbeat() {
@@ -235,6 +341,25 @@ export function createWebSocketConnection(
  */
 export class WebSocketConnectionManager {
   private readonly registry: RealtimeConnectionRegistry<WebSocketConnection>;
+  private readonly replayWindowSize: number;
+  private readonly maxSyncPackBytes: number;
+  private readonly replayRecords: WebSocketReplayRecord[] = [];
+  private readonly subscriptionsByOwnerKey = new Map<
+    string,
+    WebSocketRealtimeSubscription[]
+  >();
+  private replayDroppedThroughCursor = -1;
+  private readonly flowStateByConnection = new WeakMap<
+    WebSocketConnection,
+    {
+      lastAckedCursor: number;
+      lastSentCursor: number;
+      inFlightCursors: number[];
+      resyncRequired: boolean;
+      droppedCount: number;
+    }
+  >();
+  private readonly maxInFlightSyncsPerConnection: number;
 
   /**
    * In-memory presence tracking by scope key.
@@ -256,15 +381,41 @@ export class WebSocketConnectionManager {
 
   constructor(options?: {
     heartbeatIntervalMs?: number;
+    maxInFlightSyncsPerConnection?: number;
+    maxSyncPackBytes?: number;
+    replayWindowSize?: number;
     onPresenceChange?: WebSocketConnectionManager['onPresenceChange'];
   }) {
     this.onPresenceChange = options?.onPresenceChange;
+    this.maxInFlightSyncsPerConnection =
+      options?.maxInFlightSyncsPerConnection ?? 64;
+    this.maxSyncPackBytes = normalizeMaxSyncPackBytes(
+      options?.maxSyncPackBytes
+    );
+    this.replayWindowSize = normalizeReplayWindowSize(
+      options?.replayWindowSize
+    );
     this.registry = new RealtimeConnectionRegistry({
       heartbeatIntervalMs: options?.heartbeatIntervalMs,
       onOwnerDisconnected: (ownerKey) => {
         this.cleanupOwnerPresence(ownerKey);
       },
     });
+  }
+
+  recordAck(connection: WebSocketConnection, cursor: number): void {
+    if (!Number.isSafeInteger(cursor) || cursor < 0) return;
+    const state = this.getFlowState(connection);
+    if (cursor <= state.lastAckedCursor) return;
+    state.lastAckedCursor = cursor;
+    state.inFlightCursors = state.inFlightCursors.filter(
+      (inFlightCursor) => inFlightCursor > cursor
+    );
+    if (cursor >= state.lastSentCursor) {
+      state.inFlightCursors = [];
+      state.resyncRequired = false;
+      state.droppedCount = 0;
+    }
   }
 
   /**
@@ -287,6 +438,86 @@ export class WebSocketConnectionManager {
   }
 
   /**
+   * Update the active pull subscriptions for an owner. Realtime binary deltas
+   * use these records to emit the same per-subscription integrity contract as
+   * HTTP pull responses.
+   */
+  updateConnectionSubscriptions(
+    ownerKey: string,
+    subscriptions: WebSocketRealtimeSubscription[]
+  ): void {
+    if (subscriptions.length === 0) {
+      this.subscriptionsByOwnerKey.delete(ownerKey);
+      this.registry.updateOwnerScopeKeys(ownerKey, []);
+      return;
+    }
+
+    this.subscriptionsByOwnerKey.set(
+      ownerKey,
+      subscriptions.map((subscription) => ({
+        ...subscription,
+        scopeKeys: [...subscription.scopeKeys],
+      }))
+    );
+    this.registry.updateOwnerScopeKeys(
+      ownerKey,
+      uniqueScopeKeys(
+        subscriptions.flatMap((subscription) => subscription.scopeKeys)
+      )
+    );
+  }
+
+  updateConnectionSubscriptionRoots(
+    ownerKey: string,
+    updates: Array<{
+      subscriptionId: string;
+      cursor: number;
+      verifiedRoot: string;
+    }>
+  ): void {
+    if (updates.length === 0) return;
+    const subscriptions = this.subscriptionsByOwnerKey.get(ownerKey);
+    if (!subscriptions || subscriptions.length === 0) return;
+
+    const updatesBySubscription = new Map(
+      updates.map((update) => [update.subscriptionId, update])
+    );
+    let changed = false;
+    const next = subscriptions.map((subscription) => {
+      const update = updatesBySubscription.get(subscription.id);
+      if (!update) return subscription;
+      changed = true;
+      return {
+        ...subscription,
+        cursor: Math.max(subscription.cursor, update.cursor),
+        verifiedRoot: update.verifiedRoot,
+      };
+    });
+    if (changed) {
+      this.subscriptionsByOwnerKey.set(ownerKey, next);
+    }
+  }
+
+  getConnectionSubscriptions(
+    ownerKey: string
+  ): readonly WebSocketRealtimeSubscription[] {
+    return this.subscriptionsByOwnerKey.get(ownerKey) ?? [];
+  }
+
+  getConnectionsForScopeKeys(
+    scopeKeys: Iterable<string>,
+    options?: { excludeClientIds?: readonly string[] }
+  ): WebSocketConnection[] {
+    const connections: WebSocketConnection[] = [];
+    this.registry.forEachConnectionInScopeKeys(
+      scopeKeys,
+      (connection) => connections.push(connection),
+      options
+    );
+    return connections;
+  }
+
+  /**
    * Check whether a client is currently authorized/subscribed for a scope key.
    */
   isConnectionSubscribedToScopeKey(
@@ -294,6 +525,62 @@ export class WebSocketConnectionManager {
     scopeKey: string
   ): boolean {
     return this.registry.isOwnerSubscribedToScopeKey(ownerKey, scopeKey);
+  }
+
+  getConnectionScopeKeys(ownerKey: string): readonly string[] {
+    return this.registry.getScopeKeysForOwner(ownerKey);
+  }
+
+  /**
+   * Replay recent websocket delta notifications for a reconnecting client.
+   * Returns false when the requested cursor range is no longer fully in memory,
+   * so the caller can send an explicit pull-required recovery frame.
+   */
+  replayScopeKeys(
+    connection: WebSocketConnection,
+    scopeKeys: string[],
+    fromCursor: number,
+    latestCursor: number
+  ): boolean {
+    if (
+      !Number.isSafeInteger(fromCursor) ||
+      !Number.isSafeInteger(latestCursor)
+    ) {
+      return false;
+    }
+    if (latestCursor <= fromCursor) {
+      return true;
+    }
+    if (scopeKeys.length === 0 || this.replayRecords.length === 0) {
+      return false;
+    }
+    if (fromCursor < this.replayDroppedThroughCursor) {
+      return false;
+    }
+
+    const scopeKeySet = new Set(scopeKeys);
+    const records = this.replayRecords.filter(
+      (record) =>
+        record.cursor > fromCursor &&
+        record.cursor <= latestCursor &&
+        record.scopeKeys.some((scopeKey) => scopeKeySet.has(scopeKey))
+    );
+    if (records.length === 0) {
+      return false;
+    }
+
+    const lastRecordCursor = records.reduce(
+      (cursor, record) => Math.max(cursor, record.cursor),
+      fromCursor
+    );
+    if (lastRecordCursor < latestCursor) {
+      return false;
+    }
+
+    for (const record of records) {
+      this.deliverSyncRecordToConnection(connection, record);
+    }
+    return true;
   }
 
   // =========================================================================
@@ -590,12 +877,6 @@ export class WebSocketConnectionManager {
   // =========================================================================
 
   /**
-   * Maximum serialized size (bytes) for inline WS change delivery.
-   * Larger payloads fall back to cursor-only notification.
-   */
-  private static readonly WS_INLINE_MAX_BYTES = 64 * 1024;
-
-  /**
    * Notify clients that new data is available for the given scopes.
    * Dedupes connections that match multiple scopes.
    */
@@ -604,31 +885,32 @@ export class WebSocketConnectionManager {
     cursor: number,
     opts?: {
       excludeClientIds?: string[];
-      changes?: unknown[];
-      actorId?: string;
-      createdAt?: string;
+      syncPack?: Uint8Array;
+      syncPackForConnection?: (
+        connection: WebSocketConnection
+      ) => Uint8Array | undefined;
     }
   ): void {
-    // Size guard: only deliver inline changes if under threshold
-    let inlineChanges: unknown[] | undefined;
-    if (opts?.changes && opts.changes.length > 0) {
-      const serialized = JSON.stringify(opts.changes);
-      if (serialized.length <= WebSocketConnectionManager.WS_INLINE_MAX_BYTES) {
-        inlineChanges = opts.changes;
-      }
-    }
+    const websocketSyncPack =
+      opts?.syncPack && opts.syncPack.byteLength <= this.maxSyncPackBytes
+        ? opts.syncPack
+        : undefined;
+    const replayRecord: WebSocketReplayRecord = {
+      scopeKeys: [...scopeKeys],
+      cursor,
+      syncPack: websocketSyncPack,
+      payloadBytes: opts?.syncPack?.byteLength,
+      syncPackForConnection: opts?.syncPackForConnection,
+      hasSharedPayload:
+        opts?.syncPack !== undefined ||
+        opts?.syncPackForConnection !== undefined,
+    };
+    this.rememberReplayRecord(replayRecord);
 
     this.registry.forEachConnectionInScopeKeys(
       scopeKeys,
       (conn) => {
-        if (inlineChanges) {
-          conn.sendSync(cursor, inlineChanges, {
-            actorId: opts?.actorId,
-            createdAt: opts?.createdAt,
-          });
-        } else {
-          conn.sendSync(cursor);
-        }
+        this.deliverSyncRecordToConnection(conn, replayRecord);
       },
       { excludeClientIds: opts?.excludeClientIds }
     );
@@ -640,7 +922,15 @@ export class WebSocketConnectionManager {
    */
   notifyAllClients(cursor: number): void {
     this.registry.forEachConnection((conn) => {
-      conn.sendSync(cursor);
+      if (this.shouldSendResyncRequired(conn, cursor)) {
+        this.sendResyncRequired(conn, cursor);
+        return;
+      }
+      this.markSyncSent(conn, cursor);
+      conn.sendSync(cursor, {
+        reason: 'server-wakeup',
+        requiresPull: true,
+      });
     });
   }
 
@@ -697,4 +987,148 @@ export class WebSocketConnectionManager {
     this.registry.closeAll(1000, 'server shutdown');
     this.presenceByScopeKey.clear();
   }
+
+  private getFlowState(connection: WebSocketConnection): {
+    lastAckedCursor: number;
+    lastSentCursor: number;
+    inFlightCursors: number[];
+    resyncRequired: boolean;
+    droppedCount: number;
+  } {
+    let state = this.flowStateByConnection.get(connection);
+    if (!state) {
+      state = {
+        lastAckedCursor: -1,
+        lastSentCursor: -1,
+        inFlightCursors: [],
+        resyncRequired: false,
+        droppedCount: 0,
+      };
+      this.flowStateByConnection.set(connection, state);
+    }
+    return state;
+  }
+
+  private shouldSendResyncRequired(
+    connection: WebSocketConnection,
+    cursor: number
+  ): boolean {
+    if (
+      this.maxInFlightSyncsPerConnection <= 0 ||
+      !Number.isSafeInteger(cursor) ||
+      cursor < 0
+    ) {
+      return false;
+    }
+    const state = this.getFlowState(connection);
+    if (cursor <= state.lastAckedCursor) return false;
+    return (
+      state.resyncRequired ||
+      state.inFlightCursors.length >= this.maxInFlightSyncsPerConnection
+    );
+  }
+
+  private markSyncSent(connection: WebSocketConnection, cursor: number): void {
+    if (
+      this.maxInFlightSyncsPerConnection <= 0 ||
+      !Number.isSafeInteger(cursor) ||
+      cursor < 0
+    ) {
+      return;
+    }
+    const state = this.getFlowState(connection);
+    if (cursor <= state.lastAckedCursor) return;
+    state.lastSentCursor = Math.max(state.lastSentCursor, cursor);
+    if (!state.inFlightCursors.includes(cursor)) {
+      state.inFlightCursors.push(cursor);
+    }
+  }
+
+  private sendResyncRequired(
+    connection: WebSocketConnection,
+    cursor: number
+  ): void {
+    const state = this.getFlowState(connection);
+    state.resyncRequired = true;
+    state.lastSentCursor = Math.max(state.lastSentCursor, cursor);
+    state.droppedCount += 1;
+    connection.sendSync(cursor, {
+      reason: 'resync-required',
+      requiresPull: true,
+      droppedCount: state.droppedCount,
+    });
+  }
+
+  private rememberReplayRecord(record: WebSocketReplayRecord): void {
+    if (
+      this.replayWindowSize <= 0 ||
+      record.scopeKeys.length === 0 ||
+      !Number.isSafeInteger(record.cursor) ||
+      record.cursor < 0
+    ) {
+      return;
+    }
+    this.replayRecords.push(record);
+    while (this.replayRecords.length > this.replayWindowSize) {
+      const dropped = this.replayRecords.shift();
+      if (dropped) {
+        this.replayDroppedThroughCursor = Math.max(
+          this.replayDroppedThroughCursor,
+          dropped.cursor
+        );
+      }
+    }
+  }
+
+  private deliverSyncRecordToConnection(
+    connection: WebSocketConnection,
+    record: WebSocketReplayRecord
+  ): void {
+    if (this.shouldSendResyncRequired(connection, record.cursor)) {
+      this.sendResyncRequired(connection, record.cursor);
+      return;
+    }
+
+    const connectionSyncPack =
+      record.syncPackForConnection?.(connection) ?? record.syncPack;
+    if (
+      connectionSyncPack &&
+      connectionSyncPack.byteLength <= this.maxSyncPackBytes &&
+      connection.syncPackEncoding === 'binary-sync-pack-v1'
+    ) {
+      this.markSyncSent(connection, record.cursor);
+      connection.sendSyncPack(connectionSyncPack);
+      return;
+    }
+
+    this.markSyncSent(connection, record.cursor);
+    connection.sendSync(record.cursor, {
+      reason:
+        connectionSyncPack || record.payloadBytes !== undefined
+          ? 'payload-too-large'
+          : 'server-wakeup',
+      requiresPull: true,
+      payloadBytes: connectionSyncPack?.byteLength ?? record.payloadBytes,
+    });
+  }
+}
+
+function normalizeMaxSyncPackBytes(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_WS_SYNC_PACK_MAX_BYTES;
+  if (!Number.isFinite(value)) return DEFAULT_WS_SYNC_PACK_MAX_BYTES;
+  return Math.max(0, Math.floor(value));
+}
+
+function normalizeReplayWindowSize(value: number | undefined): number {
+  if (value === undefined) return 64;
+  if (!Number.isFinite(value)) return 64;
+  return Math.max(0, Math.floor(value));
+}
+
+function uniqueScopeKeys(scopeKeys: Iterable<string>): string[] {
+  const unique = new Set<string>();
+  for (const scopeKey of scopeKeys) {
+    if (scopeKey) unique.add(scopeKey);
+  }
+  return Array.from(unique);
 }

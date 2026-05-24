@@ -445,6 +445,14 @@ describe('createConsoleGatewayRoutes', () => {
     activeClientCount: 1,
     minActiveClientCursor: 35,
     maxActiveClientCursor: 35,
+    snapshotChunkCount: 2,
+    snapshotChunkBytes: 120,
+    expiredSnapshotChunkCount: 1,
+    expiredSnapshotChunkBytes: 40,
+    snapshotArtifactCount: 1,
+    snapshotArtifactBytes: 1024,
+    expiredSnapshotArtifactCount: 0,
+    expiredSnapshotArtifactBytes: 0,
   };
 
   const betaStats: SyncStats = {
@@ -456,6 +464,14 @@ describe('createConsoleGatewayRoutes', () => {
     activeClientCount: 1,
     minActiveClientCursor: 18,
     maxActiveClientCursor: 18,
+    snapshotChunkCount: 3,
+    snapshotChunkBytes: 240,
+    expiredSnapshotChunkCount: 2,
+    expiredSnapshotChunkBytes: 160,
+    snapshotArtifactCount: 2,
+    snapshotArtifactBytes: 2048,
+    expiredSnapshotArtifactCount: 1,
+    expiredSnapshotArtifactBytes: 512,
   };
 
   const alphaTimeseries: TimeseriesStatsResponse = {
@@ -878,8 +894,10 @@ describe('createConsoleGatewayRoutes', () => {
     expect(noMatchResponse.status).toBe(400);
     const noMatchBody = (await noMatchResponse.json()) as {
       error: string;
+      details: { consoleError: string };
     };
-    expect(noMatchBody.error).toBe('NO_INSTANCES_SELECTED');
+    expect(noMatchBody.error).toBe('console.invalid_request');
+    expect(noMatchBody.details.consoleError).toBe('no_instances_selected');
   });
 
   it('merges stats and reports partial failures', async () => {
@@ -901,6 +919,8 @@ describe('createConsoleGatewayRoutes', () => {
 
     expect(body.commitCount).toBe(alphaStats.commitCount);
     expect(body.changeCount).toBe(alphaStats.changeCount);
+    expect(body.snapshotChunkBytes).toBe(alphaStats.snapshotChunkBytes);
+    expect(body.snapshotArtifactCount).toBe(alphaStats.snapshotArtifactCount);
     expect(body.maxCommitSeqByInstance.alpha).toBe(alphaStats.maxCommitSeq);
     expect(body.minCommitSeqByInstance.alpha).toBe(alphaStats.minCommitSeq);
     expect(body.partial).toBe(true);
@@ -1034,10 +1054,12 @@ describe('createConsoleGatewayRoutes', () => {
     expect(response.status).toBe(502);
     const body = (await response.json()) as {
       error: string;
-      failedInstances: Array<{ instanceId: string; reason: string }>;
+      details: {
+        failedInstances: Array<{ instanceId: string; reason: string }>;
+      };
     };
-    expect(body.error).toBe('DOWNSTREAM_UNAVAILABLE');
-    expect(body.failedInstances).toEqual([
+    expect(body.error).toBe('console.downstream_unavailable');
+    expect(body.details.failedInstances).toEqual([
       { instanceId: 'alpha', reason: 'HTTP 503', status: 503 },
       { instanceId: 'beta', reason: 'HTTP 503', status: 503 },
     ]);
@@ -1247,8 +1269,10 @@ describe('createConsoleGatewayRoutes', () => {
     const pruneBody = (await pruneWithoutInstance.json()) as {
       error: string;
       message: string;
+      details: { consoleError: string };
     };
-    expect(pruneBody.error).toBe('INSTANCE_REQUIRED');
+    expect(pruneBody.error).toBe('console.invalid_request');
+    expect(pruneBody.details.consoleError).toBe('instance_required');
 
     const handlersWithoutInstance = await app.request(
       'http://localhost/console/handlers',
@@ -1259,8 +1283,10 @@ describe('createConsoleGatewayRoutes', () => {
     expect(handlersWithoutInstance.status).toBe(400);
     const handlersBody = (await handlersWithoutInstance.json()) as {
       error: string;
+      details: { consoleError: string };
     };
-    expect(handlersBody.error).toBe('INSTANCE_REQUIRED');
+    expect(handlersBody.error).toBe('console.invalid_request');
+    expect(handlersBody.details.consoleError).toBe('instance_required');
   });
 
   it('proxies single-instance mutation and config endpoints', async () => {

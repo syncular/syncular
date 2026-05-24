@@ -14,6 +14,8 @@
 import type { ScopeValues, StoredScopes, SyncOp } from '@syncular/core';
 import type { DbExecutor } from '@syncular/server';
 import {
+  type AuditRowHistoryArgs,
+  type AuditRowHistoryRow,
   BaseServerSyncDialect,
   coerceIsoString,
   coerceNumber,
@@ -110,6 +112,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       .addColumn('meta', 'jsonb')
       .addColumn('result_json', 'jsonb')
       .addColumn('change_count', 'integer', (col) => col.notNull().defaultTo(0))
+      .addColumn('commit_digest', 'text')
+      .addColumn('commit_chain_root', 'text')
       .addColumn('affected_tables', sql`text[]`, (col) =>
         col.notNull().defaultTo(sql`ARRAY[]::text[]`)
       )
@@ -128,6 +132,10 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       ADD COLUMN IF NOT EXISTS partition_id text NOT NULL DEFAULT 'default'`.execute(
       db
     );
+    await sql`ALTER TABLE sync_commits
+      ADD COLUMN IF NOT EXISTS commit_digest text`.execute(db);
+    await sql`ALTER TABLE sync_commits
+      ADD COLUMN IF NOT EXISTS commit_chain_root text`.execute(db);
 
     await sql`DROP INDEX IF EXISTS idx_sync_commits_client_commit`.execute(db);
     await db.schema
@@ -171,6 +179,37 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       .createIndex('idx_sync_table_commits_commit_seq')
       .ifNotExists()
       .on('sync_table_commits')
+      .columns(['partition_id', 'commit_seq'])
+      .execute();
+
+    await db.schema
+      .createTable('sync_scope_commits')
+      .ifNotExists()
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('table', 'text', (col) => col.notNull())
+      .addColumn('scope_key', 'text', (col) => col.notNull())
+      .addColumn('commit_seq', 'bigint', (col) =>
+        col.notNull().references('sync_commits.commit_seq').onDelete('cascade')
+      )
+      .addPrimaryKeyConstraint('sync_scope_commits_pk', [
+        'partition_id',
+        'table',
+        'scope_key',
+        'commit_seq',
+      ])
+      .execute();
+
+    await sql`ALTER TABLE sync_scope_commits
+      ADD COLUMN IF NOT EXISTS partition_id text NOT NULL DEFAULT 'default'`.execute(
+      db
+    );
+
+    await db.schema
+      .createIndex('idx_sync_scope_commits_commit_seq')
+      .ifNotExists()
+      .on('sync_scope_commits')
       .columns(['partition_id', 'commit_seq'])
       .execute();
 
@@ -237,6 +276,7 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       .addColumn('effective_scopes', 'jsonb', (col) =>
         col.notNull().defaultTo(sql`'{}'::jsonb`)
       )
+      .addColumn('realtime_subscriptions', 'jsonb')
       .addColumn('updated_at', 'timestamptz', (col) =>
         col.notNull().defaultTo(sql`now()`)
       )
@@ -250,6 +290,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       ADD COLUMN IF NOT EXISTS partition_id text NOT NULL DEFAULT 'default'`.execute(
       db
     );
+    await sql`ALTER TABLE sync_client_cursors
+      ADD COLUMN IF NOT EXISTS realtime_subscriptions jsonb`.execute(db);
 
     await db.schema
       .createIndex('idx_sync_client_cursors_updated_at')
@@ -270,6 +312,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       .addColumn('as_of_commit_seq', 'bigint', (col) => col.notNull())
       .addColumn('row_cursor', 'text', (col) => col.notNull().defaultTo(''))
       .addColumn('row_limit', 'integer', (col) => col.notNull())
+      .addColumn('next_row_cursor', 'text')
+      .addColumn('is_last_page', 'integer', (col) => col.notNull().defaultTo(0))
       .addColumn('encoding', 'text', (col) => col.notNull())
       .addColumn('compression', 'text', (col) => col.notNull())
       .addColumn('sha256', 'text', (col) => col.notNull())
@@ -284,6 +328,12 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
 
     await sql`ALTER TABLE sync_snapshot_chunks
       ADD COLUMN IF NOT EXISTS partition_id text NOT NULL DEFAULT 'default'`.execute(
+      db
+    );
+    await sql`ALTER TABLE sync_snapshot_chunks
+      ADD COLUMN IF NOT EXISTS next_row_cursor text`.execute(db);
+    await sql`ALTER TABLE sync_snapshot_chunks
+      ADD COLUMN IF NOT EXISTS is_last_page integer NOT NULL DEFAULT 0`.execute(
       db
     );
 
@@ -310,6 +360,171 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       ])
       .unique()
       .execute();
+
+    await db.schema
+      .createTable('sync_snapshot_artifacts')
+      .ifNotExists()
+      .addColumn('artifact_id', 'text', (col) => col.primaryKey())
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('scope_key', 'text', (col) => col.notNull())
+      .addColumn('subscription_id', 'text', (col) => col.notNull())
+      .addColumn('table', 'text', (col) => col.notNull())
+      .addColumn('artifact_kind', 'text', (col) => col.notNull())
+      .addColumn('schema_version', 'text', (col) => col.notNull())
+      .addColumn('as_of_commit_seq', 'bigint', (col) => col.notNull())
+      .addColumn('row_cursor', 'text', (col) => col.notNull().defaultTo(''))
+      .addColumn('row_limit', 'integer', (col) => col.notNull())
+      .addColumn('row_count', 'integer', (col) => col.notNull())
+      .addColumn('next_row_cursor', 'text')
+      .addColumn('is_first_page', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .addColumn('is_last_page', 'integer', (col) => col.notNull().defaultTo(0))
+      .addColumn('compression', 'text', (col) => col.notNull())
+      .addColumn('sha256', 'text', (col) => col.notNull())
+      .addColumn('byte_length', 'integer', (col) => col.notNull())
+      .addColumn('manifest_digest', 'text', (col) => col.notNull())
+      .addColumn('feature_set_json', 'text', (col) => col.notNull())
+      .addColumn('manifest_json', 'text', (col) => col.notNull())
+      .addColumn('blob_hash', 'text', (col) => col.notNull())
+      .addColumn('created_at', 'timestamptz', (col) =>
+        col.notNull().defaultTo(sql`now()`)
+      )
+      .addColumn('expires_at', 'timestamptz', (col) => col.notNull())
+      .execute();
+
+    await db.schema
+      .createIndex('idx_sync_snapshot_artifacts_expires_at')
+      .ifNotExists()
+      .on('sync_snapshot_artifacts')
+      .columns(['expires_at'])
+      .execute();
+
+    await db.schema
+      .createIndex('idx_sync_snapshot_artifacts_page_key')
+      .ifNotExists()
+      .on('sync_snapshot_artifacts')
+      .columns([
+        'partition_id',
+        'scope_key',
+        'subscription_id',
+        'table',
+        'as_of_commit_seq',
+        'row_cursor',
+        'row_limit',
+        'artifact_kind',
+        'schema_version',
+        'compression',
+      ])
+      .unique()
+      .execute();
+
+    await db.schema
+      .createTable('sync_crdt_updates')
+      .ifNotExists()
+      .addColumn('seq', 'bigserial', (col) => col.primaryKey())
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('stream_id', 'text', (col) => col.notNull())
+      .addColumn('app_table', 'text', (col) => col.notNull())
+      .addColumn('row_id', 'text', (col) => col.notNull())
+      .addColumn('field_name', 'text', (col) => col.notNull())
+      .addColumn('update_id', 'text', (col) => col.notNull())
+      .addColumn('actor_id', 'text')
+      .addColumn('client_id', 'text')
+      .addColumn('key_id', 'text', (col) => col.notNull())
+      .addColumn('ciphertext', 'text', (col) => col.notNull())
+      .addColumn('scopes', 'jsonb', (col) =>
+        col.notNull().defaultTo(sql`'{}'::jsonb`)
+      )
+      .addColumn('created_at', 'timestamptz', (col) =>
+        col.notNull().defaultTo(sql`now()`)
+      )
+      .execute();
+    await sql`ALTER TABLE sync_crdt_updates
+      ADD COLUMN IF NOT EXISTS partition_id text NOT NULL DEFAULT 'default'`.execute(
+      db
+    );
+    await db.schema
+      .createIndex('idx_sync_crdt_updates_update_id')
+      .ifNotExists()
+      .on('sync_crdt_updates')
+      .columns(['partition_id', 'update_id'])
+      .unique()
+      .execute();
+    await db.schema
+      .createIndex('idx_sync_crdt_updates_stream_seq')
+      .ifNotExists()
+      .on('sync_crdt_updates')
+      .columns(['partition_id', 'stream_id', 'seq'])
+      .execute();
+    await db.schema
+      .createIndex('idx_sync_crdt_updates_scope_table')
+      .ifNotExists()
+      .on('sync_crdt_updates')
+      .columns(['partition_id', 'app_table', 'row_id', 'field_name'])
+      .execute();
+    await this.ensureIndex(
+      db,
+      'idx_sync_crdt_updates_scopes',
+      'CREATE INDEX idx_sync_crdt_updates_scopes ON sync_crdt_updates USING GIN (scopes)'
+    );
+
+    await db.schema
+      .createTable('sync_crdt_checkpoints')
+      .ifNotExists()
+      .addColumn('seq', 'bigserial', (col) => col.primaryKey())
+      .addColumn('partition_id', 'text', (col) =>
+        col.notNull().defaultTo('default')
+      )
+      .addColumn('stream_id', 'text', (col) => col.notNull())
+      .addColumn('app_table', 'text', (col) => col.notNull())
+      .addColumn('row_id', 'text', (col) => col.notNull())
+      .addColumn('field_name', 'text', (col) => col.notNull())
+      .addColumn('checkpoint_id', 'text', (col) => col.notNull())
+      .addColumn('covers_seq', 'bigint', (col) => col.notNull())
+      .addColumn('actor_id', 'text')
+      .addColumn('client_id', 'text')
+      .addColumn('key_id', 'text', (col) => col.notNull())
+      .addColumn('ciphertext', 'text', (col) => col.notNull())
+      .addColumn('scopes', 'jsonb', (col) =>
+        col.notNull().defaultTo(sql`'{}'::jsonb`)
+      )
+      .addColumn('created_at', 'timestamptz', (col) =>
+        col.notNull().defaultTo(sql`now()`)
+      )
+      .execute();
+    await sql`ALTER TABLE sync_crdt_checkpoints
+      ADD COLUMN IF NOT EXISTS partition_id text NOT NULL DEFAULT 'default'`.execute(
+      db
+    );
+    await db.schema
+      .createIndex('idx_sync_crdt_checkpoints_checkpoint_id')
+      .ifNotExists()
+      .on('sync_crdt_checkpoints')
+      .columns(['partition_id', 'checkpoint_id'])
+      .unique()
+      .execute();
+    await db.schema
+      .createIndex('idx_sync_crdt_checkpoints_stream_covers')
+      .ifNotExists()
+      .on('sync_crdt_checkpoints')
+      .columns(['partition_id', 'stream_id', 'covers_seq'])
+      .execute();
+    await db.schema
+      .createIndex('idx_sync_crdt_checkpoints_scope_table')
+      .ifNotExists()
+      .on('sync_crdt_checkpoints')
+      .columns(['partition_id', 'app_table', 'row_id', 'field_name'])
+      .execute();
+    await this.ensureIndex(
+      db,
+      'idx_sync_crdt_checkpoints_scopes',
+      'CREATE INDEX idx_sync_crdt_checkpoints_scopes ON sync_crdt_checkpoints USING GIN (scopes)'
+    );
   }
 
   // ===========================================================================
@@ -390,19 +605,38 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       actorId: string;
       cursor: number;
       effectiveScopes: ScopeValues;
+      realtimeSubscriptions?: unknown;
     }
   ): Promise<void> {
     const partitionId = args.partitionId ?? 'default';
     const now = new Date().toISOString();
     const scopesJson = JSON.stringify(args.effectiveScopes);
 
+    if (args.realtimeSubscriptions === undefined) {
+      await sql`
+        INSERT INTO sync_client_cursors (partition_id, client_id, actor_id, cursor, effective_scopes, updated_at)
+        VALUES (${partitionId}, ${args.clientId}, ${args.actorId}, ${args.cursor}, ${scopesJson}::jsonb, ${now})
+        ON CONFLICT(partition_id, client_id) DO UPDATE SET
+          actor_id = ${args.actorId},
+          cursor = ${args.cursor},
+          effective_scopes = ${scopesJson}::jsonb,
+          updated_at = ${now}
+      `.execute(db);
+      return;
+    }
+
+    const realtimeSubscriptionsJson = JSON.stringify(
+      args.realtimeSubscriptions
+    );
+
     await sql`
-      INSERT INTO sync_client_cursors (partition_id, client_id, actor_id, cursor, effective_scopes, updated_at)
-      VALUES (${partitionId}, ${args.clientId}, ${args.actorId}, ${args.cursor}, ${scopesJson}::jsonb, ${now})
+      INSERT INTO sync_client_cursors (partition_id, client_id, actor_id, cursor, effective_scopes, realtime_subscriptions, updated_at)
+      VALUES (${partitionId}, ${args.clientId}, ${args.actorId}, ${args.cursor}, ${scopesJson}::jsonb, ${realtimeSubscriptionsJson}::jsonb, ${now})
       ON CONFLICT(partition_id, client_id) DO UPDATE SET
         actor_id = ${args.actorId},
         cursor = ${args.cursor},
         effective_scopes = ${scopesJson}::jsonb,
+        realtime_subscriptions = ${realtimeSubscriptionsJson}::jsonb,
         updated_at = ${now}
     `.execute(db);
   }
@@ -454,23 +688,173 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
     }));
   }
 
+  async readAuditRowHistory<DB extends SyncCoreDb>(
+    db: DbExecutor<DB>,
+    args: AuditRowHistoryArgs
+  ): Promise<AuditRowHistoryRow[]> {
+    const partitionId = args.partitionId ?? 'default';
+    const scopeFilter = buildJsonbScopeContainmentFilter(
+      'c.scopes',
+      args.scopes
+    );
+    const limit = Math.max(1, Math.min(200, args.limit));
+    const whereClauses = [
+      sql`c.partition_id = ${partitionId}`,
+      sql`cm.partition_id = ${partitionId}`,
+      sql`c."table" = ${args.table}`,
+      sql`c.row_id = ${args.rowId}`,
+      sql`(${scopeFilter})`,
+    ];
+
+    if (args.beforeCommitSeq !== undefined) {
+      whereClauses.push(sql`c.commit_seq < ${args.beforeCommitSeq}`);
+    }
+    if (args.afterCommitSeq !== undefined) {
+      whereClauses.push(sql`c.commit_seq >= ${args.afterCommitSeq}`);
+    }
+
+    const res = await sql<{
+      commit_seq: unknown;
+      actor_id: string;
+      client_id: string;
+      client_commit_id: string;
+      created_at: unknown;
+      change_id: unknown;
+      table: string;
+      row_id: string;
+      op: string;
+      row_json: unknown | null;
+      row_version: unknown | null;
+      scopes: unknown;
+    }>`
+      SELECT
+        c.commit_seq,
+        cm.actor_id,
+        cm.client_id,
+        cm.client_commit_id,
+        cm.created_at,
+        c.change_id,
+        c."table",
+        c.row_id,
+        c.op,
+        c.row_json,
+        c.row_version,
+        c.scopes
+      FROM sync_changes c
+      JOIN sync_commits cm
+        ON cm.partition_id = c.partition_id
+       AND cm.commit_seq = c.commit_seq
+      WHERE ${sql.join(whereClauses, sql` AND `)}
+      ORDER BY c.commit_seq DESC, c.change_id DESC
+      LIMIT ${limit + 1}
+    `.execute(db);
+
+    return res.rows.map((row) => ({
+      commit_seq: coerceNumber(row.commit_seq) ?? 0,
+      actor_id: row.actor_id,
+      client_id: row.client_id,
+      client_commit_id: row.client_commit_id,
+      created_at: coerceIsoString(row.created_at),
+      change_id: coerceNumber(row.change_id) ?? 0,
+      table: row.table,
+      row_id: row.row_id,
+      op: row.op as SyncOp,
+      row_json: row.row_json ?? null,
+      row_version: coerceNumber(row.row_version),
+      scopes: parseScopes(row.scopes),
+    }));
+  }
+
   protected override async readIncrementalPullRowsBatch<DB extends SyncCoreDb>(
     db: DbExecutor<DB>,
     args: Omit<IncrementalPullRowsArgs, 'batchSize'>
   ): Promise<IncrementalPullRow[]> {
     const partitionId = args.partitionId ?? 'default';
-    const limitCommits = Math.max(1, Math.min(500, args.limitCommits));
+    const limitCommits = Math.max(1, Math.min(1000, args.limitCommits));
 
     const scopeFilter = buildJsonbScopeContainmentFilter(
       'c.scopes',
       args.scopes
     );
 
+    const scopeIndexedCommitSeqs = await this.readScopeIndexedCommitSeqsForPull(
+      db,
+      {
+        partitionId,
+        table: args.table,
+        scopes: args.scopes,
+        cursor: args.cursor,
+        limitCommits,
+      }
+    );
+    if (scopeIndexedCommitSeqs.length > 0) {
+      const commitSeqsFilter = this.buildNumberListFilter(
+        scopeIndexedCommitSeqs
+      );
+      const scannedMaxCommitSeq =
+        scopeIndexedCommitSeqs[scopeIndexedCommitSeqs.length - 1] ??
+        args.cursor;
+      const res = await sql<{
+        commit_seq: unknown;
+        actor_id: string;
+        created_at: unknown;
+        commit_digest: string | null;
+        commit_chain_root: string | null;
+        change_id: unknown;
+        table: string;
+        row_id: string;
+        op: string;
+        row_json: unknown | null;
+        row_version: unknown | null;
+        scopes: unknown;
+      }>`
+        SELECT
+          cm.commit_seq,
+          cm.actor_id,
+          cm.created_at,
+          cm.commit_digest,
+          cm.commit_chain_root,
+          c.change_id,
+          c."table",
+          c.row_id,
+          c.op,
+          c.row_json,
+          c.row_version,
+          c.scopes
+        FROM sync_commits cm
+        JOIN sync_changes c ON c.commit_seq = cm.commit_seq
+        WHERE cm.commit_seq ${commitSeqsFilter}
+          AND cm.partition_id = ${partitionId}
+          AND c.partition_id = ${partitionId}
+          AND c."table" = ${args.table}
+          AND (${scopeFilter})
+        ORDER BY cm.commit_seq ASC, c.change_id ASC
+      `.execute(db);
+
+      return res.rows.map((row) => ({
+        commit_seq: coerceNumber(row.commit_seq) ?? 0,
+        scanned_max_commit_seq: scannedMaxCommitSeq,
+        actor_id: row.actor_id,
+        created_at: coerceIsoString(row.created_at),
+        commit_digest: row.commit_digest ?? null,
+        commit_chain_root: row.commit_chain_root ?? null,
+        change_id: coerceNumber(row.change_id) ?? 0,
+        table: row.table,
+        row_id: row.row_id,
+        op: row.op as SyncOp,
+        row_json: row.row_json ?? null,
+        row_version: coerceNumber(row.row_version),
+        scopes: parseScopes(row.scopes),
+      }));
+    }
+
     const res = await sql<{
       commit_seq: unknown;
       scanned_max_commit_seq: unknown;
       actor_id: string;
       created_at: unknown;
+      commit_digest: string | null;
+      commit_chain_root: string | null;
       change_id: unknown;
       table: string;
       row_id: string;
@@ -508,6 +892,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
         (SELECT max(commit_seq) FROM commit_window) AS scanned_max_commit_seq,
         cm.actor_id,
         cm.created_at,
+        cm.commit_digest,
+        cm.commit_chain_root,
         c.change_id,
         c."table",
         c.row_id,
@@ -530,6 +916,8 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       scanned_max_commit_seq: coerceNumber(row.scanned_max_commit_seq),
       actor_id: row.actor_id,
       created_at: coerceIsoString(row.created_at),
+      commit_digest: row.commit_digest ?? null,
+      commit_chain_root: row.commit_chain_root ?? null,
       change_id: coerceNumber(row.change_id) ?? 0,
       table: row.table,
       row_id: row.row_id,
@@ -567,6 +955,21 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
     const deletedChanges = Number(res.numAffectedRows ?? 0);
 
     // Remove routing index entries that no longer have any remaining changes
+    await sql`
+      DELETE FROM sync_scope_commits sc
+      USING sync_commits cm
+        WHERE cm.commit_seq = sc.commit_seq
+          AND cm.partition_id = sc.partition_id
+          AND cm.created_at < ${cutoffIso}
+        AND NOT EXISTS (
+          SELECT 1
+          FROM sync_changes c
+          WHERE c.commit_seq = sc.commit_seq
+            AND c.partition_id = sc.partition_id
+            AND c."table" = sc."table"
+        )
+    `.execute(db);
+
     await sql`
       DELETE FROM sync_table_commits tc
       USING sync_commits cm
@@ -633,6 +1036,7 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
         row_count INTEGER,
         subscription_count INTEGER,
         scopes_summary JSONB,
+        response_summary JSONB,
         tables TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
         error_message TEXT,
         payload_ref TEXT,
@@ -678,6 +1082,10 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
     await sql`
       ALTER TABLE sync_request_events
       ADD COLUMN IF NOT EXISTS scopes_summary JSONB
+    `.execute(db);
+    await sql`
+      ALTER TABLE sync_request_events
+      ADD COLUMN IF NOT EXISTS response_summary JSONB
     `.execute(db);
     await sql`
       ALTER TABLE sync_request_events
@@ -756,6 +1164,73 @@ export class PostgresServerSyncDialect extends BaseServerSyncDialect<'postgres'>
       db,
       'idx_sync_operation_events_type',
       'CREATE INDEX idx_sync_operation_events_type ON sync_operation_events(operation_type)'
+    );
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS sync_realtime_events (
+        event_id BIGSERIAL PRIMARY KEY,
+        partition_id TEXT NOT NULL DEFAULT 'default',
+        actor_id TEXT NOT NULL,
+        client_id TEXT NOT NULL,
+        transport_path TEXT NOT NULL DEFAULT 'direct',
+        event_type TEXT NOT NULL,
+        reason TEXT,
+        cursor BIGINT,
+        latest_cursor BIGINT,
+        commit_seq BIGINT,
+        scope_count INTEGER,
+        skipped_count INTEGER,
+        sync_pack_encoding TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `.execute(db);
+    await this.ensureIndex(
+      db,
+      'idx_sync_realtime_events_created_at',
+      'CREATE INDEX idx_sync_realtime_events_created_at ON sync_realtime_events(created_at DESC)'
+    );
+    await this.ensureIndex(
+      db,
+      'idx_sync_realtime_events_partition_client_created_at',
+      'CREATE INDEX idx_sync_realtime_events_partition_client_created_at ON sync_realtime_events(partition_id, client_id, created_at DESC)'
+    );
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS sync_client_diagnostic_snapshots (
+        snapshot_id BIGSERIAL PRIMARY KEY,
+        partition_id TEXT NOT NULL DEFAULT 'default',
+        client_id TEXT NOT NULL,
+        actor_id TEXT,
+        runtime_kind TEXT,
+        runtime_version TEXT,
+        schema_version INTEGER,
+        reported_at TIMESTAMPTZ NOT NULL,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        lifecycle_phase TEXT,
+        connection_state TEXT,
+        freshness_state TEXT NOT NULL,
+        health_max_severity TEXT,
+        diagnostic_codes_summary JSONB,
+        queue_summary JSONB,
+        timing_summary JSONB,
+        redaction_summary JSONB,
+        snapshot_json JSONB NOT NULL
+      )
+    `.execute(db);
+    await this.ensureIndex(
+      db,
+      'idx_sync_client_diagnostic_snapshots_received_at',
+      'CREATE INDEX idx_sync_client_diagnostic_snapshots_received_at ON sync_client_diagnostic_snapshots(received_at DESC)'
+    );
+    await this.ensureIndex(
+      db,
+      'idx_sync_client_diagnostic_snapshots_latest',
+      'CREATE INDEX idx_sync_client_diagnostic_snapshots_latest ON sync_client_diagnostic_snapshots(partition_id, client_id, received_at DESC)'
+    );
+    await this.ensureIndex(
+      db,
+      'idx_sync_client_diagnostic_snapshots_health',
+      'CREATE INDEX idx_sync_client_diagnostic_snapshots_health ON sync_client_diagnostic_snapshots(partition_id, health_max_severity, received_at DESC)'
     );
 
     // API Keys table

@@ -8,9 +8,12 @@
 import type { ScopeValues, SqlFamily, StoredScopes } from '@syncular/core';
 import type { Kysely, RawBuilder, Transaction } from 'kysely';
 import { sql } from 'kysely';
+import { scopeKeysFromScopeValues } from '../helpers/scope-commit-index';
 import type { SyncChangeRow, SyncCommitRow, SyncCoreDb } from '../schema';
 import { coerceIsoString, coerceNumber, parseScopes } from './helpers';
 import type {
+  AuditRowHistoryArgs,
+  AuditRowHistoryRow,
   DbExecutor,
   IncrementalPullRow,
   IncrementalPullRowsArgs,
@@ -58,6 +61,40 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
     values: string[]
   ): RawBuilder<unknown>;
 
+  protected async readScopeIndexedCommitSeqsForPull<DB extends SyncCoreDb>(
+    db: Kysely<DB> | Transaction<DB>,
+    args: {
+      cursor: number;
+      limitCommits: number;
+      table: string;
+      scopes: ScopeValues;
+      partitionId?: string;
+    }
+  ): Promise<number[]> {
+    const partitionId = args.partitionId ?? 'default';
+    const scopeKeys = scopeKeysFromScopeValues(args.scopes);
+    if (scopeKeys.length === 0) return [];
+    const scopeKeysFilter = this.buildStringListFilter(scopeKeys);
+
+    const res = await sql<{ commit_seq: unknown }>`
+      SELECT DISTINCT commit_seq
+      FROM sync_scope_commits
+      WHERE partition_id = ${partitionId}
+        AND "table" = ${args.table}
+        AND scope_key ${scopeKeysFilter}
+        AND commit_seq > ${args.cursor}
+      ORDER BY commit_seq ASC
+      LIMIT ${args.limitCommits}
+    `.execute(db);
+
+    return res.rows
+      .map((r) => coerceNumber(r.commit_seq))
+      .filter(
+        (n): n is number =>
+          typeof n === 'number' && Number.isFinite(n) && n > args.cursor
+      );
+  }
+
   // ===========================================================================
   // Abstract methods (genuinely different implementations)
   // ===========================================================================
@@ -88,6 +125,11 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
       partitionId?: string;
     }
   ): Promise<SyncChangeRow[]>;
+
+  abstract readAuditRowHistory<DB extends SyncCoreDb>(
+    db: DbExecutor<DB>,
+    args: AuditRowHistoryArgs
+  ): Promise<AuditRowHistoryRow[]>;
 
   protected abstract readIncrementalPullRowsBatch<DB extends SyncCoreDb>(
     db: DbExecutor<DB>,
@@ -208,8 +250,10 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
       actor_id: string;
       created_at: unknown;
       result_json: unknown | null;
+      commit_digest: string | null;
+      commit_chain_root: string | null;
     }>`
-      SELECT commit_seq, actor_id, created_at, result_json
+      SELECT commit_seq, actor_id, created_at, result_json, commit_digest, commit_chain_root
       FROM sync_commits
       WHERE commit_seq ${seqsFilter}
         AND partition_id = ${partitionId}
@@ -221,6 +265,8 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
       actor_id: row.actor_id,
       created_at: coerceIsoString(row.created_at),
       result_json: row.result_json ?? null,
+      commit_digest: row.commit_digest ?? null,
+      commit_chain_root: row.commit_chain_root ?? null,
     }));
   }
 
@@ -232,19 +278,38 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
       actorId: string;
       cursor: number;
       effectiveScopes: ScopeValues;
+      realtimeSubscriptions?: unknown;
     }
   ): Promise<void> {
     const partitionId = args.partitionId ?? 'default';
     const now = new Date().toISOString();
     const scopesJson = JSON.stringify(args.effectiveScopes);
 
+    if (args.realtimeSubscriptions === undefined) {
+      await sql`
+        INSERT INTO sync_client_cursors (partition_id, client_id, actor_id, cursor, effective_scopes, updated_at)
+        VALUES (${partitionId}, ${args.clientId}, ${args.actorId}, ${args.cursor}, ${scopesJson}, ${now})
+        ON CONFLICT(partition_id, client_id) DO UPDATE SET
+          actor_id = ${args.actorId},
+          cursor = ${args.cursor},
+          effective_scopes = ${scopesJson},
+          updated_at = ${now}
+      `.execute(db);
+      return;
+    }
+
+    const realtimeSubscriptionsJson = JSON.stringify(
+      args.realtimeSubscriptions
+    );
+
     await sql`
-      INSERT INTO sync_client_cursors (partition_id, client_id, actor_id, cursor, effective_scopes, updated_at)
-      VALUES (${partitionId}, ${args.clientId}, ${args.actorId}, ${args.cursor}, ${scopesJson}, ${now})
+      INSERT INTO sync_client_cursors (partition_id, client_id, actor_id, cursor, effective_scopes, realtime_subscriptions, updated_at)
+      VALUES (${partitionId}, ${args.clientId}, ${args.actorId}, ${args.cursor}, ${scopesJson}, ${realtimeSubscriptionsJson}, ${now})
       ON CONFLICT(partition_id, client_id) DO UPDATE SET
         actor_id = ${args.actorId},
         cursor = ${args.cursor},
         effective_scopes = ${scopesJson},
+        realtime_subscriptions = ${realtimeSubscriptionsJson},
         updated_at = ${now}
     `.execute(db);
   }
@@ -253,10 +318,10 @@ export abstract class BaseServerSyncDialect<F extends SqlFamily = SqlFamily>
     db: DbExecutor<DB>,
     args: IncrementalPullRowsArgs
   ): AsyncGenerator<IncrementalPullRow> {
-    const limitCommits = Math.max(1, Math.min(500, args.limitCommits));
+    const limitCommits = Math.max(1, Math.min(1000, args.limitCommits));
     const batchSize = Math.max(
       1,
-      Math.min(limitCommits, args.batchSize ?? 100, 500)
+      Math.min(limitCommits, args.batchSize ?? limitCommits, 1000)
     );
 
     let processedCommits = 0;

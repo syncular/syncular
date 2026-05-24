@@ -6,7 +6,7 @@ import {
   type SyncCoreDb,
 } from '@syncular/server';
 import { Hono } from 'hono';
-import type { Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
 import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../../server-dialect-sqlite/src';
 import { createSyncRoutes } from '../routes';
@@ -212,7 +212,13 @@ describe('createSyncRoutes audit endpoints', () => {
     const detail = (await detailResponse.json()) as {
       ok: boolean;
       commit: { commitSeq: number; actorId: string };
-      changes: Array<{ table: string; rowId: string; op: string }>;
+      changes: Array<{
+        table: string;
+        rowId: string;
+        op: string;
+        fields: string[];
+        rowJson?: unknown;
+      }>;
     };
     expect(detail.ok).toBe(true);
     expect(detail.commit.commitSeq).toBe(commitSeq);
@@ -223,6 +229,13 @@ describe('createSyncRoutes audit endpoints', () => {
       rowId: 't-detail',
       op: 'upsert',
     });
+    expect(detail.changes[0]?.fields).toEqual([
+      'id',
+      'server_version',
+      'title',
+      'user_id',
+    ]);
+    expect(detail.changes[0]).not.toHaveProperty('rowJson');
 
     const wrongPartition = await app.request(
       `http://localhost/sync/audit/commits/${commitSeq}`,
@@ -236,6 +249,261 @@ describe('createSyncRoutes audit endpoints', () => {
     expect(wrongPartition.status).toBe(404);
   });
 
+  it('does not leak commit detail changes outside actor scopes', async () => {
+    const app = createApp();
+
+    const commitSeq = await pushCommit({
+      app,
+      actorId: 'u2',
+      clientId: 'client-secret',
+      clientCommitId: 'commit-secret',
+      rowId: 't-secret-commit',
+      title: 'Secret Commit Task',
+    });
+
+    const response = await app.request(
+      `http://localhost/sync/audit/commits/${commitSeq}`,
+      {
+        headers: {
+          'x-user-id': 'u1',
+          'x-partition-id': 'p1',
+        },
+      }
+    );
+
+    expect(response.status).toBe(404);
+    const bodyText = await response.text();
+    expect(bodyText).not.toContain('Secret Commit Task');
+    expect(bodyText).not.toContain('commit-secret');
+  });
+
+  it('returns redacted row history scoped to actor scopes', async () => {
+    const app = createApp();
+
+    const firstCommitSeq = await pushCommit({
+      app,
+      actorId: 'u1',
+      clientId: 'client-1',
+      clientCommitId: 'row-history-1',
+      rowId: 't-history',
+      title: 'History Task 1',
+    });
+    const secondCommitSeq = await pushCommit({
+      app,
+      actorId: 'u1',
+      clientId: 'client-1',
+      clientCommitId: 'row-history-2',
+      rowId: 't-history',
+      title: 'History Task 2',
+    });
+
+    const response = await app.request(
+      'http://localhost/sync/audit/rows/tasks/t-history?limit=1',
+      {
+        headers: {
+          'x-user-id': 'u1',
+          'x-partition-id': 'p1',
+        },
+      }
+    );
+
+    expect(response.status).toBe(200);
+    const history = (await response.json()) as {
+      ok: boolean;
+      table: string;
+      rowId: string;
+      history: Array<{
+        commitSeq: number;
+        clientCommitId: string;
+        fields: string[];
+        scopeFields: string[];
+        changeKind: string;
+        sensitiveFields: string[];
+        redaction: { payload: string; reason: string };
+      }>;
+      nextCursor: number | null;
+      rowJson?: unknown;
+    };
+    expect(history.ok).toBe(true);
+    expect(history.table).toBe('tasks');
+    expect(history.rowId).toBe('t-history');
+    expect(history.history).toHaveLength(1);
+    expect(history.history[0]).toMatchObject({
+      commitSeq: secondCommitSeq,
+      clientCommitId: 'row-history-2',
+    });
+    expect(history.history[0]?.fields).toEqual([
+      'id',
+      'server_version',
+      'title',
+      'user_id',
+    ]);
+    expect(history.history[0]?.scopeFields).toEqual(['user_id']);
+    expect(history.history[0]?.changeKind).toBe('app_row');
+    expect(history.history[0]?.sensitiveFields).toEqual([]);
+    expect(history.history[0]?.redaction).toEqual({
+      payload: 'omitted',
+      reason: 'audit_redacted_by_default',
+    });
+    expect(history).not.toHaveProperty('rowJson');
+    expect(history.nextCursor).toBe(secondCommitSeq);
+
+    const olderPage = await app.request(
+      `http://localhost/sync/audit/rows/tasks/t-history?beforeCommitSeq=${history.nextCursor}`,
+      {
+        headers: {
+          'x-user-id': 'u1',
+          'x-partition-id': 'p1',
+        },
+      }
+    );
+    expect(olderPage.status).toBe(200);
+    const olderHistory = (await olderPage.json()) as {
+      history: Array<{ commitSeq: number; clientCommitId: string }>;
+      nextCursor: number | null;
+    };
+    expect(olderHistory.history).toHaveLength(1);
+    expect(olderHistory.history[0]).toMatchObject({
+      commitSeq: firstCommitSeq,
+      clientCommitId: 'row-history-1',
+    });
+    expect(olderHistory.nextCursor).toBeNull();
+  });
+
+  it('does not leak unauthorized row history across actor scopes', async () => {
+    const app = createApp();
+
+    await pushCommit({
+      app,
+      actorId: 'u1',
+      clientId: 'client-1',
+      clientCommitId: 'row-history-secret',
+      rowId: 't-secret',
+      title: 'Secret Task',
+    });
+
+    const response = await app.request(
+      'http://localhost/sync/audit/rows/tasks/t-secret',
+      {
+        headers: {
+          'x-user-id': 'u2',
+          'x-partition-id': 'p1',
+        },
+      }
+    );
+
+    expect(response.status).toBe(404);
+    const bodyText = await response.text();
+    expect(bodyText).not.toContain('Secret Task');
+    expect(bodyText).not.toContain('row-history-secret');
+  });
+
+  it('exports a redacted actor-scoped debug bundle', async () => {
+    const app = createApp();
+
+    const visibleCommitSeq = await pushCommit({
+      app,
+      actorId: 'u1',
+      clientId: 'client-visible',
+      clientCommitId: 'debug-visible',
+      rowId: 'debug-visible-row',
+      title: 'Visible Debug Payload',
+    });
+    await pushCommit({
+      app,
+      actorId: 'u2',
+      clientId: 'client-hidden',
+      clientCommitId: 'debug-hidden',
+      rowId: 'debug-hidden-row',
+      title: 'Hidden Debug Payload',
+    });
+
+    await dialect.ensureConsoleSchema(db);
+    await sql`
+      INSERT INTO sync_request_events (
+        partition_id, request_id, trace_id, span_id,
+        event_type, sync_path, actor_id, client_id, transport_path,
+        status_code, outcome, response_status, error_code,
+        duration_ms, commit_seq, operation_count, row_count,
+        subscription_count, scopes_summary, tables, created_at
+      ) VALUES
+        (
+          'p1', 'request-visible', 'trace-visible', null,
+          'sync', 'http-combined', 'u1', 'client-visible', 'direct',
+          200, 'visible-ok', 'applied', null,
+          12, ${visibleCommitSeq}, 1, 1,
+          0, ${JSON.stringify({ user_id: 'u1' })}, ${JSON.stringify(['tasks'])},
+          '2026-05-21T10:00:00.000Z'
+        ),
+        (
+          'p1', 'request-hidden', 'trace-hidden', null,
+          'sync', 'http-combined', 'u2', 'client-hidden', 'direct',
+          200, 'hidden-secret-outcome', 'applied', null,
+          13, ${visibleCommitSeq + 1}, 1, 1,
+          0, ${JSON.stringify({ user_id: 'u2' })}, ${JSON.stringify(['tasks'])},
+          '2026-05-21T10:00:01.000Z'
+        )
+    `.execute(db);
+
+    const response = await app.request(
+      'http://localhost/sync/audit/debug/export?limitCommits=10&limitEvents=10',
+      {
+        headers: {
+          'x-user-id': 'u1',
+          'x-partition-id': 'p1',
+        },
+      }
+    );
+
+    expect(response.status).toBe(200);
+    const debugExport = (await response.json()) as {
+      ok: boolean;
+      partitionId: string;
+      commits: Array<{
+        commitSeq: number;
+        clientCommitId: string;
+        changes: Array<{
+          rowId: string;
+          redaction: { payload: string; reason: string };
+          rowJson?: unknown;
+          scopes?: unknown;
+        }>;
+      }>;
+      requestEvents: Array<{
+        actorId: string;
+        requestId: string;
+        scopesSummary: Record<string, string | string[]> | null;
+      }>;
+    };
+    expect(debugExport.ok).toBe(true);
+    expect(debugExport.partitionId).toBe('p1');
+    expect(debugExport.commits).toHaveLength(1);
+    expect(debugExport.commits[0]).toMatchObject({
+      commitSeq: visibleCommitSeq,
+      clientCommitId: 'debug-visible',
+    });
+    expect(debugExport.commits[0]?.changes).toHaveLength(1);
+    expect(debugExport.commits[0]?.changes[0]).not.toHaveProperty('rowJson');
+    expect(debugExport.commits[0]?.changes[0]).not.toHaveProperty('scopes');
+    expect(debugExport.commits[0]?.changes[0]?.redaction).toEqual({
+      payload: 'omitted',
+      reason: 'audit_redacted_by_default',
+    });
+    expect(debugExport.requestEvents).toHaveLength(1);
+    expect(debugExport.requestEvents[0]).toMatchObject({
+      actorId: 'u1',
+      requestId: 'request-visible',
+      scopesSummary: { user_id: 'u1' },
+    });
+
+    const serialized = JSON.stringify(debugExport);
+    expect(serialized).not.toContain('Visible Debug Payload');
+    expect(serialized).not.toContain('Hidden Debug Payload');
+    expect(serialized).not.toContain('debug-hidden');
+    expect(serialized).not.toContain('request-hidden');
+    expect(serialized).not.toContain('hidden-secret-outcome');
+  });
+
   it('requires authentication for audit endpoints', async () => {
     const app = createApp();
 
@@ -246,5 +514,16 @@ describe('createSyncRoutes audit endpoints', () => {
     });
 
     expect(response.status).toBe(401);
+
+    const debugExportResponse = await app.request(
+      'http://localhost/sync/audit/debug/export',
+      {
+        headers: {
+          'x-user-id': 'anon',
+        },
+      }
+    );
+
+    expect(debugExportResponse.status).toBe(401);
   });
 });

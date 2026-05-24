@@ -1,0 +1,171 @@
+import dev.syncular.client.SyncularBoltClient
+import dev.syncular.client.SyncularBoltClientConfig
+import java.io.File
+import kotlinx.serialization.json.jsonPrimitive
+
+private class BoltNativeClient(
+    private val client: SyncularBoltClient,
+) : SyncularNativeJsonClient {
+    override fun applyMutationJson(mutationJson: String, localRowJson: String?): String =
+        client.applyMutationJson(mutationJson, localRowJson)
+
+    override fun applyLeasedMutationJson(mutationJson: String, localRowJson: String?): String =
+        client.applyLeasedMutationJson(mutationJson, localRowJson)
+
+    override fun enqueueMutationJson(mutationJson: String, localRowJson: String?): String =
+        client.enqueueMutationJson(mutationJson, localRowJson)
+
+    override fun enqueueLeasedMutationJson(mutationJson: String, localRowJson: String?): String =
+        client.enqueueLeasedMutationJson(mutationJson, localRowJson)
+
+    override fun issueAuthLeaseJson(requestJson: String): String =
+        client.issueAuthLeaseJson(requestJson)
+
+    override fun diagnosticSnapshotJson(): String =
+        client.diagnosticSnapshotJson()
+
+    override fun openCrdtFieldJson(requestJson: String): String =
+        client.openCrdtFieldJson(requestJson)
+
+    override fun applyCrdtFieldTextJson(requestJson: String): String =
+        client.applyCrdtFieldTextJson(requestJson)
+
+    override fun applyCrdtFieldYjsUpdateJson(requestJson: String): String =
+        client.applyCrdtFieldYjsUpdateJson(requestJson)
+
+    override fun enqueueCrdtFieldYjsUpdateJson(requestJson: String): String =
+        client.enqueueCrdtFieldYjsUpdateJson(requestJson)
+
+    override fun enqueueCrdtFieldTextJson(requestJson: String): String =
+        client.enqueueCrdtFieldTextJson(requestJson)
+
+    override fun enqueueCrdtFieldCompactionJson(requestJson: String): String =
+        client.enqueueCrdtFieldCompactionJson(requestJson)
+
+    override fun materializeCrdtFieldJson(requestJson: String): String =
+        client.materializeCrdtFieldJson(requestJson)
+
+    override fun snapshotCrdtFieldStateVectorJson(requestJson: String): String =
+        client.snapshotCrdtFieldStateVectorJson(requestJson)
+
+    override fun compactCrdtFieldJson(requestJson: String): String =
+        client.compactCrdtFieldJson(requestJson)
+
+    override fun queryJson(requestJson: String): String =
+        client.queryJson(requestJson)
+
+    override fun registerQueryJson(queryJson: String): String =
+        client.registerQueryJson(queryJson)
+
+    override fun unregisterQuery(id: String): Boolean =
+        client.unregisterQuery(id)
+}
+
+private fun expect(condition: Boolean, message: String) {
+    if (!condition) error(message)
+}
+
+private fun removeSqliteFiles(path: String) {
+    listOf("", "-wal", "-shm", "-journal").forEach { suffix ->
+        File(path + suffix).delete()
+    }
+}
+
+private fun readEvents(client: SyncularBoltClient, count: Int): List<SyncularNativeEvent> {
+    val events = mutableListOf<SyncularNativeEvent>()
+    val deadline = System.currentTimeMillis() + 5_000
+    while (events.size < count && System.currentTimeMillis() < deadline) {
+        val eventJson = client.nextEventJsonTimeout(50uL) ?: continue
+        events += syncularDecodeNativeEvent(eventJson)
+    }
+    expect(events.size == count, "Kotlin host expected $count native events, got ${events.size}")
+    return events
+}
+
+fun main(args: Array<String>) {
+    val dbPath = args.firstOrNull()
+        ?: File(System.getProperty("java.io.tmpdir"), "syncular-kotlin-bolt-host.sqlite").absolutePath
+    removeSqliteFiles(dbPath)
+
+    val config = SyncularBoltClientConfig(
+        dbPath = dbPath,
+        baseUrl = "http://127.0.0.1:9/sync",
+        clientId = "kotlin-bolt-host",
+        actorId = "user-rust",
+        projectId = "project-rust",
+        appSchemaJson = syncularNativeGeneratedAppSchemaJson,
+        autoSyncLocalWrites = false,
+    )
+    val raw = SyncularBoltClient.openAsync(config)
+    val client = BoltNativeClient(raw)
+    try {
+        expect(raw.openCommandId()?.startsWith("native-open-") == true, "Kotlin host async open should expose command id")
+        expect(raw.finishOpenTimeout(5_000uL), "Kotlin host async open should finish")
+        expect(raw.isOpenFinished(), "Kotlin host async open should report finished")
+        expect(raw.startEventStream(256uL), "Kotlin host should start native event stream")
+        expect(raw.openCommandId() == null, "Kotlin host async open command id should clear after ready")
+
+        val manifest = raw.runtimeManifestJson()
+        expect(manifest.contains("\"storage_backend\":\"diesel-sqlite\""), "Kotlin host should expose diesel sqlite manifest")
+        expect(manifest.contains("\"query-observer-events\""), "Kotlin host manifest should expose query observer events")
+        expect(raw.setAuthHeadersJson("""{"authorization":"Bearer local-kotlin"}"""), "Kotlin host should accept auth headers")
+
+        expect(raw.syncWorkerRunning(), "Kotlin host worker should start")
+        expect(raw.pauseSyncWorker(), "Kotlin host worker should pause")
+        expect(!raw.syncWorkerRunning(), "Kotlin host worker should report paused")
+        expect(raw.resumeSyncWorker(), "Kotlin host worker should resume")
+        expect(raw.syncWorkerRunning(), "Kotlin host worker should report running")
+        expect(raw.pauseSyncWorker(), "Kotlin host worker should pause before offline local writes")
+
+        val query = TaskQuery
+            .select()
+            .filter(TaskQuery.userId.eq("user-rust"))
+            .orderBy(TaskQuery.serverVersion.desc())
+            .limit(10)
+        val live = query.liveQuery(id = "kotlin-bolt-live", label = "Kotlin host")
+        val initialRows = live.start(client)
+        expect(initialRows.isEmpty(), "Kotlin host live query should start empty")
+        expect(raw.observedQueriesJson().contains("kotlin-bolt-live"), "Kotlin host should register observed query")
+
+        val commitId = client.mutations.tasks.insert(
+            NewTask(
+                id = "task-kotlin-bolt",
+                title = "",
+                completed = 1,
+                userId = "user-rust",
+                projectId = "project-rust",
+            ),
+        )
+        expect(commitId.isNotEmpty(), "Kotlin host mutation should return a commit id")
+
+        val crdtReceipt = client.applyTaskTitleText(rowId = "task-kotlin-bolt", nextText = "Kotlin Bolt CRDT")
+        expect(crdtReceipt.syncMode == "server-merge", "Kotlin host CRDT text helper should return server-merge receipt")
+        val materializedTitle = client.materializeTaskTitle(rowId = "task-kotlin-bolt")
+        expect(materializedTitle.value.jsonPrimitive.content == "Kotlin Bolt CRDT", "Kotlin host CRDT materialize helper should read updated title")
+
+        val events = readEvents(raw, 5)
+        expect(events.any { it.kind == "RowsChanged" && it.tables == listOf("tasks") }, "Kotlin host should emit task rows changed")
+        expect(events.any { it.kind == "QueriesChanged" && it.queries == listOf("kotlin-bolt-live") }, "Kotlin host should emit live query changed")
+        expect(events.any { it.kind == "CrdtFieldChanged" && it.tables.contains("tasks") }, "Kotlin host should emit CRDT field changed")
+
+        val rows = query.fetch(client)
+        expect(rows.size == 1, "Kotlin host query should read inserted task")
+        expect(rows[0].id == "task-kotlin-bolt", "Kotlin host query should decode inserted id")
+        expect(rows[0].title == "Kotlin Bolt CRDT", "Kotlin host query should decode CRDT title")
+
+        val queryEvent = events.first { it.kind == "QueriesChanged" }
+        val refreshedRows = live.refreshIfChanged(queryEvent, client)
+        expect(refreshedRows?.size == 1, "Kotlin host live query should refresh from native event")
+
+        val outbox = raw.outboxSummariesJson()
+        expect(outbox.contains(commitId), "Kotlin host outbox summaries should contain commit")
+        expect(live.stop(client), "Kotlin host live query should unregister")
+        expect(!raw.observedQueriesJson().contains("kotlin-bolt-live"), "Kotlin host should remove observed query")
+        expect(raw.shutdown(), "Kotlin host should shut down native client")
+
+        println("Kotlin generated Bolt host smoke passed")
+    } finally {
+        runCatching { raw.shutdown() }
+        raw.close()
+    }
+}

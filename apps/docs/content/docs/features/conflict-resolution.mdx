@@ -1,0 +1,55 @@
+---
+title: Conflict Resolution
+description: Build user-facing resolution flows for concurrent writes.
+---
+
+# Conflict Resolution
+
+Syncular detects row conflicts with optimistic concurrency. When a client pushes
+a mutation based on an older `server_version`, the server rejects that operation
+as a conflict and the client stores it for resolution.
+
+Use [Learn: Conflict Resolution](/docs/learn/conflict-resolution) for the
+mental model. Use this page as the feature checklist for product UI.
+
+## Product flow
+
+1. Show a badge or banner from conflict counters.
+2. Fetch conflict details for the affected rows.
+3. Show the server version, local intent, and field-level context.
+4. Resolve by keeping server, retrying local intent, or applying a custom
+   merged mutation.
+5. Push the resolution through generated mutations so outbox and history stay
+   coherent.
+
+## Binding surfaces
+
+- Browser and React expose conflict counters for app chrome.
+- Rust exposes typed conflict helpers from the generated client.
+- Swift and Kotlin receive conflict events through the native event stream and
+  can call generated mutation APIs for the retry or merge write.
+
+Do not write conflict resolution through raw SQL. Resolution is a sync
+operation and should go through the generated mutation surface.
+
+## Server responsibilities
+
+Table handlers should return structured conflict results and emit no changes
+for rejected operations. If a table has app-specific merge rules, put the
+authoritative decision in `applyOperation`.
+
+## Watch-outs
+
+- Design schemas to avoid avoidable conflicts; append-only and per-user rows
+  conflict less than shared mutable rows.
+- Auto-merge only when the fields do not overlap or the business rule is clear.
+- Keep manual conflict UI focused on the few records where data loss matters.
+- Test long offline sessions, duplicate pushes, and conflict retry loops.
+
+## Related docs
+
+- [Learn: Conflict Resolution](/docs/learn/conflict-resolution)
+- [Apply Operations / Push](/docs/server/apply-push)
+- [Rust Client](/docs/client/rust)
+- [React](/docs/client/react)
+- [Testkit](/docs/testing)

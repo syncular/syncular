@@ -2,6 +2,7 @@ import { describe, expect, it, mock } from 'bun:test';
 import { createDatabase } from '@syncular/core';
 import { createPgliteDialect } from '@syncular/dialect-pglite';
 import {
+  createScopeCommitIndexEntries,
   ensureSyncSchema,
   InMemorySyncRealtimeBroadcaster,
   type SyncCoreDb,
@@ -51,6 +52,19 @@ describe('realtime broadcaster bridge', () => {
         scopes: { user_id: 'u1' },
       })
       .execute();
+    await db
+      .insertInto('sync_scope_commits')
+      .values(
+        createScopeCommitIndexEntries([
+          { table: 'tasks', scopes: { user_id: 'u1' } },
+        ]).map((entry) => ({
+          partition_id: 'default',
+          table: entry.table,
+          scope_key: entry.scopeKey,
+          commit_seq: commitSeq,
+        }))
+      )
+      .execute();
 
     const broadcaster = new InMemorySyncRealtimeBroadcaster();
     const upgradeWebSocket = defineWebSocketHelper(async () => {});
@@ -98,6 +112,7 @@ describe('realtime broadcaster bridge', () => {
           return true;
         },
         sendSync: onSync,
+        sendSyncPack: mock(() => {}),
         sendHeartbeat: mock(() => {}),
         sendPresence: mock(() => {}),
         sendError: mock(() => {}),
@@ -114,7 +129,10 @@ describe('realtime broadcaster bridge', () => {
     });
     await new Promise((r) => setTimeout(r, 0));
 
-    expect(onSync).toHaveBeenCalledWith(commitSeq);
+    expect(onSync).toHaveBeenCalledWith(commitSeq, {
+      reason: 'server-wakeup',
+      requiresPull: true,
+    });
 
     // Echo suppression: instance2 ignores events it originated.
     onSync.mockClear();

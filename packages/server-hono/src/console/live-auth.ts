@@ -1,3 +1,5 @@
+import { createSyncularErrorResponse } from '@syncular/core';
+
 export function parseBearerToken(
   authHeader: string | null | undefined
 ): string | null {
@@ -31,7 +33,12 @@ export function closeUnauthenticatedSocket(ws: {
   close: (code?: number, reason?: string) => void;
 }): void {
   try {
-    ws.send(JSON.stringify({ type: 'error', message: 'UNAUTHENTICATED' }));
+    ws.send(
+      JSON.stringify({
+        type: 'error',
+        ...createSyncularErrorResponse('console.auth_required'),
+      })
+    );
   } catch {
     // ignore send errors
   }

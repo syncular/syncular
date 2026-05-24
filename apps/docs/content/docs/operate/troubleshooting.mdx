@@ -78,12 +78,15 @@ Common causes:
 
 - The client never persists the cursor/state (database not persisted, stateId changes, or app resets DB).
 - Pruning removed commits the client still needs, so the server forces a bootstrap.
-- The client changes `actorId`/`clientId`/`db`/`transport` without remounting `SyncProvider`.
+- The app changes `actorId`, `clientId`, `fileName`, or generated app schema
+  without closing the old client and opening a new one.
 
 Checklist:
 
-- Ensure `actorId` and `clientId` are stable for the lifetime of the provider.
-- If they change, remount with a React `key`.
+- Ensure `actorId` and `clientId` are stable for the lifetime of the opened
+  client.
+- If they change in React, create a new Syncular client and remount
+  `SyncProvider` with a `key`.
 - Confirm you are not deleting the local DB between reloads.
 - If pruning is enabled, validate your prune settings match your offline window.
 
@@ -94,13 +97,13 @@ Checklist:
 - Ensure the write is actually pushed (check outbox and sync status).
 - Ensure the server emitted changes for the correct scopes.
 - Ensure the other client has a subscription that matches those scopes.
-- If realtime is enabled, remember: WebSocket is a wake-up signal only — data still arrives via pull.
+- If realtime is enabled, check whether the server sent a verified delta or a pull-required wake-up. Pull-required events still recover through HTTP pull.
 
 In React, inspect:
 
-- `useSyncStatus()` (online/syncing/error)
-- `useOutbox()` (queued commits)
-- `useConflicts()` (conflicts blocking commits)
+- `useSyncConnection()` (realtime connection state)
+- `useOutboxStats()` (queued commits)
+- `useConflictStats()` (conflicts blocking commits)
 
 ## “I’m seeing lots of conflicts”
 
@@ -109,10 +112,12 @@ Conflicts typically mean optimistic concurrency is enabled but the client is not
 Checklist:
 
 - Ensure synced tables include a `server_version` column (or your configured version column).
-- Ensure your write path is sending the right `base_version`. `useMutations()` and `useMutation()` read `server_version` automatically by default; low-level helpers should either pass `baseVersion` explicitly or use the incrementing version plugin.
+- Ensure your write path is sending the right `base_version`. Generated
+  mutations read `server_version` automatically by default; low-level helpers
+  should pass `baseVersion` explicitly.
 - Ensure your server handler increments the version column on each successful write.
 
-See: [Conflict Resolution](/docs/concepts/conflict-resolution).
+See: [Conflict Resolution](/docs/learn/conflict-resolution).
 
 ## “WebSocket doesn’t connect”
 
@@ -133,7 +138,7 @@ Checklist:
   connection churn. The built-in transport guards reconnect attempts; custom
   transports should close stale sockets and ignore stale callbacks.
 
-See: [Realtime](/docs/build/realtime).
+See: [Realtime](/docs/server/realtime-websocket).
 
 ## “Rows appear, then disappear after first sync”
 
@@ -163,12 +168,12 @@ Checklist:
 
 - Reduce scope cardinality (prefer `project_id`/`team_id` over many fine-grained scopes).
 - Tune snapshot limits (`limitSnapshotRows`, `maxSnapshotPages`) carefully; don’t default to “huge”.
-- Use snapshot chunks (`json-row-frame-v1` + gzip) and ensure the `/sync/snapshot-chunks/:chunkId` route is reachable.
-- If chunk downloads return `400 INVALID_REQUEST`, make sure the client is sending `X-Syncular-Snapshot-Scopes`. The built-in HTTP transport does this automatically; manual callers must send the subscription scopes themselves.
+- Use snapshot chunks (`binary-table-v1` + gzip) and ensure the `/sync/snapshot-chunks/:chunkId` route is reachable.
+- If chunk downloads return `400 sync.invalid_request`, make sure the client is sending `X-Syncular-Snapshot-Scopes`. The built-in HTTP transport does this automatically; manual callers must send the subscription scopes themselves.
 - Index your scope columns and primary keys appropriately (especially on the server DB).
 
 ## Next steps
 
-- [Data Modeling with Scopes](/docs/build/data-modeling)
-- [Server Setup](/docs/build/server-setup)
-- [Client Setup](/docs/build/client-setup)
+- [Data Modeling with Scopes](/docs/features/data-modeling)
+- [Server Setup](/docs/server/setup-with-hono)
+- [Client Setup](/docs/client/quick-start)

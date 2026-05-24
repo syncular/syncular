@@ -11,6 +11,7 @@ import {
   Spinner,
   StreamLog,
 } from '@syncular/ui';
+import { Link } from '@tanstack/react-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   useClearEventsMutation,
@@ -25,7 +26,7 @@ import {
 import type { ConsoleTimelineItem, TimeseriesRange } from '../lib/types';
 
 type ViewMode = 'all' | 'commits' | 'events';
-type EventTypeFilter = 'all' | 'push' | 'pull';
+type EventTypeFilter = 'all' | 'sync' | 'push' | 'pull';
 type OutcomeFilter = 'all' | 'applied' | 'error' | 'rejected';
 
 function formatTime(iso: string, timeFormat: 'relative' | 'absolute'): string {
@@ -50,6 +51,7 @@ interface StreamSearchTokens {
   table?: string;
   requestId?: string;
   traceId?: string;
+  syncAttemptId?: string;
   search?: string;
 }
 
@@ -90,6 +92,13 @@ function parseStreamSearchTokens(value: string): StreamSearchTokens {
     }
     if (normalizedPrefix === 'trace') {
       parsed.traceId = tokenValue;
+      continue;
+    }
+    if (
+      normalizedPrefix === 'syncattempt' ||
+      normalizedPrefix === 'syncattemptid'
+    ) {
+      parsed.syncAttemptId = tokenValue;
       continue;
     }
 
@@ -216,6 +225,9 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
       ...(parsedSearch.clientId ? { clientId: parsedSearch.clientId } : {}),
       ...(parsedSearch.requestId ? { requestId: parsedSearch.requestId } : {}),
       ...(parsedSearch.traceId ? { traceId: parsedSearch.traceId } : {}),
+      ...(parsedSearch.syncAttemptId
+        ? { syncAttemptId: parsedSearch.syncAttemptId }
+        : {}),
       ...(parsedSearch.table ? { table: parsedSearch.table } : {}),
       ...(parsedSearch.search ? { search: parsedSearch.search } : {}),
       from,
@@ -337,7 +349,7 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
       }
 
       return {
-        type: event.eventType as 'push' | 'pull',
+        type: event.eventType,
         id: resolveEventEntryId(event, sourceInstanceId),
         outcome: event.outcome,
         duration: `${event.durationMs}ms`,
@@ -394,6 +406,7 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
       label: 'Type',
       options: [
         { id: 'all', label: 'All' },
+        { id: 'sync', label: 'Sync' },
         { id: 'push', label: 'Push' },
         { id: 'pull', label: 'Pull' },
       ],
@@ -443,7 +456,7 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
             <FilterBar
               groups={filterGroups}
               searchValue={searchValue}
-              searchPlaceholder="Use actor:, client:, table:, request:, trace: or free text..."
+              searchPlaceholder="Use actor:, client:, table:, request:, trace:, syncAttemptId: or free text..."
               onSearchChange={setSearchValue}
               actions={
                 <>
@@ -580,9 +593,35 @@ export function Stream({ initialSelectedEntryId }: StreamProps = {}) {
                             ? ` | version: ${change.rowVersion}`
                             : ''}
                         </div>
-                        <pre className="font-mono text-[10px] rounded bg-surface p-2 overflow-x-auto text-neutral-200">
-                          {formatJson(change.rowJson)}
-                        </pre>
+                        <div className="font-mono text-[10px] rounded bg-surface p-2 space-y-1 text-neutral-200">
+                          <div>kind: {change.changeKind}</div>
+                          <div>
+                            fields:{' '}
+                            {change.fields.length > 0
+                              ? change.fields.join(', ')
+                              : '--'}
+                          </div>
+                          {change.sensitiveFields.length > 0 ? (
+                            <div>
+                              sensitive: {change.sensitiveFields.join(', ')}
+                            </div>
+                          ) : null}
+                          <div>
+                            redaction: {change.redaction.payload} /{' '}
+                            {change.redaction.reason}
+                          </div>
+                        </div>
+                        <Link
+                          to="/investigate/row/$table/$rowId"
+                          params={{
+                            table: change.table,
+                            rowId: change.rowId,
+                          }}
+                        >
+                          <Button variant="ghost" size="sm">
+                            Investigate row
+                          </Button>
+                        </Link>
                       </div>
                     ))
                   )}

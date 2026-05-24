@@ -77,6 +77,17 @@ function readRootVersion(): string | null {
   return null;
 }
 
+const SEMVER_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/;
+
+export function normalizeReleaseVersion(version: string): string {
+  const normalized = version.trim().replace(/^v(?=\d+\.\d+\.\d+)/, '');
+  if (!SEMVER_PATTERN.test(normalized)) {
+    throw new Error(`Invalid SemVer version: ${version}`);
+  }
+  return normalized;
+}
+
 export function computeStampedVersion(suffix: string): string {
   const normalizedSuffix = suffix.trim();
   if (normalizedSuffix.length === 0) {
@@ -88,5 +99,5 @@ export function computeStampedVersion(suffix: string): string {
     throw new Error('No version found in root package.json');
   }
 
-  return `${baseVersion}-${normalizedSuffix}`;
+  return normalizeReleaseVersion(`${baseVersion}-${normalizedSuffix}`);
 }

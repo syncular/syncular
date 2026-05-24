@@ -1,0 +1,72 @@
+---
+title: File / Blob Sync
+description: Sync large files and media without putting binary data into row commits.
+---
+
+# File / Blob Sync
+
+Blob sync is for files, images, media, and other large binary payloads. Keep
+metadata in synced tables and store binary bodies through Syncular blob routes
+and storage adapters.
+
+## Recommended shape
+
+- Put file metadata, ownership, status, and references in normal synced rows.
+- Store the binary body through blob routes backed by object storage or a local
+  adapter.
+- Use content hashes as durable references from rows to blobs.
+- Let the runtime queue uploads/downloads and emit progress or failure events.
+- Keep image resizing, thumbnail generation, and file picker behavior in the
+  app layer.
+
+## Binding examples
+
+Browser and native clients expose blob operations through the generated runtime
+surface. The app stores the blob locally first, writes a generated mutation that
+references the blob, then lets the runtime upload and retry.
+
+### Browser TypeScript
+
+```ts
+const ref = await syncular.blobs.store(file, {
+  mimeType: file.type,
+});
+
+await syncular.mutations.tasks.update(taskId, {
+  image: ref,
+});
+```
+
+Rust, Swift, Kotlin, JVM, React Native, and desktop hosts use the same blob
+lifecycle through their generated clients or native bindings. Keep host-specific
+file picker, byte stream, and background-upload policy in the app shell; keep
+blob refs in synced rows.
+
+Queued blob uploads are part of the same runtime event model as rows, outbox,
+conflicts, and presence. UI shells should subscribe to blob events instead of
+polling storage directly.
+
+## Server flow
+
+Mount blob routes next to sync routes and authorize them with the same actor
+boundary. Blob routes are separate from row push/pull so large bodies do not
+inflate commit payloads.
+
+Use [Server Blobs](/docs/server/blobs) for route setup and
+[Cloudflare](/docs/server/cloudflare) for R2-backed deployments.
+
+## Watch-outs
+
+- Do not put raw binary data in synced row JSON.
+- Keep metadata visibility separate from authorization to fetch blob bodies.
+- Test interrupted upload, retry, cache clear, and redownload paths.
+- Size snapshot and blob storage independently; they use related storage
+  primitives but have different lifecycle pressure.
+
+## Related docs
+
+- [Server Blobs](/docs/server/blobs)
+- [Blobs and Media Recipe](/docs/features/recipes/blobs-and-media)
+- [Browser TypeScript](/docs/client/browser)
+- [Native Lifecycle](/docs/client/native)
+- [Console Storage](/docs/operate/console/storage)

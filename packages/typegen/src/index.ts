@@ -8,6 +8,7 @@
  */
 
 export * from './checksums';
+export * from './app-contract';
 export * from './generate';
 export * from './introspect';
 export * from './map-types';

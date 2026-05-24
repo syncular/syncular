@@ -15,7 +15,15 @@
  * - DELETE /clients/:id   - Evict client
  */
 
-import { logSyncEvent, sha256Hex } from '@syncular/core';
+import {
+  createSyncularErrorResponse,
+  ErrorResponseSchema,
+  logSyncEvent,
+  type ScopeValues,
+  type StoredScopes,
+  type SyncularErrorCode,
+  sha256Hex,
+} from '@syncular/core';
 import type { SqlFamily, SyncCoreDb, SyncServerAuth } from '@syncular/server';
 import {
   coerceNumber,
@@ -25,13 +33,16 @@ import {
   previewPruneSync,
   pruneSync,
   readSyncStats,
+  toDialectJsonValue,
 } from '@syncular/server';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { resolver, validator as zValidator } from 'hono-openapi';
+import { resolver } from 'hono-openapi';
 import { type Generated, type Kysely, type Selectable, sql } from 'kysely';
 import { z } from 'zod';
+import { summarizeAuditChange } from '../audit-redaction';
+import { consoleValidator as zValidator } from '../validation';
 import { isWebSocketOriginAllowed } from '../websocket-origin';
 import {
   closeUnauthenticatedSocket,
@@ -59,6 +70,13 @@ import {
   type ConsoleClearEventsResult,
   ConsoleClearEventsResultSchema,
   type ConsoleClient,
+  type ConsoleClientDiagnosticCodeSummary,
+  type ConsoleClientDiagnosticFreshnessState,
+  type ConsoleClientDiagnosticHealthSeverity,
+  type ConsoleClientDiagnosticIngest,
+  ConsoleClientDiagnosticIngestSchema,
+  type ConsoleClientDiagnosticRecord,
+  ConsoleClientDiagnosticRecordSchema,
   ConsoleClientSchema,
   type ConsoleCommitDetail,
   ConsoleCommitDetailSchema,
@@ -66,6 +84,10 @@ import {
   ConsoleCommitListItemSchema,
   type ConsoleCompactResult,
   ConsoleCompactResultSchema,
+  type ConsoleDebugExportCommit,
+  type ConsoleDebugExportEvent,
+  type ConsoleDebugExportResponse,
+  ConsoleDebugExportResponseSchema,
   type ConsoleEvictResult,
   ConsoleEvictResultSchema,
   type ConsoleHandler,
@@ -86,9 +108,21 @@ import {
   type ConsolePruneResult,
   ConsolePruneResultSchema,
   type ConsoleRequestEvent,
+  type ConsoleRequestEventResponseSummary,
   ConsoleRequestEventSchema,
   type ConsoleRequestPayload,
   ConsoleRequestPayloadSchema,
+  type ConsoleRowHistoryResponse,
+  ConsoleRowHistoryResponseSchema,
+  type ConsoleRowInvestigationClient,
+  type ConsoleRowInvestigationFinding,
+  type ConsoleRowInvestigationRealtimeEvidence,
+  type ConsoleRowInvestigationRequestEvidence,
+  type ConsoleRowInvestigationResponse,
+  ConsoleRowInvestigationResponseSchema,
+  type ConsoleRowInvestigationScopeEligibility,
+  type ConsoleRowInvestigationSnapshotEvidence,
+  type ConsoleRowInvestigationSubscriptionEvidence,
   type ConsoleTimelineItem,
   ConsoleTimelineItemSchema,
   ConsoleTimelineQuerySchema,
@@ -191,14 +225,6 @@ function includesSearchTerm(
   return value.toLowerCase().includes(searchTerm);
 }
 
-function parseJsonRecord(value: unknown): Record<string, unknown> {
-  const parsed = parseJsonValue(value);
-  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-    return {};
-  }
-  return parsed as Record<string, unknown>;
-}
-
 function parseJsonStringArray(value: unknown): string[] {
   const parsed = parseJsonValue(value);
   if (!Array.isArray(parsed)) return [];
@@ -228,6 +254,211 @@ function parseScopesSummary(
   return Object.keys(summary).length > 0 ? summary : null;
 }
 
+function parseResponseSummary(
+  value: unknown
+): ConsoleRequestEventResponseSummary | null {
+  const parsed = parseJsonValue(value);
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+
+  const summary: ConsoleRequestEventResponseSummary = {};
+  for (const [key, entry] of Object.entries(parsed)) {
+    if (typeof entry === 'number' && Number.isFinite(entry)) {
+      summary[key] = entry;
+    }
+  }
+  return Object.keys(summary).length > 0 ? summary : null;
+}
+
+function scopeValueCovers(
+  allowed: ScopeValues[string] | undefined,
+  rowValue: string | undefined
+): boolean {
+  if (!rowValue || allowed === undefined) return false;
+  const allowedValues = Array.isArray(allowed) ? allowed : [allowed];
+  return allowedValues.includes('*') || allowedValues.includes(rowValue);
+}
+
+function assessScopeEligibility(args: {
+  rowScopes: StoredScopes | null;
+  clientScopes: ScopeValues | null;
+}): ConsoleRowInvestigationScopeEligibility {
+  if (!args.clientScopes) {
+    return {
+      status: 'no_client',
+      requiredScopeKeys: [],
+      matchedScopeKeys: [],
+      missingScopeKeys: [],
+    };
+  }
+  if (!args.rowScopes || Object.keys(args.rowScopes).length === 0) {
+    return {
+      status: 'unknown',
+      requiredScopeKeys: [],
+      matchedScopeKeys: [],
+      missingScopeKeys: [],
+    };
+  }
+
+  const requiredScopeKeys = Object.keys(args.rowScopes).sort();
+  const matchedScopeKeys: string[] = [];
+  const missingScopeKeys: string[] = [];
+
+  for (const key of requiredScopeKeys) {
+    if (scopeValueCovers(args.clientScopes[key], args.rowScopes[key])) {
+      matchedScopeKeys.push(key);
+      continue;
+    }
+    missingScopeKeys.push(key);
+  }
+
+  return {
+    status: missingScopeKeys.length === 0 ? 'eligible' : 'not_eligible',
+    requiredScopeKeys,
+    matchedScopeKeys,
+    missingScopeKeys,
+  };
+}
+
+function summarizeSubscriptionEvidence(
+  events: readonly ConsoleRequestEvent[]
+): ConsoleRowInvestigationSubscriptionEvidence {
+  const subscriptionEvents = events.filter(
+    (event) =>
+      event.eventType === 'pull' ||
+      (event.eventType === 'sync' && event.subscriptionCount !== null)
+  );
+  const latest = subscriptionEvents[0] ?? null;
+  const observedScopeKeys = new Set<string>();
+  let revokedSubscriptionCount = 0;
+  for (const event of subscriptionEvents) {
+    for (const key of Object.keys(event.scopesSummary ?? {})) {
+      observedScopeKeys.add(key);
+    }
+    revokedSubscriptionCount +=
+      event.responseSummary?.revokedSubscriptionCount ?? 0;
+  }
+
+  return {
+    status:
+      subscriptionEvents.length === 0
+        ? 'unknown'
+        : revokedSubscriptionCount > 0
+          ? 'revoked'
+          : subscriptionEvents.some(
+                (event) => (event.subscriptionCount ?? 0) > 0
+              )
+            ? 'observed'
+            : 'not_observed',
+    matchingEventCount: subscriptionEvents.length,
+    latestEventId: latest?.eventId ?? null,
+    latestRequestId: latest?.requestId ?? null,
+    latestEventOutcome: latest?.outcome ?? null,
+    latestSubscriptionCount: latest?.subscriptionCount ?? null,
+    requestedTableObserved: events.length > 0,
+    observedScopeKeys: Array.from(observedScopeKeys).sort(),
+  };
+}
+
+function summarizeRequestEvidence(
+  events: readonly ConsoleRequestEvent[]
+): ConsoleRowInvestigationRequestEvidence {
+  const latest = events[0] ?? null;
+  const successEvents = events.filter(
+    (event) => event.responseStatus === 'success'
+  );
+  const nonSuccessEvents = events.filter(
+    (event) => event.responseStatus !== 'success'
+  );
+  const latestSuccess = successEvents[0] ?? null;
+  const latestNonSuccess = nonSuccessEvents[0] ?? null;
+
+  return {
+    matchingEventCount: events.length,
+    successEventCount: successEvents.length,
+    nonSuccessEventCount: nonSuccessEvents.length,
+    latestEventId: latest?.eventId ?? null,
+    latestRequestId: latest?.requestId ?? null,
+    latestOutcome: latest?.outcome ?? null,
+    latestResponseStatus: latest?.responseStatus ?? null,
+    latestErrorCode: latest?.errorCode ?? null,
+    latestErrorMessage: latest?.errorMessage ?? null,
+    latestSuccessRequestId: latestSuccess?.requestId ?? null,
+    latestNonSuccessRequestId: latestNonSuccess?.requestId ?? null,
+    latestNonSuccessResponseStatus: latestNonSuccess?.responseStatus ?? null,
+    latestNonSuccessErrorCode: latestNonSuccess?.errorCode ?? null,
+  };
+}
+
+function summarizeSnapshotEvidence(
+  events: readonly ConsoleRequestEvent[]
+): ConsoleRowInvestigationSnapshotEvidence {
+  return events.reduce<ConsoleRowInvestigationSnapshotEvidence>(
+    (summary, event) => {
+      const responseSummary = event.responseSummary;
+      summary.pageCount += responseSummary?.snapshotPageCount ?? 0;
+      summary.inlineRowCount += responseSummary?.snapshotInlineRowCount ?? 0;
+      summary.chunkCount += responseSummary?.snapshotChunkCount ?? 0;
+      summary.chunkBytes += responseSummary?.snapshotChunkBytes ?? 0;
+      summary.artifactCount += responseSummary?.snapshotArtifactCount ?? 0;
+      summary.artifactBytes += responseSummary?.snapshotArtifactBytes ?? 0;
+      return summary;
+    },
+    {
+      pageCount: 0,
+      inlineRowCount: 0,
+      chunkCount: 0,
+      chunkBytes: 0,
+      artifactCount: 0,
+      artifactBytes: 0,
+    }
+  );
+}
+
+interface RealtimeEvidenceRow {
+  event_id: unknown;
+  event_type: string;
+  reason: string | null;
+  cursor: unknown;
+  latest_cursor: unknown;
+}
+
+function summarizeRealtimeEvidence(
+  rows: readonly RealtimeEvidenceRow[]
+): ConsoleRowInvestigationRealtimeEvidence {
+  const latest = rows[0] ?? null;
+  const latestPullRequired = rows.find(
+    (row) => row.event_type === 'pull_required'
+  );
+
+  return {
+    matchingEventCount: rows.length,
+    connectedEventCount: rows.filter((row) => row.event_type === 'connected')
+      .length,
+    pullRequiredEventCount: rows.filter(
+      (row) => row.event_type === 'pull_required'
+    ).length,
+    ackEventCount: rows.filter((row) => row.event_type === 'ack').length,
+    rejectedEventCount: rows.filter((row) => row.event_type === 'rejected')
+      .length,
+    errorEventCount: rows.filter((row) => row.event_type === 'error').length,
+    latestEventId: coerceNumber(latest?.event_id) ?? null,
+    latestEventType: latest?.event_type ?? null,
+    latestReason: latest?.reason ?? null,
+    latestCursor: coerceNumber(latest?.cursor) ?? null,
+    latestServerCursor: coerceNumber(latest?.latest_cursor) ?? null,
+    latestPullRequiredReason: latestPullRequired?.reason ?? null,
+  };
+}
+
+function normalizeRequestEventType(value: unknown): 'sync' | 'push' | 'pull' {
+  if (value === 'sync' || value === 'push' || value === 'pull') {
+    return value;
+  }
+  return 'pull';
+}
+
 function getClientActivityState(args: {
   connectionCount: number;
   updatedAt: string | null | undefined;
@@ -249,6 +480,182 @@ function getClientActivityState(args: {
     return 'idle';
   }
   return 'stale';
+}
+
+function getDiagnosticFreshnessState(
+  reportedAt: string,
+  receivedAt: string
+): ConsoleClientDiagnosticFreshnessState {
+  const reportedAtMs = parseDate(reportedAt);
+  const receivedAtMs = parseDate(receivedAt);
+  if (reportedAtMs === null || receivedAtMs === null) {
+    return 'stale';
+  }
+
+  const ageMs = Math.max(0, receivedAtMs - reportedAtMs);
+  if (ageMs <= 60_000) {
+    return 'active';
+  }
+  if (ageMs <= 5 * 60_000) {
+    return 'idle';
+  }
+  return 'stale';
+}
+
+const diagnosticSeverityRank: Record<
+  ConsoleClientDiagnosticHealthSeverity,
+  number
+> = {
+  debug: 0,
+  info: 1,
+  warn: 2,
+  error: 3,
+};
+
+function maxDiagnosticSeverity(
+  current: ConsoleClientDiagnosticHealthSeverity | null,
+  next: ConsoleClientDiagnosticHealthSeverity
+): ConsoleClientDiagnosticHealthSeverity {
+  if (!current) {
+    return next;
+  }
+  return diagnosticSeverityRank[next] > diagnosticSeverityRank[current]
+    ? next
+    : current;
+}
+
+function summarizeDiagnosticCodes(
+  diagnostics: ConsoleClientDiagnosticRecord['recentDiagnostics']
+): {
+  codes: ConsoleClientDiagnosticCodeSummary[];
+  healthMaxSeverity: ConsoleClientDiagnosticHealthSeverity | null;
+} {
+  const summary = new Map<
+    string,
+    { count: number; maxLevel: ConsoleClientDiagnosticHealthSeverity }
+  >();
+  let healthMaxSeverity: ConsoleClientDiagnosticHealthSeverity | null = null;
+
+  for (const event of diagnostics) {
+    const code = event.code.trim();
+    if (!code) {
+      continue;
+    }
+    const level = event.level;
+    healthMaxSeverity = maxDiagnosticSeverity(healthMaxSeverity, level);
+    const existing = summary.get(code);
+    if (!existing) {
+      summary.set(code, { count: 1, maxLevel: level });
+      continue;
+    }
+    existing.count += 1;
+    existing.maxLevel = maxDiagnosticSeverity(existing.maxLevel, level);
+  }
+
+  const codes = Array.from(summary.entries())
+    .map(([code, value]) => ({
+      code,
+      count: value.count,
+      maxLevel: value.maxLevel,
+    }))
+    .sort((a, b) => {
+      const severityDelta =
+        diagnosticSeverityRank[b.maxLevel] - diagnosticSeverityRank[a.maxLevel];
+      return severityDelta === 0 ? a.code.localeCompare(b.code) : severityDelta;
+    });
+
+  return { codes, healthMaxSeverity };
+}
+
+function buildQueueSummary(
+  record: Pick<
+    ConsoleClientDiagnosticRecord,
+    'blobUploadStats' | 'conflictStats' | 'outboxStats'
+  >
+): Record<string, unknown> | null {
+  const summary = {
+    outbox: record.outboxStats,
+    conflicts: record.conflictStats,
+    blobUploads: record.blobUploadStats,
+  };
+  return Object.values(summary).some((value) => value !== null)
+    ? summary
+    : null;
+}
+
+function buildTimingSummary(
+  timings: ConsoleClientDiagnosticRecord['recentSyncTimings']
+): Record<string, unknown> | null {
+  const latest = timings[timings.length - 1] ?? null;
+  if (!latest && timings.length === 0) {
+    return null;
+  }
+  return {
+    count: timings.length,
+    latest,
+  };
+}
+
+function normalizeDiagnosticFieldKey(key: string): string {
+  return key.toLowerCase().replace(/[^a-z0-9]/gu, '');
+}
+
+function findSensitiveDiagnosticField(
+  value: unknown,
+  path = '$',
+  depth = 0
+): string | null {
+  if (depth > 12 || value === null || value === undefined) {
+    return null;
+  }
+
+  if (Array.isArray(value)) {
+    for (let index = 0; index < value.length; index++) {
+      const found = findSensitiveDiagnosticField(
+        value[index],
+        `${path}[${index}]`,
+        depth + 1
+      );
+      if (found) {
+        return found;
+      }
+    }
+    return null;
+  }
+
+  if (typeof value !== 'object') {
+    return null;
+  }
+
+  for (const [key, entry] of Object.entries(value)) {
+    if (
+      CLIENT_DIAGNOSTIC_SENSITIVE_KEYS.has(normalizeDiagnosticFieldKey(key))
+    ) {
+      return `${path}.${key}`;
+    }
+    const found = findSensitiveDiagnosticField(
+      entry,
+      `${path}.${key}`,
+      depth + 1
+    );
+    if (found) {
+      return found;
+    }
+  }
+
+  return null;
+}
+
+function jsonByteLength(value: unknown): number {
+  return new TextEncoder().encode(JSON.stringify(value)).byteLength;
+}
+
+function readStringProperty(
+  value: Record<string, unknown> | null | undefined,
+  key: string
+): string | null {
+  const entry = value?.[key];
+  return typeof entry === 'string' && entry.length > 0 ? entry : null;
 }
 
 type TimeseriesInterval = 'minute' | 'hour' | 'day';
@@ -355,30 +762,96 @@ function calculatePercentiles(latencies: number[]): LatencyPercentiles {
   };
 }
 
+function consoleRouteError(
+  c: Context,
+  status: 400 | 401 | 403 | 404 | 501 | 503,
+  code: SyncularErrorCode,
+  message?: string,
+  details?: Record<string, unknown>
+): Response {
+  return c.json(
+    createSyncularErrorResponse(code, {
+      ...(message ? { message } : {}),
+      ...(details ? { details } : {}),
+    }),
+    status
+  );
+}
+
+function consoleNotFound(c: Context, message?: string): Response {
+  return consoleRouteError(c, 404, 'console.not_found', message);
+}
+
+function blobStorageNotConfigured(c: Context): Response {
+  return consoleRouteError(c, 501, 'blob.storage_not_configured');
+}
+
 // ============================================================================
 // Route Schemas
 // ============================================================================
 
-const ErrorResponseSchema = z.object({
-  error: z.string(),
-  message: z.string().optional(),
-});
-
 const commitSeqParamSchema = z.object({ seq: z.coerce.number().int() });
+const rowHistoryParamSchema = z.object({
+  table: z.string().min(1),
+  rowId: z.string().min(1),
+});
 const clientIdParamSchema = z.object({ id: z.string().min(1) });
 const eventIdParamSchema = z.object({ id: z.coerce.number().int() });
 const apiKeyIdParamSchema = z.object({ id: z.string().min(1) });
+const clientDiagnosticsQuerySchema =
+  ConsolePartitionedPaginationQuerySchema.extend({
+    clientId: z.string().min(1).optional(),
+  });
+const clientDiagnosticDetailQuerySchema = ConsolePartitionQuerySchema;
+const clientDiagnosticHistoryQuerySchema =
+  ConsolePartitionedPaginationQuerySchema;
 
 const eventsQuerySchema = ConsolePartitionedPaginationQuerySchema.extend({
-  eventType: z.enum(['push', 'pull']).optional(),
+  eventType: z.enum(['sync', 'push', 'pull']).optional(),
   actorId: z.string().optional(),
   clientId: z.string().optional(),
   requestId: z.string().optional(),
   traceId: z.string().optional(),
+  syncAttemptId: z.string().optional(),
   outcome: z.string().optional(),
 });
 
 const commitDetailQuerySchema = ConsolePartitionQuerySchema;
+const rowHistoryQueryBaseSchema = ConsolePartitionQuerySchema.extend({
+  limit: z.coerce.number().int().min(1).max(200).default(50),
+  beforeCommitSeq: z.coerce.number().int().min(1).optional(),
+  afterCommitSeq: z.coerce.number().int().min(1).optional(),
+});
+const rowHistoryQuerySchema = rowHistoryQueryBaseSchema.refine(
+  (query) =>
+    query.beforeCommitSeq === undefined ||
+    query.afterCommitSeq === undefined ||
+    query.afterCommitSeq < query.beforeCommitSeq,
+  {
+    message: 'afterCommitSeq must be lower than beforeCommitSeq',
+    path: ['afterCommitSeq'],
+  }
+);
+const rowInvestigationQuerySchema = rowHistoryQueryBaseSchema
+  .extend({
+    clientId: z.string().min(1).optional(),
+  })
+  .refine(
+    (query) =>
+      query.beforeCommitSeq === undefined ||
+      query.afterCommitSeq === undefined ||
+      query.afterCommitSeq < query.beforeCommitSeq,
+    {
+      message: 'afterCommitSeq must be lower than beforeCommitSeq',
+      path: ['afterCommitSeq'],
+    }
+  );
+const debugExportQuerySchema = ConsolePartitionQuerySchema.extend({
+  limitCommits: z.coerce.number().int().min(1).max(200).default(50),
+  limitEvents: z.coerce.number().int().min(1).max(500).default(100),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+});
 const eventDetailQuerySchema = ConsolePartitionQuerySchema;
 const evictClientQuerySchema = ConsolePartitionQuerySchema;
 const apiKeyStatusSchema = z.enum(['active', 'revoked', 'expiring']);
@@ -399,6 +872,21 @@ const DEFAULT_OPERATION_EVENTS_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const DEFAULT_OPERATION_EVENTS_MAX_ROWS = 5_000;
 const DEFAULT_TIMELINE_SCAN_MAX_ROWS = 10_000;
 const DEFAULT_AUTO_EVENTS_PRUNE_INTERVAL_MS = 5 * 60 * 1000;
+const DEFAULT_CLIENT_DIAGNOSTICS_MAX_RECORDS = 500;
+const DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES = 64 * 1024;
+const CLIENT_DIAGNOSTIC_SENSITIVE_KEYS = new Set([
+  'accesstoken',
+  'apikey',
+  'authorization',
+  'authtoken',
+  'mnemonic',
+  'password',
+  'plaintext',
+  'privatekey',
+  'refreshtoken',
+  'secret',
+  'seedphrase',
+]);
 
 function readNonNegativeInteger(
   value: number | undefined,
@@ -411,6 +899,66 @@ function readNonNegativeInteger(
     return fallback;
   }
   return Math.floor(value);
+}
+
+function isoFromUnixMs(value: number | undefined, fallback: Date): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return fallback.toISOString();
+  }
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) {
+    return fallback.toISOString();
+  }
+  return date.toISOString();
+}
+
+function clientDiagnosticStoreKey(partitionId: string, clientId: string) {
+  return `${partitionId}\u0000${clientId}`;
+}
+
+function buildClientDiagnosticRecord(
+  payload: ConsoleClientDiagnosticIngest,
+  receivedAt: Date
+): ConsoleClientDiagnosticRecord {
+  const { snapshot } = payload;
+  const reportedAt = isoFromUnixMs(snapshot.generatedAt, receivedAt);
+  const receivedAtIso = receivedAt.toISOString();
+  const partialRecord = {
+    clientId: payload.clientId,
+    actorId: payload.actorId ?? null,
+    partitionId: payload.partitionId,
+    reportedAt,
+    receivedAt: receivedAtIso,
+    runtime: snapshot.runtime ?? null,
+    connection: snapshot.connection ?? null,
+    lifecycle: payload.lifecycle ?? null,
+    bootstrap: snapshot.bootstrap ?? null,
+    transportStats: snapshot.transportStats ?? null,
+    outboxStats: snapshot.outboxStats ?? null,
+    conflictStats: snapshot.conflictStats ?? null,
+    blobUploadStats: snapshot.blobUploadStats ?? null,
+    subscriptions: snapshot.subscriptions ?? [],
+    recentDiagnostics: snapshot.recentDiagnostics ?? [],
+    recentSyncTimings: snapshot.recentSyncTimings ?? [],
+  };
+  const diagnosticSummary = summarizeDiagnosticCodes(
+    partialRecord.recentDiagnostics
+  );
+  const queueSummary = buildQueueSummary(partialRecord);
+
+  return {
+    ...partialRecord,
+    freshnessState: getDiagnosticFreshnessState(reportedAt, receivedAtIso),
+    healthMaxSeverity: diagnosticSummary.healthMaxSeverity,
+    diagnosticCodesSummary: diagnosticSummary.codes,
+    queueSummary,
+    timingSummary: buildTimingSummary(partialRecord.recentSyncTimings),
+    redactionSummary: {
+      rawSnapshot: 'normalized_redacted_record',
+      sensitiveKeys: 'rejected',
+      payloadValues: 'client_redacted',
+    },
+  };
 }
 
 export function createConsoleRoutes<
@@ -429,10 +977,7 @@ export function createConsoleRoutes<
       error instanceof Error ? error.message : 'Unknown console error';
     console.error('[console] route error', error);
     return context.json(
-      {
-        error: 'CONSOLE_ROUTE_ERROR',
-        message,
-      },
+      createSyncularErrorResponse('console.internal', { message }),
       500
     );
   });
@@ -458,6 +1003,7 @@ export function createConsoleRoutes<
     row_count: number | null;
     subscription_count: number | null;
     scopes_summary: unknown | null;
+    response_summary: unknown | null;
     tables: unknown;
     error_message: string | null;
     payload_ref: string | null;
@@ -497,12 +1043,54 @@ export function createConsoleRoutes<
     created_at: Generated<string>;
   }
 
+  interface SyncRealtimeEventsTable {
+    event_id: Generated<number>;
+    partition_id: string;
+    actor_id: string;
+    client_id: string;
+    transport_path: string;
+    event_type: string;
+    reason: string | null;
+    cursor: number | null;
+    latest_cursor: number | null;
+    commit_seq: number | null;
+    scope_count: number | null;
+    skipped_count: number | null;
+    sync_pack_encoding: string | null;
+    created_at: Generated<string>;
+  }
+
+  interface SyncClientDiagnosticSnapshotsTable {
+    snapshot_id: Generated<number>;
+    partition_id: string;
+    client_id: string;
+    actor_id: string | null;
+    runtime_kind: string | null;
+    runtime_version: string | null;
+    schema_version: number | null;
+    reported_at: string;
+    received_at: Generated<string>;
+    lifecycle_phase: string | null;
+    connection_state: string | null;
+    freshness_state: string;
+    health_max_severity: string | null;
+    diagnostic_codes_summary: unknown | null;
+    queue_summary: unknown | null;
+    timing_summary: unknown | null;
+    redaction_summary: unknown | null;
+    snapshot_json: unknown;
+  }
+
   type SyncOperationEventRow = Selectable<SyncOperationEventsTable>;
+  type SyncClientDiagnosticSnapshotRow =
+    Selectable<SyncClientDiagnosticSnapshotsTable>;
 
   interface ConsoleDb extends SyncCoreDb {
     sync_request_events: SyncRequestEventsTable;
     sync_request_payloads: SyncRequestPayloadsTable;
     sync_operation_events: SyncOperationEventsTable;
+    sync_realtime_events: SyncRealtimeEventsTable;
+    sync_client_diagnostic_snapshots: SyncClientDiagnosticSnapshotsTable;
     sync_api_keys: SyncApiKeysTable;
   }
 
@@ -538,6 +1126,10 @@ export function createConsoleRoutes<
   const autoEventsPruneIntervalMs = readNonNegativeInteger(
     options.maintenance?.autoPruneIntervalMs,
     DEFAULT_AUTO_EVENTS_PRUNE_INTERVAL_MS
+  );
+  const clientDiagnosticsMaxRecords = readNonNegativeInteger(
+    options.maintenance?.clientDiagnosticsMaxRows,
+    DEFAULT_CLIENT_DIAGNOSTICS_MAX_RECORDS
   );
   let lastEventsPruneRunAt = 0;
 
@@ -587,7 +1179,7 @@ export function createConsoleRoutes<
       await consoleSchemaReadyPromise;
       return null;
     } catch {
-      return c.json({ error: 'CONSOLE_SCHEMA_UNAVAILABLE' }, 503);
+      return consoleRouteError(c, 503, 'console.schema_unavailable');
     }
   };
 
@@ -606,8 +1198,8 @@ export function createConsoleRoutes<
     await next();
   });
 
-  // Route auth middleware. Keep /events/live exempt to preserve websocket
-  // message-based auth handshake fallback when no Authorization header is sent.
+  // Route auth middleware. Keep /events/live exempt so browser WebSocket
+  // clients can authenticate with the first message instead of a header.
   routes.use('*', async (c, next) => {
     if (c.req.method === 'OPTIONS' || c.req.path.endsWith('/events/live')) {
       await next();
@@ -616,7 +1208,7 @@ export function createConsoleRoutes<
 
     const auth = await options.authenticate(c);
     if (!auth) {
-      return c.json({ error: 'UNAUTHENTICATED' }, 401);
+      return consoleRouteError(c, 401, 'console.auth_required');
     }
 
     c.set('consoleAuth', auth);
@@ -644,6 +1236,7 @@ export function createConsoleRoutes<
     'row_count',
     'subscription_count',
     'scopes_summary',
+    'response_summary',
     'tables',
     'error_message',
     'payload_ref',
@@ -658,7 +1251,7 @@ export function createConsoleRoutes<
     requestId: row.request_id ?? '',
     traceId: row.trace_id ?? null,
     spanId: row.span_id ?? null,
-    eventType: row.event_type === 'push' ? 'push' : 'pull',
+    eventType: normalizeRequestEventType(row.event_type),
     syncPath: row.sync_path === 'ws-push' ? 'ws-push' : 'http-combined',
     transportPath: row.transport_path === 'relay' ? 'relay' : 'direct',
     actorId: row.actor_id ?? '',
@@ -673,11 +1266,43 @@ export function createConsoleRoutes<
     rowCount: coerceNumber(row.row_count),
     subscriptionCount: coerceNumber(row.subscription_count),
     scopesSummary: parseScopesSummary(row.scopes_summary),
+    responseSummary: parseResponseSummary(row.response_summary),
     tables: options.dialect.dbToArray(row.tables),
     errorMessage: row.error_message ?? null,
     payloadRef: row.payload_ref ?? null,
     createdAt: row.created_at ?? '',
   });
+
+  const mapDebugExportEvent = (
+    row: SyncRequestEventsTable
+  ): ConsoleDebugExportEvent => {
+    const mapped = mapRequestEvent(row);
+    return {
+      eventId: mapped.eventId,
+      partitionId: mapped.partitionId,
+      requestId: mapped.requestId,
+      traceId: mapped.traceId,
+      spanId: mapped.spanId,
+      eventType: mapped.eventType,
+      syncPath: mapped.syncPath,
+      transportPath: mapped.transportPath,
+      actorId: mapped.actorId,
+      clientId: mapped.clientId,
+      statusCode: mapped.statusCode,
+      outcome: mapped.outcome,
+      responseStatus: mapped.responseStatus,
+      errorCode: mapped.errorCode,
+      durationMs: mapped.durationMs,
+      commitSeq: mapped.commitSeq,
+      operationCount: mapped.operationCount,
+      rowCount: mapped.rowCount,
+      subscriptionCount: mapped.subscriptionCount,
+      scopesSummary: mapped.scopesSummary,
+      responseSummary: mapped.responseSummary,
+      tables: mapped.tables,
+      createdAt: mapped.createdAt,
+    };
+  };
 
   const operationEventSelectColumns = [
     'operation_id',
@@ -709,9 +1334,60 @@ export function createConsoleRoutes<
     createdAt: row.created_at ?? '',
   });
 
+  const readRedactedCommitChanges = async (
+    partitionId: string,
+    commitSeqs: readonly number[]
+  ): Promise<Map<number, ConsoleChange[]>> => {
+    if (commitSeqs.length === 0) {
+      return new Map();
+    }
+
+    const rows = await db
+      .selectFrom('sync_changes')
+      .select([
+        'commit_seq',
+        'change_id',
+        'table',
+        'row_id',
+        'op',
+        'row_json',
+        'row_version',
+        'scopes',
+      ])
+      .where('partition_id', '=', partitionId)
+      .where('commit_seq', 'in', [...commitSeqs])
+      .orderBy('commit_seq', 'asc')
+      .orderBy('change_id', 'asc')
+      .execute();
+
+    const changesByCommitSeq = new Map<number, ConsoleChange[]>();
+    for (const row of rows) {
+      const commitSeq = coerceNumber(row.commit_seq);
+      if (commitSeq === null) continue;
+      const changes = changesByCommitSeq.get(commitSeq) ?? [];
+      changes.push({
+        ...summarizeAuditChange({
+          table: row.table ?? '',
+          op: row.op === 'delete' ? 'delete' : 'upsert',
+          rowJson: row.row_json,
+          scopes: row.scopes,
+        }),
+        changeId: coerceNumber(row.change_id) ?? 0,
+        table: row.table ?? '',
+        rowId: row.row_id ?? '',
+        op: row.op === 'delete' ? 'delete' : 'upsert',
+        rowVersion: coerceNumber(row.row_version),
+      });
+      changesByCommitSeq.set(commitSeq, changes);
+    }
+
+    return changesByCommitSeq;
+  };
+
   type PruneEventsRunResult = {
     requestEventsDeleted: number;
     operationEventsDeleted: number;
+    realtimeEventsDeleted: number;
     payloadSnapshotsDeleted: number;
     totalDeleted: number;
   };
@@ -827,6 +1503,53 @@ export function createConsoleRoutes<
     return Number(result?.numDeletedRows ?? 0);
   };
 
+  const pruneRealtimeEventsByAge = async (): Promise<number> => {
+    if (requestEventsMaxAgeMs <= 0) {
+      return 0;
+    }
+
+    const cutoffDate = new Date(Date.now() - requestEventsMaxAgeMs);
+    const result = await db
+      .deleteFrom('sync_realtime_events')
+      .where('created_at', '<', cutoffDate.toISOString())
+      .executeTakeFirst();
+    return Number(result?.numDeletedRows ?? 0);
+  };
+
+  const pruneRealtimeEventsByCount = async (): Promise<number> => {
+    if (requestEventsMaxRows <= 0) {
+      return 0;
+    }
+
+    const countRow = await db
+      .selectFrom('sync_realtime_events')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+    const total = coerceNumber(countRow?.total) ?? 0;
+    if (total <= requestEventsMaxRows) {
+      return 0;
+    }
+
+    const cutoffRow = await db
+      .selectFrom('sync_realtime_events')
+      .select(['event_id'])
+      .orderBy('event_id', 'desc')
+      .offset(requestEventsMaxRows)
+      .limit(1)
+      .executeTakeFirst();
+
+    const cutoffEventId = coerceNumber(cutoffRow?.event_id);
+    if (cutoffEventId === null) {
+      return 0;
+    }
+
+    const result = await db
+      .deleteFrom('sync_realtime_events')
+      .where('event_id', '<=', cutoffEventId)
+      .executeTakeFirst();
+    return Number(result?.numDeletedRows ?? 0);
+  };
+
   const pruneConsoleEvents = async (): Promise<PruneEventsRunResult> => {
     const requestEventsDeletedByAge = await pruneRequestEventsByAge();
     const requestEventsDeletedByCount = await pruneRequestEventsByCount();
@@ -838,12 +1561,19 @@ export function createConsoleRoutes<
     const operationEventsDeleted =
       operationEventsDeletedByAge + operationEventsDeletedByCount;
 
+    const realtimeEventsDeletedByAge = await pruneRealtimeEventsByAge();
+    const realtimeEventsDeletedByCount = await pruneRealtimeEventsByCount();
+    const realtimeEventsDeleted =
+      realtimeEventsDeletedByAge + realtimeEventsDeletedByCount;
+
     const payloadSnapshotsDeleted = await deleteUnreferencedPayloadSnapshots();
-    const totalDeleted = requestEventsDeleted + operationEventsDeleted;
+    const totalDeleted =
+      requestEventsDeleted + operationEventsDeleted + realtimeEventsDeleted;
 
     return {
       requestEventsDeleted,
       operationEventsDeleted,
+      realtimeEventsDeleted,
       payloadSnapshotsDeleted,
       totalDeleted,
     };
@@ -894,6 +1624,7 @@ export function createConsoleRoutes<
           deletedCount: result.totalDeleted,
           requestEventsDeleted: result.requestEventsDeleted,
           operationEventsDeleted: result.operationEventsDeleted,
+          realtimeEventsDeleted: result.realtimeEventsDeleted,
           payloadDeletedCount: result.payloadSnapshotsDeleted,
         });
       })
@@ -930,6 +1661,146 @@ export function createConsoleRoutes<
             : JSON.stringify(event.resultPayload),
       })
       .execute();
+  };
+
+  const parseClientDiagnosticSnapshotRow = (
+    row: SyncClientDiagnosticSnapshotRow
+  ): ConsoleClientDiagnosticRecord | null => {
+    const parsed = parseJsonValue(row.snapshot_json);
+    const record = ConsoleClientDiagnosticRecordSchema.safeParse(parsed);
+    if (!record.success) {
+      return null;
+    }
+    return record.data;
+  };
+
+  const readClientDiagnosticRecords = async (args: {
+    clientId?: string;
+    clientIds?: string[];
+    latestOnly: boolean;
+    limit?: number;
+    offset?: number;
+    partitionId?: string;
+  }): Promise<{ items: ConsoleClientDiagnosticRecord[]; total: number }> => {
+    let query = db.selectFrom('sync_client_diagnostic_snapshots').selectAll();
+
+    if (args.partitionId) {
+      query = query.where('partition_id', '=', args.partitionId);
+    }
+    if (args.clientId) {
+      query = query.where('client_id', '=', args.clientId);
+    }
+    if (args.clientIds && args.clientIds.length > 0) {
+      query = query.where('client_id', 'in', args.clientIds);
+    }
+
+    const rows = await query
+      .orderBy('received_at', 'desc')
+      .orderBy('snapshot_id', 'desc')
+      .execute();
+    const items: ConsoleClientDiagnosticRecord[] = [];
+    const latestKeys = new Set<string>();
+
+    for (const row of rows) {
+      const record = parseClientDiagnosticSnapshotRow(row);
+      if (!record) {
+        continue;
+      }
+      if (args.latestOnly) {
+        const key = clientDiagnosticStoreKey(
+          record.partitionId,
+          record.clientId
+        );
+        if (latestKeys.has(key)) {
+          continue;
+        }
+        latestKeys.add(key);
+      }
+      items.push(record);
+    }
+
+    const offset = args.offset ?? 0;
+    const limit = args.limit ?? items.length;
+    return {
+      items: items.slice(offset, offset + limit),
+      total: items.length,
+    };
+  };
+
+  const writeClientDiagnosticRecord = async (
+    record: ConsoleClientDiagnosticRecord
+  ): Promise<void> => {
+    await db
+      .insertInto('sync_client_diagnostic_snapshots')
+      .values({
+        partition_id: record.partitionId,
+        client_id: record.clientId,
+        actor_id: record.actorId,
+        runtime_kind:
+          record.runtime?.rust?.crateName ??
+          record.runtime?.packageName ??
+          null,
+        runtime_version:
+          record.runtime?.rust?.crateVersion ??
+          record.runtime?.packageVersion ??
+          null,
+        schema_version: record.runtime?.rust?.schemaVersion ?? null,
+        reported_at: record.reportedAt,
+        received_at: record.receivedAt,
+        lifecycle_phase: readStringProperty(record.lifecycle, 'phase'),
+        connection_state:
+          readStringProperty(record.connection, 'realtime') ??
+          readStringProperty(record.lifecycle, 'realtime'),
+        freshness_state: record.freshnessState,
+        health_max_severity: record.healthMaxSeverity,
+        diagnostic_codes_summary: toDialectJsonValue(
+          options.dialect,
+          record.diagnosticCodesSummary
+        ),
+        queue_summary: toDialectJsonValue(options.dialect, record.queueSummary),
+        timing_summary: toDialectJsonValue(
+          options.dialect,
+          record.timingSummary
+        ),
+        redaction_summary: toDialectJsonValue(
+          options.dialect,
+          record.redactionSummary
+        ),
+        snapshot_json: toDialectJsonValue(options.dialect, record),
+      })
+      .execute();
+  };
+
+  const pruneClientDiagnosticRecordsByCount = async (): Promise<void> => {
+    if (clientDiagnosticsMaxRecords <= 0) {
+      return;
+    }
+
+    const countRow = await db
+      .selectFrom('sync_client_diagnostic_snapshots')
+      .select(({ fn }) => fn.countAll().as('total'))
+      .executeTakeFirst();
+    const total = coerceNumber(countRow?.total) ?? 0;
+    if (total <= clientDiagnosticsMaxRecords) {
+      return;
+    }
+
+    const cutoffRow = await db
+      .selectFrom('sync_client_diagnostic_snapshots')
+      .select(['snapshot_id'])
+      .orderBy('snapshot_id', 'desc')
+      .offset(clientDiagnosticsMaxRecords)
+      .limit(1)
+      .executeTakeFirst();
+    const cutoffSnapshotId = coerceNumber(cutoffRow?.snapshot_id);
+    if (cutoffSnapshotId === null) {
+      return;
+    }
+
+    await db
+      .deleteFrom('sync_client_diagnostic_snapshots')
+      .where('snapshot_id', '<=', cutoffSnapshotId)
+      .executeTakeFirst();
   };
 
   const shouldUseRawMetrics = async (
@@ -1092,6 +1963,7 @@ export function createConsoleRoutes<
             bucket: unknown;
             push_count: unknown;
             pull_count: unknown;
+            event_count: unknown;
             error_count: unknown;
             avg_latency_ms: unknown;
           }>`
@@ -1099,6 +1971,7 @@ export function createConsoleRoutes<
               strftime(${bucketFormat}, created_at) as bucket,
               sum(case when event_type = 'push' then 1 else 0 end) as push_count,
               sum(case when event_type = 'pull' then 1 else 0 end) as pull_count,
+              count(*) as event_count,
               sum(case when outcome = 'error' then 1 else 0 end) as error_count,
               avg(duration_ms) as avg_latency_ms
             from ${sql.table('sync_request_events')}
@@ -1120,9 +1993,9 @@ export function createConsoleRoutes<
 
             const pushCount = coerceNumber(row.push_count) ?? 0;
             const pullCount = coerceNumber(row.pull_count) ?? 0;
+            const rowEventCount = coerceNumber(row.event_count) ?? 0;
             const errorCount = coerceNumber(row.error_count) ?? 0;
             const avgLatencyMs = coerceNumber(row.avg_latency_ms);
-            const rowEventCount = pushCount + pullCount;
 
             bucket.pushCount += pushCount;
             bucket.pullCount += pullCount;
@@ -1137,6 +2010,7 @@ export function createConsoleRoutes<
             bucket: unknown;
             push_count: unknown;
             pull_count: unknown;
+            event_count: unknown;
             error_count: unknown;
             avg_latency_ms: unknown;
           }>`
@@ -1144,6 +2018,7 @@ export function createConsoleRoutes<
               date_trunc(${interval}, created_at::timestamptz) as bucket,
               count(*) filter (where event_type = 'push') as push_count,
               count(*) filter (where event_type = 'pull') as pull_count,
+              count(*) as event_count,
               count(*) filter (where outcome = 'error') as error_count,
               avg(duration_ms) as avg_latency_ms
             from ${sql.table('sync_request_events')}
@@ -1165,9 +2040,9 @@ export function createConsoleRoutes<
 
             const pushCount = coerceNumber(row.push_count) ?? 0;
             const pullCount = coerceNumber(row.pull_count) ?? 0;
+            const rowEventCount = coerceNumber(row.event_count) ?? 0;
             const errorCount = coerceNumber(row.error_count) ?? 0;
             const avgLatencyMs = coerceNumber(row.avg_latency_ms);
-            const rowEventCount = pushCount + pullCount;
 
             bucket.pushCount += pushCount;
             bucket.pullCount += pullCount;
@@ -1251,7 +2126,8 @@ export function createConsoleRoutes<
         const pull: LatencyPercentiles = { p50: 0, p90: 0, p99: 0 };
 
         for (const row of rowsResult.rows) {
-          const eventType = row.event_type === 'push' ? 'push' : 'pull';
+          const eventType = normalizeRequestEventType(row.event_type);
+          if (eventType === 'sync') continue;
           const target = eventType === 'push' ? push : pull;
           target.p50 = coerceNumber(row.p50) ?? 0;
           target.p90 = coerceNumber(row.p90) ?? 0;
@@ -1341,12 +2217,14 @@ export function createConsoleRoutes<
         clientId,
         requestId,
         traceId,
+        syncAttemptId,
         table,
         outcome,
         search,
         from,
         to,
       } = c.req.valid('query');
+      const resolvedTraceId = traceId ?? syncAttemptId;
 
       const items: ConsoleTimelineItem[] = [];
       const normalizedSearchTerm = search?.trim().toLowerCase() || null;
@@ -1360,7 +2238,7 @@ export function createConsoleRoutes<
         !eventType &&
         !outcome &&
         !requestId &&
-        !traceId
+        !resolvedTraceId
       ) {
         let commitsQuery = db
           .selectFrom('sync_commits')
@@ -1452,8 +2330,8 @@ export function createConsoleRoutes<
         if (requestId) {
           eventsQuery = eventsQuery.where('request_id', '=', requestId);
         }
-        if (traceId) {
-          eventsQuery = eventsQuery.where('trace_id', '=', traceId);
+        if (resolvedTraceId) {
+          eventsQuery = eventsQuery.where('trace_id', '=', resolvedTraceId);
         }
         if (outcome) {
           eventsQuery = eventsQuery.where('outcome', '=', outcome);
@@ -1724,7 +2602,7 @@ export function createConsoleRoutes<
       const commitRow = await commitQuery.executeTakeFirst();
 
       if (!commitRow) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return consoleNotFound(c);
       }
 
       let changesQuery = db
@@ -1748,15 +2626,22 @@ export function createConsoleRoutes<
         .orderBy('change_id', 'asc')
         .execute();
 
-      const changes: ConsoleChange[] = changeRows.map((row) => ({
-        changeId: coerceNumber(row.change_id) ?? 0,
-        table: row.table ?? '',
-        rowId: row.row_id ?? '',
-        op: row.op === 'delete' ? 'delete' : 'upsert',
-        rowJson: parseJsonValue(row.row_json),
-        rowVersion: coerceNumber(row.row_version),
-        scopes: parseJsonRecord(row.scopes),
-      }));
+      const changes: ConsoleChange[] = changeRows.map((row) => {
+        const op = row.op === 'delete' ? 'delete' : 'upsert';
+        return {
+          ...summarizeAuditChange({
+            table: row.table ?? '',
+            op,
+            rowJson: row.row_json,
+            scopes: row.scopes,
+          }),
+          changeId: coerceNumber(row.change_id) ?? 0,
+          table: row.table ?? '',
+          rowId: row.row_id ?? '',
+          op,
+          rowVersion: coerceNumber(row.row_version),
+        };
+      });
 
       const commit: ConsoleCommitDetail = {
         commitSeq: coerceNumber(commitRow.commit_seq) ?? 0,
@@ -1770,6 +2655,597 @@ export function createConsoleRoutes<
       };
 
       return c.json(commit, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /row-history/:table/:rowId
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/row-history/:table/:rowId',
+    describeConsoleRoute({
+      summary: 'Get redacted row history',
+      responses: {
+        200: {
+          description: 'Redacted row history with request-event links',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleRowHistoryResponseSchema),
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        404: {
+          description: 'Not found',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('param', rowHistoryParamSchema),
+    zValidator('query', rowHistoryQuerySchema),
+    async (c) => {
+      const { table, rowId } = c.req.valid('param');
+      const {
+        partitionId: requestedPartitionId,
+        limit,
+        beforeCommitSeq,
+        afterCommitSeq,
+      } = c.req.valid('query');
+      const partitionId = requestedPartitionId ?? 'default';
+
+      const rows = await options.dialect.readAuditRowHistory(
+        options.db as unknown as Kysely<SyncCoreDb>,
+        {
+          partitionId,
+          table,
+          rowId,
+          scopes: {},
+          limit,
+          beforeCommitSeq,
+          afterCommitSeq,
+        }
+      );
+      if (rows.length === 0) {
+        return consoleNotFound(c);
+      }
+
+      const hasMore = rows.length > limit;
+      const selectedRows = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore
+        ? Number(selectedRows[selectedRows.length - 1]?.commit_seq ?? 0)
+        : null;
+      const commitSeqs = Array.from(
+        new Set(selectedRows.map((row) => Number(row.commit_seq)))
+      );
+
+      const eventRows =
+        commitSeqs.length > 0
+          ? await db
+              .selectFrom('sync_request_events')
+              .select(['event_id', 'commit_seq', 'request_id', 'trace_id'])
+              .where('partition_id', '=', partitionId)
+              .where('commit_seq', 'in', commitSeqs)
+              .orderBy('event_id', 'asc')
+              .execute()
+          : [];
+      const eventLinksByCommitSeq = new Map<
+        number,
+        {
+          eventIds: Set<number>;
+          requestIds: Set<string>;
+          traceIds: Set<string>;
+        }
+      >();
+      for (const row of eventRows) {
+        const commitSeq = coerceNumber(row.commit_seq);
+        if (commitSeq === null) continue;
+        const links = eventLinksByCommitSeq.get(commitSeq) ?? {
+          eventIds: new Set<number>(),
+          requestIds: new Set<string>(),
+          traceIds: new Set<string>(),
+        };
+        const eventId = coerceNumber(row.event_id);
+        if (eventId !== null) links.eventIds.add(eventId);
+        if (row.request_id) links.requestIds.add(row.request_id);
+        if (row.trace_id) links.traceIds.add(row.trace_id);
+        eventLinksByCommitSeq.set(commitSeq, links);
+      }
+
+      const response: ConsoleRowHistoryResponse = {
+        table,
+        rowId,
+        partitionId,
+        history: selectedRows.map((row) => {
+          const commitSeq = Number(row.commit_seq);
+          const links = eventLinksByCommitSeq.get(commitSeq);
+          const summary = summarizeAuditChange({
+            table: row.table,
+            op: row.op,
+            rowJson: row.row_json,
+            scopes: row.scopes,
+          });
+          return {
+            commitSeq,
+            actorId: row.actor_id,
+            clientId: row.client_id,
+            clientCommitId: row.client_commit_id,
+            createdAt: row.created_at,
+            changeId: Number(row.change_id),
+            table: row.table,
+            rowId: row.row_id,
+            op: row.op,
+            rowVersion:
+              row.row_version === null ? null : Number(row.row_version),
+            ...summary,
+            requestEventIds: links ? Array.from(links.eventIds) : [],
+            requestIds: links ? Array.from(links.requestIds) : [],
+            traceIds: links ? Array.from(links.traceIds) : [],
+          };
+        }),
+        nextCursor,
+      };
+
+      return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /row-investigation/:table/:rowId
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/row-investigation/:table/:rowId',
+    describeConsoleRoute({
+      summary: 'Investigate row visibility',
+      responses: {
+        200: {
+          description: 'Redacted row investigation with client/event hints',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleRowInvestigationResponseSchema),
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('param', rowHistoryParamSchema),
+    zValidator('query', rowInvestigationQuerySchema),
+    async (c) => {
+      const { table, rowId } = c.req.valid('param');
+      const {
+        partitionId: requestedPartitionId,
+        clientId,
+        limit,
+        beforeCommitSeq,
+        afterCommitSeq,
+      } = c.req.valid('query');
+      const partitionId = requestedPartitionId ?? 'default';
+
+      const rows = await options.dialect.readAuditRowHistory(
+        options.db as unknown as Kysely<SyncCoreDb>,
+        {
+          partitionId,
+          table,
+          rowId,
+          scopes: {},
+          limit,
+          beforeCommitSeq,
+          afterCommitSeq,
+        }
+      );
+
+      const hasMore = rows.length > limit;
+      const selectedRows = hasMore ? rows.slice(0, limit) : rows;
+      const nextCursor = hasMore
+        ? Number(selectedRows[selectedRows.length - 1]?.commit_seq ?? 0)
+        : null;
+      const commitSeqs = Array.from(
+        new Set(selectedRows.map((row) => Number(row.commit_seq)))
+      );
+
+      const eventLinkRows =
+        commitSeqs.length > 0
+          ? await db
+              .selectFrom('sync_request_events')
+              .select(['event_id', 'commit_seq', 'request_id', 'trace_id'])
+              .where('partition_id', '=', partitionId)
+              .where('commit_seq', 'in', commitSeqs)
+              .orderBy('event_id', 'asc')
+              .execute()
+          : [];
+      const eventLinksByCommitSeq = new Map<
+        number,
+        {
+          eventIds: Set<number>;
+          requestIds: Set<string>;
+          traceIds: Set<string>;
+        }
+      >();
+      for (const row of eventLinkRows) {
+        const commitSeq = coerceNumber(row.commit_seq);
+        if (commitSeq === null) continue;
+        const links = eventLinksByCommitSeq.get(commitSeq) ?? {
+          eventIds: new Set<number>(),
+          requestIds: new Set<string>(),
+          traceIds: new Set<string>(),
+        };
+        const eventId = coerceNumber(row.event_id);
+        if (eventId !== null) links.eventIds.add(eventId);
+        if (row.request_id) links.requestIds.add(row.request_id);
+        if (row.trace_id) links.traceIds.add(row.trace_id);
+        eventLinksByCommitSeq.set(commitSeq, links);
+      }
+
+      const history = selectedRows.map((row) => {
+        const commitSeq = Number(row.commit_seq);
+        const links = eventLinksByCommitSeq.get(commitSeq);
+        const summary = summarizeAuditChange({
+          table: row.table,
+          op: row.op,
+          rowJson: row.row_json,
+          scopes: row.scopes,
+        });
+        return {
+          commitSeq,
+          actorId: row.actor_id,
+          clientId: row.client_id,
+          clientCommitId: row.client_commit_id,
+          createdAt: row.created_at,
+          changeId: Number(row.change_id),
+          table: row.table,
+          rowId: row.row_id,
+          op: row.op,
+          rowVersion: row.row_version === null ? null : Number(row.row_version),
+          ...summary,
+          requestEventIds: links ? Array.from(links.eventIds) : [],
+          requestIds: links ? Array.from(links.requestIds) : [],
+          traceIds: links ? Array.from(links.traceIds) : [],
+        };
+      });
+
+      const latestRow = selectedRows[0] ?? null;
+      const latestCommitSeq = latestRow
+        ? (coerceNumber(latestRow.commit_seq) ?? 0)
+        : null;
+      const latestOp =
+        latestRow?.op === 'delete' || latestRow?.op === 'upsert'
+          ? latestRow.op
+          : null;
+
+      const clientRow = clientId
+        ? await db
+            .selectFrom('sync_client_cursors')
+            .select([
+              'client_id',
+              'actor_id',
+              'cursor',
+              'effective_scopes',
+              'updated_at',
+            ])
+            .where('partition_id', '=', partitionId)
+            .where('client_id', '=', clientId)
+            .executeTakeFirst()
+        : null;
+
+      const eventRows = await db
+        .selectFrom('sync_request_events')
+        .select(requestEventSelectColumns)
+        .where('partition_id', '=', partitionId)
+        .$if(Boolean(clientId), (query) =>
+          query.where('client_id', '=', clientId ?? '')
+        )
+        .orderBy('created_at', 'desc')
+        .limit(Math.min(Math.max(limit * 5, 25), 200))
+        .execute();
+      const relevantEvents = eventRows
+        .map((row) => mapRequestEvent(row))
+        .filter((event) => (event.tables ?? []).includes(table))
+        .slice(0, limit);
+      const subscriptionEvidence =
+        summarizeSubscriptionEvidence(relevantEvents);
+      const requestEvidence = summarizeRequestEvidence(relevantEvents);
+      const snapshotEvidence = summarizeSnapshotEvidence(relevantEvents);
+      const realtimeRows = clientId
+        ? await db
+            .selectFrom('sync_realtime_events')
+            .select([
+              'event_id',
+              'event_type',
+              'reason',
+              'cursor',
+              'latest_cursor',
+            ])
+            .where('partition_id', '=', partitionId)
+            .where('client_id', '=', clientId)
+            .orderBy('created_at', 'desc')
+            .limit(Math.min(Math.max(limit * 5, 25), 200))
+            .execute()
+        : [];
+      const realtimeEvidence = summarizeRealtimeEvidence(realtimeRows);
+
+      const latestClientEvent = relevantEvents.find(
+        (event) => !clientId || event.clientId === clientId
+      );
+      const clientScopes = clientRow
+        ? (options.dialect.dbToScopes(
+            clientRow.effective_scopes
+          ) as ScopeValues)
+        : null;
+      const latestRowScopes = latestRow
+        ? options.dialect.dbToScopes(latestRow.scopes)
+        : null;
+      const client: ConsoleRowInvestigationClient | null = clientRow
+        ? {
+            clientId: clientRow.client_id ?? '',
+            actorId: clientRow.actor_id ?? '',
+            cursor: coerceNumber(clientRow.cursor) ?? 0,
+            effectiveScopeKeys: Object.keys(clientScopes ?? {}).sort(),
+            updatedAt: clientRow.updated_at ?? '',
+            lastRequestAt: latestClientEvent?.createdAt ?? null,
+            lastRequestType: latestClientEvent?.eventType ?? null,
+            lastRequestOutcome: latestClientEvent?.outcome ?? null,
+          }
+        : null;
+
+      const scopeEligibility = assessScopeEligibility({
+        rowScopes: latestRowScopes,
+        clientScopes,
+      });
+      const findings: ConsoleRowInvestigationFinding[] = [];
+      if (!latestRow) {
+        findings.push({
+          severity: 'warning',
+          code: 'row.not_found',
+          message:
+            'No audit entry exists for this table and row in the selected partition.',
+        });
+      }
+      if (!clientId) {
+        findings.push({
+          severity: 'info',
+          code: 'client.not_selected',
+          message:
+            'Provide a client id to check cursor position and scope eligibility.',
+        });
+      } else if (!client) {
+        findings.push({
+          severity: 'warning',
+          code: 'client.not_found',
+          message:
+            'No client cursor exists for this client in the selected partition.',
+        });
+      }
+      if (latestOp === 'delete') {
+        findings.push({
+          severity: 'warning',
+          code: 'row.deleted',
+          message: 'The latest recorded operation for this row is a delete.',
+        });
+      }
+      if (
+        client &&
+        latestCommitSeq !== null &&
+        client.cursor < latestCommitSeq
+      ) {
+        findings.push({
+          severity: 'warning',
+          code: 'client.cursor_behind',
+          message:
+            'The client cursor is behind the latest row commit, so the row may not have been pulled yet.',
+        });
+      }
+      if (scopeEligibility.status === 'not_eligible') {
+        findings.push({
+          severity: 'warning',
+          code: 'scope.not_eligible',
+          message:
+            'The client effective scopes do not cover the latest row scopes.',
+        });
+      }
+      if (relevantEvents.length === 0) {
+        findings.push({
+          severity: 'info',
+          code: 'events.none_for_table',
+          message:
+            'No recent request events mention this table for the selected filters.',
+        });
+      } else if (subscriptionEvidence.status === 'revoked') {
+        findings.push({
+          severity: 'warning',
+          code: 'subscription.revoked',
+          message:
+            'A relevant pull event reported at least one revoked subscription.',
+        });
+      } else if (subscriptionEvidence.status === 'unknown') {
+        findings.push({
+          severity: 'info',
+          code: 'subscription.not_recorded',
+          message:
+            'Relevant events exist, but none include subscription-count evidence.',
+        });
+      } else if (subscriptionEvidence.status === 'not_observed') {
+        findings.push({
+          severity: 'warning',
+          code: 'subscription.not_observed',
+          message:
+            'Relevant pull events did not report an active subscription for this table.',
+        });
+      }
+      if (latestClientEvent && latestClientEvent.responseStatus !== 'success') {
+        findings.push({
+          severity: 'warning',
+          code: 'events.latest_not_success',
+          message:
+            'The latest relevant request event did not complete successfully.',
+        });
+      }
+
+      const response: ConsoleRowInvestigationResponse = {
+        table,
+        rowId,
+        partitionId,
+        clientId: clientId ?? null,
+        rowKnown: history.length > 0,
+        latestCommitSeq,
+        latestOp,
+        client,
+        scopeEligibility,
+        subscriptionEvidence,
+        requestEvidence,
+        snapshotEvidence,
+        realtimeEvidence,
+        history,
+        relevantEvents,
+        findings,
+        nextCursor,
+      };
+
+      return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /debug/export
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/debug/export',
+    describeConsoleRoute({
+      summary: 'Export a redacted debug bundle',
+      responses: {
+        200: {
+          description: 'Size-bounded redacted debug export',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleDebugExportResponseSchema),
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('query', debugExportQuerySchema),
+    async (c) => {
+      const {
+        partitionId: requestedPartitionId,
+        limitCommits,
+        limitEvents,
+      } = c.req.valid('query');
+      const { from, to } = c.req.valid('query');
+      const partitionId = requestedPartitionId ?? 'default';
+
+      let commitsQuery = db
+        .selectFrom('sync_commits')
+        .select([
+          'commit_seq',
+          'actor_id',
+          'client_id',
+          'client_commit_id',
+          'created_at',
+          'change_count',
+          'affected_tables',
+        ])
+        .where('partition_id', '=', partitionId);
+      if (from) commitsQuery = commitsQuery.where('created_at', '>=', from);
+      if (to) commitsQuery = commitsQuery.where('created_at', '<=', to);
+
+      let eventsQuery = db
+        .selectFrom('sync_request_events')
+        .select(requestEventSelectColumns)
+        .where('partition_id', '=', partitionId);
+      if (from) eventsQuery = eventsQuery.where('created_at', '>=', from);
+      if (to) eventsQuery = eventsQuery.where('created_at', '<=', to);
+
+      const [commitRows, eventRows] = await Promise.all([
+        commitsQuery
+          .orderBy('commit_seq', 'desc')
+          .limit(limitCommits + 1)
+          .execute(),
+        eventsQuery
+          .orderBy('created_at', 'desc')
+          .limit(limitEvents + 1)
+          .execute(),
+      ]);
+
+      const selectedCommitRows = commitRows.slice(0, limitCommits);
+      const selectedEventRows = eventRows.slice(0, limitEvents);
+      const commitSeqs = selectedCommitRows
+        .map((row) => coerceNumber(row.commit_seq))
+        .filter((seq): seq is number => seq !== null);
+      const changesByCommitSeq = await readRedactedCommitChanges(
+        partitionId,
+        commitSeqs
+      );
+
+      const commits: ConsoleDebugExportCommit[] = selectedCommitRows.map(
+        (row) => {
+          const commitSeq = coerceNumber(row.commit_seq) ?? 0;
+          return {
+            commitSeq,
+            actorId: row.actor_id ?? '',
+            clientId: row.client_id ?? '',
+            clientCommitId: row.client_commit_id ?? '',
+            createdAt: row.created_at ?? '',
+            changeCount: coerceNumber(row.change_count) ?? 0,
+            affectedTables: options.dialect.dbToArray(row.affected_tables),
+            changes: changesByCommitSeq.get(commitSeq) ?? [],
+          };
+        }
+      );
+
+      const response: ConsoleDebugExportResponse = {
+        generatedAt: new Date().toISOString(),
+        partitionId,
+        limits: {
+          commits: limitCommits,
+          requestEvents: limitEvents,
+        },
+        truncated: {
+          commits: commitRows.length > limitCommits,
+          requestEvents: eventRows.length > limitEvents,
+        },
+        commits,
+        requestEvents: selectedEventRows.map(mapDebugExportEvent),
+      };
+
+      return c.json(response, 200);
     }
   );
 
@@ -1849,10 +3325,14 @@ export function createConsoleRoutes<
         string,
         {
           createdAt: string;
-          eventType: 'push' | 'pull';
+          eventType: 'sync' | 'push' | 'pull';
           outcome: string;
           transportPath: 'direct' | 'relay';
         }
+      >();
+      const latestDiagnosticsByClientId = new Map<
+        string,
+        ConsoleClientDiagnosticRecord
       >();
 
       if (pagedClientIds.length > 0) {
@@ -1885,7 +3365,7 @@ export function createConsoleRoutes<
             continue;
           }
 
-          const eventType = row.event_type === 'push' ? 'push' : 'pull';
+          const eventType = normalizeRequestEventType(row.event_type);
 
           latestEventsByClientId.set(clientId, {
             createdAt: row.created_at ?? '',
@@ -1894,12 +3374,24 @@ export function createConsoleRoutes<
             transportPath: row.transport_path === 'relay' ? 'relay' : 'direct',
           });
         }
+
+        const diagnosticRecords = await readClientDiagnosticRecords({
+          clientIds: pagedClientIds,
+          latestOnly: true,
+          partitionId,
+        });
+        for (const record of diagnosticRecords.items) {
+          if (!latestDiagnosticsByClientId.has(record.clientId)) {
+            latestDiagnosticsByClientId.set(record.clientId, record);
+          }
+        }
       }
 
       const items: ConsoleClient[] = rows.map((row) => {
         const clientId = row.client_id ?? '';
         const cursor = coerceNumber(row.cursor) ?? 0;
         const latestEvent = latestEventsByClientId.get(clientId);
+        const latestDiagnostic = latestDiagnosticsByClientId.get(clientId);
         const connectionCount =
           options.wsConnectionManager?.getConnectionCount(clientId) ?? 0;
         const connectionPath =
@@ -1920,6 +3412,10 @@ export function createConsoleRoutes<
             connectionCount,
             updatedAt: row.updated_at,
           }),
+          diagnosticFreshnessState: latestDiagnostic?.freshnessState ?? null,
+          diagnosticHealthMaxSeverity:
+            latestDiagnostic?.healthMaxSeverity ?? null,
+          diagnosticReceivedAt: latestDiagnostic?.receivedAt ?? null,
           lastRequestAt: latestEvent?.createdAt ?? null,
           lastRequestType: latestEvent?.eventType ?? null,
           lastRequestOutcome: latestEvent?.outcome ?? null,
@@ -1939,6 +3435,217 @@ export function createConsoleRoutes<
 
       c.header('X-Total-Count', String(total));
       return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /client-diagnostics
+  // -------------------------------------------------------------------------
+
+  routes.post(
+    '/client-diagnostics',
+    describeConsoleRoute({
+      summary: 'Ingest a redacted Rust client diagnostic snapshot',
+      responses: {
+        202: {
+          description: 'Accepted client diagnostic snapshot',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleClientDiagnosticRecordSchema),
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('json', ConsoleClientDiagnosticIngestSchema),
+    async (c) => {
+      const payload = c.req.valid('json');
+      const sensitiveField = findSensitiveDiagnosticField(payload);
+      if (sensitiveField) {
+        return consoleRouteError(c, 400, 'console.invalid_request', undefined, {
+          fieldPath: sensitiveField,
+          reason: 'client_diagnostic_sensitive_field',
+        });
+      }
+
+      const record = buildClientDiagnosticRecord(payload, new Date());
+      const recordBytes = jsonByteLength(record);
+      if (recordBytes > DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES) {
+        return consoleRouteError(c, 400, 'console.invalid_request', undefined, {
+          maxBytes: DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES,
+          actualBytes: recordBytes,
+          reason: 'client_diagnostic_snapshot_too_large',
+        });
+      }
+
+      await writeClientDiagnosticRecord(record);
+      await pruneClientDiagnosticRecordsByCount();
+      return c.json(record, 202);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /client-diagnostics
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/client-diagnostics',
+    describeConsoleRoute({
+      summary: 'List latest redacted Rust client diagnostic snapshots',
+      responses: {
+        200: {
+          description: 'Paginated client diagnostic snapshots',
+          content: {
+            'application/json': {
+              schema: resolver(
+                ConsolePaginatedResponseSchema(
+                  ConsoleClientDiagnosticRecordSchema
+                )
+              ),
+            },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('query', clientDiagnosticsQuerySchema),
+    async (c) => {
+      const { limit, offset, partitionId, clientId } = c.req.valid('query');
+      const records = await readClientDiagnosticRecords({
+        clientId,
+        latestOnly: true,
+        limit,
+        offset,
+        partitionId,
+      });
+
+      const response: ConsolePaginatedResponse<ConsoleClientDiagnosticRecord> =
+        {
+          items: records.items,
+          total: records.total,
+          offset,
+          limit,
+        };
+
+      c.header('X-Total-Count', String(records.total));
+      return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /client-diagnostics/:id/history
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/client-diagnostics/:id/history',
+    describeConsoleRoute({
+      summary: 'List retained redacted Rust client diagnostic snapshots',
+      responses: {
+        200: {
+          description: 'Paginated client diagnostic snapshot history',
+          content: {
+            'application/json': {
+              schema: resolver(
+                ConsolePaginatedResponseSchema(
+                  ConsoleClientDiagnosticRecordSchema
+                )
+              ),
+            },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('param', clientIdParamSchema),
+    zValidator('query', clientDiagnosticHistoryQuerySchema),
+    async (c) => {
+      const { id } = c.req.valid('param');
+      const { limit, offset, partitionId } = c.req.valid('query');
+      const records = await readClientDiagnosticRecords({
+        clientId: id,
+        latestOnly: false,
+        limit,
+        offset,
+        partitionId,
+      });
+
+      const response: ConsolePaginatedResponse<ConsoleClientDiagnosticRecord> =
+        {
+          items: records.items,
+          total: records.total,
+          offset,
+          limit,
+        };
+
+      c.header('X-Total-Count', String(records.total));
+      return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /client-diagnostics/:id
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/client-diagnostics/:id',
+    describeConsoleRoute({
+      summary: 'Get latest redacted Rust client diagnostic snapshot',
+      responses: {
+        200: {
+          description: 'Client diagnostic snapshot',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleClientDiagnosticRecordSchema),
+            },
+          },
+        },
+        404: {
+          description: 'Diagnostic snapshot not found',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('param', clientIdParamSchema),
+    zValidator('query', clientDiagnosticDetailQuerySchema),
+    async (c) => {
+      const { id } = c.req.valid('param');
+      const { partitionId } = c.req.valid('query');
+      const records = await readClientDiagnosticRecords({
+        clientId: id,
+        latestOnly: true,
+        limit: 1,
+        offset: 0,
+        partitionId,
+      });
+      const record = records.items[0] ?? null;
+      if (!record) {
+        return consoleNotFound(c, 'Client diagnostic snapshot not found.');
+      }
+      return c.json(record, 200);
     }
   );
 
@@ -2390,8 +4097,10 @@ export function createConsoleRoutes<
         clientId,
         requestId,
         traceId,
+        syncAttemptId,
         outcome,
       } = c.req.valid('query');
+      const resolvedTraceId = traceId ?? syncAttemptId;
 
       let query = db
         .selectFrom('sync_request_events')
@@ -2421,9 +4130,9 @@ export function createConsoleRoutes<
         query = query.where('request_id', '=', requestId);
         countQuery = countQuery.where('request_id', '=', requestId);
       }
-      if (traceId) {
-        query = query.where('trace_id', '=', traceId);
-        countQuery = countQuery.where('trace_id', '=', traceId);
+      if (resolvedTraceId) {
+        query = query.where('trace_id', '=', resolvedTraceId);
+        countQuery = countQuery.where('trace_id', '=', resolvedTraceId);
       }
       if (outcome) {
         query = query.where('outcome', '=', outcome);
@@ -2709,7 +4418,10 @@ export function createConsoleRoutes<
 
     routes.get('/events/live', async (c, next) => {
       if (!isWebSocketOriginAllowed(c, options.websocket?.allowedOrigins)) {
-        return c.json({ error: 'FORBIDDEN_ORIGIN' }, 403);
+        return c.json(
+          createSyncularErrorResponse('console.forbidden_origin'),
+          403
+        );
       }
       return liveEventsWebSocketRoute(c, next);
     });
@@ -2770,7 +4482,7 @@ export function createConsoleRoutes<
       const row = await eventQuery.executeTakeFirst();
 
       if (!row) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return consoleNotFound(c);
       }
 
       return c.json(mapRequestEvent(row), 200);
@@ -2832,15 +4544,12 @@ export function createConsoleRoutes<
       const eventRow = await eventQuery.executeTakeFirst();
 
       if (!eventRow) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return consoleNotFound(c);
       }
 
       const payloadRef = eventRow.payload_ref;
       if (!payloadRef) {
-        return c.json(
-          { error: 'NOT_FOUND', message: 'No payload snapshot recorded' },
-          404
-        );
+        return consoleNotFound(c, 'No payload snapshot recorded');
       }
 
       const payloadRow = await db
@@ -2857,10 +4566,7 @@ export function createConsoleRoutes<
         .executeTakeFirst();
 
       if (!payloadRow) {
-        return c.json(
-          { error: 'NOT_FOUND', message: 'Payload snapshot not available' },
-          404
-        );
+        return consoleNotFound(c, 'Payload snapshot not available');
       }
 
       const payload: ConsoleRequestPayload = {
@@ -2953,10 +4659,17 @@ export function createConsoleRoutes<
         deletedCount,
         requestEventsDeleted: pruneResult.requestEventsDeleted,
         operationEventsDeleted: pruneResult.operationEventsDeleted,
+        realtimeEventsDeleted: pruneResult.realtimeEventsDeleted,
         payloadDeletedCount: pruneResult.payloadSnapshotsDeleted,
       });
 
-      const result: ConsolePruneEventsResult = { deletedCount };
+      const result: ConsolePruneEventsResult = {
+        deletedCount,
+        requestEventsDeleted: pruneResult.requestEventsDeleted,
+        operationEventsDeleted: pruneResult.operationEventsDeleted,
+        realtimeEventsDeleted: pruneResult.realtimeEventsDeleted,
+        payloadDeletedCount: pruneResult.payloadSnapshotsDeleted,
+      };
       return c.json(result, 200);
     }
   );
@@ -3239,7 +4952,7 @@ export function createConsoleRoutes<
         .executeTakeFirst();
 
       if (!row) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return consoleNotFound(c);
       }
 
       const key: ConsoleApiKey = {
@@ -3348,9 +5061,11 @@ export function createConsoleRoutes<
         .slice(0, 200);
 
       if (keyIds.length === 0) {
-        return c.json(
-          { error: 'INVALID_REQUEST', message: 'No API key IDs provided' },
-          400
+        return consoleRouteError(
+          c,
+          400,
+          'console.invalid_request',
+          'No API key IDs provided'
         );
       }
 
@@ -3466,7 +5181,7 @@ export function createConsoleRoutes<
         .executeTakeFirst();
 
       if (!existingRow) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return consoleNotFound(c);
       }
 
       const newKeyId = generateKeyId();
@@ -3574,7 +5289,7 @@ export function createConsoleRoutes<
         .executeTakeFirst();
 
       if (!existingRow) {
-        return c.json({ error: 'NOT_FOUND' }, 404);
+        return consoleNotFound(c);
       }
 
       // Revoke old key
@@ -3668,7 +5383,7 @@ export function createConsoleRoutes<
     zValidator('query', ConsoleBlobListQuerySchema),
     async (c) => {
       if (!bucket) {
-        return c.json({ error: 'BLOB_STORAGE_NOT_CONFIGURED' }, 501);
+        return blobStorageNotConfigured(c);
       }
 
       const { prefix, cursor, limit } = c.req.valid('query');
@@ -3718,13 +5433,13 @@ export function createConsoleRoutes<
     }),
     async (c) => {
       if (!bucket) {
-        return c.json({ error: 'BLOB_STORAGE_NOT_CONFIGURED' }, 501);
+        return blobStorageNotConfigured(c);
       }
 
       const key = decodeURIComponent(c.req.param('key'));
       const object = await bucket.get(key);
       if (!object) {
-        return c.json({ error: 'BLOB_NOT_FOUND' }, 404);
+        return consoleRouteError(c, 404, 'blob.not_found');
       }
 
       const headers = new Headers();
@@ -3769,7 +5484,7 @@ export function createConsoleRoutes<
     }),
     async (c) => {
       if (!bucket) {
-        return c.json({ error: 'BLOB_STORAGE_NOT_CONFIGURED' }, 501);
+        return blobStorageNotConfigured(c);
       }
 
       const key = decodeURIComponent(c.req.param('key'));

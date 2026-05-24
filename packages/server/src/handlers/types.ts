@@ -1,8 +1,12 @@
 import type {
+  BinarySnapshotColumn,
+  BinarySnapshotRowsEncoder,
   ScopePattern,
   ScopeValues,
   ScopeValuesForKeys,
   StoredScopes,
+  SyncAuthLeaseProvenance,
+  SyncChange,
   SyncOp,
   SyncOperation,
   SyncOperationResult,
@@ -79,6 +83,11 @@ export interface ServerSnapshotContext<
   cursor: string | null;
   /** Max rows to return */
   limit: number;
+  /**
+   * Client schema version targeted by this snapshot.
+   * Use this to emit the correct generated client row shape for older clients.
+   */
+  schemaVersion: number;
 }
 
 /**
@@ -99,6 +108,11 @@ export interface ServerApplyOperationContext<
    * Use this to transform payloads from older client versions.
    */
   schemaVersion: number;
+  /**
+   * Auth lease provenance captured when the client queued the commit.
+   * This is audit/replay context only; handlers must still use current auth.
+   */
+  authLease?: SyncAuthLeaseProvenance;
 }
 
 /**
@@ -206,11 +220,33 @@ export interface ServerHandlerOptions<
   snapshotChunkTtlMs?: number;
 
   /**
-   * Maximum uncompressed row-frame bytes to group into a cached snapshot bundle.
-   * Larger values reduce chunk/request overhead for large bootstraps at the
-   * cost of higher transient memory and chunk sizes.
+   * Stable binary snapshot column metadata. Generators should provide this for
+   * Rust/native clients so the server does not need to infer column order and
+   * value types from every snapshot chunk at runtime.
    */
-  snapshotBundleMaxBytes?: number;
+  snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
+
+  /**
+   * Version-aware binary snapshot column metadata. Returning null intentionally
+   * disables fallback to current metadata.
+   */
+  snapshotBinaryColumnsForVersion?: (
+    schemaVersion: number
+  ) => readonly BinarySnapshotColumn[] | null | undefined;
+
+  /**
+   * Optional generated binary snapshot encoder. When present, binary bootstrap
+   * chunks use this instead of the generic object-row encoder.
+   */
+  snapshotBinaryEncoder?: BinarySnapshotRowsEncoder;
+
+  /**
+   * Version-aware generated binary snapshot encoder. Returning null
+   * intentionally disables fallback to the current encoder.
+   */
+  snapshotBinaryEncoderForVersion?: (
+    schemaVersion: number
+  ) => BinarySnapshotRowsEncoder | null | undefined;
 
   /**
    * Transform client payload → server row on writes.
@@ -257,6 +293,9 @@ export interface ServerTableHandler<
   /** Table name */
   table: string;
 
+  /** Primary key column for row ids and artifact/import metadata. */
+  primaryKeyColumn?: string;
+
   /** Scope patterns used by this handler */
   scopePatterns: ScopePattern[];
 
@@ -271,9 +310,44 @@ export interface ServerTableHandler<
   snapshotChunkTtlMs?: number;
 
   /**
-   * Maximum uncompressed row-frame bytes to group into a cached snapshot bundle.
+   * Stable binary snapshot column metadata used by binary bootstrap chunks.
    */
-  snapshotBundleMaxBytes?: number;
+  snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
+
+  /**
+   * Version-aware binary snapshot column metadata. Generated handlers should
+   * use this when old client schema versions can have different row shapes.
+   * Returning null intentionally disables fallback to current metadata.
+   */
+  snapshotBinaryColumnsForVersion?: (
+    schemaVersion: number
+  ) => readonly BinarySnapshotColumn[] | null | undefined;
+
+  /**
+   * Optional generated binary snapshot encoder used by binary bootstrap chunks.
+   */
+  snapshotBinaryEncoder?: BinarySnapshotRowsEncoder;
+
+  /**
+   * Version-aware binary snapshot encoder. Returning null intentionally
+   * disables fallback to the current generated encoder.
+   */
+  snapshotBinaryEncoderForVersion?: (
+    schemaVersion: number
+  ) => BinarySnapshotRowsEncoder | null | undefined;
+
+  /**
+   * Project a persisted incremental change row to the requested client schema
+   * before pull plugins, wire integrity, and response encoding run.
+   *
+   * Generated divergent-schema handlers use this to keep the commit log in the
+   * current client row shape while serving older clients their targeted row
+   * shape.
+   */
+  projectChangeForVersion?: (
+    change: SyncChange,
+    schemaVersion: number
+  ) => SyncChange;
 
   /**
    * Hint for push engine savepoint optimization on single-op commits.

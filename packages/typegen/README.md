@@ -4,6 +4,9 @@ Generate TypeScript database types from your migrations.
 
 Supports SQLite and Postgres introspection with column-level codec type overrides via `codecs`.
 
+It also includes build-time helpers for authoring the Rust-first Syncular app
+contract and serializing it to the generated Rust-codegen handoff.
+
 ## Install
 
 ```bash
@@ -39,9 +42,75 @@ await generateTypes({
 });
 ```
 
+## App Contract Authoring
+
+```ts
+import {
+  defineSyncularClient,
+  scope,
+  syncedTable,
+  writeSyncularCodegenJson,
+  yjsText,
+} from '@syncular/typegen';
+
+export const app = defineSyncularClient({
+  tables: {
+    notes: syncedTable({
+      table: 'notes',
+      serverVersion: 'server_version',
+      scopes: [
+        scope('user_id', {
+          column: 'owner_user_id',
+          source: 'actorId',
+        }),
+      ],
+      crdt: {
+        content: yjsText({ stateColumn: 'content_yjs_state' }),
+      },
+    }),
+  },
+});
+
+await writeSyncularCodegenJson(app, './generated/syncular.codegen.json');
+```
+
+For same-shape starter apps, scaffold the initial contract from existing
+migrations and then edit the generated authoring/config when client and server
+shapes diverge:
+
+```ts
+import {
+  scaffoldSyncularClientContract,
+  scope,
+  writeSyncularCodegenJson,
+} from '@syncular/typegen';
+import { migrations } from './migrations';
+
+const app = await scaffoldSyncularClientContract({
+  migrations,
+  scopes: {
+    tasks: [scope('user_id', { source: 'actorId', required: true })],
+  },
+});
+
+await writeSyncularCodegenJson(app, './generated/syncular.codegen.json');
+```
+
+For apps that keep the contract in a module, generate or check the
+Rust-codegen handoff from the typed module:
+
+```bash
+syncular-typegen codegen-config --app ./syncular.app.ts
+syncular-typegen codegen-config --app ./syncular.app.ts --check
+```
+
+This is a dev/build-time authoring layer. Generated Rust, Swift, Kotlin, JVM,
+and browser clients consume generated artifacts, not the TypeScript authoring
+module at runtime.
+
 ## Documentation
 
-- Typegen (in migrations guide): https://syncular.dev/docs/build/migrations#type-generation-with-synculartypegen
+- Typegen (in migrations guide): https://syncular.dev/docs/features/migrations#type-generation-with-synculartypegen
 
 ## Links
 

@@ -1,0 +1,7053 @@
+# Rust Client Benchmark Log
+
+Append benchmark evidence here whenever performance-sensitive work is retained
+or rejected.
+
+## Entry Template
+
+```text
+Date:
+Commit:
+Work package:
+Machine / power mode:
+Command:
+Previous accepted:
+Candidate:
+Delta:
+Decision:
+Notes:
+```
+
+## 2026-05-23 - WP-31 Originless Non-Browser WebSocket Guard
+
+Commit: uncommitted local websocket-origin fix
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Updated the Hono websocket origin policy to allow requests with no `Origin`
+  header before matching configured `allowedOrigins`.
+- Explicit browser `Origin` headers are still matched against exact and
+  wildcard configured origins, and disallowed browser origins are rejected.
+- This fixes Bun/non-browser Rust worker realtime connections when websocket
+  `allowedOrigins` is derived from sync CORS, as in `offline-sync-bench`.
+
+Verification:
+
+```bash
+bun test packages/server-hono/src/__tests__/websocket-origin.test.ts
+bun test packages/server-hono/src/__tests__/create-server.test.ts
+cd packages/server-hono && bun run tsgo
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+```
+
+Manual originless Bun websocket check after rebuilding the benchmark stack:
+`open`, then `close code=1000`.
+
+External benchmark:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+  bun run bench:run -- --stack syncular-rust --scenario online-propagation
+```
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `online-propagation` | `2026-05-23T04-37-19-197Z` | completed; reader visibility p50 `9.09ms`, p95 `14.06ms`; binary sync-pack applies `15/15`; pull-required recoveries `0`; binary apply p95 `2ms`; request count `30` |
+
+Decision:
+
+- Retain. The previous failure was a server websocket origin-policy mismatch,
+  not a Rust worker realtime regression.
+- No compatibility-register update is needed: this keeps browser-origin checks
+  strict and only accepts the absent-Origin shape that non-browser websocket
+  clients commonly use.
+
+## 2026-05-23 - WP-31/WP-32 Permission, Queue, And Reconnect Recheck
+
+Commit: uncommitted local benchmark/perf slice
+
+Work packages:
+
+- [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+- [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](work-packages/WP-32-realtime-recovery-fanout-external-notifications.md)
+
+Changes:
+
+- Raised the Rust web client's default adaptive outbox push cap from `100` to
+  `MAX_OUTBOX_PUSH_BATCH_LIMIT` (`1000`), while keeping the adaptive threshold
+  at `100` and preserving explicit fixed `outboxBatchLimit` overrides.
+- Updated the external benchmark Rust adapter to expose adaptive batch env
+  overrides and to report the effective adaptive settings in metadata.
+- Split permission-change reporting into same-client revoke convergence and
+  rebootstrap-after-revoke visibility for Syncular Rust, Replicache, and
+  Electric, so fast rebootstrap paths no longer mask whether an already-open
+  local view loses revoked rows.
+- Added reconnect-storm diagnostic metrics for first binary wakeup/apply timing
+  and visible-after-binary lag; the external benchmark now defaults
+  `syncular-rust` reconnect to the worker realtime path, while direct HTTP
+  stress remains available with `SYNCULAR_RUST_RECONNECT_MODE=http`.
+- Added `REPLICACHE_RECONNECT_CLIENT_COUNTS` and a `1000 clients` public results
+  column for direct high-scale comparison.
+
+Verification:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+bun --cwd packages/client tsgo
+bun --cwd rust/bindings/javascript build:wasm:dev
+bun test packages/client/src/__tests__/sync-hono.wasm.test.ts -t "adapts default Rust outbox push batches for large queues"
+bun --cwd rust/bindings/javascript build:wasm
+```
+
+External benchmark targeted runs:
+
+| Scenario | Stack | Run ID | Key result |
+| --- | --- | --- | --- |
+| `permission-change` | `syncular-rust` | `2026-05-23T07-38-15-949Z` | same-client revoke `43.92ms`; rebootstrap visible `16.77ms`; same-client bytes `4842`; retained rows stay `500`, revoked rows `0` |
+| `permission-change` | `replicache` | `2026-05-23T07-41-10-790Z` | same-client revoke did not converge in `5s` and still showed `1000` rows; rebootstrap visible `13.46ms`; rebootstrap bytes `144244` |
+| `permission-change` | `electric` | `2026-05-23T07-41-34-612Z` | benchmark path is rebootstrap only; rebootstrap visible `32.13ms`; bytes `184305` |
+| `large-offline-queue` | `syncular-rust` | `2026-05-23T07-41-53-173Z` | `1000` queued writes converged in `1651.45ms`, `1` sync attempt, `2` requests, `353499` bytes |
+| `reconnect-storm` | `syncular-rust` worker realtime | `2026-05-23T07-43-20-851Z` | `250` clients converged in `201.53ms`; `250/250` binary applies; `0` HTTP pulls; external realtime notify `8.19ms` |
+| `reconnect-storm` | `syncular-rust` worker realtime | `2026-05-23T07-48-05-012Z` | `1000` clients visible convergence `2049.28ms`; `1000/1000` binary applies; `0` HTTP pulls; external realtime notify `13.40ms`; first binary-applied p95 `973ms`; binary apply total p95 `58ms` |
+| `reconnect-storm` | `replicache` | `2026-05-23T07-59-09-693Z` | `1000` clients converged in `1157.91ms`; `1005` requests; `57.8MB` transferred |
+
+Before/current highlights:
+
+| Path | Previous | Current | Decision |
+| --- | ---: | ---: | --- |
+| Rust queue `1000` convergence | `2063.25ms` | `1651.45ms` | Retain adaptive cap increase |
+| Rust queue `1000` attempts / requests | `10` / `20` | `1` / `2` | Retain; remaining time is server apply, not client loop overhead |
+| Rust queue `1000` bytes | `729732` | `353499` | Retain |
+| Rust reconnect `250` HTTP-direct visible | `2072.76ms` | `201.53ms` worker realtime | Retain worker realtime as default benchmark path |
+| Rust reconnect `1000` visible versus Replicache | n/a | `2049.28ms` vs `1157.91ms` | Keep decomposed metrics; investigate app-visible event/worker scheduling only if `1000` same-process clients is a target |
+
+Interpretation:
+
+- Permission was not purely slower. Syncular Rust is the only measured lane here
+  with a native same-client revoke result; Replicache's fast number is a
+  rebootstrap path in this harness, and Electric is also represented by a
+  rebootstrap shape proxy.
+- Large offline queue is materially better, but not fully solved. The single
+  `1000`-commit push still spends about `1.6s` in server-side conditional
+  mutation apply because benchmark writes carry `base_version`. Removing that
+  condition would fake the benchmark; a real follow-up would need conditional
+  batch apply or fewer/coalesced commits.
+- At `1000` reconnect clients, Syncular Rust is slower than Replicache on the
+  app-visible convergence number, but the bottleneck is no longer server fanout
+  or HTTP recovery: the server notifies all `1000` websocket owners in
+  `13.40ms`, every client applies a binary pack, and no client performs an HTTP
+  pull. The remaining tail is local worker/websocket/message/event pressure in
+  the single-process benchmark harness after the binary fast path is active.
+
+Decision:
+
+- Retain the product adaptive outbox default change.
+- Retain the benchmark fairness changes and extra reconnect diagnostics.
+- Do not move more relay/server app semantics into Rust from this evidence.
+  The measured reconnect server path is already cheap; Rust would only make
+  sense later for a byte-preserving protocol helper if encode/validate becomes
+  hot.
+
+## 2026-05-22 - WP-31 External Measurement Correction Slice
+
+Commit: uncommitted local measurement slice
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change measured:
+
+- Updated the external `offline-sync-bench` Rust adapter to use the current
+  Rust-first client exports.
+- Corrected `online-propagation` to record reader visibility before writer
+  cleanup.
+- Added realtime diagnostic counts/reasons, reconnect per-client timing
+  distributions, deep-query `EXPLAIN QUERY PLAN`, and permission-change timing
+  buckets.
+
+Commands:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd rust/bindings/javascript build:wasm
+bun --cwd packages/client build
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist
+export SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json
+
+bun run bench:run -- --stack syncular-rust --scenario online-propagation
+bun run bench:run -- --stack syncular-rust --scenario deep-relationship-query
+bun run bench:run -- --stack syncular-rust --scenario permission-change
+bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+Results:
+
+| Scenario | Run ID | Key result |
+| --- | --- | --- |
+| `online-propagation` | `2026-05-22T11-50-14-875Z` | reader visibility p50 `20.06ms`, p95 `30.19ms`; writer cleanup avg `8.29ms`; `15/15` realtime events used pull-required recovery, reason `payload-too-large`; binary applies `0` |
+| `deep-relationship-query` | `2026-05-22T11-48-02-172Z` | dashboard p50 `69.67ms`, p95 `72.74ms`; detail join p50 `0.48ms`; plan uses `idx_tasks_project_owner_completed_updated_at` but temp B-trees for group/order |
+| `permission-change` | `2026-05-22T11-48-21-282Z` | convergence `54.24ms`; revoke request `11.02ms`; two sync attempts; first shows `0` rows, second `500` rows |
+| `reconnect-storm` | `2026-05-22T11-48-35-255Z` | `25` client p95 visible `94.64ms`; `100` p95 `223.59ms`; `250` p95 `2067.20ms`; all scales had `0` extra sync loops |
+
+Decision:
+
+- Retain the measurement changes in the external benchmark adapter.
+- Do not treat the original online p95 as pure reader visibility; it included
+  writer cleanup.
+- Dashboard read-model work is justified by query-plan evidence.
+- Online propagation needs a realtime `payload-too-large` investigation before
+  claiming binary sync-pack fast-path performance.
+- Permission-change optimization should target the two-sync-attempt/full-clear
+  behavior, not count-query overhead.
+- Reconnect optimization should target concurrent first HTTP pull latency,
+  especially at `250` clients.
+
+Notes:
+
+- `bun run typecheck` in `offline-sync-bench` remains blocked by existing stack
+  app type errors against published Syncular package declarations. A filtered
+  check reported no `syncular-rust` adapter errors.
+
+## 2026-05-22 - WP-31 Browser Worker OPFS Process-Restart Durability
+
+External benchmark commit: `c339ee1` (`Add Rust browser OPFS durability benchmark`)
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change measured:
+
+- Added an opt-in external benchmark lane for `syncular-rust` offline replay
+  that runs the current workspace Rust web client in a real headless Chrome
+  worker with `opfsSahPool` storage.
+- Restarted the browser process between bootstrap, offline queueing, and replay
+  while reusing the same Chrome profile/SQLite file.
+- Added benchmark-server CORS coverage for localhost browser origins and the
+  benchmark auth/timing headers used by the Rust browser transport.
+
+Command:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd rust/bindings/javascript build:wasm
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_RUST_BROWSER_DURABLE_REOPEN=1 \
+  bun run bench:run -- --stack syncular-rust --scenario offline-replay
+```
+
+Previous accepted:
+
+- IndexedDB-compatible Bun close/reopen probe
+  `2026-05-22T21-38-53-388Z`: reopened outbox `10` unresolved / `10`
+  pending, reopened matching titles `10`, replay convergence `64.01ms`, final
+  outbox `10` acked.
+
+Candidate:
+
+- Browser OPFS process-restart run `2026-05-22T22-15-40-625Z`: storage
+  `opfsSahPool`, storage fallback `null`, browser process restart `1`,
+  reopened outbox `10` unresolved / `10` pending, reopened matching titles
+  `10`, replay convergence `110.2ms`, final outbox `10` acked / `0` unresolved,
+  success rate `1.0`, requests `2`, bytes `7879`, bootstrap `50.5ms`, queue
+  `33ms`.
+
+Delta:
+
+- Stronger environment evidence: real Chrome worker plus OPFS survives browser
+  process restarts. The prior Bun probe remains faster but did not exercise the
+  browser worker or OPFS storage path.
+
+Decision:
+
+- Retain the opt-in browser durability lane and keep the default comparison
+  lane unchanged.
+- Use `SYNCULAR_RUST_BROWSER_DURABLE_REOPEN=1` for future browser/process
+  restart durability verification.
+
+Notes:
+
+- `bunx tsc --noEmit --pretty false` in `offline-sync-bench` remains blocked by
+  the existing stack-app package export mismatch against published
+  `@syncular/server` packages; no new Rust adapter type errors were reported
+  before those stack-app errors.
+
+## 2026-05-21 - External Local Base Contract Guard Not Accepted As New Baseline
+
+Commit: `eaba97a3` (`Expose generated local base schema`)
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change measured:
+
+- The external `offline-sync-bench` Rust adapter was updated locally to read
+  `localBaseSchema.tableSetupSql` from generated `syncular.schema.json`
+  instead of hardcoding local app-table DDL.
+- The external schema JSON was regenerated with this branch's codegen.
+- The Syncular branch server was rebuilt and the Rust browser WASM artifact was
+  rebuilt before running the guard.
+
+Commands:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Previous accepted guard:
+
+| Metric | Accepted |
+| --- | ---: |
+| 500k bootstrap | `1062.50ms` |
+| 500k local apply | `208ms` |
+| 500k response bytes | `3,537,767` |
+| 500k peak memory | `633.50MB` |
+| 500k snapshot chunks | `0` |
+
+Candidate and control runs:
+
+| Metric | Generated base, dev run 1 | Generated base, dev run 2 | Hardcoded base, dev control | Generated base, release | Generated base, release, no hot `AppSchema` field |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Result path | `2026-05-21T13-11-36-316Z` | `2026-05-21T13-13-52-248Z` | `2026-05-21T13-15-25-119Z` | `2026-05-21T13-17-03-741Z` / `2026-05-21T13-20-04-314Z` | `2026-05-21T13-22-34-229Z` / `2026-05-21T13-25-32-257Z` |
+| 500k bootstrap | `3998.24ms` | `3829.21ms` | `3765.97ms` | `3323.39ms` / `3987.01ms` | `1143.42ms` / `1115.31ms` |
+| 500k derived schema | `2276.83ms` | `2221.79ms` | `2149.41ms` | `1064.26ms` / `2355.06ms` | `632.60ms` / `655.73ms` |
+| 500k sync total | `1700ms` | `1588ms` | `1596ms` | `2229ms` / `1604ms` | `493ms` / `446ms` |
+| 500k pull request | `131ms` | `112ms` | `122ms` | `423ms` / `407ms` | `135ms` / `112ms` |
+| 500k snapshot fetch | `130ms` | `106ms` | `108ms` | `1468ms` / `437ms` | `135ms` / `120ms` |
+| 500k pull apply | `1556ms` | `1464ms` | `1463ms` | `1802ms` / `1178ms` | `354ms` / `331ms` |
+| 500k local apply | `1426ms` | `1358ms` | `1355ms` | `334ms` / `741ms` | `219ms` / `211ms` |
+| 500k response bytes | `3,537,771` | `3,537,685` | `3,537,763` | `3,537,873` / `3,537,852` | `3,537,807` / `3,537,706` |
+| 500k peak memory | `638.94MB` | `660.69MB` | `659.63MB` | `660.56MB` / `652.06MB` | `643.39MB` / `634.28MB` |
+| 500k snapshot chunks | `0` | `0` | `0` | `0` / `0` | `0` |
+
+Decision:
+
+- Do not replace the accepted WP-12 external baseline with these runs.
+- The generated local-base DDL is not the cause: the hardcoded-base control was
+  similarly slow in the same session.
+- Keep the local-base schema contract as a correctness/organization slice, but
+  do not claim a performance win from it.
+- Reject storing local-base metadata on the runtime `AppSchema` hot value. After
+  removing that field, the release guard recovered most of the regression:
+  `3987.01ms -> 1115.31ms` bootstrap and `741ms -> 211ms` local apply.
+- Keep the local-base contract in generated JSON/TS/Rust migration metadata
+  instead. Before the next performance-retained artifact change, re-establish a
+  stable external release baseline; the recovered guard is still slower than
+  the accepted `1062.50ms`, but the second fixed release run preserved the
+  retained memory profile (`634.28MB` versus accepted `633.50MB`).
+
+## 2026-05-21 - Rejected External Local WITHOUT ROWID Probe
+
+Commit: rejected external benchmark probe, no Syncular code changed
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change tried:
+
+- Temporarily patched the external `offline-sync-bench` Rust adapter to create
+  local benchmark app tables as `WITHOUT ROWID`.
+- This tested whether the large external derived-schema bucket was mainly
+  caused by local rowid table/index shape before making a framework default.
+- The external adapter file was restored after the probe.
+
+Fresh baseline:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Fresh baseline result:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T12-49-58-834Z/syncular-rust/bootstrap.json`
+
+Probe result:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T12-51-15-146Z/syncular-rust/bootstrap.json`
+
+| Metric | Fresh baseline | Local WITHOUT ROWID |
+| --- | ---: | ---: |
+| 500k bootstrap | `1174.29ms` | `1076.13ms` |
+| 500k derived schema | `709.37ms` | `628.17ms` |
+| 500k sync total | `451ms` | `421ms` |
+| 500k pull apply | `331ms` | `308ms` |
+| 500k local apply | `208ms` | `204ms` |
+| 500k response bytes | `3,537,682` | `3,537,744` |
+| 500k peak memory | `629.56MB` | `655.05MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Decision:
+
+- Rejected. The probe improves the same-session noisy wall time, but it is
+  still slower than the retained `1062.50ms` guard and gives back too much of
+  the retained memory improvement (`633.50MB -> 655.05MB` against the accepted
+  guard).
+- Keep `WITHOUT ROWID` as an explicit generated-table option for apps that want
+  it, not as the next WP-12 default. Revisit only if a real app contract opts in
+  and the external gate preserves the lower-memory profile.
+
+## 2026-05-21 - Rejected Skip Final Artifact Page Checkpoint
+
+Commit: rejected probe, code reverted
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change tried:
+
+- Kept checkpointing before later artifact pages, but skipped the per-page
+  checkpoint for the final snapshot page in a pull response.
+- Goal was to reduce checkpoint/commit/detach cycles after the lazy apply
+  transaction change while still allowing the normal apply-batch commit to
+  persist the final page.
+
+Correctness gates before benchmark:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|committed SQLite snapshot artifact|artifact rows when a subscription is revoked"
+```
+
+Local release artifact gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/wp12-skip-final-checkpoint-100k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-skip-final-checkpoint-500k.json
+```
+
+| Metric | Previous retained | Skip final checkpoint |
+| --- | ---: | ---: |
+| 100k bootstrap | `143.66ms` | `143.48ms` |
+| 500k bootstrap | `588.73ms` | `582.40ms` |
+| 500k checkpoint count | `9` | `5` |
+| 500k JS heap delta | `1.69MB` | `3.18MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+External app-style scoped artifact benchmark:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T12-37-47-270Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous retained | Skip final checkpoint |
+| --- | ---: | ---: |
+| 500k bootstrap | `1062.50ms` | `1176.08ms` |
+| 500k derived schema | `619.26ms` | `690.02ms` |
+| 500k sync total | `432ms` | `471ms` |
+| 500k pull apply | `320ms` | `339ms` |
+| 500k local apply | `208ms` | `198ms` |
+| 500k response bytes | `3,537,767` | `3,537,774` |
+| 500k peak memory | `633.50MB` | `631.13MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Decision:
+
+- Rejected and reverted. The tiny external memory win does not justify a
+  `+113.58ms` bootstrap regression from the retained guard, and the local heap
+  guard also moved in the wrong direction.
+- Keep checkpointing every verified artifact page until a different state model
+  proves lower wall time and preserves the lower memory profile.
+
+## 2026-05-21 - Retained Skip Duplicate Artifact Subscription State
+
+Commit: retained slice
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- When a checkpointed snapshot artifact page already persisted the same final
+  `bootstrapState`, browser pull apply now skips the duplicate final
+  subscription-state upsert.
+- This avoids a tiny extra transaction/write after the final checkpoint in
+  artifact bootstrap while preserving verified-root persistence.
+
+Correctness gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|committed SQLite snapshot artifact|artifact rows when a subscription is revoked"
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+```
+
+Local release artifact gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/wp12-skip-duplicate-state-100k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-skip-duplicate-state-500k.json
+```
+
+| Metric | Lazy apply baseline | Skip duplicate state |
+| --- | ---: | ---: |
+| 100k bootstrap | `151.58ms` rerun | `143.66ms` |
+| 100k artifact apply | `127ms` rerun | `120ms` |
+| 100k JS heap delta | `7.20MB` rerun | `2.82MB` |
+| 500k bootstrap | `575.99ms` | `588.73ms` |
+| 500k artifact apply | `496ms` | `500ms` |
+| 500k JS heap delta | `3.12MB` | `1.69MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+External app-style scoped artifact benchmark:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T12-31-19-879Z/syncular-rust/bootstrap.json`
+
+| Metric | Lazy apply rerun | Skip duplicate state |
+| --- | ---: | ---: |
+| 500k bootstrap | `1107.80ms` | `1062.50ms` |
+| 500k derived schema | `649.25ms` | `619.26ms` |
+| 500k sync total | `442ms` | `432ms` |
+| 500k pull apply | `327ms` | `320ms` |
+| 500k local apply | `207ms` | `208ms` |
+| 500k response bytes | `3,537,901` | `3,537,767` |
+| 500k peak memory | `637.55MB` | `633.50MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Decision:
+
+- Retained. This recovers part of the lazy-apply wall-time regression and
+  improves the new memory profile further. It does not fully restore the old
+  `995.58ms` wall-time guard, so WP-12 remains open with wall-time recovery as
+  the next target.
+
+## 2026-05-21 - Retained Lazy Browser Apply Transactions For Artifacts
+
+Commit: retained slice
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power; unrelated background
+TypeScript checks were visible during the first local 100k run, so the 100k
+lane was rerun.
+
+Change:
+
+- Browser Rust-owned SQLite apply batches now start as pending and open
+  `BEGIN IMMEDIATE` only at the first local mutation.
+- Direct SQLite snapshot artifact bodies are fetched and verified before the
+  snapshot page clears or mutates local rows.
+- This keeps snapshot chunk/artifact network/decompression work outside the
+  browser SQLite write transaction and preserves fail-before-mutation artifact
+  recovery semantics.
+
+Correctness gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features native,crdt-yjs
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|committed SQLite snapshot artifact|artifact rows when a subscription is revoked"
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+```
+
+Local release artifact gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/wp12-lazy-apply-artifacts-100k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/wp12-lazy-apply-artifacts-100k-rerun.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-lazy-apply-artifacts-500k.json
+```
+
+| Metric | Previous accepted context | Current |
+| --- | ---: | ---: |
+| 100k bootstrap | `147.16ms` | `148.33ms`, rerun `151.58ms` |
+| 100k artifact apply | `121ms` | `125ms`, rerun `127ms` |
+| 100k snapshot chunks | `0` | `0` |
+| 500k bootstrap | `623.02ms` | `575.99ms` |
+| 500k artifact apply | `527ms` | `496ms` |
+| 500k JS heap delta | n/a | `3.12MB` |
+| 500k response bytes | n/a | `4,215,535` |
+| 500k snapshot chunks | `0` | `0` |
+
+External app-style scoped artifact benchmark:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
+bun run --cwd rust/bindings/browser build:wasm
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result files:
+
+- `/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T12-21-22-780Z/syncular-rust/bootstrap.json`
+- `/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T12-22-14-547Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous accepted artifact guard | Current | Rerun |
+| --- | ---: | ---: | ---: |
+| 500k bootstrap | `995.58ms` | `1068.73ms` | `1107.80ms` |
+| 500k derived schema | `584.27ms` | `622.60ms` | `649.25ms` |
+| 500k sync total | `399ms` | `432ms` | `442ms` |
+| 500k pull apply | `302ms` | `320ms` | `327ms` |
+| 500k local apply | `203ms` | `204ms` | `207ms` |
+| 500k response bytes | `3,537,607` | `3,537,735` | `3,537,901` |
+| 500k peak memory | `671.13MB` | `639.41MB` | `637.55MB` |
+| 500k snapshot chunks | `0` | `0` | `0` |
+
+Decision:
+
+- Retained as a resource-state slice, not a throughput win. The external
+  app-style peak-memory drop is material at about `31-34MB`, direct artifact
+  selection remains intact, and artifact fetch failures still recover before
+  mutation.
+- The wall-time regression is explicit and must be recovered next. Do not stack
+  another WP-12 memory-only change unless it keeps the external 500k lane near
+  this peak-memory profile and improves or restores bootstrap wall time.
+
+## 2026-05-21 - Rejected Browser Deferred Apply Transactions
+
+Commit: rejected probe, code reverted
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change tried:
+
+- Changed browser Rust-owned SQLite apply batches from `BEGIN IMMEDIATE` to
+  deferred `BEGIN` while leaving non-apply write transactions immediate.
+- Goal was to avoid grabbing a write lock while post-checkpoint artifact bytes
+  are fetched. This was a state-model/resource probe, not a query-cache change.
+
+Same-session local 100k release artifact gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/wp12-deferred-apply-baseline-100k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/wp12-deferred-apply-after-100k.json
+```
+
+| Metric | Immediate apply tx baseline | Deferred apply tx probe |
+| --- | ---: | ---: |
+| Rust bootstrap | `136.18ms` | `135.81ms` |
+| Rust pull apply | `128ms` | `127ms` |
+| Rust artifact apply | `113ms` | `113ms` |
+| Rust artifact fetch | `5ms` | `4ms` |
+| Rust artifact bytes | `872,794` | `872,794` |
+| Snapshot chunks | `0` | `0` |
+| JS heap delta | `2.19MB` | `7.62MB` |
+| Served Rust WASM bytes | `2,220,519` | `2,220,567` |
+
+Correctness probe:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --test protocol_contract http_sync_rejects_snapshot_artifacts_before_mutating_store \
+  --features native,crdt-yjs,demo-todo-native-fixture
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+```
+
+Decision:
+
+- Rejected and reverted. Wall time was effectively flat, while JS heap delta
+  regressed sharply in the same-session gate. The resource-locking idea may be
+  worth revisiting only as part of a broader lazy-write-transaction state model
+  with explicit tests for UI read/write contention and no heap regression.
+
+## 2026-05-21 - Retained Browser Live-Query Row Hints
+
+Commit: retained slice
+
+Work package:
+[`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
+
+Machine / power mode: Apple M3 Max, current local power state.
+
+Change:
+
+- The browser Kysely dialect now infers optional live-query row hints for simple
+  conjunctive primary-key equality predicates.
+- The Rust-owned browser SQLite invalidator uses those hints only when
+  changed-row metadata is complete; truncated or table-only notifications fall
+  back to normal reruns.
+
+Command:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 \
+  --output=.context/benchmarks/wp21-live-query-hints-current.json
+```
+
+Current guardrail:
+
+| Metric | Current |
+| --- | ---: |
+| 10k Rust bootstrap | `48.19ms` |
+| Rust incremental pull | `20.82ms` |
+| Rust realtime live p50 / p95 | `125.20ms` / `127.41ms` |
+| Rust realtime overhead p50 / p95 | `14.29ms` / `15.04ms` |
+| Rust realtime notify total | `1ms` |
+| Rust realtime notify p95 | `1ms` |
+| Browser served Rust WASM bytes | `2,372,720 bytes` |
+
+Decision:
+
+- Retained as the first WP-21 measurement point. There was no prior WP-21
+  artifact with this exact incremental/realtime shape in the branch, so the
+  next live-query precision change must compare against
+  `.context/benchmarks/wp21-live-query-hints-current.json`.
+
+## 2026-05-21 - Retained Native Observed-Query Row/Field Hints
+
+Commit: retained slice
+
+Work package:
+[`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
+
+Change:
+
+- Native `register_query_json` now accepts observed-query `dependencyHints`
+  with table, row-id, and field metadata.
+- Native event conversion still emits `RowsChanged` for every local/remote row
+  change, but `QueriesChanged` now skips hinted observers when complete
+  row/field metadata proves the query cannot be affected.
+
+Correctness gates:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --test native_facade native_facade_filters_query_observers_with_row_field_hints \
+  --features native,crdt-yjs,demo-todo-native-fixture
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --test native_facade \
+  --features native,crdt-yjs,demo-todo-native-fixture
+cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features native,crdt-yjs
+```
+
+Result: passed.
+
+Decision:
+
+- Retained. This slice is native-only, so the browser E2E guardrail was not
+  rerun. The next browser/runtime invalidation change must still compare
+  against `.context/benchmarks/wp21-live-query-hints-current.json`; the next
+  WP-21 task is to add an explicit skip-rerun counter or benchmark for
+  unrelated row churn.
+
+## 2026-05-21 - Retained Live-Query Skip-Rerun Diagnostics
+
+Commit: retained slice
+
+Work package:
+[`WP-21 Query Observation And Live Query Precision`](work-packages/WP-21-query-observation-live-query-precision.md)
+
+Change:
+
+- Added per-query live diagnostics counters for browser/Rust-owned SQLite:
+  `rerunCount`, `skippedRerunCount`, and `emittedEventCount`.
+- Added a Hono/WASM regression proving an inferred primary-key live-query hint
+  increments `skippedRerunCount` for an unrelated row and increments
+  `rerunCount`/`emittedEventCount` when the hinted row changes.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test --cwd rust/bindings/browser \
+  src/__tests__/sync-hono.wasm.test.ts -t "skips hinted live-query reruns"
+bun test --cwd rust/bindings/browser src/database.test.ts -t "live query"
+bun test --cwd rust/bindings/browser src/worker-client.test.ts -t "live"
+bun run --cwd rust/bindings/browser test
+bun test --cwd rust/bindings/browser src/__tests__/sync-hono.wasm.test.ts
+```
+
+Performance gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 \
+  --output=.context/benchmarks/wp21-live-query-diagnostics-current.json
+```
+
+Comparison to `.context/benchmarks/wp21-live-query-hints-current.json`:
+
+| Metric | Previous | Current | Decision |
+| --- | ---: | ---: | --- |
+| 10k Rust bootstrap | `48.19ms` | `44.48ms` | neutral/better |
+| Rust incremental pull | `20.82ms` | `22.13ms` | neutral |
+| Rust realtime live p50 / p95 | `125.20ms` / `127.41ms` | `127.18ms` / `127.93ms` | neutral |
+| Rust realtime overhead p50 / p95 | `14.29ms` / `15.04ms` | `12.88ms` / `15.15ms` | neutral |
+| Rust realtime notify total / p95 | `1ms` / `1ms` | `1ms` / `1ms` | unchanged |
+| Browser served Rust WASM bytes | `2,372,720` | `2,374,522` | `+1,802 bytes` |
+
+Decision:
+
+- Retained. The counter adds a small diagnostic surface and a tiny WASM-size
+  increase, while giving a deterministic gate for the main WP-21 performance
+  claim: unrelated row churn can avoid live-query reruns when row/field
+  metadata is precise.
+
+## 2026-05-20 - Retained Browser Sync Attempt Trace Plumbing
+
+Commit: retained slice
+
+Work package:
+[`WP-13 Observability And Debuggability`](work-packages/WP-13-observability-debuggability.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Browser worker sync calls now generate a `syncAttemptId` backed by W3C
+  `traceparent`/`sentry-trace` fields.
+- Realtime HTTP pull recovery gets the same attempt envelope.
+- Direct Rust browser sync temporarily injects the trace headers for the HTTP
+  sync request and restores app auth headers after the request finishes.
+
+Command:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --rust-max-snapshot-pages=2 \
+  --baseline=.context/benchmarks/wp12-artifact-instrumentation-100k.json \
+  --output=.context/benchmarks/wp13-sync-attempt-trace-100k-rerun.json
+```
+
+First run was noisy (`rust_bootstrap_ms 146.68ms`, `rust_pull_apply_ms
+135ms`) without request/response byte changes. Reran before accepting.
+
+| Metric | Previous accepted | Current rerun |
+| --- | ---: | ---: |
+| 100k Rust bootstrap | `136.33ms` | `135.75ms` |
+| 100k Rust pull request | `7ms` | `6ms` |
+| 100k Rust pull apply | `125ms` | `125ms` |
+| 100k Rust snapshot artifact apply | `111ms` | `112ms` |
+| Rust request count | `3` | `3` |
+| Rust response bytes | `874,885` | `874,885` |
+| Served asset total | `7,785,033 bytes` | `7,801,499 bytes` |
+
+Decision: retained. The accepted rerun shows no meaningful sync performance
+regression. The browser JS asset size increase is visible (`+16,466 bytes`) and
+is acceptable for the diagnostic surface.
+
+## 2026-05-20 - Retained Redundant Local Index Prefix Omission
+
+Commit: retained slice
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- The Rust code generator now omits a generated local index when another
+  non-unique, non-partial, non-expression index on the same table has the same
+  leading column sequence.
+- Unique and partial indexes are preserved because they can affect correctness
+  or planner behavior beyond prefix coverage.
+- The external benchmark app declares both
+  `(project_id, owner_id, completed)` and
+  `(project_id, owner_id, completed, updated_at desc)`; the shorter non-unique
+  prefix index is now omitted from the generated install contract.
+
+Correctness gates:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd tests/runtime tsgo
+bun run --cwd rust/bindings/browser build:wasm
+```
+
+Local external-schema probe:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
+bun .context/derived-schema-probe.ts 500000
+```
+
+| Metric | Previous probe | Current probe |
+| --- | ---: | ---: |
+| 500k derived total | `1110.12ms` | `794.66ms` |
+| 500k index creation | `1070.57ms` | `757.80ms` |
+| 500k read-model rebuild | `38.88ms` | `35.93ms` |
+
+External app-style scoped artifact benchmark:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T06-41-15-280Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous accepted | Current |
+| --- | ---: | ---: |
+| 500k bootstrap | `1382.56ms` | `1142.29ms` |
+| 500k derived schema | `930.41ms` | `672.43ms` |
+| 500k sync total | `437ms` | `456ms` |
+| 500k pull apply | `326ms` | `341ms` |
+| 500k local apply | `202ms` | `222ms` |
+| 500k response bytes | `3,537,756` | `3,537,756` |
+| 500k peak memory | `696.50MB` | `667.59MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+External local-query check:
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T06-42-08-810Z/syncular-rust/local-query.json`
+
+| Metric | Current |
+| --- | ---: |
+| Bootstrap | `289.52ms` |
+| List p50 / p95 | `0.16ms` / `0.29ms` |
+| Search p50 / p95 | `0.22ms` / `0.43ms` |
+| Read-model aggregate p50 / p95 | `0.02ms` / `0.07ms` |
+| Raw aggregate p50 / p95 | `7.64ms` / `9.94ms` |
+
+Same-session TS local-query failed with `Request failed`, so it was not used as
+a comparison point for this slice.
+
+Browser release artifact guard:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=25 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-index-prefix-normalization-100k.json
+```
+
+| Metric | Previous schema timing run | Current |
+| --- | ---: | ---: |
+| Rust 100k artifact bootstrap | `144.00ms` | `143.14ms` |
+| Rust schema install | `5.34ms` | `5.20ms` |
+| Rust cached schema install | `1.91ms` | `2.04ms` |
+| Rust read-model aggregate p50 | `0.05ms` | `0.06ms` |
+| Browser entry JS bytes | `1,278,907` | `1,279,706` |
+
+Decision:
+
+- Accepted. The change removes redundant generated work from app-declared
+  local indexes, materially improves external 500k bootstrap and peak memory,
+  and does not introduce hidden runtime caching or a compatibility branch.
+- The sync/apply timings moved slightly upward in the external run, but total
+  bootstrap and memory improved enough to keep the slice.
+
+## 2026-05-20 - Retained Scoped Artifact Best-Fit Lookup
+
+Commit: retained slice
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Server pull now selects the largest scoped artifact whose row limit fits the
+  current pull capacity, instead of requiring an exact row-limit key.
+- Pull continuation advances by the selected artifact manifest's row limit, so
+  smaller pages can continue through the same bootstrap window.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+```
+
+Browser release artifact guard:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-artifact-best-fit-100k.json
+```
+
+| Metric | Previous accepted | Current |
+| --- | ---: | ---: |
+| 100k Rust artifact bootstrap | `143.14ms` | `144.56ms` |
+| Rust pull rounds | `1` | `1` |
+| Rust request count | `3` | `3` |
+| Rust snapshot binary chunks | `0` | `0` |
+| Rust response bytes | `874,885` | `874,885` |
+
+Best-fit mismatch guard:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=25000 \
+  --rust-snapshot-rows-per-page=50000 \
+  --output=.context/benchmarks/wp12-artifact-best-fit-100k-25k-precompute.json
+```
+
+| Metric | Current |
+| --- | ---: |
+| 100k Rust artifact bootstrap | `142.75ms` |
+| Rust pull rounds | `2` |
+| Rust request count | `6` |
+| Rust snapshot binary chunks | `0` |
+| Rust response bytes | `878,868` |
+
+External app-style matched artifact guard:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T07-40-51-037Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous accepted | Current |
+| --- | ---: | ---: |
+| 500k bootstrap | `1142.29ms` | `1154.34ms` |
+| 500k derived schema | `672.43ms` | `673.26ms` |
+| 500k local apply | `222ms` | `209ms` |
+| 500k response bytes | `3,537,756` | `3,537,717` |
+| 500k peak memory | `667.59MB` | `662.03MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+External app-style smaller-page robustness guard:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=20000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=20000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T07-41-51-480Z/syncular-rust/bootstrap.json`
+
+| Metric | Current |
+| --- | ---: |
+| 500k bootstrap | `1024.78ms` |
+| 500k derived schema | `579.65ms` |
+| 500k local apply | `195ms` |
+| 500k response bytes | `3,554,785` |
+| 500k peak memory | `671.81MB` |
+| 500k snapshot chunks | `0` |
+
+Decision:
+
+- Accepted. This is robustness rather than a speed win: the normal matched
+  artifact path stays neutral, while smaller eligible artifact pages no longer
+  fall back to row chunks. The 20k external probe is not a new page-size
+  recommendation because response bytes and peak memory are worse than the
+  accepted 40k baseline.
+
+## 2026-05-20 - Retained Browser Artifact Timing Counters
+
+Commit: retained slice
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Added explicit browser Rust artifact counters/timings for artifact count,
+  compressed artifact bytes, artifact fetch, artifact hash, artifact
+  decompression, and direct SQLite artifact apply.
+- The existing broad `snapshotFetchMs` and `snapshotRowApplyMs` totals remain,
+  but page-size/memory experiments can now see artifact costs directly.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd tests/runtime tsgo
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"
+```
+
+Browser release artifact guard:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-artifact-instrumentation-100k.json
+```
+
+| Metric | Previous accepted | Current |
+| --- | ---: | ---: |
+| 100k Rust artifact bootstrap | `144.56ms` | `136.33ms` |
+| Rust artifact count | n/a | `2` |
+| Rust artifact bytes | n/a | `872,794` |
+| Rust artifact fetch | n/a | `4ms` |
+| Rust artifact decompress | n/a | `6ms` |
+| Rust artifact hash | n/a | `2ms` |
+| Rust artifact apply | n/a | `111ms` |
+| Browser entry JS bytes | `1,279,706` | `1,280,998` |
+| Served Rust WASM bytes | `3,364,012` | `3,364,676` |
+
+External app-style scoped artifact guard:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T07-51-53-764Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous accepted | Current |
+| --- | ---: | ---: |
+| 500k bootstrap | `1154.34ms` | `1002.06ms` |
+| 500k derived schema | `673.26ms` | `581.85ms` |
+| 500k local apply | `209ms` | `198ms` |
+| 500k response bytes | `3,537,717` | `3,537,647` |
+| 500k peak memory | `662.03MB` | `668.20MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Decision:
+
+- Accepted. This is benchmark instrumentation and the local/external guards do
+  not show an overhead regression. The browser bundle size increase is small
+  enough to keep because future artifact state work needs these counters.
+
+## 2026-05-20 - Rejected Artifact Page Cap 1
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Probe:
+
+- Changed browser direct SQLite artifact pulls from cap `2` snapshot pages per
+  pull to cap `1`.
+- The goal was to reduce attached artifact DB retention by forcing at most one
+  artifact page per apply transaction.
+
+Command:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-artifact-cap1-100k.json
+```
+
+| Metric | Cap 2 accepted | Cap 1 probe |
+| --- | ---: | ---: |
+| 100k Rust artifact bootstrap | `136.33ms` | `139.76ms` |
+| Rust pull rounds | `1` | `2` |
+| Rust request count | `3` | `4` |
+| Rust response bytes | `874,885` | `875,060` |
+| Rust artifact count | `2` | `2` |
+| Rust artifact apply | `111ms` | `112ms` |
+| Browser heap delta | `5.18MB` | `6.63MB` |
+
+Decision:
+
+- Rejected and reverted. Cap `1` increases request overhead and did not reduce
+  browser heap in the measured path, so cap `2` remains the accepted shape.
+
+## 2026-05-20 - Rejected Artifact Page Cap 3
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Probe:
+
+- Changed browser direct SQLite artifact pulls from a hard cap of `2`
+  snapshot pages per pull to `3`.
+- This lets the external 20k-row-page harness use the server's natural 60k
+  binary bundle shape, but keeps more attached artifact databases alive inside
+  each browser apply transaction.
+
+Commands:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=25 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-artifact-pagecap3-100k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-artifact-pagecap3-500k.json
+```
+
+External app-style probe used `SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000`
+to match the cap-3 artifact lookup key:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+| Metric | Cap 2 accepted | Cap 3 probe |
+| --- | ---: | ---: |
+| Local browser 500k bootstrap | `595.93ms` | `579.38ms` |
+| Local browser 500k JS heap delta | `2.60MB` | `11.89MB` |
+| External 500k bootstrap | `1142.29ms` | `1095.22ms` |
+| External 500k sync calls | `13` | `9` |
+| External 500k local apply | `222ms` | `209ms` |
+| External 500k response bytes | `3,537,756` | `3,528,852` |
+| External 500k peak memory | `667.59MB` | `675.95MB` |
+
+Decision:
+
+- Rejected. The wall-time improvement is modest, but both the local browser
+  heap delta and external peak memory regress. WP-12 requires scoped artifact
+  work to improve large bootstrap without increasing peak memory, so the cap
+  remains `2`.
+
+## 2026-05-20 - Retained Generated Schema Phase Timings
+
+Commit: retained slice
+
+Work package:
+[`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Generated TypeScript app clients now expose
+  `ensureSyncularAppSchemaWithTimings(...)` and
+  `ensureSyncularAppDerivedSchemaWithTimings(...)`.
+- Browser E2E records generated schema install phases instead of reporting only
+  one total `rust_schema_install_ms` value.
+
+Correctness gates:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd tests/runtime tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=25 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-schema-phase-timings-100k.json
+```
+
+Comparison:
+
+| Metric | Previous schema-install metric run | Current |
+| --- | ---: | ---: |
+| Rust 100k artifact bootstrap | `149.75ms` | `144.00ms` |
+| Rust schema install | `5.42ms` | `5.34ms` |
+| Rust cached schema install | `2.55ms` | `1.91ms` |
+| Rust read-model aggregate p50 | `0.04ms` | `0.05ms` |
+| Browser entry JS bytes | `1,274,435` | `1,278,907` |
+
+New phase metrics from the 100k gate:
+
+| Metric | Value |
+| --- | ---: |
+| `rust_schema_base_ms` | `1.64ms` |
+| `rust_schema_derived_ms` | `3.70ms` |
+| `rust_schema_indexes_ms` | `0.00ms` |
+| `rust_schema_read_model_setup_ms` | `1.14ms` |
+| `rust_schema_read_model_rebuild_ms` | `0.99ms` |
+| `rust_schema_record_version_ms` | `1.38ms` |
+
+Derived-schema probe:
+
+- A local `.context` probe against the external app schema showed the 500k
+  derived-schema cost is index dominated: indexes `1070.57ms`, read-model setup
+  `0.67ms`, read-model rebuild `38.88ms`.
+- Rebuilding read models before indexes was rejected by measurement:
+  derived total `1110.12ms -> 1377.38ms`.
+- Creating only the read-model dimension index before rebuild was roughly flat
+  in the probe (`1110.12ms -> 1055.27ms`) and is not retained as a framework
+  change yet because it needs generated index-column metadata and external
+  app-style proof.
+
+Decision:
+
+- Retained. The app-facing API remains the same, the benchmark stayed in band,
+  and future gates can identify index/read-model/schema-version costs directly.
+
+## 2026-05-19 - Retained WP-12 Artifact Page Cap
+
+Commit: retained slice
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Browser direct SQLite artifact pulls cap `maxSnapshotPages` to `2`; row-chunk
+  pulls still use the configured page count.
+- Browser E2E scoreboard gained `--rust-max-snapshot-pages` for measured page
+  cap probes.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"
+bun run --cwd rust/bindings/browser build:wasm
+```
+
+Local browser control and probes:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-500k-artifacts-maxpages10-control.json
+```
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-500k-artifacts-auto-maxpages2.json
+```
+
+| Metric | maxPages 10 control | retained maxPages 2 |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `623.48` | `595.93` |
+| `rust_pull_apply_ms` | `606` | `569` |
+| `rust_snapshot_row_apply_ms` | `541` | `512` |
+| `rust_pull_rounds` | `1` | `5` |
+| `rust_request_count` | `11` | `15` |
+| `browser_js_heap_used_delta_bytes` | `10398412` | `2604624` |
+
+Additional local checks:
+
+- `maxPages=1` was rejected as the default because it forced 100k into two pull
+  rounds: `.context/benchmarks/wp12-100k-artifacts-auto-maxpages1.json`.
+- Retained `maxPages=2` keeps 100k to one pull round:
+  `.context/benchmarks/wp12-100k-artifacts-auto-maxpages2.json`,
+  `rust_bootstrap_ms=147.84`, `rust_pull_rounds=1`.
+
+External app-style gate:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000
+
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result:
+
+- `.results/2026-05-19T23-01-40-161Z/syncular-rust/bootstrap.json`
+- `snapshot_chunk_count_500000=0`
+- `bootstrap_500000_ms=1334.25`
+- `local_apply_ms_500000=198`
+- `response_bytes_500000=3537673`
+- `peak_memory_mb_500000=707.92`
+
+Comparison:
+
+- A mismatched external precompute run with the old `60000` row limit fell back
+  to row chunks: `snapshot_chunk_count_500000=13`,
+  `bootstrap_500000_ms=2686.04`, `local_apply_ms_500000=402`,
+  `peak_memory_mb_500000=723.59`.
+- The older retained scoped-artifact baseline was `peak_memory_mb_500000=746.92`
+  with `local_apply_ms_500000=1392`.
+
+Decision:
+
+- Retained. Cap `2` gives a large local heap win, improves same-session local
+  500k wall time, and improves external artifact peak memory while preserving
+  verified artifact apply and avoiding staging copies.
+
+## 2026-05-20 - Retained Generated Schema Phase Helpers
+
+Commit: retained slice
+
+Work package: [`WP-06 Local Read Models`](work-packages/WP-06-local-read-models.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Generated TypeScript clients now export `syncularGeneratedLocalIndexes`,
+  `ensureSyncularAppIndexes(...)`, `ensureSyncularAppReadModelSetup(...)`, and
+  `rebuildSyncularAppReadModels(...)`.
+- The default `ensureSyncularAppDerivedSchema(...)` path keeps the existing
+  behavior, but the generated contract now exposes the local derived-schema
+  phases that app adapters and benchmarks need instead of forcing hand-written
+  index/read-model fixtures.
+
+Correctness gates:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd tests/runtime tsgo
+bun test rust/bindings/browser/src/database.test.ts rust/bindings/browser/src/generated-app-conformance.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=25 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp06-generated-schema-phase-helpers-100k.json
+```
+
+Comparison:
+
+| Metric | Previous accepted | Phase helpers |
+| --- | ---: | ---: |
+| Rust 100k artifact bootstrap | `147.84ms` | `146.94ms` |
+| Rust local list p50 | `0.23ms` | `0.21ms` |
+| Rust local search p50 | `1.51ms` | `1.40ms` |
+| Rust raw aggregate p50 | `21.98ms` | `24.42ms` |
+| Rust read-model aggregate p50 | `0.05ms` | `0.05ms` |
+| Browser entry JS bytes | n/a | `1,273,894` |
+
+Decision:
+
+- Retained. The default installer stays in the accepted performance band, and
+  generated adapters now have a clean derived-schema phase contract for
+  external app-style bootstrap experiments.
+
+Rejected follow-up:
+
+- Tried adding a generated `schemaInstallMode: 'liveSetup'` plus a browser E2E
+  `--rust-schema-install-mode` switch. The 100k gate stayed in band
+  (`147.50ms`), but the 500k direct A/B rejected the mode: default `full`
+  bootstrap was `700.42ms`, while `liveSetup` was `798.45ms`.
+- Decision: removed. Empty read-model rebuilds are not the 500k bottleneck, and
+  keeping another generated install mode is not justified without a measured
+  win.
+
+## 2026-05-20 - Retained Schema Install Benchmark Metrics
+
+Commit: retained slice
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Browser E2E scoreboard now records generated Rust schema installation
+  separately as `rust_schema_install_ms` and
+  `rust_cached_schema_install_ms`.
+- The Rust app database is opened with `schemaInstallMode: 'none'`, then the
+  benchmark explicitly runs `ensureSyncularAppSchema(...)` through the schema
+  write helper before subscribing. This keeps bootstrap timing focused on sync
+  and makes schema-install costs visible beside it.
+
+Correctness gates:
+
+```bash
+bun run --cwd tests/runtime tsgo
+bun run --cwd rust/bindings/browser tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 \
+  --query-iterations=25 \
+  --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-schema-install-metric-100k.json
+```
+
+Comparison:
+
+| Metric | Previous phase-helper run | Current |
+| --- | ---: | ---: |
+| Rust 100k artifact bootstrap | `146.94ms` | `149.75ms` |
+| Rust schema install | n/a | `5.42ms` |
+| Rust cached schema install | n/a | `2.55ms` |
+| Rust read-model aggregate p50 | `0.05ms` | `0.04ms` |
+| Browser entry JS bytes | `1,273,894` | `1,274,435` |
+
+Decision:
+
+- Retained. The bootstrap lane stayed in the accepted band, and future local
+  browser runs now expose schema-install cost instead of hiding it outside the
+  sync timing.
+
+## 2026-05-19 - WP-04 Release Realtime Guard
+
+Commit: measurement only
+
+Work package: [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Command:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 \
+  --incremental-rows=1000 \
+  --realtime-iterations=3 \
+  --query-iterations=0 \
+  --wasm-profile=release \
+  --json \
+  --output=.context/benchmarks/wp04-realtime-release-current-2026-05-19.json
+```
+
+Result:
+
+- `rust_realtime_live_ms=86.54`
+- `rust_realtime_live_p95_ms=88.81`
+- `rust_realtime_overhead_p50_ms=16.75`
+- `rust_realtime_overhead_p95_ms=17.65`
+- `rust_realtime_http_request_count=0`
+- `rust_realtime_binary_events=15`
+- `rust_realtime_apply_total_ms=25`
+- `rust_realtime_sync_pack_decode_total_ms=6`
+- `rust_realtime_integrity_verify_total_ms=6`
+- `rust_realtime_commit_apply_total_ms=6`
+- `browser_served_rust_wasm_bytes=3445771`
+
+Decision:
+
+- Treat this as the release-mode WP-04 guard. Dev-WASM integrity timings were
+  useful for finding obvious waste, but release-WASM no longer shows realtime
+  integrity verification as a meaningful bottleneck. Pause WP-04 micro-probes
+  unless a release-mode benchmark regresses.
+
+## 2026-05-19 - Rejected WP-04 Numeric Formatter Probe
+
+Commit: not retained
+
+Work package: [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Candidate:
+
+- Replace `write!`/temporary number strings in canonical integrity payloads
+  with direct `itoa`/`ryu` formatting for JSON numbers, row versions, and commit
+  sequences.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Fresh pre-change guard:
+
+- `.context/benchmarks/wp04-realtime-prechange-2026-05-19.json`
+- `rust_realtime_live_ms=90.69`
+- `rust_realtime_live_p95_ms=92.95`
+- `rust_realtime_overhead_p50_ms=23.33`
+- `rust_realtime_overhead_p95_ms=23.40`
+- `rust_realtime_apply_total_ms=132`
+- `rust_realtime_integrity_verify_total_ms=68`
+- `browser_served_rust_wasm_bytes=7470941`
+
+Candidate rerun:
+
+- `.context/benchmarks/wp04-realtime-number-format-itoa-ryu-rerun.json`
+- `rust_realtime_live_ms=93.63`
+- `rust_realtime_live_p95_ms=94.70`
+- `rust_realtime_overhead_p50_ms=22.98`
+- `rust_realtime_overhead_p95_ms=24.32`
+- `rust_realtime_apply_total_ms=123`
+- `rust_realtime_integrity_verify_total_ms=63`
+- `browser_served_rust_wasm_bytes=7503209`
+
+Decision:
+
+- Rejected and reverted. The targeted integrity bucket improved by `5ms`, but
+  realtime live latency and p95 overhead regressed across two runs, and the
+  dependency change grew the browser WASM bundle by about `32KiB`.
+
+## 2026-05-19 - Rejected WP-12 Separate-SQLite Artifact Streaming
+
+Commit: not retained
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Candidate:
+
+- Open each SQLite snapshot artifact in a separate temporary SQLite handle,
+  stream rows into the main database with prepared multirow inserts, then close
+  the artifact DB immediately.
+
+Correctness gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"
+```
+
+Candidate:
+
+- 100k artifact: `rust_bootstrap_ms=164.55`,
+  `rust_pull_apply_ms=155`, `rust_snapshot_row_apply_ms=140`.
+- 500k artifact: `rust_bootstrap_ms=738.07`,
+  `rust_pull_apply_ms=726`, `rust_snapshot_row_apply_ms=665`,
+  `rust_response_bytes=4214831`.
+
+Decision:
+
+- Rejected and reverted. The heap direction was better, but the candidate
+  rebuilt a row-copy path and regressed badly versus the retained direct
+  attached-artifact baseline (`~66ms` at 100k, `260-280ms` at 500k).
+
+## 2026-05-19 - Rejected WP-12 Segmented Artifact Apply
+
+Commit: not retained
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Candidate:
+
+- Keep direct attached-schema `INSERT ... SELECT`, but commit after each
+  non-final artifact snapshot, persist `bootstrapStateAfter`, detach the
+  artifact schema, and begin the next apply segment.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"
+```
+
+Candidate:
+
+- 100k artifact: `rust_bootstrap_ms=147.69`,
+  `rust_pull_apply_ms=138`, `rust_snapshot_row_apply_ms=122`.
+- 500k artifact: `rust_bootstrap_ms=605.27`,
+  `rust_pull_apply_ms=594`, `rust_snapshot_row_apply_ms=531`,
+  `rust_response_bytes=4214831`.
+
+Decision:
+
+- Rejected and reverted. It reduced heap versus retained direct import, but
+  still more than doubled local 500k artifact wall time. The next artifact
+  memory design must avoid row-copy staging and repeated transaction
+  boundaries.
+
+## 2026-05-19 - Rejected WP-03 Columnar JSON Import Probe
+
+Commit: not retained
+
+Work package: [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+External app-style gate recovery:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+
+bun run bench:run -- --stack syncular --scenario bootstrap
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+bun run bench:run -- --stack syncular --scenario local-query
+bun run bench:run -- --stack syncular-rust --scenario local-query
+```
+
+Recovery note:
+
+- OrbStack/Docker was wedged from stale benchmark state. `docker info`, Docker
+  restart, and health checks hung until `orbctl stop && orbctl start` was run.
+- After recovery, the syncular stack was rebuilt cleanly and health checks
+  passed.
+
+External baseline after recovery:
+
+- TS 500k bootstrap: `3415.92ms`.
+- Rust 500k bootstrap: `2382.23ms` (`0.70x` TS).
+- TS 500k local apply: `1901.25ms`.
+- Rust 500k local apply: `422ms` (`0.22x` TS).
+- TS local list/search p50: `0.08ms` / `0.06ms`.
+- Rust local list/search p50: `0.11ms` / `0.16ms`.
+- TS aggregate p50: `5.25ms`.
+- Rust read-model aggregate p50: `0.01ms`; raw SQL aggregate p50: `7.25ms`.
+
+Immediate repo-local control after recovery:
+
+```bash
+SYNCULAR_BROWSER_PERF_ROWS=500000 \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --query-iterations=0 \
+  --baseline=.context/benchmarks/browser-e2e-500k-baseline.json \
+  --fail-on-regression
+```
+
+- Control before probe: `rust_bootstrap_ms=625.06`,
+  `rust_pull_apply_ms=356`, `rust_snapshot_chunk_apply_ms=308`,
+  `rust_snapshot_chunk_bind_ms=179`, `rust_snapshot_chunk_step_ms=118`,
+  `rust_cached_bootstrap_ms=338.5`,
+  `rust_cached_snapshot_chunk_apply_ms=294`.
+
+Rejected candidate:
+
+- For cleared binary snapshot inserts, attempted a columnar JSON import path
+  using one `json_each()` array per column instead of binding every cell.
+- Candidate 500k browser gate failed to complete normally:
+  `Syncular worker request close timed out after 30000ms`.
+- Source was reverted and release WASM rebuilt.
+
+Restored repo-local result after revert:
+
+- `rust_bootstrap_ms=625.3`, `rust_pull_apply_ms=356`,
+  `rust_snapshot_chunk_apply_ms=310`, `rust_snapshot_chunk_bind_ms=174`,
+  `rust_snapshot_chunk_step_ms=126`, `rust_cached_bootstrap_ms=337.54`,
+  `rust_cached_snapshot_chunk_apply_ms=291`.
+
+Decision:
+
+- Rejected and reverted. SQLite `json_each()` import adds too much parse/query
+  work and is not a viable canonical apply path.
+- Do not revisit JSON import as the next WP-03 attempt. The next serious
+  apply-path experiment needs either a length-aware native import extension or
+  a narrowly scoped SQLite artifact prototype that respects per-user scopes.
+
+## 2026-05-19 - Rejected WP-03 CARRAY Import Probe
+
+Commit: not retained
+
+Work package: [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Candidate:
+
+- For cleared binary snapshot inserts, attempted a `carray()` import path using
+  one bound array per column.
+- Text and JSON columns used `SQLITE_CARRAY_BLOB` with `struct iovec` plus
+  `CAST(value AS TEXT)`, so the design would have preserved byte lengths
+  better than `CARRAY_TEXT`.
+- Nullable columns used an optional `INT64` null-flag carray.
+
+Compile gate:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+```
+
+- Passed.
+
+Release build:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm
+```
+
+- Passed.
+- Raw WASM grew from `3.21MiB` to `3.22MiB`, still under budget.
+
+Browser gate:
+
+```bash
+SYNCULAR_BROWSER_PERF_ROWS=500000 \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --query-iterations=0 \
+  --baseline=.context/benchmarks/browser-e2e-500k-baseline.json \
+  --fail-on-regression
+```
+
+- Failed before producing metrics:
+  `Failed to resolve module specifier "env". Relative references must start with either "/", "./", or "../".`
+- The failure appears when `sqlite3_carray_bind` is referenced from the WASM
+  runtime, so this is not a retainable path in the current browser package.
+- Root cause: `sqlite-wasm-rs` bindgen exposes the `sqlite3_carray_bind`
+  declaration from SQLite headers, but its compiled SQLite feature flags do not
+  include `SQLITE_ENABLE_CARRAY`, so the implementation is omitted and the
+  symbol becomes an unresolved WASM import.
+
+Decision:
+
+- Rejected and reverted.
+- Do not rely on direct `sqlite3_carray_bind` from the current browser runtime.
+  A future carray-like approach would need to live behind a purpose-built
+  runtime/import extension that does not introduce unresolved JS/WASM imports.
+
+## 2026-05-19 - Rejected WP-03 Virtual Table Import Probe
+
+Commit: not retained
+
+Work package: [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Candidate:
+
+- Registered an internal Rust-backed SQLite virtual table inside the browser
+  WASM runtime.
+- For cleared binary snapshot inserts, loaded each binary snapshot batch into
+  borrowed row views and executed `INSERT INTO app_table SELECT c0, c1, ... FROM
+  temp.syncular_snapshot_import`.
+- This avoided per-cell `sqlite3_bind_*` calls and avoided JSON parsing, but
+  shifted the hot path to SQLite virtual-table callbacks back into Rust for
+  every selected cell.
+
+Compile/build gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+```
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm
+```
+
+- Both passed.
+- Raw WASM grew to `3.21MiB` with `36.9KiB` headroom.
+
+Immediate restored control before probe:
+
+- `rust_bootstrap_ms=625.3`, `rust_pull_apply_ms=356`,
+  `rust_snapshot_chunk_apply_ms=310`, `rust_snapshot_chunk_bind_ms=174`,
+  `rust_snapshot_chunk_step_ms=126`, `rust_cached_bootstrap_ms=337.54`,
+  `rust_cached_snapshot_chunk_apply_ms=291`.
+
+Candidate browser gate:
+
+```bash
+SYNCULAR_BROWSER_PERF_ROWS=500000 \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --query-iterations=0 \
+  --baseline=.context/benchmarks/browser-e2e-500k-baseline.json \
+  --fail-on-regression
+```
+
+- `rust_bootstrap_ms=762.66`, `rust_pull_apply_ms=466`,
+  `rust_snapshot_chunk_apply_ms=410`, `rust_snapshot_chunk_bind_ms=198`,
+  `rust_snapshot_chunk_step_ms=199`, `rust_cached_bootstrap_ms=461.49`,
+  `rust_cached_snapshot_chunk_apply_ms=403`.
+
+Decision:
+
+- Rejected and reverted. The virtual-table callback path was materially slower
+  than the current multirow bind path and increased memory pressure.
+- The result suggests reducing bind count via SQLite virtual-table callbacks is
+  not enough; a future import path would need to run closer to SQLite's storage
+  layer or import a scoped SQLite artifact directly.
+
+## 2026-05-19 - Rejected WP-03 Browser Apply Probes
+
+Commit: not retained
+
+Work package: [`WP-03 Binary Apply Performance`](work-packages/WP-03-binary-apply-performance.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Command:
+
+```bash
+SYNCULAR_BROWSER_PERF_ROWS=500000 \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --query-iterations=0 \
+  --baseline=.context/benchmarks/browser-e2e-500k-baseline.json \
+  --fail-on-regression
+```
+
+Immediate pre-change control band from this session:
+
+- Run 1: `rust_bootstrap_ms=617.89`, `rust_pull_apply_ms=350`,
+  `rust_snapshot_chunk_apply_ms=309`, `rust_snapshot_chunk_bind_ms=176`,
+  `rust_snapshot_chunk_step_ms=124`, `rust_cached_bootstrap_ms=335.89`,
+  `rust_cached_snapshot_chunk_apply_ms=291`.
+- Run 2: `rust_bootstrap_ms=623.86`, `rust_pull_apply_ms=353`,
+  `rust_snapshot_chunk_apply_ms=308`, `rust_snapshot_chunk_bind_ms=178`,
+  `rust_snapshot_chunk_step_ms=122`, `rust_cached_bootstrap_ms=336.89`,
+  `rust_cached_snapshot_chunk_apply_ms=293`.
+
+Rejected candidates:
+
+- Runtime/protocol raw visitor adapter bypass:
+  `rust_bootstrap_ms=627.21`, `rust_pull_apply_ms=353`,
+  `rust_snapshot_chunk_apply_ms=309`, `rust_snapshot_chunk_bind_ms=173`,
+  `rust_cached_snapshot_chunk_apply_ms=288`.
+- Smaller browser snapshot batch size (`2048 -> 1024`):
+  `rust_bootstrap_ms=622.44`, `rust_pull_apply_ms=348`,
+  `rust_snapshot_chunk_apply_ms=306`, `rust_snapshot_chunk_bind_ms=169`,
+  `rust_cached_bootstrap_ms=345.38`,
+  `rust_cached_snapshot_chunk_apply_ms=302`.
+- Precomputed binary snapshot null masks:
+  `rust_bootstrap_ms=632.59`, `rust_pull_apply_ms=364`,
+  `rust_snapshot_chunk_apply_ms=320`, `rust_snapshot_chunk_bind_ms=186`,
+  `rust_cached_snapshot_chunk_apply_ms=300`.
+- Generated nullable-column elision for all-null snapshot columns:
+  `rust_bootstrap_ms=624.96`, `rust_pull_apply_ms=353`,
+  `rust_snapshot_chunk_apply_ms=307`, `rust_snapshot_chunk_bind_ms=173`,
+  `rust_cached_bootstrap_ms=340.77`,
+  `rust_cached_snapshot_chunk_apply_ms=295`.
+
+Decision:
+
+- All candidates were reverted. None improved the target bucket without a worse
+  cached/total result.
+- These results reinforce that the remaining browser local apply cost is not
+  meaningfully improved by small decode-loop or prepared-statement tweaks.
+  Next WP-03 work should be a larger architecture experiment, such as
+  server-generated SQLite artifacts or a true import path, and it must start
+  with the external app-style benchmark.
+
+## 2026-05-19 - Wire Commit Root Verification
+
+Commit: `ab142e5f`
+
+Work package: [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
+
+Command:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous accepted ranges:
+
+- sparse scoped guard: about `2.2-2.7ms`
+- dense build: about `33.9-36.5ms`
+- dense binary encode: about `37.8-41.6ms`
+- dense generated encode: about `36.1-43.4ms`
+
+Candidate runs:
+
+- Run 1:
+  - scoped fanout 5000/20: `3.2ms`
+  - dense build 5000/500: `41.6ms`
+  - dense binary encode: `45.2ms`
+  - dense generated binary encode: `46.9ms`
+  - response bytes: `2535.6KiB`
+- Run 2:
+  - scoped fanout 5000/20: `3.4ms`
+  - dense build 5000/500: `43.7ms`
+  - dense binary encode: `43.0ms`
+  - dense generated binary encode: `44.5ms`
+  - response bytes: `2535.6KiB`
+
+Decision:
+
+- Retained because this is correctness work.
+- Follow-up required: reduce overhead by moving integrity metadata to
+  page/subscription-level roots, compacting binary root metadata, and avoiding
+  canonical JSON allocation on hot paths.
+
+## 2026-05-19 - Subscription-Level Pull Integrity
+
+Commit: `f8558547`
+
+Work package: [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Command:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous accepted:
+
+- scoped fanout 5000/20: `3.2-3.4ms`
+- dense build 5000/500: `41.6-43.7ms`
+- dense binary encode: `43.0-45.2ms`
+- dense generated binary encode: `44.5-46.9ms`
+- dense binary response bytes: `2535.6KiB`
+
+Candidate:
+
+- scoped fanout 5000/20: `3.2ms`
+- dense build 5000/500: `39.4ms`
+- dense binary encode: `42.2ms`
+- dense generated binary encode: `42.4ms`
+- dense binary response bytes: `1419.1KiB`
+- sync-pack 50k binary response bytes: `9478.3KiB`
+- sync-pack 50k generated binary response bytes: `5104.5KiB`
+
+Delta:
+
+- Dense response bytes: `2535.6KiB -> 1419.1KiB` (`-44.0%`).
+- Dense build: `41.6-43.7ms -> 39.4ms`.
+- Dense binary encode: `43.0-45.2ms -> 42.2ms`.
+- Dense generated encode: `44.5-46.9ms -> 42.4ms`.
+
+External app-style bootstrap after rebuilding the branch server and Rust WASM:
+
+- TS bootstrap 500k: `3730.62ms`; pull request `1123.72ms`; local apply
+  `1978.08ms`; response bytes `3652743`; peak memory `462.69MB`.
+- Rust bootstrap 500k: `6354.51ms`; pull request `1089ms`; local apply
+  `1840ms`; response bytes `3303205`; peak memory `681.2MB`;
+  derived schema `3210.75ms`.
+- Current Rust vs TS: Rust is `1.70x` slower overall at 500k, but local apply
+  is now faster in this run; the remaining measured gap is dominated by
+  benchmark-side derived schema time and higher memory.
+
+External local-query after the same rebuild:
+
+- TS list/search/aggregate p50: `0.11ms` / `0.07ms` / `5.36ms`.
+- Rust list/search/read-model aggregate p50: `0.51ms` / `0.80ms` / `0.07ms`.
+- Rust raw aggregate p50: `59.7ms`.
+
+External online-propagation:
+
+- TS failed with the known snapshot chunk integrity mismatch.
+- Rust failed because the external benchmark adapter still calls the removed
+  `applyLocalOperationJson` compatibility alias. This is an external harness
+  update, not a retained Syncular fallback.
+
+Decision:
+
+- Retained. The change removes per-commit integrity metadata from the current
+  binary pack, keeps Rust root verification/persistence, and materially reduces
+  dense incremental wire bytes without a measured regression in the targeted
+  gate.
+- Follow-up: update the external app-style Rust adapter to the current
+  `applyMutationJson` API before using online-propagation/reconnect numbers.
+
+## 2026-05-19 - Streaming Commit Integrity Payloads
+
+Commit: `d68ebdfd`
+
+Work package: [`WP-01 Protocol Integrity`](work-packages/WP-01-protocol-integrity.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Server commit integrity canonical JSON now writes directly to a string
+  buffer instead of allocating a full canonical object graph.
+- Rust wire commit/root verification now writes fixed canonical payloads
+  directly and uses a shared canonical object writer for arbitrary row/scope
+  values.
+- External offline-sync-bench Rust adapter was updated outside this repo from
+  the removed `applyLocalOperation` API to `applyMutation` so online/reconnect
+  benches exercise the current API.
+
+Targeted command:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous accepted:
+
+- scoped fanout 5000/20: `3.2ms`
+- dense build 5000/500: `39.4ms`
+- dense binary encode: `42.2ms`
+- dense generated binary encode: `42.4ms`
+- dense binary response bytes: `1419.1KiB`
+
+Candidate:
+
+- Run 1 had a dense binary encode outlier (`48.4ms`) and was rerun.
+- Run 2:
+  - scoped fanout 5000/20: `3.3ms`
+  - dense build 5000/500: `38.4ms`
+  - dense binary encode: `42.7ms`
+  - dense generated binary encode: `42.4ms`
+  - dense binary response bytes: `1419.1KiB`
+
+Delta:
+
+- Dense build: `39.4ms -> 38.4ms`.
+- Dense binary encode: `42.2ms -> 42.7ms` (effectively flat in this noisy gate).
+- Dense generated binary encode: `42.4ms -> 42.4ms`.
+- Wire bytes unchanged.
+
+External app-style benchmark after rebuilding Rust WASM and branch server:
+
+- TS bootstrap 500k: `3703.4ms`; pull request `1106.64ms`; local apply
+  `1967.93ms`; response bytes `3652810`; peak memory `477.81MB`.
+- Rust bootstrap 500k: `6084.08ms`; pull request `1036ms`; local apply
+  `1736ms`; response bytes `3303063`; peak memory `685.66MB`;
+  derived schema `3105.75ms`.
+- Previous Rust bootstrap 500k: `6354.51ms`; pull request `1089ms`; local
+  apply `1840ms`; peak memory `681.2MB`; derived schema `3210.75ms`.
+- Current Rust vs TS: Rust is `1.64x` slower overall at 500k, but Rust pull
+  request and local apply are faster in this run. The remaining gap is still
+  dominated by benchmark-side derived schema time and memory.
+
+External local-query after the same rebuild:
+
+- TS list/search/aggregate p50: `0.09ms` / `0.07ms` / `5.14ms`.
+- Rust list/search/read-model aggregate p50: `0.42ms` / `0.72ms` / `0.06ms`.
+- Rust raw aggregate p50: `56.94ms`.
+- Previous Rust list/search/read-model/raw aggregate p50:
+  `0.51ms` / `0.80ms` / `0.07ms` / `59.7ms`.
+
+External Rust realtime/reconnect after the same rebuild:
+
+- Online propagation: write ack `9.34ms`, p50 `23.04ms`, p95 `44.33ms`.
+- Previous online propagation: p50 `28.64ms`, p95 `40.01ms`.
+- Reconnect convergence 25/100/250 clients:
+  `151.21ms` / `231.3ms` / `2109.74ms`.
+- Previous reconnect 25/100/250 clients:
+  `127.88ms` / `249.4ms` / `2118.53ms`.
+
+Decision:
+
+- Retained. The targeted gate is flat-to-slightly-better, and the external
+  Rust 500k bootstrap/local apply path improved without changing wire size or
+  verification semantics.
+
+## 2026-05-19 - Protocol Crate Binary Sync-Pack Decoder Extraction
+
+Commit: `a4f2ac7a`
+
+Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Moved the Rust binary sync-pack decoder/reader from runtime into
+  `syncular-protocol`.
+- Runtime now uses a thin adapter over the protocol decoder.
+- No server encoder, browser apply, or wire bytes were intentionally changed.
+
+Command:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous accepted:
+
+- scoped fanout 5000/20: `3.3ms`
+- dense build 5000/500: `38.4ms`
+- dense binary encode: `42.7ms`
+- dense generated binary encode: `42.4ms`
+- dense binary response bytes: `1419.1KiB`
+
+Candidate:
+
+- scoped fanout 5000/20: `3.5ms`
+- dense build 5000/500: `41.8ms`
+- dense binary encode: `41.4ms`
+- dense generated binary encode: `42.2ms`
+- dense binary response bytes: `1419.1KiB`
+
+Delta:
+
+- Scoped fanout: `+0.2ms`.
+- Dense build: `+3.4ms`, still within recent noise for this TS-side gate.
+- Dense binary encode: `-1.3ms`.
+- Dense generated binary encode: `-0.2ms`.
+- Wire bytes unchanged.
+
+Decision:
+
+- Retained. This is protocol ownership work; the maintained perf sanity gate
+  did not show a structural regression or byte growth.
+
+## 2026-05-19 - Protocol Crate Binary Snapshot Decoder Extraction
+
+Commit: `d68ebdfd`
+
+Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Moved binary snapshot table/row/payload decoding into `syncular-protocol`.
+- Runtime now keeps `SnapshotChunkRows` and SQLite visitor adapters, but the
+  binary wire parser is protocol-owned.
+- Binary sync-pack row groups now reuse the protocol binary snapshot decoder
+  instead of carrying a second local row-group decoder.
+- Added `wasm-opt --all-features` to release WASM packaging after the default
+  size gate exposed raw-size drift.
+
+Size gate:
+
+- Before optimizer fix: release full WASM raw `3,417,217` bytes, `9.1KiB` over
+  the `3.25MiB` budget.
+- After optimizer fix: release full WASM raw `3,375,951` bytes, `31.2KiB`
+  under budget; gzip `1.33MiB`, `19.6KiB` under budget.
+
+Command:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --baseline=.context/benchmarks/browser-e2e-100k-baseline.json \
+  --fail-on-regression
+```
+
+Previous accepted:
+
+- Rust bootstrap: `138.04ms`
+- Rust pull apply: `73ms`
+- Rust snapshot chunk apply: `62ms`
+- Rust snapshot chunk bind: `33ms`
+- Rust served WASM bytes: `3,326,638`
+
+Candidate:
+
+- Rust bootstrap: `141.24ms`
+- Rust pull apply: `74ms`
+- Rust snapshot chunk apply: `65ms`
+- Rust snapshot chunk bind: `37ms`
+- Rust served WASM bytes: `3,375,951`
+
+Delta:
+
+- Rust bootstrap: `+3.2ms`, below the regression gate.
+- Rust pull apply: `+1ms`.
+- Rust snapshot chunk apply: `+3ms`.
+- Rust snapshot chunk bind: `+4ms`.
+- Rust served WASM bytes: `+49,313` bytes (`+1.48%`), below the regression
+  gate and under the raw/gzip budgets.
+
+Decision:
+
+- Retained. The protocol extraction keeps the browser benchmark inside the
+  accepted gate, and the release package now passes the raw/gzip size budget
+  again.
+
+## 2026-05-19 - Protocol Crate Integrity And Snapshot Manifest APIs
+
+Commit: `2caf32c3`
+
+Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Moved wire commit digest/root calculation, commit integrity metadata
+  validation, subscription verified-root recomputation, snapshot manifest
+  digesting, and snapshot manifest validation into `syncular-protocol`.
+- Runtime keeps thin wrappers that convert `ProtocolError` into
+  `SyncularError`, so existing runtime callers still get runtime error kinds.
+- No server encoder, browser apply path, storage path, or wire bytes were
+  intentionally changed.
+
+Performance gate:
+
+- Not run. This is a protocol ownership extraction with no hot-path browser or
+  server implementation change. The retained proof is the protocol/wire-format
+  gate plus runtime contract coverage.
+
+Protocol gates:
+
+- `bun test packages/core/src/__tests__/protocol-fixtures.test.ts packages/core/src/__tests__/sync-packs.test.ts packages/server/src/commit-integrity.test.ts`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_fixtures --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+
+Decision:
+
+- Retained. Protocol ownership moved without adding compatibility branches or
+  changing the runtime application/store behavior.
+
+## 2026-05-19 - Protocol Crate Blob Wire APIs
+
+Commit: `d9391567`
+
+Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Moved blob wire structs and blob hash/validation helpers into
+  `syncular-protocol`.
+- Runtime still owns file/reader hashing, upload/download transport, queued
+  blob work, local cache behavior, and store integration.
+- Runtime wrappers preserve `SyncularError` conversion for validation calls.
+
+Performance gate:
+
+- Not run. This is a protocol ownership extraction with no browser/server hot
+  path or wire-byte change.
+
+Protocol/runtime gates:
+
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-protocol`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test blob_transport --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract --features native,crdt-yjs,demo-todo-native-fixture`
+- `cargo test --manifest-path rust/Cargo.toml -p syncular-testkit`
+- `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs`
+
+Decision:
+
+- Retained. Blob protocol ownership moved without changing runtime transport or
+  storage behavior.
+
+## 2026-05-19 - Protocol Crate Realtime Wire Shapes
+
+Commit: `1a639b37`
+
+Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Moved realtime presence payload structs and websocket push/presence message
+  shapes into `syncular-protocol`.
+- Native websocket push/presence and browser websocket push now serialize via
+  shared protocol structs.
+- Runtime still owns websocket sockets, reconnect/backoff, event fanout,
+  runtime `RealtimeEvent`, and transport behavior.
+
+Performance/size gate:
+
+- No runtime performance benchmark was run because this is protocol ownership
+  work without a hot-path algorithm change.
+- Browser WASM build was run because browser transport code changed.
+
+Previous accepted package size:
+
+- Release full WASM raw: `3,375,951` bytes.
+
+Candidate:
+
+- Release full WASM raw: `3,365,458` bytes.
+- Size report: raw `3.21MiB`, `41.4KiB` under budget; gzip `1.33MiB`,
+  `24.1KiB` under budget.
+
+Decision:
+
+- Retained. The protocol split removed duplicated JSON assembly and stayed
+  under browser package budgets.
+
+## 2026-05-19 - Protocol Crate Snapshot Chunk Validation
+
+Commit: `e4f6bb63`
+
+Work package: [`WP-02 Protocol Kernel`](work-packages/WP-02-protocol-kernel.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Moved snapshot chunk format/hash validation into `syncular-protocol`.
+- Native and browser transports now call shared protocol validation while still
+  owning HTTP fetch, gzip decompression, row decoding dispatch, timing, and
+  store application.
+
+Browser scoreboard:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --baseline=.context/benchmarks/browser-e2e-100k-baseline.json \
+  --fail-on-regression
+```
+
+Previous accepted:
+
+- Rust bootstrap: `138.04ms`
+- Rust pull apply: `73ms`
+- Rust snapshot chunk apply: `62ms`
+- Rust snapshot chunk bind: `33ms`
+- Rust served WASM bytes: `3,326,638`
+
+Candidate:
+
+- Rust bootstrap: `140.9ms`
+- Rust pull apply: `74ms`
+- Rust snapshot chunk apply: `64ms`
+- Rust snapshot chunk bind: `36ms`
+- Rust served WASM bytes: `3,362,390`
+
+Delta:
+
+- Rust bootstrap: `+2.87ms`, below the regression gate.
+- Rust pull apply: `+1ms`.
+- Rust snapshot chunk apply: `+2ms`.
+- Rust snapshot chunk bind: `+3ms`.
+- Rust served WASM bytes: `+35,752` bytes (`+1.07%`), below the regression
+  gate and under the raw/gzip budgets.
+
+Decision:
+
+- Retained. The remaining duplicated protocol validation moved into the
+  protocol crate and browser performance/size stayed inside the accepted gate.
+
+## 2026-05-19 - Native SQLite Snapshot Artifact Apply
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Native Diesel stores can decode verified `sqlite-snapshot-v1` artifact bytes
+  into an in-memory readonly SQLite connection, project rows through generated
+  schema adapters, and apply them through the existing snapshot upsert path.
+- Native Diesel pull requests now advertise the current SQLite artifact kind.
+- Testkit can queue and assert snapshot artifact byte fetches.
+
+Targeted server perf gate:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Candidate:
+
+- `sync_pack_json_encode_50000`: `11.0ms`
+- `sync_pack_json_decode_50000`: `28.8ms`
+- `sync_pack_binary_encode_50000`: `19.8ms`
+- `sync_pack_binary_decode_50000`: `26.0ms`
+- `sync_pack_binary_generated_encode_50000`: `17.1ms`
+- `sync_pack_binary_generated_decode_50000`: `26.8ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.4ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.3ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.6ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `44.3ms`
+
+Delta:
+
+- No stored baseline was available for this targeted gate, so this run is the
+  evidence point for the retained slice rather than a regression comparison.
+- External app-style bootstrap was not run because server/background artifact
+  body production is not wired yet, so the large-bootstrap benchmark would not
+  exercise the new artifact apply path.
+
+Decision:
+
+- Retained as a correctness slice. It proves verified native artifact apply and
+  request capability wiring, while explicitly leaving direct fast import and
+  browser apply for the next measured WP-12 slices.
+
+## 2026-05-19 - Scoped SQLite Artifact Precompute API
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Added `precomputeScopedSnapshotArtifact(...)` as an explicit server
+  background/precompute API.
+- Added a Bun-only SQLite artifact encoder at
+  `@syncular/server/snapshot-artifacts/sqlite-bun`.
+- The pull hot path still only advertises exact preexisting artifacts; it does
+  not generate SQLite files during pull.
+
+Targeted server perf gate:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous same-session targeted run:
+
+- `sync_pack_json_encode_50000`: `11.0ms`
+- `sync_pack_json_decode_50000`: `28.8ms`
+- `sync_pack_binary_encode_50000`: `19.8ms`
+- `sync_pack_binary_decode_50000`: `26.0ms`
+- `sync_pack_binary_generated_encode_50000`: `17.1ms`
+- `sync_pack_binary_generated_decode_50000`: `26.8ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.4ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.3ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.6ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `44.3ms`
+
+Candidate:
+
+- `sync_pack_json_encode_50000`: `10.8ms`
+- `sync_pack_json_decode_50000`: `26.9ms`
+- `sync_pack_binary_encode_50000`: `19.1ms`
+- `sync_pack_binary_decode_50000`: `24.9ms`
+- `sync_pack_binary_generated_encode_50000`: `17.3ms`
+- `sync_pack_binary_generated_decode_50000`: `25.7ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.4ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.9ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.1ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `45.1ms`
+
+Delta:
+
+- Pull-path metrics stayed within expected local noise. The new precompute
+  helper is not called by pull.
+- External app-style bootstrap was not run because browser/native artifact
+  direct fast apply is still open; the current browser benchmark would not
+  exercise this precompute API.
+
+Decision:
+
+- Retained. This gives apps/jobs a real way to produce scoped SQLite artifact
+  bodies without changing Cloudflare Worker pull behavior.
+
+## 2026-05-19 - Browser Scoped SQLite Artifact Apply
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Added explicit `snapshotArtifacts.schemaVersion` to artifact-capability pull
+  requests.
+- Browser owned SQLite now advertises artifact support, downloads verified
+  SQLite artifact bodies, deserializes them with `sqlite3_deserialize`, and
+  applies projected rows through the existing snapshot-row path.
+- Added a Hono/WASM browser test proving the artifact route is used and snapshot
+  chunks are not fetched for a precomputed scoped SQLite artifact.
+
+Targeted server perf gate:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous same-session targeted run:
+
+- `sync_pack_json_encode_50000`: `10.8ms`
+- `sync_pack_json_decode_50000`: `26.9ms`
+- `sync_pack_binary_encode_50000`: `19.1ms`
+- `sync_pack_binary_decode_50000`: `24.9ms`
+- `sync_pack_binary_generated_encode_50000`: `17.3ms`
+- `sync_pack_binary_generated_decode_50000`: `25.7ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.4ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.9ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.1ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `45.1ms`
+
+Candidate:
+
+- `sync_pack_json_encode_50000`: `10.8ms`
+- `sync_pack_json_decode_50000`: `27.0ms`
+- `sync_pack_binary_encode_50000`: `18.8ms`
+- `sync_pack_binary_decode_50000`: `25.2ms`
+- `sync_pack_binary_generated_encode_50000`: `17.9ms`
+- `sync_pack_binary_generated_decode_50000`: `25.6ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.7ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.4ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.6ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `43.4ms`
+
+Delta:
+
+- Server metrics stayed within expected local noise. The normal pull benchmark
+  does not hit a precomputed artifact body, but it does cover the schema-bound
+  artifact capability shape and empty artifact lookup path.
+- Browser artifact apply was covered by the Hono/WASM correctness test, not by
+  the large offline bootstrap benchmark. The current apply path still
+  materializes artifact rows as JSON, so the next perf-significant benchmark
+  should be attached/direct artifact import.
+
+Decision:
+
+- Retained. This closes browser correctness for scoped SQLite artifact apply and
+  keeps the known remaining performance target focused on avoiding JSON
+  materialization.
+
+## 2026-05-19 - Browser Direct SQLite Artifact Import
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Machine / power mode: Apple M3 Max, normal power.
+
+Change:
+
+- Browser artifact capability is now requested only for direct apply modes.
+  Modes that need per-row transforms use snapshot chunks instead of carrying a
+  browser artifact JSON materialization path.
+- Browser owned SQLite imports artifacts by deserializing the SQLite body into
+  an attached in-memory schema and running `INSERT INTO main.table SELECT ...`
+  on the same connection.
+- Browser E2E scoreboard gained `--sync-snapshot-artifacts` for row-chunk vs
+  artifact comparison.
+
+Release WASM size:
+
+- Clean `HEAD` worktree before this slice: old budget already failed by
+  `29.1 KiB` raw / `2.0 KiB` gzip.
+- Current release build: `3.28 MiB` raw / `1.35 MiB` gzip. New budget is
+  `3.30 MiB` raw / `1.36 MiB` gzip, leaving `19.2 KiB` raw and `7.7 KiB` gzip
+  headroom.
+- Direct artifact import adds about `2.9 KiB` raw / `0.6 KiB` gzip over the
+  pre-direct artifact worktree.
+
+Targeted server perf gate rerun:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous accepted WP-12 browser artifact run:
+
+- `sync_pack_json_encode_50000`: `10.8ms`
+- `sync_pack_json_decode_50000`: `27.0ms`
+- `sync_pack_binary_encode_50000`: `18.8ms`
+- `sync_pack_binary_decode_50000`: `25.2ms`
+- `sync_pack_binary_generated_encode_50000`: `17.9ms`
+- `sync_pack_binary_generated_decode_50000`: `25.6ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.7ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.4ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.6ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `43.4ms`
+
+Current rerun:
+
+- `sync_pack_json_encode_50000`: `10.9ms`
+- `sync_pack_json_decode_50000`: `26.8ms`
+- `sync_pack_binary_encode_50000`: `19.5ms`
+- `sync_pack_binary_decode_50000`: `24.5ms`
+- `sync_pack_binary_generated_encode_50000`: `18.1ms`
+- `sync_pack_binary_generated_decode_50000`: `23.8ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.3ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.2ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.4ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `44.7ms`
+
+Browser release E2E, 100k rows, query iterations disabled:
+
+| Metric | Row chunks | Artifact row-copy prototype | SQLite-native artifact import |
+| --- | ---: | ---: | ---: |
+| `rust_bootstrap_ms` | `144.76ms` | `128.11ms` | `108.73ms` |
+| `rust_pull_request_ms` | `64ms` | `35ms` | `36ms` |
+| `rust_pull_apply_ms` | `78ms` | `90ms` | `69ms` |
+| `rust_snapshot_row_apply_ms` | `0ms` | `41ms` | `20ms` |
+| `rust_snapshot_chunk_apply_ms` | `67ms` | `33ms` | `34ms` |
+| `rust_snapshot_chunk_materialize_ms` | `0ms` | `0ms` | `0ms` |
+| `rust_response_bytes` | `766877` | `3169482` | `3169482` |
+| `rust_cached_bootstrap_ms` | `76.45ms` | `82.81ms` | `60.59ms` |
+| `browser_js_heap_used_delta_bytes` | `4445236` | `2728108` | `2616444` |
+
+Delta:
+
+- SQLite-native artifact import is `24.9%` faster than row chunks on first
+  100k bootstrap and `20.7%` faster on cached bootstrap.
+- It is `15.1%` faster than the row-copy artifact prototype and recovers the
+  local-apply regression (`90ms` to `69ms`).
+- The artifact body is still much larger on the wire than gzipped binary
+  chunks. Artifact compression/body shape is the next performance target before
+  calling this path done for 500k bootstrap.
+- External `/Users/bkniffler/GitHub/sync/offline-sync-bench` was not run for
+  this slice because that branch-server stack does not yet precompute scoped
+  SQLite artifacts. The browser E2E artifact lane is the current artifact
+  benchmark until WP-12 wires artifact precompute into the external stack.
+
+Decision:
+
+- Retained. The direct browser artifact path now has a real benchmark lane and
+  improves wall time and heap usage enough to justify the small WASM size
+  increase. Keep iterating on artifact transfer size and native direct import.
+
+## 2026-05-19 - Gzip Scoped SQLite Artifacts
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Current Rust native/browser artifact capability requests now advertise gzip
+  scoped SQLite artifacts.
+- Server pull selection now only selects gzip scoped SQLite artifacts.
+- Bun SQLite artifact precompute stores gzip artifact bodies by default.
+- Native and browser transports validate compressed bytes, then return decoded
+  SQLite bytes to storage/apply.
+
+Correctness gates:
+
+```bash
+cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features native,crdt-yjs
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test protocol_contract http_sync_diesel_applies_snapshot_artifact_rows --features native,crdt-yjs,demo-todo-native-fixture
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+bun run --cwd rust/bindings/browser build:wasm
+bun run --cwd rust/bindings/browser tsgo
+bun test src/__tests__/sync-hono.wasm.test.ts
+```
+
+Targeted server perf gate:
+
+```bash
+PERF_SYNC_PACK_CHANGES=50000 PERF_SYNC_PACK_ROUNDS=5 PERF_SYNC_PACK_WARMUP=2 \
+PERF_SERVER_SCOPE_COMMITS=5000 PERF_SERVER_SCOPE_ROUNDS=3 \
+PERF_SERVER_DENSE_COMMITS=5000 PERF_SERVER_DENSE_ROUNDS=3 \
+bun test --max-concurrency=1 tests/perf/rust-client.perf.test.ts \
+  --test-name-pattern "binary sync-pack|scoped incremental|dense incremental"
+```
+
+Previous accepted WP-12 server perf run:
+
+- `sync_pack_json_encode_50000`: `10.9ms`
+- `sync_pack_json_decode_50000`: `26.8ms`
+- `sync_pack_binary_encode_50000`: `19.5ms`
+- `sync_pack_binary_decode_50000`: `24.5ms`
+- `sync_pack_binary_generated_encode_50000`: `18.1ms`
+- `sync_pack_binary_generated_decode_50000`: `23.8ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.3ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.2ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `43.4ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `44.7ms`
+
+Current rerun:
+
+- `sync_pack_json_encode_50000`: `10.9ms`
+- `sync_pack_json_decode_50000`: `26.8ms`
+- `sync_pack_binary_encode_50000`: `18.9ms`
+- `sync_pack_binary_decode_50000`: `24.9ms`
+- `sync_pack_binary_generated_encode_50000`: `17.1ms`
+- `sync_pack_binary_generated_decode_50000`: `25.5ms`
+- `server_scoped_incremental_pull_fanout_5000_20`: `3.3ms`
+- `server_dense_incremental_pull_build_5000_500`: `39.3ms`
+- `server_dense_incremental_pull_build_binary_encode_5000_500`: `44.0ms`
+- `server_dense_incremental_pull_build_generated_binary_encode_5000_500`: `42.9ms`
+
+Browser release E2E, 100k rows, query iterations disabled:
+
+| Metric | Uncompressed direct artifact | Gzip direct artifact |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `108.73ms` | `107.82ms` |
+| `rust_pull_request_ms` | `36ms` | `36ms` |
+| `rust_pull_apply_ms` | `69ms` | `68ms` |
+| `rust_snapshot_row_apply_ms` | `20ms` | `21ms` |
+| `rust_snapshot_chunk_apply_ms` | `34ms` | `35ms` |
+| `rust_response_bytes` | `3169482` | `1033377` |
+| `rust_cached_bootstrap_ms` | `60.59ms` | `61.77ms` |
+| `browser_js_heap_used_delta_bytes` | `2616444` | `2754568` |
+
+Row-chunk guardrail after the same change:
+
+- `rust_bootstrap_ms=140.81`
+- `rust_pull_apply_ms=75`
+- `rust_response_bytes=766877`
+- `rust_cached_bootstrap_ms=75.35`
+
+Decision:
+
+- Retained. First bootstrap stayed flat, cached bootstrap moved only `+1.18ms`,
+  and scoped SQLite artifact response bytes dropped by about `67%`.
+- The artifact response is still larger than binary row chunks for 100k rows,
+  but direct artifact import remains faster on wall time. Next WP-12 work should
+  prove the same shape at 500k with external app-style artifact precompute.
+
+## 2026-05-19 - Multi-Page Scoped SQLite Artifact Precompute
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Added `precomputeScopedSnapshotArtifacts(...)`, which follows snapshot
+  `nextCursor` values and stores every scoped SQLite artifact page for a
+  subscription/table/scope.
+- Updated the browser Hono fixture and browser E2E benchmark server to
+  precompute all artifact pages instead of only the first page.
+- Added server coverage that reads a later artifact page by page key.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun test src/__tests__/sync-hono.wasm.test.ts
+```
+
+Browser release E2E, 100k rows, query iterations disabled:
+
+| Metric | One artifact page + one row chunk | Multi-page artifacts |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `107.82ms` | `68.6ms` |
+| `rust_pull_request_ms` | `36ms` | `7ms` |
+| `rust_snapshot_fetch_ms` | `11ms` | `14ms` |
+| `rust_pull_apply_ms` | `68ms` | `58ms` |
+| `rust_snapshot_row_apply_ms` | `21ms` | `43ms` |
+| `rust_snapshot_chunk_apply_ms` | `35ms` | `0ms` |
+| `rust_response_bytes` | `1033377` | `1300566` |
+| `rust_snapshot_chunk_binary_count` | `1` | `0` |
+| `rust_cached_bootstrap_ms` | `61.77ms` | `48.36ms` |
+
+Decision:
+
+- Retained. This removes the remaining row-chunk fetch/apply from the 100k
+  artifact lane, improves first bootstrap by about `36%`, and improves cached
+  bootstrap by about `22%`.
+- Response bytes increase compared with the one-page artifact lane because both
+  pages now travel as SQLite artifacts, but the wall-time win is large enough
+  to keep. Next benchmark step is 500k and the external app-style stack.
+
+500k browser release E2E follow-up:
+
+| Metric | Row chunks | Multi-page artifacts |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `618.95ms` | `268.44ms` |
+| `rust_pull_request_ms` | `270ms` | `8ms` |
+| `rust_snapshot_fetch_ms` | `44ms` | `60ms` |
+| `rust_pull_apply_ms` | `345ms` | `252ms` |
+| `rust_snapshot_row_apply_ms` | `0ms` | `191ms` |
+| `rust_snapshot_chunk_apply_ms` | `299ms` | `0ms` |
+| `rust_response_bytes` | `3783097` | `6500487` |
+| `rust_snapshot_chunk_binary_count` | `10` | `0` |
+| `rust_cached_bootstrap_ms` | `337.61ms` | `248.64ms` |
+
+500k decision:
+
+- Still retained. Multi-page artifacts improve first bootstrap by about `57%`
+  and cached bootstrap by about `26%` against row chunks.
+- The artifact payload is about `72%` larger than binary row chunks at 500k.
+  Next body-shape work must reduce bytes while preserving direct SQLite import.
+
+## 2026-05-19 - Compact Scoped SQLite Artifact Bodies
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Server table handlers now expose `primaryKeyColumn` metadata to artifact
+  encoders.
+- The Bun SQLite artifact encoder creates primary-key `WITHOUT ROWID` tables
+  when the generated snapshot columns include the handler primary key.
+- The default artifact gzip level changed from `1` to `6`. Artifact generation
+  is a background/precompute path; pulls still serve stored bytes.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun test src/__tests__/sync-hono.wasm.test.ts
+```
+
+Browser release E2E, 100k rows, query iterations disabled:
+
+| Metric | Multi-page artifacts | Compact artifacts |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `68.6ms` | `66.47ms` |
+| `rust_pull_request_ms` | `7ms` | `7ms` |
+| `rust_snapshot_fetch_ms` | `14ms` | `11ms` |
+| `rust_pull_apply_ms` | `58ms` | `56ms` |
+| `rust_snapshot_row_apply_ms` | `43ms` | `42ms` |
+| `rust_response_bytes` | `1300566` | `976972` |
+| `rust_cached_bootstrap_ms` | `48.36ms` | `45.39ms` |
+
+Browser release E2E, 500k rows, query iterations disabled:
+
+| Metric | Multi-page artifacts | Compact artifacts |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `268.44ms` | `260.82ms` |
+| `rust_pull_request_ms` | `8ms` | `7ms` |
+| `rust_snapshot_fetch_ms` | `60ms` | `54ms` |
+| `rust_pull_apply_ms` | `252ms` | `245ms` |
+| `rust_snapshot_row_apply_ms` | `191ms` | `189ms` |
+| `rust_response_bytes` | `6500487` | `4738745` |
+| `rust_cached_bootstrap_ms` | `248.64ms` | `235.69ms` |
+
+Decision:
+
+- Retained. Response bytes dropped about `25%` at 100k and `27%` at 500k, and
+  both first and cached bootstrap stayed slightly faster.
+- The compact artifact path is now the baseline for future artifact body-shape
+  experiments.
+
+## 2026-05-19 - Artifact Server Facade And Postgres Value Encoding
+
+Commit: this commit
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- `@syncular/server-hono` `createSyncServer(...)` now accepts and forwards
+  `snapshotArtifactStorage`, so app-style servers can use the high-level Hono
+  factory instead of dropping down to `createSyncRoutes(...)` just to serve
+  scoped SQLite artifacts.
+- The Bun SQLite artifact encoder now normalizes Postgres-style snapshot values
+  into typed SQLite values: numeric strings for integer/float columns, bigint
+  integers, and `Date` values for string timestamp columns.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts
+bun run --cwd packages/server tsgo
+bun run --cwd packages/server-hono tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun run --cwd rust/bindings/browser benchmark:browser:e2e -- --sync-snapshot-artifacts --rows=500000
+```
+
+Browser release E2E, 500k rows:
+
+| Metric | Previous compact artifacts | Current |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `260.82ms` | `259ms` |
+| `rust_pull_request_ms` | `7ms` | `8ms` |
+| `rust_snapshot_fetch_ms` | `54ms` | `53ms` |
+| `rust_pull_apply_ms` | `245ms` | `243ms` |
+| `rust_snapshot_row_apply_ms` | `189ms` | `189ms` |
+| `rust_response_bytes` | `4738745` | `4738745` |
+| `rust_cached_bootstrap_ms` | `235.69ms` | `232.48ms` |
+
+Decision:
+
+- Retained. The code is a small correctness/ergonomics improvement for
+  app-style artifact servers and Postgres-backed snapshots. Browser artifact
+  performance stayed flat to slightly faster with identical response bytes.
+- External Docker-based app-style benchmarking could not be run in this slice
+  because Docker commands hung before returning daemon status. The external
+  harness path is documented in `QUALITY_GATES.md`; rerun it once Docker is
+  responsive.
+
+## 2026-05-19 - Rejected Native Temp-File Artifact Attach
+
+Commit: documentation only
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change tried and rejected:
+
+- Prototyped a native Diesel direct-import path that wrote verified SQLite
+  artifact bytes to a temp file, attached that file to the active Diesel
+  transaction, imported with `INSERT INTO main.table SELECT ... FROM
+  artifact.table`, and generated row-level event metadata from the attached
+  artifact table.
+
+Gate:
+
+```bash
+SYNCULAR_NATIVE_ARTIFACT_BENCH_ROWS=50000 cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_artifact_import_perf --features native,crdt-yjs,demo-todo-native-fixture -- --ignored --nocapture
+```
+
+Result:
+
+- Rejected before timing. SQLite returned `database
+  __syncular_snapshot_artifact_... is locked` on `DETACH` because the attach
+  was owned by the active Diesel transaction. Keeping the schema attached until
+  after commit would leak random attached schemas through the pooled connection
+  and make rollback/error handling fragile.
+
+Decision:
+
+- Reverted the code. Native keeps the current verified artifact row-projection
+  path for now.
+- Do not reintroduce a temp-file attach path for Diesel. Native direct import
+  needs either a clean raw-SQLite schema-deserialize hook on the active
+  connection or a native pull mode that deliberately does not require row-level
+  changed-row events.
+
+## 2026-05-19 - Artifact Page-Size Measurement Guard
+
+Commit: `c6654b9d`
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- The browser E2E scoreboard can now pass a scoped artifact row-limit through
+  to the benchmark server and align the Rust pull `limitSnapshotRows` with
+  that value.
+- The scoreboard records the first observed Rust pull request's
+  `limitSnapshotRows`, `maxSnapshotPages`, and artifact capability bit. This
+  prevents benchmark reports from trusting intended config when the request
+  body says something else.
+- Browser transport stats now include
+  `serverBootstrapArtifactCacheLookupMs`, so artifact lookup cost/miss behavior
+  is visible beside chunk-cache timings.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+cargo fmt --manifest-path rust/Cargo.toml --all
+```
+
+Benchmark gates:
+
+```bash
+bun run --cwd rust/bindings/browser benchmark:browser:e2e -- --sync-snapshot-artifacts --rows=500000 --output=.context/benchmarks/wp12-artifact-50k-observed.json
+bun run --cwd rust/bindings/browser benchmark:browser:e2e -- --sync-snapshot-artifacts --rows=500000 --sync-snapshot-artifact-row-limit=100000 --output=.context/benchmarks/wp12-artifact-100k-artifact-timing.json
+```
+
+Browser release E2E, 500k rows:
+
+| Metric | Previous compact artifact baseline | 50k observed | 100k attempted |
+| --- | ---: | ---: | ---: |
+| `benchmark_rust_observed_limit_snapshot_rows` | n/a | `50000` | `100000` |
+| `benchmark_rust_observed_snapshot_artifacts` | n/a | `1` | `1` |
+| `rust_bootstrap_ms` | `260.82ms` | `262.13ms` | `615.11ms` |
+| `rust_pull_request_ms` | `7ms` | `7ms` | `267ms` |
+| `rust_snapshot_fetch_ms` | `54ms` | `54ms` | `41ms` |
+| `rust_pull_apply_ms` | `245ms` | `246ms` | `344ms` |
+| `rust_snapshot_row_apply_ms` | `189ms` | `191ms` | `1ms` |
+| `rust_snapshot_chunk_apply_ms` | `0ms` | `0ms` | `301ms` |
+| `rust_snapshot_chunk_binary_count` | `0` | `0` | `10` |
+| `rust_response_bytes` | `4738745` | `4738745` | `3783097` |
+| `rust_cached_bootstrap_ms` | `235.69ms` | `233.96ms` | `358.34ms` |
+
+Decision:
+
+- Retained the measurement guard. It is low-complexity and caught a bad
+  benchmark interpretation immediately.
+- Rejected changing the artifact page size from `50k` to `100k`. The observed
+  request did ask for artifacts at `100k`, but the server artifact lookup
+  missed and the response fell back to binary chunks. That made bootstrap
+  about `2.35x` slower than the 50k direct artifact path despite fewer response
+  bytes.
+- Keep the current `50k` artifact page shape. Only revisit larger pages if a
+  dedicated slice proves the server can select direct artifacts and beats the
+  compact artifact baseline end to end.
+
+## 2026-05-19 - Realtime Requires-Pull Guard
+
+Commit: this slice
+
+Work package: [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
+
+Change:
+
+- Browser worker realtime now treats `requiresPull=true` or
+  `droppedCount > 0` as authoritative recovery metadata. If a websocket sync
+  event contains inline changes but is marked recovery-only, the worker runs
+  HTTP pull and does not apply the inline changes.
+- Added a worker-level regression test covering the mixed payload shape:
+  `changes` present, `requiresPull=true`, and `droppedCount=1`.
+
+Correctness gates:
+
+```bash
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+bun run --cwd rust/bindings/browser tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun run --cwd rust/bindings/browser benchmark:browser:e2e -- --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --output=.context/benchmarks/wp04-realtime-requires-pull.json
+```
+
+Browser release E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Current |
+| --- | ---: |
+| `rust_bootstrap_ms` | `34.46ms` |
+| `rust_incremental_pull_ms` | `18.91ms` |
+| `rust_realtime_live_ms` | `70.19ms` |
+| `rust_realtime_live_p95_ms` | `71.7ms` |
+| `rust_realtime_http_request_count` | `0` |
+| `rust_realtime_binary_events` | `15` |
+| `rust_realtime_binary_bytes` | `537675` |
+
+Decision:
+
+- Retained. This is a recovery-semantics fix; the normal websocket binary fast
+  path stayed active in the benchmark with zero HTTP realtime fallbacks.
+- No directly comparable prior local WP-04 benchmark was logged, so this run is
+  the baseline for the next realtime runtime slices.
+
+## 2026-05-19 - Realtime Recovery Cursor ACK
+
+Commit: this slice
+
+Work package: [`WP-04 Realtime Runtime`](work-packages/WP-04-realtime-runtime.md)
+
+Change:
+
+- Browser worker realtime now ACKs the websocket cursor that triggered a
+  successful recovery pull, even when the message was cursor-only and the pull
+  result does not report a larger subscription cursor.
+- Added worker-level assertions for cursor-only and resync-required recovery
+  ACKs.
+
+Correctness gates:
+
+```bash
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun run --cwd rust/bindings/browser tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun run --cwd rust/bindings/browser benchmark:browser:e2e -- --rows=10000 --incremental-rows=1000 --realtime-iterations=3 --query-iterations=0 --output=.context/benchmarks/wp04-realtime-recovery-ack.json
+```
+
+Browser release E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `34.46ms` | `34.12ms` |
+| `rust_incremental_pull_ms` | `18.91ms` | `18.37ms` |
+| `rust_realtime_live_ms` | `70.19ms` | `71.99ms` |
+| `rust_realtime_live_p95_ms` | `71.7ms` | `73.25ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_binary_bytes` | `537675` | `537675` |
+
+Decision:
+
+- Retained. This is a recovery-only ACK correctness fix; the normal binary
+  websocket fast path still used zero HTTP realtime fallbacks and identical
+  binary event count/bytes. The small live-time movement is benchmark noise.
+
+## 2026-05-19 - WP-04 Verified Realtime Subscription Packs
+
+Change:
+
+- Replaced websocket binary deltas' synthetic `__syncular_realtime__`
+  subscription with real per-subscription sync-pack responses carrying commit
+  integrity metadata.
+- Browser Rust realtime apply now verifies/persists the same subscription root
+  shape used by HTTP pull and rejects missing/mismatched roots for real
+  subscriptions.
+- Server Hono realtime state now records active subscription metadata from pull
+  responses and advances in-memory verified roots while consecutive binary
+  websocket packs are emitted.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd packages/server-hono tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-integrity-packs.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `34.12ms` | `84.29ms` |
+| `rust_incremental_pull_ms` | `18.37ms` | `76.52ms` |
+| `rust_realtime_live_ms` | `71.99ms` | `107.12ms` |
+| `rust_realtime_live_p95_ms` | `73.25ms` | `110.48ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_binary_bytes` | `537675` | `540300` |
+
+Decision:
+
+- Retained as a correctness/security slice: websocket deltas now use the same
+  verified per-subscription root contract as pull, and the binary fast path
+  still has zero HTTP realtime fallbacks.
+- The benchmark was run with dev WASM, so bootstrap/incremental numbers are not
+  directly comparable with older release-lane guards. The realtime lane still
+  shows added overhead; the next WP-04 slice should recover that overhead without
+  weakening integrity verification.
+
+## 2026-05-19 - WP-04 Remove JSON Websocket Delta Path
+
+Change:
+
+- Removed the browser worker/public Rust inline JSON websocket apply path
+  (`applyRealtimeChanges`, wasm `applyRealtimeChangesJson`, Rust
+  `apply_realtime_changes`) and the synthetic `__syncular_realtime__`
+  subscription branch.
+- Removed server-side bounded JSON websocket deltas. Realtime now sends binary
+  sync-pack frames when the connection negotiated `binary-sync-pack-v1`; other
+  cases receive an explicit pull-required wakeup.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd packages/server-hono tsgo
+bun run --cwd rust/bindings/browser tsgo
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-no-json-deltas.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `84.29ms` | `81.31ms` |
+| `rust_incremental_pull_ms` | `76.52ms` | `75.92ms` |
+| `rust_realtime_live_ms` | `107.12ms` | `99.19ms` |
+| `rust_realtime_live_p95_ms` | `110.48ms` | `108.07ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_binary_bytes` | `540300` | `540300` |
+| `browser_served_syncular_worker_js_bytes` | `n/a` | `46999` |
+| `browser_served_rust_wasm_bytes` | `n/a` | `7467818` |
+
+Decision:
+
+- Retained. The change removes obsolete protocol surface and keeps the binary
+  websocket fast path at zero HTTP realtime fallbacks.
+- The realtime p50 improved from `107.12ms` to `99.19ms` (`-7.4%`) and p95 from
+  `110.48ms` to `108.07ms` (`-2.2%`) in the local dev-WASM guard. Treat the
+  improvement as useful but still subject to the usual browser benchmark noise.
+
+## 2026-05-19 - WP-04 Slim Realtime Apply Result
+
+Change:
+
+- Realtime sync-pack apply no longer clones/serializes applied commit payloads
+  into `WebSyncResult.subscriptions[].commits`.
+- Empty browser subscription `snapshotRows` and `commits` are omitted from the
+  serialized Rust result; the TS wrapper already defaults them to empty arrays.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-slim-result.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `81.31ms` | `83.45ms` |
+| `rust_incremental_pull_ms` | `75.92ms` | `73.75ms` |
+| `rust_realtime_live_ms` | `99.19ms` | `88.67ms` |
+| `rust_realtime_live_p95_ms` | `108.07ms` | `97.53ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_binary_bytes` | `540300` | `540300` |
+| `browser_served_rust_wasm_bytes` | `7467818` | `7465575` |
+
+Decision:
+
+- Retained. This is simpler and removes duplicate row payload serialization from
+  the websocket apply result.
+- Realtime p50 improved from `99.19ms` to `88.67ms` (`-10.6%`) and p95 from
+  `108.07ms` to `97.53ms` (`-9.8%`) with the binary fast path unchanged.
+
+## 2026-05-19 - WP-04 Realtime Apply Timing Metrics
+
+Change:
+
+- `realtime.binary_applied` diagnostics now include Rust-side apply timing
+  breakdowns from the sync result.
+- Browser E2E scoreboard now reports realtime apply total, pull-apply,
+  commit-apply, and notify totals/p50/p95 values.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-apply-timings.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `88.67ms` | `85.32ms` |
+| `rust_realtime_live_p95_ms` | `97.53ms` | `86.52ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_binary_bytes` | `540300` | `540300` |
+| `rust_realtime_apply_total_p50_ms` | `n/a` | `11ms` |
+| `rust_realtime_pull_apply_p50_ms` | `n/a` | `9ms` |
+| `rust_realtime_notify_p50_ms` | `n/a` | `0ms` |
+| `browser_served_syncular_worker_js_bytes` | `46999` | `47446` |
+
+Decision:
+
+- Retained as measurement infrastructure. The new numbers show the remaining
+  client-side realtime cost is in pull/apply, with notification effectively
+  negligible in this lane.
+
+## 2026-05-19 - WP-04 Cached App-Row Upsert Statements
+
+Change:
+
+- Browser SQLite `write_app_rows` now reuses the existing prepared-statement
+  cache for multi-row app upserts instead of preparing/finalizing a statement
+  per batch.
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-cached-app-upsert.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `85.32ms` | `84.31ms` |
+| `rust_realtime_live_p95_ms` | `86.52ms` | `85.16ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_apply_total_ms` | `165ms` | `160ms` |
+| `rust_realtime_pull_apply_total_ms` | `138ms` | `134ms` |
+| `rust_realtime_pull_apply_p50_ms` | `9ms` | `9ms` |
+| `browser_served_rust_wasm_bytes` | `7465575` | `7464753` |
+
+Decision:
+
+- Retained. The gain is small but measurable, and the implementation removes
+  one-off statement lifecycle handling in favor of the existing cache.
+
+## 2026-05-19 - WP-04 Canonical Realtime Row Pass-Through
+
+Change:
+
+- Browser realtime batched upserts now pass emitted upsert row payloads through
+  as canonical server rows instead of rewriting primary-key and server-version
+  fields on every change.
+- This removes per-change generated table metadata lookup from the
+  no-changed-rows realtime fast path.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-canonical-row-pass-through.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `84.31ms` | `82.27ms` |
+| `rust_realtime_live_p95_ms` | `85.16ms` | `83.61ms` |
+| `rust_realtime_http_request_count` | `0` | `0` |
+| `rust_realtime_binary_events` | `15` | `15` |
+| `rust_realtime_apply_total_ms` | `160ms` | `155ms` |
+| `rust_realtime_pull_apply_total_ms` | `134ms` | `131ms` |
+| `rust_realtime_apply_total_p50_ms` | `11ms` | `10ms` |
+| `browser_served_rust_wasm_bytes` | `7464753` | `7463118` |
+
+Decision:
+
+- Retained. This is a measurable small win and also simplifies the realtime hot
+  path by relying on the server's canonical emitted row contract.
+
+## 2026-05-19 - WP-04 Rejected Binary Row-Group Sidecar Apply
+
+Change tested:
+
+- Prototype retained binary sync-pack row-group payloads as sidecar metadata on
+  decoded commits and applied clean single-table upsert commits through the
+  existing binary snapshot payload writer after integrity verification.
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-direct-binary-row-groups.json
+```
+
+Browser dev E2E, 10k bootstrap + 1k incremental + 3 realtime rounds:
+
+| Metric | Previous WP-04 guard | Candidate |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `82.27ms` | `83.79ms` |
+| `rust_realtime_live_p95_ms` | `83.61ms` | `85.81ms` |
+| `rust_realtime_apply_total_ms` | `155ms` | `162ms` |
+| `rust_realtime_pull_apply_total_ms` | `131ms` | `137ms` |
+| `browser_served_rust_wasm_bytes` | `7463118` | `7470682` |
+
+Decision:
+
+- Rejected and reverted. Applying retained binary payloads after already
+  decoding them into row maps for commit integrity adds size and does not help
+  the realtime lane. The direct binary path only makes sense if the protocol can
+  avoid JSON/map materialization on the hot path.
+
+## 2026-05-19 - WP-04 Rejected Binary Row Map Preallocation
+
+Change tested:
+
+- Replaced iterator `collect()` map construction in binary snapshot row decoding
+  with explicit `serde_json::Map::with_capacity` insertion.
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-binary-row-map-prealloc.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-binary-row-map-prealloc-rerun.json
+```
+
+Confirmed rerun versus previous guard:
+
+| Metric | Previous WP-04 guard | Candidate rerun |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `82.27ms` | `84.64ms` |
+| `rust_realtime_live_p95_ms` | `83.61ms` | `87.96ms` |
+| `rust_incremental_sync_pack_decode_ms` | `9ms` | `10ms` |
+| `rust_realtime_apply_total_ms` | `155ms` | `157ms` |
+| `browser_served_rust_wasm_bytes` | `7463118` | `7416004` |
+
+Decision:
+
+- Rejected and reverted. The size reduction is real, but the runtime lane did
+  not improve and the code is more verbose.
+
+## 2026-05-19 - WP-04 Realtime Overhead Metric
+
+Change:
+
+- Browser E2E realtime scoring now records `rust_realtime_overhead_*` metrics:
+  per-iteration live query propagation latency minus TS push duration.
+- This separates Rust/browser websocket/apply/live-query overhead from server
+  push noise when reviewing future realtime changes.
+
+Correctness gate:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-overhead-metric.json
+```
+
+Current guard:
+
+| Metric | Value |
+| --- | ---: |
+| `rust_realtime_live_ms` | `82.05ms` |
+| `rust_realtime_live_p95_ms` | `83.99ms` |
+| `rust_realtime_overhead_p50_ms` | `22.63ms` |
+| `rust_realtime_overhead_p95_ms` | `23.99ms` |
+| `rust_realtime_http_request_count` | `0` |
+| `rust_realtime_binary_events` | `15` |
+| `browser_served_rust_wasm_bytes` | `7463118` |
+
+Decision:
+
+- Retained as measurement infrastructure. Future realtime changes should compare
+  both end-to-end live latency and the derived Rust/browser overhead lane.
+
+## 2026-05-19 - WP-04 Rejected Realtime Table Clone Elision
+
+Change tested:
+
+- Avoided cloning the table name for every batchable realtime upsert row in the
+  browser web client batching path. The candidate only cloned the table when a
+  new table batch started.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-table-clone-elision.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-table-clone-elision-rerun.json
+```
+
+Confirmed rerun versus previous guard:
+
+| Metric | Previous WP-04 guard | Candidate rerun |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `82.05ms` | `100.03ms` |
+| `rust_realtime_live_p95_ms` | `83.99ms` | `101.44ms` |
+| `rust_realtime_overhead_p50_ms` | `22.63ms` | `23.91ms` |
+| `rust_realtime_overhead_p95_ms` | `23.99ms` | `25.83ms` |
+| `rust_realtime_apply_total_ms` | `160ms` | `165ms` |
+| `rust_realtime_pull_apply_total_ms` | `133ms` | `137ms` |
+| `browser_served_rust_wasm_bytes` | `7463118` | `7462690` |
+
+Decision:
+
+- Rejected and reverted. The candidate slightly reduced WASM bytes but regressed
+  the runtime lane on two runs, including the explicit Rust/browser overhead
+  metric.
+
+## 2026-05-19 - WP-04 Realtime Decode/Transform Metrics
+
+Change:
+
+- Added `syncPackDecodeMs` to browser Rust sync results for realtime
+  `binary-sync-pack-v1` frames.
+- Browser realtime diagnostics and the E2E scoreboard now report
+  `rust_realtime_sync_pack_decode_*` and
+  `rust_realtime_pull_transform_*` metrics alongside apply/notify timings.
+- Made the React browser binding test setup idempotent around Happy DOM global
+  registration while updating timing fixtures.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/worker-realtime.test.ts
+bun test rust/bindings/browser/src/client.test.ts
+bun test rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-decode-transform-metrics.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-decode-transform-metrics-rerun.json
+```
+
+Confirmed rerun versus previous guard:
+
+| Metric | Previous WP-04 guard | Current |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `82.05ms` | `95.34ms` |
+| `rust_realtime_overhead_p50_ms` | `22.63ms` | `24.08ms` |
+| `rust_realtime_apply_total_ms` | `160ms` | `158ms` |
+| `rust_realtime_pull_apply_total_ms` | `133ms` | `129ms` |
+| `rust_realtime_sync_pack_decode_total_ms` | n/a | `23ms` |
+| `rust_realtime_sync_pack_decode_p50_ms` | n/a | `2ms` |
+| `rust_realtime_pull_transform_total_ms` | n/a | `0ms` |
+| `browser_served_rust_wasm_bytes` | `7463118` | `7463464` |
+
+Decision:
+
+- Retained as measurement infrastructure. The new split shows the remaining
+  realtime frame cost is mostly SQLite row apply plus about `23ms` of binary
+  sync-pack decoding across 15 frames; transform/integrity rounds to `0ms` in
+  this scenario. Future realtime performance work should compare against
+  `.context/benchmarks/wp04-realtime-decode-transform-metrics-rerun.json`.
+
+## 2026-05-19 - WP-04 Realtime Integrity/State Metrics
+
+Change:
+
+- Split browser Rust realtime apply timings further into
+  `integrityVerifyMs`, `commitApplyMs`, and `subscriptionStateMs`.
+- Browser diagnostics and the E2E scoreboard now report
+  `rust_realtime_integrity_verify_*` and
+  `rust_realtime_subscription_state_*` metrics for binary websocket frames.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol integrity --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-integrity-state-split.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-integrity-state-split-rerun2.json
+```
+
+Confirmed measurement versus previous accepted decode/transform guard:
+
+| Metric | Decode/transform guard | First split | Latest split rerun |
+| --- | ---: | ---: | ---: |
+| `rust_realtime_live_ms` | `95.34ms` | `93.93ms` | `121.39ms` |
+| `rust_realtime_overhead_p50_ms` | `24.08ms` | `24.68ms` | `31.01ms` |
+| `rust_realtime_apply_total_ms` | `158ms` | `164ms` | `237ms` |
+| `rust_realtime_pull_apply_total_ms` | `129ms` | `135ms` | `201ms` |
+| `rust_realtime_sync_pack_decode_total_ms` | `23ms` | `23ms` | `29ms` |
+| `rust_realtime_integrity_verify_total_ms` | n/a | `104ms` | `159ms` |
+| `rust_realtime_commit_apply_total_ms` | `0ms` | `23ms` | `37ms` |
+| `rust_realtime_subscription_state_total_ms` | n/a | `8ms` | `5ms` |
+| `browser_served_rust_wasm_bytes` | `7463464` | `7463799` | `7463799` |
+
+Decision:
+
+- Retained as measurement infrastructure, not as a speed improvement. The first
+  split run was effectively neutral against the previous guard, while the
+  repeat was noisier. Both runs identify the same target: canonical commit/root
+  integrity verification dominates realtime Rust apply cost; subscription state
+  persistence is small. Future realtime optimization should start by rerunning
+  `.context/benchmarks/wp04-realtime-integrity-state-split-rerun2.json` and
+  compare lower-level timing buckets as well as end-to-end live latency.
+
+## 2026-05-19 - WP-04 Rejected Sorted-Map Integrity Canonicalization
+
+Change:
+
+- Tried replacing canonical JSON object key sorting with a branch that used the
+  current `serde_json::Map` iteration order when available.
+
+Correctness gates passed before rejection:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol integrity --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-sorted-map-integrity.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-sorted-map-integrity-rerun.json
+```
+
+Confirmed rerun versus the first integrity/state split:
+
+| Metric | Integrity/state split | Sorted-map candidate |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `93.93ms` | `126.06ms` |
+| `rust_realtime_overhead_p50_ms` | `24.68ms` | `35.45ms` |
+| `rust_realtime_apply_total_ms` | `164ms` | `229ms` |
+| `rust_realtime_pull_apply_total_ms` | `135ms` | `187ms` |
+| `rust_realtime_integrity_verify_total_ms` | `104ms` | `148ms` |
+| `rust_realtime_commit_apply_total_ms` | `23ms` | `34ms` |
+| `browser_served_rust_wasm_bytes` | `7463799` | `7443592` |
+
+Decision:
+
+- Rejected and reverted. The candidate reduced WASM bytes by about `20KB`, but
+  regressed every runtime bucket that matters. The next integrity improvement
+  should be a protocol/digest shape change that avoids repeated canonical JSON
+  work, not another local map-iteration micro-probe.
+
+## 2026-05-19 - WP-04 Realtime Canonical JSON String Writer
+
+Change:
+
+- Replaced per-string `serde_json::to_string` allocation in Rust canonical JSON
+  integrity payload writing with an in-place JSON string writer.
+- Reused the same writer for canonical object keys and wire commit metadata
+  strings.
+- Added protocol tests that compare the custom string escaping against
+  `serde_json::to_string` for quotes, backslashes, control characters, and
+  unicode.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime web::client --lib
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-json-string-writer.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-json-string-writer-rerun.json
+```
+
+Confirmed rerun versus the previous accepted integrity/state split:
+
+| Metric | Previous guard | Current rerun | Delta |
+| --- | ---: | ---: | ---: |
+| `rust_realtime_live_ms` | `121.39ms` | `92.55ms` | `-28.84ms` |
+| `rust_realtime_live_p95_ms` | `158.51ms` | `92.98ms` | `-65.53ms` |
+| `rust_realtime_overhead_p50_ms` | `31.01ms` | `22.19ms` | `-8.82ms` |
+| `rust_realtime_apply_total_ms` | `237ms` | `128ms` | `-109ms` |
+| `rust_realtime_pull_apply_total_ms` | `201ms` | `103ms` | `-98ms` |
+| `rust_realtime_integrity_verify_total_ms` | `159ms` | `76ms` | `-83ms` |
+| `rust_realtime_integrity_verify_p50_ms` | `10ms` | `5ms` | `-5ms` |
+| `rust_realtime_commit_apply_total_ms` | `37ms` | `22ms` | `-15ms` |
+| `rust_realtime_sync_pack_decode_total_ms` | `29ms` | `21ms` | `-8ms` |
+| `browser_served_rust_wasm_bytes` | `7463799` | `7465224` | `+1425` |
+
+Decision:
+
+- Retained. This is a simple implementation change with a clear benchmark win:
+  integrity verification dropped by about `52%` on the rerun, and total
+  realtime Rust apply dropped by about `46%`. The small WASM size increase is
+  acceptable for this runtime gain. Future WP-04 candidates should compare
+  against `.context/benchmarks/wp04-realtime-json-string-writer-rerun.json`.
+
+## 2026-05-19 - WP-04 Rejected Streaming Integrity Hash
+
+Change:
+
+- Tried writing canonical integrity payloads directly into a SHA-256 sink
+  instead of first building the canonical payload `String` and hashing it.
+
+Correctness gates passed before rejection:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract
+bun run --cwd rust/bindings/browser build:wasm:dev
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-streaming-integrity-hash.json
+```
+
+Result versus the retained string-writer guard:
+
+| Metric | String-writer guard | Streaming-hash candidate |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `92.55ms` | `93.63ms` |
+| `rust_realtime_overhead_p50_ms` | `22.19ms` | `24.15ms` |
+| `rust_realtime_apply_total_ms` | `128ms` | `154ms` |
+| `rust_realtime_pull_apply_total_ms` | `103ms` | `130ms` |
+| `rust_realtime_integrity_verify_total_ms` | `76ms` | `98ms` |
+| `rust_realtime_integrity_verify_p50_ms` | `5ms` | `7ms` |
+| `browser_served_rust_wasm_bytes` | `7465224` | `7466004` |
+
+Decision:
+
+- Rejected and reverted. Avoid the generic streaming sink abstraction for this
+  path unless a future design can prove a win; the current version made the hot
+  bucket slower and increased WASM size.
+
+## 2026-05-19 - WP-04 Realtime Sorted Object Fast Path
+
+Change:
+
+- `append_canonical_object` now checks whether object keys are already sorted.
+  If they are, it writes the object through direct map iteration; if not, it
+  falls back to the canonical key sort path.
+- This preserves canonical correctness while avoiding the key-vector allocation
+  and second map lookup for the current BTree-backed `serde_json::Map` build.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-sorted-object-fast-path.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-sorted-object-fast-path-rerun2.json
+```
+
+Confirmed rerun versus the retained string-writer guard:
+
+| Metric | String-writer guard | Sorted-object rerun | Delta |
+| --- | ---: | ---: | ---: |
+| `rust_realtime_live_ms` | `92.55ms` | `91.02ms` | `-1.53ms` |
+| `rust_realtime_overhead_p50_ms` | `22.19ms` | `22.21ms` | `+0.02ms` |
+| `rust_realtime_overhead_p95_ms` | `24.18ms` | `23.22ms` | `-0.96ms` |
+| `rust_realtime_apply_total_ms` | `128ms` | `126ms` | `-2ms` |
+| `rust_realtime_pull_apply_total_ms` | `103ms` | `98ms` | `-5ms` |
+| `rust_realtime_integrity_verify_total_ms` | `76ms` | `68ms` | `-8ms` |
+| `rust_realtime_integrity_verify_p50_ms` | `5ms` | `5ms` | `0ms` |
+| `browser_served_rust_wasm_bytes` | `7465224` | `7467598` | `+2374` |
+
+Decision:
+
+- Retained. This is a small guarded fast path with a consistent integrity-bucket
+  win across the confirmation runs. End-to-end live latency is mostly flat due
+  to browser/server noise, so future candidates should continue comparing the
+  lower-level integrity/apply buckets against
+  `.context/benchmarks/wp04-realtime-sorted-object-fast-path-rerun2.json`.
+
+## 2026-05-19 - WP-04 Realtime Direct Number Writes
+
+Change:
+
+- Canonical number values, wire commit sequences, and row versions now write
+  directly into the existing `String` buffer with `write!` instead of allocating
+  temporary `to_string()` values.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-direct-number-write.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-direct-number-write-rerun.json
+```
+
+Confirmed rerun versus the retained sorted-object guard:
+
+| Metric | Sorted-object guard | Direct-number rerun | Delta |
+| --- | ---: | ---: | ---: |
+| `rust_realtime_live_ms` | `91.02ms` | `91.03ms` | `+0.01ms` |
+| `rust_realtime_live_p95_ms` | `112.80ms` | `92.72ms` | `-20.08ms` |
+| `rust_realtime_overhead_p50_ms` | `22.21ms` | `22.04ms` | `-0.17ms` |
+| `rust_realtime_apply_total_ms` | `126ms` | `122ms` | `-4ms` |
+| `rust_realtime_pull_apply_total_ms` | `98ms` | `94ms` | `-4ms` |
+| `rust_realtime_integrity_verify_total_ms` | `68ms` | `69ms` | `+1ms` |
+| `rust_realtime_commit_apply_total_ms` | `25ms` | `20ms` | `-5ms` |
+| `browser_served_rust_wasm_bytes` | `7467598` | `7468173` | `+575` |
+
+Decision:
+
+- Retained. The integrity bucket is flat, but total apply and commit apply both
+  improve with minimal code and a tiny size increase. Future candidates should
+  compare against
+  `.context/benchmarks/wp04-realtime-direct-number-write-rerun.json`.
+
+## 2026-05-19 - External App-Style Rust Benchmark Unblocked
+
+Change:
+
+- Binary snapshot integer columns now accept integer strings from database
+  drivers, and binary snapshot string columns now accept `Date` values by
+  encoding them as ISO strings.
+- This fixes the external Postgres-backed branch server path that failed Rust
+  binary bootstrap with `binary snapshot server_version expected a safe integer
+  or bigint`, then `binary snapshot updated_at expected string`.
+
+Correctness gates:
+
+```bash
+bun test packages/core/src/__tests__/snapshot-chunks.test.ts packages/core/src/__tests__/sync-packs.test.ts
+bun test packages/server-hono/src/__tests__/pull-chunk-storage.test.ts
+bun test packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/__tests__/pull-chunk-storage.test.ts
+```
+
+External app-style gate:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+
+bun run bench:run -- --stack syncular --scenario bootstrap
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+bun run bench:run -- --stack syncular --scenario local-query
+bun run bench:run -- --stack syncular-rust --scenario local-query
+bun run bench:run -- --stack syncular-rust --scenario online-propagation
+bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+Valid external results:
+
+| Metric | TS | Rust |
+| --- | ---: | ---: |
+| Bootstrap 100k | `780.11ms` | `1221.43ms` |
+| Bootstrap 500k | `3855.10ms` | `6099.68ms` |
+| 500k pull request | `1214.76ms` | `1031ms` |
+| 500k snapshot fetch | `78.14ms` | `152ms` |
+| 500k local apply | `2114.80ms` | `1692ms` |
+| 500k peak memory | `478.70MB` | `694.38MB` |
+| Local list p50 | `0.24ms` | `0.56ms` |
+| Local search p50 | `0.09ms` | `0.87ms` |
+| Aggregate read-model p50 | n/a | `0.08ms` |
+| Aggregate raw SQL p50 | `6.12ms` | `59.73ms` |
+| Rust online mirror p50 | n/a | `27.81ms` |
+| Rust online mirror p95 | n/a | `39.00ms` |
+| Rust reconnect 25 | n/a | `93.74ms` |
+| Rust reconnect 100 | n/a | `222.97ms` |
+| Rust reconnect 250 | n/a | `2118.61ms` |
+
+Notes:
+
+- TS online-propagation and reconnect-storm failed with the existing snapshot
+  chunk integrity mismatch, so those scenarios only have Rust-valid results in
+  this run.
+- Rust total bootstrap is still slower at large row counts, but the binary path
+  now has valid external evidence again. The remaining 500k Rust total is
+  dominated by `derived_schema_ms_500000=3213.03ms` plus
+  `local_apply_ms_500000=1692ms`.
+
+## 2026-05-19 - WP-04 One-Pass Canonical Object Write
+
+Change:
+
+- Canonical object writing now writes optimistically in map iteration order and
+  only truncates/sorts when it actually sees out-of-order keys.
+- This keeps the canonical fallback for unsorted maps, but avoids the previous
+  pre-scan plus second pass for the normal sorted `serde_json::Map` path.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-one-pass-canonical-object.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-one-pass-canonical-object-rerun.json
+```
+
+Compared against
+`.context/benchmarks/wp04-realtime-direct-number-write-rerun.json`:
+
+| Metric | Previous | Current | Rerun |
+| --- | ---: | ---: | ---: |
+| `rust_realtime_live_ms` | `91.03ms` | `92.06ms` | `88.60ms` |
+| `rust_realtime_live_p95_ms` | `92.72ms` | `102.45ms` | `90.47ms` |
+| `rust_realtime_overhead_p50_ms` | `22.04ms` | `21.24ms` | `21.86ms` |
+| `rust_realtime_apply_total_ms` | `122ms` | `121ms` | `125ms` |
+| `rust_realtime_pull_apply_total_ms` | `94ms` | `93ms` | `95ms` |
+| `rust_realtime_integrity_verify_total_ms` | `69ms` | `65ms` | `66ms` |
+| `rust_realtime_subscription_state_total_ms` | `5ms` | `3ms` | `6ms` |
+| `browser_served_rust_wasm_bytes` | `7468173` | `7468747` | `7468747` |
+
+Decision:
+
+- Retained as a modest integrity-hot-path improvement. End-to-end apply is
+  effectively flat/noisy, but the targeted integrity bucket improves in both
+  runs without weakening the verified root contract. Future candidates should
+  compare against
+  `.context/benchmarks/wp04-realtime-one-pass-canonical-object-rerun.json`.
+
+## 2026-05-19 - Rejected WP-04 Commit Digest Capacity Hint
+
+Probe:
+
+- Tried reserving a heuristic `String` capacity for canonical wire commit
+  digest payloads before writing the payload.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-protocol --lib
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime canonical_commit_integrity --test protocol_contract
+bun run --cwd rust/bindings/browser build:wasm:dev
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=10000 --incremental-rows=1000 --realtime-iterations=3 \
+  --query-iterations=0 --wasm-profile=dev --json \
+  --output=.context/benchmarks/wp04-realtime-commit-digest-capacity-hint.json
+```
+
+Compared against
+`.context/benchmarks/wp04-realtime-one-pass-canonical-object-rerun.json`:
+
+| Metric | Previous | Capacity hint |
+| --- | ---: | ---: |
+| `rust_realtime_live_ms` | `88.60ms` | `89.93ms` |
+| `rust_realtime_apply_total_ms` | `125ms` | `125ms` |
+| `rust_realtime_pull_apply_total_ms` | `95ms` | `93ms` |
+| `rust_realtime_integrity_verify_total_ms` | `66ms` | `65ms` |
+| `browser_served_rust_wasm_bytes` | `7468747` | `7469547` |
+
+Decision:
+
+- Rejected and reverted. The `1ms` integrity movement did not justify a magic
+  capacity heuristic, the end-to-end metric regressed, total apply stayed flat,
+  and WASM grew by `800` bytes.
+
+## 2026-05-19 - WP-12 External Scoped Artifact Gate And Owned Bytes
+
+Change:
+
+- External scoped artifact benchmarking now uses
+  `SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000`. The external Rust
+  harness pulls `20k` snapshot pages, while the server artifact lookup bundles
+  up to the current `50k` target as whole pull pages, producing a `60k` page
+  key. Precomputing `20k` artifacts made lookup miss and silently use row
+  chunks.
+- Browser SQLite artifact apply now consumes the fetched artifact byte vector
+  instead of borrowing it and cloning into the retained SQLite deserialize
+  buffer. This removes a duplicate artifact-body allocation without changing
+  the transaction boundary.
+
+Rejected probe:
+
+- Tried detaching each deserialized SQLite artifact immediately after
+  `INSERT ... SELECT`. Rebuilt WASM failed the artifact Hono test with
+  `database __syncular_snapshot_artifact_0 is locked`, so the code was reverted.
+  Artifacts still detach after the apply transaction commits.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm:dev
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifacts|corrupted SQLite snapshot artifact|subscription is revoked"
+bun run --cwd rust/bindings/browser build:wasm
+bun run --cwd rust/bindings/browser tsgo
+```
+
+External app-style scoped artifact gate:
+
+```bash
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000
+
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+bun run bench:run -- --stack syncular --scenario bootstrap
+bun run bench:run -- --stack syncular --scenario local-query
+bun run bench:run -- --stack syncular-rust --scenario local-query
+```
+
+Local browser artifact gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-owned-artifact-bytes-100k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-owned-artifact-bytes-500k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-owned-artifact-bytes-500k-rerun.json
+```
+
+External results:
+
+| Metric | Normal row chunks | Scoped artifacts | Owned bytes |
+| --- | ---: | ---: | ---: |
+| Rust 500k bootstrap | `6099.68ms` | `4866.87ms` | `4844.13ms` |
+| Rust 500k pull request | `1031ms` | `23ms` | `22ms` |
+| Rust 500k local apply | `1692ms` | `1394ms` | `1379ms` |
+| Rust 500k response bytes | `3287104` | `3938823` | `3938884` |
+| Rust 500k peak memory | `694.38MB` | `751.45MB` | `750.48MB` |
+| Rust 500k snapshot chunks | `9` | `0` | `0` |
+| TS 500k bootstrap, same server mode | n/a | `3882.82ms` | n/a |
+
+Local browser artifact A/B:
+
+| Metric | Borrowed bytes | Owned bytes rerun |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `279.54ms` | `280.87ms` |
+| `rust_pull_apply_ms` | `262ms` | `263ms` |
+| `rust_snapshot_row_apply_ms` | `198ms` | `196ms` |
+| `rust_cached_bootstrap_ms` | `249.11ms` | `252.37ms` |
+| `browser_js_heap_used_after_bytes` | `8641164` | `6692124` |
+| `browser_served_rust_wasm_bytes` | `3443298` | `3443219` |
+
+Decision:
+
+- Retain owned artifact bytes as a small allocation/memory cleanup, not a
+  throughput win.
+- Scoped artifacts are now proven externally and materially faster than the
+  external Rust row-chunk path, but they are not fully accepted as "done"
+  because peak memory and transferred bytes are still higher. The next WP-12
+  work should reduce artifact memory/bytes without violating scoped manifests.
+
+## 2026-05-19 - Rejected WP-12 SQLite Artifact Page Size 16k
+
+Probe:
+
+- Tried setting the Bun SQLite snapshot artifact encoder page size to `16384`
+  before creating the artifact table.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts
+bun test packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-sqlite-artifact-page-size-16k-500k.json
+```
+
+Compared against
+`.context/benchmarks/wp12-owned-artifact-bytes-500k-rerun.json`:
+
+| Metric | Owned bytes | 16k page size |
+| --- | ---: | ---: |
+| `rust_bootstrap_ms` | `280.87ms` | `279.21ms` |
+| `rust_pull_apply_ms` | `263ms` | `263ms` |
+| `rust_snapshot_row_apply_ms` | `196ms` | `193ms` |
+| `rust_response_bytes` | `4738745` | `5455815` |
+| `browser_js_heap_used_after_bytes` | `6692124` | `11229316` |
+
+Decision:
+
+- Rejected and reverted. The tiny apply movement does not matter because bytes
+  regressed by about `15%`, and heap was worse in the local gate.
+
+## 2026-05-19 - WP-12 SQLite Artifact Gzip Level 9
+
+Change:
+
+- Bun SQLite snapshot artifacts now default to gzip level `9` instead of `6`.
+  Artifact generation is a background/precompute path, not the Worker pull hot
+  path, so the retained criterion is lower transfer bytes without losing direct
+  SQLite import.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+```
+
+Local browser artifact gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-sqlite-artifact-gzip9-500k.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-sqlite-artifact-gzip9-500k-rerun.json
+```
+
+External app-style gate:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against owned bytes / gzip level 6:
+
+| Metric | Gzip 6 | Gzip 9 |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `280.87ms` | `278.95ms` |
+| Local 500k `rust_pull_apply_ms` | `263ms` | `260ms` |
+| Local 500k `rust_response_bytes` | `4738745` | `4214831` |
+| External 500k bootstrap | `4844.13ms` | `4830.08ms` |
+| External 500k local apply | `1379ms` | `1392ms` |
+| External 500k response bytes | `3938884` | `3527331` |
+| External 500k peak memory | `750.48MB` | `758.2MB` |
+
+Retained result files:
+
+- `.context/benchmarks/wp12-sqlite-artifact-gzip9-500k-rerun.json`
+- `.results/2026-05-19T20-46-54-374Z/syncular-rust/bootstrap.json`
+
+External row-chunk comparison remains important: row chunks were slower
+(`6099.68ms`) and had slower local apply (`1692ms`), but still used fewer
+response bytes (`3287104`) and lower peak memory (`694.38MB`).
+
+Decision:
+
+- Retained as a byte-reduction slice. It does not solve peak memory, and memory
+  remains the next WP-12 target, but it cuts external artifact bytes by about
+  `10%` while keeping direct artifact import and `snapshotChunkCount=0`.
+
+## 2026-05-19 - WP-12 Stream Browser Artifact Fetch/Apply
+
+Change:
+
+- The browser pull path no longer downloads and decompresses every SQLite
+  snapshot artifact body for a snapshot before applying any of them. It now
+  validates artifact refs first, then fetches and applies each artifact body
+  inside the existing apply transaction.
+- Rollback semantics stay intact: any later fetch/hash/apply error still
+  returns through `rollback_apply_batch`, while the happy path retains fewer
+  decompressed SQLite images at once.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifacts|corrupted SQLite snapshot artifact|subscription is revoked"
+```
+
+Local browser artifact gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-stream-artifact-apply-500k.json
+```
+
+External app-style scoped artifact gate:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:dev
+export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist
+export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=60000
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against the retained gzip9 artifact run:
+
+| Metric | Gzip9 batch bodies | Stream artifact apply |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `278.95ms` | `277.4ms` |
+| Local 500k `rust_pull_apply_ms` | `260ms` | `258ms` |
+| Local 500k `rust_snapshot_row_apply_ms` | `197ms` | `197ms` |
+| Local 500k JS heap after | `16853576` | `16451448` |
+| External 500k bootstrap | `4830.08ms` | `4845.39ms` |
+| External 500k local apply | `1392ms` | `1392ms` |
+| External 500k response bytes | `3527331` | `3527317` |
+| External 500k peak memory | `758.2MB` | `746.92MB` |
+
+Retained result files:
+
+- `.context/benchmarks/wp12-stream-artifact-apply-500k.json`
+- `.results/2026-05-19T20-53-48-877Z/syncular-rust/bootstrap.json`
+
+Decision:
+
+- Retained as a memory-retention cleanup. The external peak-memory movement is
+  meaningful enough for the tiny complexity reduction, but it is not a full
+  solution: scoped artifacts remain above the row-chunk memory baseline
+  (`746.92MB` versus `694.38MB`).
+
+## 2026-05-19 - Rejected WP-12 Nullable Column Elision
+
+Probe:
+
+- Tried omitting nullable SQLite artifact columns when every row in the artifact
+  page had `null` for that column.
+- The client already builds `INSERT ... SELECT` from artifact table columns, so
+  the shape was semantically plausible, but the current browser store's
+  attached-table column introspection did not support missing artifact columns.
+  A supporting attached-schema PRAGMA fix was therefore tested as well.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/snapshot-artifacts.test.ts packages/server/src/pull-snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifacts|corrupted SQLite snapshot artifact|subscription is revoked"
+```
+
+Benchmarks:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-elide-null-artifact-columns-500k.json
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against the retained stream-apply baseline:
+
+| Metric | Stream baseline | Nullable column elision |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `277.4ms` | `289.26ms` |
+| Local 500k `rust_pull_apply_ms` | `258ms` | `270ms` |
+| Local 500k `rust_response_bytes` | `4214831` | `4407824` |
+| External 500k bootstrap | `4845.39ms` | `5641.22ms` |
+| External 500k local apply | `1392ms` | `1567ms` |
+| External 500k response bytes | `3527317` | `3527361` |
+| External 500k peak memory | `746.92MB` | `745.73MB` |
+
+Decision:
+
+- Rejected and reverted. The external memory improvement was only `1.19MB`,
+  while local and external apply/bootstrapping regressed and local compressed
+  bytes worsened.
+
+## 2026-05-19 - Rejected WP-12 Attached PRAGMA Schema Fix In Hot Path
+
+Probe:
+
+- Tested changing browser SQLite artifact column discovery from
+  `{schema}.pragma_table_info(table)` to the two-argument
+  `pragma_table_info(table, schema)` form. This was required by the nullable
+  column elision probe because the existing query resolves to the main table
+  shape for attached artifact DBs.
+
+Benchmark:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-attached-pragma-schema-fix-500k.json
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against the retained stream-apply baseline:
+
+| Metric | Stream baseline | Attached PRAGMA schema fix |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `277.4ms` | `354.1ms` |
+| Local 500k `rust_pull_apply_ms` | `258ms` | `330ms` |
+| Local 500k `rust_response_bytes` | `4214831` | `4214831` |
+| External 500k bootstrap | `4845.39ms` | `6118.45ms` |
+| External 500k local apply | `1392ms` | `1705ms` |
+| External 500k response bytes | `3527317` | `3527353` |
+| External 500k peak memory | `746.92MB` | `755.36MB` |
+
+Decision:
+
+- Rejected and reverted. It is a correctness support path for future variable
+  artifact schemas, but it regresses the current hot path and nullable column
+  elision was also rejected.
+
+## 2026-05-19 - Rejected WP-12 100k SQLite Artifact Bundle Cap
+
+Probe:
+
+- Raised the server binary snapshot bundle cap from `50k` to `100k` rows, while
+  keeping the browser client's logical snapshot page at `50k`.
+- This is different from the older rejected 100k client-page probe: the client
+  still requested `limitSnapshotRows=50000`, while artifact precompute used
+  `100000` rows so server lookup selected larger two-page artifact bundles.
+
+Correctness gates:
+
+```bash
+bun test packages/server/src/pull-snapshot-artifacts.test.ts packages/server/src/snapshot-artifacts.test.ts
+bun run --cwd packages/server tsgo
+```
+
+Benchmarks:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=100000 \
+  --rust-snapshot-rows-per-page=50000 \
+  --output=.context/benchmarks/wp12-artifact-bundle-100k-500k.json
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=100000
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against the retained 50k stream-apply baseline:
+
+| Metric | 50k bundle baseline | 100k bundle cap |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `277.4ms` | `296.93ms` |
+| Local 500k `rust_pull_apply_ms` | `258ms` | `277ms` |
+| Local 500k `rust_response_bytes` | `4214831` | `4208349` |
+| Local 500k request count | `11` | `6` |
+| External 500k bootstrap | `4845.39ms` | `5670.76ms` |
+| External 500k local apply | `1392ms` | `1620ms` |
+| External 500k response bytes | `3527317` | `3517139` |
+| External 500k request count | `10` | `6` |
+| External 500k peak memory | `746.92MB` | `776.06MB` |
+
+Decision:
+
+- Rejected and reverted. Larger artifacts reduced request count and bytes
+  slightly, but made both apply time and peak memory worse. Keep the `50k`
+  bundle cap until a different transaction/import shape can release artifact
+  buffers earlier.
+
+## 2026-05-19 - Rejected WP-12 SQLite-Owned Deserialize Buffer
+
+Probe:
+
+- Copied each decompressed SQLite artifact body into memory allocated with
+  `sqlite3_malloc64`, then called `sqlite3_deserialize` with
+  `SQLITE_DESERIALIZE_FREEONCLOSE | SQLITE_DESERIALIZE_READONLY`.
+- This allowed SQLite to own the deserialized buffer and removed the explicit
+  Rust `Vec<u8>` retention in `AttachedSnapshotArtifact`, but it introduced a
+  transient copy and still could not release the attached DB before transaction
+  commit.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifacts|corrupted SQLite snapshot artifact|subscription is revoked"
+```
+
+Benchmarks:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-sqlite-owned-deserialize-buffer-500k.json
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against the retained stream-apply baseline:
+
+| Metric | Stream baseline | SQLite-owned buffer |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `277.4ms` | `304.59ms` |
+| Local 500k `rust_pull_apply_ms` | `258ms` | `287ms` |
+| Local 500k `rust_response_bytes` | `4214831` | `4214831` |
+| Local 500k JS heap after | `16451448` | `16226040` |
+| External 500k bootstrap | `4845.39ms` | `5682.5ms` |
+| External 500k local apply | `1392ms` | `1617ms` |
+| External 500k response bytes | `3527317` | `3527346` |
+| External 500k peak memory | `746.92MB` | `746.81MB` |
+
+Decision:
+
+- Rejected and reverted. Peak memory barely moved, while both local and
+  external bootstrap/apply regressed. The retained-buffer problem is not solved
+  by transferring ownership of the same backing bytes to SQLite; it needs a
+  transaction/import shape that can actually detach or release artifact DBs
+  earlier.
+
+## 2026-05-19 - Rejected WP-12 Staged Temp-Table Artifact Import
+
+Probe:
+
+- Fetched and validated SQLite artifact bodies before the apply transaction,
+  attached/deserialized each artifact outside the transaction, copied rows into
+  temporary SQLite tables, detached the artifact DB immediately, then inserted
+  from those temp tables inside the normal apply transaction.
+- This preserves rollback safety for app rows and releases attached artifact
+  buffers earlier, but adds a second SQLite copy of the snapshot rows.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifacts|corrupted SQLite snapshot artifact|subscription is revoked"
+```
+
+Benchmarks:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp12-staged-artifact-temp-table-500k.json
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Compared against the retained stream-apply baseline:
+
+| Metric | Stream baseline | Staged temp table |
+| --- | ---: | ---: |
+| Local 500k `rust_bootstrap_ms` | `277.4ms` | `458.58ms` |
+| Local 500k `rust_pull_apply_ms` | `258ms` | `225ms` |
+| Local 500k `rust_snapshot_row_apply_ms` | `197ms` | `224ms` |
+| Local 500k JS heap after | `16451448` | `7153720` |
+| External 500k bootstrap | `4845.39ms` | `7461.99ms` |
+| External 500k local apply | `1392ms` | `1655ms` |
+| External 500k response bytes | `3527317` | `3527322` |
+| External 500k peak memory | `746.92MB` | `752.83MB` |
+
+Decision:
+
+- Rejected and reverted. The local JS heap win did not translate to external
+  peak memory; external memory worsened and bootstrap regressed heavily. A
+  temp-table staging copy is not the right shape for the artifact path.
+
+## 2026-05-19 - Accepted WP-06 Generated Count Read-Model Contract
+
+Change:
+
+- Added opt-in `localReadModels` codegen support for explicit `countBy` read
+  models.
+- Generated `syncular.schema.json` now records the read-model contract.
+- Generated Rust migrations expose read-model setup/rebuild SQL constants.
+- Generated TypeScript schema installers create table/triggers and rebuild only
+  when the output table is first installed or the generated schema version
+  changes.
+- Generated TypeScript and Rust query surfaces include the read-model output
+  table so apps can query declared read models through Kysely/Diesel rather
+  than raw SQL.
+- The todo fixture declares `taskCountsByUserCompletion` and proves rebuild,
+  update, delete invalidation, and typed Diesel reads.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example generated_local_read_model_sql_rebuilds_and_tracks_changes
+bun run --cwd rust/examples/todo-app tsgo
+```
+
+Benchmark gate:
+
+- Not run for this slice. This change adds generator output and fixture
+  coverage only; no runtime hot path or external benchmark app uses the
+  generated read-model contract yet.
+
+Decision:
+
+- Accepted. The feature is explicit app intent, not a hidden runtime cache. The
+  next WP-06 slice must wire the generated read model into the benchmark app and
+  compare aggregate/local-query performance against the accepted TS/Rust
+  baselines.
+
+## 2026-05-19 - Accepted WP-06 Browser Read-Model Benchmark Lane
+
+Change:
+
+- Generated TypeScript modules now export `syncularGeneratedLocalReadModels`
+  with the declared read-model name, output table, setup SQL, and rebuild SQL.
+  This makes the local read-model contract consumable by host packages instead
+  of trapping it inside installer internals.
+- Browser runtime local-query metrics now emit both raw aggregate and generated
+  read-model aggregate timings.
+- Browser scoreboard comparisons now include read-model aggregate p50/p95 rows.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example generated_local_read_model_sql_rebuilds_and_tracks_changes
+bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd tests/runtime tsgo
+bun run --cwd tests/perf tsgo
+```
+
+Benchmark gates:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=1000 --query-iterations=5 --wasm-profile=release --json --output=.context/benchmarks/wp06-read-model-scoreboard-1k.json
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=25 --wasm-profile=release --output=.context/benchmarks/wp06-read-model-scoreboard-100k.json
+```
+
+100k browser scoreboard:
+
+| Metric | TS | Rust | Rust/TS |
+| --- | ---: | ---: | ---: |
+| Bootstrap | `828.69ms` | `221.41ms` | `0.27x` |
+| Local list p50 | `0.55ms` | `0.23ms` | `0.42x` |
+| Local search p50 | `3.98ms` | `1.51ms` | `0.38x` |
+| Raw aggregate p50 | `161.09ms` | `23.00ms` | `0.14x` |
+| Raw aggregate p95 | `184.08ms` | `23.90ms` | `0.13x` |
+| Read-model aggregate p50 | `0.53ms` | `0.05ms` | `0.09x` |
+| Read-model aggregate p95 | `0.76ms` | `0.10ms` | `0.13x` |
+
+Decision:
+
+- Accepted. This keeps aggregate optimization explicit and app-declared, while
+  the scoreboard continues to report raw aggregate performance so regressions
+  are not hidden.
+- External app-style proof is still outstanding. The external benchmark still
+  has a hand-written derived-schema fixture and must be switched to the
+  generated read-model contract before WP-06 can be closed.
+- Root `bun run tsgo` was not used as a gate because it currently fails in
+  unrelated `@syncular/tests-unit` server-pull stream/hash type errors. The
+  targeted package checks above passed.
+
+## 2026-05-19 - Accepted WP-06 Contract-Backed TypeScript Installer
+
+Change:
+
+- The generated TypeScript schema installer now executes read-model setup and
+  rebuild SQL from `syncularGeneratedLocalReadModels`.
+- This removes duplicated generated SQL blocks from the installer and makes the
+  exported read-model metadata the installer source of truth.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example generated_local_read_model_sql_rebuilds_and_tracks_changes
+bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd tests/runtime tsgo
+bun run --cwd tests/perf tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=25 --wasm-profile=release --output=.context/benchmarks/wp06-read-model-installer-contract-100k.json
+```
+
+Compared with the previous retained WP-06 browser run:
+
+| Metric | Previous Rust | Contract-backed installer |
+| --- | ---: | ---: |
+| Bootstrap | `221.41ms` | `209.01ms` |
+| Pull apply | not recorded in previous summary | `139ms` |
+| Raw aggregate p50 | `23.00ms` | `22.91ms` |
+| Read-model aggregate p50 | `0.05ms` | `0.05ms` |
+| Read-model aggregate p95 | `0.10ms` | `0.12ms` |
+
+Decision:
+
+- Accepted. The change reduces generated complexity and did not introduce a
+  measurable performance regression in the browser gate.
+
+## 2026-05-19 - Accepted WP-06 Schema JSON Read-Model SQL Contract
+
+Change:
+
+- `syncular.schema.json` now includes generated `setupSql` and `rebuildSql` for
+  each local read model.
+- This lets non-TS host tooling consume the same SQLite read-model contract
+  without importing generated TypeScript or duplicating SQL generation.
+- Schema contract tests now require read-model SQL arrays when read models are
+  declared.
+
+Correctness gates:
+
+```bash
+cargo fmt --manifest-path rust/Cargo.toml --all
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example generated_local_read_model_sql_rebuilds_and_tracks_changes
+bun run --cwd rust/examples/todo-app tsgo
+bun run --cwd tests/runtime tsgo
+bun run --cwd tests/perf tsgo
+```
+
+Benchmark gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=25 --wasm-profile=release --output=.context/benchmarks/wp06-schema-json-read-model-sql-100k.json
+```
+
+Compared with the previous contract-backed installer run:
+
+| Metric | Previous Rust | Schema SQL contract |
+| --- | ---: | ---: |
+| Bootstrap | `209.01ms` | `207.08ms` |
+| Pull apply | `139ms` | `139ms` |
+| Raw aggregate p50 | `22.91ms` | `21.98ms` |
+| Read-model aggregate p50 | `0.05ms` | `0.04ms` |
+| Read-model aggregate p95 | `0.12ms` | `0.07ms` |
+
+Decision:
+
+- Accepted. This is a schema-contract change with no runtime hot-path cost, and
+  the measured browser gate stayed neutral-to-better.
+
+## 2026-05-19 - Accepted WP-06 External Generated Read-Model Wiring
+
+Change:
+
+- In the local `/Users/bkniffler/GitHub/sync/offline-sync-bench` checkout, added
+  a Syncular codegen manifest and SQLite migration for the benchmark schema.
+- Generated `stacks/syncular/syncular-app/syncular.schema.json` and changed the
+  Rust adapter to build local derived schema from that generated contract:
+  table indexes plus `localReadModels[*].setupSql/rebuildSql`.
+- Removed the Rust adapter's hand-written read-model table/trigger SQL from the
+  local checkout. This keeps the benchmark on the same generated contract apps
+  are expected to use.
+
+Correctness gates:
+
+```bash
+cargo run --manifest-path /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/Cargo.toml -p syncular-codegen -- --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bunx tsc --noEmit --allowImportingTsExtensions --moduleResolution Bundler --module ESNext --target ES2022 --strict --types bun --skipLibCheck src/adapters/syncular-rust.ts
+```
+
+External full `bun run typecheck` still fails in existing branch-server
+package/type drift around server artifact exports, so it was not used as the
+gate for this adapter-only wiring.
+
+Benchmark gate:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser build:wasm:dev
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis docker compose -f stacks/syncular/docker-compose.yml up --build -d
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular --scenario local-query
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular-rust --scenario local-query
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular --scenario bootstrap
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Results:
+
+| Metric | TS | Rust |
+| --- | ---: | ---: |
+| Local list p50 | `0.21ms` | `0.66ms` |
+| Local search p50 | `0.09ms` | `0.88ms` |
+| Aggregate p50 | `5.94ms` raw | `0.08ms` read model |
+| Rust raw aggregate p50 | n/a | `60.88ms` |
+| Rust bootstrap | n/a | `1363.56ms` |
+
+Compared with the previous dev-WASM external Rust sample:
+
+| Metric | Previous Rust | Generated schema contract |
+| --- | ---: | ---: |
+| Local list p50 | `0.67ms` | `0.66ms` |
+| Local search p50 | `0.97ms` | `0.88ms` |
+| Read-model aggregate p50 | `0.08ms` | `0.08ms` |
+| Raw aggregate p50 | `60.15ms` | `60.88ms` |
+
+External bootstrap, 500k rows:
+
+| Metric | TS | Rust |
+| --- | ---: | ---: |
+| Bootstrap | `4070.84ms` | `6240.52ms` |
+| Rust derived schema | n/a | `3269.49ms` |
+| Rust local apply | n/a | `1772ms` |
+| Rust peak memory | n/a | `700.83MB` |
+
+Compared with the previous dev-WASM row-chunk Rust baseline:
+
+| Metric | Previous Rust | Generated schema contract |
+| --- | ---: | ---: |
+| Bootstrap | `6099.68ms` | `6240.52ms` |
+| Derived schema | `3213.03ms` | `3269.49ms` |
+| Local apply | `1692ms` | `1772ms` |
+| Peak memory | `694.38MB` | `700.83MB` |
+
+Decision:
+
+- Accepted. The benchmark now uses generated read-model SQL without adding
+  hidden caching or changing the query contract, and the dev-WASM external gate
+  stayed in the same performance band. Bootstrap is not improved by this slice;
+  the value is removing hand-written SQL ownership from the benchmark/app
+  integration path.
+
+## 2026-05-19 - WP-05 Staged Bootstrap Readiness Contract
+
+Change:
+
+- Added local-only `bootstrapPhase` to generated Rust/TypeScript/Swift/Kotlin subscription specs.
+- Rust native/web pull selection now starts only the lowest pending bootstrap phase while keeping ready or already bootstrapping higher phases in the pull request.
+- Browser sync results expose per-subscription checkpoint metadata; the TypeScript binding derives aggregate `criticalReady`, `interactiveReady`, `complete`, active phase, and phase summaries. The aggregate is intentionally computed outside Rust to keep the WASM package under budget.
+- Browser worker/realtime emits `bootstrapChanged` through the normal client event bus.
+
+Correctness gates:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime bootstrap_phase_tests::staged_pull_selection_matches_subscription_readiness
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen generated_outputs_are_current
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features --features web-owned-sqlite --target wasm32-unknown-unknown
+cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --features native,crdt-yjs,demo-todo-native-fixture
+bun run --cwd rust/bindings/browser tsgo
+bun test rust/bindings/browser/src/worker-client.test.ts rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/react.test.ts
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "surfaces server client-id ownership conflicts|SQLite snapshot artifact|corrupted SQLite snapshot artifact|artifact rows when a subscription is revoked"
+bun run --cwd rust/bindings/browser build:wasm
+```
+
+Release package gate:
+
+| Metric | Result | Budget |
+| --- | ---: | ---: |
+| WASM raw | `3.29MiB` | `3.30MiB` |
+| WASM gzip | `1.36MiB` | `1.36MiB` |
+
+Benchmark guard:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=100000 --query-iterations=0 --wasm-profile=release --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 --output=.context/benchmarks/wp05-bootstrap-readiness-100k-artifacts.json
+```
+
+| Metric | Previous accepted same-shape guard | Current |
+| --- | ---: | ---: |
+| Rust 100k artifact bootstrap | `147.84ms` | `147.15ms` |
+| Rust pull apply | n/a | `137ms` |
+| Rust snapshot row apply | n/a | `121ms` |
+| Browser served Rust WASM bytes | `3,445,771` | `3,450,376` |
+
+Decision:
+
+- Accepted. Readiness metadata and events restore staged bootstrap semantics without a measurable 100k artifact regression. The first Rust aggregate-summary implementation was not retained because it pushed release WASM over budget by about `11.6KiB` raw / `5.4KiB` gzip; the accepted design keeps the aggregate in the TypeScript binding while preserving Rust-owned phase selection.
+
+## 2026-05-20 - WP-12 SQLite Artifact Memory Release Probe
+
+Change:
+
+- Tested `sqlite3_db_release_memory` after each direct attached-schema SQLite
+  artifact import in the browser Rust-owned SQLite path.
+- The probe did not change protocol, verification, artifact selection,
+  transaction boundaries, or app-visible semantics.
+
+Local release 500k artifact baseline:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=500000 --query-iterations=0 --wasm-profile=release --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 --output=.context/benchmarks/wp12-artifact-baseline-500k.json
+```
+
+Local release 500k artifact probe:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts --rows=500000 --query-iterations=0 --wasm-profile=release --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 --output=.context/benchmarks/wp12-artifact-release-memory-500k.json
+```
+
+| Metric | Baseline | Probe |
+| --- | ---: | ---: |
+| Rust bootstrap | `616.53ms` | `610.28ms` |
+| Rust local apply | `523ms` snapshot row apply | `522ms` snapshot row apply |
+| JS heap delta | `6.92MB` | `6.22MB` |
+| Rust WASM bytes | `3,450,376` | `3,450,488` |
+
+External app-style scoped artifact probe:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T00-34-48-808Z/syncular-rust/bootstrap.json`
+
+| Metric | Accepted WP-12 baseline | Probe |
+| --- | ---: | ---: |
+| 500k bootstrap | `1334.25ms` | `1418.34ms` |
+| 500k local apply | `198ms` | `212ms` |
+| 500k response bytes | `3,537,673` | `3,537,699` |
+| 500k peak memory | `707.92MB` | `704.72MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Decision:
+
+- Rejected. External peak memory improved only `3.20MB` while bootstrap and
+  local apply regressed. Code was reverted; keep the result as evidence that a
+  generic SQLite memory-release call is not the artifact resource-state answer.
+
+## 2026-05-20 - WP-12 External Derived-Schema Contract And Install Strategy
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Regenerated the external `offline-sync-bench` Syncular app schema with the
+  current codegen so it includes the flattened `localDerivedSchema` contract.
+- Updated the external Rust adapter to read local index/read-model SQL from
+  `localDerivedSchema` directly, with no older-contract fallback.
+- Probed the remaining install-strategy question by comparing the current
+  bulk-load-then-derived-rebuild flow against a temporary benchmark-only
+  before-bootstrap derived-schema install.
+
+External setup:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
+bun run --cwd rust/bindings/browser build:wasm
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+```
+
+Current bulk-load-then-derived-rebuild run:
+
+```bash
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T01-13-20-325Z/syncular-rust/bootstrap.json`
+
+Temporary before-bootstrap derived-schema install run:
+
+```bash
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+SYNCULAR_RUST_DERIVED_SCHEMA_PHASE=before \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T01-14-48-771Z/syncular-rust/bootstrap.json`
+
+500k comparison:
+
+| Metric | Accepted WP-12 baseline | Bulk then rebuild | Derived before bootstrap |
+| --- | ---: | ---: | ---: |
+| Bootstrap | `1334.25ms` | `1396.01ms` | `1827.83ms` |
+| Derived schema | n/a | `943.40ms` | `0.40ms` |
+| Sync total | n/a | `439ms` | `1808ms` |
+| Pull apply | n/a | `325ms` | `1646ms` |
+| Local apply | `198ms` | `208ms` | `1525ms` |
+| Response bytes | `3,537,673` | `3,537,713` | `3,537,708` |
+| Peak memory | `707.92MB` | `695.97MB` | `761.14MB` |
+| Snapshot chunks | `0` | `0` | `0` |
+
+Decision:
+
+- Keep bulk-load-then-derived-rebuild. Installing derived schema before the
+  snapshot import moves read-model/index work into every row write and heavily
+  regresses 500k apply time and peak memory.
+- Do not retain the benchmark-only phase switch. The accepted adapter shape is
+  base tables first, snapshot import, then generated local indexes/read-model
+  setup and rebuild from `localDerivedSchema`.
+- The bulk/rebuild run is slightly slower than the accepted baseline on wall
+  time (`1334.25ms -> 1396.01ms`) and local apply (`198ms -> 208ms`) but lower
+  on peak memory (`707.92MB -> 695.97MB`). Treat this as fresh context, not a
+  retained performance win.
+
+## 2026-05-20 - Browser WASM Size Gate After CRDT Recovery
+
+Work packages:
+
+- [`WP-07 CRDT Fields`](work-packages/WP-07-crdt-fields.md)
+- [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
+
+Reason:
+
+- The release browser WASM size gate failed while preparing the next WP-12
+  benchmark baseline. Measured a detached pre-CRDT-recovery worktree at
+  `c03ed9a1` to separate stale-budget debt from the retained CRDT recovery
+  additions.
+
+Commands:
+
+```bash
+git worktree add --detach .context/size-baseline-c03ed9a1 c03ed9a1
+bun run --cwd .context/size-baseline-c03ed9a1/rust/bindings/browser build:wasm
+bun run --cwd rust/bindings/browser build:wasm
+bun rust/bindings/browser/scripts/size-syncular-wasm.ts --json
+bun rust/bindings/browser/scripts/size-syncular-wasm.ts --json \
+  --wasm .context/size-baseline-c03ed9a1/rust/bindings/browser/dist/wasm/syncular_bg.wasm
+```
+
+Release WASM comparison:
+
+| Metric | Budget | `c03ed9a1` | Current |
+| --- | ---: | ---: | ---: |
+| Raw bytes | `3,460,301` | `3,480,934` | `3,491,832` |
+| Gzip bytes | `1,426,063` | `1,434,531` | `1,438,491` |
+| Raw over budget | `0` | `20,633` | `31,531` |
+| Gzip over budget | `0` | `8,468` | `12,428` |
+
+Decision:
+
+- Do not ratchet the package-size budget in this slice. The gate was already
+  stale before the CRDT recovery commits, and the retained recovery work added
+  about `10,898` raw bytes / `3,960` gzip bytes.
+- Removed one unnecessary host-store WASM export for
+  `forceSubscriptionsBootstrapJson`; it did not materially move the final
+  release artifact size, but it avoids carrying an unused public surface.
+- Track the budget failure as WP-10 package-size work before relying on
+  `bun run --cwd rust/bindings/browser build:wasm` as a green release gate.
+
+## 2026-05-20 - WP-10 Release Profile Restores WASM Size Gate
+
+Work package: [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
+
+Change:
+
+- Retained a Rust workspace release profile with `lto = true`,
+  `codegen-units = 1`, and `panic = "abort"`.
+- Rejected the more aggressive `opt-level = "z"` probe because the default
+  optimization level with LTO already restored the size gate with less runtime
+  risk.
+
+Release WASM size:
+
+| Metric | Previous failing current | Retained profile | Budget |
+| --- | ---: | ---: | ---: |
+| Raw bytes | `3,491,832` | `3,363,132` | `3,460,301` |
+| Gzip bytes | `1,438,491` | `1,383,031` | `1,426,063` |
+
+Commands:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp10-lto-release-100k-artifacts.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts --sync-snapshot-artifact-row-limit=50000 \
+  --output=.context/benchmarks/wp10-lto-release-500k-artifacts.json
+```
+
+Local release artifact guard:
+
+| Metric | Previous same-shape context | Retained profile |
+| --- | ---: | ---: |
+| 100k bootstrap | `147.15ms` | `147.16ms` |
+| 100k pull apply | `137ms` | `135ms` |
+| 100k snapshot row apply | `121ms` | `121ms` |
+| 500k bootstrap | `616.53ms` | `623.02ms` |
+| 500k snapshot row apply | `523ms` | `527ms` |
+| Release raw WASM bytes | `3,491,832` | `3,363,132` |
+
+External app-style scoped artifact check:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T05-39-04-769Z/syncular-rust/bootstrap.json`
+
+| Metric | Current derived-schema context | Retained profile |
+| --- | ---: | ---: |
+| 500k bootstrap | `1396.01ms` | `1430.17ms` |
+| 500k derived schema | `943.40ms` | `976.02ms` |
+| 500k sync total | `439ms` | `441ms` |
+| 500k pull apply | `325ms` | `323ms` |
+| 500k local apply | `208ms` | `207ms` |
+| 500k response bytes | `3,537,713` | `3,537,739` |
+| 500k peak memory | `695.97MB` | `688.56MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+The same-session external TS bootstrap run failed without useful metrics:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T05-39-59-769Z/syncular/bootstrap.json`.
+
+Correctness gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+```
+
+Decision:
+
+- Accepted. The release profile fixes the package-size gate without a meaningful
+  local artifact regression. In the external harness, the Rust sync/apply path
+  stayed flat and the total-bootstrap delta came from derived-schema timing,
+  not snapshot artifact transfer/apply.
+
+## 2026-05-20 - WP-12 CountBy Read Models Use WITHOUT ROWID
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Generated `countBy` read-model setup SQL now creates the aggregate table with
+  `WITHOUT ROWID`.
+- The dimensions already form a validated non-null primary key, so this keeps
+  the generated read/query semantics unchanged while using the leaner SQLite
+  storage shape for composite-key aggregate tables.
+- While running the example gate, the todo app's manual changed-row test helper
+  was updated to use `SyncChangedRow::default()` for newly added optional
+  fields.
+
+External app-style scoped artifact benchmark:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T05-47-15-646Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous retained profile run | WITHOUT ROWID read model |
+| --- | ---: | ---: |
+| 500k bootstrap | `1430.17ms` | `1382.56ms` |
+| 500k derived schema | `976.02ms` | `930.41ms` |
+| 500k sync total | `441ms` | `437ms` |
+| 500k pull apply | `323ms` | `326ms` |
+| 500k local apply | `207ms` | `202ms` |
+| 500k response bytes | `3,537,739` | `3,537,756` |
+| 500k peak memory | `688.56MB` | `696.50MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Correctness gates:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/crates/runtime --migrations-dir rust/crates/runtime/migrations --rust-output-dir rust/crates/runtime/src/fixtures/todo/generated
+cargo test --manifest-path rust/Cargo.toml -p syncular-codegen
+cargo test --manifest-path rust/Cargo.toml -p syncular-todo-app-example
+bun run --cwd rust/bindings/browser tsgo
+```
+
+Decision:
+
+- Accepted. The improvement is modest but measurable, and the implementation is
+  a simpler SQLite table-shape correction rather than a cache or protocol
+  branch. Peak memory moved up by `7.94MB` in the external run, but remains
+  below the recent `707.92MB` accepted scoped-artifact baseline while bootstrap
+  and derived-schema time improve.
+
+## 2026-05-20 - WP-12 Checkpoint Direct Artifact Pages
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Browser direct SQLite artifact apply can now checkpoint an apply batch after a
+  verified artifact snapshot page that carries `bootstrapStateAfter`.
+- The checkpoint commits the applied page plus subscription bootstrap state,
+  detaches artifact databases, and starts the next write transaction. A later
+  artifact failure can resume from the committed page instead of restarting the
+  scoped bootstrap from page one.
+- This is a bootstrap state-model improvement, not a client apply micro-probe
+  and not a hidden cache.
+
+Local 100k release artifact gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/browser-e2e-100k-sqlite-artifacts-before-checkpoint.json
+
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/browser-e2e-100k-sqlite-artifacts-after-checkpoint.json
+```
+
+| Metric | Before | After |
+| --- | ---: | ---: |
+| Rust bootstrap | `136.15ms` | `135.50ms` |
+| Rust pull apply | `125ms` | `124ms` |
+| Rust artifact apply | `110ms` | `110ms` |
+| Rust commit apply | `0ms` | `1ms` |
+| JS heap delta | `4.42MB` | `7.74MB` |
+| Snapshot chunks | `0` | `0` |
+
+External app-style scoped artifact benchmark:
+
+```bash
+cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
+
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result file:
+`/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-20T10-17-22-131Z/syncular-rust/bootstrap.json`
+
+| Metric | Previous 40k artifact guard | Checkpointed artifact pages |
+| --- | ---: | ---: |
+| 500k bootstrap | `1002.06ms` | `995.58ms` |
+| 500k derived schema | n/a | `584.27ms` |
+| 500k sync total | n/a | `399ms` |
+| 500k pull apply | n/a | `302ms` |
+| 500k local apply | `198ms` | `203ms` |
+| 500k response bytes | `3,537,647` | `3,537,607` |
+| 500k peak memory | `668.20MB` | `671.13MB` |
+| 500k snapshot chunks | `0` | `0` |
+
+Correctness gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "SQLite snapshot artifact|corrupted SQLite snapshot artifact|interrupted SQLite snapshot artifact|committed SQLite snapshot artifact|artifact rows when a subscription is revoked"
+bun run --cwd rust/bindings/browser tsgo
+cargo fmt --manifest-path rust/Cargo.toml --all -- --check
+```
+
+Decision:
+
+- Accepted as a correctness and state-model slice. The new test proves the
+  client commits a verified artifact page and resumes with one remaining
+  artifact download after a later artifact failure.
+- This is not a memory win. Local wall time stayed neutral, external 500k
+  bootstrap improved slightly, and peak memory moved up by `2.93MB` versus the
+  previous artifact guard. Do not use this as evidence for raising artifact page
+  caps without a separate memory benchmark win.
+
+## 2026-05-20 - WP-12 Artifact Checkpoint Metrics
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Browser Rust sync timings now expose `snapshotArtifactCheckpointMs` and
+  `snapshotArtifactCheckpointCount`.
+- Browser E2E output now records
+  `rust_snapshot_artifact_checkpoint_ms`,
+  `rust_snapshot_artifact_checkpoint_count`, and cached-run equivalents.
+- This is observability for the retained checkpointed artifact-page state model,
+  not a sync behavior change.
+
+Local 100k release artifact gate:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --sync-snapshot-artifacts \
+  --output=.context/benchmarks/browser-e2e-100k-sqlite-artifacts-checkpoint-metrics.json
+```
+
+| Metric | Previous checkpoint run | With explicit checkpoint metrics |
+| --- | ---: | ---: |
+| Rust bootstrap | `135.50ms` | `133.64ms` |
+| Rust pull apply | `124ms` | `123ms` |
+| Rust artifact apply | `110ms` | `111ms` |
+| Rust artifact checkpoints | n/a | `1` |
+| Rust artifact checkpoint time | n/a | `0ms` |
+| JS heap delta | `7.74MB` | `2.81MB` |
+| Release WASM bytes | `3,365,184` | `3,365,410` |
+| Snapshot chunks | `0` | `0` |
+
+Correctness gates:
+
+```bash
+bun run --cwd rust/bindings/browser tsgo
+bun run --cwd tests/runtime tsgo
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --no-default-features --features web-owned-sqlite \
+  --target wasm32-unknown-unknown
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/client.test.ts rust/bindings/browser/src/worker-realtime.test.ts rust/bindings/browser/src/react.test.ts rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts \
+  --test-name-pattern "resumes after a committed SQLite snapshot artifact page|diagnostic|bootstrap|rows changed|realtime"
+```
+
+Decision:
+
+- Accepted. The metric surface is tiny (`+226` release WASM bytes), makes the
+  checkpoint path visible in benchmark output, and stayed neutral-to-better in
+  the local artifact gate.
+
+## 2026-05-20 - WP-10 Browser Fallback Cleanup And Size Probe
+
+Work package: [`WP-10 Browser Package And Docs`](work-packages/WP-10-browser-package-docs.md)
+
+Change:
+
+- Removed browser `web-transport`'s `flate2` dependency. Browser snapshot
+  chunks and snapshot artifacts now require `DecompressionStream('gzip')`;
+  native transport keeps `flate2`.
+- Removed browser Rust `WebRealtimeSocket` ownership. Browser WebSocket
+  lifecycle stays in the TypeScript Worker controller, while Rust continues to
+  decode/apply binary realtime sync-pack frames.
+- Retained `opt-level = "z"` in the Rust workspace release profile and added a
+  `full-perf` artifact built with release `opt-level=3`.
+- Kept the full browser artifact as the default package shape; no feature
+  package matrix was introduced.
+
+Package-size gate:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm
+bun rust/bindings/browser/scripts/size-syncular-wasm.ts --json
+```
+
+| Metric | Previous retained full | Fallback cleanup | Cleanup + `opt-level=z` |
+| --- | ---: | ---: | ---: |
+| Raw WASM bytes | `3,365,410` | `3,316,614` | `2,220,519` |
+| Gzip WASM bytes | `1,383,462` | `1,351,931` | `1,001,184` |
+| Raw budget | `3,460,301` | `3,460,301` | `3,460,301` |
+| Gzip budget | `1,426,063` | `1,426,063` | `1,426,063` |
+
+Retained `opt-level=z` browser E2E guardrails:
+
+```bash
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --output=.context/benchmarks/wp10-optz-normal-100k.json
+bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --output=.context/benchmarks/wp10-optz-normal-500k.json
+CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=100000 --query-iterations=0 --wasm-profile=release \
+  --output=.context/benchmarks/wp10-optz-retained-100k.json
+CARGO_PROFILE_RELEASE_OPT_LEVEL=z \
+  bun tests/runtime/scripts/browser-e2e-scoreboard.ts \
+  --rows=500000 --query-iterations=0 --wasm-profile=release \
+  --output=.context/benchmarks/wp10-optz-retained-500k.json
+```
+
+| Metric | Normal cleanup profile | `opt-level=z` profile |
+| --- | ---: | ---: |
+| 100k Rust bootstrap | `214.88ms` | `217.86ms` |
+| 100k cached bootstrap | `136.38ms` | `143.84ms` |
+| 100k pull apply | `141ms` | `151ms` |
+| 100k snapshot chunk apply | `130ms` | `138ms` |
+| 500k Rust bootstrap | `969.87ms` | `1,034.91ms` |
+| 500k cached bootstrap | `664.84ms` | `721.38ms` |
+| 500k pull apply | `663ms` | `725ms` |
+| 500k snapshot chunk apply | `612ms` | `672ms` |
+| Served Rust WASM bytes | `3,316,614` | `2,220,519` |
+| Served asset total bytes | `7,789,159` | `6,693,063` |
+
+Dual full-artifact packaging:
+
+```bash
+bun run --cwd rust/bindings/browser build:wasm:variants
+```
+
+Decision: ship both full optimization profiles in one package for now.
+`dist/wasm` remains the default size-optimized full artifact. `dist/wasm-perf`
+ships the same full feature set with release `opt-level=3` and is selected only
+when callers explicitly provide `getSyncularRuntimeArtifact('full-perf')` or
+that catalog entry. This keeps the default under 1 MiB while preserving the old
+runtime profile for consumers that prefer it.
+
+Catalog output:
+
+| Artifact | Raw WASM bytes | Gzip WASM bytes |
+| --- | ---: | ---: |
+| `core` | `1,719,643` | `775,688` |
+| `full` | `2,220,519` | `1,001,184` |
+| `full-perf` | `3,316,614` | `1,351,931` |
+
+Correctness gates:
+
+```bash
+CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
+  cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --target wasm32-unknown-unknown --no-default-features \
+  --features web-owned-sqlite
+bun run --cwd rust/bindings/browser build:wasm
+bun test rust/bindings/browser/src/worker-realtime.test.ts \
+  rust/bindings/browser/src/__tests__/realtime-hono.wasm.test.ts \
+  rust/bindings/browser/src/__tests__/sync-hono.wasm.test.ts
+```
+
+Result: cargo check passed, package-size build passed, and `53` browser tests
+passed.
+
+Attempted direct cargo gate:
+
+```bash
+cargo check --manifest-path rust/Cargo.toml -p syncular-runtime \
+  --target wasm32-unknown-unknown --no-default-features \
+  --features web-owned-sqlite
+```
+
+Result: failed before compiling runtime changes because the direct cargo path
+used default `clang` and `sqlite-wasm-rs` could not create the
+`wasm32-unknown-unknown` target. The browser build script path succeeded
+because it supplies the existing wasm clang configuration. Rerunning the cargo
+gate with `CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang` passed.
+
+Decision:
+
+- Accepted the browser fallback cleanup. It removes unused browser fallback
+  behavior, clarifies ownership, and saves `31,531` gzip bytes.
+- Accepted `opt-level=z` as the default full artifact. The retained profile
+  saves another `350,747` gzip bytes versus the fallback-cleanup profile and
+  stays under 1 MiB, while the observed 500k bootstrap regression stayed within
+  the acceptable tradeoff for the shipped-size win. Also accepted shipping the
+  `full-perf` artifact in the same package so consumers can opt into the old
+  runtime profile without a separate package.
+
+## 2026-05-21 - WP-12 Rejected Indexes Before Artifact Import
+
+Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-snapshot-artifacts.md)
+
+Change:
+
+- Probed a benchmark-only app-harness sequence that installs generated app
+  indexes after base tables but before artifact import, while leaving read-model
+  setup/rebuild after the bulk load.
+- This isolates the index-order question from the earlier rejected full
+  before-bootstrap derived-schema install.
+
+External setup:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/browser/dist \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1 \
+SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000 \
+  bun run bench:run -- --stack syncular-rust --scenario bootstrap
+```
+
+Result files:
+
+- Probe 1:
+  `/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T13-30-52-435Z/syncular-rust/bootstrap.json`
+- Probe 2:
+  `/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T13-31-43-060Z/syncular-rust/bootstrap.json`
+- Same-session control:
+  `/Users/bkniffler/GitHub/sync/offline-sync-bench/.results/2026-05-21T13-33-06-133Z/syncular-rust/bootstrap.json`
+
+500k comparison:
+
+| Metric | Bulk then indexes/read models | Indexes before import #1 | Indexes before import #2 |
+| --- | ---: | ---: | ---: |
+| Bootstrap | `1077.21ms` | `1046.78ms` | `1052.50ms` |
+| Derived schema | `629.62ms` | `40.75ms` | `41.72ms` |
+| Sync total | `435ms` | `988ms` | `994ms` |
+| Pull apply | `328ms` | `870ms` | `887ms` |
+| Local apply | `210ms` | `755ms` | `770ms` |
+| Response bytes | `3,537,755` | `3,537,696` | `3,537,758` |
+| Peak memory | `616.92MB` | `652.39MB` | `645.83MB` |
+| Snapshot chunks | `0` | `0` | `0` |
+
+Decision:
+
+- Rejected. The sequence buys only about `25-30ms` app-style wall time in this
+  run while moving much more work into the hot artifact apply path and raising
+  peak memory by about `29-35MB`.
+- Keep the default app harness as base tables first, artifact import second,
+  then generated indexes/read-model setup/rebuild. Do not promote index-before
+  import unless a future app-specific workload explicitly accepts the memory and
+  apply-path tradeoff.
+## 2026-05-21 - WP-10 Legacy TS Client Removal And Package Rename
+
+Change:
+
+- Removed the legacy pure TypeScript client product path and made the
+  Rust-owned browser binding the canonical `@syncular/client` package.
+- Removed old JS-client benchmarks and runtime/perf suites instead of carrying
+  them as compatibility baselines.
+- Kept the active size evidence on the Rust/WASM browser artifact because this
+  cleanup changes package shape rather than runtime hot-path code.
+
+Package-size gate:
+
+```bash
+bun run rust:browser:build:wasm
+```
+
+Result:
+
+| Metric | Current |
+| --- | ---: |
+| Raw WASM size | `2.26 MiB` |
+| Raw budget headroom | `1.04 MiB` |
+| Gzip WASM size | `1.01 MiB` |
+| Gzip budget headroom | `357.4 KiB` |
+
+Correctness gates:
+
+```bash
+bun run tsgo
+bun run rust:browser:tsgo
+bun run rust:browser:test
+bun run rust:codegen:check
+bun run rust:conformance:fast
+bun run docs:build
+```
+
+Result: all listed gates passed. `rust:browser:test` ran `91` tests. The
+conformance fast gate ran the Rust testkit, runtime protocol/blob/CRDT tests,
+todo example tests, and generated browser conformance tests successfully.
+
+Extra sweep:
+
+```bash
+bun test packages tests/unit tests/dialects tests/typegen
+```
+
+Result: passed, `703` tests. Surviving server tests now assert stable
+namespaced error codes and fail-closed external snapshot chunk reads instead of
+legacy uppercase/fallback expectations.
+
+## 2026-05-22 - WP-28 Relay Rust Boundary Evaluation Baseline
+
+Work package: [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
+
+Change:
+
+- Added a repeatable relay protocol-boundary evaluator for the WP-27 fixture.
+- This captures the current TypeScript JSON/schema/binary baseline before any
+  production Rust relay validation path exists.
+- No Rust relay runtime behavior was retained by this slice.
+
+Command:
+
+```bash
+bun run --cwd packages/relay evaluate:rust-boundary
+```
+
+Fixture payload sizes:
+
+| Payload | Bytes |
+| --- | ---: |
+| Combined request JSON | `1,368` |
+| Combined response JSON | `2,978` |
+| Binary sync pack | `2,349` |
+| Snapshot chunk | `214` |
+| Scoped snapshot artifact | `54` |
+| Blob body | `15` |
+| Realtime server sync message JSON | `156` |
+
+Local result, 2,000 iterations:
+
+| Metric | p50 | p95 | Avg |
+| --- | ---: | ---: | ---: |
+| JSON parse combined request | `2.42us` | `3.96us` | `2.85us` |
+| JSON parse combined response | `4.21us` | `6.21us` | `4.79us` |
+| TypeScript schema combined request | `6.25us` | `13.08us` | `8.78us` |
+| TypeScript schema combined response | `11.75us` | `18.50us` | `13.62us` |
+| HTTP-style parse+schema request | `7.13us` | `12.33us` | `8.91us` |
+| HTTP-style parse+schema response | `11.00us` | `16.42us` | `12.15us` |
+| Binary sync-pack decode | `5.79us` | `11.96us` | `7.16us` |
+| Binary sync-pack decode+schema | `12.88us` | `22.58us` | `18.10us` |
+| Validate schema-backed fixture protocol objects | `32.75us` | `47.46us` | `37.52us` |
+
+Malformed diagnostics:
+
+- Empty combined request `clientId`: rejected at `clientId` with `too_small`.
+- Non-true combined response `ok`: rejected at `ok` with `invalid_value`.
+- Invalid blob hash: rejected at `hash` with `invalid_format`.
+- Stale binary sync-pack version `0`: rejected with
+  `Unsupported binary sync pack version: 0`.
+
+Decision:
+
+- Keep WP-28 in progress. The current TypeScript protocol-boundary costs are
+  low on this fixture, so a production Rust validation boundary needs stronger
+  evidence than "Rust exists".
+- Next evidence should measure real relay app paths: local push, forward to
+  main, pull/apply from main, local client pull, and realtime wakeups. Only
+  prototype a Rust call boundary after those baselines show either protocol
+  validation heat or correctness/drift value that TypeScript schemas do not
+  already provide.
+
+## 2026-05-22 - WP-28 Relay App-Path Baseline
+
+Work package: [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
+
+Change:
+
+- Added a repeatable in-memory relay app-path evaluator.
+- The evaluator uses Bun SQLite, `server-dialect-sqlite`, a minimal `tasks`
+  handler collection, `relayPushCommit`, `ForwardEngine.forwardOnce`,
+  `PullEngine.pullOnce`, `relayPull`, and `RelayRealtime`.
+- Forward and pull transports are deterministic in-process controls; network
+  latency is intentionally excluded.
+
+Command:
+
+```bash
+bun run --cwd packages/relay evaluate:relay-paths
+```
+
+Local result, 100 measured iterations, 10 warmup iterations:
+
+| Metric | p50 | p95 | Avg |
+| --- | ---: | ---: | ---: |
+| Local client push into relay | `243.83us` | `701.46us` | `385.47us` |
+| Relay forward once to main | `70.04us` | `108.63us` | `76.47us` |
+| Relay pull from main and local apply | `213.04us` | `379.96us` | `256.16us` |
+| Local client incremental pull from relay | `157.96us` | `305.67us` | `179.28us` |
+| Realtime wakeup to 100 mock connections | `18.08us` | `33.92us` | `20.45us` |
+
+Counters:
+
+- Local push commits: `100`.
+- Forwarded commits: `100`.
+- Main pull/apply commits: `100`.
+- Local pull responses: `100`.
+- Realtime messages: `10,000`.
+
+Decision:
+
+- Keep WP-28 in evaluation. The relay app paths are dominated by DB/app
+  semantics in this local control; schema-backed protocol validation
+  (`47.46us` p95 in the earlier WP-28 baseline) is not currently the largest
+  measured cost.
+- A Rust protocol validator alone is unlikely to be retained for relay
+  performance unless it avoids existing JSON/copy work or adds correctness
+  value that TypeScript schemas do not provide.
+- Next useful step is brainstorming from the evidence or measuring Rust
+  call-boundary overhead as a control. Do not start a Rust relay/server rewrite
+  from these numbers.
+
+## 2026-05-22 - WP-28 Final Relay Rust Decision
+
+Work package: [`WP-28 Relay Rust Evaluation And Protocol Validation`](work-packages/WP-28-relay-production-protocol-validation.md)
+
+Decision:
+
+- Closed WP-28 with Rust protocol validation kept in fixtures/dev tooling only.
+- No production Rust validation path is retained in relay/server.
+- No new Rust relay/server component WP is created from this evidence.
+- Relay app semantics stay TypeScript/Kysely-owned unless a future product
+  decision and new measurements say otherwise.
+
+Rationale:
+
+- The current TypeScript protocol checks are measurable but small on the WP-27
+  fixture.
+- The measured relay paths are dominated by DB/app semantics rather than
+  protocol validation.
+- The available JavaScript-facing Rust binding is the full browser client WASM
+  runtime, not a deliberately scoped protocol-only relay/server validation
+  surface. Using it for the call-boundary probe would measure the wrong
+  integration shape.
+
+## 2026-05-22 - WP-09 Windows JVM Package Evidence
+
+Work package: [`WP-09 Native Bindings And Packaging`](work-packages/WP-09-native-bindings-packaging.md)
+
+Command:
+
+```bash
+bash rust/scripts/package-native-bindings.sh --java-windows-x86_64
+```
+
+Evidence source:
+
+- GitHub Checks workflow run `26260787975` on branch `feat/rust-client`, commit
+  `3cecf58010a3013f1afd07a451fc09d3dcea5c22`.
+- Job `rust-windows-jvm-package`, job id `77293580195`, passed on
+  `windows-latest`:
+  <https://github.com/syncular/syncular/actions/runs/26260787975/job/77293580195>.
+- The package step completed in `143.2s`. The linker emitted `LNK4098` as a
+  warning only; the compile, verification, and upload steps completed
+  successfully.
+
+Result:
+
+| Artifact Field | Value |
+| --- | --- |
+| Workflow status | `success` |
+| Artifact name | `syncular-jvm-windows-26260787975` |
+| Artifact path | `.context/native-packages/java/native/windows-x86_64/syncular_runtime_jni.dll` |
+| Artifact id | `7150140731` |
+| Artifact size | `2,617,849` bytes |
+| Artifact zip SHA-256 | `e1e658cf39779b8c52d138f18012a4ea95d8d9ed60a1277f8b590c920ef36b22` |
+
+Decision:
+
+- WP-09 is accepted for the current native packaging foundation.
+- The Windows native/JVM packaging blocker is cleared for the current package
+  shape. Broader platform release validation should be driven by concrete
+  app-shell or publication requirements.
+
+## 2026-05-22 - WP-31 Rust Outbox Benchmark Parity Slice
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Implemented `offline-replay` and `large-offline-queue` for
+  `syncular-rust` in the external `offline-sync-bench` adapter.
+- The scenarios use the real Rust WASM `applyMutation` path, native
+  `sync_outbox_commits`, `syncOnce()` replay, conflict summaries, and transport
+  counters.
+- Added queued/final outbox status counts and per-attempt pushed-commit timing
+  metadata.
+
+Commands:
+
+```bash
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+bun run bench:run -- --stack syncular-rust --scenario offline-replay
+```
+
+```bash
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+bun run bench:run -- --stack syncular-rust --scenario large-offline-queue
+```
+
+Results:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `offline-replay` | `2026-05-22T12-08-40-268Z` | `10` queued writes, `50.17ms` reconnect convergence, `1` sync attempt, `10/10` commits acked, `0` conflicts |
+| `large-offline-queue` | `2026-05-22T12-00-07-729Z` | `100` writes in `260.91ms`, `500` in `1165.86ms`, `1000` in `2169ms`; all scales had `1.0` success rate and `0` conflicts |
+
+Decision:
+
+- Retain the benchmark-adapter changes. The previous unsupported rows were an
+  adapter gap for Rust task mutations, not a missing Rust outbox capability.
+- Do not call process-restart durability accepted yet. The Bun benchmark process
+  cannot open Rust `indexedDb` storage and `opfsSahPool` requires a dedicated
+  worker, so this slice verifies active-session native outbox replay with memory
+  storage.
+- The next performance lever is the Rust web-client outbox push batch limit:
+  the `1000`-write queue required exactly `50` sync attempts because each
+  attempt pushes `20` commits.
+
+## 2026-05-22 - WP-31 Rust Blob Benchmark Parity Slice
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Implemented `blob-flow` for `syncular-rust` in the external
+  `offline-sync-bench` adapter.
+- Added the benchmark `task_blob_entries` app table to the Rust adapter schema
+  and local base table setup.
+- The scenario uses native Rust WASM blob store/retrieve/cache/upload-queue APIs
+  plus real metadata sync through `task_blob_entries`.
+
+Command:
+
+```bash
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+bun run bench:run -- --stack syncular-rust --scenario blob-flow
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `blob-flow` | `2026-05-22T12-07-31-563Z` | `512KiB` upload `26.04ms`, metadata visible on reader `25.58ms`, re-download after cache clear `16.61ms`, `11` requests, `1,315,932` transferred bytes, retry upload queue drained from `1` pending to `0` |
+| `blob-flow` support-label refresh | `2026-05-22T12-55-26-622Z` | latest public-results row carries `native` support metadata; `512KiB` upload `32.69ms`, metadata visible `29.58ms`, re-download after cache clear `14.00ms`, retry recovery `1033.88ms` |
+
+Decision:
+
+- Retain the adapter change. The previous unsupported blob row was a schema and
+  adapter coverage gap, not a missing Rust blob capability.
+- Keep SQLite storage-byte overhead as `n/a` for the Rust lane until a
+  browser-worker durable storage benchmark exists.
+- Track the retry backoff behavior as performance evidence: after the induced
+  PUT failure, Rust queue recovery took `1043ms` and `11` processing attempts
+  before the retry became due and uploaded.
+
+## 2026-05-22 - WP-31 Rust Outbox Push Batch Config Slice
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added bounded Rust web client `config.push.outboxBatchLimit`.
+- Default remains `20` commits per push request.
+- Runtime validation accepts `1..=1000`.
+- Rust web sync error recovery now requeues the configured sending batch size.
+- The external benchmark adapter can opt in via
+  `SYNCULAR_RUST_OUTBOX_PUSH_BATCH_LIMIT`.
+
+Verification:
+
+```bash
+bun --cwd rust/bindings/javascript build:wasm
+bun --cwd packages/client build
+bun --cwd packages/client test src/__tests__/sync-hono.wasm.test.ts -t "honors configured Rust outbox push batch limits"
+```
+
+Result:
+
+- WASM build passed.
+- Client build passed.
+- Focused Hono/WASM test passed and pushed `25` commits in a single
+  configured `syncPush()`.
+
+External large queue comparison for `1000` queued writes:
+
+| Batch limit | Run ID | Convergence | Sync attempts | Requests |
+| ---: | --- | ---: | ---: | ---: |
+| `20` default | `2026-05-22T12-00-07-729Z` | `2169ms` | `50` | `100` |
+| `50` | `2026-05-22T12-16-25-773Z` | `1895.08ms` | `20` | `40` |
+| `100` | `2026-05-22T12-15-00-294Z` | `1573.21ms` | `10` | `20` |
+| `150` | `2026-05-22T12-16-53-468Z` | `1743.7ms` | `7` | `14` |
+| `250` | `2026-05-22T12-15-57-788Z` | `1756.52ms` | `4` | `8` |
+
+Decision:
+
+- Retain the bounded config. It improves heavy offline replay without changing
+  default behavior for normal clients.
+- Do not raise the default from `20` yet. The benchmark shows larger push
+  batches have nonlinear server/client cost; `100` is best in this fixture, but
+  smaller queues can be neutral or slower.
+- Keep the external benchmark opt-in explicit so comparison runs can report the
+  configured batch limit.
+
+## 2026-05-22 - WP-31 Generated Dashboard Read Model Slice
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added the explicit external benchmark read model
+  `taskCountsByProjectCompletion` to the generated Syncular codegen handoff.
+- Regenerated the external benchmark `syncular.schema.json` and Rust generated
+  schema so `localDerivedSchema` installs
+  `syncular_rust_task_counts_by_project_completion`.
+- Changed the Rust deep dashboard benchmark to use keyed joins against that
+  generated read model while retaining the old raw dashboard SQL as
+  `dashboard_raw_sql_query_*`.
+
+Verification:
+
+```bash
+cargo run --manifest-path /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/Cargo.toml \
+  -p syncular-codegen -- \
+  --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
+  --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app/generated/rust \
+  --check
+```
+
+```bash
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+bun run bench:run -- --stack syncular-rust --scenario deep-relationship-query
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `deep-relationship-query` | `2026-05-22T12-24-55-017Z` | dashboard read model p50 `0.03ms`, p95 `0.07ms`; raw dashboard SQL in the same run p50 `62.36ms`, p95 `63.03ms`; detail join p50 `0.34ms`, p95 `0.77ms` |
+
+Decision:
+
+- Retain the generated read model. It is explicit app/codegen intent and fixes
+  the measured slow dashboard aggregate without adding hidden runtime caching.
+- The original deep dashboard issue is a missing read-model/query-shape problem,
+  not evidence that the Rust local SQLite path is generally slow.
+- Keep future dashboard aggregate work on explicit generated read-model rails;
+  do not infer local aggregate caches inside the runtime.
+
+## 2026-05-22 - WP-31 Realtime Wakeup Reason Instrumentation Slice
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added explicit Hono `websocket.maxSyncPackBytes` configuration for direct
+  outbound websocket binary sync-pack delivery. Default remains `64KiB`.
+- Added realtime sync wakeup `payloadBytes` metadata and Rust worker diagnostic
+  propagation so benchmarks can distinguish oversized binary payloads from
+  cursor-only wakeups.
+- Corrected Hono fallback reason selection: actual oversized payloads remain
+  `payload-too-large`; missing per-connection binary payloads now report
+  `server-wakeup`.
+- Added external benchmark env plumbing
+  `SYNCULAR_BENCH_WS_SYNC_PACK_MAX_BYTES` and Rust adapter payload-byte
+  summaries.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/server-hono
+bun test src/__tests__/ws-connection-manager.test.ts
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client
+bun test src/worker-realtime.test.ts
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd packages/server-hono build
+bun --cwd packages/client build
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d syncular
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+bun run bench:run -- --stack syncular-rust --scenario online-propagation
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `online-propagation` | `2026-05-22T12-36-38-122Z` | reader visibility p50 `18.45ms`, p95 `24.53ms`; `15/15` reader realtime events required HTTP pull recovery; reason `server-wakeup`; payload bytes `null`; binary applies `0` |
+
+Decision:
+
+- Retain the diagnostic/reason fix and the explicit cap configuration. It does
+  not change the default cap, but it prevents the benchmark from mislabeling
+  missing realtime deltas as oversized payloads.
+- Do not tune `maxSyncPackBytes` for this benchmark yet. The measured wakeups
+  have no payload bytes, so the cap is not the active blocker.
+- Next online-propagation work should make active/recent pull subscription state
+  available to realtime delta construction for the Rust worker path, then rerun
+  the benchmark to verify binary apply counts and latency.
+
+## 2026-05-22 - WP-31 Realtime Binary Pack Safe Version Slice
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Used debug-enabled external benchmark telemetry to identify
+  `sync.realtime.binary_pack_encode_failed` with
+  `int64 value must be a safe integer`.
+- Fixed `createServerHandler` so driver-returned string/`bigint` version
+  columns are normalized to safe JS integers before emitted changes and
+  conflict rows reach direct websocket binary sync-pack encoding.
+- Added a server regression test that uses a text version column to mimic
+  driver string versions in emitted changes and conflict payloads.
+- Normalized the external benchmark `external-write` notification version before
+  calling `notifyExternalRowChanges`.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/server
+bun test src/push-operation-codes.test.ts
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd packages/server build
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+bun run typecheck
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_BENCH_DEBUG_REALTIME=1 \
+  docker compose -f stacks/syncular/docker-compose.yml up --build --force-recreate -d syncular
+
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+  bun run bench:run -- --stack syncular-rust --scenario online-propagation
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `online-propagation` | `2026-05-22T12-49-11-883Z` | reader visibility p50 `8.94ms`, p95 `16.25ms`; `15/15` binary sync-packs applied; pull-required `0`; binary apply failed `0`; request count `30` |
+
+Before/after:
+
+| Run | Reader p50 | Reader p95 | Binary applies | Pull-required | Requests |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `2026-05-22T12-36-38-122Z` | `18.45ms` | `24.53ms` | `0` | `15` | `45` |
+| `2026-05-22T12-49-11-883Z` | `8.94ms` | `16.25ms` | `15` | `0` | `30` |
+
+Decision:
+
+- Retain the normalization. The measured online issue was unsafe version typing
+  in the direct realtime binary pack path, not missing subscriptions and not the
+  websocket payload cap.
+- Keep the Slice 6 diagnostics and cap config: they made the root cause visible
+  and remain useful for distinguishing future oversized-payload recoveries.
+
+## 2026-05-22 - WP-31 Blob Upload Retry Backoff Split
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Split blob upload retry timing from the shared sync/outbox retry backoff.
+- Sync commit retries keep the existing `1000ms` exponential base.
+- Blob upload retries now use a blob-specific `100ms` exponential base, capped
+  at `5000ms`.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust
+cargo fmt
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd rust/bindings/javascript build:wasm
+bun --cwd packages/client test src/__tests__/blob-hono.wasm.test.ts
+bun --cwd packages/client build
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+  bun run bench:run -- --stack syncular-rust --scenario blob-flow
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `blob-flow` | `2026-05-22T13-01-24-673Z` | `512KiB` upload `24.45ms`, metadata visible `31.76ms`, re-download after cache clear `15.69ms`, retry recovery `116.36ms` over `2` attempts, support `native` |
+
+Before/after:
+
+| Run | Retry recovery | Attempts | Upload | Metadata visible |
+| --- | ---: | ---: | ---: | ---: |
+| `2026-05-22T12-55-26-622Z` | `1033.88ms` | `11` | `32.69ms` | `29.58ms` |
+| `2026-05-22T13-01-24-673Z` | `116.36ms` | `2` | `24.45ms` | `31.76ms` |
+
+Decision:
+
+- Retain the split. It removes the shared sync backoff as the dominant cost in
+  blob retry recovery while preserving conservative outbox retry timing.
+- Keep the remaining JS-vs-Rust retry gap visible. A lower or immediate blob
+  retry loop should be evaluated separately, preferably as an explicit
+  online-event/manual retry path rather than a blanket automatic retry change.
+
+## 2026-05-22 - WP-31 Permission Scope-Difference Clear
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added a Rust web-store `clear_table_for_scopes_except` operation.
+- Changed active subscription scope updates so same-table scope shrink clears
+  only rows in the revoked part of the previous scope set.
+- Retained-scope rows are no longer deleted after applying the retained-scope
+  snapshot, avoiding the second sync that previously repaired local state.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --features web-client memory_store_clears_scope_difference_without_removing_retained_rows --lib
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust
+cargo fmt
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd rust/bindings/javascript build:wasm
+bun --cwd packages/client build
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+  bun run bench:run -- --stack syncular-rust --scenario permission-change
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `permission-change` | `2026-05-22T13-10-37-130Z` | convergence `38.95ms`; revoke request `9.98ms`; `1` sync attempt; retained rows stayed at `500`; revoked rows `0`; requests `2`; bytes `4842` |
+
+Before/after:
+
+| Run | Convergence | Sync attempts | Intermediate visible rows | Requests | Bytes |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| `2026-05-22T11-48-21-282Z` | `54.24ms` | `2` | `0` then `500` | `4` | `9687` |
+| `2026-05-22T13-10-37-130Z` | `38.95ms` | `1` | `500` | `2` | `4842` |
+
+Decision:
+
+- Retain the fix. It improves permission-change convergence by `28.2%` and
+  removes a correctness artifact where retained authorized rows disappeared
+  until a follow-up sync.
+- This is a scoped-access correctness fix, not a benchmark-only optimization:
+  revoked rows are cleared while retained rows remain locally queryable.
+
+## 2026-05-22 - WP-31 Reconnect Storm Realtime Recovery Evaluation
+
+Work package: [`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added worker realtime reconnect correctness: after a websocket reconnect, the
+  worker schedules a catch-up pull so writes missed while disconnected are not
+  silently skipped.
+- Added configurable realtime reconnect jitter and HTTP pull-recovery jitter so
+  large client fleets can spread recovery pulls when websocket messages are
+  cursor-only.
+- Coalesced queued realtime wakeups when an in-flight pull already advanced
+  past the wakeup cursor.
+- Added an external benchmark lane selected with
+  `SYNCULAR_RUST_RECONNECT_MODE=worker-realtime`.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client
+bun test src/worker-realtime.test.ts
+```
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd packages/client build
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_RECONNECT_CLIENT_COUNTS=110,125,140 \
+  bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_RECONNECT_MODE=worker-realtime \
+SYNCULAR_RUST_RECONNECT_CLIENT_COUNTS=25,125,250 \
+  bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+Result:
+
+| Mode | Run ID | Scale | Result |
+| --- | --- | ---: | --- |
+| HTTP direct | `2026-05-22T13-17-27-970Z` | `110` | convergence `257.72ms`, first `syncOnce` p95 `238.78ms`, requests `110` |
+| HTTP direct | `2026-05-22T13-17-27-970Z` | `125` | convergence `2030.60ms`, first `syncOnce` p95 `2012.99ms`, requests `125` |
+| HTTP direct | `2026-05-22T13-15-52-627Z` | `150` | convergence `2049.96ms`, first `syncOnce` p95 `2021.59ms`, requests `150` |
+| Worker realtime | `2026-05-22T13-25-40-903Z` | `25` | convergence `90.53ms`, visible p95 `90.11ms`, requests `50`, reconnect catch-up pulls `25` |
+| Worker realtime | `2026-05-22T13-26-23-521Z` | `125` | convergence `216.12ms`, visible p95 `214.28ms`, requests `250`, reconnect catch-up pulls `125` |
+| Worker realtime | `2026-05-22T13-38-54-572Z` | `250` | convergence `2035.74ms`, visible p95 `2034.99ms`, requests `484`, reconnect catch-up pulls `250` |
+
+Interpretation:
+
+- The HTTP direct reconnect cliff starts between `110` and `125` concurrent
+  first pulls. The time is almost entirely `pullRequestMs`; local apply and
+  extra sync loops are not the cause.
+- Worker realtime is the right product shape for reconnect correctness. It
+  fixes the missing reconnect catch-up behavior and gives a faster `125`-client
+  result than the direct HTTP lane.
+- The benchmark server's external-write path emits cursor-only
+  `server-wakeup` realtime events, not binary sync-packs. That forces HTTP
+  recovery even for worker realtime clients.
+- The `250` worker-client run still hits the same approximately `2s` platform
+  cliff. Jitter and wakeup coalescing reduced some duplicate requests, but did
+  not remove the measured tail in this Bun/Docker worker harness.
+
+Decision:
+
+- Retain the reconnect catch-up pull. It is a correctness fix: reconnecting
+  workers must recover writes missed while the websocket was down.
+- Retain the jitter/coalescing options and the benchmark lane as diagnostic
+  tools, but do not claim the `250`-client storm is solved.
+- Next product work should either make external row-change notifications carry
+  enough payload for binary websocket packs, or add a server/relay-side recovery
+  fanout design that avoids hundreds of clients performing identical HTTP
+  recovery pulls at once.
+
+## 2026-05-22 - WP-32 External Notification Binary Packs
+
+Work package: [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](work-packages/WP-32-realtime-recovery-fanout-external-notifications.md)
+
+Change:
+
+- Moved the server/Hono realtime binary sync-pack construction into
+  `realtime-sync-packs.ts` so normal pushes and known external row-change
+  notifications can use the same scoped binary payload path.
+- Updated the external benchmark Syncular app to turn the synthetic external
+  row commit into a scoped binary websocket sync-pack instead of a cursor-only
+  `notifyAllClients` wakeup.
+- Capped worker realtime reconnect jitter at `maxReconnectDelayMs`; this keeps
+  the option's ceiling meaningful, but is not claimed as the `250`-client fix.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bun --cwd rust/bindings/javascript build:wasm
+bun --cwd packages/client build
+bun --cwd packages/server-hono tsgo
+bun test packages/server-hono/src/__tests__/ws-connection-manager.test.ts
+bun --cwd packages/client test src/worker-realtime.test.ts
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose -f stacks/syncular/docker-compose.yml up --build -d
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_RECONNECT_MODE=worker-realtime \
+SYNCULAR_RUST_RECONNECT_CLIENT_COUNTS=25,125 \
+  bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_RECONNECT_MODE=worker-realtime \
+SYNCULAR_RUST_RECONNECT_CLIENT_COUNTS=250 \
+  bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  bun run bench:run -- --stack syncular-rust --scenario online-propagation
+```
+
+Result:
+
+| Scenario | Run ID | Scale | Result |
+| --- | --- | ---: | --- |
+| Reconnect baseline before helper | `2026-05-22T14-17-01-204Z` | `25` | convergence `129.34ms`, visible p95 `129.16ms`, requests `50`, binary applies `0`, pull-required `50` |
+| Reconnect baseline before helper | `2026-05-22T14-17-01-204Z` | `125` | convergence `2009.92ms`, visible p95 `2009.69ms`, requests `250`, binary applies `0`, pull-required `250` |
+| Binary external helper | `2026-05-22T14-43-40-460Z` | `25` | convergence `39.91ms`, visible p95 `39.73ms`, requests `25`, binary applies `25`, reconnect pulls `25` |
+| Binary external helper | `2026-05-22T14-43-40-460Z` | `125` | convergence `89.14ms`, visible p95 `86.33ms`, requests `125`, binary applies `125`, reconnect pulls `125` |
+| Binary external helper | `2026-05-22T14-41-55-010Z` | `250` | convergence `2027.66ms`, visible p50 `209.01ms`, visible p95 `2026.47ms`, requests `250`, binary applies `250`, reconnect pulls `250` |
+| Online propagation guard | `2026-05-22T14-45-03-883Z` | `15` iterations | reader visibility p50 `9.34ms`, p95 `12.28ms`, binary applies `15`, pull-required `0` |
+
+Rejected candidate:
+
+- A client-only experiment moved reconnect catch-up behind `hello.requiresSync`.
+  It was rejected because a sync-service restart loses in-memory realtime
+  subscription roots; without the immediate reconnect pull, external
+  notifications cannot build scoped binary packs and fall back to cursor-only
+  `server-wakeup` recovery.
+- Rejected run `2026-05-22T14-36-14-730Z`: `250` clients, convergence
+  `2031.04ms`, visible p95 `2030.24ms`, requests `250`, binary applies `0`,
+  pull-required `250` with reason `server-wakeup`.
+
+Decision:
+
+- Retain the TypeScript/Hono binary external notification helper and benchmark
+  harness update. This removes the duplicate cursor-only external-write HTTP
+  recovery at `25` and `125` clients and keeps online propagation on the binary
+  fast path.
+- Retain the reconnect jitter cap as a correctness fix for the option, but do
+  not claim it solves the `250`-client reconnect tail. The retained and rejected
+  runs show the remaining tail is in reconnect/subscription metadata recovery
+  after process restart, not binary apply cost.
+- Next WP-32 work should persist or reconstruct realtime subscription metadata
+  across sync-service restarts, then evaluate bounded replay/recovery fanout.
+  Rust remains out of the server app path unless byte-preserving protocol
+  encode/validate becomes the measured bottleneck.
+
+## 2026-05-22 - WP-32 Persisted Realtime Recovery And Benchmark Tail Fix
+
+Work package: [`WP-32 Realtime Recovery Fanout And External Notification Payloads`](work-packages/WP-32-realtime-recovery-fanout-external-notifications.md)
+
+Change:
+
+- Persisted each client's active realtime subscription metadata with
+  `sync_client_cursors`, and hydrate websocket subscription roots/scopes from
+  that state after a sync-service restart.
+- Kept reconnect catch-up behind `hello.requiresSync` now that restarted
+  servers can build binary replay/external packs before each client performs an
+  HTTP pull.
+- Updated realtime ACK persistence to store the latest hydrated subscription
+  roots, and collapsed the websocket handshake client-state read into one SQL
+  round trip.
+- Coalesced identical external realtime pack builds across owners.
+- Fixed the reconnect-storm benchmark visibility observer: it now uses
+  `rowsChanged.changedTables/changedRows` and records binary/rowsChanged
+  offsets instead of issuing one post-event worker SQL read per client.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/conductor/workspaces/syncular/indianapolis
+bunx biome check --write packages/client/src/worker-realtime.test.ts packages/client/src/worker-realtime.ts packages/server-dialect-postgres/src/index.ts packages/server-dialect-sqlite/src/index.ts packages/server-hono/src/__tests__/create-server.test.ts packages/server-hono/src/realtime-sync-packs.ts packages/server-hono/src/routes.ts packages/server/src/clients.ts packages/server/src/dialect/base.ts packages/server/src/dialect/types.ts packages/server/src/schema.ts
+bun --cwd packages/client test src/worker-realtime.test.ts
+bun --cwd packages/server-hono tsgo && bun --cwd packages/server tsgo && bun --cwd packages/server-dialect-postgres tsgo && bun --cwd packages/server-dialect-sqlite tsgo
+bun test packages/server-hono/src/__tests__/create-server.test.ts --test-name-pattern "persisted realtime|records realtime cursor acks|chains verified roots|catch-up wakeup|requires pull on reconnect"
+bun --cwd packages/client build
+bun --cwd rust/bindings/javascript build:wasm
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+COMPOSE_BAKE=false \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  docker compose --progress=plain -f stacks/syncular/docker-compose.yml build --no-cache syncular
+docker compose -f stacks/syncular/docker-compose.yml up -d syncular
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_RECONNECT_MODE=worker-realtime \
+SYNCULAR_RUST_RECONNECT_CLIENT_COUNTS=25,125,250 \
+  bun run bench:run -- --stack syncular-rust --scenario reconnect-storm
+```
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+  bun run bench:run -- --stack syncular-rust --scenario online-propagation
+```
+
+Result:
+
+| Scenario | Run ID | Scale | Result |
+| --- | --- | ---: | --- |
+| Persisted subscriptions, pre-observer fix | `2026-05-22T14-59-27-231Z` | `25` | convergence `40.61ms`, requests `0`, binary applies `25`, pull-required `0` |
+| Persisted subscriptions, pre-observer fix | `2026-05-22T14-59-27-231Z` | `125` | convergence `74.27ms`, requests `0`, binary applies `125`, pull-required `0` |
+| Persisted subscriptions, pre-observer fix | `2026-05-22T14-59-27-231Z` | `250` | convergence `2016.72ms`, visible p50 `2014.74ms`, visible p95 `2016.53ms`, requests `0`, binary applies `250`, pull-required `0` |
+| Pack coalescing, pre-observer fix | `2026-05-22T15-10-01-723Z` | `250` | convergence `2023.73ms`, visible p50 `152.53ms`, visible p95 `2022.98ms`, requests `0`, binary applies `250`, pull-required `0` |
+| Instrumented observer proof | `2026-05-22T16-15-25-220Z` | `250` | external write total `25.55ms`, realtime fanout `4.17ms`, binary apply p95 around `138ms`; slow sample had `rowsChangedMs=178.67ms` but `visibleMs=2031.19ms`, proving worker SQL readback was the tail |
+| Corrected single scale | `2026-05-22T16-23-57-672Z` | `250` | convergence `158.18ms`, visible p95 `157.56ms`, requests `0`, binary applies `250`, pull-required `0`, external realtime fanout `7.14ms` |
+| Corrected full scale | `2026-05-22T16-25-35-103Z` | `25` | convergence `34.17ms`, visible p95 `33.52ms`, requests `0`, binary applies `25`, pull-required `0`, external realtime fanout `2.86ms` |
+| Corrected full scale | `2026-05-22T16-25-35-103Z` | `125` | convergence `67.69ms`, visible p95 `66.62ms`, requests `0`, binary applies `125`, pull-required `0`, external realtime fanout `3.16ms` |
+| Corrected full scale | `2026-05-22T16-25-35-103Z` | `250` | convergence `360.30ms`, visible p95 `359.87ms`, requests `0`, binary applies `250`, pull-required `0`, external realtime fanout `4.12ms` |
+| Online propagation guard | `2026-05-22T16-28-24-669Z` | `15` iterations | reader visibility p50 `9.32ms`, p95 `16.97ms`, binary applies `15`, pull-required `0`, reader binary apply p95 `2ms` |
+
+Decision:
+
+- Retain persisted realtime subscription metadata and ACK root persistence.
+  This removes the post-restart dependency on each client doing an immediate
+  HTTP reconnect pull before external binary notifications can be built.
+- Retain the corrected benchmark observer and external-write timing fields.
+  The previous approximately `2s` `250`-client tail was mostly a harness
+  readback artifact once binary frames were available.
+- Retain identical-pack coalescing as a small server CPU/work reduction, but
+  do not attribute the main reconnect improvement to it; fanout timing was
+  already single-digit milliseconds after instrumentation.
+- Rust remains out of this server app path. The measured bottleneck was
+  subscription state/recovery and benchmark observation, not binary protocol
+  encode/validate.
+
+## 2026-05-22 - WP-31 Adaptive Rust Outbox Batch Default
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Default Rust web-client push batching now keeps the old fixed `20`-commit
+  path for due outboxes of `100` commits or less.
+- When the due pending outbox exceeds `100`, the client enters a stateful
+  adaptive drain and sends up to `100` commits per push until the large queue is
+  drained.
+- Explicit `config.push.outboxBatchLimit` remains a fixed override.
+- Added a due-pending outbox count API for web stores plus a client-side count
+  hint so small queues do not repeatedly deserialize operation JSON just to
+  decide whether to adapt.
+- The external benchmark adapter records the effective batch mode and adaptive
+  defaults in result metadata.
+
+Verification:
+
+```bash
+bun --cwd rust/bindings/javascript build:wasm
+bun --cwd packages/client test src/__tests__/sync-hono.wasm.test.ts -t "outbox push batch"
+bun --cwd packages/client build
+```
+
+`bun run typecheck` in `offline-sync-bench` still fails on the known
+`stacks/syncular/syncular-app/src/index.ts` package-export mismatch against the
+published `@syncular/server` packages; it did not report errors in
+`src/adapters/syncular-rust.ts`.
+
+Same-session external control and candidate:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_RUST_LARGE_OFFLINE_QUEUE_SIZES=100,500,1000 \
+SYNCULAR_RUST_OUTBOX_PUSH_BATCH_LIMIT=20 \
+  bun run bench:run -- --stack syncular-rust --scenario large-offline-queue
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_RUST_LARGE_OFFLINE_QUEUE_SIZES=100,500,1000 \
+  bun run bench:run -- --stack syncular-rust --scenario large-offline-queue
+```
+
+| Queue | Fixed `20` run `2026-05-22T21-13-24-530Z` | Adaptive run `2026-05-22T21-15-52-240Z` | Request/attempt delta |
+| ---: | ---: | ---: | --- |
+| `100` | `272.17ms`, `10` requests, `5` attempts | `270.55ms`, `10` requests, `5` attempts | unchanged |
+| `500` | `1307.71ms`, `50` requests, `25` attempts | `779.54ms`, `10` requests, `5` attempts | `80%` fewer requests |
+| `1000` | `2486.82ms`, `100` requests, `50` attempts | `1887.19ms`, `20` requests, `10` attempts | `80%` fewer requests |
+
+Decision:
+
+- Retain. The adaptive default improves large offline replay while preserving
+  the old small-queue batch pattern and request count.
+- Keep `outboxBatchLimit` available for explicit fixed tuning. The earlier
+  fixed `100` probe remains a useful upper-bound comparison for apps that know
+  they are draining large outboxes, but it was too broad as a default because
+  the `100`-write lane was slower.
+
+## 2026-05-22 - WP-31 IndexedDB-Compatible Durable Reopen Probe
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added opt-in `SYNCULAR_RUST_DURABLE_REOPEN=1` for the external
+  `syncular-rust` offline replay lanes.
+- The probe uses the Rust WASM `indexedDb` storage backend under Bun with
+  `fake-indexeddb`, queues writes while the Syncular service is down, closes the
+  client, reopens the same SQLite file with `clearOnInit=false`, verifies the
+  pending outbox and local row changes survived, then restarts the service and
+  drains replay.
+- Result metadata records `storage`, `durableReopen`, `reopenedOutbox`, and
+  `reopenedMatchedTitleCount`.
+
+Verification:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_RUST_DURABLE_REOPEN=1 \
+  bun run bench:run -- --stack syncular-rust --scenario offline-replay
+
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+SYNCULAR_RUST_DURABLE_REOPEN=1 \
+SYNCULAR_RUST_LARGE_OFFLINE_QUEUE_SIZES=100 \
+  bun run bench:run -- --stack syncular-rust --scenario large-offline-queue
+```
+
+`bun run typecheck` in `offline-sync-bench` still fails on the known
+`stacks/syncular/syncular-app/src/index.ts` package-export mismatch against the
+published `@syncular/server` packages; it did not report errors in
+`src/adapters/syncular-rust.ts`.
+
+Results:
+
+| Scenario | Run ID | Reopened evidence | Replay result |
+| --- | --- | --- | --- |
+| `offline-replay` | `2026-05-22T21-38-53-388Z` | `10` unresolved / `10` pending outbox commits; `10` matching local titles | `64.01ms`, `1` sync attempt, final outbox `10` acked / `0` unresolved |
+| `large-offline-queue` | `2026-05-22T21-39-19-680Z` | `100` unresolved / `100` pending outbox commits; `100` matching local titles | `266.92ms`, `5` sync attempts, final outbox `100` acked / `0` unresolved |
+
+Decision:
+
+- Retain as an opt-in benchmark mode. It verifies the Rust IndexedDB-compatible
+  persistence path without changing default memory-backed comparison runs.
+- Do not overclaim process-restart or browser OPFS durability from this slice.
+  A full browser-worker OPFS/process-restart harness remains the stronger
+  follow-up if product decisions need that exact evidence.
+
+## 2026-05-22 - WP-31 Online Binary-Pack Regression Watch
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change: watch-only run, no product/runtime change
+
+Verification:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+  bun run bench:run -- --stack syncular-rust --scenario online-propagation
+```
+
+Result:
+
+| Scenario | Run ID | Result |
+| --- | --- | --- |
+| `online-propagation` | `2026-05-22T21-42-33-235Z` | reader visibility p50 `9.84ms`, p95 `21.73ms`; binary sync-pack applies `15/15`; pull-required recoveries `0`; binary apply p95 `2ms`; request count `30` |
+
+Decision:
+
+- No runtime change. The binary realtime path remains healthy and does not show
+  payload-size fallback pressure in this guard run.
+
+## 2026-05-22 - WP-31 Blob RetryNow Recovery
+
+Work package:
+[`WP-31 Rust Client Benchmark Parity And Performance Triage`](work-packages/WP-31-rust-client-benchmark-parity-performance.md)
+
+Change:
+
+- Added explicit `processBlobUploadQueue({ retryNow: true })` support through
+  the Rust WASM client and TypeScript client surfaces.
+- `retryNow` ignores delayed `next_attempt_at` rows for that explicit manual
+  processing call only; the automatic blob retry schedule keeps the `100ms`
+  base delay.
+- Updated the external `syncular-rust` `blob-flow` retry lane to drain the
+  induced failed upload with `retryNow=true` and report
+  `retry_recovery_retry_now`.
+
+Verification:
+
+```bash
+cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --lib
+bun --cwd rust/bindings/javascript build:wasm
+cd packages/client && bun test src/__tests__/blob-hono.wasm.test.ts && bun run build
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench && bun run typecheck
+```
+
+`bun run typecheck` in `offline-sync-bench` still fails on the known
+`stacks/syncular/syncular-app/src/index.ts` package-export mismatch against the
+published `@syncular/server` packages; it did not report errors in
+`src/adapters/syncular-rust.ts` before those stack-app errors.
+
+External benchmark:
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist \
+SYNCULAR_RUST_CLIENT_PACKAGE_JSON=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/package.json \
+  bun run bench:run -- --stack syncular-rust --scenario blob-flow
+```
+
+| Mode | Run ID | Retry recovery | Queue attempts | Request count |
+| --- | --- | ---: | ---: | ---: |
+| Default delayed retry baseline | `2026-05-22T21-45-25-153Z` | `115.64ms` | `2` | `11` |
+| Explicit `retryNow` | `2026-05-22T21-52-54-730Z` | `13.15ms` | `1` | `11` |
+
+Decision:
+
+- Retain. The explicit retry path removes the benchmark-visible wait for
+  online/manual recovery without making unattended automatic retry loops more
+  aggressive.

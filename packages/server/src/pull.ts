@@ -1,27 +1,41 @@
 import {
+  type BinarySnapshotColumn,
+  type BinarySnapshotColumnType,
+  type BinarySnapshotRowsEncoder,
   bytesToReadableStream,
   captureSyncException,
   concatByteChunks,
   countSyncMetric,
+  createSnapshotManifest,
   distributionSyncMetric,
-  encodeSnapshotRowFrames,
-  encodeSnapshotRows,
+  encodeBinarySnapshotTable,
   gzipBytes,
   randomId,
   type ScopeValues,
+  SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
   SYNC_SNAPSHOT_CHUNK_ENCODING,
   type SyncBootstrapState,
   type SyncChange,
   type SyncCommit,
+  type SyncCrdtStateVectorHint,
   type SyncPullRequest,
   type SyncPullResponse,
   type SyncPullSubscriptionResponse,
+  type SyncScopedSnapshotArtifactKind,
   type SyncSnapshot,
+  type SyncSnapshotArtifactCompression,
+  type SyncSnapshotArtifactsRequest,
+  type SyncSnapshotChunkRef,
   sha256Hex,
+  snapshotScopeDigestFromCacheKey,
   startSyncSpan,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
+import {
+  createWireSubscriptionIntegrity,
+  SYNCULAR_COMMIT_GENESIS_ROOT,
+} from './commit-integrity';
 import type {
   DbExecutor,
   IncrementalPullRow,
@@ -31,13 +45,22 @@ import {
   getServerBootstrapOrderFor,
   type ServerHandlerCollection,
 } from './handlers/collection';
-import type { SyncServerAuth } from './handlers/types';
+import type { ServerTableHandler, SyncServerAuth } from './handlers/types';
 import { EXTERNAL_CLIENT_ID } from './notify';
+import {
+  type SyncServerPullPlugin,
+  sortServerPullPlugins,
+} from './plugins/types';
 import type { SyncCoreDb } from './schema';
 import {
+  createScopedSnapshotArtifactScopeCacheKey,
+  readBestScopedSnapshotArtifactRefForPageCapacity,
+} from './snapshot-artifacts';
+import {
+  createSnapshotChunkScopeCacheKey,
   insertSnapshotChunk,
   readSnapshotChunkRefByPageKey,
-  scopesToSnapshotChunkScopeKey,
+  type SnapshotChunkRefWithContinuation,
 } from './snapshot-chunks';
 import type { SnapshotChunkStorage } from './snapshot-chunks/types';
 import {
@@ -47,17 +70,16 @@ import {
 import { resolveEffectiveScopesForSubscriptions } from './subscriptions/resolve';
 
 const defaultScopeCache = createMemoryScopeCache();
-const DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 512 * 1024;
-const MAX_ADAPTIVE_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES = 4 * 1024 * 1024;
-const DEFAULT_INLINE_SNAPSHOT_ROW_FRAME_BYTES = 256 * 1024;
-const EMPTY_SNAPSHOT_ROW_FRAMES = encodeSnapshotRows([]);
+const DEFAULT_MAX_BINARY_SNAPSHOT_BUNDLE_ROWS = 50_000;
+const DEFAULT_SNAPSHOT_CHUNK_GZIP_LEVEL = 1;
 const MAX_PULL_TRANSACTION_RETRIES = 2;
 const PULL_TRANSACTION_RETRY_DELAY_MS = 15;
 
 interface PullBootstrapTimings {
   snapshotQueryMs: number;
-  rowFrameEncodeMs: number;
+  binaryEncodeMs: number;
   chunkCacheLookupMs: number;
+  artifactCacheLookupMs: number;
   chunkGzipMs: number;
   chunkHashMs: number;
   chunkPersistMs: number;
@@ -70,74 +92,153 @@ interface SnapshotChunkEncodeResult {
   hashMs: number;
 }
 
+function toResponseChunkRef(ref: SyncSnapshotChunkRef): SyncSnapshotChunkRef {
+  return {
+    id: ref.id,
+    byteLength: ref.byteLength,
+    sha256: ref.sha256,
+    encoding: ref.encoding,
+    compression: ref.compression,
+  };
+}
+
+async function createChunkedSnapshotManifest(args: {
+  table: string;
+  asOfCommitSeq: number;
+  scopeKey: string;
+  rowCursor: string | null;
+  rowLimit: number;
+  nextRowCursor: string | null;
+  isFirstPage: boolean;
+  isLastPage: boolean;
+  chunks: readonly SyncSnapshotChunkRef[];
+}): Promise<SyncSnapshot['manifest']> {
+  return createSnapshotManifest({
+    version: 1,
+    table: args.table,
+    asOfCommitSeq: args.asOfCommitSeq,
+    scopeDigest: snapshotScopeDigestFromCacheKey(args.scopeKey),
+    rowCursor: args.rowCursor,
+    rowLimit: args.rowLimit,
+    nextRowCursor: args.nextRowCursor,
+    isFirstPage: args.isFirstPage,
+    isLastPage: args.isLastPage,
+    chunks: args.chunks.map(toResponseChunkRef),
+  });
+}
+
+interface SnapshotArtifactSelection {
+  artifactKind: SyncScopedSnapshotArtifactKind;
+  compression: SyncSnapshotArtifactCompression;
+  schemaVersion: string;
+  featureSet: readonly string[];
+}
+
+function normalizeFeatureSet(
+  features: readonly string[] | undefined
+): string[] {
+  return Array.from(new Set(features ?? [])).sort();
+}
+
+function resolveSnapshotArtifactSelection(
+  request: SyncSnapshotArtifactsRequest | undefined,
+  clientSchemaVersion: number
+): SnapshotArtifactSelection | null {
+  if (!request) return null;
+  if (
+    !request.artifactKinds.includes(
+      SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1
+    )
+  ) {
+    return null;
+  }
+  if (!request.compressions?.includes(SYNC_SNAPSHOT_CHUNK_COMPRESSION)) {
+    return null;
+  }
+  return {
+    artifactKind: SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
+    compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+    schemaVersion: String(clientSchemaVersion),
+    featureSet: normalizeFeatureSet(request.featureSet),
+  };
+}
+
+function resolveSnapshotBinaryColumns<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(
+  handler: ServerTableHandler<DB, Auth>,
+  schemaVersion: number
+): readonly BinarySnapshotColumn[] | undefined {
+  const versioned = handler.snapshotBinaryColumnsForVersion?.(schemaVersion);
+  return versioned === undefined
+    ? handler.snapshotBinaryColumns
+    : (versioned ?? undefined);
+}
+
+function resolveSnapshotBinaryEncoder<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(
+  handler: ServerTableHandler<DB, Auth>,
+  schemaVersion: number
+): BinarySnapshotRowsEncoder | undefined {
+  const versioned = handler.snapshotBinaryEncoderForVersion?.(schemaVersion);
+  return versioned === undefined
+    ? handler.snapshotBinaryEncoder
+    : (versioned ?? undefined);
+}
+
 function createPullBootstrapTimings(): PullBootstrapTimings {
   return {
     snapshotQueryMs: 0,
-    rowFrameEncodeMs: 0,
+    binaryEncodeMs: 0,
     chunkCacheLookupMs: 0,
+    artifactCacheLookupMs: 0,
     chunkGzipMs: 0,
     chunkHashMs: 0,
     chunkPersistMs: 0,
   };
 }
 
-let nodeCryptoModulePromise: Promise<
-  typeof import('node:crypto') | null
-> | null = null;
-
-async function getNodeCryptoModule(): Promise<
-  typeof import('node:crypto') | null
-> {
-  if (!nodeCryptoModulePromise) {
-    nodeCryptoModulePromise = import('node:crypto').catch(() => null);
-  }
-  return nodeCryptoModulePromise;
-}
-
-async function sha256HexFromByteChunks(
-  chunks: readonly Uint8Array[]
-): Promise<string> {
-  const nodeCrypto = await getNodeCryptoModule();
-  if (nodeCrypto && typeof nodeCrypto.createHash === 'function') {
-    const hasher = nodeCrypto.createHash('sha256');
-    for (const chunk of chunks) {
-      if (chunk.length === 0) continue;
-      hasher.update(chunk);
-    }
-    return hasher.digest('hex');
-  }
-
-  return sha256Hex(concatByteChunks(chunks));
+function resolveBinarySnapshotBundleRowLimit(args: {
+  limitSnapshotRows: number;
+  pagesRemaining: number;
+}): number {
+  const pageSize = Math.max(1, args.limitSnapshotRows);
+  const pagesRemaining = Math.max(1, args.pagesRemaining);
+  const maxBundlePages = Math.max(
+    1,
+    Math.ceil(DEFAULT_MAX_BINARY_SNAPSHOT_BUNDLE_ROWS / pageSize)
+  );
+  return pageSize * Math.min(pagesRemaining, maxBundlePages);
 }
 
 async function gzipByteChunks(
-  chunks: readonly Uint8Array[]
+  chunks: readonly Uint8Array[],
+  gzipLevel: number
 ): Promise<Uint8Array> {
-  return gzipBytes(concatByteChunks(chunks));
+  return gzipBytes(concatByteChunks(chunks), {
+    level: gzipLevel,
+  });
 }
 
 async function encodeCompressedSnapshotChunk(
-  chunks: readonly Uint8Array[]
+  chunks: readonly Uint8Array[],
+  gzipLevel: number
 ): Promise<SnapshotChunkEncodeResult> {
   const gzipStartedAt = Date.now();
-  const gzipPromise = gzipByteChunks(chunks).then((body) => ({
-    body,
-    gzipMs: Math.max(0, Date.now() - gzipStartedAt),
-  }));
+  const body = await gzipByteChunks(chunks, gzipLevel);
+  const gzipMs = Math.max(0, Date.now() - gzipStartedAt);
   const hashStartedAt = Date.now();
-  const hashPromise = sha256HexFromByteChunks(chunks).then((sha256) => ({
-    sha256,
-    hashMs: Math.max(0, Date.now() - hashStartedAt),
-  }));
-  const [{ body, gzipMs }, { sha256, hashMs }] = await Promise.all([
-    gzipPromise,
-    hashPromise,
-  ]);
+  const sha256 = await sha256Hex(body);
+  const hashMs = Math.max(0, Date.now() - hashStartedAt);
   return { body, sha256, gzipMs, hashMs };
 }
 
 async function encodeCompressedSnapshotChunkToStream(
-  chunks: readonly Uint8Array[]
+  chunks: readonly Uint8Array[],
+  gzipLevel: number
 ): Promise<{
   stream: ReadableStream<Uint8Array>;
   byteLength: number;
@@ -145,7 +246,7 @@ async function encodeCompressedSnapshotChunkToStream(
   gzipMs: number;
   hashMs: number;
 }> {
-  const encoded = await encodeCompressedSnapshotChunk(chunks);
+  const encoded = await encodeCompressedSnapshotChunk(chunks, gzipLevel);
   return {
     stream: bytesToReadableStream(encoded.body),
     byteLength: encoded.body.length,
@@ -155,30 +256,108 @@ async function encodeCompressedSnapshotChunkToStream(
   };
 }
 
-function resolveSnapshotBundleMaxBytes(args: {
-  configuredMaxBytes?: number;
-  pageRowCount: number;
-  pageRowFrameBytes: number;
-}): number {
+interface SnapshotColumnInference {
+  name: string;
+  type: BinarySnapshotColumnType | null;
+  nullable: boolean;
+  presentCount: number;
+}
+
+function encodeBinarySnapshotRows(
+  table: string,
+  rows: readonly unknown[],
+  columns?: readonly BinarySnapshotColumn[]
+): Uint8Array {
+  const recordRows = rows.map((row) => toSnapshotRecordRow(table, row));
+  return encodeBinarySnapshotTable({
+    table,
+    columns: columns ?? inferBinarySnapshotColumns(recordRows),
+    rows: recordRows,
+  });
+}
+
+function toSnapshotRecordRow(
+  table: string,
+  row: unknown
+): Record<string, unknown> {
   if (
-    typeof args.configuredMaxBytes === 'number' &&
-    Number.isFinite(args.configuredMaxBytes) &&
-    args.configuredMaxBytes > 0
+    row == null ||
+    typeof row !== 'object' ||
+    Array.isArray(row) ||
+    row instanceof Uint8Array ||
+    row instanceof ArrayBuffer
   ) {
-    return Math.max(1, args.configuredMaxBytes);
+    throw new Error(
+      `Cannot encode binary snapshot for table ${table}: snapshot rows must be objects`
+    );
+  }
+  return row as Record<string, unknown>;
+}
+
+function inferBinarySnapshotColumns(
+  rows: readonly Record<string, unknown>[]
+): BinarySnapshotColumn[] {
+  const columns: SnapshotColumnInference[] = [];
+  const columnsByName = new Map<string, SnapshotColumnInference>();
+
+  for (const row of rows) {
+    for (const name in row) {
+      if (!Object.hasOwn(row, name)) continue;
+      const value = row[name];
+      let column = columnsByName.get(name);
+      if (!column) {
+        column = { name, type: null, nullable: false, presentCount: 0 };
+        columnsByName.set(name, column);
+        columns.push(column);
+      }
+      column.presentCount += 1;
+      if (value == null) {
+        column.nullable = true;
+        continue;
+      }
+      column.type = mergeBinarySnapshotColumnTypes(
+        column.type,
+        inferBinarySnapshotColumnType(value)
+      );
+    }
   }
 
-  if (args.pageRowCount <= 0 || args.pageRowFrameBytes <= 0) {
-    return DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES;
-  }
+  return columns.map((column) => ({
+    name: column.name,
+    type: column.type ?? 'json',
+    ...(column.nullable || column.presentCount < rows.length
+      ? { nullable: true }
+      : {}),
+  }));
+}
 
-  return Math.max(
-    DEFAULT_MAX_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES,
-    Math.min(
-      MAX_ADAPTIVE_SNAPSHOT_BUNDLE_ROW_FRAME_BYTES,
-      args.pageRowFrameBytes
-    )
-  );
+function inferBinarySnapshotColumnType(
+  value: unknown
+): BinarySnapshotColumnType {
+  if (typeof value === 'string') return 'string';
+  if (typeof value === 'boolean') return 'boolean';
+  if (typeof value === 'bigint') return 'integer';
+  if (typeof value === 'number') {
+    return Number.isSafeInteger(value) ? 'integer' : 'float';
+  }
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) {
+    return 'bytes';
+  }
+  return 'json';
+}
+
+function mergeBinarySnapshotColumnTypes(
+  current: BinarySnapshotColumnType | null,
+  next: BinarySnapshotColumnType
+): BinarySnapshotColumnType {
+  if (!current || current === next) return next;
+  if (
+    (current === 'integer' && next === 'float') ||
+    (current === 'float' && next === 'integer')
+  ) {
+    return 'float';
+  }
+  return 'json';
 }
 
 export interface PullResult {
@@ -203,8 +382,10 @@ interface PendingExternalChunkWrite {
     asOfCommitSeq: number;
     rowCursor: string | null;
     rowLimit: number;
+    nextRowCursor: string | null;
+    isLastPage: boolean;
   };
-  rowFrameParts: Uint8Array[];
+  payloadParts: Uint8Array[];
   expiresAt: string;
 }
 
@@ -244,6 +425,13 @@ function sanitizeLimit(
   if (value === undefined || value === null) return defaultValue;
   if (Number.isNaN(value)) return defaultValue;
   return Math.max(min, Math.min(max, value));
+}
+
+function sanitizeGzipLevel(value: number | undefined): number {
+  if (value === undefined || value === null || !Number.isFinite(value)) {
+    return DEFAULT_SNAPSHOT_CHUNK_GZIP_LEVEL;
+  }
+  return Math.max(0, Math.min(9, Math.trunc(value)));
 }
 
 function isSerializablePullError(error: Error): boolean {
@@ -291,6 +479,90 @@ interface PullResponseStats {
   commitCount: number;
   changeCount: number;
   snapshotPageCount: number;
+}
+
+function assertPullChangeIdentityUnchanged(
+  source: string,
+  before: SyncChange,
+  after: SyncChange
+): void {
+  if (before.table !== after.table) {
+    throw new Error(
+      `${source} cannot change change.table (${before.table} -> ${after.table})`
+    );
+  }
+  if (before.row_id !== after.row_id) {
+    throw new Error(
+      `${source} cannot change change.row_id (${before.row_id} -> ${after.row_id})`
+    );
+  }
+  if (before.op !== after.op) {
+    throw new Error(
+      `${source} cannot change change.op (${before.op} -> ${after.op})`
+    );
+  }
+}
+
+function projectPullChangeForClientSchema<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(args: {
+  handler: ServerTableHandler<DB, Auth>;
+  change: SyncChange;
+  schemaVersion: number;
+}): SyncChange {
+  const projected = args.handler.projectChangeForVersion
+    ? args.handler.projectChangeForVersion(args.change, args.schemaVersion)
+    : args.change;
+  assertPullChangeIdentityUnchanged(
+    'Server table handler projectChangeForVersion',
+    args.change,
+    projected
+  );
+  return projected;
+}
+
+async function transformPullChanges<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth,
+>(args: {
+  plugins: readonly SyncServerPullPlugin<DB, Auth>[];
+  ctx: { db: DbExecutor<DB>; actorId: string; auth: Auth };
+  tableHandler: ServerTableHandler<DB, Auth>;
+  subscription: {
+    id: string;
+    table: string;
+    scopes: ScopeValues;
+    params: Record<string, unknown> | undefined;
+    cursor: number;
+    crdtStateVectors: readonly SyncCrdtStateVectorHint[];
+  };
+  changes: readonly SyncChange[];
+}): Promise<SyncChange[]> {
+  let changes = [...args.changes];
+  for (const plugin of args.plugins) {
+    if (!plugin.transformPullChanges) continue;
+    const nextChanges = await plugin.transformPullChanges({
+      ctx: args.ctx,
+      tableHandler: args.tableHandler,
+      subscription: args.subscription,
+      changes,
+    });
+    if (nextChanges.length !== changes.length) {
+      throw new Error(
+        `Server pull plugin "${plugin.name}" cannot change pull change count (${changes.length} -> ${nextChanges.length})`
+      );
+    }
+      for (let i = 0; i < changes.length; i += 1) {
+        assertPullChangeIdentityUnchanged(
+          `Server pull plugin "${plugin.name}"`,
+          changes[i]!,
+          nextChanges[i]!
+        );
+    }
+    changes = [...nextChanges];
+  }
+  return changes;
 }
 
 function summarizePullResponse(response: SyncPullResponse): PullResponseStats {
@@ -444,10 +716,39 @@ export async function pull<
    * Defaults to process-local memory cache.
    */
   scopeCache?: ScopeCacheBackend;
+  /**
+   * Gzip compression level for generated snapshot chunks. The protocol remains
+   * gzip-only; this tunes CPU/size tradeoffs for deployments that know their
+   * network constraints.
+   *
+   * Default: 1, range: 0-9.
+   */
+  snapshotChunkGzipLevel?: number;
+  /**
+   * Schema/cache semantic version included in generated snapshot chunk cache
+   * keys. Changing this value invalidates cached bootstrap chunks without
+   * requiring table data to change.
+   */
+  snapshotChunkCacheSchemaVersion?: number | string | null;
+  /**
+   * Optional server plugins for protocol-level pull transforms.
+   */
+  plugins?: readonly SyncServerPullPlugin<DB, Auth>[];
 }): Promise<PullResult> {
   const { request, dialect } = args;
   const db = args.db;
+  const pullPlugins = sortServerPullPlugins(args.plugins);
   const partitionId = args.auth.partitionId ?? 'default';
+  const snapshotChunkGzipLevel = sanitizeGzipLevel(args.snapshotChunkGzipLevel);
+  const clientSchemaVersion = request.schemaVersion;
+  if (!Number.isInteger(clientSchemaVersion) || clientSchemaVersion < 1) {
+    throw new Error('Pull request schemaVersion must be a positive integer');
+  }
+  const snapshotChunkCacheSchemaVersion =
+    args.snapshotChunkCacheSchemaVersion === null ||
+    args.snapshotChunkCacheSchemaVersion === undefined
+      ? clientSchemaVersion
+      : `${clientSchemaVersion}:${args.snapshotChunkCacheSchemaVersion}`;
   const requestedSubscriptionCount = Array.isArray(request.subscriptions)
     ? request.subscriptions.length
     : 0;
@@ -465,12 +766,12 @@ export async function pull<
     async (span) => {
       try {
         // Validate and sanitize request limits
-        const limitCommits = sanitizeLimit(request.limitCommits, 50, 1, 500);
+        const limitCommits = sanitizeLimit(request.limitCommits, 1000, 1, 1000);
         const limitSnapshotRows = sanitizeLimit(
           request.limitSnapshotRows,
           1000,
           1,
-          20000
+          50000
         );
         const maxSnapshotPages = sanitizeLimit(
           request.maxSnapshotPages,
@@ -479,6 +780,13 @@ export async function pull<
           50
         );
         const dedupeRows = request.dedupeRows === true;
+        const snapshotChunkEncoding = SYNC_SNAPSHOT_CHUNK_ENCODING;
+        const snapshotArtifactSelection = resolveSnapshotArtifactSelection(
+          request.snapshotArtifacts,
+          clientSchemaVersion
+        );
+        const snapshotArtifactSchemaVersion =
+          snapshotArtifactSelection?.schemaVersion ?? null;
         // Resolve effective scopes for each subscription
         const resolved = await resolveEffectiveScopesForSubscriptions({
           db,
@@ -579,12 +887,6 @@ export async function pull<
                       args.handlers,
                       sub.table
                     ).map((handler) => handler.table);
-                    const preferInlineBootstrapSnapshot =
-                      cursor >= 0 ||
-                      sub.bootstrapState != null ||
-                      (latestExternalCommitForTable !== undefined &&
-                        latestExternalCommitForTable > cursor);
-
                     const initState: SyncBootstrapState = {
                       asOfCommitSeq: maxCommitSeq,
                       tables,
@@ -628,39 +930,115 @@ export async function pull<
 
                     const snapshots: SyncSnapshot[] = [];
                     let nextState: SyncBootstrapState | null = effectiveState;
-                    const cacheKey = `${partitionId}:${await scopesToSnapshotChunkScopeKey(
-                      effectiveScopes
-                    )}`;
+                    const cacheKey = await createSnapshotChunkScopeCacheKey({
+                      partitionId,
+                      scopes: effectiveScopes,
+                      schemaVersion: snapshotChunkCacheSchemaVersion,
+                      encoding: snapshotChunkEncoding,
+                      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                      gzipLevel: snapshotChunkGzipLevel,
+                    });
+                    const artifactScopeKey =
+                      snapshotArtifactSelection && snapshotArtifactSchemaVersion
+                        ? await createScopedSnapshotArtifactScopeCacheKey({
+                            partitionId,
+                            subscriptionId: sub.id,
+                            scopes: effectiveScopes,
+                            schemaVersion: snapshotArtifactSchemaVersion,
+                            artifactKind:
+                              snapshotArtifactSelection.artifactKind,
+                            compression: snapshotArtifactSelection.compression,
+                            features: snapshotArtifactSelection.featureSet,
+                          })
+                        : null;
 
                     interface SnapshotBundle {
                       table: string;
+                      tableIndex: number;
                       startCursor: string | null;
+                      nextRowCursor: string | null;
                       isFirstPage: boolean;
                       isLastPage: boolean;
                       pageCount: number;
+                      cacheRowLimit: number | null;
                       ttlMs: number;
-                      rowFrameByteLength: number;
-                      rowFrameParts: Uint8Array[];
-                      inlineRows: unknown[] | null;
+                      binaryColumns?: readonly BinarySnapshotColumn[];
+                      binaryEncoder?: BinarySnapshotRowsEncoder;
+                      binaryRows: unknown[];
                     }
+
+                    const createSnapshotBundle = (
+                      table: string,
+                      tableIndex: number,
+                      rowCursor: string | null,
+                      ttlMs: number,
+                      binaryColumns?: readonly BinarySnapshotColumn[],
+                      binaryEncoder?: BinarySnapshotRowsEncoder
+                    ): SnapshotBundle => {
+                      return {
+                        table,
+                        tableIndex,
+                        startCursor: rowCursor,
+                        nextRowCursor: null,
+                        isFirstPage: rowCursor == null,
+                        isLastPage: false,
+                        pageCount: 0,
+                        cacheRowLimit: null,
+                        ttlMs,
+                        binaryColumns,
+                        binaryEncoder,
+                        binaryRows: [],
+                      };
+                    };
+
+                    const snapshotBootstrapStateAfter = (args: {
+                      tableIndex: number;
+                      nextRowCursor: string | null;
+                      isLastPage: boolean;
+                    }): SyncBootstrapState | null => {
+                      if (!args.isLastPage) {
+                        return {
+                          ...effectiveState,
+                          tableIndex: args.tableIndex,
+                          rowCursor: args.nextRowCursor,
+                        };
+                      }
+                      if (args.tableIndex + 1 < effectiveState.tables.length) {
+                        return {
+                          ...effectiveState,
+                          tableIndex: args.tableIndex + 1,
+                          rowCursor: null,
+                        };
+                      }
+                      return null;
+                    };
+
+                    const encodeSnapshotBundlePayload = (
+                      bundle: SnapshotBundle
+                    ): Uint8Array[] => {
+                      const encodeStartedAt = Date.now();
+                      const payload = bundle.binaryEncoder
+                        ? bundle.binaryEncoder(bundle.binaryRows)
+                        : encodeBinarySnapshotRows(
+                            bundle.table,
+                            bundle.binaryRows,
+                            bundle.binaryColumns
+                          );
+                      bootstrapTimings.binaryEncodeMs += Math.max(
+                        0,
+                        Date.now() - encodeStartedAt
+                      );
+                      return [payload];
+                    };
 
                     const flushSnapshotBundle = async (
                       bundle: SnapshotBundle
                     ): Promise<void> => {
-                      if (bundle.inlineRows) {
-                        snapshots.push({
-                          table: bundle.table,
-                          rows: bundle.inlineRows,
-                          isFirstPage: bundle.isFirstPage,
-                          isLastPage: bundle.isLastPage,
-                        });
-                        return;
-                      }
-
                       const nowIso = new Date().toISOString();
                       const bundleRowLimit = Math.max(
                         1,
-                        limitSnapshotRows * bundle.pageCount
+                        bundle.cacheRowLimit ??
+                          limitSnapshotRows * bundle.pageCount
                       );
 
                       const cacheLookupStartedAt = Date.now();
@@ -671,7 +1049,7 @@ export async function pull<
                         asOfCommitSeq: effectiveState.asOfCommitSeq,
                         rowCursor: bundle.startCursor,
                         rowLimit: bundleRowLimit,
-                        encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                        encoding: snapshotChunkEncoding,
                         compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
                         nowIso,
                       });
@@ -680,7 +1058,7 @@ export async function pull<
                         Date.now() - cacheLookupStartedAt
                       );
 
-                      let chunkRef = cached;
+                      let chunkRef: SyncSnapshotChunkRef | null = cached;
                       if (!chunkRef) {
                         const expiresAt = new Date(
                           Date.now() + Math.max(1000, bundle.ttlMs)
@@ -693,6 +1071,11 @@ export async function pull<
                             chunks: [],
                             isFirstPage: bundle.isFirstPage,
                             isLastPage: bundle.isLastPage,
+                            bootstrapStateAfter: snapshotBootstrapStateAfter({
+                              tableIndex: bundle.tableIndex,
+                              nextRowCursor: bundle.nextRowCursor,
+                              isLastPage: bundle.isLastPage,
+                            }),
                           };
                           snapshots.push(snapshot);
                           pendingExternalChunkWrites.push({
@@ -704,15 +1087,18 @@ export async function pull<
                               asOfCommitSeq: effectiveState.asOfCommitSeq,
                               rowCursor: bundle.startCursor,
                               rowLimit: bundleRowLimit,
+                              nextRowCursor: bundle.nextRowCursor,
+                              isLastPage: bundle.isLastPage,
                             },
-                            rowFrameParts: [...bundle.rowFrameParts],
+                            payloadParts: encodeSnapshotBundlePayload(bundle),
                             expiresAt,
                           });
                           return;
                         }
                         const encodedChunk =
                           await encodeCompressedSnapshotChunk(
-                            bundle.rowFrameParts
+                            encodeSnapshotBundlePayload(bundle),
+                            snapshotChunkGzipLevel
                           );
                         bootstrapTimings.chunkGzipMs += encodedChunk.gzipMs;
                         bootstrapTimings.chunkHashMs += encodedChunk.hashMs;
@@ -726,7 +1112,9 @@ export async function pull<
                           asOfCommitSeq: effectiveState.asOfCommitSeq,
                           rowCursor: bundle.startCursor,
                           rowLimit: bundleRowLimit,
-                          encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                          nextRowCursor: bundle.nextRowCursor,
+                          isLastPage: bundle.isLastPage,
+                          encoding: snapshotChunkEncoding,
                           compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
                           sha256: encodedChunk.sha256,
                           body: encodedChunk.body,
@@ -738,12 +1126,29 @@ export async function pull<
                         );
                       }
 
+                      const chunk = toResponseChunkRef(chunkRef);
                       snapshots.push({
                         table: bundle.table,
                         rows: [],
-                        chunks: [chunkRef],
+                        chunks: [chunk],
+                        manifest: await createChunkedSnapshotManifest({
+                          table: bundle.table,
+                          asOfCommitSeq: effectiveState.asOfCommitSeq,
+                          scopeKey: cacheKey,
+                          rowCursor: bundle.startCursor,
+                          rowLimit: bundleRowLimit,
+                          nextRowCursor: bundle.nextRowCursor,
+                          isFirstPage: bundle.isFirstPage,
+                          isLastPage: bundle.isLastPage,
+                          chunks: [chunk],
+                        }),
                         isFirstPage: bundle.isFirstPage,
                         isLastPage: bundle.isLastPage,
+                        bootstrapStateAfter: snapshotBootstrapStateAfter({
+                          tableIndex: bundle.tableIndex,
+                          nextRowCursor: bundle.nextRowCursor,
+                          isLastPage: bundle.isLastPage,
+                        }),
                       });
                     };
 
@@ -780,20 +1185,164 @@ export async function pull<
                         if (activeBundle) {
                           await flushSnapshotBundle(activeBundle);
                         }
-                        const bundleHeader = EMPTY_SNAPSHOT_ROW_FRAMES;
-                        activeBundle = {
-                          table: nextTableName,
-                          startCursor: nextState.rowCursor,
-                          isFirstPage: nextState.rowCursor == null,
-                          isLastPage: false,
-                          pageCount: 0,
-                          ttlMs:
-                            tableHandler.snapshotChunkTtlMs ??
+                        activeBundle = createSnapshotBundle(
+                          nextTableName,
+                          nextState.tableIndex,
+                          nextState.rowCursor,
+                          tableHandler.snapshotChunkTtlMs ??
                             24 * 60 * 60 * 1000,
-                          rowFrameByteLength: bundleHeader.length,
-                          rowFrameParts: [bundleHeader],
-                          inlineRows: null,
-                        };
+                          resolveSnapshotBinaryColumns(
+                            tableHandler,
+                            clientSchemaVersion
+                          ),
+                          resolveSnapshotBinaryEncoder(
+                            tableHandler,
+                            clientSchemaVersion
+                          )
+                        );
+                      }
+
+                      if (artifactScopeKey && activeBundle.pageCount === 0) {
+                        const pagesRemaining = Math.max(
+                          1,
+                          maxSnapshotPages - pageIndex
+                        );
+                        const artifactRowLimit =
+                          resolveBinarySnapshotBundleRowLimit({
+                            limitSnapshotRows,
+                            pagesRemaining,
+                          });
+                        const artifactLookupStartedAt = Date.now();
+                        const artifact =
+                          await readBestScopedSnapshotArtifactRefForPageCapacity(
+                            trx,
+                            {
+                              partitionId,
+                              scopeKey: artifactScopeKey,
+                              subscriptionId: sub.id,
+                              table: nextTableName,
+                              asOfCommitSeq: effectiveState.asOfCommitSeq,
+                              rowCursor: nextState.rowCursor,
+                              maxRowLimit: artifactRowLimit,
+                              artifactKind:
+                                snapshotArtifactSelection!.artifactKind,
+                              schemaVersion: snapshotArtifactSchemaVersion!,
+                              compression:
+                                snapshotArtifactSelection!.compression,
+                            }
+                          );
+                        bootstrapTimings.artifactCacheLookupMs += Math.max(
+                          0,
+                          Date.now() - artifactLookupStartedAt
+                        );
+
+                        if (
+                          artifact &&
+                          (artifact.isLastPage ||
+                            artifact.nextRowCursor !== null)
+                        ) {
+                          snapshots.push({
+                            table: nextTableName,
+                            rows: [],
+                            artifacts: [artifact],
+                            isFirstPage: artifact.isFirstPage,
+                            isLastPage: artifact.isLastPage,
+                            bootstrapStateAfter: snapshotBootstrapStateAfter({
+                              tableIndex: nextState.tableIndex,
+                              nextRowCursor: artifact.nextRowCursor,
+                              isLastPage: artifact.isLastPage,
+                            }),
+                          });
+                          activeBundle = null;
+                          const selectedArtifactRowLimit =
+                            artifact.manifest.rowLimit;
+                          pageIndex +=
+                            Math.max(
+                              1,
+                              Math.ceil(
+                                selectedArtifactRowLimit / limitSnapshotRows
+                              )
+                            ) - 1;
+
+                          nextState = snapshotBootstrapStateAfter({
+                            tableIndex: nextState.tableIndex,
+                            nextRowCursor: artifact.nextRowCursor,
+                            isLastPage: artifact.isLastPage,
+                          });
+                          continue;
+                        }
+                      }
+
+                      if (activeBundle.pageCount === 0) {
+                        const pagesRemaining = Math.max(
+                          1,
+                          maxSnapshotPages - pageIndex
+                        );
+                        const cachedRowLimit =
+                          resolveBinarySnapshotBundleRowLimit({
+                            limitSnapshotRows,
+                            pagesRemaining,
+                          });
+                        activeBundle.cacheRowLimit = cachedRowLimit;
+                        const cacheLookupStartedAt = Date.now();
+                        const cached: SnapshotChunkRefWithContinuation | null =
+                          await readSnapshotChunkRefByPageKey(trx, {
+                            partitionId,
+                            scopeKey: cacheKey,
+                            scope: nextTableName,
+                            asOfCommitSeq: effectiveState.asOfCommitSeq,
+                            rowCursor: nextState.rowCursor,
+                            rowLimit: cachedRowLimit,
+                            encoding: snapshotChunkEncoding,
+                            compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                          });
+                        bootstrapTimings.chunkCacheLookupMs += Math.max(
+                          0,
+                          Date.now() - cacheLookupStartedAt
+                        );
+
+                        if (
+                          cached &&
+                          (cached.isLastPage || cached.nextRowCursor !== null)
+                        ) {
+                          const chunk = toResponseChunkRef(cached);
+                          snapshots.push({
+                            table: nextTableName,
+                            rows: [],
+                            chunks: [chunk],
+                            manifest: await createChunkedSnapshotManifest({
+                              table: nextTableName,
+                              asOfCommitSeq: effectiveState.asOfCommitSeq,
+                              scopeKey: cacheKey,
+                              rowCursor: nextState.rowCursor,
+                              rowLimit: cachedRowLimit,
+                              nextRowCursor: cached.nextRowCursor,
+                              isFirstPage: nextState.rowCursor == null,
+                              isLastPage: cached.isLastPage,
+                              chunks: [chunk],
+                            }),
+                            isFirstPage: nextState.rowCursor == null,
+                            isLastPage: cached.isLastPage,
+                            bootstrapStateAfter: snapshotBootstrapStateAfter({
+                              tableIndex: nextState.tableIndex,
+                              nextRowCursor: cached.nextRowCursor,
+                              isLastPage: cached.isLastPage,
+                            }),
+                          });
+                          activeBundle = null;
+                          pageIndex +=
+                            Math.max(
+                              1,
+                              Math.ceil(cachedRowLimit / limitSnapshotRows)
+                            ) - 1;
+
+                          nextState = snapshotBootstrapStateAfter({
+                            tableIndex: nextState.tableIndex,
+                            nextRowCursor: cached.nextRowCursor,
+                            isLastPage: cached.isLastPage,
+                          });
+                          continue;
+                        }
                       }
 
                       const snapshotQueryStartedAt = Date.now();
@@ -808,6 +1357,7 @@ export async function pull<
                           scopeValues: effectiveScopes,
                           cursor: nextState.rowCursor,
                           limit: limitSnapshotRows,
+                          schemaVersion: clientSchemaVersion,
                         },
                         sub.params
                       );
@@ -816,57 +1366,19 @@ export async function pull<
                         Date.now() - snapshotQueryStartedAt
                       );
 
-                      const rowFrameEncodeStartedAt = Date.now();
-                      const rowFrames = encodeSnapshotRowFrames(
-                        page.rows ?? []
-                      );
-                      bootstrapTimings.rowFrameEncodeMs += Math.max(
-                        0,
-                        Date.now() - rowFrameEncodeStartedAt
-                      );
-                      const bundleMaxBytes = resolveSnapshotBundleMaxBytes({
-                        configuredMaxBytes: tableHandler.snapshotBundleMaxBytes,
-                        pageRowCount: page.rows?.length ?? 0,
-                        pageRowFrameBytes: rowFrames.length,
-                      });
-                      if (
-                        activeBundle.pageCount > 0 &&
-                        activeBundle.rowFrameByteLength + rowFrames.length >
-                          bundleMaxBytes
-                      ) {
-                        await flushSnapshotBundle(activeBundle);
-                        const bundleHeader = EMPTY_SNAPSHOT_ROW_FRAMES;
-                        activeBundle = {
-                          table: nextTableName,
-                          startCursor: nextState.rowCursor,
-                          isFirstPage: nextState.rowCursor == null,
-                          isLastPage: false,
-                          pageCount: 0,
-                          ttlMs:
-                            tableHandler.snapshotChunkTtlMs ??
-                            24 * 60 * 60 * 1000,
-                          rowFrameByteLength: bundleHeader.length,
-                          rowFrameParts: [bundleHeader],
-                          inlineRows: null,
-                        };
-                      }
-
-                      if (
-                        preferInlineBootstrapSnapshot &&
-                        activeBundle.pageCount === 0 &&
-                        page.nextCursor == null &&
-                        rowFrames.length <=
-                          DEFAULT_INLINE_SNAPSHOT_ROW_FRAME_BYTES
-                      ) {
-                        activeBundle.inlineRows = page.rows ?? [];
-                      } else {
-                        activeBundle.inlineRows = null;
-                      }
-                      activeBundle.rowFrameParts.push(rowFrames);
-                      activeBundle.rowFrameByteLength += rowFrames.length;
+                      const pageRows = page.rows ?? [];
+                      activeBundle.nextRowCursor = page.nextCursor;
+                      activeBundle.binaryRows.push(...pageRows);
                       activeBundle.pageCount += 1;
 
                       if (page.nextCursor != null) {
+                        const shouldFlushBinaryBundle =
+                          activeBundle.binaryRows.length >=
+                          DEFAULT_MAX_BINARY_SNAPSHOT_BUNDLE_ROWS;
+                        if (shouldFlushBinaryBundle) {
+                          await flushSnapshotBundle(activeBundle);
+                          activeBundle = null;
+                        }
                         nextState = {
                           ...nextState,
                           rowCursor: page.nextCursor,
@@ -960,6 +1472,53 @@ export async function pull<
                     }
                   }
 
+                  const tableHandler = args.handlers.byTable.get(sub.table);
+                  if (!tableHandler) {
+                    throw new Error(`Unknown table: ${sub.table}`);
+                  }
+
+                  const incrementalItems = incrementalRows.map((r) => ({
+                    commitSeq: r.commit_seq,
+                    createdAt: r.created_at,
+                    actorId: r.actor_id,
+                    change: projectPullChangeForClientSchema({
+                      handler: tableHandler,
+                      schemaVersion: clientSchemaVersion,
+                      change: {
+                        table: r.table,
+                        row_id: r.row_id,
+                        op: r.op,
+                        row_json: r.row_json,
+                        row_version: r.row_version,
+                        scopes: r.scopes,
+                      } satisfies SyncChange,
+                    }),
+                  }));
+
+                  if (pullPlugins.length > 0 && incrementalItems.length > 0) {
+                    const transformedChanges = await transformPullChanges({
+                      plugins: pullPlugins,
+                      ctx: {
+                        db: trx,
+                        actorId: args.auth.actorId,
+                        auth: args.auth,
+                      },
+                      tableHandler,
+                      subscription: {
+                        id: sub.id,
+                        table: sub.table,
+                        scopes: effectiveScopes,
+                        params: sub.params,
+                        cursor,
+                        crdtStateVectors: sub.crdtStateVectors,
+                      },
+                      changes: incrementalItems.map((item) => item.change),
+                    });
+                    for (let i = 0; i < incrementalItems.length; i += 1) {
+                      incrementalItems[i]!.change = transformedChanges[i]!;
+                    }
+                  }
+
                   let nextCursor = cursor;
 
                   if (dedupeRows) {
@@ -973,17 +1532,9 @@ export async function pull<
                       }
                     >();
 
-                    for (const r of incrementalRows) {
-                      nextCursor = Math.max(nextCursor, r.commit_seq);
-                      const rowKey = `${r.table}\u0000${r.row_id}`;
-                      const change: SyncChange = {
-                        table: r.table,
-                        row_id: r.row_id,
-                        op: r.op,
-                        row_json: r.row_json,
-                        row_version: r.row_version,
-                        scopes: r.scopes,
-                      };
+                    for (const item of incrementalItems) {
+                      nextCursor = Math.max(nextCursor, item.commitSeq);
+                      const rowKey = `${item.change.table}\u0000${item.change.row_id}`;
 
                       // Move row keys to insertion tail so Map iteration yields
                       // "latest change wins" order without a full array sort.
@@ -991,10 +1542,10 @@ export async function pull<
                         latestByRowKey.delete(rowKey);
                       }
                       latestByRowKey.set(rowKey, {
-                        commitSeq: r.commit_seq,
-                        createdAt: r.created_at,
-                        actorId: r.actor_id,
-                        change,
+                        commitSeq: item.commitSeq,
+                        createdAt: item.createdAt,
+                        actorId: item.actorId,
+                        change: item.change,
                       });
                     }
 
@@ -1030,6 +1581,15 @@ export async function pull<
                       }
                       lastCommit.changes.push(item.change);
                     }
+                    const integrity = await createWireSubscriptionIntegrity({
+                      partitionId,
+                      subscriptionId: sub.id,
+                      previousRoot:
+                        typeof sub.verifiedRoot === 'string'
+                          ? sub.verifiedRoot
+                          : SYNCULAR_COMMIT_GENESIS_ROOT,
+                      commits,
+                    });
 
                     subResponses.push({
                       id: sub.id,
@@ -1037,44 +1597,45 @@ export async function pull<
                       scopes: effectiveScopes,
                       bootstrap: false,
                       nextCursor,
+                      ...(integrity ? { integrity } : {}),
                       commits,
                     });
                     nextCursors.push(nextCursor);
                     continue;
                   }
 
-                  const commitsBySeq = new Map<number, SyncCommit>();
-                  const commitSeqs: number[] = [];
+                  const commits: SyncCommit[] = [];
 
-                  for (const r of incrementalRows) {
-                    nextCursor = Math.max(nextCursor, r.commit_seq);
-                    const seq = r.commit_seq;
-                    let commit = commitsBySeq.get(seq);
-                    if (!commit) {
+                  for (const item of incrementalItems) {
+                    nextCursor = Math.max(nextCursor, item.commitSeq);
+                    const seq = item.commitSeq;
+                    let commit = commits[commits.length - 1];
+                    if (!commit || commit.commitSeq !== seq) {
                       commit = {
                         commitSeq: seq,
-                        createdAt: r.created_at,
-                        actorId: r.actor_id,
+                        createdAt: item.createdAt,
+                        actorId: item.actorId,
                         changes: [],
                       };
-                      commitsBySeq.set(seq, commit);
-                      commitSeqs.push(seq);
+                      commits.push(commit);
                     }
 
-                    const change: SyncChange = {
-                      table: r.table,
-                      row_id: r.row_id,
-                      op: r.op,
-                      row_json: r.row_json,
-                      row_version: r.row_version,
-                      scopes: r.scopes,
-                    };
-                    commit.changes.push(change);
+                    commit.changes.push(item.change);
                   }
+
+                  const integrity = await createWireSubscriptionIntegrity({
+                    partitionId,
+                    subscriptionId: sub.id,
+                    previousRoot:
+                      typeof sub.verifiedRoot === 'string'
+                        ? sub.verifiedRoot
+                        : SYNCULAR_COMMIT_GENESIS_ROOT,
+                    commits,
+                  });
 
                   nextCursor = Math.max(nextCursor, maxScannedCommitSeq);
 
-                  if (commitSeqs.length === 0) {
+                  if (commits.length === 0) {
                     subResponses.push({
                       id: sub.id,
                       status: 'active',
@@ -1087,17 +1648,13 @@ export async function pull<
                     continue;
                   }
 
-                  const commits: SyncCommit[] = commitSeqs
-                    .map((seq) => commitsBySeq.get(seq))
-                    .filter((c): c is SyncCommit => !!c)
-                    .filter((c) => c.changes.length > 0);
-
                   subResponses.push({
                     id: sub.id,
                     status: 'active',
                     scopes: effectiveScopes,
                     bootstrap: false,
                     nextCursor,
+                    ...(integrity ? { integrity } : {}),
                     commits,
                   });
                   nextCursors.push(nextCursor);
@@ -1127,16 +1684,17 @@ export async function pull<
                 4,
                 async (pending) => {
                   const cacheLookupStartedAt = Date.now();
-                  let chunkRef = await readSnapshotChunkRefByPageKey(db, {
-                    partitionId: pending.cacheLookup.partitionId,
-                    scopeKey: pending.cacheLookup.scopeKey,
-                    scope: pending.cacheLookup.scope,
-                    asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
-                    rowCursor: pending.cacheLookup.rowCursor,
-                    rowLimit: pending.cacheLookup.rowLimit,
-                    encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
-                    compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
-                  });
+                  let chunkRef: SyncSnapshotChunkRef | null =
+                    await readSnapshotChunkRefByPageKey(db, {
+                      partitionId: pending.cacheLookup.partitionId,
+                      scopeKey: pending.cacheLookup.scopeKey,
+                      scope: pending.cacheLookup.scope,
+                      asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                      rowCursor: pending.cacheLookup.rowCursor,
+                      rowLimit: pending.cacheLookup.rowLimit,
+                      encoding: snapshotChunkEncoding,
+                      compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
+                    });
                   bootstrapTimings.chunkCacheLookupMs += Math.max(
                     0,
                     Date.now() - cacheLookupStartedAt
@@ -1151,7 +1709,8 @@ export async function pull<
                         gzipMs,
                         hashMs,
                       } = await encodeCompressedSnapshotChunkToStream(
-                        pending.rowFrameParts
+                        pending.payloadParts,
+                        snapshotChunkGzipLevel
                       );
                       bootstrapTimings.chunkGzipMs += gzipMs;
                       bootstrapTimings.chunkHashMs += hashMs;
@@ -1163,7 +1722,9 @@ export async function pull<
                         asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
                         rowCursor: pending.cacheLookup.rowCursor,
                         rowLimit: pending.cacheLookup.rowLimit,
-                        encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                        nextRowCursor: pending.cacheLookup.nextRowCursor,
+                        isLastPage: pending.cacheLookup.isLastPage,
+                        encoding: snapshotChunkEncoding,
                         compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
                         sha256,
                         byteLength,
@@ -1176,7 +1737,8 @@ export async function pull<
                       );
                     } else {
                       const encodedChunk = await encodeCompressedSnapshotChunk(
-                        pending.rowFrameParts
+                        pending.payloadParts,
+                        snapshotChunkGzipLevel
                       );
                       bootstrapTimings.chunkGzipMs += encodedChunk.gzipMs;
                       bootstrapTimings.chunkHashMs += encodedChunk.hashMs;
@@ -1188,7 +1750,9 @@ export async function pull<
                         asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
                         rowCursor: pending.cacheLookup.rowCursor,
                         rowLimit: pending.cacheLookup.rowLimit,
-                        encoding: SYNC_SNAPSHOT_CHUNK_ENCODING,
+                        nextRowCursor: pending.cacheLookup.nextRowCursor,
+                        isLastPage: pending.cacheLookup.isLastPage,
+                        encoding: snapshotChunkEncoding,
                         compression: SYNC_SNAPSHOT_CHUNK_COMPRESSION,
                         sha256: encodedChunk.sha256,
                         body: encodedChunk.body,
@@ -1201,7 +1765,20 @@ export async function pull<
                     }
                   }
 
-                  pending.snapshot.chunks = [chunkRef];
+                  const chunk = toResponseChunkRef(chunkRef);
+                  pending.snapshot.chunks = [chunk];
+                  pending.snapshot.manifest =
+                    await createChunkedSnapshotManifest({
+                      table: pending.snapshot.table,
+                      asOfCommitSeq: pending.cacheLookup.asOfCommitSeq,
+                      scopeKey: pending.cacheLookup.scopeKey,
+                      rowCursor: pending.cacheLookup.rowCursor,
+                      rowLimit: pending.cacheLookup.rowLimit,
+                      nextRowCursor: pending.cacheLookup.nextRowCursor,
+                      isFirstPage: pending.snapshot.isFirstPage,
+                      isLastPage: pending.cacheLookup.isLastPage,
+                      chunks: [chunk],
+                    });
                 }
               );
             }
@@ -1217,9 +1794,12 @@ export async function pull<
             span.setAttribute('snapshot_page_count', stats.snapshotPageCount);
             span.setAttributes({
               bootstrap_snapshot_query_ms: bootstrapTimings.snapshotQueryMs,
-              bootstrap_row_frame_encode_ms: bootstrapTimings.rowFrameEncodeMs,
+              bootstrap_snapshot_binary_encode_ms:
+                bootstrapTimings.binaryEncodeMs,
               bootstrap_chunk_cache_lookup_ms:
                 bootstrapTimings.chunkCacheLookupMs,
+              bootstrap_artifact_cache_lookup_ms:
+                bootstrapTimings.artifactCacheLookupMs,
               bootstrap_chunk_gzip_ms: bootstrapTimings.chunkGzipMs,
               bootstrap_chunk_hash_ms: bootstrapTimings.chunkHashMs,
               bootstrap_chunk_persist_ms: bootstrapTimings.chunkPersistMs,

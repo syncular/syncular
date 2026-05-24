@@ -1,371 +1,291 @@
-import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createDatabase, type SyncTransport } from '@syncular/core';
-import type { Kysely } from 'kysely';
-import { sql } from 'kysely';
-import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
-import { Client } from './client';
-import { SyncEngine } from './engine/SyncEngine';
-import type { ClientHandlerCollection } from './handlers/collection';
-import { ensureClientSyncSchema } from './migrate';
-import type { SyncClientDb } from './schema';
+import { describe, expect, it } from 'bun:test';
+import { SyncularClientLifecycle } from './client';
+import type {
+  SyncularDiagnosticEvent,
+  SyncularDiagnosticSink,
+  SyncularNetworkStatusSource,
+  SyncularRealtimeConnectionState,
+  SyncularSubscriptionSpec,
+  SyncularSyncResult,
+} from './types';
 
-interface TasksTable {
-  id: string;
-  title: string;
-  server_version: number;
-}
-
-interface TestDb extends SyncClientDb {
-  tasks: TasksTable;
-}
-
-const noopTransport: SyncTransport = {
-  async sync() {
-    return {};
-  },
-  async fetchSnapshotChunk() {
-    return new Uint8Array();
-  },
-};
-
-describe('Client conflict events', () => {
-  let db: Kysely<TestDb>;
-  let client: Client<TestDb>;
-  let engine: SyncEngine<TestDb>;
-
-  async function seedConflict(id: string): Promise<void> {
-    const now = Date.now();
-    await sql`
-      insert into ${sql.table('sync_outbox_commits')} (
-        ${sql.ref('id')},
-        ${sql.ref('client_commit_id')},
-        ${sql.ref('status')},
-        ${sql.ref('operations_json')},
-        ${sql.ref('last_response_json')},
-        ${sql.ref('error')},
-        ${sql.ref('created_at')},
-        ${sql.ref('updated_at')},
-        ${sql.ref('attempt_count')},
-        ${sql.ref('acked_commit_seq')},
-        ${sql.ref('schema_version')}
-      ) values (
-        ${'outbox-1'},
-        ${'commit-1'},
-        ${'failed'},
-        ${JSON.stringify([
-          {
-            table: 'tasks',
-            row_id: 't1',
-            op: 'upsert',
-            payload: { id: 't1', title: 'local', server_version: 1 },
-          },
-        ])},
-        ${null},
-        ${'conflict'},
-        ${now},
-        ${now},
-        ${1},
-        ${null},
-        ${1}
-      )
-    `.execute(db);
-
-    await sql`
-      insert into ${sql.table('sync_conflicts')} (
-        ${sql.ref('id')},
-        ${sql.ref('outbox_commit_id')},
-        ${sql.ref('client_commit_id')},
-        ${sql.ref('op_index')},
-        ${sql.ref('result_status')},
-        ${sql.ref('message')},
-        ${sql.ref('code')},
-        ${sql.ref('server_version')},
-        ${sql.ref('server_row_json')},
-        ${sql.ref('created_at')},
-        ${sql.ref('resolved_at')},
-        ${sql.ref('resolution')}
-      ) values (
-        ${id},
-        ${'outbox-1'},
-        ${'commit-1'},
-        ${0},
-        ${'conflict'},
-        ${'server conflict'},
-        ${'CONFLICT'},
-        ${2},
-        ${JSON.stringify({ id: 't1', title: 'server', server_version: 2 })},
-        ${now},
-        ${null},
-        ${null}
-      )
-    `.execute(db);
-  }
-
-  async function runConflictCheck(
-    engineInstance: SyncEngine<TestDb>
-  ): Promise<void> {
-    const checker = Reflect.get(engineInstance, 'emitNewConflicts');
-    if (typeof checker !== 'function') {
-      throw new Error('Expected emitNewConflicts to be callable');
-    }
-    await checker.call(engineInstance);
-  }
-
-  beforeEach(async () => {
-    db = createDatabase<TestDb>({
-      dialect: createBunSqliteDialect({ path: ':memory:' }),
-      family: 'sqlite',
-    });
-    await ensureClientSyncSchema(db);
-    await db.schema
-      .createTable('tasks')
-      .addColumn('id', 'text', (col) => col.primaryKey())
-      .addColumn('title', 'text', (col) => col.notNull())
-      .addColumn('server_version', 'integer', (col) =>
-        col.notNull().defaultTo(0)
-      )
-      .execute();
-
-    const handlers: ClientHandlerCollection<TestDb> = [];
-    client = new Client<TestDb>({
-      db,
-      transport: noopTransport,
-      tableHandlers: handlers,
-      clientId: 'client-1',
-      actorId: 'u1',
-      subscriptions: [],
+describe('Syncular browser client lifecycle', () => {
+  it('starts subscriptions, initial sync, and realtime in order', async () => {
+    const client = new FakeLifecycleClient();
+    const subscription = taskSubscription('actor');
+    const lifecycle = new SyncularClientLifecycle(client, {
+      subscriptions: [subscription],
+      realtime: { wsUrl: 'wss://example.test/sync/realtime' },
     });
 
-    engine = new SyncEngine<TestDb>({
-      db,
-      transport: noopTransport,
-      handlers: handlers,
-      actorId: 'u1',
-      clientId: 'client-1',
-      subscriptions: [],
+    await lifecycle.start();
+
+    expect(client.calls).toEqual([
+      'setSubscriptions',
+      'syncOnce',
+      'startRealtime',
+    ]);
+    expect(client.subscriptions).toEqual([subscription]);
+    expect(client.realtimeOptions).toEqual({
+      wsUrl: 'wss://example.test/sync/realtime',
     });
-    Reflect.set(client, 'engine', engine);
-    const wireEngineEvents = Reflect.get(client, 'wireEngineEvents');
-    if (typeof wireEngineEvents !== 'function') {
-      throw new Error('Expected wireEngineEvents to be callable');
-    }
-    wireEngineEvents.call(client);
   });
 
-  afterEach(async () => {
-    client.destroy();
-    await db.destroy();
+  it('uses websocket reconnects as wakeups for HTTP catchup', async () => {
+    const client = new FakeLifecycleClient();
+    const lifecycle = new SyncularClientLifecycle(client);
+
+    await lifecycle.start();
+    expect(client.syncCount).toBe(1);
+    expect(client.calls).toEqual(['syncOnce', 'startRealtime']);
+
+    client.emitRealtimeState('connected');
+    await Promise.resolve();
+    expect(client.syncCount).toBe(1);
+
+    client.emitRealtimeState('disconnected');
+    client.emitRealtimeState('connected');
+    await waitFor(() => client.syncCount === 2);
   });
 
-  it('emits conflict:resolved with the resolved conflict payload', async () => {
-    await seedConflict('conflict-1');
-
-    const resolvedEvents: Array<{ id: string }> = [];
-    client.on('conflict:resolved', (conflict) => {
-      resolvedEvents.push({ id: conflict.id });
+  it('keeps interval polling opt-in', async () => {
+    const client = new FakeLifecycleClient();
+    const lifecycle = new SyncularClientLifecycle(client, {
+      initialSync: false,
     });
 
-    await client.resolveConflict('conflict-1', { strategy: 'keep-local' });
+    await lifecycle.start();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(client.syncCount).toBe(0);
 
-    expect(resolvedEvents).toEqual([{ id: 'conflict-1' }]);
-
-    const resolvedRow = await sql<{ resolved_at: number | null }>`
-      select ${sql.ref('resolved_at')}
-      from ${sql.table('sync_conflicts')}
-      where ${sql.ref('id')} = ${'conflict-1'}
-      limit 1
-    `.execute(db);
-    expect(resolvedRow.rows[0]?.resolved_at).not.toBeNull();
+    await lifecycle.stop();
+    expect(client.calls.at(-1)).toBe('stopRealtime');
   });
 
-  it('emits conflict:new only once per unresolved conflict id', async () => {
-    await seedConflict('conflict-1');
+  it('forces bootstrap and resyncs when sync diagnostics require resync', async () => {
+    const client = new FakeLifecycleClient();
+    const lifecycle = new SyncularClientLifecycle(client);
 
-    const newEvents: string[] = [];
-    client.on('conflict:new', (conflict) => {
-      newEvents.push(conflict.id);
-    });
+    await lifecycle.start();
+    client.emitSyncResyncRequired();
 
-    await runConflictCheck(engine);
-    await runConflictCheck(engine);
-
-    expect(newEvents).toEqual(['conflict-1']);
-  });
-
-  it('forwards push:result events from the engine', () => {
-    const pushResults: Array<{ clientCommitId: string; status: string }> = [];
-    client.on('push:result', (result) => {
-      pushResults.push({
-        clientCommitId: result.clientCommitId,
-        status: result.status,
-      });
-    });
-
-    const emit = Reflect.get(engine, 'emit');
-    if (typeof emit !== 'function') {
-      throw new Error('Expected SyncEngine.emit to be callable');
-    }
-
-    emit.call(engine, 'push:result', {
-      outboxCommitId: 'outbox-1',
-      clientCommitId: 'commit-1',
-      status: 'rejected',
-      commitSeq: null,
-      results: [],
-      errorCode: 'CONFLICT',
-      timestamp: Date.now(),
-    });
-
-    expect(pushResults).toEqual([
-      {
-        clientCommitId: 'commit-1',
-        status: 'rejected',
-      },
+    await waitFor(() => client.calls.includes('forceSubscriptionsBootstrap'));
+    await waitFor(() => client.syncCount === 2);
+    expect(client.calls).toEqual([
+      'syncOnce',
+      'startRealtime',
+      'forceSubscriptionsBootstrap',
+      'syncOnce',
     ]);
   });
+
+  it('starts offline and syncs when the browser comes online', async () => {
+    const client = new FakeLifecycleClient();
+    const network = new FakeNetworkStatus(false);
+    const lifecycle = new SyncularClientLifecycle(client, { network });
+
+    await lifecycle.start();
+
+    expect(client.calls).toEqual([]);
+
+    network.setOnline(true);
+
+    await waitFor(
+      () => client.syncCount === 1 && client.calls.includes('startRealtime')
+    );
+    expect(client.calls).toEqual(['syncOnce', 'startRealtime']);
+  });
+
+  it('keeps lifecycle running when initial sync hits a retryable offline error', async () => {
+    const client = new FakeLifecycleClient();
+    client.syncError = new Error('browser fetch failed: offline');
+    const lifecycle = new SyncularClientLifecycle(client, {
+      network: new FakeNetworkStatus(true),
+    });
+
+    await lifecycle.start();
+
+    expect(client.calls).toEqual(['syncOnce', 'startRealtime']);
+  });
 });
 
-describe('Client local mutation sync scheduling', () => {
-  let db: Kysely<TestDb>;
-  let client: Client<TestDb>;
+function taskSubscription(actorId: string): SyncularSubscriptionSpec {
+  return {
+    id: `tasks:${actorId}`,
+    table: 'tasks',
+    scopes: { user_id: actorId },
+  };
+}
 
-  beforeEach(async () => {
-    db = createDatabase<TestDb>({
-      dialect: createBunSqliteDialect({ path: ':memory:' }),
-      family: 'sqlite',
-    });
-    await ensureClientSyncSchema(db);
-    await db.schema
-      .createTable('tasks')
-      .addColumn('id', 'text', (col) => col.primaryKey())
-      .addColumn('title', 'text', (col) => col.notNull())
-      .addColumn('server_version', 'integer', (col) =>
-        col.notNull().defaultTo(0)
-      )
-      .execute();
+class FakeLifecycleClient {
+  calls: string[] = [];
+  subscriptions: readonly SyncularSubscriptionSpec[] = [];
+  realtimeOptions: boolean | Record<string, unknown> | undefined;
+  syncCount = 0;
+  syncError: unknown = undefined;
+  realtime: SyncularRealtimeConnectionState = 'disconnected';
+  readonly #diagnosticListeners = new Set<SyncularDiagnosticSink>();
 
-    client = new Client<TestDb>({
-      db,
-      transport: noopTransport,
-      tableHandlers: [],
-      clientId: 'client-sync-after-mutation',
-      actorId: 'u1',
+  addDiagnosticListener(listener: SyncularDiagnosticSink): () => void {
+    this.#diagnosticListeners.add(listener);
+    return () => {
+      this.#diagnosticListeners.delete(listener);
+    };
+  }
+
+  connectionState(): {
+    closed: boolean;
+    pendingRequests: number;
+    realtime: SyncularRealtimeConnectionState;
+  } {
+    return {
+      closed: false,
+      pendingRequests: 0,
+      realtime: this.realtime,
+    };
+  }
+
+  async setSubscriptions(
+    subscriptions: readonly SyncularSubscriptionSpec[]
+  ): Promise<void> {
+    this.calls.push('setSubscriptions');
+    this.subscriptions = subscriptions;
+  }
+
+  async forceSubscriptionsBootstrap(): Promise<number> {
+    this.calls.push('forceSubscriptionsBootstrap');
+    return this.subscriptions.length;
+  }
+
+  async startRealtime(
+    options?: boolean | Record<string, unknown>
+  ): Promise<void> {
+    this.calls.push('startRealtime');
+    this.realtimeOptions = options;
+  }
+
+  async stopRealtime(): Promise<void> {
+    this.calls.push('stopRealtime');
+  }
+
+  async syncOnce(): Promise<SyncularSyncResult> {
+    this.calls.push('syncOnce');
+    this.syncCount += 1;
+    if (this.syncError) throw this.syncError;
+    return {
+      changedTables: [],
+      changedRows: [],
+      changedRowsTruncated: false,
       subscriptions: [],
-    });
-  });
-
-  afterEach(async () => {
-    client.destroy();
-    await db.destroy();
-  });
-
-  it('schedules a background local-trigger sync after low-level mutations when started', async () => {
-    const syncCalls: Array<{ trigger?: 'ws' | 'local' | 'poll' }> = [];
-
-    Reflect.set(client, 'engine', {
-      getState: () => ({
-        enabled: true,
-        isSyncing: false,
-        connectionState: 'connected',
-        transportMode: 'realtime',
-        lastSyncAt: null,
-        error: null,
-        pendingCount: 0,
-        retryCount: 0,
-        isRetrying: false,
-      }),
-      sync: async (opts?: { trigger?: 'ws' | 'local' | 'poll' }) => {
-        syncCalls.push(opts ?? {});
-        return {
-          success: true,
-          pushedCommits: 0,
-          pullRounds: 0,
-          pullResponse: { ok: true, subscriptions: [] },
-          error: null,
-        };
+      bootstrap: {
+        channelPhase: 'idle',
+        progressPercent: 100,
+        isBootstrapping: false,
+        criticalReady: true,
+        interactiveReady: true,
+        complete: true,
+        activePhase: null,
+        expectedSubscriptionIds: [],
+        readySubscriptionIds: [],
+        pendingSubscriptionIds: [],
+        subscriptions: [],
+        phases: [],
       },
-      destroy: () => {},
-    });
-    Reflect.set(client, 'started', true);
+      pushedCommits: 0,
+      timings: zeroSyncTimings(),
+    };
+  }
 
-    await client.mutations.tasks.insert({ title: 'queued task' });
+  emitRealtimeState(state: SyncularRealtimeConnectionState): void {
+    this.realtime = state;
+    const event: SyncularDiagnosticEvent = {
+      at: Date.now(),
+      level: 'info',
+      source: 'realtime',
+      code: 'realtime.state',
+      message: `realtime ${state}`,
+      details: { state },
+    };
+    for (const listener of this.#diagnosticListeners) listener(event);
+  }
 
-    expect(syncCalls).toEqual([{ trigger: 'local' }]);
-  });
+  emitSyncResyncRequired(): void {
+    const event: SyncularDiagnosticEvent = {
+      at: Date.now(),
+      level: 'error',
+      source: 'sync',
+      code: 'sync.resync_required',
+      message: 'sync requires resync',
+      details: { resyncRequired: true },
+    };
+    for (const listener of this.#diagnosticListeners) listener(event);
+  }
+}
 
-  it('does not schedule a background sync while retry backoff is active', async () => {
-    const syncCalls: Array<{ trigger?: 'ws' | 'local' | 'poll' }> = [];
+class FakeNetworkStatus implements SyncularNetworkStatusSource {
+  #online: boolean;
+  readonly #listeners = new Map<'online' | 'offline', Set<() => void>>([
+    ['online', new Set()],
+    ['offline', new Set()],
+  ]);
 
-    Reflect.set(client, 'engine', {
-      getState: () => ({
-        enabled: true,
-        isSyncing: false,
-        connectionState: 'connected',
-        transportMode: 'realtime',
-        lastSyncAt: null,
-        error: null,
-        pendingCount: 1,
-        retryCount: 1,
-        isRetrying: true,
-      }),
-      sync: async (opts?: { trigger?: 'ws' | 'local' | 'poll' }) => {
-        syncCalls.push(opts ?? {});
-        return {
-          success: true,
-          pushedCommits: 0,
-          pullRounds: 0,
-          pullResponse: { ok: true, subscriptions: [] },
-          error: null,
-        };
-      },
-      destroy: () => {},
-    });
-    Reflect.set(client, 'started', true);
+  constructor(online: boolean) {
+    this.#online = online;
+  }
 
-    await client.mutations.tasks.insert({ title: 'queued task' });
+  isOnline(): boolean {
+    return this.#online;
+  }
 
-    expect(syncCalls).toEqual([]);
-  });
-});
+  addEventListener(type: 'online' | 'offline', listener: () => void): void {
+    this.#listeners.get(type)?.add(listener);
+  }
 
-describe('Client inspector snapshot', () => {
-  let db: Kysely<TestDb>;
-  let client: Client<TestDb>;
+  removeEventListener(type: 'online' | 'offline', listener: () => void): void {
+    this.#listeners.get(type)?.delete(listener);
+  }
 
-  beforeEach(async () => {
-    db = createDatabase<TestDb>({
-      dialect: createBunSqliteDialect({ path: ':memory:' }),
-      family: 'sqlite',
-    });
-    await ensureClientSyncSchema(db);
+  setOnline(online: boolean): void {
+    if (this.#online === online) return;
+    this.#online = online;
+    const type = online ? 'online' : 'offline';
+    for (const listener of this.#listeners.get(type) ?? []) listener();
+  }
+}
 
-    const handlers: ClientHandlerCollection<TestDb> = [];
-    client = new Client<TestDb>({
-      db,
-      transport: noopTransport,
-      tableHandlers: handlers,
-      clientId: 'client-inspector',
-      actorId: 'u1',
-      subscriptions: [],
-    });
-  });
+function zeroSyncTimings(): SyncularSyncResult['timings'] {
+  return {
+    totalMs: 0,
+    pushMs: 0,
+    pullMs: 0,
+    pullRequestMs: 0,
+    syncPackDecodeMs: 0,
+    pullTransformMs: 0,
+    integrityVerifyMs: 0,
+    snapshotFetchMs: 0,
+    pullApplyMs: 0,
+    scopeClearMs: 0,
+    snapshotRowApplyMs: 0,
+    snapshotArtifactApplyMs: 0,
+    snapshotArtifactCheckpointMs: 0,
+    snapshotArtifactCheckpointCount: 0,
+    snapshotChunkApplyMs: 0,
+    snapshotChunkMaterializeMs: 0,
+    commitApplyMs: 0,
+    subscriptionStateMs: 0,
+    notifyMs: 0,
+    ...({
+      snapshotChunkResetMs: 0,
+      snapshotChunkBindMs: 0,
+      snapshotChunkStepMs: 0,
+    } as object),
+  } as SyncularSyncResult['timings'];
+}
 
-  afterEach(async () => {
-    client.destroy();
-    await db.destroy();
-  });
-
-  it('returns a serializable inspector snapshot', async () => {
-    await client.start();
-    await client.sync();
-
-    const snapshot = await client.getInspectorSnapshot({ eventLimit: 20 });
-
-    expect(snapshot).not.toBeNull();
-    expect(snapshot?.version).toBe(1);
-    expect(snapshot?.generatedAt).toBeGreaterThan(0);
-    expect(Array.isArray(snapshot?.recentEvents)).toBe(true);
-    expect(snapshot?.recentEvents.length).toBeGreaterThan(0);
-    expect(snapshot?.diagnostics).toBeDefined();
-  });
-});
+async function waitFor(predicate: () => boolean): Promise<void> {
+  for (let attempt = 0; attempt < 20; attempt++) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 1));
+  }
+  throw new Error('timed out waiting for condition');
+}

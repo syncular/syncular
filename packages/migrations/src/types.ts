@@ -11,10 +11,7 @@ export type MigrationFn<DB = unknown> = (db: Kysely<DB>) => Promise<void>;
 
 export type MigrationChecksumMode = 'deterministic' | 'disabled';
 
-export type MigrationChecksumAlgorithm =
-  | 'legacy_source_v1'
-  | 'sql_trace_v1'
-  | 'disabled';
+export type MigrationChecksumAlgorithm = 'sql_trace_v1' | 'disabled';
 
 export type MigrationChecksums = Record<string, string>;
 

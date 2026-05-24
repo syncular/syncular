@@ -135,7 +135,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256,
         body,
@@ -146,12 +146,12 @@ describe('DbMetadataSnapshotChunkStorage', () => {
       expect(ref.id).toBeTruthy();
       expect(ref.sha256).toBe(sha256);
       expect(ref.byteLength).toBe(body.length);
-      expect(ref.encoding).toBe('json-row-frame-v1');
+      expect(ref.encoding).toBe('binary-table-v1');
       expect(ref.compression).toBe('gzip');
 
       // Verify body stored in blob adapter (hash derived from chunk metadata)
       const computedHash = expectedBlobHash({
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256,
       });
@@ -177,7 +177,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256,
         body,
@@ -192,7 +192,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 200, // Different commit seq
         rowCursor: 'cursor2',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256, // Same content hash
         body,
@@ -204,7 +204,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
 
       // But blob should only be stored once (deterministic metadata hash)
       const computedHash = expectedBlobHash({
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256,
       });
@@ -229,7 +229,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: sha256_1,
         body: body1,
@@ -248,7 +248,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100, // Same
         rowCursor: 'cursor1', // Same
         rowLimit: 1000, // Same
-        encoding: 'json-row-frame-v1', // Same
+        encoding: 'binary-table-v1', // Same
         compression: 'gzip', // Same
         sha256: sha256_2,
         body: body2,
@@ -261,7 +261,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
 
       // Old blob should still exist (no orphan cleanup on update)
       const oldBlobHash = expectedBlobHash({
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: sha256_1,
       });
@@ -270,7 +270,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
 
       // New blob should exist (computed from new chunk metadata)
       const newBlobHash = expectedBlobHash({
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: sha256_2,
       });
@@ -285,7 +285,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
       });
 
       const compressedBody = new TextEncoder().encode('compressed-bytes');
-      const chunkSha = 'row-frame-hash-value';
+      const chunkSha = 'binary-table-hash-value';
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -301,7 +301,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 123,
         rowCursor: 'cursor-stream',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: chunkSha,
         bodyStream: stream,
@@ -312,7 +312,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
       expect(ref.sha256).toBe(chunkSha);
 
       const expectedHash = expectedBlobHash({
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: chunkSha,
       });
@@ -326,7 +326,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
       });
 
       const compressedBody = new TextEncoder().encode('stream-without-length');
-      const chunkSha = 'row-frame-hash-no-length';
+      const chunkSha = 'binary-table-hash-no-length';
 
       const stream = new ReadableStream<Uint8Array>({
         start(controller) {
@@ -342,7 +342,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 124,
         rowCursor: 'cursor-stream-2',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: chunkSha,
         bodyStream: stream,
@@ -353,7 +353,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
       expect(ref.byteLength).toBe(compressedBody.length);
 
       const expectedHash = expectedBlobHash({
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: chunkSha,
       });
@@ -378,7 +378,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256,
         body,
@@ -418,7 +418,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256,
         body,
@@ -432,7 +432,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
       });
 
@@ -455,7 +455,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: 'expired123',
         body,
@@ -469,7 +469,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
       });
 
@@ -491,7 +491,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: 'nomatch123',
         body,
@@ -506,7 +506,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
       });
 
@@ -530,7 +530,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: 'expired123',
         body: expiredBody,
@@ -546,7 +546,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 200,
         rowCursor: 'cursor2',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: 'valid456',
         body: validBody,
@@ -564,7 +564,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
       // Expired blob should be deleted
       const expiredBlob = await mockBlobAdapter.get(
         expectedBlobHash({
-          encoding: 'json-row-frame-v1',
+          encoding: 'binary-table-v1',
           compression: 'gzip',
           sha256: 'expired123',
         })
@@ -607,7 +607,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
           asOfCommitSeq: 100 + i,
           rowCursor: `cursor-${i}`,
           rowLimit: 1000,
-          encoding: 'json-row-frame-v1',
+          encoding: 'binary-table-v1',
           compression: 'gzip',
           sha256: `expired-batch-${i}`,
           body,
@@ -652,7 +652,7 @@ describe('DbMetadataSnapshotChunkStorage', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 1000,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: 'error123',
         body,

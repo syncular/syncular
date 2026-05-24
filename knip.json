@@ -11,59 +11,99 @@
   "typescript": true,
   "ignore": [
     "**/generated/**",
-    "**/.wrangler/**",
     "types/**"
   ],
   "ignoreDependencies": [
-    "happy-dom",
     "tailwindcss"
   ],
-  "ignoreBinaries": ["act", "k6", "maestro", "version"],
+  "ignoreBinaries": [
+    "k6",
+    "maestro",
+    "version"
+  ],
   "ignoreIssues": {
-    "plugins/blob/client/src/index.ts": ["exports", "types"],
-    "plugins/blob/client/src/migrate.ts": ["exports"],
-    "plugins/blob/client/src/types.ts": ["exports", "types"],
-    "plugins/blob/server-storage-filesystem/src/index.ts": ["types"],
-    "plugins/blob/server-storage-s3/src/index.ts": ["types"],
-    "packages/server-hono/src/websocket-origin.ts": ["exports"],
-    "plugins/encryption/client/src/key-sharing.ts": ["exports"]
+    "plugins/blob/server-storage-filesystem/src/index.ts": [
+      "types"
+    ],
+    "plugins/blob/server-storage-s3/src/index.ts": [
+      "types"
+    ],
+    "apps/console/build.ts": [
+      "files"
+    ],
+    "apps/demo/scripts/dev.ts": [
+      "files"
+    ],
+    "apps/demo/src/server/sync-server.ts": [
+      "files"
+    ],
+    "apps/demo/package.json": [
+      "dependencies"
+    ],
+    "packages/console/build-static.ts": [
+      "files"
+    ],
+    "rust/examples/todo-app/package.json": [
+      "dependencies"
+    ],
+    "packages/server-hono/src/websocket-origin.ts": [
+      "exports"
+    ],
+    "config/tsconfig.react-native.json": [
+      "unlisted"
+    ],
+    "packages/core/src/snapshot-chunks.ts": [
+      "duplicates"
+    ],
+    "packages/server-hono/src/validation.ts": [
+      "exports"
+    ],
+    "packages/client/src/client.ts": [
+      "duplicates"
+    ],
+    "packages/client/src/database.ts": [
+      "duplicates"
+    ],
+    "packages/client/src/diagnostics.ts": [
+      "exports"
+    ],
+    "packages/client/src/sql-safety.ts": [
+      "exports"
+    ],
+    "packages/client/src/worker-protocol.ts": [
+      "types"
+    ],
+    "packages/client/src/worker-realtime.ts": [
+      "types",
+      "exports"
+    ],
+    "packages/client/src/generated-bridge.ts": [
+      "types"
+    ],
+    "packages/client-crdt-adapters/src/webview-host-facade.ts": [
+      "exports"
+    ],
+    "packages/client-crdt-adapters/src/yjs-document-field-adapter.ts": [
+      "exports"
+    ],
+    "packages/console/src/lib/types.ts": [
+      "types"
+    ]
   },
   "workspaces": {
     ".": {
-      "entry": ["scripts/*.ts"]
+      "entry": [
+        "scripts/*.ts"
+      ]
     },
     "packages/core": {
       "includeEntryExports": false,
-      "entry": ["src/**/*.test.ts"]
-    },
-    "packages/client": {
-      "includeEntryExports": false
-    },
-    "packages/client-react": {
-      "includeEntryExports": false,
       "entry": [
-        "src/**/*.test.ts",
-        "src/**/*.test.tsx",
-        "src/__tests__/test-utils.ts",
-        "src/__tests__/integration/test-setup.ts"
+        "scripts/*.ts",
+        "src/**/*.test.ts"
       ]
     },
-    "packages/client-plugin-encryption": {
-      "includeEntryExports": false
-    },
-    "plugins/yjs/client": {
-      "includeEntryExports": false
-    },
     "plugins/yjs/server": {
-      "includeEntryExports": false
-    },
-    "plugins/offline-auth/client": {
-      "includeEntryExports": false
-    },
-    "plugins/offline-auth/react": {
-      "includeEntryExports": false
-    },
-    "plugins/blob/client": {
       "includeEntryExports": false
     },
     "plugins/blob/server-storage-filesystem": {
@@ -80,7 +120,10 @@
     },
     "packages/server-hono": {
       "includeEntryExports": false,
-      "entry": ["src/**/*.test.ts", "scripts/*.ts"]
+      "entry": [
+        "src/**/*.test.ts",
+        "scripts/*.ts"
+      ]
     },
     "packages/server-cloudflare": {
       "includeEntryExports": false
@@ -103,9 +146,6 @@
     "packages/transport-http": {
       "includeEntryExports": false
     },
-    "packages/transport-ws": {
-      "includeEntryExports": false
-    },
     "packages/relay": {
       "includeEntryExports": false
     },
@@ -117,6 +157,35 @@
     },
     "packages/testkit": {
       "includeEntryExports": false
+    },
+    "packages/client-expo": {
+      "includeEntryExports": false
+    },
+    "packages/client-react": {
+      "includeEntryExports": false,
+      "entry": [
+        "src/**/*.test.ts"
+      ]
+    },
+    "packages/client-react-native": {
+      "includeEntryExports": false
+    },
+    "packages/client-tauri": {
+      "includeEntryExports": false
+    },
+    "packages/client": {
+      "includeEntryExports": false,
+      "entry": [
+        "src/**/*.test.ts",
+        "src/**/__tests__/**/*.ts",
+        "scripts/*.ts"
+      ]
+    },
+    "packages/client-crdt-adapters": {
+      "includeEntryExports": false,
+      "entry": [
+        "src/**/*.test.ts"
+      ]
     },
     "packages/syncular": {
       "includeEntryExports": false
@@ -145,9 +214,6 @@
     "packages/dialect-d1": {
       "includeEntryExports": false
     },
-    "packages/dialect-wa-sqlite": {
-      "includeEntryExports": false
-    },
     "packages/dialect-expo-sqlite": {
       "includeEntryExports": false
     },
@@ -157,20 +223,30 @@
     "packages/dialect-electron-sqlite": {
       "includeEntryExports": false
     },
-    "packages/ui": {
-      "includeEntryExports": false
-    },
-    "apps/demo": {
+    "rust/bindings/javascript": {
       "includeEntryExports": false,
       "entry": [
-        "src/main.tsx!",
-        "src/sw/server.ts!",
         "scripts/*.ts"
       ]
+    },
+    "rust/examples/todo-app": {
+      "includeEntryExports": false,
+      "entry": [
+        "conformance/**/*.ts",
+        "native-smokes/**/*.ts"
+      ]
+    },
+    "packages/ui": {
+      "includeEntryExports": false
     },
     "apps/console": {
       "entry": [
         "src/main.tsx!"
+      ]
+    },
+    "apps/demo": {
+      "entry": [
+        "src/server/sync-server.ts"
       ]
     },
     "apps/docs": {
@@ -182,14 +258,15 @@
       ]
     },
     "tests/unit": {
-      "entry": ["**/*.test.ts"]
+      "entry": [
+        "**/*.test.ts"
+      ]
     },
     "tests/dialects": {
       "includeEntryExports": false,
-      "entry": ["**/*.ts"]
-    },
-    "tests/perf": {
-      "entry": ["**/*.ts"]
+      "entry": [
+        "**/*.ts"
+      ]
     },
     "tests/load": {
       "includeEntryExports": false,
@@ -198,23 +275,21 @@
         "scripts/*.js",
         "*.ts"
       ],
-      "ignoreDependencies": ["k6"]
-    },
-    "tests/integration": {
-      "includeEntryExports": false,
-      "entry": ["**/*.ts"]
-    },
-    "tests/runtime": {
-      "includeEntryExports": false,
-      "entry": ["**/*.ts"],
-      "ignoreDependencies": ["better-sqlite3"]
+      "ignoreDependencies": [
+        "k6"
+      ]
     },
     "tests/typegen": {
       "includeEntryExports": false,
-      "entry": ["**/*.ts"]
+      "entry": [
+        "**/*.ts"
+      ]
     },
     "tests/expo-app": {
-      "entry": ["**/*.ts", "**/*.tsx"]
+      "entry": [
+        "**/*.ts",
+        "**/*.tsx"
+      ]
     }
   }
 }

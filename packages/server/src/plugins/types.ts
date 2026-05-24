@@ -1,7 +1,13 @@
-import type { SyncOperation } from '@syncular/core';
+import type {
+  ScopeValues,
+  SyncChange,
+  SyncCrdtStateVectorHint,
+  SyncOperation,
+} from '@syncular/core';
 import type {
   ApplyOperationResult,
   ServerApplyOperationContext,
+  ServerContext,
   ServerTableHandler,
   SyncServerAuth,
 } from '../handlers/types';
@@ -41,7 +47,24 @@ export interface ServerPushPluginAfterApplyArgs<
   applied: ApplyOperationResult;
 }
 
-export interface SyncServerPushPlugin<
+export interface ServerPullPluginTransformChangesArgs<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+> {
+  ctx: ServerContext<DB, Auth>;
+  tableHandler: ServerTableHandler<DB, Auth>;
+  subscription: {
+    id: string;
+    table: string;
+    scopes: ScopeValues;
+    params: Record<string, unknown> | undefined;
+    cursor: number;
+    crdtStateVectors: readonly SyncCrdtStateVectorHint[];
+  };
+  changes: readonly SyncChange[];
+}
+
+export interface SyncServerPlugin<
   DB extends SyncCoreDb = SyncCoreDb,
   Auth extends SyncServerAuth = SyncServerAuth,
 > {
@@ -68,7 +91,29 @@ export interface SyncServerPushPlugin<
   afterApplyOperation?(
     args: ServerPushPluginAfterApplyArgs<DB, Auth>
   ): Promise<ApplyOperationResult> | ApplyOperationResult;
+
+  /**
+   * Called while building an incremental pull response for a single
+   * subscription/table, before wire integrity is calculated.
+   *
+   * Use this for scoped, protocol-level row payload transforms such as sending
+   * a CRDT update envelope instead of a full document state when the client
+   * advertised an applicable state vector.
+   */
+  transformPullChanges?(
+    args: ServerPullPluginTransformChangesArgs<DB, Auth>
+  ): Promise<readonly SyncChange[]> | readonly SyncChange[];
 }
+
+export type SyncServerPushPlugin<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+> = SyncServerPlugin<DB, Auth>;
+
+export type SyncServerPullPlugin<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+> = SyncServerPlugin<DB, Auth>;
 
 export function sortServerPushPlugins<
   DB extends SyncCoreDb = SyncCoreDb,
@@ -87,4 +132,13 @@ export function sortServerPushPlugins<
       return a.index - b.index;
     })
     .map((entry) => entry.plugin);
+}
+
+export function sortServerPullPlugins<
+  DB extends SyncCoreDb = SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+>(
+  plugins: readonly SyncServerPullPlugin<DB, Auth>[] | undefined
+): SyncServerPullPlugin<DB, Auth>[] {
+  return sortServerPushPlugins(plugins);
 }

@@ -5,6 +5,7 @@
  * - sync_commits: one row per committed push
  * - sync_changes: one row per emitted change, stamped with scopes
  * - sync_table_commits: commit routing index for fast pull
+ * - sync_scope_commits: scope routing index for scoped incremental pull
  */
 
 import type { SyncOp } from '@syncular/core';
@@ -32,6 +33,10 @@ export interface SyncCommitsTable {
   result_json: unknown | null;
   /** Number of emitted changes (denormalized for observability) */
   change_count: Generated<number>;
+  /** Hex SHA-256 digest of the canonical persisted commit payload */
+  commit_digest: Generated<string | null>;
+  /** Hex SHA-256 root chaining this commit to the previous partition root */
+  commit_chain_root: Generated<string | null>;
   /**
    * Tables affected by this commit (for realtime notifications).
    * Array of table names that had changes.
@@ -83,6 +88,15 @@ export interface SyncClientCursorsTable {
    * This is the intersection of requested scopes and allowed scopes.
    */
   effective_scopes: unknown;
+  /**
+   * Last active realtime subscription snapshot for websocket binary packs.
+   *
+   * This duplicates the protocol-level subscription id/table/scope/cursor/root
+   * shape from the latest successful pull so a restarted realtime server can
+   * rebuild scoped binary notifications before the client performs another
+   * HTTP pull.
+   */
+  realtime_subscriptions: unknown | null;
   /** Last update timestamp */
   updated_at: Generated<string>;
 }
@@ -105,7 +119,11 @@ export interface SyncSnapshotChunksTable {
   row_cursor: string;
   /** Snapshot row limit used to produce this chunk */
   row_limit: number;
-  /** Row encoding (e.g. 'json-row-frame-v1') */
+  /** Cursor after this chunk; null means no next row for this table */
+  next_row_cursor?: string | null;
+  /** 1 when this chunk reaches the end of the table snapshot */
+  is_last_page?: number;
+  /** Row encoding (e.g. 'binary-table-v1') */
   encoding: string;
   /** Compression algorithm (e.g. 'gzip') */
   compression: string;
@@ -124,6 +142,108 @@ export interface SyncSnapshotChunksTable {
 }
 
 /**
+ * Cached scoped snapshot artifacts.
+ *
+ * Artifacts are larger immutable bootstrap payloads, such as scoped SQLite
+ * snapshot files, addressed by a verified manifest and stored in object
+ * storage via blob_hash.
+ */
+export interface SyncSnapshotArtifactsTable {
+  /** Opaque artifact id */
+  artifact_id: string;
+  /** Logical partition key (tenant / demo / workspace) */
+  partition_id: string;
+  /** Effective scope key this artifact belongs to */
+  scope_key: string;
+  /** Stable subscription id this artifact serves */
+  subscription_id: string;
+  /** App table represented by the artifact */
+  table: string;
+  /** Artifact format (e.g. 'sqlite-snapshot-v1') */
+  artifact_kind: string;
+  /** App schema/cache semantic version */
+  schema_version: string;
+  /** Snapshot as-of commit sequence */
+  as_of_commit_seq: number;
+  /** Snapshot row cursor key (empty string represents null) */
+  row_cursor: string;
+  /** Snapshot row limit used to produce this artifact */
+  row_limit: number;
+  /** Number of rows included in the artifact */
+  row_count: number;
+  /** Cursor after this artifact; null means no next row for this table */
+  next_row_cursor?: string | null;
+  /** 1 when this artifact starts at the table's first page */
+  is_first_page: number;
+  /** 1 when this artifact reaches the end of the table snapshot */
+  is_last_page: number;
+  /** Artifact compression algorithm */
+  compression: string;
+  /** Hex-encoded sha256 of artifact body bytes */
+  sha256: string;
+  /** Byte length of artifact body bytes */
+  byte_length: number;
+  /** Hex digest of the scoped artifact manifest */
+  manifest_digest: string;
+  /** Normalized JSON feature set */
+  feature_set_json: string;
+  /** Canonical manifest JSON */
+  manifest_json: string;
+  /** Reference to blob storage */
+  blob_hash: string;
+  /** Created timestamp */
+  created_at: Generated<string>;
+  /** Expiration timestamp (server may delete after this) */
+  expires_at: string;
+}
+
+/**
+ * Shared encrypted CRDT update log.
+ *
+ * One physical table stores updates for every encrypted CRDT field. The logical
+ * stream is keyed by partition_id + stream_id, where stream_id is derived from
+ * app_table + row_id + field_name.
+ */
+export interface SyncCrdtUpdatesTable {
+  seq: Generated<number>;
+  partition_id: string;
+  stream_id: string;
+  app_table: string;
+  row_id: string;
+  field_name: string;
+  update_id: string;
+  actor_id: string | null;
+  client_id: string | null;
+  key_id: string;
+  ciphertext: string;
+  scopes: unknown;
+  created_at: Generated<string>;
+}
+
+/**
+ * Shared encrypted CRDT checkpoints.
+ *
+ * Checkpoints contain encrypted full Yjs/Yrs state snapshots and allow old
+ * update-log rows to be garbage-collected after retention rules are satisfied.
+ */
+export interface SyncCrdtCheckpointsTable {
+  seq: Generated<number>;
+  partition_id: string;
+  stream_id: string;
+  app_table: string;
+  row_id: string;
+  field_name: string;
+  checkpoint_id: string;
+  covers_seq: number;
+  actor_id: string | null;
+  client_id: string | null;
+  key_id: string;
+  ciphertext: string;
+  scopes: unknown;
+  created_at: Generated<string>;
+}
+
+/**
  * Index table: which commits affect which tables.
  *
  * Used to efficiently find commit_seq values for a table without scanning
@@ -137,6 +257,20 @@ export interface SyncTableCommitsTable {
 }
 
 /**
+ * Index table: which commits affect which table/scope route keys.
+ *
+ * Used to avoid scanning table-level commits that cannot match a scoped
+ * subscription. JSON scope filtering still validates exact multi-scope matches.
+ */
+export interface SyncScopeCommitsTable {
+  /** Logical partition key (tenant / demo / workspace) */
+  partition_id: string;
+  table: string;
+  scope_key: string;
+  commit_seq: number;
+}
+
+/**
  * Database interface for sync infrastructure tables
  * Merge this with your app's database interface
  */
@@ -144,8 +278,12 @@ export interface SyncCoreDb {
   sync_commits: SyncCommitsTable;
   sync_changes: SyncChangesTable;
   sync_client_cursors: SyncClientCursorsTable;
+  sync_crdt_updates: SyncCrdtUpdatesTable;
+  sync_crdt_checkpoints: SyncCrdtCheckpointsTable;
   sync_table_commits: SyncTableCommitsTable;
+  sync_scope_commits: SyncScopeCommitsTable;
   sync_snapshot_chunks: SyncSnapshotChunksTable;
+  sync_snapshot_artifacts: SyncSnapshotArtifactsTable;
 }
 
 /**
@@ -156,6 +294,8 @@ export interface SyncCommitRow {
   actor_id: string;
   created_at: string;
   result_json: unknown | null;
+  commit_digest: string | null;
+  commit_chain_root: string | null;
 }
 
 /**

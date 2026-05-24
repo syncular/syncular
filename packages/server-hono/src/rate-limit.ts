@@ -5,7 +5,7 @@
  * server load from misbehaving clients.
  */
 
-import { logSyncEvent } from '@syncular/core';
+import { createSyncularErrorResponse, logSyncEvent } from '@syncular/core';
 import type { Context, MiddlewareHandler } from 'hono';
 
 /**
@@ -255,12 +255,10 @@ export function createRateLimiter(
       }
 
       return c.json(
-        {
-          error: 'RATE_LIMITED',
+        createSyncularErrorResponse('sync.rate_limited', {
           message: 'Too many requests. Please try again later.',
-          retryAfterMs,
-          retryAfterSec,
-        },
+          details: { retryAfterMs, retryAfterSec },
+        }),
         429
       );
     }

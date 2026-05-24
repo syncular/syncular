@@ -1,7 +1,7 @@
 {
-  "name": "@syncular/client-react",
+  "name": "@syncular/react",
   "version": "0.0.0",
-  "description": "React hooks and bindings for the Syncular client",
+  "description": "React hooks and provider for the Syncular Rust client",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
@@ -16,21 +16,18 @@
   "keywords": [
     "sync",
     "offline-first",
-    "realtime",
-    "database",
-    "typescript",
     "react",
-    "hooks"
+    "rust"
   ],
   "private": false,
   "publishConfig": {
     "access": "public"
   },
+  "sideEffects": false,
   "type": "module",
   "exports": {
     ".": {
       "bun": "./src/index.ts",
-      "browser": "./src/index.ts",
       "import": {
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
@@ -38,13 +35,14 @@
     }
   },
   "scripts": {
-    "test": "bun test src/__tests__",
+    "test": "bun test src/*.test.ts",
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
     "release": "bunx syncular-publish"
   },
   "dependencies": {
-    "@syncular/client": "workspace:*"
+    "@syncular/client": "workspace:*",
+    "@syncular/core": "workspace:*"
   },
   "peerDependencies": {
     "kysely": "^0.28.0",
@@ -53,18 +51,15 @@
   "devDependencies": {
     "@happy-dom/global-registrator": "^20.8.9",
     "@syncular/config": "workspace:*",
-    "@syncular/core": "workspace:*",
-    "@syncular/dialect-bun-sqlite": "workspace:*",
-    "@syncular/testkit": "workspace:*",
     "@testing-library/react": "^16.3.2",
     "@types/react": "^19.2.14",
-    "happy-dom": "^20.8.9",
-    "kysely": "*",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4"
+    "react": "*"
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__/**"
   ]
 }

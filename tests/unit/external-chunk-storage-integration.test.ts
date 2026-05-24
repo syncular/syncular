@@ -4,7 +4,8 @@
  * Covers:
  * - pull() with chunkStorage parameter stores chunks externally
  * - Chunk body is retrieved from external storage
- * - Fallback to inline body when external read fails
+ * - External reads fail closed when the external body is missing
+ * - Database-inline bodies work when no external chunkStorage is configured
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
@@ -114,7 +115,7 @@ describe('External chunk storage integration', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 100,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: 'abc123',
         body,
@@ -130,7 +131,7 @@ describe('External chunk storage integration', () => {
       ).toBe('external chunk data');
     });
 
-    it('falls back to inline body when external storage returns null', async () => {
+    it('fails closed when external storage returns null for an external chunk read', async () => {
       // Create a chunk storage that always returns null for reads
       const failingChunkStorage: {
         readChunk: (chunkId: string) => Promise<Uint8Array | null>;
@@ -138,32 +139,30 @@ describe('External chunk storage integration', () => {
         readChunk: async () => null,
       };
 
-      // Insert chunk with inline body
-      const body = new TextEncoder().encode('inline fallback data');
+      // Insert a DB-inline body to prove external reads do not fall back to it.
+      const body = new TextEncoder().encode('inline body not used');
       await insertSnapshotChunk(db, {
-        chunkId: 'test-fallback',
+        chunkId: 'test-missing-external-body',
         partitionId: 'test',
         scopeKey: 'test',
         scope: 'test_items',
         asOfCommitSeq: 100,
         rowCursor: '',
         rowLimit: 100,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
-        sha256: 'fallback123',
+        sha256: 'missing123',
         body,
         expiresAt: new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString(),
       });
 
-      // Read with failing external storage - should fall back to inline
-      const chunk = await readSnapshotChunk(db, 'test-fallback', {
-        chunkStorage: failingChunkStorage,
-      });
-
-      expect(chunk).not.toBeNull();
-      expect(
-        new TextDecoder().decode(await chunkBodyToUint8Array(chunk!.body))
-      ).toBe('inline fallback data');
+      await expect(
+        readSnapshotChunk(db, 'test-missing-external-body', {
+          chunkStorage: failingChunkStorage,
+        })
+      ).rejects.toThrow(
+        'Snapshot chunk body missing for chunk test-missing-external-body'
+      );
     });
 
     it('returns null when chunk not found', async () => {
@@ -190,7 +189,7 @@ describe('External chunk storage integration', () => {
         asOfCommitSeq: 100,
         rowCursor: '',
         rowLimit: 100,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: 'inline123',
         body,
@@ -236,7 +235,7 @@ describe('External chunk storage integration', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 50,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: 'findable123',
         body,
@@ -250,7 +249,7 @@ describe('External chunk storage integration', () => {
         asOfCommitSeq: 100,
         rowCursor: 'cursor1',
         rowLimit: 50,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
       });
 
@@ -272,7 +271,7 @@ describe('External chunk storage integration', () => {
         asOfCommitSeq: 1,
         rowCursor: '',
         rowLimit: 10,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: 'old123',
         body: new TextEncoder().encode('old data'),
@@ -287,7 +286,7 @@ describe('External chunk storage integration', () => {
         asOfCommitSeq: 2,
         rowCursor: '',
         rowLimit: 10,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
         sha256: 'new456',
         body: new TextEncoder().encode('new data'),
@@ -308,7 +307,7 @@ describe('External chunk storage integration', () => {
         asOfCommitSeq: 1,
         rowCursor: '',
         rowLimit: 10,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
       });
       expect(oldFound).toBeNull();
@@ -321,7 +320,7 @@ describe('External chunk storage integration', () => {
         asOfCommitSeq: 2,
         rowCursor: '',
         rowLimit: 10,
-        encoding: 'json-row-frame-v1',
+        encoding: 'binary-table-v1',
         compression: 'gzip',
       });
       expect(newFound).not.toBeNull();

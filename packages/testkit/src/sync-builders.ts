@@ -50,6 +50,7 @@ export interface CreateSyncSubscriptionOptions {
   params?: SyncSubscriptionRequest['params'];
   cursor?: number;
   bootstrapState?: SyncSubscriptionRequest['bootstrapState'];
+  crdtStateVectors?: SyncSubscriptionRequest['crdtStateVectors'];
 }
 
 export function createSyncSubscription(
@@ -62,6 +63,7 @@ export function createSyncSubscription(
     ...(options.params ? { params: options.params } : {}),
     cursor: options.cursor ?? 0,
     bootstrapState: options.bootstrapState ?? null,
+    crdtStateVectors: options.crdtStateVectors ?? [],
   };
 }
 
@@ -89,6 +91,7 @@ export function createSyncPushRequest(
 
 export interface CreateSyncPullRequestOptions {
   clientId: string;
+  schemaVersion?: number;
   subscriptions: SyncSubscriptionRequest[];
   limitCommits?: number;
   limitSnapshotRows?: number;
@@ -101,6 +104,7 @@ export function createSyncPullRequest(
 ): SyncPullRequest {
   return {
     clientId: options.clientId,
+    schemaVersion: options.schemaVersion ?? 1,
     subscriptions: options.subscriptions,
     limitCommits: options.limitCommits ?? 50,
     ...(options.limitSnapshotRows !== undefined

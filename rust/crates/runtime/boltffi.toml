@@ -1,0 +1,37 @@
+[package]
+name = "syncular"
+crate = "syncular-runtime"
+
+[targets.apple]
+output = "../../bindings/swift"
+include_macos = true
+
+[targets.apple.swift]
+module_name = "Syncular"
+output = "../../bindings/swift/Sources/BoltFFI"
+
+[targets.android]
+output = "../../bindings/kotlin"
+min_sdk = 24
+architectures = ["arm64", "x86_64"]
+
+[targets.android.kotlin]
+package = "dev.syncular.client"
+api_style = "top_level"
+
+[targets.java]
+package = "dev.syncular.client"
+module_name = "Syncular"
+min_version = 8
+
+[targets.java.jvm]
+enabled = true
+output = "../../bindings/java"
+host_targets = ["current"]
+
+[targets.wasm]
+enabled = false
+# Browser support is packaged through packages/client with wasm-bindgen,
+# the dedicated Worker, Rust-owned SQLite, and the custom Kysely dialect.
+# The BoltFFI surface wraps the native Diesel facade and is used for Swift,
+# Kotlin/Android, and JVM bindings.

@@ -37,6 +37,7 @@
     }
   },
   "scripts": {
+    "fixtures:protocol": "bun scripts/generate-protocol-fixtures.ts",
     "test": "bun test src/__tests__",
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",

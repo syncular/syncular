@@ -1,9 +1,14 @@
+import {
+  createSyncularErrorResponse,
+  type SyncularErrorCode,
+} from '@syncular/core';
 import type { Context } from 'hono';
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
 import type { UpgradeWebSocket } from 'hono/ws';
-import { resolver, validator as zValidator } from 'hono-openapi';
+import { resolver } from 'hono-openapi';
 import { z } from 'zod';
+import { consoleValidator as zValidator } from '../validation';
 import { isWebSocketOriginAllowed } from '../websocket-origin';
 import {
   closeUnauthenticatedSocket,
@@ -62,6 +67,17 @@ import {
   TimeseriesStatsResponseSchema,
 } from './schemas';
 import type { ConsoleAuthResult } from './types';
+
+type ConsoleGatewayErrorStatus = 400 | 401 | 403 | 404 | 502;
+
+function consoleGatewayError(
+  c: Context,
+  status: ConsoleGatewayErrorStatus,
+  code: SyncularErrorCode,
+  options: { message?: string; details?: Record<string, unknown> } = {}
+): Response {
+  return c.json(createSyncularErrorResponse(code, options), status);
+}
 
 export interface ConsoleGatewayInstance {
   instanceId: string;
@@ -195,11 +211,12 @@ const GatewayOperationsQuerySchema = ConsoleOperationsQuerySchema.extend(
 const GatewayEventsQuerySchema = ConsolePartitionedPaginationQuerySchema.extend(
   {
     ...GatewayInstanceFilterSchema.shape,
-    eventType: z.enum(['push', 'pull']).optional(),
+    eventType: z.enum(['sync', 'push', 'pull']).optional(),
     actorId: z.string().optional(),
     clientId: z.string().optional(),
     requestId: z.string().optional(),
     traceId: z.string().optional(),
+    syncAttemptId: z.string().optional(),
     outcome: z.string().optional(),
   }
 );
@@ -434,13 +451,13 @@ function parseLocalNumericId(value: string): number | null {
 function noInstancesSelectedResponse(): {
   ok: false;
   status: 400;
-  error: 'NO_INSTANCES_SELECTED';
+  error: 'no_instances_selected';
   message: string;
 } {
   return {
     ok: false,
     status: 400,
-    error: 'NO_INSTANCES_SELECTED',
+    error: 'no_instances_selected',
     message: 'No enabled instances matched the provided instance filter.',
   };
 }
@@ -492,7 +509,7 @@ function resolveFederatedOrLocalNumericTarget(args: {
       return {
         ok: false,
         status: 404,
-        error: 'NOT_FOUND',
+        error: 'not_found',
         message: 'Instance not found',
       };
     }
@@ -504,7 +521,7 @@ function resolveFederatedOrLocalNumericTarget(args: {
     return {
       ok: false,
       status: 400,
-      error: 'INVALID_FEDERATED_ID',
+      error: 'invalid_federated_id',
       message: args.invalidMessage,
     };
   }
@@ -535,7 +552,7 @@ function resolveEventTarget(args: {
     query: args.query,
     invalidMessage:
       'Expected either "<instanceId>:<eventId>" or "<eventId>" with an explicit instance filter.',
-    ambiguousError: 'AMBIGUOUS_EVENT_ID',
+    ambiguousError: 'ambiguous_event_id',
     ambiguousMessage:
       'Local event IDs are ambiguous across multiple instances. Use "<instanceId>:<eventId>" or select one instance.',
   });
@@ -560,7 +577,7 @@ function resolveCommitTarget(args: {
     query: args.query,
     invalidMessage:
       'Expected either "<instanceId>:<commitSeq>" or "<commitSeq>" with an explicit instance filter.',
-    ambiguousError: 'AMBIGUOUS_COMMIT_ID',
+    ambiguousError: 'ambiguous_commit_id',
     ambiguousMessage:
       'Local commit IDs are ambiguous across multiple instances. Use "<instanceId>:<commitSeq>" or select one instance.',
   });
@@ -581,7 +598,7 @@ function resolveSingleInstanceTarget(args: {
   return resolveSingleSelectedInstance({
     ...args,
     onMultiple: {
-      error: 'INSTANCE_REQUIRED',
+      error: 'instance_required',
       message:
         'This endpoint requires exactly one target instance. Provide `instanceId` or a single-value `instanceIds` filter.',
     },
@@ -813,14 +830,14 @@ function normalizeDownstreamError(args: {
 
   if (typeof args.body === 'string' && args.body.trim().length > 0) {
     return {
-      error: 'DOWNSTREAM_ERROR',
+      error: 'downstream_error',
       message: args.body,
       instanceId: args.instanceId,
     };
   }
 
   return {
-    error: 'DOWNSTREAM_ERROR',
+    error: 'downstream_error',
     status: args.status,
     instanceId: args.instanceId,
   };
@@ -874,11 +891,20 @@ async function forwardDownstreamJsonRequest<T>(args: {
       return {
         ok: false,
         status: response.status,
-        body: normalizeDownstreamError({
-          body: payload,
-          status: response.status,
-          instanceId: args.instance.instanceId,
-        }),
+        body: createSyncularErrorResponse(
+          response.status === 404
+            ? 'console.not_found'
+            : 'console.downstream_unavailable',
+          {
+            details: {
+              downstream: normalizeDownstreamError({
+                body: payload,
+                status: response.status,
+                instanceId: args.instance.instanceId,
+              }),
+            },
+          }
+        ),
       };
     }
 
@@ -887,11 +913,13 @@ async function forwardDownstreamJsonRequest<T>(args: {
       return {
         ok: false,
         status: 502,
-        body: {
-          error: 'INVALID_DOWNSTREAM_RESPONSE',
-          message: 'Downstream response failed validation.',
-          instanceId: args.instance.instanceId,
-        },
+        body: createSyncularErrorResponse(
+          'console.downstream_invalid_response',
+          {
+            message: 'Downstream response failed validation.',
+            details: { instanceId: args.instance.instanceId },
+          }
+        ),
       };
     }
 
@@ -904,11 +932,10 @@ async function forwardDownstreamJsonRequest<T>(args: {
     return {
       ok: false,
       status: 502,
-      body: {
-        error: 'DOWNSTREAM_UNAVAILABLE',
+      body: createSyncularErrorResponse('console.downstream_unavailable', {
         message: toErrorMessage(error),
-        instanceId: args.instance.instanceId,
-      },
+        details: { instanceId: args.instance.instanceId },
+      }),
     };
   }
 }
@@ -1010,7 +1037,7 @@ async function checkDownstreamInstanceHealth(args: {
 }
 
 function unauthorizedResponse(c: Context): Response {
-  return c.json({ error: 'UNAUTHORIZED' }, 401);
+  return consoleGatewayError(c, 401, 'console.auth_required');
 }
 
 function jsonResponse(payload: unknown, status: number): Response {
@@ -1026,13 +1053,38 @@ function allInstancesFailedResponse(
   c: Context,
   failedInstances: GatewayFailure[]
 ): Response {
-  return c.json(
+  return consoleGatewayError(c, 502, 'console.downstream_unavailable', {
+    details: { failedInstances },
+  });
+}
+
+function consoleTargetErrorResponse(
+  c: Context,
+  target: { status: 400 | 404; error: string; message?: string }
+): Response {
+  return consoleGatewayError(
+    c,
+    target.status,
+    target.status === 404 ? 'console.not_found' : 'console.invalid_request',
     {
-      error: 'DOWNSTREAM_UNAVAILABLE',
-      failedInstances,
-    },
-    502
+      ...(target.message ? { message: target.message } : {}),
+      details: { consoleError: target.error },
+    }
   );
+}
+
+function downstreamFailureResponse(
+  c: Context,
+  failure: GatewayFailure
+): Response {
+  if (failure.status === 404) {
+    return consoleGatewayError(c, 404, 'console.not_found', {
+      details: { failure },
+    });
+  }
+  return consoleGatewayError(c, 502, 'console.downstream_unavailable', {
+    details: { failedInstances: [failure] },
+  });
 }
 
 export function createConsoleGatewayRoutes(
@@ -1085,13 +1137,7 @@ export function createConsoleGatewayRoutes(
       query: args.query,
     });
     if (!target.ok) {
-      return args.c.json(
-        {
-          error: target.error,
-          message: target.message,
-        },
-        target.status
-      );
+      return consoleTargetErrorResponse(args.c, target);
     }
 
     const forwardQuery = sanitizeForwardQueryParams(
@@ -1129,13 +1175,7 @@ export function createConsoleGatewayRoutes(
     const noInstanceError = noInstancesSelectedResponse();
     return {
       ok: false,
-      response: c.json(
-        {
-          error: noInstanceError.error,
-          message: noInstanceError.message,
-        },
-        noInstanceError.status
-      ),
+      response: consoleTargetErrorResponse(c, noInstanceError),
     };
   };
 
@@ -1932,6 +1972,22 @@ export function createConsoleGatewayRoutes(
           maxActiveClientCursor: maxNullable(
             statsValues.map((stats) => stats.maxActiveClientCursor)
           ),
+          snapshotChunkCount: sum((stats) => stats.snapshotChunkCount),
+          snapshotChunkBytes: sum((stats) => stats.snapshotChunkBytes),
+          expiredSnapshotChunkCount: sum(
+            (stats) => stats.expiredSnapshotChunkCount
+          ),
+          expiredSnapshotChunkBytes: sum(
+            (stats) => stats.expiredSnapshotChunkBytes
+          ),
+          snapshotArtifactCount: sum((stats) => stats.snapshotArtifactCount),
+          snapshotArtifactBytes: sum((stats) => stats.snapshotArtifactBytes),
+          expiredSnapshotArtifactCount: sum(
+            (stats) => stats.expiredSnapshotArtifactCount
+          ),
+          expiredSnapshotArtifactBytes: sum(
+            (stats) => stats.expiredSnapshotArtifactBytes
+          ),
           minCommitSeqByInstance,
           maxCommitSeqByInstance,
           partial: fetched.failedInstances.length > 0,
@@ -2151,13 +2207,7 @@ export function createConsoleGatewayRoutes(
         const query = c.req.valid('query');
         const target = resolveCommitTarget({ seq, instances, query });
         if (!target.ok) {
-          return c.json(
-            {
-              error: target.error,
-              ...(target.message ? { message: target.message } : {}),
-            },
-            target.status
-          );
+          return consoleTargetErrorResponse(c, target);
         }
 
         const forwardQuery = sanitizeForwardQueryParams(
@@ -2173,16 +2223,7 @@ export function createConsoleGatewayRoutes(
         });
 
         if (!result.ok) {
-          if (result.failure.status === 404) {
-            return c.json({ error: 'NOT_FOUND' }, 404);
-          }
-          return c.json(
-            {
-              error: 'DOWNSTREAM_UNAVAILABLE',
-              failedInstances: [result.failure],
-            },
-            502
-          );
+          return downstreamFailureResponse(c, result.failure);
         }
 
         return c.json({
@@ -2620,8 +2661,11 @@ export function createConsoleGatewayRoutes(
             ws.send(
               JSON.stringify({
                 type: 'error',
-                message:
-                  'No enabled instances matched the provided instance filter.',
+                ...createSyncularErrorResponse('console.invalid_request', {
+                  message:
+                    'No enabled instances matched the provided instance filter.',
+                  details: { consoleError: 'no_instances_selected' },
+                }),
               })
             );
             ws.close(4004, 'No instances selected');
@@ -2858,7 +2902,7 @@ export function createConsoleGatewayRoutes(
 
     routes.get('/events/live', async (c, next) => {
       if (!isWebSocketOriginAllowed(c, options.websocket?.allowedOrigins)) {
-        return c.json({ error: 'FORBIDDEN_ORIGIN' }, 403);
+        return consoleGatewayError(c, 403, 'console.forbidden_origin');
       }
       return liveEventsWebSocketRoute(c, next);
     });
@@ -2894,13 +2938,7 @@ export function createConsoleGatewayRoutes(
           query,
         });
         if (!target.ok) {
-          return c.json(
-            {
-              error: target.error,
-              ...(target.message ? { message: target.message } : {}),
-            },
-            target.status
-          );
+          return consoleTargetErrorResponse(c, target);
         }
 
         const forwardQuery = sanitizeForwardQueryParams(
@@ -2916,16 +2954,7 @@ export function createConsoleGatewayRoutes(
         });
 
         if (!result.ok) {
-          if (result.failure.status === 404) {
-            return c.json({ error: 'NOT_FOUND' }, 404);
-          }
-          return c.json(
-            {
-              error: 'DOWNSTREAM_UNAVAILABLE',
-              failedInstances: [result.failure],
-            },
-            502
-          );
+          return downstreamFailureResponse(c, result.failure);
         }
 
         return c.json({
@@ -2968,13 +2997,7 @@ export function createConsoleGatewayRoutes(
           query,
         });
         if (!target.ok) {
-          return c.json(
-            {
-              error: target.error,
-              ...(target.message ? { message: target.message } : {}),
-            },
-            target.status
-          );
+          return consoleTargetErrorResponse(c, target);
         }
 
         const forwardQuery = sanitizeForwardQueryParams(
@@ -2990,16 +3013,7 @@ export function createConsoleGatewayRoutes(
         });
 
         if (!result.ok) {
-          if (result.failure.status === 404) {
-            return c.json({ error: 'NOT_FOUND' }, 404);
-          }
-          return c.json(
-            {
-              error: 'DOWNSTREAM_UNAVAILABLE',
-              failedInstances: [result.failure],
-            },
-            502
-          );
+          return downstreamFailureResponse(c, result.failure);
         }
 
         return c.json({

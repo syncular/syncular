@@ -11,9 +11,12 @@ Syncular is a sync framework for building **local-first applications** — apps 
 
 > **You are here:** Overview (evaluate if Syncular is a fit).
 >
-> **If you’re building:** start with [Build](/docs/build).
+> **If you’re building:** start with [Client](/docs/client) and [Server](/docs/server).
 
-Your app talks to a local SQLite database. Changes sync through an immutable commit log. Authorization is baked in through scopes. Everything is typed end-to-end with Kysely.
+Your app talks to a local SQLite database owned by the Rust client runtime.
+Changes sync through an immutable commit log. Authorization is baked in through
+scopes. Reads stay type-safe through the host query builder: Kysely in browser
+TypeScript, Diesel in Rust, and generated DSLs for native bindings.
 
 ```tsx
 function TaskList() {
@@ -41,8 +44,9 @@ No loading spinners. No network requests in the hot path. Queries run against lo
 Start from the question you actually have right now.
 
 <Cards>
-  <Card title="Evaluate Syncular" href="/docs/introduction" description="Fit, demo, trust signals, and honest comparisons before you commit" />
-  <Card title="Implement the Core Path" href="/docs/build" description="Server setup, client setup, table handlers, and the first production-ready build path" />
+  <Card title="Evaluate Syncular" href="/docs/start" description="Fit, demo, trust signals, and honest comparisons before you commit" />
+  <Card title="Build The Client" href="/docs/client" description="Generate typed app clients for browser TypeScript, Rust, Swift, Kotlin, Android, and JVM" />
+  <Card title="Build The Server" href="/docs/server" description="Implement handlers, auth scopes, snapshots, pushes, realtime, and deployment targets" />
   <Card title="Run It in Production" href="/docs/operate" description="Deployment, observability, troubleshooting, Console, and maintenance workflows" />
 </Cards>
 
@@ -51,9 +55,9 @@ Start from the question you actually have right now.
 A new sync system should earn trust. Syncular tries to do that in visible ways: deterministic tests, runtime coverage, failure injection, operator tooling, and product-facing history.
 
 <Cards>
-  <Card title="Testing & Confidence" href="/docs/introduction/testing-and-confidence" description="How the test suite is layered, what gets exercised, and how to evaluate risk" />
+  <Card title="Testing & Confidence" href="/docs/start/testing-and-confidence" description="How the test suite is layered, what gets exercised, and how to evaluate risk" />
   <Card title="Testing" href="/docs/testing" description="Runner-agnostic testkit, fault injection, runtime patterns, and real examples" />
-  <Card title="Audit & History" href="/docs/build/audit-ui" description="Product-facing history, app-owned audit logs, and links into operator forensics" />
+  <Card title="Audit & History" href="/docs/features/audit-and-history" description="Product-facing history, app-owned audit logs, and links into operator forensics" />
   <Card title="Operate" href="/docs/operate" description="Observability, Console workflows, troubleshooting, and deployment guidance" />
 </Cards>
 
@@ -62,9 +66,11 @@ A new sync system should earn trust. Syncular tries to do that in visible ways: 
 The docs are organized by reader intent. Start with the topic that matches what you're trying to do.
 
 <Cards>
-  <Card title="Get Started" href="/docs/introduction" description="Overview, quick start, installation, demo, and evaluation paths" />
-  <Card title="Concepts" href="/docs/concepts" description="Commit log, bootstrap, scopes, subscriptions, and conflict semantics" />
-  <Card title="Build" href="/docs/build" description="Step-by-step implementation guides and capability docs" />
+  <Card title="Start" href="/docs/start" description="Overview, quick start, installation, and evaluation paths" />
+  <Card title="Learn" href="/docs/learn" description="Commit log, bootstrap, scopes, subscriptions, and conflict semantics" />
+  <Card title="Client" href="/docs/client" description="Rust-first runtime, browser Worker, native bindings, testkit, and packaging" />
+  <Card title="Server" href="/docs/server" description="Authoritative sync server, handlers, auth, realtime, and deployment targets" />
+  <Card title="Features" href="/docs/features" description="Schema, migrations, error handling, audit/history, and app shapes" />
   <Card title="Testing" href="/docs/testing" description="Testkit, runtime patterns, fault injection, and examples" />
   <Card title="Operate" href="/docs/operate" description="Deployment, observability, troubleshooting, and Console workflows" />
   <Card title="Reference" href="/docs/reference" description="Client SDK, server reference, and HTTP API material" />
@@ -92,15 +98,15 @@ flowchart TB
 
   Outbox -->|push over HTTP| Handlers
   Log -->|pull over HTTP| Incoming
-  Log -. optional wake-up .-> UI
+  Log -. optional realtime .-> UI
 `}
-  caption="Queries stay local. Network traffic only happens on push and pull, with optional realtime wake-ups to trigger the next pull."
+  caption="Queries stay local. HTTP push/pull remains the recovery path, and realtime WebSocket can carry verified deltas or pull-required wake-ups."
 />
 
 1. **User makes a change** — written to local SQLite instantly, queued in the outbox
 2. **Outbox pushes to server** — server validates, applies, writes to commit log
 3. **Other clients pull** — fetch new commits since their last position, apply to local DB
-4. **WebSocket wake-ups** — optional real-time notifications trigger immediate pulls
+4. **WebSocket realtime** — optional verified deltas apply immediately; pull-required wake-ups trigger HTTP recovery
 
 ## Why Syncular?
 
@@ -140,13 +146,13 @@ subscriptions: [
 | Feature | What it means |
 |---------|---------------|
 | **Local-first** | SQLite on the client. Instant queries. Works offline. |
-| **Type-safe** | End-to-end TypeScript with Kysely. Queries checked at build time. |
+| **Type-safe** | Host-native query builders and generated app clients. Queries checked at build time. |
 | **Commit-log sync** | Append-only log. Incremental pulls. Easy to debug and reason about. |
 | **Scope-based auth** | Every change tagged with who can see it. Auditable and composable. |
 | **Conflict detection** | Optimistic concurrency with version numbers. Handle conflicts your way. |
-| **Real-time** | WebSocket wake-ups for instant updates. Data always flows over HTTP. |
+| **Real-time** | WebSocket realtime for verified deltas plus HTTP pull recovery when needed. |
 | **Self-hosted** | Run on your infrastructure. Apache 2.0 licensed. No vendor lock-in. |
-| **Encryption** | Optional E2E field encryption plugin with key sharing. |
+| **Encryption** | Optional E2E field encryption capability with key sharing. |
 
 ## When to use Syncular
 
@@ -157,15 +163,15 @@ subscriptions: [
 - Team values type safety and debuggability
 
 **Not a good fit:**
-- Need managed infrastructure (consider [PowerSync](/docs/introduction/comparison/vs-powersync) or [Zero](/docs/introduction/comparison/vs-zero))
-- Building Google Docs-style real-time collaboration (consider [Jazz](/docs/introduction/comparison/vs-jazz))
-- Want arbitrary client queries without server-defined table handlers (consider [Zero](/docs/introduction/comparison/vs-zero))
+- Need managed infrastructure (consider [PowerSync](/docs/start/comparison/vs-powersync) or [Zero](/docs/start/comparison/vs-zero))
+- Building Google Docs-style real-time collaboration (consider [Jazz](/docs/start/comparison/vs-jazz))
+- Want arbitrary client queries without server-defined table handlers (consider [Zero](/docs/start/comparison/vs-zero))
 
-See [Good Fit & Not Fit](/docs/introduction/good-fit) for a fuller decision guide, including multiplayer games and other workloads that want a different architecture.
+See [Good Fit & Not Fit](/docs/start/good-fit) for a fuller decision guide, including multiplayer games and other workloads that want a different architecture.
 
 ## Next
 
-- Implementing? Start with [Build](/docs/build).
-- Learn the model: [How Sync Works](/docs/concepts/architecture) and [Scopes](/docs/concepts/scopes).
-- Want an honest comparison? See [Comparison](/docs/introduction/comparison).
+- Implementing? Start with [Client](/docs/client) and [Server](/docs/server).
+- Learn the model: [How Sync Works](/docs/learn/architecture) and [Scopes](/docs/learn/scopes).
+- Want an honest comparison? See [Comparison](/docs/start/comparison).
 - Looking for endpoints? See the [API Reference](/docs/reference/api).

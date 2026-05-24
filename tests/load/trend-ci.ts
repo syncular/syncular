@@ -16,7 +16,7 @@ import {
   median,
   parseFloatOrDefault,
   parseIntOrDefault,
-} from '../perf/trend-stats';
+} from './trend-stats';
 
 interface ScenarioMetrics {
   httpReqs: number | null;

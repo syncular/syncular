@@ -1,0 +1,74 @@
+---
+title: Undo / Redo
+description: Replay generated mutations from command history.
+---
+
+# Undo / Redo
+
+Undo and redo are built on command history. Generated mutations can record the
+before and after rows for a user command, then replay the inverse mutation later
+through the same Syncular write path.
+
+## Recommended shape
+
+- Use generated mutations, not raw SQL, for commands that should be undoable.
+- Group multi-row user actions into one command when the UI treats them as one
+  action.
+- Replay undo and redo as normal mutations so outbox, conflicts, encryption,
+  CRDT metadata, and sync events remain coherent.
+- Refuse undo when the current local row no longer matches the recorded command
+  precondition.
+
+## Binding examples
+
+Command history is generated-client behavior. Rust and browser TypeScript expose
+it today; Swift/Kotlin wrappers should follow the same command-history
+semantics when their generated mutation APIs are mature enough.
+
+### Rust
+
+```rust
+client.commit_with_history("rename-task", |mutations| {
+    mutations.tasks().update(TaskPatch::new(task_id).title("Next title"))
+})?;
+
+if client.command_history().can_undo()? {
+    client.command_history().undo_last()?;
+}
+
+if client.command_history().can_redo()? {
+    client.command_history().redo_last()?;
+}
+```
+
+### Browser TypeScript
+
+```ts
+await syncular.mutations.tasks.update(taskId, {
+  title: 'Next title',
+});
+
+if (await syncular.commandHistory.canUndo()) {
+  await syncular.commandHistory.undoLast();
+}
+
+await syncular.commandHistory.redoLast();
+```
+
+Browser generated clients wrap mutation surfaces with command-history capture
+when command history is available on the generated app database.
+
+## Watch-outs
+
+- Do not use command history as product audit; use
+  [Audit And History](/docs/features/audit-and-history) for durable history.
+- Decide how undo behaves for leased offline commands after auth is revoked.
+- Keep editor-internal undo stacks separate from Syncular row mutation history.
+- Test undo after remote changes, conflict resolution, and app restart.
+
+## Related docs
+
+- [Audit And History](/docs/features/audit-and-history)
+- [Conflict Resolution](/docs/features/conflict-resolution)
+- [CRDT Fields](/docs/features/crdt-fields)
+- [Rust Client](/docs/client/rust)

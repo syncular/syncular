@@ -17,6 +17,14 @@ export const SyncStatsSchema = z.object({
   activeClientCount: z.number().int(),
   minActiveClientCursor: z.number().int().nullable(),
   maxActiveClientCursor: z.number().int().nullable(),
+  snapshotChunkCount: z.number().int().nonnegative(),
+  snapshotChunkBytes: z.number().int().nonnegative(),
+  expiredSnapshotChunkCount: z.number().int().nonnegative(),
+  expiredSnapshotChunkBytes: z.number().int().nonnegative(),
+  snapshotArtifactCount: z.number().int().nonnegative(),
+  snapshotArtifactBytes: z.number().int().nonnegative(),
+  expiredSnapshotArtifactCount: z.number().int().nonnegative(),
+  expiredSnapshotArtifactBytes: z.number().int().nonnegative(),
 });
 
 export type SyncStats = z.infer<typeof SyncStatsSchema>;
@@ -37,14 +45,31 @@ export const ConsoleCommitListItemSchema = z.object({
 
 export type ConsoleCommitListItem = z.infer<typeof ConsoleCommitListItemSchema>;
 
+export const ConsoleAuditChangeKindSchema = z.enum([
+  'app_row',
+  'delete',
+  'blob_reference',
+  'encrypted_field_envelope',
+  'encrypted_crdt_update',
+  'encrypted_crdt_checkpoint',
+]);
+
+export const ConsoleAuditChangeRedactionSchema = z.object({
+  payload: z.literal('omitted'),
+  reason: z.literal('audit_redacted_by_default'),
+});
+
 export const ConsoleChangeSchema = z.object({
   changeId: z.number().int(),
   table: z.string(),
   rowId: z.string(),
   op: z.enum(['upsert', 'delete']),
-  rowJson: z.unknown().nullable(),
   rowVersion: z.number().int().nullable(),
-  scopes: z.record(z.string(), z.unknown()),
+  fields: z.array(z.string()),
+  scopeFields: z.array(z.string()),
+  changeKind: ConsoleAuditChangeKindSchema,
+  sensitiveFields: z.array(z.string()),
+  redaction: ConsoleAuditChangeRedactionSchema,
 });
 
 export type ConsoleChange = z.infer<typeof ConsoleChangeSchema>;
@@ -55,9 +80,251 @@ export const ConsoleCommitDetailSchema = ConsoleCommitListItemSchema.extend({
 
 export type ConsoleCommitDetail = z.infer<typeof ConsoleCommitDetailSchema>;
 
+export const ConsoleRowHistoryEntrySchema = z.object({
+  commitSeq: z.number().int(),
+  actorId: z.string(),
+  clientId: z.string(),
+  clientCommitId: z.string(),
+  createdAt: z.string(),
+  changeId: z.number().int(),
+  table: z.string(),
+  rowId: z.string(),
+  op: z.enum(['upsert', 'delete']),
+  rowVersion: z.number().int().nullable(),
+  fields: z.array(z.string()),
+  scopeFields: z.array(z.string()),
+  changeKind: ConsoleAuditChangeKindSchema,
+  sensitiveFields: z.array(z.string()),
+  redaction: ConsoleAuditChangeRedactionSchema,
+  requestEventIds: z.array(z.number().int()),
+  requestIds: z.array(z.string()),
+  traceIds: z.array(z.string()),
+});
+
+export type ConsoleRowHistoryEntry = z.infer<
+  typeof ConsoleRowHistoryEntrySchema
+>;
+
+export const ConsoleRowHistoryResponseSchema = z.object({
+  table: z.string(),
+  rowId: z.string(),
+  partitionId: z.string(),
+  history: z.array(ConsoleRowHistoryEntrySchema),
+  nextCursor: z.number().int().nullable(),
+});
+
+export type ConsoleRowHistoryResponse = z.infer<
+  typeof ConsoleRowHistoryResponseSchema
+>;
+
+export const ConsoleRowInvestigationClientSchema = z.object({
+  clientId: z.string(),
+  actorId: z.string(),
+  cursor: z.number().int(),
+  effectiveScopeKeys: z.array(z.string()),
+  updatedAt: z.string(),
+  lastRequestAt: z.string().nullable(),
+  lastRequestType: z.enum(['sync', 'push', 'pull']).nullable(),
+  lastRequestOutcome: z.string().nullable(),
+});
+
+export type ConsoleRowInvestigationClient = z.infer<
+  typeof ConsoleRowInvestigationClientSchema
+>;
+
+export const ConsoleRowInvestigationScopeEligibilitySchema = z.object({
+  status: z.enum(['eligible', 'not_eligible', 'unknown', 'no_client']),
+  requiredScopeKeys: z.array(z.string()),
+  matchedScopeKeys: z.array(z.string()),
+  missingScopeKeys: z.array(z.string()),
+});
+
+export type ConsoleRowInvestigationScopeEligibility = z.infer<
+  typeof ConsoleRowInvestigationScopeEligibilitySchema
+>;
+
+export const ConsoleRowInvestigationFindingSchema = z.object({
+  severity: z.enum(['info', 'warning', 'error']),
+  code: z.string(),
+  message: z.string(),
+});
+
+export type ConsoleRowInvestigationFinding = z.infer<
+  typeof ConsoleRowInvestigationFindingSchema
+>;
+
+export const ConsoleRowInvestigationSubscriptionEvidenceSchema = z.object({
+  status: z.enum(['observed', 'revoked', 'not_observed', 'unknown']),
+  matchingEventCount: z.number().int().nonnegative(),
+  latestEventId: z.number().int().nullable(),
+  latestRequestId: z.string().nullable(),
+  latestEventOutcome: z.string().nullable(),
+  latestSubscriptionCount: z.number().int().nullable(),
+  requestedTableObserved: z.boolean(),
+  observedScopeKeys: z.array(z.string()),
+});
+
+export type ConsoleRowInvestigationSubscriptionEvidence = z.infer<
+  typeof ConsoleRowInvestigationSubscriptionEvidenceSchema
+>;
+
+export const ConsoleRowInvestigationRequestEvidenceSchema = z.object({
+  matchingEventCount: z.number().int().nonnegative(),
+  successEventCount: z.number().int().nonnegative(),
+  nonSuccessEventCount: z.number().int().nonnegative(),
+  latestEventId: z.number().int().nullable(),
+  latestRequestId: z.string().nullable(),
+  latestOutcome: z.string().nullable(),
+  latestResponseStatus: z.string().nullable(),
+  latestErrorCode: z.string().nullable(),
+  latestErrorMessage: z.string().nullable(),
+  latestSuccessRequestId: z.string().nullable(),
+  latestNonSuccessRequestId: z.string().nullable(),
+  latestNonSuccessResponseStatus: z.string().nullable(),
+  latestNonSuccessErrorCode: z.string().nullable(),
+});
+
+export type ConsoleRowInvestigationRequestEvidence = z.infer<
+  typeof ConsoleRowInvestigationRequestEvidenceSchema
+>;
+
+export const ConsoleRowInvestigationSnapshotEvidenceSchema = z.object({
+  pageCount: z.number().int().nonnegative(),
+  inlineRowCount: z.number().int().nonnegative(),
+  chunkCount: z.number().int().nonnegative(),
+  chunkBytes: z.number().int().nonnegative(),
+  artifactCount: z.number().int().nonnegative(),
+  artifactBytes: z.number().int().nonnegative(),
+});
+
+export type ConsoleRowInvestigationSnapshotEvidence = z.infer<
+  typeof ConsoleRowInvestigationSnapshotEvidenceSchema
+>;
+
+export const ConsoleRowInvestigationRealtimeEvidenceSchema = z.object({
+  matchingEventCount: z.number().int().nonnegative(),
+  connectedEventCount: z.number().int().nonnegative(),
+  pullRequiredEventCount: z.number().int().nonnegative(),
+  ackEventCount: z.number().int().nonnegative(),
+  rejectedEventCount: z.number().int().nonnegative(),
+  errorEventCount: z.number().int().nonnegative(),
+  latestEventId: z.number().int().nullable(),
+  latestEventType: z.string().nullable(),
+  latestReason: z.string().nullable(),
+  latestCursor: z.number().int().nullable(),
+  latestServerCursor: z.number().int().nullable(),
+  latestPullRequiredReason: z.string().nullable(),
+});
+
+export type ConsoleRowInvestigationRealtimeEvidence = z.infer<
+  typeof ConsoleRowInvestigationRealtimeEvidenceSchema
+>;
+
+export const ConsoleRequestEventResponseSummarySchema = z
+  .object({
+    subscriptionCount: z.number().int().nonnegative().optional(),
+    activeSubscriptionCount: z.number().int().nonnegative().optional(),
+    revokedSubscriptionCount: z.number().int().nonnegative().optional(),
+    bootstrapSubscriptionCount: z.number().int().nonnegative().optional(),
+    commitCount: z.number().int().nonnegative().optional(),
+    changeCount: z.number().int().nonnegative().optional(),
+    snapshotPageCount: z.number().int().nonnegative().optional(),
+    snapshotInlineRowCount: z.number().int().nonnegative().optional(),
+    snapshotChunkCount: z.number().int().nonnegative().optional(),
+    snapshotChunkBytes: z.number().int().nonnegative().optional(),
+    snapshotArtifactCount: z.number().int().nonnegative().optional(),
+    snapshotArtifactBytes: z.number().int().nonnegative().optional(),
+  })
+  .passthrough();
+
+export type ConsoleRequestEventResponseSummary = z.infer<
+  typeof ConsoleRequestEventResponseSummarySchema
+>;
+
+export const ConsoleDebugExportCommitSchema =
+  ConsoleCommitListItemSchema.extend({
+    changes: z.array(ConsoleChangeSchema),
+  });
+
+export type ConsoleDebugExportCommit = z.infer<
+  typeof ConsoleDebugExportCommitSchema
+>;
+
+export const ConsoleDebugExportEventSchema = z.object({
+  eventId: z.number().int(),
+  partitionId: z.string(),
+  requestId: z.string(),
+  traceId: z.string().nullable(),
+  spanId: z.string().nullable(),
+  eventType: z.enum(['sync', 'push', 'pull']),
+  syncPath: z.enum(['http-combined', 'ws-push']),
+  transportPath: z.enum(['direct', 'relay']),
+  actorId: z.string(),
+  clientId: z.string(),
+  statusCode: z.number().int(),
+  outcome: z.string(),
+  responseStatus: z.string(),
+  errorCode: z.string().nullable(),
+  durationMs: z.number().int(),
+  commitSeq: z.number().int().nullable(),
+  operationCount: z.number().int().nullable(),
+  rowCount: z.number().int().nullable(),
+  subscriptionCount: z.number().int().nullable(),
+  scopesSummary: z
+    .record(z.string(), z.union([z.string(), z.array(z.string())]))
+    .nullable(),
+  responseSummary: ConsoleRequestEventResponseSummarySchema.nullable(),
+  tables: z.array(z.string()),
+  createdAt: z.string(),
+});
+
+export type ConsoleDebugExportEvent = z.infer<
+  typeof ConsoleDebugExportEventSchema
+>;
+
+export const ConsoleDebugExportResponseSchema = z.object({
+  generatedAt: z.string(),
+  partitionId: z.string(),
+  limits: z.object({
+    commits: z.number().int(),
+    requestEvents: z.number().int(),
+  }),
+  truncated: z.object({
+    commits: z.boolean(),
+    requestEvents: z.boolean(),
+  }),
+  commits: z.array(ConsoleDebugExportCommitSchema),
+  requestEvents: z.array(ConsoleDebugExportEventSchema),
+});
+
+export type ConsoleDebugExportResponse = z.infer<
+  typeof ConsoleDebugExportResponseSchema
+>;
+
 // ============================================================================
 // Client Schemas
 // ============================================================================
+
+export const ConsoleClientDiagnosticHealthSeveritySchema = z.enum([
+  'debug',
+  'info',
+  'warn',
+  'error',
+]);
+
+export type ConsoleClientDiagnosticHealthSeverity = z.infer<
+  typeof ConsoleClientDiagnosticHealthSeveritySchema
+>;
+
+export const ConsoleClientDiagnosticFreshnessStateSchema = z.enum([
+  'active',
+  'idle',
+  'stale',
+]);
+
+export type ConsoleClientDiagnosticFreshnessState = z.infer<
+  typeof ConsoleClientDiagnosticFreshnessStateSchema
+>;
 
 export const ConsoleClientSchema = z.object({
   clientId: z.string(),
@@ -69,14 +336,197 @@ export const ConsoleClientSchema = z.object({
   realtimeConnectionCount: z.number().int().nonnegative(),
   isRealtimeConnected: z.boolean(),
   activityState: z.enum(['active', 'idle', 'stale']),
+  diagnosticFreshnessState:
+    ConsoleClientDiagnosticFreshnessStateSchema.nullable(),
+  diagnosticHealthMaxSeverity:
+    ConsoleClientDiagnosticHealthSeveritySchema.nullable(),
+  diagnosticReceivedAt: z.string().nullable(),
   lastRequestAt: z.string().nullable(),
-  lastRequestType: z.enum(['push', 'pull']).nullable(),
+  lastRequestType: z.enum(['sync', 'push', 'pull']).nullable(),
   lastRequestOutcome: z.string().nullable(),
   effectiveScopes: z.record(z.string(), z.unknown()),
   updatedAt: z.string(),
 });
 
 export type ConsoleClient = z.infer<typeof ConsoleClientSchema>;
+
+export const ConsoleClientDiagnosticRuntimeSchema = z
+  .object({
+    packageName: z.string().optional(),
+    packageVersion: z.string().optional(),
+    workerProtocolVersion: z.number().int().optional(),
+    storage: z.string().optional(),
+    storageFallback: z
+      .object({
+        from: z.string().optional(),
+        to: z.string().optional(),
+        reason: z.string().optional(),
+      })
+      .passthrough()
+      .optional(),
+    workerUrl: z.string().optional(),
+    wasmGlueUrl: z.string().optional(),
+    wasmUrl: z.string().optional(),
+    rust: z
+      .object({
+        crateName: z.string().optional(),
+        crateVersion: z.string().optional(),
+        schemaVersion: z.number().int().optional(),
+        features: z.array(z.string()).optional(),
+      })
+      .passthrough()
+      .optional(),
+  })
+  .passthrough();
+
+export type ConsoleClientDiagnosticRuntime = z.infer<
+  typeof ConsoleClientDiagnosticRuntimeSchema
+>;
+
+export const ConsoleClientDiagnosticConnectionSchema = z
+  .object({
+    closed: z.boolean().optional(),
+    pendingRequests: z.number().int().nonnegative().optional(),
+    realtime: z.string().optional(),
+    storageFallback: z.unknown().optional(),
+    lastDiagnostic: z.unknown().optional(),
+    lastError: z.unknown().optional(),
+  })
+  .passthrough();
+
+export const ConsoleClientDiagnosticLifecycleSchema = z
+  .object({
+    phase: z.string().optional(),
+    realtime: z.string().optional(),
+    online: z.boolean().optional(),
+    requiresAction: z.boolean().optional(),
+    pendingRequests: z.number().int().nonnegative().optional(),
+    bootstrap: z.unknown().optional(),
+    outbox: z.unknown().optional(),
+    conflicts: z.unknown().optional(),
+    blobUploads: z.unknown().optional(),
+    lastDiagnostic: z.unknown().optional(),
+    lastError: z.unknown().optional(),
+  })
+  .passthrough();
+
+export const ConsoleClientDiagnosticSubscriptionSchema = z
+  .object({
+    id: z.string(),
+    table: z.string(),
+    scopeKeys: z.array(z.string()).default([]),
+    scopeValueCount: z.number().int().nonnegative().default(0),
+    paramsKeys: z.array(z.string()).default([]),
+    paramsValueCount: z.number().int().nonnegative().default(0),
+    status: z.string().nullable().default(null),
+    ready: z.boolean().default(false),
+    phase: z.string().optional(),
+    progressPercent: z.number().default(0),
+    cursor: z.union([z.number().int(), z.string()]).nullable().default(null),
+    bootstrapPhase: z.number().int().default(0),
+    bootstrapState: z.unknown().nullable().default(null),
+  })
+  .passthrough();
+
+export type ConsoleClientDiagnosticSubscription = z.infer<
+  typeof ConsoleClientDiagnosticSubscriptionSchema
+>;
+
+export const ConsoleClientDiagnosticEventSchema = z
+  .object({
+    at: z.number(),
+    level: z.enum(['debug', 'info', 'warn', 'error']).catch('info'),
+    source: z.string(),
+    code: z.string(),
+    message: z.string(),
+    syncAttemptId: z.string().optional(),
+    traceId: z.string().optional(),
+    spanId: z.string().optional(),
+    clientId: z.string().optional(),
+    subscriptionId: z.string().optional(),
+    table: z.string().optional(),
+    rowId: z.string().optional(),
+    cursor: z.union([z.number(), z.string()]).nullable().optional(),
+    details: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
+export type ConsoleClientDiagnosticEvent = z.infer<
+  typeof ConsoleClientDiagnosticEventSchema
+>;
+
+export const ConsoleClientDiagnosticCodeSummarySchema = z.object({
+  code: z.string(),
+  count: z.number().int().nonnegative(),
+  maxLevel: ConsoleClientDiagnosticHealthSeveritySchema,
+});
+
+export type ConsoleClientDiagnosticCodeSummary = z.infer<
+  typeof ConsoleClientDiagnosticCodeSummarySchema
+>;
+
+export const ConsoleClientDiagnosticSnapshotSchema = z
+  .object({
+    generatedAt: z.number().optional(),
+    runtime: ConsoleClientDiagnosticRuntimeSchema.optional(),
+    connection: ConsoleClientDiagnosticConnectionSchema.optional(),
+    subscriptions: z
+      .array(ConsoleClientDiagnosticSubscriptionSchema)
+      .default([]),
+    recentDiagnostics: z.array(ConsoleClientDiagnosticEventSchema).default([]),
+    recentSyncTimings: z.array(z.record(z.string(), z.unknown())).default([]),
+    bootstrap: z.record(z.string(), z.unknown()).optional(),
+    transportStats: z.record(z.string(), z.unknown()).optional(),
+    outboxStats: z.record(z.string(), z.unknown()).optional(),
+    conflictStats: z.record(z.string(), z.unknown()).optional(),
+    blobUploadStats: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
+export type ConsoleClientDiagnosticSnapshot = z.infer<
+  typeof ConsoleClientDiagnosticSnapshotSchema
+>;
+
+export const ConsoleClientDiagnosticIngestSchema = z.object({
+  clientId: z.string().min(1),
+  actorId: z.string().min(1).optional(),
+  partitionId: z.string().min(1).default('default'),
+  lifecycle: ConsoleClientDiagnosticLifecycleSchema.optional(),
+  snapshot: ConsoleClientDiagnosticSnapshotSchema,
+});
+
+export type ConsoleClientDiagnosticIngest = z.infer<
+  typeof ConsoleClientDiagnosticIngestSchema
+>;
+
+export const ConsoleClientDiagnosticRecordSchema = z.object({
+  clientId: z.string(),
+  actorId: z.string().nullable(),
+  partitionId: z.string(),
+  reportedAt: z.string(),
+  receivedAt: z.string(),
+  freshnessState: ConsoleClientDiagnosticFreshnessStateSchema,
+  healthMaxSeverity: ConsoleClientDiagnosticHealthSeveritySchema.nullable(),
+  diagnosticCodesSummary: z.array(ConsoleClientDiagnosticCodeSummarySchema),
+  queueSummary: z.record(z.string(), z.unknown()).nullable(),
+  timingSummary: z.record(z.string(), z.unknown()).nullable(),
+  redactionSummary: z.record(z.string(), z.unknown()),
+  runtime: ConsoleClientDiagnosticRuntimeSchema.nullable(),
+  connection: ConsoleClientDiagnosticConnectionSchema.nullable(),
+  lifecycle: ConsoleClientDiagnosticLifecycleSchema.nullable(),
+  bootstrap: z.record(z.string(), z.unknown()).nullable(),
+  transportStats: z.record(z.string(), z.unknown()).nullable(),
+  outboxStats: z.record(z.string(), z.unknown()).nullable(),
+  conflictStats: z.record(z.string(), z.unknown()).nullable(),
+  blobUploadStats: z.record(z.string(), z.unknown()).nullable(),
+  subscriptions: z.array(ConsoleClientDiagnosticSubscriptionSchema),
+  recentDiagnostics: z.array(ConsoleClientDiagnosticEventSchema),
+  recentSyncTimings: z.array(z.record(z.string(), z.unknown())),
+});
+
+export type ConsoleClientDiagnosticRecord = z.infer<
+  typeof ConsoleClientDiagnosticRecordSchema
+>;
 
 // ============================================================================
 // Handler Schemas
@@ -133,7 +583,7 @@ export const ConsoleRequestEventSchema = z.object({
   requestId: z.string(),
   traceId: z.string().nullable(),
   spanId: z.string().nullable(),
-  eventType: z.enum(['push', 'pull']),
+  eventType: z.enum(['sync', 'push', 'pull']),
   syncPath: z.enum(['http-combined', 'ws-push']),
   transportPath: z.enum(['direct', 'relay']),
   actorId: z.string(),
@@ -150,6 +600,7 @@ export const ConsoleRequestEventSchema = z.object({
   scopesSummary: z
     .record(z.string(), z.union([z.string(), z.array(z.string())]))
     .nullable(),
+  responseSummary: ConsoleRequestEventResponseSummarySchema.nullable(),
   tables: z.array(z.string()),
   errorMessage: z.string().nullable(),
   payloadRef: z.string().nullable(),
@@ -157,6 +608,30 @@ export const ConsoleRequestEventSchema = z.object({
 });
 
 export type ConsoleRequestEvent = z.infer<typeof ConsoleRequestEventSchema>;
+
+export const ConsoleRowInvestigationResponseSchema = z.object({
+  table: z.string(),
+  rowId: z.string(),
+  partitionId: z.string(),
+  clientId: z.string().nullable(),
+  rowKnown: z.boolean(),
+  latestCommitSeq: z.number().int().nullable(),
+  latestOp: z.enum(['upsert', 'delete']).nullable(),
+  client: ConsoleRowInvestigationClientSchema.nullable(),
+  scopeEligibility: ConsoleRowInvestigationScopeEligibilitySchema,
+  subscriptionEvidence: ConsoleRowInvestigationSubscriptionEvidenceSchema,
+  requestEvidence: ConsoleRowInvestigationRequestEvidenceSchema,
+  snapshotEvidence: ConsoleRowInvestigationSnapshotEvidenceSchema,
+  realtimeEvidence: ConsoleRowInvestigationRealtimeEvidenceSchema,
+  history: z.array(ConsoleRowHistoryEntrySchema),
+  relevantEvents: z.array(ConsoleRequestEventSchema),
+  findings: z.array(ConsoleRowInvestigationFindingSchema),
+  nextCursor: z.number().int().nullable(),
+});
+
+export type ConsoleRowInvestigationResponse = z.infer<
+  typeof ConsoleRowInvestigationResponseSchema
+>;
 
 export const ConsoleRequestPayloadSchema = z.object({
   payloadRef: z.string(),
@@ -187,6 +662,10 @@ export type ConsoleClearEventsResult = z.infer<
 
 export const ConsolePruneEventsResultSchema = z.object({
   deletedCount: z.number().int(),
+  requestEventsDeleted: z.number().int().nonnegative(),
+  operationEventsDeleted: z.number().int().nonnegative(),
+  realtimeEventsDeleted: z.number().int().nonnegative(),
+  payloadDeletedCount: z.number().int().nonnegative(),
 });
 
 export type ConsolePruneEventsResult = z.infer<
@@ -318,11 +797,12 @@ export type ConsolePaginatedResponse<T> = {
 export const ConsoleTimelineQuerySchema =
   ConsolePartitionedPaginationQuerySchema.extend({
     view: z.enum(['all', 'commits', 'events']).default('all'),
-    eventType: z.enum(['push', 'pull']).optional(),
+    eventType: z.enum(['sync', 'push', 'pull']).optional(),
     actorId: z.string().optional(),
     clientId: z.string().optional(),
     requestId: z.string().optional(),
     traceId: z.string().optional(),
+    syncAttemptId: z.string().optional(),
     table: z.string().optional(),
     outcome: z.string().optional(),
     search: z.string().optional(),
@@ -397,7 +877,7 @@ export const LatencyQuerySchema = z.object({
 // ============================================================================
 
 export const LiveEventSchema = z.object({
-  type: z.enum(['push', 'pull', 'commit', 'client_update']),
+  type: z.enum(['sync', 'push', 'pull', 'commit', 'client_update']),
   timestamp: z.string(),
   data: z.record(z.string(), z.unknown()),
 });

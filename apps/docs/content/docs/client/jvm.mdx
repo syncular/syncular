@@ -1,0 +1,68 @@
+---
+title: JVM
+description: Use the Java/JVM binding and packaged native Syncular runtime.
+---
+
+# JVM
+
+JVM hosts use the generated Java binding over the native Syncular runtime. This
+is the lowest-level JVM surface; Kotlin apps usually use the generated Kotlin
+helpers in [Kotlin / Android](/docs/client/kotlin-android).
+
+## Open the client
+
+```java
+import dev.syncular.client.SyncularBoltClient;
+import dev.syncular.client.SyncularBoltClientConfig;
+import java.util.Optional;
+
+try (var client = new SyncularBoltClient(new SyncularBoltClientConfig(
+    dbPath,
+    "https://api.example.com/sync",
+    "jvm-device-1",
+    "user-1",
+    Optional.of("project-1"),
+    Optional.of(syncularNativeGeneratedAppSchemaJson),
+    false
+))) {
+    client.startEventStream(256);
+    client.setAuthHeadersJson("{\"authorization\":\"Bearer token\"}");
+    client.startRealtimeWorker();
+}
+```
+
+## Events
+
+The Java binding exposes the stable native JSON event stream:
+
+```java
+while (true) {
+    var event = client.nextEventJsonTimeout(250);
+    if (event.isEmpty()) continue;
+
+    viewModel.applySyncularEventJson(event.get());
+}
+```
+
+If an event reports overflow or `resyncRequired`, discard incremental state,
+refresh from local SQLite, resubscribe to events, and trigger sync if the app
+needs immediate recovery.
+
+## Queries and mutations
+
+For pure Java, generated table-specific helpers are intentionally thinner than
+Rust, Swift, and Kotlin today. Use the native JSON query/mutation boundary from
+generated app code, or put the app-specific query layer in Kotlin and call it
+from Java.
+
+The JVM package is still useful for desktop services, JVM-hosted app shells,
+and integration tests that want the same native runtime package used by Kotlin.
+
+## Packaging
+
+Package the platform native library beside the Java classes. The generated JVM
+smoke packages the JNI native library under `rust/bindings/java/native` and
+runs against a real local SQLite database.
+
+See [Packaging](/docs/client/packaging) for native artifact layout.
+

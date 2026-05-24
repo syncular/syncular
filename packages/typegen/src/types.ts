@@ -6,14 +6,6 @@ import type { DefinedMigrations } from '@syncular/migrations';
 
 export type TypegenDialect = 'sqlite' | 'postgres';
 
-export type SyncularImportType =
-  | 'scoped'
-  | 'umbrella'
-  | {
-      client: string;
-      [packageName: string]: string;
-    };
-
 /**
  * Column information for a schema column.
  */
@@ -99,15 +91,6 @@ export interface GenerateTypesOptions<DB = unknown> {
   output: string;
   /** Database dialect to use for introspection (default: 'sqlite') */
   dialect?: TypegenDialect;
-  /** Whether to extend SyncClientDb interface (adds sync infrastructure types) */
-  extendsSyncClientDb?: boolean;
-  /**
-   * Controls how syncular package imports are rendered in generated output.
-   * - 'scoped' (default): '@syncular/client'
-   * - 'umbrella': 'syncular/client'
-   * - object: explicit package mapping (must include `client`)
-   */
-  syncularImportType?: SyncularImportType;
   /** Generate versioned interfaces (ClientDbV1, ClientDbV2, etc.) */
   includeVersionHistory?: boolean;
   /** Only generate types for these tables (default: all tables) */

@@ -1,12 +1,18 @@
 /**
  * Stamps all publishable workspace packages with a suffixed version.
- * Usage: bun scripts/stamp-versions.ts <suffix>
- * Example: bun scripts/stamp-versions.ts 123 → 0.0.1-123
+ * Usage:
+ *   bun scripts/stamp-versions.ts <suffix>
+ *   bun scripts/stamp-versions.ts --version <version>
+ *
+ * Examples:
+ *   bun scripts/stamp-versions.ts staging.123 → 0.0.1-staging.123
+ *   bun scripts/stamp-versions.ts --version 0.0.1 → 0.0.1
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import {
   computeStampedVersion,
   listWorkspacePackageJsonPaths,
+  normalizeReleaseVersion,
 } from './version-utils';
 
 type DependencySection =
@@ -32,13 +38,14 @@ interface PackageEntry {
   shouldStamp: boolean;
 }
 
-const suffix = process.argv[2];
-if (!suffix) {
-  console.error('Usage: bun scripts/stamp-versions.ts <suffix>');
+const args = process.argv.slice(2);
+const dryRun = args.includes('--dry-run');
+const version = resolveVersion(args.filter((arg) => arg !== '--dry-run'));
+if (!version) {
+  console.error('Usage: bun scripts/stamp-versions.ts <suffix> | --version <version>');
   process.exit(1);
 }
 
-const version = computeStampedVersion(suffix);
 console.log(`Stamping version: ${version}\n`);
 
 const packageJsonPaths = await listWorkspacePackageJsonPaths();
@@ -60,6 +67,16 @@ for (const packageJsonPath of packageJsonPaths) {
   }
 }
 
+function resolveVersion(args: string[]): string | null {
+  if (args[0] === '--version') {
+    const exactVersion = args[1];
+    return exactVersion ? normalizeReleaseVersion(exactVersion) : null;
+  }
+
+  const [suffix] = args;
+  return suffix ? computeStampedVersion(suffix) : null;
+}
+
 for (const entry of entries) {
   const { path, pkg, shouldStamp } = entry;
   if (!shouldStamp || typeof pkg.version !== 'string') {
@@ -69,10 +86,12 @@ for (const entry of entries) {
   pkg.version = version;
   stampInternalDependencies(pkg, internalPackageNames, version);
 
-  writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
+  if (!dryRun) {
+    writeFileSync(path, `${JSON.stringify(pkg, null, 2)}\n`);
+  }
   const name =
     typeof pkg.name === 'string' && pkg.name.length > 0 ? pkg.name : path;
-  console.log(`  ${name} → ${version}`);
+  console.log(`  ${name} → ${version}${dryRun ? ' (dry run)' : ''}`);
 }
 
 function isPublishableWorkspacePackage(pkg: PackageJson): boolean {

@@ -90,8 +90,104 @@ export type ConsoleCommitListItem = PaginatedItem<'getConsoleCommits'> &
 export type ConsoleCommitDetail =
   JsonSuccessResponse<'getConsoleCommitsBySeq'> & GatewayCommitFields;
 
+export type ConsoleRowHistoryResponse =
+  JsonSuccessResponse<'getConsoleRowHistoryByTableByRowId'>;
+
+export type ConsoleRowInvestigationResponse =
+  JsonSuccessResponse<'getConsoleRowInvestigationByTableByRowId'>;
+
+export type ConsoleClientDiagnosticLevel = 'debug' | 'info' | 'warn' | 'error';
+export type ConsoleClientDiagnosticFreshnessState = 'active' | 'idle' | 'stale';
+
 export type ConsoleClient = PaginatedItem<'getConsoleClients'> &
-  GatewayClientFields;
+  GatewayClientFields & {
+    diagnosticFreshnessState: ConsoleClientDiagnosticFreshnessState | null;
+    diagnosticHealthMaxSeverity: ConsoleClientDiagnosticLevel | null;
+    diagnosticReceivedAt: string | null;
+  };
+
+export interface ConsoleClientDiagnosticRuntime {
+  packageName?: string;
+  packageVersion?: string;
+  workerProtocolVersion?: number;
+  storage?: string;
+  storageFallback?: {
+    from?: string;
+    to?: string;
+    reason?: string;
+  };
+  workerUrl?: string;
+  wasmGlueUrl?: string;
+  wasmUrl?: string;
+  rust?: {
+    crateName?: string;
+    crateVersion?: string;
+    schemaVersion?: number;
+    features?: string[];
+  };
+}
+
+export interface ConsoleClientDiagnosticEvent {
+  at: number;
+  level: ConsoleClientDiagnosticLevel;
+  source: string;
+  code: string;
+  message: string;
+  syncAttemptId?: string;
+  traceId?: string;
+  spanId?: string;
+  clientId?: string;
+  subscriptionId?: string;
+  table?: string;
+  rowId?: string;
+  cursor?: number | string | null;
+  details?: Record<string, unknown>;
+}
+
+export interface ConsoleClientDiagnosticSubscription {
+  id: string;
+  table: string;
+  scopeKeys: string[];
+  scopeValueCount: number;
+  paramsKeys: string[];
+  paramsValueCount: number;
+  status: string | null;
+  ready: boolean;
+  phase?: string;
+  progressPercent: number;
+  cursor: number | string | null;
+  bootstrapPhase: number;
+  bootstrapState: unknown | null;
+}
+
+export interface ConsoleClientDiagnosticRecord {
+  clientId: string;
+  actorId: string | null;
+  partitionId: string;
+  reportedAt: string;
+  receivedAt: string;
+  freshnessState: ConsoleClientDiagnosticFreshnessState;
+  healthMaxSeverity: ConsoleClientDiagnosticLevel | null;
+  diagnosticCodesSummary: Array<{
+    code: string;
+    count: number;
+    maxLevel: ConsoleClientDiagnosticLevel;
+  }>;
+  queueSummary: Record<string, unknown> | null;
+  timingSummary: Record<string, unknown> | null;
+  redactionSummary: Record<string, unknown>;
+  runtime: ConsoleClientDiagnosticRuntime | null;
+  connection: Record<string, unknown> | null;
+  lifecycle: Record<string, unknown> | null;
+  bootstrap: Record<string, unknown> | null;
+  transportStats: Record<string, unknown> | null;
+  outboxStats: Record<string, unknown> | null;
+  conflictStats: Record<string, unknown> | null;
+  blobUploadStats: Record<string, unknown> | null;
+  subscriptions: ConsoleClientDiagnosticSubscription[];
+  recentDiagnostics: ConsoleClientDiagnosticEvent[];
+  recentSyncTimings: Array<Record<string, unknown>>;
+}
 
 export type ConsoleHandler =
   JsonSuccessResponse<'getConsoleHandlers'>['items'][number];

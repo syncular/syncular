@@ -1,3 +1,4 @@
+.context/
 .ignore/
 node_modules/
 .DS_Store
@@ -31,3 +32,28 @@ demo/a/
 demo-*.png
 
 **/*.tgz
+
+# Rust build artifacts
+rust/target/
+rust/**/target/
+rust/crates/runtime/generated/
+rust/bindings/kotlin/jniLibs/
+rust/bindings/swift/Syncular.xcframework/
+rust/bindings/swift/Syncular.xcframework.zip
+rust/bindings/swift/headers_staging/
+rust/bindings/swift/ios-simulator-fat/
+rust/bindings/swift/macos-fat/
+rust/bindings/java/native/
+rust/bindings/java/*.dylib
+rust/bindings/java/*.so
+rust/bindings/java/*.dll
+
+# Native app smoke build artifacts
+rust/examples/todo-app/native-smokes/android-lifecycle/.gradle/
+rust/examples/todo-app/native-smokes/android-lifecycle/.kotlin/
+rust/examples/todo-app/native-smokes/android-lifecycle/local.properties
+rust/examples/todo-app/native-smokes/android-lifecycle/app/build/
+rust/examples/todo-app/native-smokes/android-lifecycle/build/
+rust/examples/todo-app/native-smokes/ios-lifecycle/SyncularLifecycleApp.xcodeproj/
+rust/examples/todo-app/native-smokes/ios-lifecycle/.build/
+rust/examples/todo-app/native-smokes/ios-lifecycle/DerivedData/

@@ -39,7 +39,7 @@ describe('createNodeHonoServer', () => {
           origin: 'http://127.0.0.1:4173',
           'access-control-request-method': 'GET',
           'access-control-request-headers':
-            'x-actor-id, x-syncular-snapshot-scopes',
+            'x-actor-id, x-syncular-schema-version, x-syncular-snapshot-scopes',
         },
       }
     );
@@ -48,6 +48,9 @@ describe('createNodeHonoServer', () => {
     expect(response.headers.get('access-control-allow-origin')).toBe('*');
     expect(response.headers.get('access-control-allow-headers')).toContain(
       'x-syncular-snapshot-scopes'
+    );
+    expect(response.headers.get('access-control-allow-headers')).toContain(
+      'x-syncular-schema-version'
     );
   });
 });

@@ -4,9 +4,10 @@
   "icon": "Library",
   "pages": [
     "index",
-    "---SDKs and Server---",
+    "---SDKs, Server, and CLI---",
     "client-sdk",
     "server",
+    "cli",
     "---HTTP API---",
     "api"
   ]

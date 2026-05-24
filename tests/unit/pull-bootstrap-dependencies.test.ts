@@ -2,7 +2,8 @@ import { describe, expect, it } from 'bun:test';
 import { gunzipSync } from 'node:zlib';
 import {
   createDatabase,
-  decodeSnapshotRows,
+  decodeBinarySnapshotTable,
+  SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   type SyncPullRequest,
 } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
@@ -51,13 +52,18 @@ interface ClientDb {
   catalog_items: CatalogItemsTable;
 }
 
-function decodeSnapshotRowsGzip(
-  bytes: Uint8Array | ReadableStream<Uint8Array>
+function decodeSnapshotChunkRowsGzip(
+  bytes: Uint8Array | ReadableStream<Uint8Array>,
+  encoding: string
 ): unknown[] {
   if (!(bytes instanceof Uint8Array)) {
     throw new Error('Expected Uint8Array snapshot body in this test');
   }
-  return decodeSnapshotRows(gunzipSync(bytes));
+  const decoded = gunzipSync(bytes);
+  if (encoding === SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1) {
+    return decodeBinarySnapshotTable(decoded).rows;
+  }
+  throw new Error(`Unexpected snapshot encoding: ${encoding}`);
 }
 
 async function readSnapshotRows(
@@ -68,17 +74,17 @@ async function readSnapshotRows(
     return snapshot.rows;
   }
 
-  const chunkId = snapshot.chunks?.[0]?.id;
-  if (!chunkId) {
+  const chunkRef = snapshot.chunks?.[0];
+  if (!chunkRef) {
     throw new Error('Expected inline rows or a snapshot chunk');
   }
 
-  const chunk = await readSnapshotChunk(db, chunkId);
+  const chunk = await readSnapshotChunk(db, chunkRef.id);
   if (!chunk) {
     throw new Error('Expected stored snapshot chunk');
   }
 
-  return decodeSnapshotRowsGzip(chunk.body);
+  return decodeSnapshotChunkRowsGzip(chunk.body, chunkRef.encoding);
 }
 
 describe('pull bootstrap behavior', () => {
@@ -156,6 +162,7 @@ describe('pull bootstrap behavior', () => {
 
       const request: SyncPullRequest = {
         clientId: 'client-1',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 10,
@@ -165,6 +172,7 @@ describe('pull bootstrap behavior', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       };
@@ -261,6 +269,7 @@ describe('pull bootstrap behavior', () => {
       const requestedCatalogs = ['zeta', 'alpha'];
       const request: SyncPullRequest = {
         clientId: 'client-2',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 100,
         maxSnapshotPages: 1,
@@ -270,6 +279,7 @@ describe('pull bootstrap behavior', () => {
             table: 'catalog_items',
             scopes: { catalog_id: requestedCatalogs },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       };
@@ -338,6 +348,7 @@ describe('pull bootstrap behavior', () => {
 
       const request: SyncPullRequest = {
         clientId: 'client-gzip-bundle',
+        schemaVersion: 1,
         limitCommits: 10,
         limitSnapshotRows: 1,
         maxSnapshotPages: 2,
@@ -347,6 +358,7 @@ describe('pull bootstrap behavior', () => {
             table: 'tasks',
             scopes: { user_id: 'u1' },
             cursor: -1,
+            crdtStateVectors: [],
           },
         ],
       };
@@ -371,7 +383,12 @@ describe('pull bootstrap behavior', () => {
       const chunk = await readSnapshotChunk(db, chunkId);
       if (!chunk) throw new Error('Expected stored snapshot chunk');
 
-      expect(decodeSnapshotRowsGzip(chunk.body)).toEqual([
+      const snapshot = subscription.snapshots?.[0];
+      if (!snapshot) throw new Error('Expected subscription snapshot');
+
+      expect(
+        decodeSnapshotChunkRowsGzip(chunk.body, snapshot.chunks![0]!.encoding)
+      ).toEqual([
         {
           id: 't1',
           user_id: 'u1',

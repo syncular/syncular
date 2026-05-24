@@ -2,12 +2,7 @@
  * @syncular/typegen - TypeScript code generation
  */
 
-import type {
-  ColumnSchema,
-  SyncularImportType,
-  TableSchema,
-  VersionedSchema,
-} from './types';
+import type { ColumnSchema, TableSchema, VersionedSchema } from './types';
 
 /**
  * Convert a snake_case table/column name to PascalCase.
@@ -62,43 +57,17 @@ function renderDbInterface(
 export interface RenderOptions {
   /** Schemas at each version (for version history) */
   schemas: VersionedSchema[];
-  /** Whether to extend SyncClientDb */
-  extendsSyncClientDb?: boolean;
-  /** Controls package import style for SyncClientDb (default: 'scoped') */
-  syncularImportType?: SyncularImportType;
   /** Generate versioned interfaces */
   includeVersionHistory?: boolean;
   /** Custom imports collected from resolver results */
   customImports?: Array<{ name: string; from: string }>;
 }
 
-function resolveSyncClientImportPath(importType: SyncularImportType): string {
-  if (importType === 'umbrella') {
-    return 'syncular/client';
-  }
-  if (importType === 'scoped') {
-    return '@syncular/client';
-  }
-  const clientImportPath = importType.client.trim();
-  if (clientImportPath.length === 0) {
-    throw new Error(
-      'syncularImportType.client must be a non-empty package import path'
-    );
-  }
-  return clientImportPath;
-}
-
 /**
  * Render complete TypeScript type definitions.
  */
 export function renderTypes(options: RenderOptions): string {
-  const {
-    schemas,
-    extendsSyncClientDb,
-    syncularImportType = 'scoped',
-    includeVersionHistory,
-    customImports,
-  } = options;
+  const { schemas, includeVersionHistory, customImports } = options;
   const lines: string[] = [];
 
   // Header
@@ -107,14 +76,6 @@ export function renderTypes(options: RenderOptions): string {
   lines.push(' * DO NOT EDIT - regenerate with @syncular/typegen');
   lines.push(' */');
   lines.push('');
-
-  // Import SyncClientDb if extending
-  if (extendsSyncClientDb) {
-    lines.push(
-      `import type { SyncClientDb } from '${resolveSyncClientImportPath(syncularImportType)}';`
-    );
-    lines.push('');
-  }
 
   const usesGenerated = schemas.some((schema) =>
     schema.tables.some((table) =>
@@ -205,8 +166,7 @@ export function renderTypes(options: RenderOptions): string {
   }
 
   // Generate main DB interface (latest version)
-  const extendsType = extendsSyncClientDb ? 'SyncClientDb' : undefined;
-  lines.push(renderDbInterface(latestSchema, 'ClientDb', extendsType));
+  lines.push(renderDbInterface(latestSchema, 'ClientDb'));
   lines.push('');
 
   return lines.join('\n');

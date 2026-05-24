@@ -1,0 +1,172 @@
+{
+  "name": "json-combined-sync-v1",
+  "request": {
+    "clientId": "fixture-client-1",
+    "push": {
+      "commits": [
+        {
+          "clientCommitId": "fixture-commit-1",
+          "schemaVersion": 3,
+          "operations": [
+            {
+              "table": "tasks",
+              "row_id": "task-local-1",
+              "op": "upsert",
+              "payload": {
+                "id": "task-local-1",
+                "title": "Local edit",
+                "done": false
+              },
+              "base_version": 5
+            },
+            {
+              "table": "tasks",
+              "row_id": "task-deleted-1",
+              "op": "delete",
+              "payload": null,
+              "base_version": 6
+            }
+          ]
+        }
+      ]
+    },
+    "pull": {
+      "schemaVersion": 7,
+      "limitCommits": 50,
+      "limitSnapshotRows": 1000,
+      "maxSnapshotPages": 4,
+      "dedupeRows": true,
+      "subscriptions": [
+        {
+          "id": "sub-tasks",
+          "table": "tasks",
+          "scopes": {
+            "user_id": "user-1",
+            "project_id": [
+              "p1",
+              "p2"
+            ]
+          },
+          "params": {
+            "includeDone": true
+          },
+          "cursor": 41,
+          "crdtStateVectors": [
+            {
+              "rowId": "task-local-1",
+              "field": "title",
+              "stateColumn": "title_yjs_state",
+              "stateVectorBase64": "AQID",
+              "syncMode": "server-merge",
+              "updatedAt": 1770000000000
+            }
+          ],
+          "bootstrapState": {
+            "asOfCommitSeq": 40,
+            "tables": [
+              "projects",
+              "tasks"
+            ],
+            "tableIndex": 1,
+            "rowCursor": "task-0"
+          }
+        }
+      ]
+    }
+  },
+  "response": {
+    "ok": true,
+    "requiredSchemaVersion": 3,
+    "latestSchemaVersion": 4,
+    "push": {
+      "ok": true,
+      "commits": [
+        {
+          "ok": true,
+          "clientCommitId": "fixture-commit-1",
+          "status": "applied",
+          "commitSeq": 42,
+          "results": [
+            {
+              "opIndex": 0,
+              "status": "applied"
+            },
+            {
+              "opIndex": 1,
+              "status": "applied"
+            }
+          ]
+        }
+      ]
+    },
+    "pull": {
+      "ok": true,
+      "subscriptions": [
+        {
+          "id": "sub-tasks",
+          "status": "active",
+          "scopes": {
+            "user_id": "user-1",
+            "project_id": "p1"
+          },
+          "bootstrap": true,
+          "bootstrapState": {
+            "asOfCommitSeq": 42,
+            "tables": [
+              "tasks"
+            ],
+            "tableIndex": 0,
+            "rowCursor": "task-1"
+          },
+          "nextCursor": 42,
+          "commits": [
+            {
+              "commitSeq": 42,
+              "createdAt": "2026-05-19T10:00:00.000Z",
+              "actorId": "user-2",
+              "changes": [
+                {
+                  "table": "tasks",
+                  "row_id": "task-remote-1",
+                  "op": "upsert",
+                  "row_json": {
+                    "id": "task-remote-1",
+                    "title": "Remote row",
+                    "server_version": 42
+                  },
+                  "row_version": 42,
+                  "scopes": {
+                    "user_id": "user-1",
+                    "project_id": "p1"
+                  }
+                }
+              ]
+            }
+          ],
+          "snapshots": [
+            {
+              "table": "tasks",
+              "rows": [
+                {
+                  "id": "task-snapshot-1",
+                  "title": "Snapshot row",
+                  "server_version": 41
+                }
+              ],
+              "isFirstPage": true,
+              "isLastPage": false,
+              "bootstrapStateAfter": {
+                "asOfCommitSeq": 42,
+                "tables": [
+                  "tasks"
+                ],
+                "tableIndex": 0,
+                "rowCursor": "task-snapshot-1"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

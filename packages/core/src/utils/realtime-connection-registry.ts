@@ -113,6 +113,11 @@ export class RealtimeConnectionRegistry<
     return scopeKeys.has(scopeKey);
   }
 
+  getScopeKeysForOwner(ownerKey: string): readonly string[] {
+    const scopeKeys = this.scopeKeysByOwnerKey.get(ownerKey);
+    return scopeKeys ? Array.from(scopeKeys) : [];
+  }
+
   getConnectionsForOwner(
     ownerKey: string
   ): ReadonlySet<TConnection> | undefined {

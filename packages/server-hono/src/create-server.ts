@@ -1,7 +1,7 @@
 /**
  * Simplified server factory for Hono
  *
- * Breaking changes from legacy createSyncRoutes:
+ * Current server contract:
  * - sync contract instead of top-level handlers/authenticate
  * - Combined sync + console routes in one call
  */
@@ -10,6 +10,7 @@ import type {
   ScopeCacheBackend,
   ServerSyncConfig,
   ServerSyncDialect,
+  SnapshotArtifactStorage,
   SnapshotChunkStorage,
   SqlFamily,
   SyncCoreDb,
@@ -50,6 +51,9 @@ export interface SyncServerOptions<
 
   /** Snapshot chunk storage (external body storage, e.g. R2/S3) */
   chunkStorage?: SnapshotChunkStorage;
+
+  /** Scoped snapshot artifact body storage (external body storage, e.g. R2/S3) */
+  snapshotArtifactStorage?: SnapshotArtifactStorage;
 
   /** Scope cache backend for resolveScopes() results */
   scopeCache?: ScopeCacheBackend;
@@ -121,6 +125,7 @@ export function createSyncServer<
     dialect,
     sync,
     chunkStorage,
+    snapshotArtifactStorage,
     scopeCache,
     routes,
     upgradeWebSocket,
@@ -170,6 +175,7 @@ export function createSyncServer<
     authenticate: async (context): Promise<Auth | null> =>
       sync.authenticate(context.req.raw),
     chunkStorage,
+    snapshotArtifactStorage,
     scopeCache,
     consoleLiveEmitter: consoleEventEmitter,
     consoleSchemaReady,

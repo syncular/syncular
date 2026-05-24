@@ -186,6 +186,7 @@ export class PullEngine<DB extends RelayDatabase = RelayDatabase> {
         table,
         scopes: this.scopes,
         cursor: this.cursors.get(table) ?? -1,
+        crdtStateVectors: [],
       })
     );
 
@@ -194,6 +195,7 @@ export class PullEngine<DB extends RelayDatabase = RelayDatabase> {
       const combined = await this.transport.sync({
         clientId: this.clientId,
         pull: {
+          schemaVersion: 1,
           subscriptions: subscriptionRequests,
           limitCommits: 100,
         },
