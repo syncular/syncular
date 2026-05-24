@@ -61,3 +61,4 @@ the status source; this file is the stable package index.
 35. [`WP-35 Rust-First Public Docs API Cleanup`](WP-35-rust-first-public-docs-api-cleanup.md)
 36. [`WP-36 Binding Example Clarity`](WP-36-binding-example-clarity.md)
 37. [`WP-37 Rust Crates Publishing`](WP-37-rust-crates-publishing.md)
+38. [`WP-38 Release Automation`](WP-38-release-automation.md)

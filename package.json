@@ -1,6 +1,6 @@
 {
   "name": "syncular",
-  "version": "0.0.6",
+  "version": "0.1.0",
   "devDependencies": {
     "@biomejs/biome": "2.4.10",
     "@types/bun": "^1.3.11",
@@ -60,6 +60,10 @@
     "lint:fix": "biome check --fix --unsafe .",
     "knip": "knip && knip --production --no-exit-code",
     "release": "turbo release --filter='./packages/*' --filter='./rust/bindings/*' --filter='./plugins/*/*' --concurrency=1",
+    "release:cargo": "bun scripts/publish-cargo-crates.ts --allow-dirty",
+    "release:cargo:dry-run": "bun scripts/publish-cargo-crates.ts --dry-run --allow-dirty",
+    "stamp:cargo": "bun scripts/stamp-cargo-versions.ts",
+    "stamp:npm": "bun scripts/stamp-versions.ts",
     "tsgo": "turbo tsgo --cache-dir=.turbo --concurrency=100% --parallel --force",
     "generate:openapi": "bun generate:openapi:schema && bun generate:openapi:types && bun generate:openapi:docs",
     "generate:openapi:schema": "bun --cwd packages/server-hono generate:openapi",

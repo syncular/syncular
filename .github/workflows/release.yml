@@ -4,8 +4,24 @@ on:
   workflow_run:
     workflows: ["Checks"]
     types: [completed]
-    branches: [main, release]
+    branches: [release]
+  push:
+    tags:
+      - 'v*'
   workflow_dispatch:
+    inputs:
+      channel:
+        description: Release channel to publish.
+        required: true
+        default: staging
+        type: choice
+        options:
+          - staging
+          - stable
+      version:
+        description: Exact stable version. Defaults to the tag without v, or root package.json version.
+        required: false
+        type: string
 
 permissions:
   contents: write
@@ -19,11 +35,12 @@ concurrency:
 jobs:
   release:
     if: |
-      (github.event_name == 'workflow_dispatch' && (github.ref_name == 'main' || github.ref_name == 'release')) ||
+      github.event_name == 'push' ||
+      github.event_name == 'workflow_dispatch' ||
       (github.event_name == 'workflow_run' &&
         github.event.workflow_run.conclusion == 'success' &&
         github.event.workflow_run.event == 'push' &&
-        (github.event.workflow_run.head_branch == 'main' || github.event.workflow_run.head_branch == 'release'))
+        github.event.workflow_run.head_branch == 'release')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -40,10 +57,73 @@ jobs:
       - name: Setup wasm-pack for Rust bindings
         uses: jetli/wasm-pack-action@v0.4.0
 
-      - name: Stamp versions
-        run: bun scripts/stamp-versions.ts ${{ github.run_number }}
+      - name: Resolve release version
+        id: release_meta
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          INPUT_CHANNEL: ${{ inputs.channel || '' }}
+          INPUT_VERSION: ${{ inputs.version || '' }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
 
-      - name: Publish
+          root_version="$(bun -e 'console.log(require("./package.json").version)')"
+          channel="$INPUT_CHANNEL"
+          version="$INPUT_VERSION"
+
+          if [ "$EVENT_NAME" = "workflow_run" ]; then
+            channel="staging"
+          elif [ "$EVENT_NAME" = "push" ] && [ "$REF_TYPE" = "tag" ]; then
+            channel="stable"
+            if [ -z "$version" ]; then
+              version="${REF_NAME#v}"
+            fi
+          elif [ -z "$channel" ]; then
+            channel="staging"
+          fi
+
+          if [ "$channel" = "stable" ]; then
+            if [ -z "$version" ]; then
+              version="$root_version"
+            fi
+            npm_tag="latest"
+          elif [ "$channel" = "staging" ]; then
+            version="${root_version}-staging.${RUN_NUMBER}"
+            npm_tag="staging"
+          else
+            echo "Unsupported release channel: $channel" >&2
+            exit 1
+          fi
+
+          case "$version" in
+            v*) version="${version#v}" ;;
+          esac
+
+          if ! echo "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$'; then
+            echo "Invalid SemVer version: $version" >&2
+            exit 1
+          fi
+
+          echo "channel=$channel" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "npm_tag=$npm_tag" >> "$GITHUB_OUTPUT"
+          echo "Publishing $channel release version $version with npm tag $npm_tag"
+
+      - name: Stamp npm and Cargo versions
+        run: |
+          bun scripts/stamp-versions.ts --version '${{ steps.release_meta.outputs.version }}'
+          bun scripts/stamp-cargo-versions.ts --version '${{ steps.release_meta.outputs.version }}'
+
+      - name: Publish npm packages
+        env:
+          SYNCULAR_NPM_TAG: ${{ steps.release_meta.outputs.npm_tag }}
         run: |
           npm config set registry https://registry.npmjs.org/
           bun run release
+
+      - name: Publish Cargo crates
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+        run: bun scripts/publish-cargo-crates.ts --allow-dirty
