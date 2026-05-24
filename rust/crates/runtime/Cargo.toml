@@ -2,19 +2,19 @@
 name = "syncular-runtime"
 version = "0.1.0"
 edition = "2021"
-publish = false
+description = "Shared Rust runtime for Syncular SQLite-backed native and browser clients."
+license = "Apache-2.0"
+repository = "https://github.com/syncular/syncular"
+homepage = "https://syncular.dev"
+readme = "README.md"
+keywords = ["syncular", "sqlite", "offline", "sync"]
+categories = ["database", "wasm"]
 
 [lib]
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
-default = [
-    "native",
-    "boltffi-bindings",
-    "crdt-yjs",
-    "e2ee",
-    "demo-todo-native-fixture",
-]
+default = ["native", "crdt-yjs", "e2ee"]
 boltffi-bindings = ["native", "dep:boltffi"]
 crdt-yjs = ["dep:base64", "dep:yrs"]
 demo-todo-fixture = []
@@ -55,7 +55,7 @@ web-owned-sqlite-core = [
 
 [dependencies]
 anyhow = "1.0"
-syncular-protocol = { path = "../protocol" }
+syncular-protocol = { version = "0.1.0", path = "../protocol" }
 argon2 = { version = "0.5", optional = true }
 base64 = { version = "0.22", optional = true }
 bip39 = { version = "2.1", default-features = false, features = ["std"], optional = true }
@@ -103,4 +103,4 @@ getrandom = { version = "0.2", features = ["js"] }
 uuid = { version = "1.11", features = ["v4", "js"] }
 
 [dev-dependencies]
-syncular-testkit = { path = "../testkit" }
+syncular-testkit = { version = "0.1.0", path = "../testkit" }

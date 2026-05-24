@@ -2131,6 +2131,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "syncular"
+version = "0.1.0"
+
+[[package]]
 name = "syncular-client"
 version = "0.1.0"
 dependencies = [
