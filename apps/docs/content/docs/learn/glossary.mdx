@@ -135,17 +135,29 @@ An optimization used by `@syncular/client` and `@syncular/react` to avoid expens
 "3:abc@1706123456789,def@1706123456790,ghi@0"
 ```
 
-### Plugin
+### Runtime extension
 
-A hook into the client sync lifecycle. Plugins can transform push requests before sending (`beforePush`), process push responses (`afterPush`), and transform pull responses before applying (`afterPull`). Plugins have a priority for ordering (lower runs first).
+An explicit capability layered into the Rust runtime or generated app contract,
+such as field encryption, CRDT/Yjs fields, blob handling, command history, or
+app-layer editor adapters.
 
 ```typescript
-import { createIncrementingVersionPlugin } from '@syncular/client';
+import { defineSyncularClient, encryptedField, scope, syncedTable } from '@syncular/typegen';
 
-const plugins = [createIncrementingVersionPlugin()];
+export const app = defineSyncularClient({
+  tables: {
+    notes: syncedTable({
+      table: 'notes',
+      scopes: [scope('user_id', { source: 'actorId', required: true })],
+      serverVersion: 'server_version',
+      encryptedFields: [encryptedField('body', { scope: 'notes' })],
+    }),
+  },
+});
 ```
 
-Built-in plugins include the incrementing version plugin (prevents self-conflicts on versioned hot rows), the E2EE encryption plugin (`@syncular/client`), and the Yjs CRDT plugin (`@syncular/client-crdt-adapters`).
+Prefer generated contract features or documented adapter packages over
+low-level lifecycle hooks.
 
 ---
 

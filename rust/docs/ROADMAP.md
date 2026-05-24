@@ -70,6 +70,13 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-35 Rust-First Public Docs API Cleanup`](work-packages/WP-35-rust-first-public-docs-api-cleanup.md)
+  - Accepted. Public docs that still taught pre-Rust client APIs now use the
+    generated app contract, Rust-owned SQLite runtime, generated
+    subscriptions, generated mutations, current lifecycle/diagnostics APIs,
+    current conflict APIs, and current server version-aware handler flow. The
+    focused stale API scans, docs link checker, docs typecheck/build, and
+    touched-page browser smoke passed.
 - `[x]` [`WP-34 Rust-First Docs Information Architecture`](work-packages/WP-34-rust-first-docs-information-architecture.md)
   - Accepted. Public docs moved from the old
     `Build`/`Rust Client` split to a Rust-first structure:

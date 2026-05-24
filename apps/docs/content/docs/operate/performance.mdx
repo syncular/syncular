@@ -61,22 +61,24 @@ These are server-enforced upper bounds. The client can request smaller values, b
 
 The client controls how many rows and pages it requests per pull:
 
-```tsx
-<SyncProvider
-  db={db}
-  transport={transport}
-  sync={sync}
-  identity={{ actorId: userId }}
-  clientId={clientId}
-  // Rows per snapshot page (capped by server's maxPullLimitSnapshotRows)
-  limitSnapshotRows={1000}
-  // Pages per pull cycle (capped by server's maxPullMaxSnapshotPages)
-  maxSnapshotPages={5}
-  // Commits per pull request (default varies)
-  limitCommits={100}
->
-  {children}
-</SyncProvider>
+```ts
+const syncular = await createSyncularClient<AppDb>({
+  config: {
+    baseUrl: '/sync',
+    actorId: userId,
+    clientId,
+    pull: {
+      // Rows per snapshot page, capped by maxPullLimitSnapshotRows
+      limitSnapshotRows: 1000,
+      // Pages per pull cycle, capped by maxPullMaxSnapshotPages
+      maxSnapshotPages: 5,
+      // Commits per pull request
+      limitCommits: 100,
+    },
+  },
+  subscriptions: [taskSubscription({ actorId: userId })],
+  realtime: true,
+});
 ```
 
 ### Tuning for large datasets
@@ -248,29 +250,23 @@ CREATE INDEX idx_notes_user_id_updated ON notes (user_id, updated_at);
 
 ### Client-side (SQLite)
 
-SQLite in the browser (wa-sqlite) benefits from targeted indexes on columns you query frequently:
+The Rust-owned SQLite runtime installs app tables and generated indexes from
+your migrations/app contract. Add indexes to your client SQLite migrations so
+the generator can carry the same schema contract to browser, Rust, Swift, and
+Kotlin bindings:
 
-```typescript
-async function initializeDatabase(db: Kysely<MyDb>) {
-  await createSyncularDatabase(db);
+```sql
+create table notes (
+  id text primary key not null,
+  user_id text not null,
+  title text not null,
+  body text not null default '',
+  created_at text not null,
+  server_version integer not null default 0
+);
 
-  await db.schema.createTable('notes').ifNotExists()
-    .addColumn('id', 'text', (col) => col.primaryKey())
-    .addColumn('user_id', 'text')
-    .addColumn('title', 'text')
-    .addColumn('body', 'text')
-    .addColumn('created_at', 'text')
-    .addColumn('server_version', 'integer')
-    .execute();
-
-  // Index for common query patterns
-  await db.schema
-    .createIndex('idx_notes_created_at')
-    .ifNotExists()
-    .on('notes')
-    .column('created_at')
-    .execute();
-}
+create index idx_notes_user_created
+  on notes (user_id, created_at);
 ```
 
 Keep client-side indexes minimal -- each index costs write performance on every sync-applied change.
@@ -282,26 +278,36 @@ Keep client-side indexes minimal -- each index costs write performance on every 
 Only subscribe to the data you need. Broad subscriptions pull more data and slow down sync:
 
 ```tsx
-// Good: scoped subscription in your sync config
-sync.addHandler({
-  table: 'notes',
-  scopes: ['user:{user_id}'],
-  subscribe: ({ identity }) => ({
-    id: `notes-${identity.actorId}`,
+// Good: scoped subscriptions in your generated app client
+await syncular.client.setSubscriptions([
+  {
+    id: `notes:user:${userId}`,
     table: 'notes',
-    scopes: { user_id: identity.actorId },
-  }),
-});
+    scopes: { user_id: userId },
+    params: {},
+  },
+]);
 
-// Avoid: overly broad scopes in subscribe() (pulls far more rows)
-sync.addHandler({
-  table: 'notes',
-  scopes: ['user:{user_id}'],
-  subscribe: () => ({
+// Avoid: a broad subscription that pulls far more rows
+await syncular.client.setSubscriptions([
+  {
     id: 'all-notes',
     table: 'notes',
     scopes: {},
-  }),
+    params: {},
+  },
+]);
+```
+
+Model default scopes in `syncular.app.ts` so generated helpers create the common
+subscriptions:
+
+```ts
+syncedTable({
+  table: 'notes',
+  subscriptionId: 'sub-notes',
+  serverVersion: 'server_version',
+  scopes: [scope('user_id', { source: 'actorId', required: true })],
 });
 ```
 
@@ -310,10 +316,16 @@ sync.addHandler({
 For high-volume tables, limit the commit batch size to keep pull latency predictable:
 
 ```tsx
-<SyncProvider
-  limitCommits={50} // Smaller batches, more frequent pulls
-  // ...
->
+const syncular = await createSyncularClient<AppDb>({
+  config: {
+    baseUrl: '/sync',
+    actorId: userId,
+    clientId,
+    pull: {
+      limitCommits: 50, // smaller batches, more frequent pulls
+    },
+  },
+});
 ```
 
 ### Fingerprint-based rerendering
@@ -349,19 +361,23 @@ sync: {
 }
 ```
 
-### Polling fallback
+### Polling
 
-When the WebSocket connection drops, the client automatically falls back to polling:
+Realtime is the canonical wake-up path. Interval polling is opt-in for apps
+that need an additional background cadence:
 
 ```tsx
-<SyncProvider
-  realtimeEnabled={true}
-  // Fallback poll interval when WebSocket is reconnecting (default: 30s)
-  realtimeFallbackPollMs={30_000}
-  // Standard poll interval if not using realtime at all
-  pollIntervalMs={10_000}
-  // ...
->
+const syncular = await createSyncularClient<AppDb>({
+  config: {
+    baseUrl: '/sync',
+    actorId: userId,
+    clientId,
+  },
+  realtime: true,
+  lifecycle: {
+    pollIntervalMs: 10_000,
+  },
+});
 ```
 
 ### Multi-instance broadcasting
@@ -401,24 +417,26 @@ For real-time collaborative apps with frequent writes:
 If a client subscribes to many scopes (e.g., a user's personal data + shared workspaces):
 
 ```tsx
-sync.addHandler({
-  table: 'notes',
-  scopes: ['user:{user_id}', 'workspace:{workspace_id}'],
-  subscribe: ({ identity }) => [
-    { id: `notes-user-${identity.actorId}`, table: 'notes', scopes: { user_id: identity.actorId } },
-    { id: `notes-workspace-${workspaceId}`, table: 'notes', scopes: { workspace_id: workspaceId } },
-  ],
-});
-
-sync.addHandler({
-  table: 'tasks',
-  scopes: ['workspace:{workspace_id}'],
-  subscribe: () => ({
+await syncular.client.setSubscriptions([
+  {
+    id: `notes-user-${userId}`,
+    table: 'notes',
+    scopes: { user_id: userId },
+    params: {},
+  },
+  ...workspaceIds.map((workspaceId) => ({
+    id: `notes-workspace-${workspaceId}`,
+    table: 'notes',
+    scopes: { workspace_id: workspaceId },
+    params: {},
+  })),
+  ...workspaceIds.map((workspaceId) => ({
     id: `tasks-workspace-${workspaceId}`,
     table: 'tasks',
     scopes: { workspace_id: workspaceId },
-  }),
-});
+    params: {},
+  })),
+]);
 ```
 
 The server enforces a maximum subscription count per pull (default: 200, configurable via `maxSubscriptionsPerPull`).
@@ -431,10 +449,16 @@ The server limits operations per push request (default: 200, configurable via `m
 const BATCH_SIZE = 100;
 for (let i = 0; i < allItems.length; i += BATCH_SIZE) {
   const batch = allItems.slice(i, i + BATCH_SIZE);
-  await mutations.commit(async (tx) => {
-    for (const item of batch) {
-      tx.notes.upsert(item.id, item);
-    }
+  await syncular.mutations.$commit(async (tx) => {
+    await tx.notes.insertMany(
+      batch.map((item) => ({
+        id: item.id,
+        user_id: item.userId,
+        title: item.title,
+        body: item.body,
+        created_at: item.createdAt,
+      }))
+    );
   });
 }
 ```

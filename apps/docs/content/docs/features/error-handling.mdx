@@ -1,333 +1,231 @@
 ---
 title: Error Handling
-description: Handle sync errors gracefully with retry strategies, error callbacks, and user-facing status indicators.
+description: Handle sync errors with diagnostics, lifecycle status, retry behavior, and user-facing recovery actions.
 ---
 
 # Error Handling
 
-Syncular's client sync engine provides structured error handling with automatic retries, error event callbacks, and React hooks for displaying sync status to users.
+Syncular reports failures through three layers:
+
+- thrown errors from direct calls such as `syncular.sync()`,
+  `mutations.tasks.insert(...)`, or blob operations;
+- structured diagnostics from the Rust runtime and browser/native workers;
+- aggregate app status from the managed client and React hooks.
+
+Use all three. Direct errors are for the command that failed, diagnostics are
+for logging and operations, and aggregate status is for user-facing UI.
 
 ## What you'll learn
 
-- The sync error type system and error codes
-- How automatic retry behavior works (exponential backoff)
-- Using `onError` callbacks in SyncProvider
-- Monitoring sync status with `useSyncStatus`
-- Building user-facing error indicators
-- Network error recovery patterns
+- How Syncular classifies client and server errors
+- How retry and recovery work in the managed Rust client
+- How to subscribe to diagnostics
+- How to show connection, outbox, and conflict state in React
+- How to handle auth, network, conflict, and migration/schema failures
 
-## Prerequisites
+## Error shape
 
-- A working Syncular React setup ([Client Setup](/docs/client/quick-start))
-- Familiarity with SyncProvider and basic hooks
+Browser and worker errors are normalized to Syncular client errors when
+possible:
 
-## Sync Error Types
+```ts
+import { SyncularClientError, toSyncularClientError } from '@syncular/client';
 
-Every sync error is represented by the `SyncError` interface:
-
-```typescript
-interface SyncError {
-  /** Error classification */
-  code:
-    | 'NETWORK_ERROR'
-    | 'AUTH_FAILED'
-    | 'SNAPSHOT_CHUNK_NOT_FOUND'
-    | 'MIGRATION_FAILED'
-    | 'sync.version_conflict'
-    | 'SYNC_ERROR'
-    | 'UNKNOWN';
-  /** Human-readable error message */
-  message: string;
-  /** Whether automatic retry should continue */
-  retryable: boolean;
-  /** HTTP status if the error came from transport */
-  httpStatus?: number;
-  /** Original error if available */
-  cause?: Error;
-  /** Timestamp when the error occurred */
-  timestamp: number;
+try {
+  await syncular.sync();
+} catch (err) {
+  const error = toSyncularClientError(err);
+  if (error instanceof SyncularClientError) {
+    reportSyncError({
+      code: error.code,
+      category: error.category,
+      retryable: error.retryable,
+      recommendedAction: error.recommendedAction,
+      message: error.message,
+      details: error.details,
+    });
+  }
 }
 ```
 
-### Error codes
+Server-originated codes use stable `sync.*` names such as
+`sync.forbidden`, `sync.version_conflict`, `sync.invalid_request`, and
+`sync.constraint_violation`. Browser/runtime diagnostics use source-specific
+codes such as `realtime.reconnect_scheduled`, `sync.auth_required`,
+`auth.refresh_failed`, or `blob.upload_failed`.
 
-| Code | When it occurs |
-|------|---------------|
-| `NETWORK_ERROR` | Transport-level failure (fetch failed, timeout, DNS) |
-| `AUTH_FAILED` | Transport returned `401`/`403` |
-| `SNAPSHOT_CHUNK_NOT_FOUND` | Snapshot bootstrap chunk returned `404` |
-| `MIGRATION_FAILED` | Client migration function failed before sync start |
-| `sync.version_conflict` | Push operation rejected due to version conflict |
-| `SYNC_ERROR` | Generic sync error outside specific categories |
-| `UNKNOWN` | Unexpected error that does not match other categories |
+## Runtime diagnostics
 
-## Automatic Retry Behavior
+Pass a diagnostics sink when opening the generated app database or managed
+client:
 
-The sync engine retries failed sync operations automatically using exponential backoff:
-
-- **Initial delay**: 1 second
-- **Exponential factor**: 2x per attempt
-- **Maximum delay**: 60 seconds
-- **Default max retries**: 5
-
-The retry sequence is: 1s, 2s, 4s, 8s, 16s (capped at 60s).
-
-After each successful sync, the retry counter resets to 0. Non-retryable errors (for example auth failures) stop automatic retry and require explicit remediation.
-
-### Configuring error reporting
-
-```tsx
-<SyncProvider
-  options={syncularOptions}
-  onError={(error) => reportSyncError(error)}
->
-  {children}
-</SyncProvider>
+```ts
+const syncular = await createSyncularAppDatabase({
+  config: {
+    baseUrl: '/sync',
+    actorId: userId,
+    clientId,
+  },
+  diagnostics: (event) => {
+    logger[event.level]({
+      source: event.source,
+      code: event.code,
+      message: event.message,
+      details: event.details,
+    });
+  },
+});
 ```
 
-The Rust client owns retry behavior. App code should report provider errors and
-offer reconnect actions through `useSyncConnection()`.
+Diagnostics are also what the managed lifecycle uses for resync-required
+recovery. If a subscriber overflows or the runtime reports
+`resyncRequired: true`, generated clients should resubscribe and force a fresh
+bootstrap rather than trying to reason from partial events.
 
-## The onError Callback
+## Retry and recovery
 
-The `onError` prop on SyncProvider is called whenever a sync error occurs. Use this for logging, analytics, or triggering application-level error recovery:
+The Rust runtime owns retry scheduling. Retryable outbox, blob, and realtime
+failures are persisted with the next due attempt and woken by the runtime; app
+code should not add a polling loop around sync.
+
+Common recovery paths:
+
+| Failure | Runtime behavior | App behavior |
+|---|---|---|
+| Network offline | local writes stay in SQLite/outbox; realtime stops or reconnects | show offline/pending state |
+| Auth expired | calls `authLifecycle.refreshToken` where configured | sign out or ask user to refresh if auth cannot recover |
+| Subscriber overflow | emits resync-required diagnostics | refresh live views after forced bootstrap |
+| Version conflict | persists conflict records | route user to product conflict UI |
+| Unsupported schema | server rejects with update-required style error | show "please update the app" |
+
+## Managed client status
+
+Use the managed client for non-React hosts:
+
+```ts
+const status = syncular.getStatus();
+
+if (status.hasPendingMutations) {
+  showPendingBadge(status.outbox?.pending ?? 0);
+}
+
+if (status.hasConflicts) {
+  openConflictCenter(status.conflicts?.unresolved ?? 0);
+}
+
+if (!status.isConnected) {
+  showOfflineBanner();
+}
+```
+
+Manual reconnect is just a lifecycle start/sync request:
+
+```ts
+await syncular.start();
+await syncular.sync();
+```
+
+## React status UI
+
+React hooks wrap the same managed client status:
 
 ```tsx
-function App() {
-  const handleSyncError = useCallback((error: SyncError) => {
-    // Log to your error tracking service
-    console.error(`[Sync Error] ${error.code}: ${error.message}`);
+const {
+  SyncProvider,
+  useConflictStats,
+  useOutboxStats,
+  useSyncConnection,
+} = createSyncularReact<AppDb>();
 
-    // Report to analytics
-    analytics.track('sync_error', {
-      code: error.code,
-      message: error.message,
-      timestamp: error.timestamp,
-    });
-
-    // Show a toast for certain errors
-    if (error.code === 'NETWORK_ERROR') {
-      toast.warning('Connection lost. Changes will sync when reconnected.');
-    }
-  }, []);
+function StatusBar() {
+  const connection = useSyncConnection();
+  const outbox = useOutboxStats();
+  const conflicts = useConflictStats();
 
   return (
-    <SyncProvider
-      db={db}
-      transport={transport}
-      sync={sync}
-      identity={{ actorId: userId }}
-      clientId={clientId}
-      onError={handleSyncError}
-    >
-      {children}
+    <SyncStatus
+      realtime={connection.state.realtime}
+      pending={outbox?.pending ?? 0}
+      conflicts={conflicts?.unresolved ?? 0}
+      onReconnect={connection.reconnect}
+    />
+  );
+}
+
+export function App() {
+  return (
+    <SyncProvider client={syncular}>
+      <StatusBar />
     </SyncProvider>
   );
 }
 ```
 
-## The onMigrationError Callback
+## Mutation errors
 
-The `onMigrationError` prop is called specifically when the `migrate` function fails. This is useful for migration-specific error handling (e.g., prompting the user to clear app data):
+Generated mutations reject when the local write cannot be queued, when payload
+limits are exceeded, or when the runtime cannot maintain local/outbox
+coherence.
 
-```tsx
-<SyncProvider
-  db={db}
-  transport={transport}
-  sync={sync}
-  identity={{ actorId: userId }}
-  clientId={clientId}
-  migrate={migrateClientDb}
-  onMigrationError={(error) => {
-    // Migration-specific handling
-    console.error('Migration failed:', error.message);
-    toast.error('Database upgrade failed. Please clear app data and reload.');
-  }}
-  onError={handleSyncError}
->
-  {children}
-</SyncProvider>
-```
-
-When migration fails, the sync engine does not start syncing. Both `onMigrationError` (with the raw `Error`) and `onError` (with a `SyncError` wrapping it) are called.
-```
-
-## Monitoring with useSyncStatus
-
-Use `useSyncConnection`, `useOutboxStats`, and `useConflictStats` for reactive
-client health UI:
-
-```typescript
-const connection = useSyncConnection();
-const outbox = useOutboxStats();
-const conflicts = useConflictStats();
-```
-
-### Basic usage
-
-```tsx
-function SyncStatusBar() {
-  const connection = useSyncConnection();
-  const outbox = useOutboxStats();
-
-  if (!connection.isConnected) {
-    return <span className="text-yellow-500">Offline</span>;
-  }
-
-  return (
-    <span className="text-green-500">
-      Synced
-      {(outbox?.pending ?? 0) > 0 && ` (${outbox?.pending} pending)`}
-    </span>
-  );
+```ts
+try {
+  await syncular.mutations.tasks.update(taskId, {
+    title: nextTitle,
+  });
+} catch (err) {
+  const error = toSyncularClientError(err);
+  toast.error(error.message);
 }
 ```
 
-## Connection State Monitoring
+Server-side conflicts are not the same as local mutation failures. A local
+mutation can queue successfully and later conflict during push. Use
+`syncular.conflicts.list()` or `useConflictStats()` to surface that state.
 
-Use `useSyncConnection` for more detailed connection state:
-
-```tsx
-import { Button } from '@syncular/ui/primitives';
-
-function ConnectionIndicator() {
-  const connection = useSyncConnection();
-
-  return (
-    <div>
-      <span>Realtime: {connection.state.realtime}</span>
-      <span>Pending requests: {connection.state.pendingRequests}</span>
-
-      {connection.isReconnecting && (
-        <Button onClick={connection.reconnect}>
-          Reconnect Now
-        </Button>
-      )}
-    </div>
-  );
-}
-```
-
-### Connection states
-
-| State | Meaning |
-|-------|---------|
-| `disconnected` | Realtime is stopped or unavailable |
-| `connecting` | Establishing the canonical websocket connection |
-| `connected` | Realtime WebSocket is connected |
-
-## Event-Based Error Handling
-
-For more granular control, log the provider-level lifecycle callbacks and expose
-the aggregate React hooks in UI:
-
-| Event | Payload | When |
-|-------|---------|------|
-| `onError` | `unknown` | Client creation or sync lifecycle error |
-| `useSyncConnection` | `SyncularConnectionState` | Realtime connection changes |
-| `useOutboxStats` | aggregate counters | Outbox statistics update |
-| `useConflictStats` | aggregate counters | Conflicts changed |
-
-## Network Error Recovery
-
-### Offline-first resilience
-
-Syncular is designed for offline-first use. When the network is unavailable:
-
-1. Local mutations are saved to the outbox (SQLite)
-2. The sync engine enters retry mode with exponential backoff
-3. When connectivity returns, pending mutations are pushed automatically
-4. The pull catches up on missed server changes
-
-### Manual reconnection
+## Conflict handling
 
 ```tsx
-import { Button } from '@syncular/ui/primitives';
-
-function OfflineBanner() {
-  const connection = useSyncConnection();
-
-  if (connection.isConnected) return null;
-
-  return (
-    <div className="bg-yellow-100 p-2 flex items-center justify-between">
-      <span>You are offline. Changes are saved locally.</span>
-      <Button
-        onClick={() => {
-          connection.reconnect();
-        }}
-      >
-        Try Reconnecting
-      </Button>
-    </div>
-  );
-}
-```
-
-### Clearing failed commits
-
-If mutations keep failing (e.g., due to permanent server-side validation errors), you can clear them from the outbox:
-
-```tsx
-import { Button } from '@syncular/ui/primitives';
-
-function FailedCommitsManager() {
-  const outbox = useOutboxStats();
-
-  if (!outbox?.failed) return null;
-
-  return (
-    <div>
-      <p>{outbox.failed} failed commits</p>
-      <Button onClick={() => openOutboxReview()}>Review Outbox</Button>
-    </div>
-  );
-}
-```
-
-## Conflict Handling
-
-When a push operation encounters a version conflict, the server reports conflict
-counters to the Rust client. Use `useConflictStats()` for app chrome and route
-users to a product-specific conflict center for detailed review.
-
-```tsx
-import { Button } from '@syncular/ui/primitives';
-import { createSyncularReact } from '@syncular/react';
-
-const { useConflictStats } = createSyncularReact<AppDb>();
-
 function ConflictBanner() {
   const stats = useConflictStats();
 
   if (!stats?.unresolved) return null;
 
   return (
-    <div>
-      <h3>Conflicts ({stats.unresolved})</h3>
-      <Button onClick={() => openConflictCenter()}>Review</Button>
-    </div>
+    <button onClick={() => openConflictCenter()}>
+      Review {stats.unresolved} conflicts
+    </button>
   );
 }
 ```
 
-Resolution options are application policy: keep the server version, retry the
-local intent, or write a merged update through generated mutations.
+Resolution policy is product-specific: keep the server value, retry the local
+intent, or write a merged update through generated mutations.
 
-## Best Practices
+## Migration and schema failures
 
-1. **Always provide an `onError` callback** for production apps to capture errors in your monitoring system.
+The generated client validates the Rust runtime package, required runtime
+features, and generated schema version during `createSyncularAppDatabase(...)`.
+If this fails, do not start sync. Show a blocking app error, clear local state
+only behind an explicit product decision, and ship a fixed app/runtime pair.
 
-2. **Show sync status to users** so they know when they are offline or changes are pending. A small indicator in the app header is usually sufficient.
+For unsupported older clients, reject on the server from a version-aware
+handler and let the app display a "please update" screen.
 
-3. **Handle the "retry exhausted" case** -- when `retryCount` reaches `maxRetries`, the engine stops retrying. Show a manual retry button at that point.
+## Best practices
 
-4. **Use `pendingCount`** to warn users before they close the browser tab with unsent changes.
+1. Attach a diagnostics sink in production and forward redacted diagnostics to
+   your monitoring pipeline.
+2. Show connection, outbox, and conflict state in app chrome.
+3. Do not poll around retryable failures; let the runtime wake retries and use
+   `syncular.sync()` only for explicit user actions.
+4. Treat resync-required or event-overflow diagnostics as a live-view refresh
+   boundary.
+5. Keep conflict resolution product-specific and write resolved state through
+   generated mutations.
 
-5. **Clear stale failed commits** rather than letting them accumulate indefinitely in the outbox.
+## Next steps
 
-## Next Steps
-
-- [Realtime](/docs/server/realtime-websocket) - WebSocket realtime for verified deltas and recovery wake-ups
-- [Operations](/docs/operate/operations-setup) - Mutations and the outbox
-- [Troubleshooting](/docs/operate/troubleshooting) - Common issues and solutions
+- [Realtime](/docs/server/realtime-websocket) -- WebSocket wakeups and recovery
+- [Conflict Resolution](/docs/features/conflict-resolution) -- product
+  conflict policies
+- [Troubleshooting](/docs/operate/troubleshooting) -- production issue triage

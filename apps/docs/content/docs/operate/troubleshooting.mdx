@@ -78,12 +78,15 @@ Common causes:
 
 - The client never persists the cursor/state (database not persisted, stateId changes, or app resets DB).
 - Pruning removed commits the client still needs, so the server forces a bootstrap.
-- The client changes `actorId`/`clientId`/`db`/`transport` without remounting `SyncProvider`.
+- The app changes `actorId`, `clientId`, `fileName`, or generated app schema
+  without closing the old client and opening a new one.
 
 Checklist:
 
-- Ensure `actorId` and `clientId` are stable for the lifetime of the provider.
-- If they change, remount with a React `key`.
+- Ensure `actorId` and `clientId` are stable for the lifetime of the opened
+  client.
+- If they change in React, create a new Syncular client and remount
+  `SyncProvider` with a `key`.
 - Confirm you are not deleting the local DB between reloads.
 - If pruning is enabled, validate your prune settings match your offline window.
 
@@ -109,7 +112,9 @@ Conflicts typically mean optimistic concurrency is enabled but the client is not
 Checklist:
 
 - Ensure synced tables include a `server_version` column (or your configured version column).
-- Ensure your write path is sending the right `base_version`. `useMutations()` and `useMutation()` read `server_version` automatically by default; low-level helpers should either pass `baseVersion` explicitly or use the incrementing version plugin.
+- Ensure your write path is sending the right `base_version`. Generated
+  mutations read `server_version` automatically by default; low-level helpers
+  should pass `baseVersion` explicitly.
 - Ensure your server handler increments the version column on each successful write.
 
 See: [Conflict Resolution](/docs/learn/conflict-resolution).
