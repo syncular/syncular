@@ -1,0 +1,76 @@
+---
+title: CRDT Fields
+description: Use Yjs-backed fields for rich collaborative subdocuments.
+---
+
+# CRDT Fields
+
+CRDT fields are for parts of a row that need automatic convergence, such as
+rich text, editor state, canvas fragments, or structured collaborative content.
+They are not a replacement for the whole relational data model.
+
+## Recommended shape
+
+- Keep durable product records as normal synced rows.
+- Mark only the collaborative field as a CRDT/Yjs field in the app contract.
+- Treat the Yjs document as canonical for that field.
+- Store ProseMirror JSON, title, preview, outline, and search text as derived
+  read models.
+- Let Syncular own Yjs update persistence, merge/materialization, compaction,
+  realtime wakeups, and sync retries.
+
+```ts
+tasks: syncedTable({
+  table: 'tasks',
+  subscriptionId: 'sub-tasks',
+  serverVersion: 'server_version',
+  crdt: {
+    title: yjsText({
+      stateColumn: 'title_yjs_state',
+      containerKey: 'title',
+    }),
+  },
+});
+```
+
+## App boundary
+
+Syncular should own the dangerous plumbing: durable CRDT storage shape, Yjs/Yrs
+merge, update logs, checkpoints, worker coalescing, backpressure, encryption,
+and convergence tests.
+
+The app should own editor-specific behavior: TipTap/ProseMirror schema,
+extensions, slash commands, title derivation, preview generation, selection,
+undo stack, composition state, scroll position, and WebView bridge UI.
+
+## Host APIs
+
+Browser, Rust, Swift, and Kotlin expose the same low-level document primitives:
+
+- `openCrdtField`
+- `applyCrdtFieldYjsUpdate`
+- `enqueueCrdtFieldYjsUpdate`
+- `materializeCrdtField`
+- `crdtDocumentSnapshot`
+- `crdtUpdateLog`
+- `snapshotCrdtFieldStateVector`
+- `compactCrdtField`
+
+Use queued APIs from UI hosts so editor bursts do not block the main thread.
+
+## Watch-outs
+
+- Do not make every row a CRDT document by default.
+- Do not persist editor UI state such as selection or scroll in the CRDT field.
+- Compact old acknowledged update logs; otherwise rich text histories can grow
+  without bound.
+- For encrypted collaborative fields, use the encrypted CRDT mode instead of
+  hand-encrypting Yjs blobs in app code.
+
+## Related docs
+
+- [Collaborative Apps Recipe](/docs/features/recipes/collaborative-apps)
+- [Native Rich Editors](/docs/client/native#rich-editors)
+- [Browser Rich Editors](/docs/client/browser#rich-editors)
+- [Field Encryption](/docs/features/field-encryption)
+- [Testing](/docs/testing)

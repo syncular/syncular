@@ -1,0 +1,57 @@
+---
+title: Performance Patterns
+description: Design schemas, scopes, queries, and runtime usage for measured performance.
+---
+
+# Performance Patterns
+
+Syncular performance work should follow product shape, not benchmark shortcuts.
+Optimize for scoped subscriptions, generated mutations, binary snapshot
+chunks, event-driven realtime, and local query ergonomics.
+
+## Baseline principles
+
+- Scope data by the way users actually access it.
+- Keep bootstrap table-shaped and binary; avoid generic JSON row materialization
+  in hot paths.
+- Use generated mutation paths so local apply, outbox, encryption, blobs, and
+  events stay coherent.
+- Use row/field deltas to refresh only affected views.
+- Add local read models only for measured repeated work.
+- Run the benchmark gate before and after performance-sensitive changes.
+
+## Client patterns
+
+- Keep one hot runtime per app session.
+- Use the persistent realtime worker instead of scheduled polling.
+- Use queued native APIs from UI threads.
+- Subscribe to event streams and live-query deltas instead of reloading the
+  entire bootstrap after every change.
+- Use prepared query paths and generated read models for repeated local reads.
+
+## Server patterns
+
+- Emit binary snapshot chunks for supported generated client schemas.
+- Keep table handlers schema-version aware.
+- Use effective scopes and scoped snapshot artifacts instead of broad
+  partition snapshots.
+- Use realtime wakeups for changed scopes and HTTP pull as the recovery path.
+
+## Measurement
+
+Every performance-sensitive change should record:
+
+- the previous accepted baseline;
+- the new result;
+- the delta;
+- whether the change was kept, revised, or reverted.
+
+Use `rust/docs/BENCHMARK_LOG.md` in the repository for Rust-first benchmark
+evidence and keep app-style external benchmarks in the relevant work package.
+
+## Related docs
+
+- [Local Read Models](/docs/features/local-read-models)
+- [Operate: Performance](/docs/operate/performance)
+- [Realtime WebSocket](/docs/server/realtime-websocket)
+- [Testing](/docs/testing)
