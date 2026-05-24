@@ -58,6 +58,10 @@ rg -n 'defineClientSync|sync\\.addHandler|createSyncularDatabase\\(|SyncProvider
 - `[x]` Update CLI reference pages so generated client targets no longer expose
   old browser/client dialect flags.
 - `[x]` Update remaining reference snippets that use old client provider props.
+- `[x]` Update `packages/client/README.md` follow-up examples that still
+  mentioned removed inline websocket applies, used the wrong generated
+  database subscription method, or mixed managed-client shortcuts into
+  generated-database realtime examples.
 
 ## Accept / Reject Rule
 
@@ -100,6 +104,11 @@ would require inventing a runtime API not present in this repo.
     `/docs/reference/cli/create`,
     `/docs/reference/server/subscription-registry`, and
     `/docs/start/installation`.
+  - Follow-up package README scan found and fixed two `@syncular/client`
+    README mismatches outside the docs app: removed inline websocket apply
+    wording, corrected `syncular.client.setSubscriptions()` on generated
+    database examples, and moved generated-database presence/event examples to
+    `syncular.client.*` instead of managed-client shortcuts.
 
 ## Next Action
 

@@ -178,7 +178,7 @@ await syncular.destroy();
 The managed client starts realtime by default. Pass `realtime: false` only for a
 host policy that cannot hold a websocket. Interval polling is still off by
 default: websocket reconnects trigger HTTP catchup sync, and failed
-inline/binary websocket applies already fall back to pull. Use
+websocket binary sync-pack applies recover through HTTP pull. Use
 `lifecycle.pollIntervalMs` only for environments that explicitly need polling.
 
 ## React
@@ -506,35 +506,38 @@ const unsubscribePresence = syncular.client.addPresenceListener((event) => {
   renderCollaborators(event.scopeKey, event.presence);
 });
 
-syncular.presence.join('user:user-1', {
+syncular.client.joinPresence('user:user-1', {
   editingTaskId: 'task-1',
 });
 
-syncular.presence.updateMetadata('user:user-1', {
+syncular.client.updatePresenceMetadata('user:user-1', {
   editingTaskId: 'task-2',
 });
 
-syncular.presence.leave('user:user-1');
+const currentPresence = syncular.client.getPresence('user:user-1');
+renderCollaborators('user:user-1', currentPresence);
+
+syncular.client.leavePresence('user:user-1');
 unsubscribePresence();
 ```
 
 `getPresence(scopeKey)` returns the latest in-memory snapshot for that scope.
 The server authorizes presence against the websocket connection's current
-subscriptions, so call `syncular.setSubscriptions()` and complete an initial
-sync before joining presence.
+subscriptions, so call `syncular.client.setSubscriptions()` and complete an
+initial sync before joining presence.
 
 Operational events are available on the same client surface:
 
 ```ts
-syncular.on('outboxChanged', (stats) => {
+syncular.client.addEventListener('outboxChanged', (stats) => {
   updateSyncBadge(stats.pending + stats.sending);
 });
 
-syncular.on('conflictsChanged', (stats) => {
+syncular.client.addEventListener('conflictsChanged', (stats) => {
   showConflictCount(stats.unresolved);
 });
 
-syncular.on('blobUploadFailed', ({ hash, error }) => {
+syncular.client.addEventListener('blobUploadFailed', ({ hash, error }) => {
   reportBlobUploadFailure(hash, error);
 });
 ```
