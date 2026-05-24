@@ -1,0 +1,16 @@
+{
+  "root": true,
+  "title": "Features",
+  "icon": "Blocks",
+  "pages": [
+    "index",
+    "---Schema and Data---",
+    "data-modeling",
+    "migrations",
+    "---Sync Behavior---",
+    "error-handling",
+    "audit-and-history",
+    "---App Shapes---",
+    "recipes"
+  ]
+}

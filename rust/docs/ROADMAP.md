@@ -70,15 +70,15 @@ read-only review:
 
 ## Now
 
-- `[ ]` [`WP-34 Rust-First Docs Information Architecture`](work-packages/WP-34-rust-first-docs-information-architecture.md)
-  - New docs IA work package for moving public docs from the old
-    `Build`/`Rust Client` split to a Rust-first structure:
+- `[~]` [`WP-34 Rust-First Docs Information Architecture`](work-packages/WP-34-rust-first-docs-information-architecture.md)
+  - Batch 1 complete. Public docs moved from the old `Build`/`Rust Client`
+    split to a Rust-first structure:
     `Start`, `Learn`, `Client`, `Server`, `Features`, `Testing`, `Operate`,
     and `Reference`. Binding-specific docs stay under `Client` so browser
     TypeScript, React, React Native/Expo, Tauri/Electron, Rust, Swift,
     Kotlin/Android, and JVM read as host surfaces of one Syncular client rather
-    than separate products. Start with the navigation skeleton and docs gates
-    before deeper content rewrites.
+    than separate products. Next: polish the `Client` section into
+    binding-specific pages and push shared feature material into `Features`.
 - `[x]` [`WP-30 Foundation Cleanup And Complexity Reduction`](work-packages/WP-30-foundation-cleanup-complexity.md)
   - New cross-cutting cleanup WP for polishing, removing unnecessary code,
     deleting stale aliases/backwards-compatibility paths, and reducing

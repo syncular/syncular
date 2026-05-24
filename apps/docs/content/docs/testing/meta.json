@@ -9,6 +9,7 @@
     "lifecycle",
     "fault-injection",
     "runtime",
+    "strategy",
     "---Examples---",
     "examples-offline-reconnect",
     "examples-multi-client-realtime",

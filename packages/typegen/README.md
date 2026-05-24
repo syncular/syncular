@@ -110,7 +110,7 @@ module at runtime.
 
 ## Documentation
 
-- Typegen (in migrations guide): https://syncular.dev/docs/build/migrations#type-generation-with-synculartypegen
+- Typegen (in migrations guide): https://syncular.dev/docs/features/migrations#type-generation-with-synculartypegen
 
 ## Links
 

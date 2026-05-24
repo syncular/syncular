@@ -1,0 +1,15 @@
+{
+  "root": true,
+  "title": "Client",
+  "icon": "Cpu",
+  "pages": [
+    "index",
+    "quick-start",
+    "app-targets",
+    "browser",
+    "native",
+    "tauri-electron",
+    "testing",
+    "packaging"
+  ]
+}
