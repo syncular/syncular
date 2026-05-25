@@ -202,13 +202,6 @@
         "default": "./dist/dialect-better-sqlite3.js"
       }
     },
-    "./dialect-electron-sqlite": {
-      "bun": "./src/dialect-electron-sqlite.ts",
-      "import": {
-        "types": "./dist/dialect-electron-sqlite.d.ts",
-        "default": "./dist/dialect-electron-sqlite.js"
-      }
-    },
     "./dialect-pglite": {
       "bun": "./src/dialect-pglite.ts",
       "import": {
@@ -243,20 +236,6 @@
         "types": "./dist/dialect-d1.d.ts",
         "default": "./dist/dialect-d1.js"
       }
-    },
-    "./dialect-expo-sqlite": {
-      "bun": "./src/dialect-expo-sqlite.ts",
-      "import": {
-        "types": "./dist/dialect-expo-sqlite.d.ts",
-        "default": "./dist/dialect-expo-sqlite.js"
-      }
-    },
-    "./dialect-react-native-nitro-sqlite": {
-      "bun": "./src/dialect-react-native-nitro-sqlite.ts",
-      "import": {
-        "types": "./dist/dialect-react-native-nitro-sqlite.d.ts",
-        "default": "./dist/dialect-react-native-nitro-sqlite.js"
-      }
     }
   },
   "files": [
@@ -270,12 +249,9 @@
     "@syncular/dialect-better-sqlite3": "workspace:*",
     "@syncular/dialect-bun-sqlite": "workspace:*",
     "@syncular/dialect-d1": "workspace:*",
-    "@syncular/dialect-electron-sqlite": "workspace:*",
-    "@syncular/dialect-expo-sqlite": "workspace:*",
     "@syncular/dialect-libsql": "workspace:*",
     "@syncular/dialect-neon": "workspace:*",
     "@syncular/dialect-pglite": "workspace:*",
-    "@syncular/dialect-react-native-nitro-sqlite": "workspace:*",
     "@syncular/dialect-sqlite3": "workspace:*",
     "@syncular/migrations": "workspace:*",
     "@syncular/observability-sentry": "workspace:*",
