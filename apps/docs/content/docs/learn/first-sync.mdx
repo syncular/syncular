@@ -51,13 +51,16 @@ If you need custom snapshot logic (joins, derived rows, multi-table snapshots), 
 
 ## Snapshot chunks (fast initial sync)
 
-For large datasets, inline JSON snapshots become slow and memory-heavy. Syncular supports **snapshot chunks**:
-- The server frames rows into a compact binary format, compresses (e.g. gzip), and stores it using the same **blob storage adapter** system.
+For large datasets, Syncular uses **binary snapshot chunks** and scoped
+snapshot artifacts instead of embedding large row arrays in the sync response:
+- The server frames rows into a compact binary format, compresses (e.g. gzip),
+  and stores chunks using the same **blob storage adapter** system.
 - The sync response returns chunk descriptors (id/hash/encoding/compression) instead of embedding all rows inline.
-- The client downloads chunks and applies them as a stream.
+- The Rust client runtime downloads chunks, verifies hashes, decodes rows, and
+  applies them to SQLite.
 
 This enables very fast first syncs:
-- Less JSON overhead
+- Less JSON overhead in the bootstrap response
 - Better compression ratio
 - Streaming apply (don’t hold the entire dataset in memory)
 - Cacheable per effective scopes (so multiple devices can reuse)
@@ -72,9 +75,10 @@ At a high level:
 
 The key concept is: snapshots are generated for an *effective scope set*, not “for a user” in an opaque way. That makes caching explicit and auditable.
 
-## Client apply semantics (defaults + customization)
+## Client apply semantics
 
-On the client, handlers apply bootstrap snapshots and incremental changes.
+On the client, the generated app contract tells the Rust runtime how to apply
+bootstrap snapshots and incremental changes.
 
 Defaults are designed to work well out of the box:
 - Snapshot apply: write the received rows by primary key inside a transaction.
@@ -83,10 +87,10 @@ Defaults are designed to work well out of the box:
 - Scope revocation: clear data for scopes that are no longer subscribed or
   allowed.
 
-Most apps should not customize client apply behavior. Model soft delete,
-stale marking, and derived projections in generated table metadata or local
-read models so the runtime can keep outbox, conflicts, CRDT fields, and live
-events coherent.
+Most apps should not customize runtime apply behavior. Model soft delete, stale
+marking, and derived projections in generated table metadata or local read
+models so the runtime can keep outbox, conflicts, CRDT fields, and live events
+coherent.
 
 ## Tuning knobs (common levers)
 
@@ -106,9 +110,3 @@ The right values depend on:
 - [Blob Storage](/docs/features/recipes/blobs-and-media) — snapshot chunks use the same storage adapter system
 - [Performance](/docs/operate/performance) — bootstrap tuning and large dataset strategy
 - [Table Handlers](/docs/server/table-handlers) — controlling snapshot/apply and auth boundaries
-
-## Next Steps
-
-- [Architecture](/docs/learn/architecture) - Deep dive into the commit log
-- [Scopes](/docs/learn/scopes) - Understand authorization
-- [Conflict Resolution](/docs/learn/conflict-resolution) - Handle conflicts

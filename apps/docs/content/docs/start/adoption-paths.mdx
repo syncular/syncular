@@ -15,7 +15,8 @@ Below are practical paths teams actually take, depending on where they start.
 
 Best when you are building a new product where offline is a requirement (email client, CRM, internal tool, field app).
 
-1. Pick JavaScript or Rust as the app-client language.
+1. Pick the host surface: JavaScript/TypeScript app APIs over the Rust runtime,
+   or direct Rust app code.
 2. Create your local SQLite schema and generated app contract.
 3. Query locally with the host query builder: Kysely for JavaScript or Diesel
    for Rust.

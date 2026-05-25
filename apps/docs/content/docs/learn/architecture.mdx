@@ -17,11 +17,11 @@ flowchart LR
   end
 
   subgraph A["Client A"]
-    ADb["Local SQLite · outbox · cursor · data"]
+    ADb["Rust runtime · local SQLite · outbox · cursor"]
   end
 
   subgraph B["Client B"]
-    BDb["Local SQLite · outbox · cursor · data"]
+    BDb["Rust runtime · local SQLite · outbox · cursor"]
   end
 
   ADb -->|push over HTTP| Log
@@ -36,7 +36,8 @@ Data always flows through the server's commit log. Clients never talk to each ot
 
 ## Sync Lifecycle Overview
 
-Every client goes through the same lifecycle. The four phases happen in a continuous loop managed by the sync engine:
+Every client goes through the same lifecycle. The four phases happen in a
+continuous loop managed by the Rust client runtime:
 
 <Mermaid
   chart={`
@@ -61,7 +62,7 @@ When a client subscribes for the first time (or has fallen too far behind), it n
 2. Server calls `resolveScopes` to determine what data this actor can access
 3. Server builds a point-in-time snapshot from the table handler
 4. Server returns snapshot pages (chunked for large datasets) with an `asOfCommitSeq`
-5. Client applies the snapshot to local SQLite
+5. Client verifies and applies the snapshot through the Rust runtime to local SQLite
 6. Client sets its cursor to the snapshot's `asOfCommitSeq`
 
 <Mermaid
@@ -73,8 +74,8 @@ sequenceDiagram
   Client->>Server: POST /sync pull with cursor = -1
   Server->>Server: resolveScopes()
   Server->>Server: Build snapshot as of commit 42
-  Server-->>Client: Return bootstrap snapshots or chunks
-  Client->>Client: Apply snapshot to SQLite
+  Server-->>Client: Return bootstrap chunks or artifacts
+  Client->>Client: Verify and apply snapshot to SQLite
   Client->>Client: Set cursor = 42
 `}
 />
@@ -101,7 +102,7 @@ sequenceDiagram
   Client->>Server: POST /sync pull with cursor = 42
   Server->>Server: Fetch commits greater than 42 that match scopes
   Server-->>Client: Return commits 43..47 and nextCursor 47
-  Client->>Client: Apply changes to SQLite
+  Client->>Client: Runtime verifies and applies changes
   Client->>Client: Advance cursor to 47
 `}
 />
@@ -112,7 +113,8 @@ The server only returns commits whose scopes match the client's subscription. Sc
 
 ## Phase 3: Push (Client to Server)
 
-When the user makes a local change, it is applied optimistically and queued for push:
+When the user makes a local change through a generated mutation, it is applied
+optimistically and queued for push:
 
 <Mermaid
   chart={`
@@ -121,8 +123,8 @@ sequenceDiagram
   participant Client
   participant Server
 
-  User->>Client: Insert or update a row
-  Client->>Client: Write to local SQLite
+  User->>Client: Call generated insert/update/delete mutation
+  Client->>Client: Write through Rust runtime to local SQLite
   Client->>Client: Add operation to the outbox
   Client->>Server: POST /sync push with operations
   Server->>Server: Validate auth and apply in a transaction
@@ -176,7 +178,7 @@ The full push-then-pull cycle looks like this:
   chart={`
 flowchart LR
   Push["Push outbox"] --> Pull["Pull commits"]
-  Pull --> Apply["Apply to SQLite"]
+  Pull --> Apply["Runtime verifies and applies to SQLite"]
   Apply --> Wait["Wait for the next trigger (poll or wake-up)"]
   Wait --> Pull
 `}
@@ -247,15 +249,16 @@ sequenceDiagram
   participant Server
   participant B as Client B
 
-  A->>A: User edits task locally
-  A->>A: Write to SQLite and queue outbox
+  A->>A: User edits task through a generated mutation
+  A->>A: Runtime writes SQLite and queues outbox
   A->>Server: POST /sync (push)
   Server->>Server: Validate, apply, write commit 48
   Server-->>A: { applied, commitSeq: 48 }
-  Server-->>B: WebSocket wake-up
-  B->>Server: POST /sync (pull)
-  Server-->>B: Return commit 48
-  B->>B: Apply to SQLite and advance cursor
+  Server-->>B: WebSocket delta or pull-required wake-up
+  B->>B: Apply verified delta when safe
+  B->>Server: POST /sync (pull when recovery/checkpoint is needed)
+  Server-->>B: Return commit 48 or recovery data
+  B->>B: Apply to SQLite and advance cursor when verified
 `}
 />
 

@@ -59,14 +59,17 @@ This comparison focuses on:
 
 **Scope-based auth**: JSONB scopes make authorization explicit and auditable.
 
-**Typed SQL**: Query and handler APIs are Kysely-first.
+**Typed SQL**: TypeScript apps read through Kysely, Rust apps read through
+Diesel, and server handlers use Kysely.
 
 ## What “building” looks like
 
 At a high level:
 
 - In **Zero**, you define a schema, then define **queries** and **mutators** that run against that schema (client and server). Your UI reads via queries; writes via mutators; the system keeps the local cache consistent with server results.
-- In **Syncular**, you define server-side scope resolution + subscriptions, and client-side table handlers. Your UI reads via typed SQL (`useSyncQuery`) against local SQLite.
+- In **Syncular**, you define server-side scope resolution, table handlers, and
+  generated subscriptions. Your UI reads via typed SQL (`useSyncQuery` in
+  TypeScript, Diesel in Rust) against Rust-owned local SQLite.
 
 ## Architecture comparison
 
@@ -87,7 +90,7 @@ Zero sits between your client and Postgres, handling reactive queries and sync.
 <Mermaid
   chart={`
 flowchart LR
-  Client["Client (SQLite)"] <--> Server["Your server (Hono)"]
+  Client["Client (Rust-owned SQLite)"] <--> Server["Your server (Hono)"]
   Server <--> Postgres["Postgres"]
 `}
 />
@@ -106,7 +109,7 @@ You run the full stack with explicit control over sync logic.
 - You want explicit control over what data syncs
 - You prefer a simpler mental model (commit log vs reactive queries)
 - You need explicit, auditable authorization
-- You're already using Kysely and want type safety
+- You want typed local SQL and explicit generated mutations
 
 ## Migration notes
 

@@ -27,7 +27,7 @@ This comparison focuses on:
 | **Auth model** | JSONB scopes | Typically proxy through your API (BYO auth) |
 | **Write handling** | Offline writes built-in | Typically via your API/DB |
 | **Conflict semantics** | App-defined | Your backend/database |
-| **Client** | SQLite/PGlite | TanStack DB, PGlite, any HTTP client |
+| **Client** | Rust-owned SQLite with TypeScript, Rust, and native host APIs | TanStack DB, PGlite, any HTTP client |
 | **Self-hosted** | Yes | Yes |
 | **Managed option** | No | Yes (Electric Cloud) |
 
@@ -69,7 +69,8 @@ const { data } = useShape({
 
 **Custom conflict semantics**: You define how conflicts are resolved (per table/field, if you want).
 
-**Typed SQL**: Kysely-first query/handler model in TypeScript.
+**Typed SQL**: Kysely reads for TypeScript apps, Diesel reads for Rust apps,
+and Kysely-backed server handlers.
 
 ## Code comparison
 
@@ -164,7 +165,7 @@ Electric handles read-path sync. You handle writes separately.
 <Mermaid
   chart={`
 flowchart LR
-  Client["Client (SQLite)"] <--> Server["Your server (Hono)"]
+  Client["Client (Rust-owned SQLite)"] <--> Server["Your server (Hono)"]
   Server <--> Postgres["Postgres"]
 `}
 />
@@ -183,7 +184,7 @@ Syncular handles both read and write sync.
 - You want bidirectional sync in one system
 - You need explicit, auditable authorization
 - You want custom conflict resolution
-- You value Kysely's type safety
+- You value typed local SQL plus explicit server handlers
 
 ## Migration notes
 

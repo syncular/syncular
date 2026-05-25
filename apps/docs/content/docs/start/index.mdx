@@ -5,7 +5,9 @@ description: Start evaluating Syncular, run the demo, install packages, and find
 
 # Start
 
-Syncular is a sync framework for building **local-first applications** — apps that store data locally, work offline, and sync transparently when online.
+Syncular is a sync framework for building **local-first applications** — apps
+that store data in local SQLite, work offline, and sync through a Rust-owned
+client runtime when online.
 
 > **Alpha.** APIs, wire formats, and storage layouts will change between releases. Pin versions and expect manual migrations between versions.
 
@@ -51,7 +53,7 @@ Sync systems deserve skepticism. This section is where to decide whether Syncula
     Choose a greenfield or incremental adoption path
   </Card>
   <Card title="JavaScript" href="/docs/clients/javascript">
-    Browser, React, React Native, Tauri, Electron, and JavaScript testing
+    TypeScript app APIs over the Rust runtime for browser, React, React Native, Tauri, and Electron
   </Card>
   <Card title="Rust" href="/docs/clients/rust">
     Rust SDK, Diesel reads, native runtime, packaging, and Rust testing

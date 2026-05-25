@@ -176,10 +176,11 @@ const tasksHandler = createServerHandler({
 
 ## Client and Server Scope Symmetry
 
-For scoped tables, define the same scope shape on the server handler and the
-client handler. The server mapping says where scopes come from when writing the
-commit log. The client mapping says which local column should be used when a
-subscription is removed, revoked, or bootstrapped again.
+For scoped tables, define the same scope shape on the server handler and in the
+generated app contract. The server mapping says where scopes come from when
+writing the commit log. The generated client mapping says which local column
+the Rust runtime should use when a subscription is removed, revoked, or
+bootstrapped again.
 
 ```typescript
 // shared/scopes.ts
@@ -198,34 +199,34 @@ createServerHandler({
 ```
 
 ```typescript
-// client
-create generated client subscriptions({
+// syncular.app.ts
+syncedTable({
   table: 'notes',
-  scopes: NOTE_SCOPES,
+  scopes: [scope('user_id', { column: 'owner_user_id', source: 'actorId' })],
 });
 ```
 
 If the client subscribes with `{ user_id: 'alice' }`, the local `notes` table
-must either have an `owner_user_id` column or provide custom clearing logic.
-Without a local scope column, Syncular cannot safely clear only Alice's rows
-during bootstrap or revocation.
+must have the generated `owner_user_id` scope column. Without a local scope
+column, Syncular cannot safely clear only Alice's rows during bootstrap or
+revocation.
 
 ### Server rows should include local scope metadata
 
-For the default client handler, synced rows should include the local columns
-needed by your client schema. If your local table has `owner_user_id`, the
-server snapshot/change payload should normally include `owner_user_id` too, even
-if your app UI never displays it.
+For the default generated apply path, synced rows should include the local
+columns needed by your client schema. If your local table has `owner_user_id`,
+the server snapshot/change payload should normally include `owner_user_id` too,
+even if your app UI never displays it.
 
 ```typescript
 // server row payload
 { id: 'n1', title: 'Roadmap', owner_user_id: 'alice' }
 ```
 
-If you intentionally hide ownership metadata from row payloads, provide custom
-`applySnapshot` and `applyChange` handlers that write the local columns your
-schema requires. Keep custom clearing explicit too if the default scope-column
-mapping no longer describes the rows in local storage.
+Do not hide required ownership metadata from row payloads unless you also
+change the generated app contract and server handler design so the runtime can
+still clear revoked scopes precisely. A table with scoped sync but no local
+scope-column mapping should fail closed instead of clearing the whole table.
 
 ---
 
@@ -386,8 +387,8 @@ createServerHandler({
 ### Scope Migration (Row Moves Between Scopes)
 
 When a row moves between scopes (e.g., a task moves from project A to project B), the system automatically emits:
-1. A **DELETE** for the old scope
-2. An **UPSERT** for the new scope
+1. A **delete** for the old scope
+2. A scoped row write for the new scope
 
 This ensures clients subscribed to project A see the task removed, while clients subscribed to project B see it added. No manual handling required.
 

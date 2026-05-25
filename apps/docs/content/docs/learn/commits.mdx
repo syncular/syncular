@@ -25,7 +25,7 @@ await m.tasks.insert({
   user_id: 'user-456',
 });
 
-// 2. Syncular writes to the local SQLite DB immediately (optimistic)
+// 2. The Rust runtime writes to local SQLite immediately (optimistic)
 // 3. An outbox commit is created with one row-write operation
 // 4. When online, the client pushes to the server
 // 5. Server validates, applies in a transaction, assigns commit_seq: 42
@@ -79,7 +79,7 @@ Removes a row:
 <Mermaid
   chart={`
 flowchart TB
-  Edit["User edits data"] --> Local["Write to local SQLite"]
+  Edit["Generated mutation"] --> Local["Write through Rust runtime to SQLite"]
   Local --> Outbox["Create outbox commit"]
   Outbox --> Push["POST /sync (push)"]
   Push --> Idempotency["Idempotency check by client_id + client_commit_id"]
@@ -113,11 +113,11 @@ flowchart TB
 flowchart TB
   Request["POST /sync (pull) with subscriptions + cursors"] --> Resolve["Resolve scopes for each subscription"]
   Resolve --> Decision{"Cursor < 0 or too old?"}
-  Decision -->|Yes| Bootstrap["Bootstrap snapshot as rows or chunks"]
+  Decision -->|Yes| Bootstrap["Bootstrap with binary chunks or artifacts"]
   Decision -->|No| Incremental["Incremental commits since cursor"]
-  Bootstrap --> Response["Return subscriptions with snapshots and nextCursor"]
+  Bootstrap --> Response["Return subscriptions with snapshot descriptors and nextCursor"]
   Incremental --> Response
-  Response --> Apply["Apply changes to local SQLite"]
+  Response --> Apply["Runtime verifies and applies to local SQLite"]
   Apply --> Advance["Advance cursor to nextCursor"]
 `}
   caption="Every pull starts with scope resolution. The cursor decides whether the server sends a full bootstrap or just the commits after the current position."
@@ -128,8 +128,8 @@ flowchart TB
 1. **Request** -- Client POSTs `/sync` with `pull: { subscriptions, limitCommits }`. Each subscription has a `table`, `scopes`, and a `cursor` (position in the commit log).
 2. **Resolve** -- Server calls `resolveScopes` on each subscription's table handler to determine the effective scopes for the authenticated user.
 3. **Bootstrap or Incremental** -- If the cursor is `-1` (first sync) or too old (pruned), the server sends a full snapshot. Otherwise, it sends only commits since the cursor.
-4. **Return** -- Server returns an array of subscription responses, each with `nextCursor`, `commits`, and optionally `snapshots`.
-5. **Apply** -- Client applies changes to local SQLite inside a transaction.
+4. **Return** -- Server returns an array of subscription responses, each with `nextCursor`, `commits`, and optionally snapshot chunk or artifact descriptors.
+5. **Apply** -- The Rust client runtime verifies and applies changes to local SQLite inside a transaction.
 6. **Advance** -- Client updates its cursor to `nextCursor`, so the next pull starts where this one left off.
 
 ## Scope Matching
