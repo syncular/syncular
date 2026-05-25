@@ -1283,7 +1283,7 @@ Progress:
   passes end to end. The first run hit a transient Linux
   `cargo rustc --print=native-static-libs` failure, but the direct Linux
   target and the full aggregate rerun both passed.
-- Added a separate docs section under `apps/docs/content/docs/rust-client` for
+- Added a separate docs section under `apps/docs/content/docs/clients/rust` for
   the Rust-first client so browser/native/testkit/packaging docs do not get
   mixed into the older JavaScript-oriented client docs.
 - Native packaging docs now call out FFI ABI version `2`, the generated-client

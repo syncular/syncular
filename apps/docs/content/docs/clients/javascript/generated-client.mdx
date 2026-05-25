@@ -1,0 +1,77 @@
+---
+title: Generated Client
+description: Understand the TypeScript files generated for JavaScript apps and how they connect Kysely to the Syncular runtime.
+---
+
+# Generated Client
+
+JavaScript apps should not hand-write table metadata, mutation namespaces, or
+runtime feature contracts. Generate them from your SQLite migrations and
+`syncular.app.ts`.
+
+## Inputs
+
+The generator reads:
+
+- `migrations/**/up.sql`: the local SQLite replica shape.
+- `syncular.app.ts`: Syncular semantics that SQL cannot express, such as
+  scopes, server-version columns, blob columns, CRDT fields, encrypted fields,
+  local read models, and output paths.
+
+```ts
+import { defineSyncularClient, scope, syncedTable } from '@syncular/typegen';
+
+export const app = defineSyncularClient({
+  typescriptOutputPath: 'src/generated/syncular.browser.ts',
+  tables: {
+    tasks: syncedTable({
+      table: 'tasks',
+      subscriptionId: 'tasks-by-user',
+      primaryKey: 'id',
+      serverVersion: 'server_version',
+      scopes: [scope('user_id', { source: 'actorId', required: true })],
+    }),
+  },
+});
+```
+
+## Outputs
+
+The TypeScript output gives your app:
+
+- a typed Kysely `AppDb` interface;
+- generated runtime/open helpers;
+- generated mutation namespaces;
+- generated subscription helpers;
+- changed-row helpers for row/field deltas;
+- feature metadata for blobs, CRDT fields, encryption, and local read models.
+
+```ts
+import {
+  createSyncularAppDatabase,
+  taskSubscription,
+  syncularChangedRows,
+} from './generated/syncular.browser';
+import type { AppDb } from './generated/syncular.browser';
+```
+
+## Runtime validation
+
+Generated clients validate that the loaded runtime supports the features your
+app schema requires. If the runtime is missing required features, fail at open
+time instead of letting app code run with partial sync behavior.
+
+## What not to edit
+
+Do not edit generated files by hand. Change migrations or `syncular.app.ts`,
+then regenerate:
+
+```bash
+syncular-typegen codegen-config --app ./syncular.app.ts
+```
+
+Run the check form in CI:
+
+```bash
+syncular-typegen codegen-config --app ./syncular.app.ts --check
+```

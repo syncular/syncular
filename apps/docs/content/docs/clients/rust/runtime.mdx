@@ -1,14 +1,14 @@
 ---
-title: Native Runtime
+title: Runtime
 description: Run the Rust worker, event stream, realtime, presence, CRDT, and blob lifecycle.
 ---
 
-# Native Runtime
+# Runtime
 
 The native runtime is the Rust-owned execution boundary for local storage and
 sync. Rust apps can use it directly. JavaScript hosts such as React Native,
 Tauri, and Electron use a bridge to this same runtime, but their application
-APIs are documented under [JavaScript](/docs/javascript).
+APIs are documented under [JavaScript](/docs/clients/javascript).
 
 ## Responsibilities
 
@@ -106,16 +106,23 @@ selection state, undo stacks, and editor bridge messages.
 Use generic CRDT field APIs instead of editor-specific storage code:
 
 ```rust
-client
-    .crdt_fields()
-    .open("notes", note_id, "content_yjs_state")?
-    .apply_yjs_update(&update)?;
+use syncular_client::crdt_field::CrdtFieldId;
+
+let field = client.open_crdt_field(CrdtFieldId::new(
+    "notes",
+    note_id,
+    "content_yjs_state",
+))?;
+
+client.apply_crdt_field_text(&field, "Draft body")?;
 ```
 
 ## Next
 
-- [Rust Client SDK](/docs/rust/client-sdk)
-- [Rust Testkit](/docs/rust/testing)
-- [JavaScript React Native / Expo](/docs/javascript/react-native-expo)
-- [JavaScript Tauri](/docs/javascript/tauri)
-- [JavaScript Electron](/docs/javascript/electron)
+- [Querying](/docs/clients/rust/querying)
+- [Mutations](/docs/clients/rust/mutations)
+- [Live Updates](/docs/clients/rust/live-updates)
+- [Testing](/docs/clients/rust/testing)
+- [JavaScript React Native / Expo](/docs/clients/javascript/react-native-expo)
+- [JavaScript Tauri](/docs/clients/javascript/tauri)
+- [JavaScript Electron](/docs/clients/javascript/electron)

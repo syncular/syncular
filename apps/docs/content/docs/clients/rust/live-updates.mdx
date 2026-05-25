@@ -1,0 +1,84 @@
+---
+title: Live Updates
+description: Refresh Rust views from sync reports, row-level events, conflicts, and typed live queries.
+---
+
+# Live Updates
+
+Conflict handling and local observation are separate from querying. Queries
+read SQLite. Sync and mutations produce reports/events. Live queries use those
+reports to decide whether a typed Diesel query should refresh.
+
+## Conflicts
+
+`sync_http()` reports when a push creates conflicts:
+
+```rust
+let report = client.sync_http()?;
+
+if report.conflicts_changed {
+    for conflict in client.conflicts().pending()? {
+        println!("conflict {} {}", conflict.id, conflict.table);
+    }
+}
+```
+
+Resolve through the conflict helper:
+
+```rust
+let conflict = client.conflicts().pending()?.remove(0);
+
+let receipt = client.conflicts().keep_local(&conflict.id)?;
+println!("retry commit {:?}", receipt.retry_client_commit_id);
+```
+
+Or accept the server value:
+
+```rust
+client.conflicts().accept_server(&conflict.id)?;
+```
+
+`keep_local` queues a new local retry commit when the table contract supports
+it. `accept_server` clears the conflict and leaves the server row as the local
+truth.
+
+## Live queries
+
+Rust live queries keep Diesel semantics. You provide the query factory and the
+tables it depends on:
+
+```rust
+use diesel::prelude::*;
+use generated::{diesel_tables::TaskRow, schema};
+
+let mut live_tasks = client.live_query(["tasks"], || {
+    schema::tasks::dsl::tasks
+        .filter(schema::tasks::dsl::user_id.eq("user-rust"))
+        .order(schema::tasks::dsl::server_version.desc())
+        .select(TaskRow::as_select())
+})?;
+
+render(live_tasks.rows());
+```
+
+Refresh from a sync or mutation report:
+
+```rust
+let report = client.sync_http()?;
+
+if live_tasks.refresh_if_changed(&mut client, &report)? {
+    render(live_tasks.rows());
+}
+```
+
+This avoids converting Rust reads into predefined ORM methods while still
+giving UI code a stable refresh primitive.
+
+## Native event path
+
+For UI shells, prefer runtime event subscriptions over manually passing sync
+reports around. Native events carry `changedRows`, `changedFields`, and
+`crdtFields`, so a host bridge can refresh the exact document, list, or read
+model that changed.
+
+Use [Runtime](/docs/clients/rust/runtime) for worker-level event streams.

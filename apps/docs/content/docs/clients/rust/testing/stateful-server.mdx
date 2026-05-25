@@ -1,0 +1,91 @@
+---
+title: Stateful App Server
+description: Use AppTestServer to test multi-client sync, scope filtering, schema-version handling, auth, and realtime wakeups.
+---
+
+# Stateful App Server
+
+`AppTestServer` is an in-memory Syncular app server for tests. It stores app
+rows, applies pushed commits, returns later pull responses from that state, and
+emits realtime wakeups.
+
+Use it when you would otherwise build an app-specific memory server just to
+prove two clients converge.
+
+## Seed server rows
+
+```rust
+let server = AppTestServer::new(my_app::generated::app_schema());
+
+server.seed_row("tasks", serde_json::json!({
+    "id": "task-seeded",
+    "title": "Seeded on server",
+    "completed": 0,
+    "user_id": "user-rust",
+    "project_id": "p0",
+    "server_version": 1
+}))?;
+```
+
+Then pull from a client with matching subscriptions:
+
+```rust
+client.sync_http()?;
+assert_table_has_row(&mut client, "tasks", "id", "task-seeded");
+```
+
+## Assert server state
+
+```rust
+use syncular_testkit::{
+    assert_app_server_commit_count, assert_app_server_has_row,
+};
+
+writer.client.sync_http()?;
+
+assert_app_server_has_row(&server, "tasks", "task-1");
+assert_app_server_commit_count(
+    &server,
+    1,
+    std::time::Duration::from_secs(1),
+);
+```
+
+## Auth and schema versions
+
+Require an auth header:
+
+```rust
+let server = AppTestServer::with_options(
+    my_app::generated::app_schema(),
+    AppTestServerOptions::default()
+        .require_authorization("Bearer test-token"),
+);
+```
+
+Require a minimum schema version:
+
+```rust
+server.require_schema_version(8);
+```
+
+Use this to test the "please update the app" path for old clients before it
+reaches production.
+
+## Delivery modes
+
+Use `ReverseAndDuplicate` when testing idempotence and convergence under messy
+delivery:
+
+```rust
+let server = AppTestServer::with_options(
+    my_app::generated::app_schema(),
+    AppTestServerOptions {
+        delivery_mode: AppTestServerDeliveryMode::ReverseAndDuplicate,
+        ..Default::default()
+    },
+);
+```
+
+Pair this with CRDT and retry tests so app assertions prove convergence rather
+than only the happy path.

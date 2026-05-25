@@ -1,0 +1,71 @@
+---
+title: Mutations
+description: Write app data through generated JavaScript Syncular mutations.
+---
+
+# Mutations
+
+JavaScript writes go through generated mutation namespaces. This preserves type
+safety while keeping local rows, outbox commits, conflicts, blobs, CRDT fields,
+encryption, and row events coherent.
+
+```ts
+await syncular.mutations.tasks.insert({
+  id: crypto.randomUUID(),
+  title: 'Write through Syncular',
+  completed: 0,
+  user_id: actorId,
+});
+```
+
+## Update rows
+
+Patch only the fields that changed:
+
+```ts
+await syncular.mutations.tasks.update(taskId, {
+  completed: 1,
+});
+```
+
+Changed fields are recorded so row-delta events and live queries can refresh
+precisely.
+
+## Delete rows
+
+Generated delete behavior follows the table contract. Tables with soft-delete
+columns write a soft-delete mutation; other tables write a delete operation.
+
+```ts
+await syncular.mutations.tasks.delete(taskId);
+```
+
+## Leased mutations
+
+Use leased mutations when an offline auth lease should authorize queued writes:
+
+```ts
+await syncular.leasedMutations.tasks.update(taskId, {
+  title: 'Offline edit',
+});
+```
+
+Use normal mutations when the client is online or the server does not require
+an offline lease for that operation.
+
+## Sync after mutation
+
+Browser managed clients can schedule background sync after local writes.
+Apps that own their sync cadence can disable that behavior during open.
+
+```ts
+const syncular = await createSyncularAppDatabase({
+  config,
+  sync: {
+    autoSyncAfterMutation: false,
+  },
+});
+```
+
+UI apps should treat mutation completion as local durability. Remote acceptance
+is reported through sync/outbox/conflict events.

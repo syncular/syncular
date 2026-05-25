@@ -1,0 +1,95 @@
+---
+title: Faults, CRDT, Blobs
+description: Test retry behavior, duplicate delivery, CRDT convergence, encrypted persistence, and blob upload/cache flows.
+---
+
+# Faults, CRDT, Blobs
+
+Use focused fixtures for the parts of Syncular that are easiest to mock
+incorrectly: transport failure, duplicate delivery, CRDT update ordering,
+encrypted persistence, and blob queues.
+
+## Script transport responses
+
+`TestTransport` lets you queue responses and inspect requests:
+
+```rust
+let mut fixture = open_app_client(my_app::generated::app_schema())?;
+let handle = fixture.transport.handle();
+
+fixture.transport.push_http_response(default_combined_response());
+fixture.client.sync_http()?;
+
+assert_eq!(handle.request_count(), 1);
+```
+
+Use this for protocol shape, auth headers, retry status, and exact request
+payloads.
+
+## Retry and duplicate delivery
+
+For end-to-end retry tests, prefer `AppTestServer` with delivery modes over
+hand-authored JSON responses:
+
+```rust
+let server = AppTestServer::with_options(
+    my_app::generated::app_schema(),
+    AppTestServerOptions {
+        delivery_mode: AppTestServerDeliveryMode::ReverseAndDuplicate,
+        ..Default::default()
+    },
+);
+```
+
+Then assert application convergence, not just that a request was sent.
+
+## CRDT helpers
+
+CRDT tests should prove materialized content survives duplicate and reordered
+updates:
+
+```rust
+use syncular_testkit::assert_crdt_field_materializes;
+
+assert_crdt_field_materializes(
+    &mut client,
+    "notes",
+    "note-1",
+    "content_yjs_state",
+    "expected text",
+);
+```
+
+Add app-level assertions for title, preview, outline, or editor state in your
+own test layer.
+
+## Blob assertions
+
+Use blob queue and cache assertions after storing or retrieving files:
+
+```rust
+use syncular_testkit::{
+    assert_blob_cache, assert_blob_upload_count, assert_blob_upload_queue,
+};
+
+assert_blob_upload_queue(&mut client, 1, 0, 0);
+client.process_blob_upload_queue()?;
+assert_blob_upload_queue(&mut client, 0, 0, 0);
+
+let uploads = assert_blob_upload_count(&transport_handle, 1);
+assert_blob_cache(&mut client, 1, uploads[0].blob.size);
+```
+
+## Encryption roundtrips
+
+For encrypted fields, encrypted blobs, and encrypted CRDT fields, always assert
+both sides:
+
+- authorized client can decrypt and materialize
+- unauthorized or wrong-key path fails clearly
+- persisted SQLite state does not expose plaintext in the protected column or
+  CRDT payload
+- reconnect/reopen still decrypts after keys are restored
+
+These tests should live close to your app's schema because the exact scopes and
+key policy are product-specific.

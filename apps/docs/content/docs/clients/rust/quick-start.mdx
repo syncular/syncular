@@ -3,7 +3,7 @@ title: Quick Start
 description: Generate and use a Rust Syncular client with Diesel reads and generated mutations.
 ---
 
-# Rust Quick Start
+# Quick Start
 
 The app client is generated from your SQLite migrations and a typed
 `syncular.app.ts` contract. That contract writes
@@ -99,6 +99,7 @@ fn app_schema() -> AppSchema {
         app_tables: generated::syncular::APP_TABLES,
         app_table_metadata: generated::syncular::APP_TABLE_METADATA,
         migrations: generated::migrations::MIGRATIONS,
+        schema_version: Some(generated::migrations::current_schema_version()),
         default_subscriptions: generated::syncular::default_subscriptions,
         adapter_for: generated::diesel_tables::adapter_for,
     }
@@ -137,8 +138,8 @@ let inserted = client
 
 ## Next
 
-- Use [Client SDK](/docs/rust/client-sdk) for conflicts, live queries, and
-  deeper Rust APIs.
-- Use [Native Runtime](/docs/rust/native-runtime) for event streams, realtime,
+- Use [Live Updates](/docs/clients/rust/live-updates) for conflicts and typed
+  live queries.
+- Use [Runtime](/docs/clients/rust/runtime) for event streams, realtime,
   presence, CRDT fields, blobs, and UI lifecycle.
-- Use [Rust Testkit](/docs/rust/testing) for app tests.
+- Use [Testing](/docs/clients/rust/testing) for app tests.

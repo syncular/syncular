@@ -1,6 +1,6 @@
 # WP-34 Rust-First Docs Information Architecture
 
-Status: `[x]` implemented, language-first follow-up completed
+Status: `[x]` implemented, clients-root follow-up completed
 
 ## Goal
 
@@ -49,8 +49,7 @@ This creates several problems:
 ```text
 Start
 Learn
-JavaScript
-Rust
+Clients
 Server
 Features
 Testing
@@ -88,6 +87,45 @@ Candidate pages:
 - Schema Evolution
 - Glossary
 
+### Clients
+
+Purpose: group language/runtime client docs under one public root instead of
+making every binding a top-level docs section.
+
+Pages:
+
+- Overview
+- JavaScript
+  - Overview
+  - Quick Start
+  - Generated Client
+  - Querying
+  - Mutations
+  - Live Updates
+  - Runtime
+  - Realtime And Presence
+  - CRDT Fields
+  - Blobs And Encryption
+  - Testing
+  - Browser
+  - React
+  - React Native / Expo
+  - Tauri
+  - Electron
+- Rust
+  - Overview
+  - Quick Start
+  - Generated Client
+  - Querying
+  - Mutations
+  - Live Updates
+  - Runtime
+  - Realtime And Presence
+  - CRDT Fields
+  - Blobs And Encryption
+  - Testing
+  - Packaging
+
 ### JavaScript
 
 Purpose: application docs for TypeScript/JavaScript hosts.
@@ -96,18 +134,20 @@ Pages:
 
 - Overview
 - Quick Start
+- Generated Client
+- Querying
+- Mutations
+- Live Updates
+- Runtime
+- Realtime And Presence
+- CRDT Fields
+- Blobs And Encryption
+- Testing
 - Browser
 - React
 - React Native / Expo
 - Tauri
 - Electron
-- Testing
-  - Quick Start
-  - Testkit Primitives
-  - Resource Lifecycle
-  - Fault Injection
-  - Runtime Patterns
-  - Examples
 
 ### Rust
 
@@ -117,9 +157,15 @@ Pages:
 
 - Overview
 - Quick Start
-- Client SDK
-- Native Runtime
-- Rust Testkit
+- Generated Client
+- Querying
+- Mutations
+- Live Updates
+- Runtime
+- Realtime And Presence
+- CRDT Fields
+- Blobs And Encryption
+- Testing
 - Packaging
 
 ### Server
@@ -233,9 +279,9 @@ Candidate pages:
 ## Acceptance Criteria
 
 - Top-level docs nav matches the Rust-first product model:
-  `Start`, `Learn`, `Client`, `Server`, `Features`, `Testing`, `Operate`,
+  `Start`, `Learn`, `Clients`, `Server`, `Features`, `Testing`, `Operate`,
   `Reference`.
-- Binding-specific docs are under `Client`, not separate root-level sections.
+- Binding-specific docs are under `Clients`, not separate root-level sections.
 - `Rust Client` no longer appears as a top-level docs section name.
 - `Build` is removed as a top-level implementation bucket or reduced to a
   temporary redirect/landing page if the docs framework requires it.
@@ -330,6 +376,65 @@ when clearly historical.
   delete old public routes cleanly.
 - `[x]` Run full docs build.
 
+### Batch 6: Clients Root And Rust Depth Follow-Up
+
+- `[x]` Move JavaScript and Rust under a shared `/docs/clients` root.
+- `[x]` Remove JavaScript/Rust as top-level nav roots.
+- `[x]` Add a clients landing page that routes by app language/runtime.
+- `[x]` Expand Rust from a small overview set into dedicated pages for
+  generated code, querying, mutations, conflicts/live queries, events,
+  realtime/presence, CRDT fields, blobs/encryption, testing, and packaging.
+- `[x]` Expand Rust testing into a real subsection matching the JavaScript
+  testing shape.
+- `[x]` Update public links from `/docs/javascript` and `/docs/rust` to
+  `/docs/clients/javascript` and `/docs/clients/rust`.
+
+### Batch 7: Client Chapter Parity
+
+Problem found after Batch 6 review: JavaScript and Rust were grouped under
+`Clients`, but their internal navigation still used different concepts. Rust
+had conceptual API pages such as `Querying`; JavaScript mostly had host pages.
+JavaScript exposed `Testing`; Rust exposed `Rust Testing`. This made the docs
+feel arbitrary and forced readers to infer whether a topic was absent or merely
+named differently.
+
+Shared rule for language client sections:
+
+```text
+Overview
+Core API
+  Quick Start
+  Generated Client
+  Querying
+  Mutations
+  Live Updates
+Runtime Features
+  Runtime
+  Realtime And Presence
+  CRDT Fields
+  Blobs And Encryption
+Testing / Delivery
+  Testing
+  language-specific delivery or host pages
+```
+
+Language-specific pages are allowed only after the shared conceptual spine:
+
+- JavaScript host integrations: Browser, React, React Native / Expo, Tauri,
+  Electron.
+- Rust delivery: Packaging.
+
+Acceptance criteria:
+
+- `[x]` JavaScript and Rust use the same labels for shared client concepts.
+- `[x]` JavaScript has a `Querying` page if Rust has one.
+- `[x]` Rust and JavaScript both expose `Testing`, not language-prefixed
+  sidebar labels.
+- `[x]` Redundant Rust-only aggregate pages are removed from the public
+  client nav when they duplicate the shared pages.
+- `[x]` All old links are updated to the new shared chapter paths.
+- `[x]` Docs typecheck/build pass.
+
 ## Accept / Reject Rule
 
 Keep changes when they reduce navigation ambiguity and pass docs gates. Revert
@@ -350,13 +455,9 @@ establishing the new IA skeleton.
   - focused old-client scan
   - `bun --cwd apps/docs types:check`
   - `bun --cwd apps/docs build`
-  - Browser smoke for `/docs/client`, `/docs/client/browser`,
-    `/docs/client/react`, `/docs/client/react-native-expo`,
-    `/docs/client/tauri-electron`, `/docs/client/native`,
-    `/docs/client/rust`, `/docs/client/swift`,
-    `/docs/client/kotlin-android`, and `/docs/client/jvm`.
+  - Superseded by Batch 6 clients-root routing.
 - The public docs top-level navigation now uses:
-  `Start`, `Learn`, `Client`, `Server`, `Features`, `Testing`, `Operate`,
+  `Start`, `Learn`, `Clients`, `Server`, `Features`, `Testing`, `Operate`,
   and `Reference`.
 - `Build` and `Rust Client` are no longer public root sections. Current docs
   were moved into the new section folders instead of preserving compatibility
@@ -398,11 +499,42 @@ establishing the new IA skeleton.
   - `git diff --check`
   - `bun --cwd apps/docs types:check`
   - `bun --cwd apps/docs build`
-  - Browser smoke for `/docs`, `/docs/start`, `/docs/learn`, `/docs/client`,
-    `/docs/server`, `/docs/features`, `/docs/testing`, `/docs/operate`, and
-    `/docs/reference`.
+  - Browser smoke for `/docs`, `/docs/start`, `/docs/learn`,
+    `/docs/clients`, `/docs/server`, `/docs/features`, `/docs/testing`,
+    `/docs/operate`, and `/docs/reference`.
+- Batch 6 clients-root follow-up passes:
+  - stale old language route scan returned no public docs hits for
+    `/docs/javascript`, `/docs/rust`, or `/docs/client`.
+  - `bun --cwd apps/docs types:check`
+  - `bun --cwd apps/docs build`
+  - Build output includes `/docs/clients`.
+- Batch 7 client chapter parity passes:
+  - JavaScript and Rust now share the same visible conceptual spine:
+    `Quick Start`, `Generated Client`, `Querying`, `Mutations`,
+    `Live Updates`, `Runtime`, `Realtime And Presence`, `CRDT Fields`,
+    `Blobs And Encryption`, and `Testing`.
+  - JavaScript-specific host pages are grouped under `Host Integrations`.
+  - Rust-specific packaging is grouped under `Delivery`.
+  - Removed redundant public Rust routes:
+    `/docs/clients/rust/client-sdk`,
+    `/docs/clients/rust/native-runtime`,
+    `/docs/clients/rust/event-streams`, and
+    `/docs/clients/rust/conflicts-live-queries`.
+  - Old route scan returned no active public docs links for removed Rust client
+    pages or old `/docs/javascript`, `/docs/rust`, `/docs/client` roots.
+  - `git diff --check`
+  - `bun --cwd apps/docs types:check`
+  - `bun --cwd apps/docs build`
+  - Local route smoke:
+    `/docs/clients/javascript/querying`,
+    `/docs/clients/javascript/testing`,
+    `/docs/clients/rust/querying`,
+    `/docs/clients/rust/testing`,
+    `/docs/clients/rust/runtime`, and
+    `/docs/clients/rust/live-updates` all return `200`.
 
 ## Next Action
 
-WP-34 is complete. Return to the roadmap order and pick the next non-accepted
-work package before making further docs or runtime changes.
+WP-34 is complete with the client chapter parity follow-up. Return to the
+roadmap order and pick the next non-accepted work package before making further
+docs or runtime changes.

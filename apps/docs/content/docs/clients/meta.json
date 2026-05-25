@@ -1,0 +1,10 @@
+{
+  "root": true,
+  "title": "Clients",
+  "icon": "MonitorSmartphone",
+  "pages": [
+    "index",
+    "javascript",
+    "rust"
+  ]
+}

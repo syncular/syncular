@@ -1,0 +1,90 @@
+---
+title: Native Events
+description: Test native runtime event streams, row deltas, query refreshes, and overflow recovery with syncular-testkit.
+---
+
+# Native Events
+
+Native event tests should subscribe to the runtime event stream and assert the
+stable event contract. Do not build tests around app-side polling loops.
+
+## Wait for an event
+
+```rust
+use syncular_testkit::{
+    open_native_client_with_schema, wait_native_event,
+};
+use syncular_client::native::NativeEventKind;
+
+let mut fixture = open_native_client_with_schema(my_app::generated::app_schema())?;
+
+fixture.client.enqueue_mutation_json(
+    &serde_json::json!({
+        "table": "tasks",
+        "row_id": "task-native",
+        "op": "upsert",
+        "payload": {
+            "id": "task-native",
+            "title": "Native event",
+            "completed": 0,
+            "user_id": "user-rust",
+            "project_id": "p0"
+        },
+        "base_version": 0
+    }).to_string(),
+    None,
+)?;
+
+let event = wait_native_event(
+    &fixture.events,
+    NativeEventKind::RowsChanged,
+    std::time::Duration::from_secs(5),
+);
+
+assert_eq!(event.changed_rows[0].table, "tasks");
+assert_eq!(event.changed_rows[0].row_id, "task-native");
+```
+
+## Query observer events
+
+Register query observers when a host wants query-level refresh events:
+
+```rust
+fixture.client.register_query_json(&serde_json::json!({
+    "id": "task-list",
+    "tables": ["tasks"]
+}).to_string())?;
+```
+
+After a matching row change, assert both `RowsChanged` and `QueriesChanged`
+events.
+
+## Overflow recovery
+
+Bound event queues must have explicit recovery behavior. When a subscriber
+overflows, expect an overflow event with `resyncRequired: true`, then treat the
+subscription as stale:
+
+```rust
+let overflow = wait_native_event(
+    &fixture.events,
+    NativeEventKind::EventsOverflowed,
+    std::time::Duration::from_secs(5),
+);
+
+assert!(overflow.payload["resyncRequired"].as_bool().unwrap_or(false));
+```
+
+Your app should resubscribe and refresh live queries from SQLite before using
+new incremental events.
+
+## What to assert
+
+Useful native-event tests cover:
+
+- command id returned immediately for queued writes
+- `LocalWriteCommitted` contains changed rows and commit ids
+- `RowsChanged` includes row id, operation, changed fields, and CRDT fields
+- `QueriesChanged` identifies registered query ids
+- `SyncFailed` includes retry state
+- `EventsOverflowed` forces full refresh recovery

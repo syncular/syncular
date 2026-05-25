@@ -1,0 +1,26 @@
+{
+  "title": "JavaScript",
+  "icon": "Braces",
+  "pages": [
+    "index",
+    "---Core API---",
+    "quick-start",
+    "generated-client",
+    "querying",
+    "mutations",
+    "live-updates",
+    "---Runtime Features---",
+    "runtime",
+    "realtime-presence",
+    "crdt-fields",
+    "blobs-encryption",
+    "---Testing---",
+    "testing",
+    "---Host Integrations---",
+    "browser",
+    "react",
+    "react-native-expo",
+    "tauri",
+    "electron"
+  ]
+}

@@ -11,8 +11,8 @@ Syncular is a sync framework for building **local-first applications** — apps 
 
 > **You are here:** Overview (evaluate if Syncular is a fit).
 >
-> **If you’re building:** start with [JavaScript](/docs/javascript) or
-> [Rust](/docs/rust), then wire the [Server](/docs/server).
+> **If you’re building:** start with [JavaScript](/docs/clients/javascript) or
+> [Rust](/docs/clients/rust), then wire the [Server](/docs/server).
 
 Your app talks to a local SQLite database owned by the Rust client runtime.
 Changes sync through an immutable commit log. Authorization is baked in through
@@ -46,8 +46,7 @@ Start from the question you actually have right now.
 
 <Cards>
   <Card title="Evaluate Syncular" href="/docs/start" description="Fit, demo, trust signals, and honest comparisons before you commit" />
-  <Card title="Build The JavaScript Client" href="/docs/javascript" description="Use Kysely, React, React Native, Tauri, Electron, and @syncular/testkit" />
-  <Card title="Build The Rust Client" href="/docs/rust" description="Use Diesel reads, generated mutations, the native runtime, packaging, and syncular-testkit" />
+  <Card title="Choose A Client" href="/docs/clients" description="Pick JavaScript or Rust, then use binding-specific setup, testing, and runtime docs" />
   <Card title="Build The Server" href="/docs/server" description="Implement handlers, auth scopes, snapshots, pushes, realtime, and deployment targets" />
   <Card title="Run It in Production" href="/docs/operate" description="Deployment, observability, troubleshooting, Console, and maintenance workflows" />
 </Cards>
@@ -70,8 +69,7 @@ The docs are organized by reader intent. Start with the topic that matches what 
 <Cards>
   <Card title="Start" href="/docs/start" description="Overview, quick start, installation, and evaluation paths" />
   <Card title="Learn" href="/docs/learn" description="Commit log, bootstrap, scopes, subscriptions, and conflict semantics" />
-  <Card title="JavaScript" href="/docs/javascript" description="Browser Worker, React, React Native, Tauri, Electron, and JavaScript testing" />
-  <Card title="Rust" href="/docs/rust" description="Rust SDK, Diesel reads, native runtime, packaging, and Rust testkit" />
+  <Card title="Clients" href="/docs/clients" description="JavaScript and Rust client docs, host bridges, testing, and packaging" />
   <Card title="Server" href="/docs/server" description="Authoritative sync server, handlers, auth, realtime, and deployment targets" />
   <Card title="Features" href="/docs/features" description="Schema, migrations, error handling, audit/history, and app shapes" />
   <Card title="Testing" href="/docs/testing" description="JavaScript testkit, Rust testkit, and shared conformance strategy" />
@@ -174,8 +172,8 @@ See [Good Fit & Not Fit](/docs/start/good-fit) for a fuller decision guide, incl
 
 ## Next
 
-- Implementing? Start with [JavaScript](/docs/javascript) or
-  [Rust](/docs/rust), then wire the [Server](/docs/server).
+- Implementing? Start with [JavaScript](/docs/clients/javascript) or
+  [Rust](/docs/clients/rust), then wire the [Server](/docs/server).
 - Learn the model: [How Sync Works](/docs/learn/architecture) and [Scopes](/docs/learn/scopes).
 - Want an honest comparison? See [Comparison](/docs/start/comparison).
 - Looking for endpoints? See the [API Reference](/docs/reference/api).

@@ -1,0 +1,62 @@
+---
+title: Realtime And Presence
+description: Use websocket wakeups and presence from JavaScript clients without making realtime the source of truth.
+---
+
+# Realtime And Presence
+
+Realtime is a wakeup path. HTTP sync remains the authoritative catchup path for
+missed commits, reconnects, auth refresh, and recovery after event overflow.
+
+## Start realtime
+
+Managed browser clients can start realtime during open:
+
+```ts
+const syncular = await createSyncularClient<AppDb>({
+  config,
+  subscriptions,
+  realtime: true,
+});
+```
+
+Or start it explicitly after initial setup:
+
+```ts
+await syncular.setSubscriptions(subscriptions);
+await syncular.sync();
+await syncular.start();
+```
+
+## Presence
+
+Join presence after subscriptions and initial sync are established:
+
+```ts
+const unsubscribe = syncular.presence.onChange((event) => {
+  renderPresence(event.scopeKey, event.presence);
+});
+
+syncular.presence.join('project:project-1', {
+  view: 'task-list',
+});
+
+syncular.presence.updateMetadata('project:project-1', {
+  view: 'task-detail',
+  taskId,
+});
+
+syncular.presence.leave('project:project-1');
+unsubscribe();
+```
+
+## Recovery model
+
+Use this rule in app code:
+
+- websocket event: wake sync and refresh from local SQLite after sync
+- websocket reconnect: run catchup sync
+- event overflow: resubscribe and refresh live queries
+- auth failure: refresh token or show a session-expired state
+
+This keeps realtime fast without making it responsible for durable state.

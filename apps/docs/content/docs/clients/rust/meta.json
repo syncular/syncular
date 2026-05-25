@@ -1,0 +1,22 @@
+{
+  "title": "Rust",
+  "icon": "Workflow",
+  "pages": [
+    "index",
+    "---Core API---",
+    "quick-start",
+    "generated-client",
+    "querying",
+    "mutations",
+    "live-updates",
+    "---Runtime Features---",
+    "runtime",
+    "realtime-presence",
+    "crdt-fields",
+    "blobs-encryption",
+    "---Testing---",
+    "testing",
+    "---Delivery---",
+    "packaging"
+  ]
+}
