@@ -92,6 +92,9 @@ app-facing mutation APIs.
   of inline JSON or generic rows/chunks language.
 - `[x]` Reframe Kysely-only claims as host-query-builder claims: Kysely for
   TypeScript, Diesel for Rust, Kysely for server handlers.
+- `[x]` Run the same stale-pattern audit across public docs and clean adjacent
+  troubleshooting/migration/testing pages that still suggested client handlers,
+  old-client compatibility wording, or legacy sample instance names.
 
 ## Accept / Reject Rule
 
@@ -136,6 +139,11 @@ that invents an API not present in the repo.
     Learn pages so they consistently describe the Rust-owned client runtime,
     generated app contract, generated subscriptions/mutations, binary
     snapshot chunks/artifacts, and host-specific query builders.
+  - Follow-up public-docs stale-pattern pass also updated Operate
+    troubleshooting, Features migrations, Rust testkit stateful-server docs,
+    and Operations setup examples so unsupported schema versions fail clearly
+    and scoped local clearing is described through the generated app contract
+    rather than old client handlers/custom apply hooks.
   - Follow-up gates passed on 2026-05-26:
     - `git diff --check -- apps/docs/content/docs/index.mdx apps/docs/content/docs/start apps/docs/content/docs/learn rust/docs/work-packages/WP-39-docs-source-of-truth-and-consistency.md rust/docs/ROADMAP.md`
     - focused stale docs scans for old client APIs, old protocol wording,
@@ -149,6 +157,22 @@ that invents an API not present in the repo.
       `/docs/start`, `/docs/start/what-is-syncular`,
       `/docs/start/quick-start`, `/docs/learn`, `/docs/learn/architecture`,
       `/docs/learn/first-sync`, and `/docs/learn/scopes`; no console errors
+  - Final public-docs cleanup gates passed on 2026-05-26:
+    - `git diff --check -- apps/docs/content/docs rust/docs/work-packages/WP-39-docs-source-of-truth-and-consistency.md`
+    - full public-docs stale-pattern scan for old JS/client/protocol wording
+      returned no hits; remaining `Client SDKs` wording is only the PowerSync
+      product description
+    - `upsert` scan reviewed: remaining hits are server/internal
+      emitted-change, console/protocol, migration, or native ABI examples
+      already labeled as non-app mutation APIs
+    - changed-page internal `/docs` link checker: `14` links across `4`
+      changed docs files, no missing routes
+    - `bun --cwd apps/docs types:check`
+    - `bun --cwd apps/docs build`
+    - local browser smoke on `http://localhost:3210` for
+      `/docs/operate/troubleshooting`, `/docs/features/migrations`,
+      `/docs/clients/rust/testing/stateful-server`, and
+      `/docs/operate/operations-setup`; no console errors
   - Gates passed:
     - `git diff --check`
     - custom internal `/docs` link checker: no broken `/docs` links across

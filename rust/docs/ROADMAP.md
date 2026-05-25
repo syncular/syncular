@@ -82,7 +82,9 @@ read-only review:
     Follow-up intro/learn cleanup now keeps the docs root, Start, comparison,
     and Learn pages aligned with the Rust-owned client runtime, generated app
     contract, binary snapshot chunks/artifacts, and Kysely/Diesel host-query
-    split.
+    split. A final public-docs stale-pattern pass also removed remaining
+    client-handler and old-schema wording from adjacent troubleshooting,
+    migration, operations, and Rust testing pages.
 - `[x]` [`WP-38 Release Automation`](work-packages/WP-38-release-automation.md)
   - Accepted. Rust crates now share npm's release version source and staging
     syntax. The `release` branch publishes `0.1.0-staging.<run>` prereleases
