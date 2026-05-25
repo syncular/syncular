@@ -19,12 +19,12 @@ import {
 const DEFAULT_ITERATIONS = 2_000;
 const DEFAULT_WARMUP_ITERATIONS = 100;
 
-export interface RelayRustBoundaryEvaluationOptions {
+interface RelayRustBoundaryEvaluationOptions {
   iterations?: number;
   warmupIterations?: number;
 }
 
-export interface RelayProtocolBoundaryFixture {
+interface RelayProtocolBoundaryFixture {
   name: string;
   generatedBy: string;
   combined: {
@@ -67,7 +67,7 @@ export interface RelayProtocolBoundaryFixture {
   };
 }
 
-export interface RelayRustBoundaryMetric {
+interface RelayRustBoundaryMetric {
   name: string;
   iterations: number;
   totalUs: number;
@@ -78,19 +78,19 @@ export interface RelayRustBoundaryMetric {
   maxUs: number;
 }
 
-export interface RelayRustBoundaryDiagnostic {
+interface RelayRustBoundaryDiagnostic {
   case: string;
   rejected: boolean;
   issues: RelayRustBoundaryDiagnosticIssue[];
 }
 
-export interface RelayRustBoundaryDiagnosticIssue {
+interface RelayRustBoundaryDiagnosticIssue {
   path: string;
   code: string;
   message: string;
 }
 
-export interface RelayRustBoundaryEvaluationResult {
+interface RelayRustBoundaryEvaluationResult {
   fixture: {
     name: string;
     generatedBy: string;
@@ -112,7 +112,7 @@ export interface RelayRustBoundaryEvaluationResult {
 
 let evaluationSink: unknown;
 
-export function readRelayProtocolBoundaryFixture(): RelayProtocolBoundaryFixture {
+function readRelayProtocolBoundaryFixture(): RelayProtocolBoundaryFixture {
   return JSON.parse(
     readFileSync(
       new URL(
@@ -407,6 +407,7 @@ function measureOperation(
     evaluationSink = operation();
     samples[index] = Number(process.hrtime.bigint() - start) / 1_000;
   }
+  void evaluationSink;
   const totalUs = Number(process.hrtime.bigint() - totalStart) / 1_000;
   samples.sort((left, right) => left - right);
 
@@ -460,8 +461,4 @@ function recordFrom(value: unknown): Record<string, unknown> {
     return value as Record<string, unknown>;
   }
   throw new Error('Expected record value in relay protocol fixture');
-}
-
-export function relayRustBoundaryEvaluationSink(): unknown {
-  return evaluationSink;
 }

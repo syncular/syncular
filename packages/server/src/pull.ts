@@ -553,12 +553,12 @@ async function transformPullChanges<
         `Server pull plugin "${plugin.name}" cannot change pull change count (${changes.length} -> ${nextChanges.length})`
       );
     }
-      for (let i = 0; i < changes.length; i += 1) {
-        assertPullChangeIdentityUnchanged(
-          `Server pull plugin "${plugin.name}"`,
-          changes[i]!,
-          nextChanges[i]!
-        );
+    for (let i = 0; i < changes.length; i += 1) {
+      assertPullChangeIdentityUnchanged(
+        `Server pull plugin "${plugin.name}"`,
+        changes[i]!,
+        nextChanges[i]!
+      );
     }
     changes = [...nextChanges];
   }

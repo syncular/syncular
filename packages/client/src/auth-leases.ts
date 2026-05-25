@@ -48,13 +48,10 @@ export async function issueSyncularAuthLease(args: {
       args.appSchema
     );
   }
-  return syncularAuthLeaseRecordFromIssueResponse(
-    issueResponse,
-    args.nowMs
-  );
+  return syncularAuthLeaseRecordFromIssueResponse(issueResponse, args.nowMs);
 }
 
-export function validateSyncularAuthLeaseIssueRequestAgainstAppSchema(
+function validateSyncularAuthLeaseIssueRequestAgainstAppSchema(
   request: SyncAuthLeaseIssueRequest,
   appSchema: SyncularAppSchema
 ): void {
@@ -73,7 +70,7 @@ export function validateSyncularAuthLeaseIssueRequestAgainstAppSchema(
   );
 }
 
-export function validateSyncularAuthLeaseIssueResponseAgainstAppSchema(
+function validateSyncularAuthLeaseIssueResponseAgainstAppSchema(
   response: SyncAuthLeaseIssueResponse,
   requestSchemaVersion: number,
   appSchema: SyncularAppSchema
@@ -114,7 +111,9 @@ function validateSyncularAuthLeaseScopesAgainstAppSchema(
   source: string
 ): void {
   if (scopes.length === 0) {
-    throw new Error(`${source} must contain at least one generated table scope`);
+    throw new Error(
+      `${source} must contain at least one generated table scope`
+    );
   }
   for (const scope of scopes) {
     validateSyncularAuthLeaseScopeAgainstAppSchema(scope, appSchema, source);

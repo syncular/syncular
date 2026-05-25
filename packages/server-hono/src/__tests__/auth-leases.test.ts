@@ -1,8 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import {
   createDatabase,
+  decodeBinarySyncPack,
+  isBinarySyncPackContentType,
   type ScopeValues,
   SyncAuthLeaseIssueResponseSchema,
+  type SyncCombinedResponse,
 } from '@syncular/core';
 import {
   createServerHandler,
@@ -31,6 +34,15 @@ interface ServerDb extends SyncCoreDb {
 
 interface ClientDb {
   tasks: TasksTable;
+}
+
+async function readCombinedResponse(
+  response: Response
+): Promise<SyncCombinedResponse> {
+  if (isBinarySyncPackContentType(response.headers.get('content-type'))) {
+    return decodeBinarySyncPack(new Uint8Array(await response.arrayBuffer()));
+  }
+  return (await response.json()) as SyncCombinedResponse;
 }
 
 describe('auth lease routes', () => {
@@ -344,7 +356,7 @@ describe('auth lease routes', () => {
     });
 
     expect(response.status).toBe(200);
-    const body = await response.json();
+    const body = await readCombinedResponse(response);
     expect(body.push.commits[0]).toMatchObject({
       clientCommitId: 'commit-expired-lease',
       status: 'rejected',
@@ -438,7 +450,7 @@ describe('auth lease routes', () => {
     });
 
     expect(response.status).toBe(200);
-    const body = await response.json();
+    const body = await readCombinedResponse(response);
     expect(body.push.commits[0]).toMatchObject({
       clientCommitId: 'commit-scope-mismatch',
       status: 'rejected',
@@ -534,7 +546,7 @@ describe('auth lease routes', () => {
     });
 
     expect(response.status).toBe(200);
-    const body = await response.json();
+    const body = await readCombinedResponse(response);
     expect(body.push.commits[0]).toMatchObject({
       clientCommitId: 'commit-scope-revoked',
       status: 'rejected',

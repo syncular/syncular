@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
-import { createDatabase } from '@syncular/core';
+import {
+  createDatabase,
+  decodeBinarySyncPack,
+  isBinarySyncPackContentType,
+  type SyncCombinedResponse,
+} from '@syncular/core';
 import {
   createServerHandler,
   ensureSyncSchema,
@@ -24,6 +29,15 @@ interface ServerDb extends SyncCoreDb {
 
 interface ClientDb {
   tasks: TasksTable;
+}
+
+async function readCombinedResponse(
+  response: Response
+): Promise<SyncCombinedResponse> {
+  if (isBinarySyncPackContentType(response.headers.get('content-type'))) {
+    return decodeBinarySyncPack(new Uint8Array(await response.arrayBuffer()));
+  }
+  return (await response.json()) as SyncCombinedResponse;
 }
 
 describe('createSyncRoutes audit endpoints', () => {
@@ -120,11 +134,7 @@ describe('createSyncRoutes audit endpoints', () => {
     });
 
     expect(response.status).toBe(200);
-    const json = (await response.json()) as {
-      push?: {
-        commits?: Array<{ commitSeq?: number; status?: string }>;
-      };
-    };
+    const json = await readCombinedResponse(response);
     expect(json.push?.commits?.[0]?.status).toBe('applied');
     expect(typeof json.push?.commits?.[0]?.commitSeq).toBe('number');
     return json.push!.commits![0]!.commitSeq!;

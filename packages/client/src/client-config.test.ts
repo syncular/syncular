@@ -1,8 +1,8 @@
 import { describe, expect, it } from 'bun:test';
 import {
   resolveSyncularClientConfig,
-  SYNCULAR_LOCAL_DISABLED_BASE_URL,
   SYNCULAR_DEFAULT_STORAGE,
+  SYNCULAR_LOCAL_DISABLED_BASE_URL,
 } from './client-config';
 
 describe('Syncular client config', () => {

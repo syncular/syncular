@@ -7,9 +7,7 @@ import type { TableSchema, TypegenDialect } from './types';
 
 export type SyncularScopeSource = 'actorId' | 'projectId';
 export type SyncularCrdtYjsKind = 'text' | 'xml-fragment' | 'prosemirror';
-export type SyncularCrdtYjsSyncMode =
-  | 'server-merge'
-  | 'encrypted-update-log';
+export type SyncularCrdtYjsSyncMode = 'server-merge' | 'encrypted-update-log';
 
 export interface SyncularScopeDefinition {
   name?: string;
@@ -158,7 +156,10 @@ export interface ScaffoldSyncularClientContractOptions<DB = unknown>
     | string
     | Record<string, string>
     | ((table: TableSchema) => string);
-  subscriptionId?: string | Record<string, string> | ((table: string) => string);
+  subscriptionId?:
+    | string
+    | Record<string, string>
+    | ((table: string) => string);
   sqliteWithoutRowid?:
     | boolean
     | Record<string, boolean>
@@ -168,7 +169,9 @@ export interface ScaffoldSyncularClientContractOptions<DB = unknown>
 
 export function defineSyncularClient<
   Tables extends Record<string, SyncedTableDefinition>,
->(options: DefineSyncularClientOptions<Tables>): SyncularClientContract<Tables> {
+>(
+  options: DefineSyncularClientOptions<Tables>
+): SyncularClientContract<Tables> {
   return {
     ...options,
     kind: 'syncular-client-contract',
@@ -187,7 +190,9 @@ export function isSyncularClientContract(
   );
 }
 
-export function syncedTable(options: SyncedTableDefinition): SyncedTableDefinition {
+export function syncedTable(
+  options: SyncedTableDefinition
+): SyncedTableDefinition {
   return { ...options };
 }
 
@@ -424,7 +429,9 @@ function toCodegenTable(
       ...(field.containerKey !== undefined
         ? { containerKey: field.containerKey }
         : {}),
-      ...(field.rowIdField !== undefined ? { rowIdField: field.rowIdField } : {}),
+      ...(field.rowIdField !== undefined
+        ? { rowIdField: field.rowIdField }
+        : {}),
       ...(field.kind !== undefined ? { kind: field.kind } : {}),
       ...(field.syncMode !== undefined ? { syncMode: field.syncMode } : {}),
     }));
@@ -433,7 +440,9 @@ function toCodegenTable(
     config.encryptedFields = table.encryptedFields.map((field) => ({
       field: field.field,
       ...(field.scope !== undefined ? { scope: field.scope } : {}),
-      ...(field.rowIdField !== undefined ? { rowIdField: field.rowIdField } : {}),
+      ...(field.rowIdField !== undefined
+        ? { rowIdField: field.rowIdField }
+        : {}),
     }));
   }
   if (table.softDelete !== undefined) {

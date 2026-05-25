@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { defineMigrations } from '@syncular/migrations';
 import {
@@ -9,8 +9,8 @@ import {
   defineSyncularClient,
   encryptedField,
   loadSyncularClientContract,
-  scope,
   scaffoldSyncularClientContract,
+  scope,
   syncedTable,
   toSyncularCodegenConfig,
   toSyncularCodegenJson,

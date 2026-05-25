@@ -630,17 +630,22 @@ export const syncularGeneratedApp = {
 } as const;
 
 export async function ensureSyncularAppBaseSchema(db: Kysely<any>): Promise<void> {
-  await ensureSyncularAppSchemaMetadata(db);
+  await ensureSyncularAppBaseSchemaWithMetadata(db);
+}
+
+async function ensureSyncularAppBaseSchemaWithMetadata(db: Kysely<any>): Promise<number | null> {
+  const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppSchemaMetadata(db);
   for (const statement of syncularGeneratedAppSchema.localBaseSchema.tableSetupSql) {
     await sql.raw(statement).execute(db);
   }
+  return syncularGeneratedPreviousSchemaVersion;
 }
 
 function syncularGeneratedNowMs(): number {
   return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
 }
 
-export async function ensureSyncularAppDerivedSchemaWithTimings(db: Kysely<any>): Promise<SyncularGeneratedDerivedSchemaTimings> {
+export async function ensureSyncularAppDerivedSchemaWithTimings(db: Kysely<any>, syncularGeneratedKnownSchemaVersion?: number | null): Promise<SyncularGeneratedDerivedSchemaTimings> {
   const syncularGeneratedTotalStartedAt = syncularGeneratedNowMs();
   const syncularGeneratedTimings: SyncularGeneratedDerivedSchemaTimings = {
     totalMs: 0,
@@ -653,7 +658,9 @@ export async function ensureSyncularAppDerivedSchemaWithTimings(db: Kysely<any>)
     rebuiltReadModels: [],
   };
   let syncularGeneratedStartedAt = syncularGeneratedNowMs();
-  const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppSchemaMetadata(db);
+  const syncularGeneratedPreviousSchemaVersion = syncularGeneratedKnownSchemaVersion === undefined
+    ? await ensureSyncularAppSchemaMetadata(db)
+    : syncularGeneratedKnownSchemaVersion;
   syncularGeneratedTimings.metadataMs = syncularGeneratedNowMs() - syncularGeneratedStartedAt;
   syncularGeneratedStartedAt = syncularGeneratedNowMs();
   await ensureSyncularAppIndexes(db);
@@ -729,10 +736,10 @@ export async function ensureSyncularAppSchema(db: Kysely<any>): Promise<void> {
 export async function ensureSyncularAppSchemaWithTimings(db: Kysely<any>): Promise<SyncularGeneratedSchemaInstallTimings> {
   const syncularGeneratedTotalStartedAt = syncularGeneratedNowMs();
   const syncularGeneratedBaseStartedAt = syncularGeneratedNowMs();
-  await ensureSyncularAppBaseSchema(db);
+  const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppBaseSchemaWithMetadata(db);
   const syncularGeneratedBaseSchemaMs = syncularGeneratedNowMs() - syncularGeneratedBaseStartedAt;
   const syncularGeneratedDerivedStartedAt = syncularGeneratedNowMs();
-  const syncularGeneratedDerivedTimings = await ensureSyncularAppDerivedSchemaWithTimings(db);
+  const syncularGeneratedDerivedTimings = await ensureSyncularAppDerivedSchemaWithTimings(db, syncularGeneratedPreviousSchemaVersion);
   const syncularGeneratedDerivedSchemaMs = syncularGeneratedNowMs() - syncularGeneratedDerivedStartedAt;
   return {
     ...syncularGeneratedDerivedTimings,

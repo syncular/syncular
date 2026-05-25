@@ -177,7 +177,10 @@ export interface CreateServerHandlerOptions<
    */
   snapshotBinaryEncoderForVersion?: (
     schemaVersion: number
-  ) => BinarySnapshotRowsEncoder<Selectable<ClientDB[TableName]>> | null | undefined;
+  ) =>
+    | BinarySnapshotRowsEncoder<Selectable<ClientDB[TableName]>>
+    | null
+    | undefined;
 
   /**
    * Resolve allowed scope values for the current actor.
@@ -1086,7 +1089,9 @@ export function createServerHandler<
       | BinarySnapshotRowsEncoder
       | undefined,
     snapshotBinaryEncoderForVersion: snapshotBinaryEncoderForVersion as
-      | ((schemaVersion: number) => BinarySnapshotRowsEncoder | null | undefined)
+      | ((
+          schemaVersion: number
+        ) => BinarySnapshotRowsEncoder | null | undefined)
       | undefined,
     canRejectSingleOperationWithoutSavepoint:
       options.canRejectSingleOperationWithoutSavepoint ??

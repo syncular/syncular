@@ -1914,15 +1914,21 @@ describe('Syncular worker sync protocol against Hono routes', () => {
     ).rejects.toThrow(/unknown generated app table/);
 
     await expect(
-      client.subscribeQuery('select "id" from "tasks" limit 1', [], ['tasks'], [
-        { table: 'comments', rowIds: [], fields: [] },
-      ])
+      client.subscribeQuery(
+        'select "id" from "tasks" limit 1',
+        [],
+        ['tasks'],
+        [{ table: 'comments', rowIds: [], fields: [] }]
+      )
     ).rejects.toThrow(/not one of the observed tables/);
 
     await expect(
-      client.subscribeQuery('select "id" from "tasks" limit 1', [], ['tasks'], [
-        { table: 'tasks', rowIds: [], fields: ['runtime_only_field'] },
-      ])
+      client.subscribeQuery(
+        'select "id" from "tasks" limit 1',
+        [],
+        ['tasks'],
+        [{ table: 'tasks', rowIds: [], fields: ['runtime_only_field'] }]
+      )
     ).rejects.toThrow(/unknown generated app column/);
   });
 
@@ -2784,7 +2790,11 @@ describe('Syncular worker sync protocol against Hono routes', () => {
       pushedCommits: 0,
     });
     await expect(
-      reader.listTable<{ id: string; title: string; description: string | null }>('tasks')
+      reader.listTable<{
+        id: string;
+        title: string;
+        description: string | null;
+      }>('tasks')
     ).resolves.toEqual([
       expect.objectContaining({
         id: scenario.task.id,

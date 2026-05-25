@@ -49,13 +49,10 @@
     "size:wasm:check": "bun scripts/size-syncular-wasm.ts --check --attribution --report ../../../.context/wasm-size/syncular-wasm-size.txt",
     "size:wasm:core": "bun scripts/size-syncular-wasm.ts --wasm dist/wasm-core/syncular_bg.wasm --report ../../../.context/wasm-size/syncular-wasm-core-size.txt",
     "size:wasm:perf": "bun scripts/size-syncular-wasm.ts --wasm dist/wasm-perf/syncular_bg.wasm --report ../../../.context/wasm-size/syncular-wasm-perf-size.txt",
-    "release": "syncular-publish"
+    "release": "bun ../../../config/bin/publish.ts"
   },
   "files": [
     "dist",
     "src"
-  ],
-  "devDependencies": {
-    "@syncular/config": "workspace:*"
-  }
+  ]
 }

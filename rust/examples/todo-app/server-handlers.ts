@@ -1,19 +1,18 @@
-import {
-  createSyncularAppServerHandler,
-  syncularGeneratedApp,
-  syncularGeneratedSchemaVersion,
-  type TaskMutationPayloadV6,
-  type TaskMutationPayloadV7,
-  type TaskRow,
-  type TaskRowV6,
-  type TaskRowV7,
-} from './generated/typescript/syncular.server.generated';
 import type {
   ApplyOperationResult,
   ServerSnapshotContext,
   SyncCoreDb,
   SyncServerAuth,
 } from '@syncular/server';
+import {
+  createSyncularAppServerHandler,
+  syncularGeneratedApp,
+  type TaskMutationPayloadV6,
+  type TaskMutationPayloadV7,
+  type TaskRow,
+  type TaskRowV6,
+  type TaskRowV7,
+} from './generated/typescript/syncular.server.generated';
 
 export interface TodoServerAuth extends SyncServerAuth {
   workspaceIds: string[];
@@ -56,7 +55,7 @@ export type TaskMutationPayloadForSchema =
   | TaskMutationPayloadV7
   | Partial<Omit<TaskRow, 'id' | 'server_version'>>;
 
-export type TaskRowForSchema = TaskRow | TaskRowV6 | TaskRowV7;
+type TaskRowForSchema = TaskRow | TaskRowV6 | TaskRowV7;
 
 export function createTodoTaskServerHandler(repo: TodoTaskRepository) {
   return createSyncularAppServerHandler<TodoServerDb, TodoServerAuth>({
@@ -156,5 +155,3 @@ function appliedTaskChange(
     ],
   };
 }
-
-export const currentTodoClientSchemaVersion = syncularGeneratedSchemaVersion;

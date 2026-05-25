@@ -192,6 +192,7 @@ function baseRustRuntimeInfo(): NonNullable<SyncularRuntimeInfo['rust']> {
       'web-owned-sqlite',
       'blobs',
       'crdt-yjs',
+      'e2ee',
     ],
   };
 }

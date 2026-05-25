@@ -61,6 +61,7 @@ describe('createSyncRoutes rate limit routing', () => {
   });
 
   const pullPayload = {
+    schemaVersion: 1,
     limitCommits: 10,
     subscriptions: [
       {

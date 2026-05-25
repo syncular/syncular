@@ -145,7 +145,11 @@
       "includeEntryExports": false
     },
     "packages/relay": {
-      "includeEntryExports": false
+      "includeEntryExports": false,
+      "entry": [
+        "scripts/*.ts",
+        "src/evaluation/*.ts"
+      ]
     },
     "packages/migrations": {
       "includeEntryExports": false
@@ -221,6 +225,8 @@
     "rust/examples/todo-app": {
       "includeEntryExports": false,
       "entry": [
+        "server-handlers.ts",
+        "syncular.app.ts",
         "conformance/**/*.ts",
         "native-smokes/**/*.ts"
       ]

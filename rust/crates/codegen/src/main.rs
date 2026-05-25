@@ -6575,17 +6575,23 @@ fn generate_typescript_module(
     out.push_str(
         "export async function ensureSyncularAppBaseSchema(db: Kysely<any>): Promise<void> {\n",
     );
-    out.push_str("  await ensureSyncularAppSchemaMetadata(db);\n");
+    out.push_str("  await ensureSyncularAppBaseSchemaWithMetadata(db);\n");
+    out.push_str("}\n\n");
+    out.push_str(
+        "async function ensureSyncularAppBaseSchemaWithMetadata(db: Kysely<any>): Promise<number | null> {\n",
+    );
+    out.push_str("  const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppSchemaMetadata(db);\n");
     out.push_str(
         "  for (const statement of syncularGeneratedAppSchema.localBaseSchema.tableSetupSql) {\n",
     );
     out.push_str("    await sql.raw(statement).execute(db);\n");
     out.push_str("  }\n");
+    out.push_str("  return syncularGeneratedPreviousSchemaVersion;\n");
     out.push_str("}\n\n");
     out.push_str("function syncularGeneratedNowMs(): number {\n");
     out.push_str("  return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();\n");
     out.push_str("}\n\n");
-    out.push_str("export async function ensureSyncularAppDerivedSchemaWithTimings(db: Kysely<any>): Promise<SyncularGeneratedDerivedSchemaTimings> {\n");
+    out.push_str("export async function ensureSyncularAppDerivedSchemaWithTimings(db: Kysely<any>, syncularGeneratedKnownSchemaVersion?: number | null): Promise<SyncularGeneratedDerivedSchemaTimings> {\n");
     out.push_str("  const syncularGeneratedTotalStartedAt = syncularGeneratedNowMs();\n");
     out.push_str("  const syncularGeneratedTimings: SyncularGeneratedDerivedSchemaTimings = {\n");
     out.push_str("    totalMs: 0,\n");
@@ -6599,10 +6605,14 @@ fn generate_typescript_module(
     out.push_str("  };\n");
     out.push_str("  let syncularGeneratedStartedAt = syncularGeneratedNowMs();\n");
     if local_read_models.is_empty() {
-        out.push_str("  await ensureSyncularAppSchemaMetadata(db);\n");
+        out.push_str("  if (syncularGeneratedKnownSchemaVersion === undefined) {\n");
+        out.push_str("    await ensureSyncularAppSchemaMetadata(db);\n");
+        out.push_str("  }\n");
         out.push_str("  syncularGeneratedTimings.metadataMs = syncularGeneratedNowMs() - syncularGeneratedStartedAt;\n");
     } else {
-        out.push_str("  const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppSchemaMetadata(db);\n");
+        out.push_str("  const syncularGeneratedPreviousSchemaVersion = syncularGeneratedKnownSchemaVersion === undefined\n");
+        out.push_str("    ? await ensureSyncularAppSchemaMetadata(db)\n");
+        out.push_str("    : syncularGeneratedKnownSchemaVersion;\n");
         out.push_str("  syncularGeneratedTimings.metadataMs = syncularGeneratedNowMs() - syncularGeneratedStartedAt;\n");
     }
     out.push_str("  syncularGeneratedStartedAt = syncularGeneratedNowMs();\n");
@@ -6691,10 +6701,10 @@ fn generate_typescript_module(
     out.push_str("export async function ensureSyncularAppSchemaWithTimings(db: Kysely<any>): Promise<SyncularGeneratedSchemaInstallTimings> {\n");
     out.push_str("  const syncularGeneratedTotalStartedAt = syncularGeneratedNowMs();\n");
     out.push_str("  const syncularGeneratedBaseStartedAt = syncularGeneratedNowMs();\n");
-    out.push_str("  await ensureSyncularAppBaseSchema(db);\n");
+    out.push_str("  const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppBaseSchemaWithMetadata(db);\n");
     out.push_str("  const syncularGeneratedBaseSchemaMs = syncularGeneratedNowMs() - syncularGeneratedBaseStartedAt;\n");
     out.push_str("  const syncularGeneratedDerivedStartedAt = syncularGeneratedNowMs();\n");
-    out.push_str("  const syncularGeneratedDerivedTimings = await ensureSyncularAppDerivedSchemaWithTimings(db);\n");
+    out.push_str("  const syncularGeneratedDerivedTimings = await ensureSyncularAppDerivedSchemaWithTimings(db, syncularGeneratedPreviousSchemaVersion);\n");
     out.push_str("  const syncularGeneratedDerivedSchemaMs = syncularGeneratedNowMs() - syncularGeneratedDerivedStartedAt;\n");
     out.push_str("  return {\n");
     out.push_str("    ...syncularGeneratedDerivedTimings,\n");
@@ -12143,12 +12153,14 @@ CREATE TABLE tasks (
             "export async function ensureSyncularAppSchemaWithTimings(db: Kysely<any>): Promise<SyncularGeneratedSchemaInstallTimings> {"
         ));
         assert!(output.contains(
-            "export async function ensureSyncularAppDerivedSchemaWithTimings(db: Kysely<any>): Promise<SyncularGeneratedDerivedSchemaTimings> {"
+            "export async function ensureSyncularAppDerivedSchemaWithTimings(db: Kysely<any>, syncularGeneratedKnownSchemaVersion?: number | null): Promise<SyncularGeneratedDerivedSchemaTimings> {"
         ));
-        assert!(output.contains("  await ensureSyncularAppBaseSchema(db);"));
+        assert!(output.contains(
+            "  const syncularGeneratedPreviousSchemaVersion = await ensureSyncularAppBaseSchemaWithMetadata(db);"
+        ));
         assert!(output.contains("  await ensureSyncularAppSchemaWithTimings(db);"));
         assert!(output.contains(
-            "  const syncularGeneratedDerivedTimings = await ensureSyncularAppDerivedSchemaWithTimings(db);"
+            "  const syncularGeneratedDerivedTimings = await ensureSyncularAppDerivedSchemaWithTimings(db, syncularGeneratedPreviousSchemaVersion);"
         ));
         assert!(output.contains("export const syncularGeneratedSchemaVersion = 7 as const;"));
         assert!(output.contains("export const syncularGeneratedClientSchemaSupport = {"));

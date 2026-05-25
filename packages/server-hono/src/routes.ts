@@ -75,8 +75,8 @@ import {
   recordClientCursor,
   resolveEffectiveScopesForSubscriptions,
   rowScopesAllowed,
-  scopesToSnapshotChunkScopeKey,
   SyncClientSchemaUnsupportedError,
+  scopesToSnapshotChunkScopeKey,
   validateAuthLeaseOperation,
   verifyAuthLeaseToken,
 } from '@syncular/server';

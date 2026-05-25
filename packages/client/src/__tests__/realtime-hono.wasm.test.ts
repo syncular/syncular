@@ -32,6 +32,8 @@ import { syncConformance } from './fixtures/sync-conformance';
 const ACTOR_ID = syncConformance.actors.rust.actorId;
 const AUTHORIZATION = syncConformance.actors.rust.token;
 const REALTIME_TOKEN = syncConformance.realtime.websocketToken;
+const MULTI_SCOPE_ACTOR_ID = 'multi-scope-writer';
+const MULTI_SCOPE_TOKEN = 'Bearer multi-scope-writer';
 
 describe('Syncular worker realtime against Hono websocket routes', () => {
   const clients: Array<{ close(): Promise<void> }> = [];
@@ -172,8 +174,8 @@ describe('Syncular worker realtime against Hono websocket routes', () => {
     const writer = await openClient({
       baseUrl,
       clientId: 'mixed-scope-writer',
-      actorId: actorA.actorId,
-      authorization: actorA.token,
+      actorId: MULTI_SCOPE_ACTOR_ID,
+      authorization: MULTI_SCOPE_TOKEN,
     });
     await writer.applyMutationsCommit([
       {
@@ -462,6 +464,7 @@ describe('Syncular worker realtime against Hono websocket routes', () => {
     const tokenActors = new Map<string, string>([
       [AUTHORIZATION, ACTOR_ID],
       [REALTIME_TOKEN, ACTOR_ID],
+      [MULTI_SCOPE_TOKEN, MULTI_SCOPE_ACTOR_ID],
       [
         syncConformance.actors.ownerA.token,
         syncConformance.actors.ownerA.actorId,
@@ -491,7 +494,15 @@ describe('Syncular worker realtime against Hono websocket routes', () => {
           table: 'tasks',
           scopes: ['user:{user_id}'],
           codecs: syncularGeneratedCodecs,
-          resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+          resolveScopes: async (ctx) => ({
+            user_id:
+              ctx.actorId === MULTI_SCOPE_ACTOR_ID
+                ? [
+                    syncConformance.actors.ownerA.actorId,
+                    syncConformance.actors.ownerB.actorId,
+                  ]
+                : [ctx.actorId],
+          }),
         }),
       ],
       authenticate: async (c) => {

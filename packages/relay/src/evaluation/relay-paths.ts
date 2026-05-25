@@ -27,13 +27,13 @@ const DEFAULT_ITERATIONS = 100;
 const DEFAULT_WARMUP_ITERATIONS = 10;
 const DEFAULT_REALTIME_CONNECTIONS = 100;
 
-export interface RelayAppPathEvaluationOptions {
+interface RelayAppPathEvaluationOptions {
   iterations?: number;
   warmupIterations?: number;
   realtimeConnections?: number;
 }
 
-export interface RelayAppPathMetric {
+interface RelayAppPathMetric {
   name: string;
   iterations: number;
   totalUs: number;
@@ -44,7 +44,7 @@ export interface RelayAppPathMetric {
   maxUs: number;
 }
 
-export interface RelayAppPathEvaluationResult {
+interface RelayAppPathEvaluationResult {
   fixture: {
     name: string;
     database: 'bun:sqlite:memory';
@@ -624,6 +624,7 @@ async function measureAsyncOperation(
     appPathSink = await operation(true, index);
     samples[index] = Number(process.hrtime.bigint() - start) / 1_000;
   }
+  void appPathSink;
   const totalUs = Number(process.hrtime.bigint() - totalStart) / 1_000;
   return metricFromSamples(name, iterations, totalUs, samples);
 }
@@ -645,6 +646,7 @@ function measureOperation(
     appPathSink = operation(true, index);
     samples[index] = Number(process.hrtime.bigint() - start) / 1_000;
   }
+  void appPathSink;
   const totalUs = Number(process.hrtime.bigint() - totalStart) / 1_000;
   return metricFromSamples(name, iterations, totalUs, samples);
 }
@@ -691,8 +693,4 @@ function positiveIntegerOrDefault(
 
 function roundUs(value: number): number {
   return Math.round(value * 100) / 100;
-}
-
-export function relayAppPathEvaluationSink(): unknown {
-  return appPathSink;
 }
