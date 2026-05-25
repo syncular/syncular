@@ -20,10 +20,10 @@ const dialects = [
     href: '/docs/server/dialects',
   },
   {
-    dialect: 'wa-sqlite',
+    dialect: 'Rust SQLite',
     runtime: 'Browser (WASM)',
     clientOnly: true,
-    href: '/docs/build/runtimes/web',
+    href: '/docs/rust-client/browser',
   },
   {
     dialect: 'PGlite',

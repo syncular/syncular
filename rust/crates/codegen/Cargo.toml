@@ -9,6 +9,7 @@ homepage = "https://syncular.dev"
 readme = "README.md"
 keywords = ["syncular", "codegen", "sqlite", "diesel"]
 categories = ["development-tools"]
+exclude = ["tests/**"]
 
 [[bin]]
 name = "syncular-codegen"
