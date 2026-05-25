@@ -3,7 +3,7 @@ title: Quick Start
 description: Generate and use the TypeScript Syncular client.
 ---
 
-# JavaScript Quick Start
+# Quick Start
 
 JavaScript apps use generated TypeScript types over a generic Syncular runtime.
 Reads stay query-builder based through Kysely. Writes go through generated
@@ -92,7 +92,12 @@ await syncular.mutations.tasks.update(taskId, {
 
 ## Next
 
-- Use [Browser](/docs/javascript/browser) for Worker, realtime, row delta, blob,
-  presence, and CRDT details.
-- Use [React](/docs/javascript/react) for hooks.
-- Use [JavaScript Testing](/docs/javascript/testing) for `@syncular/testkit`.
+- Use [Generated Client](/docs/clients/javascript/generated-client) to
+  understand generated files.
+- Use [Querying](/docs/clients/javascript/querying) and
+  [Mutations](/docs/clients/javascript/mutations) for daily app code.
+- Use [Live Updates](/docs/clients/javascript/live-updates) and
+  [Runtime](/docs/clients/javascript/runtime) for event-driven UI refresh.
+- Use [Browser](/docs/clients/javascript/browser) for Worker setup.
+- Use [React](/docs/clients/javascript/react) for hooks.
+- Use [Testing](/docs/clients/javascript/testing) for `@syncular/testkit`.

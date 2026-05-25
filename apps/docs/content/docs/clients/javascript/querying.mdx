@@ -1,0 +1,52 @@
+---
+title: Querying
+description: Query local Syncular data from JavaScript with typed Kysely reads.
+---
+
+# Querying
+
+JavaScript reads use Kysely. Syncular does not generate predefined table
+methods or an ORM. The generated client gives you typed table names and column
+types; your app writes normal Kysely expressions.
+
+```ts
+const tasks = await syncular.db
+  .selectFrom('tasks')
+  .select(['id', 'title', 'completed'])
+  .where('user_id', '=', actorId)
+  .orderBy('server_version', 'desc')
+  .execute();
+```
+
+## Local reads
+
+Queries read the local SQLite replica. They do not go to the server. Catchup
+happens through explicit sync, realtime wakeups, or the managed runtime.
+
+This split keeps reads fast and keeps sync independent from UI query code.
+
+## React reads
+
+React hooks wrap the same Kysely shape:
+
+```tsx
+const { data: tasks = [] } = useSyncQuery(
+  ({ selectFrom }) =>
+    selectFrom('tasks')
+      .select(['id', 'title', 'completed'])
+      .where('user_id', '=', actorId)
+      .orderBy('server_version', 'desc'),
+  { watchTables: ['tasks'] }
+);
+```
+
+Use [React](/docs/clients/javascript/react) for hook details.
+
+## Raw SQL
+
+Use Kysely for app-table reads. Raw SQL can be useful for diagnostics or
+specialized local projections, but raw app-table writes must not bypass
+Syncular. Direct inserts, updates, and deletes skip the outbox, conflicts,
+encryption hooks, CRDT metadata, blob queues, and row-change events.
+
+Use [Mutations](/docs/clients/javascript/mutations) for app-table writes.

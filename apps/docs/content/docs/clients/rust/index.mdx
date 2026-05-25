@@ -1,0 +1,68 @@
+---
+title: Rust
+description: Rust client docs for generated Diesel types, mutations, runtime features, testing, and packaging.
+---
+
+# Rust
+
+Rust is the canonical Syncular client runtime. Use this section when your app
+code is Rust, or when a native shell embeds Syncular through the Rust runtime.
+The Rust path is not an ORM layer over Syncular. Reads stay Diesel
+query-builder expressions, while writes go through generated Syncular mutation
+namespaces so local rows, outbox commits, conflicts, blobs, CRDT fields, and
+encryption remain coherent.
+
+## Core API
+
+<Cards>
+  <Card title="Quick Start" href="/docs/clients/rust/quick-start" description="Generate Rust app code, open the client, query with Diesel, and mutate through Syncular" />
+  <Card title="Generated Client" href="/docs/clients/rust/generated-client" description="Understand generated schema, row types, migrations, metadata, subscriptions, and table helpers" />
+  <Card title="Querying" href="/docs/clients/rust/querying" description="Use Diesel expressions through client-owned SQLite connections" />
+  <Card title="Mutations" href="/docs/clients/rust/mutations" description="Insert, update, delete, lease, and batch app-table writes through Syncular" />
+  <Card title="Live Updates" href="/docs/clients/rust/live-updates" description="Resolve conflicts and refresh typed Diesel live queries from row change reports" />
+</Cards>
+
+## Runtime Features
+
+<Cards>
+  <Card title="Runtime" href="/docs/clients/rust/runtime" description="Run the worker, event stream, queued commands, and UI lifecycle model" />
+  <Card title="Realtime And Presence" href="/docs/clients/rust/realtime-presence" description="Use websocket wakeups, reconnect recovery, and presence scope membership" />
+  <Card title="CRDT Fields" href="/docs/clients/rust/crdt-fields" description="Persist and materialize Yjs/Yrs-backed fields without editor-specific storage code" />
+  <Card title="Blobs And Encryption" href="/docs/clients/rust/blobs-encryption" description="Store files, process upload queues, cache downloads, and configure field/blob encryption" />
+</Cards>
+
+## Testing
+
+<Cards>
+  <Card title="Testing" href="/docs/clients/rust/testing" description="Use syncular-testkit with real generated clients and SQLite state" />
+</Cards>
+
+## Delivery
+
+<Cards>
+  <Card title="Packaging" href="/docs/clients/rust/packaging" description="Build native runtime artifacts from the Rust workspace" />
+</Cards>
+
+## Runtime split
+
+| Layer | Rust responsibility |
+|---|---|
+| Generated app client | Diesel schema, row structs, table metadata, mutation namespaces, subscriptions, changed-row helpers |
+| `syncular-client` | Developer-facing Rust SDK for typed reads, generated writes, sync, conflicts, and live queries |
+| `syncular-runtime` | SQLite, migrations, outbox, protocol, native worker, event streams, blobs, CRDT fields, encryption, realtime |
+| `syncular-testkit` | Real SQLite fixtures, in-memory app server, transports, assertions, native event helpers, conformance data |
+| Native bindings | BoltFFI/C ABI surfaces used by Swift, Kotlin, JVM, React Native, Tauri, and Electron hosts |
+
+## Recommended path
+
+1. Start with [Quick Start](/docs/clients/rust/quick-start).
+2. Read [Generated Client](/docs/clients/rust/generated-client) before
+   changing migrations or `syncular.app.ts`.
+3. Use [Querying](/docs/clients/rust/querying) and
+   [Mutations](/docs/clients/rust/mutations) for day-to-day app code.
+4. Use [Runtime](/docs/clients/rust/runtime) for UI apps and host bridges.
+5. Add [Testing](/docs/clients/rust/testing) before building app-specific sync
+   behavior.
+
+For browser, React, React Native, Tauri, Electron, and TypeScript testing, use
+[JavaScript](/docs/clients/javascript).

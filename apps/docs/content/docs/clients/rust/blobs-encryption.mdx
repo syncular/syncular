@@ -1,0 +1,87 @@
+---
+title: Blobs And Encryption
+description: Store files, process blob queues, cache downloads, and configure field/blob encryption in Rust clients.
+---
+
+# Blobs And Encryption
+
+Blobs and encryption live in the runtime because they affect local SQLite
+state, sync payloads, retry behavior, event streams, and app-table mutation
+semantics.
+
+## Blob references
+
+Blob columns are text columns containing a JSON `BlobRef`. Mark them in
+`syncular.app.ts`:
+
+```ts
+syncedTable({
+  table: 'tasks',
+  serverVersion: 'server_version',
+  blobColumns: ['image'],
+});
+```
+
+Generated mutation types then treat the column as a blob reference instead of
+plain text.
+
+## Store and upload
+
+Rust can store bytes or files locally, then queue upload work:
+
+```rust
+let blob = client.store_blob_file(
+    std::path::Path::new("/tmp/photo.jpg"),
+    "image/jpeg",
+    false,
+    true,
+)?;
+
+client.mutations().tasks().update(
+    syncular::TaskPatch::new(task_id).image(blob),
+)?;
+
+client.process_blob_upload_queue()?;
+```
+
+UI apps should prefer queued worker methods so file IO and upload retries do
+not run on the UI thread.
+
+## Retrieve and cache
+
+The runtime can retrieve blobs into a local file path and keep cache state in
+SQLite:
+
+```rust
+client.retrieve_blob_file(&blob_ref, std::path::Path::new("/tmp/out.jpg"), true)?;
+
+if client.is_blob_local(&blob_ref.hash)? {
+    render_cached_file();
+}
+```
+
+Blob diagnostics and queue stats are emitted through the
+[Runtime](/docs/clients/rust/runtime) event stream.
+
+## Encryption
+
+Field encryption and blob encryption should be configured before opening the
+worker for app traffic. The current Rust runtime supports symmetric and
+asymmetric app encryption primitives behind the `e2ee` feature.
+
+Native hosts set encryption through the runtime boundary, then use the same
+generated mutations as unencrypted tables. The app layer should not encrypt
+individual payload fields manually after generation, because Syncular needs to
+know which fields are encrypted for sync, conflicts, and diagnostics.
+
+## What to test
+
+Before shipping blob/encryption features, test:
+
+- upload retry and duplicate completion
+- cache hit and cache miss retrieval
+- cache pruning
+- encrypted field roundtrip
+- encrypted blob roundtrip
+- encrypted CRDT update and checkpoint persistence
+- unauthorized client cannot decrypt or materialize protected data
