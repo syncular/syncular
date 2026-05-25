@@ -702,7 +702,9 @@ describe('pull', () => {
     expect(resolvedTaskHandler?.snapshotBinaryColumnsForVersion?.(6)).toEqual(
       columns
     );
-    expect(resolvedTaskHandler?.snapshotBinaryEncoderForVersion?.(6)).toBeNull();
+    expect(
+      resolvedTaskHandler?.snapshotBinaryEncoderForVersion?.(6)
+    ).toBeNull();
 
     await pushTask(handlers, 'task-1', 'First Task');
 
@@ -769,7 +771,7 @@ describe('pull', () => {
             ...historicalColumns,
             { name: 'current_only', type: 'string', nullable: true },
           ],
-          rows: rows as Record<string, unknown>[],
+          rows: [...rows] as Record<string, unknown>[],
         });
       },
       snapshotBinaryEncoderForVersion: (schemaVersion) =>

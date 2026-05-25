@@ -1,5 +1,5 @@
-import { createOpenAPI } from 'fumadocs-openapi/server';
 import type { Document } from 'fumadocs-openapi';
+import { createOpenAPI } from 'fumadocs-openapi/server';
 
 import openapiSpec from '../../openapi.json';
 
