@@ -37,13 +37,13 @@ Kysely, React, and platform bridge code can see the concrete table types.
 ## 2. Generate TypeScript
 
 ```bash
-syncular-typegen codegen-config --app ./syncular.app.ts
+npx syncular generate --manifest-dir .
 ```
 
 Run the check form in CI:
 
 ```bash
-syncular-typegen codegen-config --app ./syncular.app.ts --check
+npx syncular generate --manifest-dir . --check
 ```
 
 ## 3. Open the browser client

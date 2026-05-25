@@ -61,29 +61,24 @@ export const app = defineSyncularClient({
 Use `blobColumns`, `crdt`, `encryptedFields`, `softDelete`, and
 `subscriptionParams` when the table needs those features.
 
-Generate the Rust-codegen handoff:
+Generate the Rust-codegen handoff and app clients:
 
 ```bash
-syncular-typegen codegen-config --app ./syncular.app.ts
+npx syncular generate --manifest-dir .
 ```
 
 ## 3. Run codegen
 
-From the Syncular repo root:
+For an app outside the Syncular repo, point the manifest directory at the app:
 
 ```bash
-cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
-  --manifest-dir /absolute/path/to/your-app
+npx syncular generate --manifest-dir /absolute/path/to/your-app
 ```
 
 Run the check form in CI:
 
 ```bash
-syncular-typegen codegen-config --app ./syncular.app.ts --check
-
-cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
-  --manifest-dir /absolute/path/to/your-app \
-  --check
+npx syncular generate --manifest-dir /absolute/path/to/your-app --check
 ```
 
 ## 4. Open the generated Rust client

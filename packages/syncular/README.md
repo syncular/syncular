@@ -22,10 +22,19 @@ For plugins and runtime-specific helpers, use explicit umbrella subpaths. Exampl
 npm install syncular
 ```
 
+## Generate
+
+Run the app-facing generator from the umbrella package:
+
+```bash
+npx syncular generate --manifest-dir .
+npx syncular generate --manifest-dir . --check
+```
+
 ## Documentation
 
-- Quick start: https://syncular.dev/docs/introduction/quick-start
-- Installation: https://syncular.dev/docs/introduction/installation
+- Quick start: https://syncular.dev/docs/start/quick-start
+- CLI reference: https://syncular.dev/docs/reference/cli/generate
 
 ## Links
 

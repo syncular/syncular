@@ -67,11 +67,11 @@ Do not edit generated files by hand. Change migrations or `syncular.app.ts`,
 then regenerate:
 
 ```bash
-syncular-typegen codegen-config --app ./syncular.app.ts
+npx syncular generate --manifest-dir .
 ```
 
 Run the check form in CI:
 
 ```bash
-syncular-typegen codegen-config --app ./syncular.app.ts --check
+npx syncular generate --manifest-dir . --check
 ```

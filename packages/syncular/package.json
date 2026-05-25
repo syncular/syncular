@@ -25,10 +25,14 @@
     "access": "public"
   },
   "type": "module",
+  "bin": {
+    "syncular": "./dist/cli.js"
+  },
   "scripts": {
     "tsgo": "tsgo --noEmit",
-    "build": "rm -rf dist && tsgo",
-    "release": "syncular-publish"
+    "build": "rm -rf dist && tsgo && bun run build:cli",
+    "build:cli": "bun build ./src/cli.ts --target=node --format=esm --outfile=./dist/cli.js",
+    "release": "bun run build:cli && syncular-publish"
   },
   "exports": {
     ".": {
@@ -240,7 +244,20 @@
   },
   "files": [
     "dist",
-    "src"
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__/**",
+    "!dist/**/*.test.*",
+    "!dist/**/__tests__/**",
+    "!dist/client-plugin-*",
+    "!dist/client-react.*",
+    "!dist/dialect-wa-sqlite.*",
+    "!dist/encryption.*",
+    "!dist/server-dialect-neon.*",
+    "!dist/testkit.*",
+    "!dist/transport-ws.*",
+    "!dist/yjs.*"
   ],
   "dependencies": {
     "@syncular/client": "workspace:*",

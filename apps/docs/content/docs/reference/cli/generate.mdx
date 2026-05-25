@@ -1,0 +1,49 @@
+---
+title: Generate Command
+description: Use syncular generate to produce current Syncular app config and generated code.
+---
+
+# Generate Command
+
+`syncular generate` is the app-facing codegen entry point from the `syncular`
+npm package.
+
+It runs the current generation pipeline in order:
+
+1. If `syncular.app.ts` exists, or `--app` is supplied, generate
+   `generated/syncular.codegen.json` from the app definition.
+2. Run the Rust generator against the manifest directory.
+
+## Usage
+
+Generate files:
+
+```bash
+npx syncular generate --manifest-dir .
+```
+
+Check generated files in CI:
+
+```bash
+npx syncular generate --manifest-dir . --check
+```
+
+Use an explicit app definition:
+
+```bash
+npx syncular generate --manifest-dir . --app ./syncular.app.ts
+```
+
+## Flags
+
+- `--manifest-dir <path>`: project directory containing migrations and generated handoff config
+- `--app <path>`: app definition used to generate codegen config
+- `--migrations-dir <path>`: override the migrations directory passed to Rust codegen
+- `--rust-output-dir <path>`: override the Rust generated output directory
+- `--check`: fail if generated output is out of date
+
+## Related Guides
+
+- [Rust quick start](/docs/clients/rust/quick-start)
+- [JavaScript quick start](/docs/clients/javascript/quick-start)
+- [Schema migrations](/docs/features/migrations)
