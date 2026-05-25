@@ -35,7 +35,10 @@ For human workflows, use [Operate](/docs/operate). For product-facing history UX
 | `POST` | `/sync` | Combined sync (`push` and/or `pull`) |
 | `GET` | `/sync/audit/commits` | List commit audit history (auth/partition scoped) |
 | `GET` | `/sync/audit/commits/{commitSeq}` | Get one commit with operation-level changes |
+| `GET` | `/sync/audit/rows/{table}/{rowId}` | Read scoped row audit history |
+| `GET` | `/sync/audit/debug-export` | Export a redacted sync debug bundle |
 | `GET` | `/sync/realtime` | WebSocket realtime connection for verified deltas and pull-required wake-ups (not part of OpenAPI) |
+| `GET` | `/sync/snapshot-artifacts/{artifactId}` | Download a verified scoped bootstrap snapshot artifact |
 | `GET` | `/sync/snapshot-chunks/{chunkId}` | Download snapshot chunks for large bootstraps |
 | `POST` | `/sync/blobs/upload` | Initiate a blob upload (optional feature) |
 | `POST` | `/sync/blobs/{hash}/complete` | Mark a blob upload complete |
@@ -53,15 +56,20 @@ For human workflows, use [Operate](/docs/operate). For product-facing history UX
 | `GET` | `/console/client-diagnostics/{id}` | Get the latest redacted snapshot for one client |
 | `GET` | `/console/client-diagnostics/{id}/history` | Page retained redacted snapshots for one client |
 | `GET` | `/console/handlers` | List table handlers |
+| `GET` | `/console/row-history/{table}/{rowId}` | Read retained row history |
+| `GET` | `/console/row-investigation/{table}/{rowId}` | Investigate why a row is or is not visible |
+| `GET` | `/console/debug-export` | Export a redacted console debug bundle |
 | `GET` | `/console/storage` | List storage/blob objects (optional, requires `console.blobBucket`) |
 | `GET` | `/console/storage/{key}/download` | Download a storage/blob object (optional) |
 | `DELETE` | `/console/storage/{key}` | Delete a storage/blob object (optional) |
 
 ## Endpoint groups in this reference
 
-- **Sync and Audit**: client sync, audit history, and snapshot chunks
+- **Sync and Audit**: client sync, audit history, row audit, debug export, and
+  snapshot artifacts/chunks
 - **Blobs**: blob upload and download flow
-- **Console Read Model**: stats, commits, clients, diagnostics, handlers, and timeline
+- **Console Read Model**: stats, commits, clients, diagnostics, handlers,
+  timeline, row history, row investigation, and debug export
 - **Console Events and Storage**: request events, payload snapshots, and object storage
 - **Console Auth**: API keys and token lifecycle
 - **Console Maintenance**: notify-data-change, prune, and compact

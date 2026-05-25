@@ -199,6 +199,8 @@ interface ConsoleCommitDetail {
     changeId: number;
     table: string;
     rowId: string;
+    // Console exposes the stored protocol operation marker.
+    // App/client APIs should still use insert/update/delete.
     op: 'upsert' | 'delete';
     rowJson: unknown;
     rowVersion: number | null;

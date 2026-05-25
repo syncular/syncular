@@ -18,7 +18,7 @@ When you add a task in your app, here is what happens under the hood:
 
 ```typescript
 // 1. You call a mutation in your app
-await m.tasks.create({
+await m.tasks.insert({
   id: 'task-123',
   title: 'Buy groceries',
   completed: false,
@@ -26,8 +26,7 @@ await m.tasks.create({
 });
 
 // 2. Syncular writes to the local SQLite DB immediately (optimistic)
-// 3. An outbox commit is created with one operation:
-//    { table: 'tasks', op: 'upsert', row_id: 'task-123', payload: { ... } }
+// 3. An outbox commit is created with one row-write operation
 // 4. When online, the client pushes to the server
 // 5. Server validates, applies in a transaction, assigns commit_seq: 42
 // 6. Other clients with matching scopes pull commit_seq: 42
@@ -39,14 +38,19 @@ The user sees the task instantly. The sync happens in the background. If the dev
 
 Every commit contains one or more **operations**. Each operation targets a single row in a single table.
 
-### Upsert
+App code should not hand-author these operations. Use generated
+`insert`/`update`/`delete` mutations so Syncular can record local row state,
+outbox metadata, conflict bases, changed fields, blobs, CRDT fields, and
+encryption metadata consistently.
 
-Creates or updates a row:
+### Insert or update
+
+Generated `insert` and `update` mutations become a row-write operation in the
+outbox:
 
 ```typescript
 {
   table: 'tasks',
-  op: 'upsert',
   row_id: 'task-123',
   base_version: 5,           // Version we last saw (for conflict detection)
   payload: {

@@ -1,16 +1,16 @@
 ---
 title: Quick Start
-description: Run the Rust-first client checks
+description: Choose the JavaScript or Rust Syncular client path and wire the server.
 ---
 
 # Quick Start
 
 > **Alpha.** APIs, wire formats, and storage layouts will change between releases. Pin versions and expect manual migrations between versions.
 
-## Run the canonical client
+## Run the local checks
 
-The current client product path is the Rust-owned package published as
-`@syncular/client`. Clone the repo and run the browser binding gates:
+If you want to verify the framework repo itself, clone it and run the browser
+binding checks:
 
 ```bash
 git clone https://github.com/syncular/syncular.git
@@ -20,16 +20,46 @@ bun run client:test
 bun run client:tsgo
 ```
 
-## Build your own app (canonical path)
+## Build your own app
 
-Syncular packages are published on npm under the `@syncular` scope. The recommended implementation path is:
+The implementation path is:
 
 1. [Server Setup](/docs/server/setup-with-hono)
-2. [JavaScript Client](/docs/clients/javascript) or [Rust Client](/docs/clients/rust)
-3. Learn the model: [Scopes](/docs/learn/scopes) and [Subscriptions](/docs/learn/subscriptions)
-4. Then add features as needed: blobs, encryption, migrations, observability, console, relay
+2. Choose [JavaScript Client](/docs/clients/javascript) or
+   [Rust Client](/docs/clients/rust)
+3. Define the app schema with migrations and `syncular.app.ts`
+4. Generate the app client for your language
+5. Learn the model: [Scopes](/docs/learn/scopes) and
+   [Subscriptions](/docs/learn/subscriptions)
+6. Then add features as needed: blobs, encryption, migrations, observability,
+   console, relay
 
 If you’re not sure where to start, see [Adoption Paths](/docs/start/adoption-paths).
+
+## JavaScript first
+
+Use this path for browser, React, React Native/Expo, Tauri, or Electron apps
+where app code is TypeScript/JavaScript:
+
+```bash
+npm install @syncular/client @syncular/react kysely
+npm install -D @syncular/typegen
+```
+
+Then continue with [JavaScript Quick Start](/docs/clients/javascript/quick-start).
+
+## Rust first
+
+Use this path for Rust app code or native shells embedding Syncular directly:
+
+```bash
+cargo add syncular syncular-client
+cargo add --dev syncular-testkit
+cargo install syncular-codegen --version 0.1.0
+npm install -D @syncular/typegen
+```
+
+Then continue with [Rust Quick Start](/docs/clients/rust/quick-start).
 
 ## What happens on a write (high level)
 

@@ -33,10 +33,14 @@ See [Commits](/docs/learn/commits).
 
 ### Change
 
-A single row-level modification inside a [Commit](#commit). Each change records the `table`, `row_id`, `op` (`upsert` or `delete`), the full `row_json`, a `row_version`, and [Scopes](#scope).
+A single row-level modification inside a [Commit](#commit). Each change records
+the table, row id, operation, committed row data when present, row version, and
+[Scopes](#scope). App code should normally see this as `insert`, `update`, or
+`delete` through runtime row-delta events; server storage may use lower-level
+row-write records internally.
 
 ```typescript
-{ table: 'tasks', row_id: 'task-1', op: 'upsert', row_json: { ... }, scopes: { user_id: '123' } }
+{ table: 'tasks', rowId: 'task-1', operation: 'update', scopes: { user_id: '123' } }
 ```
 
 ### Cursor
@@ -97,10 +101,13 @@ See [Subscriptions](/docs/learn/subscriptions).
 
 ### SyncOperation
 
-Client-to-server operation in a push. Contains the `table`, `row_id`, `op`, `payload`, and optional `base_version` for [Conflict](#conflict) detection. One or more operations make up a [Commit](#commit).
+Client-to-server operation in a push. Generated app mutations create these
+records from `insert`, `update`, and `delete` calls. Each operation contains
+the table, row id, payload when present, and optional base version for
+[Conflict](#conflict) detection. One or more operations make up a [Commit](#commit).
 
 ```typescript
-{ table: 'tasks', row_id: 'task-1', op: 'upsert', payload: { title: 'New' }, base_version: 5 }
+{ table: 'tasks', rowId: 'task-1', payload: { title: 'New' }, baseVersion: 5 }
 ```
 
 ---

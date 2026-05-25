@@ -4,8 +4,8 @@
   "icon": "Library",
   "pages": [
     "index",
-    "---SDKs, Server, and CLI---",
-    "client-sdk",
+    "---Packages, Server, and CLI---",
+    "packages-crates",
     "server",
     "cli",
     "---HTTP API---",

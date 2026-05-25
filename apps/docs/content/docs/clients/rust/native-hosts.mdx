@@ -1,0 +1,53 @@
+---
+title: Native Hosts
+description: How Swift, Kotlin, Java, React Native, Tauri, and Electron should embed the Rust runtime.
+---
+
+# Native Hosts
+
+Use this page when the app shell is native or hybrid, but Syncular storage and
+sync should stay inside the Rust runtime. Full Swift/Kotlin/Java language
+guides are not documented yet; the current public contract is the Rust runtime
+plus generated host bindings.
+
+## Current shape
+
+| Host | Recommended boundary |
+|---|---|
+| Swift / iOS / macOS | Swift wrapper over the generated native runtime binding |
+| Kotlin / Android | Kotlin/JVM wrapper over the generated native runtime binding |
+| Java / JVM | JVM wrapper over the generated native runtime binding |
+| React Native / Expo | JavaScript UI through `@syncular/client-react-native`, native module owns runtime |
+| Tauri | TypeScript UI through `@syncular/client-tauri`, Rust side owns runtime |
+| Electron | Renderer UI through preload/main bridge, runtime outside renderer |
+
+## Keep the boundary small
+
+Native hosts should expose:
+
+- generated reads or query execution
+- generated mutation commands
+- lifecycle commands such as start, stop, foreground, background, and sync now
+- event-stream subscription
+- blob, CRDT field, encryption, conflict, and diagnostics commands
+
+Native hosts should not expose raw app-table insert/update SQL. Writes must go
+through generated Syncular mutation paths so outbox, conflict bases,
+encryption, blobs, CRDT fields, and event metadata stay coherent.
+
+## Event model
+
+Host bridges should subscribe to the runtime event stream instead of polling.
+Each subscriber gets independent delivery. If a subscriber overflows, treat the
+stream as stale, resubscribe, run sync if appropriate, and refresh live queries
+from SQLite.
+
+## Related docs
+
+- [Runtime](/docs/clients/rust/runtime)
+- [Live Updates](/docs/clients/rust/live-updates)
+- [Testing](/docs/clients/rust/testing)
+- [Packaging](/docs/clients/rust/packaging)
+- [React Native / Expo](/docs/clients/javascript/react-native-expo)
+- [Tauri](/docs/clients/javascript/tauri)
+- [Electron](/docs/clients/javascript/electron)

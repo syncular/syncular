@@ -15,11 +15,13 @@ Below are practical paths teams actually take, depending on where they start.
 
 Best when you are building a new product where offline is a requirement (email client, CRM, internal tool, field app).
 
-1. Pick a client runtime + SQLite dialect.
-2. Create your local DB schema and UI queries (Kysely).
-3. Add Syncular server + table handlers.
-4. Add scopes + subscriptions for partial sync and auth.
-5. Add real-time wakeups (optional).
+1. Pick JavaScript or Rust as the app-client language.
+2. Create your local SQLite schema and generated app contract.
+3. Query locally with the host query builder: Kysely for JavaScript or Diesel
+   for Rust.
+4. Add Syncular server + table handlers.
+5. Add scopes + subscriptions for partial sync and auth.
+6. Add realtime wakeups when the core push/pull path is proven.
 
 Start here:
 - [Quick Start](/docs/start/quick-start)

@@ -198,7 +198,7 @@ export const notesHandler = createSyncularAppServerHandler<ServerDb, Auth>({
     }
 
     const payload = op.payload as NoteMutationPayloadV1;
-    const stored = await upsertDocument(ctx, op.row_id, payload);
+    const stored = await saveDocument(ctx, op.row_id, payload);
     const clientRow = documentToNoteRow(stored);
 
     return {
@@ -206,6 +206,8 @@ export const notesHandler = createSyncularAppServerHandler<ServerDb, Auth>({
       emittedChanges: [{
         table: 'notes',
         row_id: clientRow.id,
+        // Internal emitted-change storage uses the row-write operation marker.
+        // Generated app mutations still expose insert/update/delete.
         op: 'upsert',
         row_json: clientRow,
         row_version: clientRow.server_version,
@@ -216,9 +218,9 @@ export const notesHandler = createSyncularAppServerHandler<ServerDb, Auth>({
 });
 ```
 
-Server changes are stored as protocol `upsert`/`delete` changes. Generated
-client mutation APIs still expose app-level `insert`, `update`, and `delete`
-methods.
+Server emitted-change records use lower-level protocol operation markers.
+Generated client mutation APIs stay app-level: `insert`, `update`, and
+`delete`.
 
 ## Schema versions
 

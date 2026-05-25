@@ -17,11 +17,30 @@ wrong layer.
 
 ## Use the right surface
 
-- Use `@syncular/testkit` when the test opens TypeScript clients, server
-  handlers, HTTP routes, websocket helpers, or JavaScript runtime fixtures.
-- Use `syncular-testkit` when the test opens generated Rust/native clients,
-  validates native worker events, or needs Rust-side app-server fixtures.
-- Use conformance scenarios when behavior must match across language bindings.
+| Test need | Use |
+|---|---|
+| TypeScript client, server handler, HTTP route, browser runtime, or websocket helper tests | [`@syncular/testkit`](/docs/clients/javascript/testing) |
+| Generated Rust client, native worker, real SQLite fixture, event stream, CRDT/blob queue tests | [`syncular-testkit`](/docs/clients/rust/testing) |
+| Behavior that must match JavaScript, Rust, and native hosts | [Conformance](/docs/testing/conformance) |
+| Server-only handler logic, auth, scopes, and schema-version projection | [Server](/docs/server) plus the JavaScript testkit server fixtures |
+| Product-specific rows, fixtures, and assertions | App-owned test helpers layered above the Syncular testkit |
 
 The goal is the same in both languages: real local SQLite behavior, real sync
 semantics, deterministic fixtures, and app-owned domain assertions.
+
+## Minimum suite before shipping
+
+- Handler/scope tests for every synced table.
+- Two-client convergence tests for the tables your product depends on.
+- Offline queue and reconnect tests for mutations that users can make offline.
+- Conflict tests for every user-visible resolution path.
+- Realtime recovery tests if your UI depends on websocket wakeups.
+- Blob, CRDT, and encryption roundtrips for every enabled capability.
+- Schema-version tests for the oldest app version you still support.
+
+## What not to mock
+
+Do not mock Syncular system tables, outbox semantics, cursor movement, CRDT
+storage, blob queues, or event streams in product tests that claim to verify
+sync behavior. Use real fixtures, then mock only your app's external services
+or UI shell.

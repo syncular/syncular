@@ -49,7 +49,7 @@ async applyOperation(ctx, op, opIndex) {
     };
   }
 
-  const stored = await repo.upsertTask({
+  const stored = await repo.saveTask({
     rowId: op.row_id,
     actorId: ctx.actorId,
     payload: op.payload,
@@ -63,6 +63,8 @@ async applyOperation(ctx, op, opIndex) {
       {
         table: 'tasks',
         row_id: row.id,
+        // Internal emitted-change storage uses the row-write operation marker.
+        // Generated app mutations still expose insert/update/delete.
         op: 'upsert',
         row_json: row,
         row_version: row.server_version,
