@@ -83,13 +83,11 @@ export const app = defineSyncularClient({
 Generate the Rust handoff and app clients:
 
 ```bash
-syncular-typegen codegen-config --app ./syncular.app.ts
-
-cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
-  --manifest-dir /absolute/path/to/your-app
+npx syncular generate --manifest-dir /absolute/path/to/your-app
 ```
 
-Use the `--check` form in CI.
+Use `npx syncular generate --manifest-dir /absolute/path/to/your-app --check`
+in CI.
 
 ## Opening the generated client
 

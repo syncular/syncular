@@ -1,13 +1,13 @@
 ---
 title: CLI
-description: Scaffold projects, run local dev flows, and deploy managed Spaces apps with the Syncular CLI.
+description: Generate Syncular app code, scaffold projects, and run local dev flows with the Syncular CLI.
 ---
 
 # CLI
 
-The Syncular CLI supports local development workflows and managed Spaces deployment workflows.
+The app-facing Syncular CLI is published by the `syncular` npm package. This repo owns the core `syncular generate` command for generated app code.
 
-It is published as `@syncular/cli`. The CLI source currently lives in the separate [`syncular-spaces`](https://github.com/syncular/syncular-spaces) repository, while this repo documents how it fits the core Syncular framework.
+Managed Spaces workflows live outside the core package, but use the same `syncular ...` command shape when that CLI is installed.
 
 In TTY sessions, it opens interactive mode by default. Use `--no-interactive` for script mode.
 
@@ -22,8 +22,8 @@ syncular --help
 Run without global install:
 
 ```bash
-npx @syncular/cli --help
-bunx @syncular/cli --help
+npx syncular --help
+bunx syncular --help
 ```
 
 The help output is the source of truth for currently available commands and flags.
@@ -32,6 +32,8 @@ The help output is the source of truth for currently available commands and flag
 
 | Local command | What it does |
 |---|---|
+| `syncular generate` | Generate Syncular app config and Rust/TypeScript generated app code |
+| `syncular generate --check` | Verify generated output is current without rewriting files |
 | `syncular doctor` | Run local checks (runtime + workspace + git) |
 | `syncular console` | Serve a local Syncular Console instance |
 | `syncular create --template syncular-libraries` | Scaffold integration libraries (default template) |
@@ -67,6 +69,9 @@ The help output is the source of truth for currently available commands and flag
 <Cards>
   <Card title="Create Commands" href="/docs/reference/cli/create">
     Library scaffolding, demo scaffolding, targets, and server/runtime selection
+  </Card>
+  <Card title="Generate Command" href="/docs/reference/cli/generate">
+    One command for Syncular app config and generated code
   </Card>
   <Card title="Migrate Commands" href="/docs/reference/cli/migrate">
     Adapter contract, config wiring, and migration command flags

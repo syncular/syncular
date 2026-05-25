@@ -60,6 +60,10 @@ the npm packages without publishing public crates from every `main` merge.
 - Deleted scheduled GitHub Actions run history for the old `Weekly Soak`,
   `Nightly`, and scheduled `Checks` runs, and disabled the remote `Weekly Soak`
   workflow while the source removal is waiting to land on `main`.
+- Follow-up release/DX slice added the app-facing `syncular generate` command
+  to the umbrella npm package, a post-publish fresh JS/Rust install smoke
+  script, and CLI docs that point app developers at `npx syncular generate`
+  instead of the internal two-command codegen sequence.
 
 ## Gates
 
@@ -73,6 +77,11 @@ the npm packages without publishing public crates from every `main` merge.
   --filter='./packages/syncular' --concurrency=1`
 - `bun run release:npm:dry-run`
 - `bun run release:cargo:dry-run`
+- `bun test packages/syncular/src/cli.test.ts`
+- `bun --cwd packages/syncular build`
+- `bun scripts/post-publish-install-smokes.ts --help`
+- `npm pack --dry-run --json` in `packages/syncular` verified `dist/cli.js`
+  is included and stale deleted-alias/test files are excluded.
 - `bun install --frozen-lockfile`
 - `gh run list --event schedule --limit 20 --json databaseId --jq 'length'`
   returned `0` after scheduled-run cleanup.

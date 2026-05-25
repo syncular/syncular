@@ -16,7 +16,7 @@ The generator reads two inputs:
 
 - `migrations/**/up.sql`: SQLite table shape for the local replica.
 - `generated/syncular.codegen.json`: generated handoff from
-  `syncular-typegen codegen-config --app ./syncular.app.ts`.
+  `npx syncular generate --manifest-dir .`.
 
 The TypeScript contract is used at development time even for Rust apps because
 it is the current shared schema definition surface. It describes Syncular
