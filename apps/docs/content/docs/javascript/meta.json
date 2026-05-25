@@ -1,0 +1,15 @@
+{
+  "root": true,
+  "title": "JavaScript",
+  "icon": "Braces",
+  "pages": [
+    "index",
+    "quick-start",
+    "browser",
+    "react",
+    "react-native-expo",
+    "tauri",
+    "electron",
+    "testing"
+  ]
+}

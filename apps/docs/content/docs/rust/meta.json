@@ -1,0 +1,13 @@
+{
+  "root": true,
+  "title": "Rust",
+  "icon": "Workflow",
+  "pages": [
+    "index",
+    "quick-start",
+    "client-sdk",
+    "native-runtime",
+    "testing",
+    "packaging"
+  ]
+}

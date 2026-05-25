@@ -1,0 +1,29 @@
+---
+title: Rust
+description: Rust SDK, Diesel query builder, native runtime, packaging, and testkit docs.
+---
+
+# Rust
+
+Rust is the canonical Syncular client runtime. Use this section when your app
+code is Rust, or when a native shell embeds Syncular through the Rust runtime.
+
+<Cards>
+  <Card title="Quick Start" href="/docs/rust/quick-start" description="Generate Rust app code, open the client, query with Diesel, and mutate through Syncular" />
+  <Card title="Client SDK" href="/docs/rust/client-sdk" description="Use Diesel reads, generated mutations, conflicts, and live queries" />
+  <Card title="Native Runtime" href="/docs/rust/native-runtime" description="Run the worker, event stream, realtime, presence, CRDT, blob, and lifecycle model" />
+  <Card title="Rust Testkit" href="/docs/rust/testing" description="Use syncular-testkit with real generated clients and SQLite state" />
+  <Card title="Packaging" href="/docs/rust/packaging" description="Build native runtime artifacts from the Rust workspace" />
+</Cards>
+
+## What Rust owns
+
+- SQLite storage and migrations.
+- Diesel query-builder reads for Rust app code.
+- Generated mutation namespaces for writes.
+- Native worker queues, event streams, realtime, presence, conflicts, blobs,
+  CRDT fields, encryption, and retry behavior.
+- Native runtime artifact packaging for app hosts.
+
+For browser, React, React Native, Tauri, Electron, and TypeScript testing, use
+[JavaScript](/docs/javascript).

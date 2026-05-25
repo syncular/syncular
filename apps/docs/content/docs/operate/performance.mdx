@@ -23,7 +23,7 @@ Syncular is designed to handle datasets ranging from small personal apps to larg
 
 ## Prerequisites
 
-- A working Syncular setup ([Server Setup](/docs/server/setup-with-hono), [Client Setup](/docs/client/quick-start))
+- A working Syncular setup ([Server Setup](/docs/server/setup-with-hono), [Client Setup](/docs/rust/quick-start))
 - A PostgreSQL database for production workloads (recommended)
 
 ## Snapshot Chunking
@@ -252,8 +252,8 @@ CREATE INDEX idx_notes_user_id_updated ON notes (user_id, updated_at);
 
 The Rust-owned SQLite runtime installs app tables and generated indexes from
 your migrations/app contract. Add indexes to your client SQLite migrations so
-the generator can carry the same schema contract to browser, Rust, Swift, and
-Kotlin bindings:
+the generator can carry the same schema contract to JavaScript and Rust
+clients:
 
 ```sql
 create table notes (

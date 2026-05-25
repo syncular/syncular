@@ -8,7 +8,7 @@ description: Encrypt selected fields, CRDT updates, and blobs in the Rust runtim
 Field encryption protects selected app fields before they leave the client
 runtime. The Rust runtime owns encryption and decryption so generated mutations,
 outbox rows, blob uploads, CRDT updates, and retries stay coherent across
-bindings.
+JavaScript and Rust clients.
 
 ## What Syncular encrypts
 
@@ -35,7 +35,8 @@ tasks: syncedTable({
 ```
 
 The TypeScript app contract is the authored source for generated metadata; the
-Rust runtime and all bindings consume the generated encryption rules.
+Rust runtime, JavaScript clients, and generated app code consume the generated
+encryption rules.
 
 ## Browser TypeScript runtime keys
 
@@ -84,8 +85,8 @@ server, but do not make server handlers depend on plaintext.
 
 ## Related docs
 
-- [Client Quick Start](/docs/client/quick-start)
-- [Browser TypeScript](/docs/client/browser)
-- [Native Lifecycle](/docs/client/native)
+- [Client Quick Start](/docs/rust/quick-start)
+- [Browser TypeScript](/docs/javascript/browser)
+- [Native Lifecycle](/docs/rust/native-runtime)
 - [CRDT Fields](/docs/features/crdt-fields)
 - [Operate](/docs/operate)

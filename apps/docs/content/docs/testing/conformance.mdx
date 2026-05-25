@@ -1,0 +1,31 @@
+---
+title: Conformance
+description: Shared behavior that JavaScript, Rust, and host runtimes should prove.
+---
+
+# Conformance
+
+Conformance tests describe Syncular behavior that should be true regardless of
+the host language.
+
+## Core scenarios
+
+- bootstrap from server state into a fresh local database
+- local mutation writes a row, outbox commit, and row/field event
+- push then pull converges two clients
+- offline mutation replays after reconnect
+- rejected push creates a conflict and exposes resolution commands
+- realtime websocket messages wake sync, but HTTP catchup remains authoritative
+- blob upload/download/cache behavior survives retry
+- CRDT field updates converge after duplicate and reordered delivery
+- encrypted field/CRDT persistence does not leak plaintext to the wrong layer
+
+## Where to implement
+
+- JavaScript suites should use [JavaScript Testing](/docs/javascript/testing).
+- Rust/native suites should use [Rust Testkit](/docs/rust/testing).
+- Server/runtime suites should share the same app table contract and scope
+  fixtures used by the generated clients.
+
+Avoid app-wide mocks for these scenarios. The useful signal comes from running
+real storage, real protocol payloads, and real event streams.

@@ -9,7 +9,7 @@ Syncular's Rust-first migration flow starts from app SQL migrations and a typed
 `syncular.app.ts` contract. Codegen turns that into:
 
 - a generated runtime handoff for Rust;
-- typed browser/Kysely, Rust/Diesel, Swift, and Kotlin app clients;
+- typed browser/Kysely and Rust/Diesel app clients;
 - generated subscription metadata, local table DDL, indexes, codecs, and
   mutation payload types;
 - version-aware server helpers for older client schemas.
@@ -60,8 +60,6 @@ import { defineSyncularClient, scope, syncedTable } from '@syncular/typegen';
 
 export const app = defineSyncularClient({
   typescriptOutputPath: 'src/generated/syncular.browser.ts',
-  nativeSwiftOutputPath: 'Generated/SyncularApp.swift',
-  nativeKotlinOutputPath: 'generated/SyncularApp.kt',
   clientSchemaSupport: {
     minSupported: 1,
   },
@@ -300,7 +298,7 @@ wants to discard offline data.
 
 ## Next steps
 
-- [Client Quick Start](/docs/client/quick-start) -- generate and open clients
+- [Client Quick Start](/docs/rust/quick-start) -- generate and open clients
 - [Server Table Handlers](/docs/server/table-handlers) -- author version-aware
   handlers
 - [Data Modeling](/docs/features/data-modeling) -- design client/server table

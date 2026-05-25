@@ -1,15 +1,16 @@
 ---
 title: Quick Start
-description: Generate and use the Rust-first Syncular app clients.
+description: Generate and use a Rust Syncular client with Diesel reads and generated mutations.
 ---
 
-# Quick Start
+# Rust Quick Start
 
 The app client is generated from your SQLite migrations and a typed
 `syncular.app.ts` contract. That contract writes
 `generated/syncular.codegen.json`, the generated handoff consumed by Rust
-codegen. The generated files are app code: keep them in your app repo so Rust,
-TypeScript, Swift, and Kotlin tooling can see the types.
+codegen. The generated files are app code: keep them in your app repo so Rust
+tooling can see Diesel schema, row types, migrations, mutation builders, and
+table metadata.
 
 ## 1. Add migrations
 
@@ -46,9 +47,6 @@ Create `syncular.app.ts` beside your app manifest:
 import { defineSyncularClient, scope, syncedTable } from '@syncular/typegen';
 
 export const app = defineSyncularClient({
-  typescriptOutputPath: 'src/generated/syncular.browser.ts',
-  nativeSwiftOutputPath: 'Generated/SyncularApp.swift',
-  nativeKotlinOutputPath: 'generated/SyncularApp.kt',
   tables: {
     tasks: syncedTable({
       table: 'tasks',
@@ -88,9 +86,31 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- \
   --check
 ```
 
-## 4. Use the generated client
+## 4. Open the generated Rust client
 
-Reads stay query-builder based. Writes go through generated mutations.
+Wire generated metadata once when opening the client:
+
+```rust
+use syncular_client::app_schema::AppSchema;
+use syncular_client::client::SyncularClient;
+
+fn app_schema() -> AppSchema {
+    AppSchema {
+        app_tables: generated::syncular::APP_TABLES,
+        app_table_metadata: generated::syncular::APP_TABLE_METADATA,
+        migrations: generated::migrations::MIGRATIONS,
+        default_subscriptions: generated::syncular::default_subscriptions,
+        adapter_for: generated::diesel_tables::adapter_for,
+    }
+}
+
+let mut client = SyncularClient::open_with_schema(config, app_schema())?;
+```
+
+## 5. Query with Diesel
+
+Reads stay query-builder based. The client owns the connection, so pass the
+Diesel query expression to `client.read(...)`.
 
 ```rust
 let tasks = client.read(
@@ -98,7 +118,13 @@ let tasks = client.read(
         .filter(schema::tasks::dsl::user_id.eq("user-rust"))
         .select(diesel_tables::TaskRow::as_select()),
 )?;
+```
 
+## 6. Mutate through Syncular
+
+Writes go through generated mutation namespaces, not raw app-table SQL:
+
+```rust
 let inserted = client
     .mutations()
     .tasks()
@@ -109,28 +135,10 @@ let inserted = client
     ))?;
 ```
 
-For browser apps, import the generated TypeScript helper and keep reads on
-Kysely:
+## Next
 
-```ts
-const syncular = await createSyncularAppDatabase({
-  config: {
-    baseUrl: '/sync',
-    actorId: 'user-1',
-    clientId: 'device-1',
-    fileName: 'app.sqlite',
-  },
-});
-
-const rows = await syncular.db
-  .selectFrom('tasks')
-  .select(['id', 'title'])
-  .where('user_id', '=', 'user-1')
-  .execute();
-
-await syncular.mutations.tasks.insert({
-  title: 'Write through Syncular',
-  completed: 0,
-  user_id: 'user-1',
-});
-```
+- Use [Client SDK](/docs/rust/client-sdk) for conflicts, live queries, and
+  deeper Rust APIs.
+- Use [Native Runtime](/docs/rust/native-runtime) for event streams, realtime,
+  presence, CRDT fields, blobs, and UI lifecycle.
+- Use [Rust Testkit](/docs/rust/testing) for app tests.
