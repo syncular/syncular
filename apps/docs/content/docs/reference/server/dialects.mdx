@@ -53,7 +53,6 @@ These packages provide the `dialect` adapter. Use `createDatabase` from `@syncul
 | Package | Runtime | Example |
 |---------|---------|---------|
 | `@syncular/dialect-better-sqlite3` | Node.js | `createDatabase({ dialect: createBetterSqlite3Dialect({ path: './data.db' }), family: 'sqlite' })` |
-| `@syncular/dialect-electron-sqlite` | Electron (Renderer) | `createDatabase({ dialect: createElectronSqliteDialectFromWindow({ bridgeKey: 'app' }), family: 'sqlite' })` |
 | `@syncular/dialect-sqlite3` | Node.js | `createDatabase({ dialect: createSqlite3Dialect({ path: './data.db' }), family: 'sqlite' })` |
 | `@syncular/dialect-bun-sqlite` | Bun | `createDatabase({ dialect: createBunSqliteDialect({ path: './data.db' }), family: 'sqlite' })` |
 | `@syncular/dialect-libsql` | Node.js / Edge | `createDatabase({ dialect: createLibsqlDialect({ url: 'libsql://...', authToken: '...' }), family: 'sqlite' })` |

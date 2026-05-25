@@ -541,3 +541,13 @@ decision, not from the deleted protocol/package paths closed here.
   - `bun run --cwd packages/typegen tsgo`: passed.
   - `bun --cwd apps/docs types:check`: passed.
   - `git diff --check`: passed.
+- Removed old native/client SQLite dialect package surfaces that do not fit the
+  Rust-owned runtime direction. `packages/dialect-electron-sqlite` and
+  `packages/dialect-react-native-nitro-sqlite` are deleted; the `syncular`
+  umbrella package no longer exports Electron, React Native Nitro, or Expo
+  dialect subpaths. The standalone Expo dialect remains only because current
+  Expo tests still use it.
+- Deprecated old npm packages for the deleted/legacy client surfaces:
+  `@syncular/dialect-wa-sqlite`, `@syncular/transport-ws`,
+  `@syncular/client-react`, client plugin packages, and the deleted
+  Electron/Nitro SQLite dialect packages.
