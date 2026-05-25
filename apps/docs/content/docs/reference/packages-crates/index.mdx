@@ -1,0 +1,51 @@
+---
+title: Packages And Crates
+description: JavaScript packages and Rust crates used by Syncular apps.
+---
+
+# Packages And Crates
+
+Use this page as a package index. Guided setup lives under
+[Installation](/docs/start/installation), [JavaScript](/docs/clients/javascript),
+and [Rust](/docs/clients/rust).
+
+## JavaScript packages
+
+| Package | Use |
+|---|---|
+| `@syncular/client` | Rust-owned browser worker runtime, Kysely local DB, generated TypeScript client integration, blobs, encryption, CRDT fields, and diagnostics |
+| `@syncular/react` | React provider, query hooks, mutation hooks, status hooks, presence, and conflict helpers |
+| `@syncular/client-react-native` | React Native/Expo bridge package for JavaScript UI code talking to the native runtime |
+| `@syncular/client-tauri` | Tauri bridge package for TypeScript UI code talking to the native runtime |
+| `@syncular/client-crdt-adapters` | Optional Yjs/editor adapters above Syncular CRDT field APIs |
+| `@syncular/testkit` | TypeScript/server/browser testkit |
+| `@syncular/typegen` | App contract and generated client handoff |
+
+## Rust crates
+
+| Crate | Use |
+|---|---|
+| `syncular` | Convenience crate and generated Rust extension traits |
+| `syncular-client` | Developer-facing Rust SDK for typed reads, generated writes, sync, conflicts, and live queries |
+| `syncular-runtime` | Runtime internals: SQLite, protocol, worker events, blobs, CRDT fields, encryption, and realtime |
+| `syncular-codegen` | Rust app-client code generator |
+| `syncular-testkit` | Rust/native fixtures, stateful app server, transports, assertions, and conformance data |
+| `syncular-protocol` | Shared protocol structures for runtime/server integration work |
+
+## Server packages
+
+| Package | Use |
+|---|---|
+| `@syncular/server` | Core sync engine and handler factory |
+| `@syncular/server-hono` | Hono HTTP/WebSocket adapter, OpenAPI routes, console routes |
+| `@syncular/server-dialect-postgres` | Postgres/Neon sync SQL dialect |
+| `@syncular/server-dialect-sqlite` | SQLite sync SQL dialect |
+| `@syncular/server-cloudflare` | Cloudflare Workers/Durable Objects/R2 helpers |
+
+## Related guides
+
+- [Installation](/docs/start/installation)
+- [JavaScript Quick Start](/docs/clients/javascript/quick-start)
+- [Rust Quick Start](/docs/clients/rust/quick-start)
+- [Server Setup](/docs/server/setup-with-hono)
+- [Testing](/docs/testing)

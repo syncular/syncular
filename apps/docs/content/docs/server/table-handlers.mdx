@@ -119,7 +119,7 @@ export function createTaskHandler(repo: TaskRepository) {
         };
       }
 
-      const stored = await repo.upsertTask({
+      const stored = await repo.saveTask({
         rowId: op.row_id,
         actorId: ctx.actorId,
         payload: op.payload as TaskMutationPayload,
@@ -133,6 +133,8 @@ export function createTaskHandler(repo: TaskRepository) {
           {
             table: 'tasks',
             row_id: row.id,
+            // Internal emitted-change storage uses the row-write operation
+            // marker; generated app mutations still expose insert/update/delete.
             op: 'upsert',
             row_json: row,
             row_version: row.server_version,
@@ -161,8 +163,9 @@ Handlers own these decisions:
 - **`emittedChanges`**: record the committed row, version, operation, and scopes
   so later pulls and realtime wakeups see the change.
 
-The server stores operation changes as `upsert` or `delete`. Client runtime
-events can then report row-level deltas as `insert`, `update`, or `delete` after
+The emitted-change `op` field is a server storage/protocol detail. App code
+should stay on generated `insert`, `update`, and `delete` mutations, and client
+runtime events report row-level deltas as `insert`, `update`, or `delete` after
 the local replica applies the change.
 
 ## Version-aware handlers

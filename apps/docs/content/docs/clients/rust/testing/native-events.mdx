@@ -22,6 +22,8 @@ fixture.client.enqueue_mutation_json(
     &serde_json::json!({
         "table": "tasks",
         "row_id": "task-native",
+        // This is the native ABI/protocol request shape. Generated Rust app
+        // code should use typed insert/update/delete mutation helpers.
         "op": "upsert",
         "payload": {
             "id": "task-native",

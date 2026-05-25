@@ -77,7 +77,7 @@ const handler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
 ### What the defaults handle
 
 - **Snapshot**: Paginated `SELECT *` filtered by scope columns, cursor-based pagination by primary key
-- **Apply (upsert)**: Insert or update with automatic `server_version` increment, constraint error classification, version conflict detection
+- **Apply row writes**: Insert or update with automatic `server_version` increment, constraint error classification, and version conflict detection
 - **Apply (delete)**: Delete by primary key with scope extraction from the existing row
 - **Scope extraction**: Reads scope values from row columns derived from scope patterns
 
@@ -136,6 +136,8 @@ When emitting changes, include scopes so the realtime system knows which clients
 emittedChanges.push({
   table: 'tasks',
   row_id: op.row_id,
+  // Internal emitted-change storage uses the row-write operation marker.
+  // Generated app mutations still expose insert/update/delete.
   op: 'upsert',
   row_json: updated,
   row_version: updated.server_version,

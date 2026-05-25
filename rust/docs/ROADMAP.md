@@ -70,6 +70,15 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-39 Docs Source Of Truth And Consistency`](work-packages/WP-39-docs-source-of-truth-and-consistency.md)
+  - Accepted. Reference API is now the only generated OpenAPI tree, duplicate
+    `/docs/api` pages were removed, stale JSON snapshot wording was replaced,
+    app-facing mutation docs stay on insert/update/delete, remaining `upsert`
+    examples are explicitly scoped to internal protocol/server/native ABI
+    details, Start/Installation now split JavaScript-first and Rust-first
+    paths, Reference has a `Packages And Crates` hub, Testing has a decision
+    matrix and shipping checklist, and Rust Delivery now has a cautious Native
+    Hosts page for Swift/Kotlin/JVM/React Native/Tauri/Electron boundaries.
 - `[x]` [`WP-38 Release Automation`](work-packages/WP-38-release-automation.md)
   - Accepted. Rust crates now share npm's release version source and staging
     syntax. The `release` branch publishes `0.1.0-staging.<run>` prereleases

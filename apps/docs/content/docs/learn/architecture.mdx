@@ -79,7 +79,10 @@ sequenceDiagram
 `}
 />
 
-For large datasets, snapshots are returned as **compressed chunks** (gzip + framed JSON rows). The client fetches each chunk separately via `GET /sync/snapshot-chunks/:chunkId`, verifies integrity, decodes framed rows, and applies them to SQLite.
+For large datasets, snapshots are returned as **binary-table snapshot chunks**
+or scoped snapshot artifacts. The client fetches each chunk separately via
+`GET /sync/snapshot-chunks/:chunkId`, verifies integrity, decodes the typed
+row payload, and applies it to SQLite.
 
 For caching, streaming, and tuning knobs, see [Bootstrap Deep Dive](/docs/learn/first-sync).
 
@@ -146,7 +149,6 @@ If another client changed the same row since this client last read it, the serve
 {
   table: 'tasks',
   row_id: 'task-1',
-  op: 'upsert',
   base_version: 5,
   payload: { title: 'Updated title' }
 }
@@ -219,9 +221,9 @@ The server commit log is the backbone of the sync protocol. It consists of two t
 
 | `sync_commits` | `sync_changes` |
 |---|---|
-| `1 · device-A · user-1` | `1 · tasks · t-1 · upsert · { user: "1" }` |
-| `2 · device-B · user-2` | `2 · tasks · t-2 · upsert · { user: "2" }` |
-| `3 · device-A · user-1` | `3 · tasks · t-1 · upsert · { user: "1" }` |
+| `1 · device-A · user-1` | `1 · tasks · t-1 · write · { user: "1" }` |
+| `2 · device-B · user-2` | `2 · tasks · t-2 · write · { user: "2" }` |
+| `3 · device-A · user-1` | `3 · tasks · t-1 · write · { user: "1" }` |
 | `4 · device-B · user-2` | `4 · tasks · t-2 · delete · { user: "2" }` |
 
 Each commit:

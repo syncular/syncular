@@ -77,11 +77,16 @@ The key concept is: snapshots are generated for an *effective scope set*, not â€
 On the client, handlers apply bootstrap snapshots and incremental changes.
 
 Defaults are designed to work well out of the box:
-- Snapshot apply: upsert all rows
-- Change apply: upsert/delete by primary key
-- Scope revocation: clear data for scopes that are no longer subscribed/allowed
+- Snapshot apply: write the received rows by primary key inside a transaction.
+- Change apply: insert, update, or delete by primary key after decoding server
+  changes.
+- Scope revocation: clear data for scopes that are no longer subscribed or
+  allowed.
 
-You only need custom client handlers when you want different semantics (soft delete, stale marking, custom clear logic, derived tables, etc.).
+Most apps should not customize client apply behavior. Model soft delete,
+stale marking, and derived projections in generated table metadata or local
+read models so the runtime can keep outbox, conflicts, CRDT fields, and live
+events coherent.
 
 ## Tuning knobs (common levers)
 

@@ -1,32 +1,70 @@
 ---
 title: Installation
-description: Install Syncular packages for server and client
+description: Install Syncular packages and crates for JavaScript and Rust apps.
 ---
 
 # Installation
 
-> **Status:** Syncular is **alpha**. Packages are published on npm under the `@syncular` scope. If you want to run the full demo locally, clone the monorepo and follow the [Quick Start](/docs/start/quick-start). This page documents the packages you'll use.
+> **Status:** Syncular is **alpha**. npm packages use the `@syncular` scope and
+> Rust crates use the `syncular-*` crate names. Pin versions across npm and
+> Cargo, and regenerate clients when your app schema changes.
 
-Not sure which runtime/dialect you need? Start with [Runtimes](/docs/start/installation).
+Use this page to install building blocks. For the implementation flow, choose
+[JavaScript](/docs/clients/javascript) or [Rust](/docs/clients/rust), then wire
+the [Server](/docs/server).
 
-## Recommended starting point
+## JavaScript app path
 
-For web apps with a Postgres backend:
+Use this path when your app code is TypeScript/JavaScript and local reads use
+Kysely. Browser/React apps still use the Rust-owned SQLite runtime through
+`@syncular/client`.
 
 ```bash
 # Server
 npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
 npm install kysely pg hono
 
-# Client (Rust browser package + React hooks)
+# Client and React hooks
 npm install @syncular/client @syncular/react kysely
+
+# App contract and generated TypeScript client
+npm install -D @syncular/typegen
 ```
 
-For Neon-backed server runtimes:
+For React Native/Expo, Tauri, or Electron hosts, add the matching host bridge:
 
 ```bash
-npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
-npm install @syncular/dialect-neon hono
+npm install @syncular/client-react-native
+npm install @syncular/client-tauri
+```
+
+Electron apps normally use `@syncular/client` plus an app-owned preload/main
+bridge.
+
+## Rust app path
+
+Use this path when app logic is Rust or a native shell embeds the Rust runtime
+directly. Diesel is the Rust query builder; generated mutations keep writes in
+Syncular's outbox/conflict path.
+
+```bash
+cargo add syncular syncular-client
+cargo add diesel --features sqlite,returning_clauses_for_sqlite_3_35
+cargo add serde serde_json uuid
+
+# Test fixtures for generated Rust/native clients
+cargo add --dev syncular-testkit
+
+# Codegen CLI for app schemas
+cargo install syncular-codegen --version 0.1.0
+```
+
+Rust apps still define the app contract with `@syncular/typegen` at development
+time so JavaScript, Rust, and native bindings consume the same generated schema
+handoff:
+
+```bash
+npm install -D @syncular/typegen
 ```
 
 ## Server packages
@@ -39,16 +77,20 @@ npm install @syncular/dialect-neon hono
 | `@syncular/server-dialect-sqlite` | SQLite dialect for sync SQL |
 | `@syncular/server-cloudflare` | Cloudflare Workers + Durable Objects adapter |
 
-### Server database
+### Server database drivers
 
-You need Kysely + a database driver:
+Server handlers use Kysely and a server database driver. This is separate from
+the client SQLite runtime.
 
 ```bash
 # Postgres (production)
 npm install kysely pg
 
-# SQLite (development/testing)
+# SQLite server dialect for development/testing servers
 npm install @syncular/dialect-better-sqlite3
+
+# Neon-backed server runtimes
+npm install @syncular/dialect-neon
 ```
 
 ## Client packages
@@ -58,6 +100,17 @@ npm install @syncular/dialect-better-sqlite3
 | `@syncular/client` | Rust-owned browser client package with TypeScript bindings, worker runtime, Kysely local DB, blob APIs, encryption configuration, and CRDT integration |
 | `@syncular/react` | React hooks and provider for the Rust-owned client |
 | `@syncular/client-crdt-adapters` | Optional Yjs/editor adapters above the Rust client CRDT field APIs |
+
+## Rust crates
+
+| Crate | Description |
+|-------|-------------|
+| `syncular` | Convenience crate and generated Rust extension traits |
+| `syncular-client` | Developer-facing Rust SDK for typed reads, generated writes, sync, conflicts, and live queries |
+| `syncular-runtime` | Runtime internals for SQLite, protocol, worker events, blobs, CRDT fields, encryption, and realtime |
+| `syncular-codegen` | App-schema code generator for generated Rust clients |
+| `syncular-testkit` | Rust/native test fixtures, stateful app server, transports, and assertions |
+| `syncular-protocol` | Shared protocol structures for runtime/server integration work |
 
 ## Optional packages
 
@@ -87,6 +140,6 @@ Syncular is written in TypeScript and ships full type definitions. For best resu
 
 ## Next steps
 
-- [Quick Start](/docs/start/quick-start) — build your first sync app
+- [Quick Start](/docs/start/quick-start) — choose the implementation path
 - [Server Setup](/docs/server/setup-with-hono) — full server configuration
 - [JavaScript](/docs/clients/javascript) and [Rust](/docs/clients/rust) — client and testing guides

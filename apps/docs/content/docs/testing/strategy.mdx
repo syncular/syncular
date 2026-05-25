@@ -12,9 +12,16 @@ features. For concrete TypeScript helpers, use
 
 ## Recommended test layers
 
-1. Fast in-process tests for handler logic and conflict behavior.
-2. Real HTTP integration tests for auth headers, routes, and subscriptions.
-3. Runtime tests (node/deno/cloudflare) for environment-specific behavior.
+1. Fast in-process tests for handler logic, auth, scopes, schema-version
+   projections, and conflict behavior.
+2. Real HTTP integration tests for auth headers, routes, subscriptions,
+   snapshot chunks/artifacts, and push/pull recovery.
+3. Client runtime tests with real SQLite, generated mutations, outbox state,
+   event streams, and reconnect behavior.
+4. Binding tests for JavaScript, Rust, and native host bridges that prove the
+   same app schema behaves the same way.
+5. Product tests that assert app-specific rows, view models, editor state, and
+   authorization behavior on top of the Syncular fixtures.
 
 ## What to verify before production
 
@@ -23,6 +30,10 @@ features. For concrete TypeScript helpers, use
 - Offline queueing and retry semantics.
 - Bootstrap + incremental pull correctness.
 - Realtime wake-up behavior (if enabled).
+- Blob upload/download/cache queues.
+- CRDT field convergence, materialization, and compaction.
+- Encrypted field/blob/CRDT persistence and wrong-key failure.
+- Event overflow recovery and full-refresh behavior.
 
 ## Next
 
