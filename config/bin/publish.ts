@@ -69,7 +69,9 @@ function readDryRun(): boolean {
     return true;
   }
 
-  const value = (process.env.SYNCULAR_PUBLISH_DRY_RUN ?? '').trim().toLowerCase();
+  const value = (process.env.SYNCULAR_PUBLISH_DRY_RUN ?? '')
+    .trim()
+    .toLowerCase();
   return value === '1' || value === 'true' || value === 'yes';
 }
 
@@ -126,10 +128,9 @@ if (dryRun) {
     `[syncular-publish] dry-run publishing ${packageMeta.name}@${packageMeta.version} with npm tag ${npmTag}`
   );
 }
-const publishResult =
-  dryRun
-    ? await $`npm publish ${tarball} --tag ${npmTag} --dry-run`.nothrow()
-    : await $`npm publish ${tarball} --tag ${npmTag} --provenance`.nothrow();
+const publishResult = dryRun
+  ? await $`npm publish ${tarball} --tag ${npmTag} --dry-run`.nothrow()
+  : await $`npm publish ${tarball} --tag ${npmTag} --provenance`.nothrow();
 if (publishResult.exitCode !== 0) {
   const stderr = decodeOutput(publishResult.stderr);
   const stdout = decodeOutput(publishResult.stdout);
