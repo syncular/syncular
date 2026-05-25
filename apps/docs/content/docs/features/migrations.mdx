@@ -12,14 +12,14 @@ Syncular's Rust-first migration flow starts from app SQL migrations and a typed
 - typed browser/Kysely and Rust/Diesel app clients;
 - generated subscription metadata, local table DDL, indexes, codecs, and
   mutation payload types;
-- version-aware server helpers for older client schemas.
+- version-aware server helpers for supported generated schema versions.
 
 ## What you'll learn
 
 - How client SQLite migrations become generated app clients
 - How to keep client and server schemas equal or intentionally different
 - How schema versions flow through push and pull
-- How to reject unsupported old clients cleanly
+- How to reject unsupported generated schema versions cleanly
 - How to build local-only apps without a backend
 
 ## Client SQLite migrations

@@ -79,7 +79,7 @@ Common causes:
 - The client never persists the cursor/state (database not persisted, stateId changes, or app resets DB).
 - Pruning removed commits the client still needs, so the server forces a bootstrap.
 - The app changes `actorId`, `clientId`, `fileName`, or generated app schema
-  without closing the old client and opening a new one.
+  without closing the current client and opening a new one.
 
 Checklist:
 
@@ -146,18 +146,14 @@ This is usually a scoped bootstrap clearing issue.
 
 Checklist:
 
-- Confirm the server handler and client handler use the same scope variables
-  (`user_id`, `project_id`, etc.).
-- Confirm the local table has the columns referenced by the client handler's
-  scope mapping. For example, `{ pattern: 'user:{user_id}', column:
-  'owner_user_id' }` requires a local `owner_user_id` column.
-- If the server hides ownership columns from client row payloads, provide
-  custom `applySnapshot` and `applyChange` handlers that write whatever local
-  metadata your schema requires. The default handler only writes columns present
-  in the row payload.
-- If you intentionally do not store local scope columns, provide custom
-  `clearAll` and `onSnapshotStart` handlers so bootstrap/revocation does not
-  depend on the default scoped clear.
+- Confirm the server handler and generated app contract use the same scope
+  variables (`user_id`, `project_id`, etc.).
+- Confirm the local table has the columns referenced by the generated scope
+  mapping. For example, `scope('user_id', { column: 'owner_user_id', ... })`
+  requires a local `owner_user_id` column.
+- Confirm the server includes required local ownership columns in snapshot and
+  change row payloads. If the runtime cannot map a revoked scope to local
+  rows, Syncular should fail closed instead of clearing the whole table.
 - Use `useSyncInspector()` or `client.getInspectorSnapshot()` to inspect active
   subscriptions, subscription scopes, recent sync events, transport state, and
   outbox counts.

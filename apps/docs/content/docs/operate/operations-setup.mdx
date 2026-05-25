@@ -88,10 +88,10 @@ const consoleGatewayRoutes = createConsoleGatewayRoutes({
       baseUrl: 'https://api.acme.dev/feature-b',
     },
     {
-      instanceId: 'legacy',
-      label: 'Legacy',
-      baseUrl: 'https://api.acme.dev/internal/legacy-sync',
-      token: process.env.LEGACY_CONSOLE_TOKEN, // optional override
+      instanceId: 'archive',
+      label: 'Archive',
+      baseUrl: 'https://api.acme.dev/internal/archive-sync',
+      token: process.env.ARCHIVE_CONSOLE_TOKEN, // optional override
     },
   ],
   websocket: {
