@@ -27,7 +27,7 @@
   "type": "module",
   "scripts": {
     "tsgo": "tsgo --noEmit",
-    "build": "tsgo",
+    "build": "rm -rf dist && tsgo",
     "release": "syncular-publish"
   },
   "exports": {
