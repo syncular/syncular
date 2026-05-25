@@ -1,12 +1,12 @@
 # WP-34 Rust-First Docs Information Architecture
 
-Status: `[x]` accepted
+Status: `[x]` implemented, language-first follow-up completed
 
 ## Goal
 
 Restructure the public docs around the Rust-first product shape:
 
-- one canonical Syncular client runtime with multiple host bindings;
+- language-first application docs for JavaScript and Rust;
 - server-authoritative sync as a separate implementation surface;
 - cross-platform features documented once, then linked from binding pages;
 - exact APIs and generated surfaces kept in reference pages.
@@ -44,12 +44,13 @@ This creates several problems:
 - Some current docs still need cleanup from the old JS-client shape, even after
   recent link and generated-handoff fixes.
 
-## Proposed Top-Level Navigation
+## Current Top-Level Navigation
 
 ```text
 Start
 Learn
-Client
+JavaScript
+Rust
 Server
 Features
 Testing
@@ -87,44 +88,39 @@ Candidate pages:
 - Schema Evolution
 - Glossary
 
-### Client
+### JavaScript
 
-Purpose: canonical Rust-first client runtime and host bindings.
+Purpose: application docs for TypeScript/JavaScript hosts.
 
-Binding pages live here as subpages, not as separate root-level products:
+Pages:
 
 - Overview
-- Generate App Client
-- Browser TypeScript
+- Quick Start
+- Browser
 - React
 - React Native / Expo
-- Tauri / Electron
-- Rust
-- Swift
-- Kotlin / Android
-- JVM
-- Local-Only Apps
-- Lifecycle And Realtime
-- Blobs
-- CRDT / Yjs
-- Encryption
+- Tauri
+- Electron
+- Testing
+  - Quick Start
+  - Testkit Primitives
+  - Resource Lifecycle
+  - Fault Injection
+  - Runtime Patterns
+  - Examples
+
+### Rust
+
+Purpose: application docs for Rust and the Rust-owned runtime.
+
+Pages:
+
+- Overview
+- Quick Start
+- Client SDK
+- Native Runtime
+- Rust Testkit
 - Packaging
-
-Binding page template:
-
-```text
-When to use it
-Install
-Generate client
-Open client
-Query
-Mutate
-Subscribe / live queries
-Realtime / lifecycle
-Blobs / CRDT / encryption support
-Testing
-Packaging notes
-```
 
 ### Server
 
@@ -168,20 +164,14 @@ Candidate pages:
 
 ### Testing
 
-Purpose: app-facing testkit and conformance workflows.
+Purpose: language-neutral entrypoint that routes to JavaScript testkit, Rust
+testkit, and shared conformance workflows.
 
-Candidate pages:
+Pages:
 
 - Overview
-- Quick Start
-- Rust Testkit
-- Stateful App Test Server
-- Browser / WASM Tests
-- Native Binding Tests
-- Fault Injection
-- Multi-Client Realtime
-- Offline Reconnect
-- Release Smoke
+- Conformance
+- Testing Strategy
 
 ### Operate
 

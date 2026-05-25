@@ -24,10 +24,8 @@ mental model. Use this page as the feature checklist for product UI.
 
 ## Binding surfaces
 
-- Browser and React expose conflict counters for app chrome.
+- JavaScript and React expose conflict counters for app chrome.
 - Rust exposes typed conflict helpers from the generated client.
-- Swift and Kotlin receive conflict events through the native event stream and
-  can call generated mutation APIs for the retry or merge write.
 
 Do not write conflict resolution through raw SQL. Resolution is a sync
 operation and should go through the generated mutation surface.
@@ -50,6 +48,6 @@ authoritative decision in `applyOperation`.
 
 - [Learn: Conflict Resolution](/docs/learn/conflict-resolution)
 - [Apply Operations / Push](/docs/server/apply-push)
-- [Rust Client](/docs/client/rust)
-- [React](/docs/client/react)
+- [Rust Client](/docs/rust/client-sdk)
+- [React](/docs/javascript/react)
 - [Testkit](/docs/testing)

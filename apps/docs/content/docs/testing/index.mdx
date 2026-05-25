@@ -1,82 +1,27 @@
 ---
 title: Testing
-description: Test Syncular apps with TypeScript and Rust testkits instead of broad mocks.
+description: Choose the JavaScript testkit, Rust testkit, or shared conformance strategy.
 ---
 
 # Testing
 
-Syncular has two public testkit surfaces:
-
-- `@syncular/testkit` for TypeScript, server, browser, and package-level tests.
-- `syncular-testkit` for Rust/native app tests against generated schemas and
-  the Rust runtime.
-
-Use these instead of mocking Syncular internals. Both testkits aim for the same
-shape: real local SQLite behavior, real sync semantics, deterministic fixtures,
-and app-owned domain assertions.
-
-Use `@syncular/testkit` to test TypeScript/server/browser behavior across:
-
-- fast in-process tests
-- real HTTP integration tests
-- runtime-oriented tests (node, deno, cloudflare)
-
-The TypeScript API is test-runner agnostic. You can use Bun, Vitest, Jest, or
-other runners without changing testkit code. For Rust/native generated clients,
-use [Rust / Native Testkit](/docs/client/testing).
-
-If you are still evaluating whether Syncular is trustworthy enough to adopt, start with [Testing & Confidence](/docs/start/testing-and-confidence).
-
-If you are still wiring the system itself, use [Client](/docs/client), [Server](/docs/server), and [Features](/docs/features) for implementation guides first.
-
-## Choose your path
+Testing is split by language/runtime so app tests do not accidentally mock the
+wrong layer.
 
 <Cards>
-  <Card title="Quick Start" href="/docs/testing/quick-start">
-    Create fixtures, run push/pull/sync, and assert rows/outbox/conflicts
-  </Card>
-  <Card title="Testkit Primitives" href="/docs/testing/primitives">
-    Builders, schema parsers, deterministic IDs/clocks, scenario flow, and realtime WS helpers
-  </Card>
-  <Card title="Resource Lifecycle" href="/docs/testing/lifecycle">
-    Optional `using` resources and callback wrappers to remove `try/finally` cleanup noise
-  </Card>
-  <Card title="Fault Injection" href="/docs/testing/fault-injection">
-    Simulate latency, flaky transport, and deterministic failures
-  </Card>
-  <Card title="Runtime Patterns" href="/docs/testing/runtime">
-    Share server handlers and runtime helpers across node/deno/cloudflare tests
-  </Card>
-  <Card title="Rust / Native Testkit" href="/docs/client/testing">
-    Test generated Rust/native clients with `syncular-testkit` and real runtime clients
-  </Card>
-  <Card title="Real-World Examples" href="/docs/testing/examples-offline-reconnect">
-    Production-style flows for offline reconnect, realtime collaboration, and runtime release smoke checks
-  </Card>
-  <Card title="CLI" href="/docs/reference/cli">
-    Scaffold projects and run migration workflows from the CLI section
-  </Card>
+  <Card title="JavaScript Testing" href="/docs/javascript/testing" description="@syncular/testkit for TypeScript, server, browser, HTTP, and runtime tests" />
+  <Card title="Rust Testkit" href="/docs/rust/testing" description="syncular-testkit for generated Rust/native clients and real SQLite state" />
+  <Card title="Conformance" href="/docs/testing/conformance" description="Shared scenarios that should hold across JavaScript, Rust, and host runtimes" />
+  <Card title="Testing Strategy" href="/docs/testing/strategy" description="What to verify before production and how to layer the suites" />
 </Cards>
 
-## API groups
+## Use the right surface
 
-These groups refer to the TypeScript `@syncular/testkit` package:
+- Use `@syncular/testkit` when the test opens TypeScript clients, server
+  handlers, HTTP routes, websocket helpers, or JavaScript runtime fixtures.
+- Use `syncular-testkit` when the test opens generated Rust/native clients,
+  validates native worker events, or needs Rust-side app-server fixtures.
+- Use conformance scenarios when behavior must match across language bindings.
 
-| Group | Main exports |
-|---|---|
-| Fixtures | `createSyncFixture`, `createTestServer`, `createTestClient`, `createEngineTestClient` |
-| HTTP fixtures | `createHttpServerFixture`, `createHttpClientFixture`, `createNodeHonoServer` |
-| Protocol + parsing | `createSyncUpsertOperation`, `createSyncSubscription`, `createSyncCombinedRequest`, `parseSyncCombinedResponse` |
-| Lifecycle resources | `withSyncFixture`, `createSyncFixtureResource`, `withTestServer`, `openRealtimeWsResource` |
-| Scenario + deterministic | `createScenarioFlow`, `runPushPullCycle`, `createIdFactory`, `createFakeClock` |
-| Runtime realtime | `createRealtimeWsUrl`, `openRealtimeWs`, `waitForWsJsonMessage`, `closeWsSafe` |
-| Assertions | `assertOutboxEmpty`, `assertConflictCount`, `assertRowExists`, `waitForOutboxEmpty` |
-| Faults | `withFaults`, `withRecording`, `createMockTransport` |
-
-Need a rollout checklist rather than APIs? See [Testing Strategy](/docs/testing/strategy).
-
-## Continue with
-
-- Need implementation guides? Go to [Client](/docs/client), [Server](/docs/server), and [Features](/docs/features)
-- Debugging a live system rather than writing tests? Use [Operate](/docs/operate)
-- Want exact helper APIs? Go to [Reference](/docs/reference)
+The goal is the same in both languages: real local SQLite behavior, real sync
+semantics, deterministic fixtures, and app-owned domain assertions.

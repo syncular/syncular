@@ -5,7 +5,10 @@ description: How to think about test coverage while building with Syncular, and 
 
 # Testing Strategy
 
-Use this page when you are deciding what to verify as you implement Syncular features. For concrete `@syncular/testkit` APIs, helpers, and examples, use the [Testing](/docs/testing) section.
+Use this page when you are deciding what to verify as you implement Syncular
+features. For concrete TypeScript helpers, use
+[JavaScript Testing](/docs/javascript/testing). For Rust/native clients, use
+[Rust Testkit](/docs/rust/testing).
 
 ## Recommended test layers
 
@@ -27,10 +30,13 @@ Use this page when you are deciding what to verify as you implement Syncular fea
   <Card title="Testing & Confidence" href="/docs/start/testing-and-confidence">
     Evaluation-oriented overview of the test layers, runtime coverage, and operator story
   </Card>
-  <Card title="Testing Section" href="/docs/testing">
-    Canonical testkit reference, primitives, and runner-agnostic examples
+  <Card title="JavaScript Testing" href="/docs/javascript/testing">
+    @syncular/testkit reference, primitives, and runner-agnostic examples
   </Card>
-  <Card title="Runtime Testing" href="/docs/testing/runtime">
+  <Card title="Rust Testkit" href="/docs/rust/testing">
+    syncular-testkit fixtures for generated Rust/native clients
+  </Card>
+  <Card title="Runtime Testing" href="/docs/javascript/testing/runtime">
     Runtime-safe patterns for node, deno, and cloudflare
   </Card>
   <Card title="Troubleshooting" href="/docs/operate/troubleshooting">

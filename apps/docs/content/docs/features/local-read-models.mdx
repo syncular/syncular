@@ -21,8 +21,8 @@ materialized summaries, and app-local indexes.
 ## App contract example
 
 Local read models are declared in the generated app contract. Today that
-contract is TypeScript-authored, then consumed by Rust, browser TypeScript,
-Swift, Kotlin, and JVM generated outputs.
+contract is TypeScript-authored, then consumed by the JavaScript and Rust
+generated clients.
 
 ```ts
 import { countByReadModel, defineSyncularClient } from '@syncular/typegen';
@@ -60,6 +60,6 @@ screens, a typed query builder over the local SQLite replica is usually enough.
 ## Related docs
 
 - [Performance Patterns](/docs/features/performance-patterns)
-- [Browser TypeScript](/docs/client/browser)
-- [Rust Client](/docs/client/rust)
+- [Browser TypeScript](/docs/javascript/browser)
+- [Rust Client](/docs/rust/client-sdk)
 - [Operate: Performance](/docs/operate/performance)

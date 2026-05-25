@@ -19,10 +19,8 @@ signals that should not become durable row history.
 
 ## Binding examples
 
-Presence is the same runtime concept across bindings. The exact host API
-differs: browser and React expose TypeScript helpers, while native hosts expose
-presence through generated Swift/Kotlin/Java wrappers and the native lifecycle
-event stream.
+Presence is the same runtime concept in JavaScript and Rust. Browser and React
+expose TypeScript helpers; Rust exposes presence handles and runtime events.
 
 ### Browser TypeScript
 
@@ -49,13 +47,12 @@ syncular.presence.leave('user:user-1');
 unsubscribe();
 ```
 
-### Native lifecycle
+### Rust runtime
 
-Native bindings expose presence handles and events through the generated
-Swift/Kotlin/Java clients. Tie the handle to a screen or editor lifecycle so
-closing or dropping it leaves presence automatically. Use
-[Native Lifecycle](/docs/client/native#ui-lifecycle) for the host-specific
-shape.
+Rust apps expose presence handles and events through the native runtime. Tie the
+handle to a screen or editor lifecycle so closing or dropping it leaves presence
+automatically. Use [Native Runtime](/docs/rust/native-runtime#presence) for the
+host-specific shape.
 
 ## Watch-outs
 
@@ -68,7 +65,7 @@ shape.
 
 ## Related docs
 
-- [Native Lifecycle](/docs/client/native#ui-lifecycle)
-- [Browser TypeScript](/docs/client/browser#presence)
+- [Native Lifecycle](/docs/rust/native-runtime#ui-lifecycle)
+- [Browser TypeScript](/docs/javascript/browser#presence)
 - [Realtime WebSocket](/docs/server/realtime-websocket)
 - [Collaborative Apps Recipe](/docs/features/recipes/collaborative-apps)

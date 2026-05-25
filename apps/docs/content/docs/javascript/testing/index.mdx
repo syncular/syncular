@@ -1,0 +1,80 @@
+---
+title: JavaScript Testing
+description: Test TypeScript, browser, server, HTTP, websocket, and runtime behavior with @syncular/testkit.
+---
+
+# JavaScript Testing
+
+Use `@syncular/testkit` instead of mocking Syncular internals in TypeScript
+tests. It gives JavaScript apps real local SQLite behavior, real sync
+semantics, deterministic fixtures, HTTP/websocket helpers, and app-owned domain
+assertions.
+
+Use `@syncular/testkit` to test TypeScript/server/browser behavior across:
+
+- fast in-process tests
+- real HTTP integration tests
+- runtime-oriented tests (node, deno, cloudflare)
+
+The TypeScript API is test-runner agnostic. You can use Bun, Vitest, Jest, or
+other runners without changing testkit code. For Rust/native generated clients,
+use [Rust Testkit](/docs/rust/testing).
+
+If you are still evaluating whether Syncular is trustworthy enough to adopt, start with [Testing & Confidence](/docs/start/testing-and-confidence).
+
+If you are still wiring the system itself, use [JavaScript](/docs/javascript),
+[Rust](/docs/rust), [Server](/docs/server), and [Features](/docs/features) for
+implementation guides first.
+
+## Choose your path
+
+<Cards>
+  <Card title="Quick Start" href="/docs/javascript/testing/quick-start">
+    Create fixtures, run push/pull/sync, and assert rows/outbox/conflicts
+  </Card>
+  <Card title="Testkit Primitives" href="/docs/javascript/testing/primitives">
+    Builders, schema parsers, deterministic IDs/clocks, scenario flow, and realtime WS helpers
+  </Card>
+  <Card title="Resource Lifecycle" href="/docs/javascript/testing/lifecycle">
+    Optional `using` resources and callback wrappers to remove `try/finally` cleanup noise
+  </Card>
+  <Card title="Fault Injection" href="/docs/javascript/testing/fault-injection">
+    Simulate latency, flaky transport, and deterministic failures
+  </Card>
+  <Card title="Runtime Patterns" href="/docs/javascript/testing/runtime">
+    Share server handlers and runtime helpers across node/deno/cloudflare tests
+  </Card>
+  <Card title="Rust / Native Testkit" href="/docs/rust/testing">
+    Test generated Rust/native clients with `syncular-testkit` and real runtime clients
+  </Card>
+  <Card title="Real-World Examples" href="/docs/javascript/testing/examples-offline-reconnect">
+    Production-style flows for offline reconnect, realtime collaboration, and runtime release smoke checks
+  </Card>
+  <Card title="CLI" href="/docs/reference/cli">
+    Scaffold projects and run migration workflows from the CLI section
+  </Card>
+</Cards>
+
+## API groups
+
+These groups refer to the TypeScript `@syncular/testkit` package:
+
+| Group | Main exports |
+|---|---|
+| Fixtures | `createSyncFixture`, `createTestServer`, `createTestClient`, `createEngineTestClient` |
+| HTTP fixtures | `createHttpServerFixture`, `createHttpClientFixture`, `createNodeHonoServer` |
+| Protocol + parsing | `createSyncUpsertOperation`, `createSyncSubscription`, `createSyncCombinedRequest`, `parseSyncCombinedResponse` |
+| Lifecycle resources | `withSyncFixture`, `createSyncFixtureResource`, `withTestServer`, `openRealtimeWsResource` |
+| Scenario + deterministic | `createScenarioFlow`, `runPushPullCycle`, `createIdFactory`, `createFakeClock` |
+| Runtime realtime | `createRealtimeWsUrl`, `openRealtimeWs`, `waitForWsJsonMessage`, `closeWsSafe` |
+| Assertions | `assertOutboxEmpty`, `assertConflictCount`, `assertRowExists`, `waitForOutboxEmpty` |
+| Faults | `withFaults`, `withRecording`, `createMockTransport` |
+
+Need a rollout checklist rather than APIs? See [Testing Strategy](/docs/testing/strategy).
+
+## Continue with
+
+- Need implementation guides? Go to [JavaScript](/docs/javascript),
+  [Rust](/docs/rust), [Server](/docs/server), and [Features](/docs/features)
+- Debugging a live system rather than writing tests? Use [Operate](/docs/operate)
+- Want exact helper APIs? Go to [Reference](/docs/reference)

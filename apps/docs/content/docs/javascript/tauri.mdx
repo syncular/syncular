@@ -1,0 +1,65 @@
+---
+title: Tauri
+description: Bridge a Tauri renderer to the Rust-owned Syncular runtime.
+---
+
+# Tauri
+
+Tauri apps are a good fit for Syncular: the Rust host can own durable local
+SQLite, sync, outbox, realtime, blobs, CRDT fields, and encryption while the
+renderer keeps typed Kysely reads and generated mutations.
+
+## Recommended shape
+
+- Keep the Syncular runtime hot in the Tauri Rust process.
+- Expose only generated mutations, generated reads, lifecycle commands, blob
+  APIs, and event subscriptions through preload IPC.
+- Keep raw synced table writes disallowed; writes go through generated Syncular
+  mutations so the outbox, conflict handling, and encryption stay coherent.
+
+## Tauri bridge
+
+Tauri apps can adapt `invoke` and `listen` to the shared TypeScript client
+shape:
+
+```ts
+import { createSyncularTauriClient } from '@syncular/client-tauri';
+
+const syncular = await createSyncularTauriClient<AppDb>({
+  invoke,
+  listen,
+});
+```
+
+The default command names use the `syncular_*` prefix, such as
+`syncular_execute_sql`, `syncular_apply_mutations_commit`,
+`syncular_sync`, and `syncular_set_subscriptions`. Override them with the
+`commands` option if your Tauri host exposes different command names.
+
+## Query and mutation model
+
+Renderer reads stay query-builder based through generated Kysely types, or
+through an app-specific IPC method that runs a generated query on the host.
+Renderer writes call generated mutation helpers:
+
+```ts
+await syncular.mutations.tasks.insert({
+  id: crypto.randomUUID(),
+  title: 'Tauri task',
+  user_id: actorId,
+});
+
+const rows = await syncular.db
+  .selectFrom('tasks')
+  .selectAll()
+  .where('user_id', '=', actorId)
+  .execute();
+```
+
+## Next steps
+
+- [JavaScript quick start](/docs/javascript/quick-start)
+- [Browser TypeScript client](/docs/javascript/browser)
+- [React](/docs/javascript/react)
+- [Native runtime](/docs/rust/native-runtime)
+- [Installation](/docs/start/installation) (package selection)

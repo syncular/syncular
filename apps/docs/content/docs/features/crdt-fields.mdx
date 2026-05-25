@@ -22,8 +22,7 @@ They are not a replacement for the whole relational data model.
 ## App contract example
 
 CRDT fields are declared once in the generated app contract. The generated
-metadata then drives browser TypeScript, Rust, Swift, Kotlin, JVM, and native
-runtime behavior.
+metadata then drives JavaScript, Rust, and native runtime behavior.
 
 ```ts
 tasks: syncedTable({
@@ -51,7 +50,7 @@ undo stack, composition state, scroll position, and WebView bridge UI.
 
 ## Host APIs
 
-Browser, Rust, Swift, and Kotlin expose the same low-level document primitives:
+JavaScript and Rust expose the same low-level document primitives:
 
 - `openCrdtField`
 - `applyCrdtFieldYjsUpdate`
@@ -76,7 +75,7 @@ Use queued APIs from UI hosts so editor bursts do not block the main thread.
 ## Related docs
 
 - [Collaborative Apps Recipe](/docs/features/recipes/collaborative-apps)
-- [Native Rich Editors](/docs/client/native#rich-editors)
-- [Browser Rich Editors](/docs/client/browser#rich-editors)
+- [Native Rich Editors](/docs/rust/native-runtime#rich-editors)
+- [Browser Rich Editors](/docs/javascript/browser#rich-editors)
 - [Field Encryption](/docs/features/field-encryption)
 - [Testing](/docs/testing)

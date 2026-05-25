@@ -1,0 +1,98 @@
+---
+title: Quick Start
+description: Generate and use the TypeScript Syncular client.
+---
+
+# JavaScript Quick Start
+
+JavaScript apps use generated TypeScript types over a generic Syncular runtime.
+Reads stay query-builder based through Kysely. Writes go through generated
+Syncular mutations so local rows, outbox commits, conflicts, blobs, CRDT fields,
+and encryption stay coherent.
+
+## 1. Define the client contract
+
+Create `syncular.app.ts` in your app:
+
+```ts
+import { defineSyncularClient, scope, syncedTable } from '@syncular/typegen';
+
+export const app = defineSyncularClient({
+  typescriptOutputPath: 'src/generated/syncular.browser.ts',
+  tables: {
+    tasks: syncedTable({
+      table: 'tasks',
+      subscriptionId: 'tasks-by-user',
+      primaryKey: 'id',
+      serverVersion: 'server_version',
+      scopes: [scope('user_id', { source: 'actorId', required: true })],
+    }),
+  },
+});
+```
+
+The generated client is app code. Keep it in your app repo so TypeScript,
+Kysely, React, and platform bridge code can see the concrete table types.
+
+## 2. Generate TypeScript
+
+```bash
+syncular-typegen codegen-config --app ./syncular.app.ts
+```
+
+Run the check form in CI:
+
+```bash
+syncular-typegen codegen-config --app ./syncular.app.ts --check
+```
+
+## 3. Open the browser client
+
+```ts
+import { createSyncularAppDatabase } from './src/generated/syncular.browser';
+
+const syncular = await createSyncularAppDatabase({
+  config: {
+    baseUrl: '/sync',
+    actorId: 'user-1',
+    clientId: 'device-1',
+    fileName: 'app.sqlite',
+  },
+  getHeaders: async () => ({
+    authorization: `Bearer ${await auth.accessToken()}`,
+  }),
+});
+```
+
+## 4. Query with Kysely
+
+```ts
+const rows = await syncular.db
+  .selectFrom('tasks')
+  .select(['id', 'title', 'completed'])
+  .where('user_id', '=', 'user-1')
+  .orderBy('server_version', 'desc')
+  .execute();
+```
+
+## 5. Mutate through Syncular
+
+```ts
+await syncular.mutations.tasks.insert({
+  id: crypto.randomUUID(),
+  title: 'Write through Syncular',
+  completed: 0,
+  user_id: 'user-1',
+});
+
+await syncular.mutations.tasks.update(taskId, {
+  completed: 1,
+});
+```
+
+## Next
+
+- Use [Browser](/docs/javascript/browser) for Worker, realtime, row delta, blob,
+  presence, and CRDT details.
+- Use [React](/docs/javascript/react) for hooks.
+- Use [JavaScript Testing](/docs/javascript/testing) for `@syncular/testkit`.

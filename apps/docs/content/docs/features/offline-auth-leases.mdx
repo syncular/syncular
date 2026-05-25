@@ -23,9 +23,8 @@ and bounded, while the server still owns final acceptance.
 
 ## Binding examples
 
-The lease contract is binding-neutral. Browser TypeScript, Rust, Swift, Kotlin,
-JVM, React Native, and desktop clients all store lease provenance locally and
-send it with generated leased mutations.
+The lease contract is runtime-neutral. JavaScript and Rust clients store lease
+provenance locally and send it with generated leased mutations.
 
 ### Browser TypeScript
 
@@ -43,9 +42,8 @@ await syncular.leasedMutations.tasks.update(taskId, {
 });
 ```
 
-React apps can use `useLeasedMutations()`. Rust, Swift, Kotlin, and Tauri
-bindings expose the generated leased mutation surface and auth lease JSON
-methods.
+React apps can use `useLeasedMutations()`. Rust apps use the generated leased
+mutation surface and auth lease JSON methods.
 
 ## Server flow
 
@@ -65,6 +63,6 @@ business policy before applying the operation.
 ## Related docs
 
 - [Scopes And Auth](/docs/server/scopes-and-auth)
-- [Native Lifecycle](/docs/client/native)
-- [React](/docs/client/react)
+- [Native Lifecycle](/docs/rust/native-runtime)
+- [React](/docs/javascript/react)
 - [Offline Field App Recipe](/docs/features/recipes/offline-field-app)

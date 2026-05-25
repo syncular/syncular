@@ -133,7 +133,6 @@ if live_tasks.refresh_if_changed(&mut client, &report)? {
 }
 ```
 
-Use [Native lifecycle](/docs/client/native) when a Rust app wants the UI worker,
-event stream, queued commands, presence handles, and realtime lifecycle used by
-Swift/Kotlin/JVM hosts.
-
+Use [Native Runtime](/docs/rust/native-runtime) when a Rust app wants the UI
+worker, event stream, queued commands, presence handles, and persistent
+realtime lifecycle.
