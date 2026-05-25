@@ -1,18 +1,18 @@
 import { describe, expect, it } from 'bun:test';
 import type { SyncOperation } from '@syncular/core';
+import type {
+  TaskMutationPayloadV6,
+  TaskRowV6,
+} from '../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
 import {
   createSyncularAppServerHandler,
   syncularGeneratedApp,
   syncularGeneratedClientSchemaForVersion,
   syncularGeneratedClientSchemaSupport,
-  syncularProjectGeneratedClientRowForVersion,
+  syncularGeneratedSchemaVersion,
   syncularGeneratedSnapshotBinaryColumnsForVersion,
   syncularGeneratedSnapshotBinaryEncoderForVersion,
-  syncularGeneratedSchemaVersion,
-} from '../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
-import type {
-  TaskMutationPayloadV6,
-  TaskRowV6,
+  syncularProjectGeneratedClientRowForVersion,
 } from '../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
 import type {
   ApplyOperationResult,
@@ -41,8 +41,9 @@ interface TestAuth extends SyncServerAuth {
 }
 
 function createSnapshotContext(
-  overrides: Partial<ServerSnapshotContext<DivergentServerDb, string, TestAuth>> =
-    {}
+  overrides: Partial<
+    ServerSnapshotContext<DivergentServerDb, string, TestAuth>
+  > = {}
 ): ServerSnapshotContext<DivergentServerDb, string, TestAuth> {
   const auth: TestAuth = {
     actorId: 'user-1',
@@ -61,8 +62,9 @@ function createSnapshotContext(
 }
 
 function createApplyContext(
-  overrides: Partial<ServerApplyOperationContext<DivergentServerDb, TestAuth>> =
-    {}
+  overrides: Partial<
+    ServerApplyOperationContext<DivergentServerDb, TestAuth>
+  > = {}
 ): ServerApplyOperationContext<DivergentServerDb, TestAuth> {
   const auth: TestAuth = {
     actorId: 'user-1',
@@ -148,59 +150,61 @@ function appliedResult(
 describe('generated app server handler', () => {
   it('delegates divergent server/client table mapping to app-owned snapshot and apply handlers', async () => {
     const translatedWrites: DocumentsTable[] = [];
-    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: syncularGeneratedApp.tables.tasks,
-      resolveScopes: (ctx) => ({
-        user_id: [ctx.actorId],
-        project_id: ctx.auth.workspaceIds,
-      }),
-      async snapshot(ctx) {
-        expect(ctx.scopeValues).toEqual({
-          user_id: 'user-1',
-          project_id: 'project-1',
-        });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>(
+      {
+        table: syncularGeneratedApp.tables.tasks,
+        resolveScopes: (ctx) => ({
+          user_id: [ctx.actorId],
+          project_id: ctx.auth.workspaceIds,
+        }),
+        async snapshot(ctx) {
+          expect(ctx.scopeValues).toEqual({
+            user_id: 'user-1',
+            project_id: 'project-1',
+          });
 
-        const serverRows: DocumentsTable[] = [
-          {
-            id: 'task-1',
-            content: 'Server title',
-            done: 0,
-            owner_id: ctx.actorId,
-            workspace_id: 'project-1',
-            revision: 3,
-          },
-        ];
+          const serverRows: DocumentsTable[] = [
+            {
+              id: 'task-1',
+              content: 'Server title',
+              done: 0,
+              owner_id: ctx.actorId,
+              workspace_id: 'project-1',
+              revision: 3,
+            },
+          ];
 
-        return {
-          rows: serverRows.map((row) => ({
-            id: row.id,
-            title: row.content,
-            completed: row.done,
-            user_id: row.owner_id,
-            project_id: row.workspace_id,
-            server_version: row.revision,
-            image: null,
-            title_yjs_state: null,
-            description: null,
-          })),
-          nextCursor: null,
-        };
-      },
-      async applyOperation(_ctx, op, opIndex) {
-        translatedWrites.push({
-          id: op.row_id,
-          content: String(op.payload?.title),
-          done: Number(op.payload?.completed),
-          owner_id: String(op.payload?.user_id),
-          workspace_id:
-            op.payload?.project_id == null
-              ? null
-              : String(op.payload.project_id),
-          revision: 5,
-        });
-        return appliedResult(opIndex, op);
-      },
-    });
+          return {
+            rows: serverRows.map((row) => ({
+              id: row.id,
+              title: row.content,
+              completed: row.done,
+              user_id: row.owner_id,
+              project_id: row.workspace_id,
+              server_version: row.revision,
+              image: null,
+              title_yjs_state: null,
+              description: null,
+            })),
+            nextCursor: null,
+          };
+        },
+        async applyOperation(_ctx, op, opIndex) {
+          translatedWrites.push({
+            id: op.row_id,
+            content: String(op.payload?.title),
+            done: Number(op.payload?.completed),
+            owner_id: String(op.payload?.user_id),
+            workspace_id:
+              op.payload?.project_id == null
+                ? null
+                : String(op.payload.project_id),
+            revision: 5,
+          });
+          return appliedResult(opIndex, op);
+        },
+      }
+    );
 
     expect(handler.table).toBe('tasks');
     expect(handler.primaryKeyColumn).toBe('id');
@@ -219,9 +223,7 @@ describe('generated app server handler', () => {
       ]
     );
     expect(
-      handler
-        .snapshotBinaryColumnsForVersion?.(6)
-        ?.map((column) => column.name)
+      handler.snapshotBinaryColumnsForVersion?.(6)?.map((column) => column.name)
     ).toEqual(
       syncularGeneratedSnapshotBinaryColumnsForVersion('tasks', 6)?.map(
         (column) => column.name
@@ -282,30 +284,32 @@ describe('generated app server handler', () => {
   });
 
   it('validates snapshot rows against the targeted generated client schema', async () => {
-    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: 'tasks',
-      resolveScopes: () => ({ user_id: ['user-1'] }),
-      async snapshot() {
-        return {
-          rows: [
-            {
-              id: 'task-bad',
-              title: null,
-              completed: 0,
-              user_id: 'user-1',
-              project_id: null,
-              server_version: 1,
-              image: null,
-              title_yjs_state: null,
-            },
-          ],
-          nextCursor: null,
-        };
-      },
-      async applyOperation(_ctx, op, opIndex) {
-        return appliedResult(opIndex, op);
-      },
-    });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>(
+      {
+        table: 'tasks',
+        resolveScopes: () => ({ user_id: ['user-1'] }),
+        async snapshot() {
+          return {
+            rows: [
+              {
+                id: 'task-bad',
+                title: null,
+                completed: 0,
+                user_id: 'user-1',
+                project_id: null,
+                server_version: 1,
+                image: null,
+                title_yjs_state: null,
+              },
+            ],
+            nextCursor: null,
+          };
+        },
+        async applyOperation(_ctx, op, opIndex) {
+          return appliedResult(opIndex, op);
+        },
+      }
+    );
 
     await expect(
       handler.snapshot(createSnapshotContext(), undefined)
@@ -314,17 +318,19 @@ describe('generated app server handler', () => {
 
   it('rejects unsupported client schema versions before custom snapshot code runs', async () => {
     let called = false;
-    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: 'tasks',
-      resolveScopes: () => ({ user_id: ['user-1'] }),
-      async snapshot() {
-        called = true;
-        return { rows: [], nextCursor: null };
-      },
-      async applyOperation(_ctx, op, opIndex) {
-        return appliedResult(opIndex, op);
-      },
-    });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>(
+      {
+        table: 'tasks',
+        resolveScopes: () => ({ user_id: ['user-1'] }),
+        async snapshot() {
+          called = true;
+          return { rows: [], nextCursor: null };
+        },
+        async applyOperation(_ctx, op, opIndex) {
+          return appliedResult(opIndex, op);
+        },
+      }
+    );
 
     await expect(
       handler.snapshot(
@@ -349,17 +355,19 @@ describe('generated app server handler', () => {
       image: null,
       title_yjs_state: null,
     };
-    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: 'tasks',
-      resolveScopes: () => ({ user_id: ['user-1'] }),
-      async snapshot(ctx) {
-        seenSchemaVersion = ctx.schemaVersion;
-        return { rows: [legacyRow], nextCursor: null };
-      },
-      async applyOperation(_ctx, op, opIndex) {
-        return appliedResult(opIndex, op);
-      },
-    });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>(
+      {
+        table: 'tasks',
+        resolveScopes: () => ({ user_id: ['user-1'] }),
+        async snapshot(ctx) {
+          seenSchemaVersion = ctx.schemaVersion;
+          return { rows: [legacyRow], nextCursor: null };
+        },
+        async applyOperation(_ctx, op, opIndex) {
+          return appliedResult(opIndex, op);
+        },
+      }
+    );
 
     await expect(
       handler.snapshot(createSnapshotContext({ schemaVersion: 6 }), undefined)
@@ -379,16 +387,18 @@ describe('generated app server handler', () => {
       title_yjs_state: null,
       description: 'current-only field',
     };
-    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: 'tasks',
-      resolveScopes: () => ({ user_id: ['user-1'] }),
-      async snapshot() {
-        return { rows: [currentShapeRow], nextCursor: null };
-      },
-      async applyOperation(_ctx, op, opIndex) {
-        return appliedResult(opIndex, op);
-      },
-    });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>(
+      {
+        table: 'tasks',
+        resolveScopes: () => ({ user_id: ['user-1'] }),
+        async snapshot() {
+          return { rows: [currentShapeRow], nextCursor: null };
+        },
+        async applyOperation(_ctx, op, opIndex) {
+          return appliedResult(opIndex, op);
+        },
+      }
+    );
 
     await expect(
       handler.snapshot(createSnapshotContext({ schemaVersion: 6 }), undefined)
@@ -448,21 +458,23 @@ describe('generated app server handler', () => {
       },
       emittedChanges: [],
     });
-    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: 'tasks',
-      resolveScopes: () => ({ user_id: ['user-1'] }),
-      async snapshot() {
-        return { rows: [], nextCursor: null };
-      },
-      async applyOperation(_ctx, _op, opIndex) {
-        return conflictResult(opIndex, currentShapeRow);
-      },
-      async applyOperationBatch(_ctx, operations) {
-        return operations.map(({ opIndex }) =>
-          conflictResult(opIndex, currentShapeRow)
-        );
-      },
-    });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>(
+      {
+        table: 'tasks',
+        resolveScopes: () => ({ user_id: ['user-1'] }),
+        async snapshot() {
+          return { rows: [], nextCursor: null };
+        },
+        async applyOperation(_ctx, _op, opIndex) {
+          return conflictResult(opIndex, currentShapeRow);
+        },
+        async applyOperationBatch(_ctx, operations) {
+          return operations.map(({ opIndex }) =>
+            conflictResult(opIndex, currentShapeRow)
+          );
+        },
+      }
+    );
 
     await expect(
       handler.applyOperation(
@@ -473,15 +485,12 @@ describe('generated app server handler', () => {
     ).rejects.toThrow('tasks.description: Unknown column');
 
     await expect(
-      handler.applyOperationBatch?.(
-        createApplyContext({ schemaVersion: 6 }),
-        [
-          {
-            op: createTaskOperation({ row_id: 'task-v6-conflict' }),
-            opIndex: 11,
-          },
-        ]
-      )
+      handler.applyOperationBatch?.(createApplyContext({ schemaVersion: 6 }), [
+        {
+          op: createTaskOperation({ row_id: 'task-v6-conflict' }),
+          opIndex: 11,
+        },
+      ])
     ).rejects.toThrow('tasks.description: Unknown column');
 
     const projected = syncularProjectGeneratedClientRowForVersion(
@@ -503,7 +512,9 @@ describe('generated app server handler', () => {
         return conflictResult(opIndex, projected);
       },
       async applyOperationBatch(_ctx, operations) {
-        return operations.map(({ opIndex }) => conflictResult(opIndex, projected));
+        return operations.map(({ opIndex }) =>
+          conflictResult(opIndex, projected)
+        );
       },
     });
 
@@ -537,28 +548,30 @@ describe('generated app server handler', () => {
   });
 
   it('requires generated handlers to emit canonical current rows', async () => {
-    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: 'tasks',
-      resolveScopes: () => ({ user_id: ['user-1'] }),
-      async snapshot() {
-        return { rows: [], nextCursor: null };
-      },
-      async applyOperation(_ctx, op, opIndex) {
-        return {
-          result: { opIndex, status: 'applied' },
-          emittedChanges: [
-            {
-              table: op.table,
-              row_id: op.row_id,
-              op: 'upsert',
-              row_json: op.payload,
-              row_version: 9,
-              scopes: { user_id: 'user-1', project_id: 'project-1' },
-            },
-          ],
-        };
-      },
-    });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>(
+      {
+        table: 'tasks',
+        resolveScopes: () => ({ user_id: ['user-1'] }),
+        async snapshot() {
+          return { rows: [], nextCursor: null };
+        },
+        async applyOperation(_ctx, op, opIndex) {
+          return {
+            result: { opIndex, status: 'applied' },
+            emittedChanges: [
+              {
+                table: op.table,
+                row_id: op.row_id,
+                op: 'upsert',
+                row_json: op.payload,
+                row_version: 9,
+                scopes: { user_id: 'user-1', project_id: 'project-1' },
+              },
+            ],
+          };
+        },
+      }
+    );
 
     await expect(
       handler.applyOperation(createApplyContext(), createTaskOperation(), 14)
@@ -580,16 +593,18 @@ describe('generated app server handler', () => {
       title_yjs_state: null,
       description: 'current-only pull field',
     };
-    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: 'tasks',
-      resolveScopes: () => ({ user_id: ['user-1'] }),
-      async snapshot() {
-        return { rows: [], nextCursor: null };
-      },
-      async applyOperation(_ctx, op, opIndex) {
-        return appliedResult(opIndex, op);
-      },
-    });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>(
+      {
+        table: 'tasks',
+        resolveScopes: () => ({ user_id: ['user-1'] }),
+        async snapshot() {
+          return { rows: [], nextCursor: null };
+        },
+        async applyOperation(_ctx, op, opIndex) {
+          return appliedResult(opIndex, op);
+        },
+      }
+    );
 
     const projected = handler.projectChangeForVersion?.(
       {
@@ -611,17 +626,19 @@ describe('generated app server handler', () => {
 
   it('rejects unsupported client schema versions before custom apply code runs', async () => {
     let called = false;
-    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: 'tasks',
-      resolveScopes: () => ({ user_id: ['user-1'] }),
-      async snapshot() {
-        return { rows: [], nextCursor: null };
-      },
-      async applyOperation(_ctx, op, opIndex) {
-        called = true;
-        return appliedResult(opIndex, op);
-      },
-    });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>(
+      {
+        table: 'tasks',
+        resolveScopes: () => ({ user_id: ['user-1'] }),
+        async snapshot() {
+          return { rows: [], nextCursor: null };
+        },
+        async applyOperation(_ctx, op, opIndex) {
+          called = true;
+          return appliedResult(opIndex, op);
+        },
+      }
+    );
 
     const result = await handler.applyOperation(
       createApplyContext({
@@ -678,25 +695,27 @@ describe('generated app server handler', () => {
       | { schemaVersion: number }
       | null = null;
 
-    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: 'tasks',
-      resolveScopes: () => ({ user_id: ['user-1'] }),
-      async snapshot() {
-        return { rows: [legacyRow], nextCursor: null };
-      },
-      async applyOperation(_ctx, op, opIndex) {
-        if (_ctx.schemaVersion === 6) {
-          branch = {
-            schemaVersion: 6,
-            payload: op.payload as TaskMutationPayloadV6,
-            row: legacyRow,
-          };
-        } else {
-          branch = { schemaVersion: _ctx.schemaVersion };
-        }
-        return appliedResult(opIndex, op);
-      },
-    });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>(
+      {
+        table: 'tasks',
+        resolveScopes: () => ({ user_id: ['user-1'] }),
+        async snapshot() {
+          return { rows: [legacyRow], nextCursor: null };
+        },
+        async applyOperation(_ctx, op, opIndex) {
+          if (_ctx.schemaVersion === 6) {
+            branch = {
+              schemaVersion: 6,
+              payload: op.payload as TaskMutationPayloadV6,
+              row: legacyRow,
+            };
+          } else {
+            branch = { schemaVersion: _ctx.schemaVersion };
+          }
+          return appliedResult(opIndex, op);
+        },
+      }
+    );
 
     const result = await handler.applyOperation(
       createApplyContext({ schemaVersion: 6 }),
@@ -714,17 +733,19 @@ describe('generated app server handler', () => {
 
   it('rejects wrong tables and invalid mutation payloads before custom apply code runs', async () => {
     let callCount = 0;
-    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: 'tasks',
-      resolveScopes: () => ({ user_id: ['user-1'] }),
-      async snapshot() {
-        return { rows: [], nextCursor: null };
-      },
-      async applyOperation(_ctx, op, opIndex) {
-        callCount += 1;
-        return appliedResult(opIndex, op);
-      },
-    });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>(
+      {
+        table: 'tasks',
+        resolveScopes: () => ({ user_id: ['user-1'] }),
+        async snapshot() {
+          return { rows: [], nextCursor: null };
+        },
+        async applyOperation(_ctx, op, opIndex) {
+          callCount += 1;
+          return appliedResult(opIndex, op);
+        },
+      }
+    );
 
     const wrongTable = await handler.applyOperation(
       createApplyContext(),
@@ -757,7 +778,9 @@ describe('generated app server handler', () => {
       emittedChanges: [],
     });
     expect(
-      invalidPayload.result.status === 'error' ? invalidPayload.result.error : ''
+      invalidPayload.result.status === 'error'
+        ? invalidPayload.result.error
+        : ''
     ).toContain('tasks.missing_column: Unknown column');
 
     const missingUpsertPayload = await handler.applyOperation(
@@ -805,20 +828,24 @@ describe('generated app server handler', () => {
 
   it('applies the same validation gate to generated batch handlers', async () => {
     let delegated: SyncOperation[] = [];
-    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>({
-      table: 'tasks',
-      resolveScopes: () => ({ user_id: ['user-1'] }),
-      async snapshot() {
-        return { rows: [], nextCursor: null };
-      },
-      async applyOperation(_ctx, op, opIndex) {
-        return appliedResult(opIndex, op);
-      },
-      async applyOperationBatch(_ctx, operations) {
-        delegated = operations.map(({ op }) => op);
-        return operations.map(({ op, opIndex }) => appliedResult(opIndex, op));
-      },
-    });
+    const handler = createSyncularAppServerHandler<DivergentServerDb, TestAuth>(
+      {
+        table: 'tasks',
+        resolveScopes: () => ({ user_id: ['user-1'] }),
+        async snapshot() {
+          return { rows: [], nextCursor: null };
+        },
+        async applyOperation(_ctx, op, opIndex) {
+          return appliedResult(opIndex, op);
+        },
+        async applyOperationBatch(_ctx, operations) {
+          delegated = operations.map(({ op }) => op);
+          return operations.map(({ op, opIndex }) =>
+            appliedResult(opIndex, op)
+          );
+        },
+      }
+    );
 
     const valid = await handler.applyOperationBatch?.(createApplyContext(), [
       { op: createTaskOperation({ row_id: 'task-a' }), opIndex: 0 },

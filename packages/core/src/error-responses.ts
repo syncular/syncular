@@ -154,8 +154,7 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     category: 'schema-mismatch',
     retryable: false,
     recommendedAction: 'upgradeClient',
-    message:
-      'The client schema version is no longer supported by this server.',
+    message: 'The client schema version is no longer supported by this server.',
   },
   'sync.integrity_rejected': {
     category: 'integrity-rejected',

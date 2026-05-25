@@ -6,9 +6,9 @@ import {
 } from '@syncular/core';
 import { Kysely, sql } from 'kysely';
 import {
-  ensureSyncularAppBaseSchema,
   ensureSyncularAppSchema,
   type SyncularAppDb,
+  syncularGeneratedAppMigrations,
   syncularGeneratedCodecs,
   syncularGeneratedSchemaVersion,
   syncularGeneratedTableConfig,
@@ -474,7 +474,20 @@ describe('generated Syncular schema migrations', () => {
     });
 
     try {
-      await ensureSyncularAppBaseSchema(db);
+      const initialMigration = syncularGeneratedAppMigrations.find(
+        (migration) => migration.schemaVersion === 1
+      );
+      expect(initialMigration).toBeDefined();
+      for (const statement of initialMigration!.appSql) {
+        await sql.raw(statement).execute(db);
+      }
+      await db.schema
+        .createTable('syncular_app_schema')
+        .ifNotExists()
+        .addColumn('schema_id', 'text', (col) => col.primaryKey())
+        .addColumn('schema_version', 'integer', (col) => col.notNull())
+        .addColumn('updated_at', 'bigint', (col) => col.notNull())
+        .execute();
       await sql`
         insert into syncular_app_schema (schema_id, schema_version, updated_at)
         values ('syncular-app', 1, 1)

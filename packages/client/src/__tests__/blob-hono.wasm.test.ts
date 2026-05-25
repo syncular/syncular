@@ -5,6 +5,7 @@ import {
   createDatabase,
 } from '@syncular/core';
 import type { Kysely } from 'kysely';
+import { syncularGeneratedApp } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import {
   type BlobTokenSigner,
@@ -346,6 +347,8 @@ describe('Syncular Rust-owned SQLite blobs against Hono routes', () => {
         fileName: `${options.clientId}.sqlite`,
         storage: 'memory',
         clearOnInit: true,
+        schemaVersion: syncularGeneratedApp.currentSchemaVersion,
+        appSchema: syncularGeneratedApp.appSchema,
       },
     });
     clients.push(client);

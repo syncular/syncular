@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import type { SyncOperation } from '@syncular/core';
+import type {
+  ServerApplyOperationContext,
+  ServerSnapshotContext,
+} from '@syncular/server';
 import {
   syncularGeneratedClientSchemaSupport,
   syncularGeneratedSchemaVersion,
@@ -13,10 +17,6 @@ import {
   type TodoServerDb,
   type TodoTaskRepository,
 } from './server-handlers';
-import type {
-  ServerApplyOperationContext,
-  ServerSnapshotContext,
-} from '@syncular/server';
 
 describe('todo app generated server handler example', () => {
   it('projects authoritative server rows to the requested client schema', async () => {
@@ -127,7 +127,7 @@ function createMemoryTodoTaskRepository(
         owner_id: String(payload.user_id ?? existing?.owner_id ?? args.actorId),
         workspace_id:
           payload.project_id === undefined
-            ? existing?.workspace_id ?? null
+            ? (existing?.workspace_id ?? null)
             : payload.project_id == null
               ? null
               : String(payload.project_id),
@@ -136,13 +136,13 @@ function createMemoryTodoTaskRepository(
         title_yjs_state:
           typeof payload.title_yjs_state === 'string'
             ? payload.title_yjs_state
-            : existing?.title_yjs_state ?? null,
+            : (existing?.title_yjs_state ?? null),
         description:
           'description' in payload
             ? payload.description == null
               ? null
               : String(payload.description)
-            : existing?.description ?? null,
+            : (existing?.description ?? null),
       };
       rows.set(row.id, row);
       return row;
@@ -159,8 +159,9 @@ function createMemoryTodoTaskRepository(
 }
 
 function snapshotContext(
-  overrides: Partial<ServerSnapshotContext<TodoServerDb, string, TodoServerAuth>> =
-    {}
+  overrides: Partial<
+    ServerSnapshotContext<TodoServerDb, string, TodoServerAuth>
+  > = {}
 ): ServerSnapshotContext<TodoServerDb, string, TodoServerAuth> {
   const auth: TodoServerAuth = {
     actorId: 'user-1',
@@ -179,8 +180,9 @@ function snapshotContext(
 }
 
 function applyContext(
-  overrides: Partial<ServerApplyOperationContext<TodoServerDb, TodoServerAuth>> =
-    {}
+  overrides: Partial<
+    ServerApplyOperationContext<TodoServerDb, TodoServerAuth>
+  > = {}
 ): ServerApplyOperationContext<TodoServerDb, TodoServerAuth> {
   const auth: TodoServerAuth = {
     actorId: 'user-1',

@@ -137,11 +137,11 @@ export async function createHonoSyncHarness(
       await db
         .insertInto('tasks')
         .values({
-            id: task.id,
-            title: task.title,
-            description: task.description ?? null,
-            completed: task.completed ?? 0,
-            user_id: task.actorId,
+          id: task.id,
+          title: task.title,
+          description: task.description ?? null,
+          completed: task.completed ?? 0,
+          user_id: task.actorId,
           project_id: task.projectId ?? null,
           server_version: task.serverVersion ?? 1,
           image: task.image ?? null,

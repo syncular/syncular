@@ -1,18 +1,16 @@
 import { describe, expect, it } from 'bun:test';
 import { type BlobRef, codecs } from '@syncular/core';
-import { sql, type Kysely } from 'kysely';
+import { type Kysely, sql } from 'kysely';
+import { syncularGeneratedApp as todoGeneratedClientApp } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import {
   createSyncularAppServerHandler as createTodoAppServerHandler,
-  syncularGeneratedApp as todoGeneratedServerApp,
+  type SyncularGeneratedClientSchemaMetadata as TodoGeneratedClientSchemaMetadata,
   syncularGeneratedClientSchemaForVersion as todoGeneratedClientSchemaForVersion,
   syncularGeneratedClientSchemaSupport as todoGeneratedClientSchemaSupport,
-  syncularProjectGeneratedClientRowForVersion as todoProjectGeneratedClientRowForVersion,
   syncularGeneratedSchemaVersion as todoGeneratedSchemaVersion,
-  type SyncularGeneratedClientSchemaMetadata as TodoGeneratedClientSchemaMetadata,
+  syncularGeneratedApp as todoGeneratedServerApp,
+  syncularProjectGeneratedClientRowForVersion as todoProjectGeneratedClientRowForVersion,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
-import {
-  syncularGeneratedApp as todoGeneratedClientApp,
-} from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import {
   createServerHandler,
   createServerHandlerCollection,
@@ -341,22 +339,24 @@ describe('Syncular core WASM artifact', () => {
   it('opens a generated local-sync-compatible client without a server', async () => {
     const actorId = 'actor-generated-local';
     const projectId = 'project-generated-local';
-    const syncular = await createSyncularDatabase<GeneratedTodoCurrentClientDb>({
-      config: {
-        mode: 'local-sync-compatible',
-        actorId,
-        projectId,
-        clientId: `client-generated-local-${Date.now()}`,
-        storage: 'memory',
-        clearOnInit: true,
-        schemaVersion: todoGeneratedSchemaVersion,
-        appSchema: todoGeneratedClientApp.appSchema,
-      },
-      codecs: todoGeneratedClientApp.codecs,
-      appTables: todoGeneratedClientApp.tableNames,
-      tableConfig: todoGeneratedClientApp.tableConfig,
-      requiredRuntimeFeatures: ['web-owned-sqlite'],
-    });
+    const syncular = await createSyncularDatabase<GeneratedTodoCurrentClientDb>(
+      {
+        config: {
+          mode: 'local-sync-compatible',
+          actorId,
+          projectId,
+          clientId: `client-generated-local-${Date.now()}`,
+          storage: 'memory',
+          clearOnInit: true,
+          schemaVersion: todoGeneratedSchemaVersion,
+          appSchema: todoGeneratedClientApp.appSchema,
+        },
+        codecs: todoGeneratedClientApp.codecs,
+        appTables: todoGeneratedClientApp.tableNames,
+        tableConfig: todoGeneratedClientApp.tableConfig,
+        requiredRuntimeFeatures: ['web-owned-sqlite'],
+      }
+    );
 
     try {
       await syncular.mutations.tasks.insert({
@@ -501,13 +501,12 @@ describe('Syncular core WASM artifact', () => {
           server_version: 0,
         })
       ).rejects.toThrow('sync.auth_lease_expired');
-      await expect(
-        syncular.db
-          .selectFrom('basic_tasks')
-          .select(['id'])
-          .where('id', '=', 'task-core-leased-expired')
-          .execute()
-      ).resolves.toEqual([]);
+      const expiredRows = await syncular.db
+        .selectFrom('basic_tasks')
+        .select(['id'])
+        .where('id', '=', 'task-core-leased-expired')
+        .execute();
+      expect(expiredRows).toEqual([]);
 
       await syncular.client.upsertAuthLease(
         authLease({
@@ -629,9 +628,7 @@ describe('Syncular core WASM artifact', () => {
     const token = 'token-generated-old-client';
     const projectId = 'project-generated-old-client';
     const oldSchemaVersion = todoGeneratedClientSchemaSupport.minSupported;
-    const oldTaskColumns = todoGeneratedClientSchemaForVersion(
-      oldSchemaVersion
-    )
+    const oldTaskColumns = todoGeneratedClientSchemaForVersion(oldSchemaVersion)
       ?.tables.find((table) => table.name === 'tasks')
       ?.columns.map((column) => column.name);
     expect(oldTaskColumns).toContain('title_yjs_state');

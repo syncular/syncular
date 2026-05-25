@@ -1,8 +1,5 @@
 import { describe, expect, it } from 'bun:test';
-import {
-  issueSyncularAuthLease,
-  validateSyncularAuthLeaseIssueRequestAgainstAppSchema,
-} from './auth-leases';
+import { issueSyncularAuthLease } from './auth-leases';
 import type { SyncularAppSchema } from './types';
 
 describe('Syncular auth leases', () => {
@@ -93,10 +90,18 @@ describe('Syncular auth leases', () => {
     );
   });
 
-  it('requires generated required scopes in auth lease requests', () => {
-    expect(() =>
-      validateSyncularAuthLeaseIssueRequestAgainstAppSchema(
-        {
+  it('requires generated required scopes in auth lease requests', async () => {
+    let fetchCount = 0;
+    await expect(
+      issueSyncularAuthLease({
+        baseUrl: 'https://example.test/sync',
+        headers: {},
+        appSchema: authLeaseAppSchema,
+        fetchImpl: (async () => {
+          fetchCount += 1;
+          return Response.json({});
+        }) as typeof fetch,
+        request: {
           schemaVersion: 8,
           scopes: [
             {
@@ -107,9 +112,9 @@ describe('Syncular auth leases', () => {
             },
           ],
         },
-        authLeaseAppSchema
-      )
-    ).toThrow('missing required generated scope user_id');
+      })
+    ).rejects.toThrow('missing required generated scope user_id');
+    expect(fetchCount).toBe(0);
   });
 });
 

@@ -42,7 +42,9 @@ const args = process.argv.slice(2);
 const dryRun = args.includes('--dry-run');
 const version = resolveVersion(args.filter((arg) => arg !== '--dry-run'));
 if (!version) {
-  console.error('Usage: bun scripts/stamp-versions.ts <suffix> | --version <version>');
+  console.error(
+    'Usage: bun scripts/stamp-versions.ts <suffix> | --version <version>'
+  );
   process.exit(1);
 }
 

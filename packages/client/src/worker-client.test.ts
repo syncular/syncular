@@ -753,6 +753,21 @@ describe('Syncular worker client', () => {
       network,
     });
 
+    const open = client.open({
+      baseUrl: '/sync',
+      actorId: 'actor',
+      clientId: 'client',
+    });
+    await waitForMessages(worker, 1);
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: true,
+    });
+    await open;
+    worker.messages.length = 0;
+
     worker.emit({
       protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       type: 'bootstrapChanged',

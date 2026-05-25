@@ -324,7 +324,10 @@ describe('createConsoleGatewayRoutes live fan-in', () => {
     });
 
     const response = await app.request('http://localhost/console/events/live', {
-      headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      headers: {
+        Authorization: `Bearer ${CONSOLE_TOKEN}`,
+        Origin: 'https://blocked.syncular.test',
+      },
     });
 
     expect(response.status).toBe(403);

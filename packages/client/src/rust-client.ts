@@ -18,6 +18,7 @@ import { SyncularClientError, toSyncularClientError } from './errors';
 import { createSyncularRuntimeInfo } from './runtime-contract';
 import { assertSyncularReadonlySql } from './sql-safety';
 import type {
+  ResolvedSyncularClientConfig,
   SyncularApplyYjsEnvelopeToPayloadArgs,
   SyncularApplyYjsTextUpdatesArgs,
   SyncularApplyYjsTextUpdatesResult,
@@ -36,7 +37,6 @@ import type {
   SyncularBuildYjsTextUpdateResult,
   SyncularChangedRow,
   SyncularClientConfig,
-  ResolvedSyncularClientConfig,
   SyncularConflictResolution,
   SyncularConflictSummary,
   SyncularConnectionState,
