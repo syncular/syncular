@@ -3,7 +3,6 @@
   "includeEntryExports": true,
   "ignoreExportsUsedInFile": false,
   "bun": true,
-  "expo": true,
   "postcss": true,
   "storybook": true,
   "tailwind": true,
@@ -18,7 +17,6 @@
   ],
   "ignoreBinaries": [
     "k6",
-    "maestro",
     "version"
   ],
   "ignoreIssues": {
@@ -214,15 +212,6 @@
     "packages/dialect-d1": {
       "includeEntryExports": false
     },
-    "packages/dialect-expo-sqlite": {
-      "includeEntryExports": false
-    },
-    "packages/dialect-react-native-nitro-sqlite": {
-      "includeEntryExports": false
-    },
-    "packages/dialect-electron-sqlite": {
-      "includeEntryExports": false
-    },
     "rust/bindings/javascript": {
       "includeEntryExports": false,
       "entry": [
@@ -283,12 +272,6 @@
       "includeEntryExports": false,
       "entry": [
         "**/*.ts"
-      ]
-    },
-    "tests/expo-app": {
-      "entry": [
-        "**/*.ts",
-        "**/*.tsx"
       ]
     }
   }

@@ -542,12 +542,27 @@ decision, not from the deleted protocol/package paths closed here.
   - `bun --cwd apps/docs types:check`: passed.
   - `git diff --check`: passed.
 - Removed old native/client SQLite dialect package surfaces that do not fit the
-  Rust-owned runtime direction. `packages/dialect-electron-sqlite` and
-  `packages/dialect-react-native-nitro-sqlite` are deleted; the `syncular`
-  umbrella package no longer exports Electron, React Native Nitro, or Expo
-  dialect subpaths. The standalone Expo dialect remains only because current
-  Expo tests still use it.
-- Deprecated old npm packages for the deleted/legacy client surfaces:
+  Rust-owned runtime direction. `packages/dialect-electron-sqlite`,
+  `packages/dialect-react-native-nitro-sqlite`, `packages/dialect-expo-sqlite`,
+  and `tests/expo-app` are deleted; the `syncular` umbrella package no longer
+  exports Electron, React Native Nitro, or Expo dialect subpaths.
+- Marked old npm packages for registry deprecation once npm OTP is available:
   `@syncular/dialect-wa-sqlite`, `@syncular/transport-ws`,
   `@syncular/client-react`, client plugin packages, and the deleted
-  Electron/Nitro SQLite dialect packages.
+  Electron/Nitro/Expo SQLite dialect packages.
+- Tightened the `syncular` umbrella package build to remove `dist` before
+  emitting. This prevents deleted subpath files from being packed as stale
+  artifacts after disruptive package cleanup.
+- Gates:
+  - `bun install --frozen-lockfile`: passed.
+  - `bun run tsgo`: passed across current workspace packages after Expo removal.
+  - `bun --cwd apps/docs types:check`: passed.
+  - `bun test tests/dialects`: passed, `28` tests.
+  - `bun --cwd packages/syncular build`: passed.
+  - `npm pack --dry-run --json` in `packages/syncular`: passed and no longer
+    includes deleted Expo/Electron/Nitro/wa-sqlite/plugin/transport-ws subpath
+    artifacts.
+  - `SYNCULAR_PUBLISH_DRY_RUN=1 SYNCULAR_NPM_TAG=staging bun run release`:
+    passed across `64` tasks; this surfaced the stale `syncular/dist` issue
+    fixed above.
+  - `git diff --check`: passed.
