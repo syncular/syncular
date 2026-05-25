@@ -68,7 +68,7 @@
   "scripts": {
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "peerDependencies": {
     "hono": "^4.0.0"

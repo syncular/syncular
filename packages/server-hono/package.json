@@ -56,7 +56,7 @@
     "generate": "bun generate:openapi",
     "generate:openapi": "bun scripts/generate-openapi.ts",
     "build": "tsgo",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "dependencies": {
     "@scalar/hono-api-reference": "^0.10.6",

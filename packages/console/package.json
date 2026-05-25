@@ -65,7 +65,7 @@
     "tsgo": "tsgo --noEmit",
     "build": "tsgo && bun run build:web",
     "build:web": "bun run build-static.ts",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "dependencies": {
     "@syncular/observability-sentry": "workspace:*",

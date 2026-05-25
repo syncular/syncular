@@ -41,7 +41,7 @@
   "scripts": {
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "dependencies": {
     "@electric-sql/pglite": "^0.3.15",

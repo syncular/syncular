@@ -44,6 +44,14 @@ the npm packages without publishing public crates from every `main` merge.
   `release` branch, stable publishing runs from `v*` tags/manual stable
   dispatch, and both npm/Cargo use the same resolved version.
 - Added Cargo publish dry-runs to the Rust native checks.
+- Added npm publish dry-run support to the shared `syncular-publish` helper and
+  a root `release:npm:dry-run` script.
+- Passed `SYNCULAR_NPM_TAG` and `SYNCULAR_PUBLISH_DRY_RUN` through Turbo so
+  staging releases cannot silently fall back to npm's `latest` tag.
+- Changed package release scripts to call the workspace-local
+  `syncular-publish` binary directly instead of `bunx syncular-publish`; the
+  Rust JavaScript binding now depends on `@syncular/config` so it gets the same
+  local publish helper as the TypeScript packages.
 - Bumped the root release version to `0.1.0` so future npm/Cargo prereleases are
   not lower than the already-published Rust `0.1.0` crates.
 - Removed the scheduled `Weekly Soak` workflow so release readiness is driven
@@ -61,6 +69,11 @@ the npm packages without publishing public crates from every `main` merge.
 - `bun scripts/publish-cargo-crates.ts --dry-run --allow-dirty`
 - `bun scripts/publish-cargo-crates.ts --allow-dirty` verified the
   already-published skip path for the current `0.1.0` crates.
+- `SYNCULAR_PUBLISH_DRY_RUN=1 SYNCULAR_NPM_TAG=staging bunx turbo release
+  --filter='./packages/syncular' --concurrency=1`
+- `bun run release:npm:dry-run`
+- `bun run release:cargo:dry-run`
+- `bun install --frozen-lockfile`
 - `gh run list --event schedule --limit 20 --json databaseId --jq 'length'`
   returned `0` after scheduled-run cleanup.
 - `gh workflow list --all` shows `Checks`, `Deploy`, and `Release` active; the

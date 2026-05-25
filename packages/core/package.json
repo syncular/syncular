@@ -41,7 +41,7 @@
     "test": "bun test src/__tests__",
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "peerDependencies": {
     "kysely": "^0.28.0",

@@ -41,7 +41,7 @@
     "build": "tsgo",
     "evaluate:rust-boundary": "bun scripts/evaluate-rust-boundary.ts",
     "evaluate:relay-paths": "bun scripts/evaluate-relay-paths.ts",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "dependencies": {
     "@syncular/core": "workspace:*",
