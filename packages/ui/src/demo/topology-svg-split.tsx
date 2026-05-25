@@ -327,7 +327,7 @@ export function TopologySvgSplit({ className }: TopologySvgSplitProps) {
         fontFamily="'JetBrains Mono', monospace"
         fontSize="7"
       >
-        wa-sqlite
+        Rust SQLite
       </text>
 
       {/* Client B node */}

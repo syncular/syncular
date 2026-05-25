@@ -2,7 +2,7 @@
  * @syncular/server-dialect-sqlite - SQLite Server Sync Dialect
  *
  * SQLite adaptation of the commit-log based sync system.
- * Works with any SQLite-compatible Kysely dialect (bun:sqlite, wa-sqlite, better-sqlite3, etc.).
+ * Works with SQLite-compatible Kysely dialects such as bun:sqlite, better-sqlite3, and sqlite3.
  *
  * Key differences from Postgres:
  * - No bigserial → INTEGER PRIMARY KEY AUTOINCREMENT

@@ -9,6 +9,7 @@ homepage = "https://syncular.dev"
 readme = "README.md"
 keywords = ["syncular", "sqlite", "offline", "sync"]
 categories = ["database", "wasm"]
+exclude = ["tests/**"]
 
 [lib]
 crate-type = ["rlib", "staticlib", "cdylib"]

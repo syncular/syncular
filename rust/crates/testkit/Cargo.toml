@@ -9,6 +9,7 @@ homepage = "https://syncular.dev"
 readme = "README.md"
 keywords = ["syncular", "testkit", "sqlite", "offline"]
 categories = ["development-tools::testing"]
+exclude = ["tests/**"]
 
 [dependencies]
 base64 = "0.22"

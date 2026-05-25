@@ -126,4 +126,4 @@ jobs:
       - name: Publish Cargo crates
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
-        run: bun scripts/publish-cargo-crates.ts --allow-dirty
+        run: bun run release:cargo

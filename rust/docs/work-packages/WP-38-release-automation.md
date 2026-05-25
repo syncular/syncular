@@ -64,6 +64,11 @@ the npm packages without publishing public crates from every `main` merge.
   to the umbrella npm package, a post-publish fresh JS/Rust install smoke
   script, and CLI docs that point app developers at `npx syncular generate`
   instead of the internal two-command codegen sequence.
+- Added `scripts/check-cargo-package-contents.ts` to fail Cargo releases when
+  publishable crates include integration tests, generated junk outside retained
+  fixture sources, `target`, `.context`, or `node_modules` content. The Cargo
+  release script and GitHub release workflow now run this check before
+  publishing.
 
 ## Gates
 
@@ -77,6 +82,7 @@ the npm packages without publishing public crates from every `main` merge.
   --filter='./packages/syncular' --concurrency=1`
 - `bun run release:npm:dry-run`
 - `bun run release:cargo:dry-run`
+- `bun run release:cargo:package-check`
 - `bun test packages/syncular/src/cli.test.ts`
 - `bun --cwd packages/syncular build`
 - `bun scripts/post-publish-install-smokes.ts --help`
