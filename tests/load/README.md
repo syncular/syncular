@@ -186,6 +186,7 @@ k6 run --out json=tests/load/results/push-pull.json tests/load/scripts/push-pull
 
 ## Notes
 
-- Macro load suites are wired into nightly CI (`load-macro-nightly`) and still runnable on-demand locally.
-- Weekly soak lane is wired in `.github/workflows/weekly-soak.yml`.
+- Macro load suites are runnable on-demand locally and via the PR load smoke
+  job when load-test paths change. Scheduled nightly/weekly Actions are not
+  part of the current release lane.
 - Rust conformance coverage is separate from k6 stress tests.
