@@ -5,6 +5,8 @@
   "globalPassThroughEnv": [
     "ACTIONS_ID_TOKEN_REQUEST_URL",
     "ACTIONS_ID_TOKEN_REQUEST_TOKEN",
+    "SYNCULAR_NPM_TAG",
+    "SYNCULAR_PUBLISH_DRY_RUN",
     "npm_config_registry"
   ],
   "tasks": {

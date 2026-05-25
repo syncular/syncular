@@ -86,8 +86,10 @@ read-only review:
     stable versions with npm tag `latest`. Cargo crates are stamped and
     published in explicit dependency order, `main` stays checks-only for
     publishing, Rust native checks now dry-run Cargo package publishing, and
-    scheduled nightly/weekly Actions plus their scheduled-run history were
-    removed so release automation starts from a clean explicit lane.
+    npm publishing now has a real all-package dry-run with workspace-local
+    publish helpers. Scheduled nightly/weekly Actions plus their scheduled-run
+    history were removed so release automation starts from a clean explicit
+    lane.
 - `[x]` [`WP-37 Rust Crates Publishing`](work-packages/WP-37-rust-crates-publishing.md)
   - Accepted. Published `syncular`, `syncular-protocol`,
     `syncular-codegen`, `syncular-runtime`, `syncular-testkit`, and

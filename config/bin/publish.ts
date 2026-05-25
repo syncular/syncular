@@ -63,6 +63,16 @@ function readNpmTag(): string {
   return tag;
 }
 
+function readDryRun(): boolean {
+  const args = new Set(process.argv.slice(2));
+  if (args.has('--dry-run')) {
+    return true;
+  }
+
+  const value = (process.env.SYNCULAR_PUBLISH_DRY_RUN ?? '').trim().toLowerCase();
+  return value === '1' || value === 'true' || value === 'yes';
+}
+
 async function isPublishedVersion(
   packageName: string,
   version: string
@@ -110,8 +120,16 @@ if (tarballs.length !== 1) {
 const [tarball] = tarballs;
 const packageMeta = readPackageMeta();
 const npmTag = readNpmTag();
+const dryRun = readDryRun();
+if (dryRun) {
+  console.log(
+    `[syncular-publish] dry-run publishing ${packageMeta.name}@${packageMeta.version} with npm tag ${npmTag}`
+  );
+}
 const publishResult =
-  await $`npm publish ${tarball} --tag ${npmTag} --provenance`.nothrow();
+  dryRun
+    ? await $`npm publish ${tarball} --tag ${npmTag} --dry-run`.nothrow()
+    : await $`npm publish ${tarball} --tag ${npmTag} --provenance`.nothrow();
 if (publishResult.exitCode !== 0) {
   const stderr = decodeOutput(publishResult.stderr);
   const stdout = decodeOutput(publishResult.stdout);

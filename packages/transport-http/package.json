@@ -48,7 +48,7 @@
     "tsgo": "tsgo --noEmit",
     "generate-types": "openapi-typescript ../server-hono/openapi.json -o src/generated/api.ts",
     "build": "tsgo",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "dependencies": {
     "@syncular/core": "workspace:*",

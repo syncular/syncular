@@ -54,7 +54,7 @@
     "test:wasm:variants": "bun --cwd ../../rust/bindings/javascript build:wasm:core && bun test src/__tests__/variant-core.wasm.test.ts",
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "dependencies": {
     "@syncular/client-javascript-bindings": "workspace:*",

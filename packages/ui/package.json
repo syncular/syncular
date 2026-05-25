@@ -102,7 +102,7 @@
     "tsgo": "tsgo --noEmit",
     "build:css": "bunx @tailwindcss/cli -i src/styles/styles.css -o dist/styles.css",
     "build": "tsgo && bun run build:css",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "peerDependencies": {
     "react": "^19.0.0",

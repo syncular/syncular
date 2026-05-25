@@ -59,7 +59,7 @@
     "test": "bun test src",
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "dependencies": {
     "@sentry/cloudflare": "^10.47.0",

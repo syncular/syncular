@@ -39,7 +39,7 @@
   "scripts": {
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "dependencies": {
     "@types/better-sqlite3": "^7.6.13",

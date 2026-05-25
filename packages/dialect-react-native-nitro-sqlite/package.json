@@ -40,7 +40,7 @@
   "scripts": {
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "dependencies": {
     "kysely-generic-sqlite": "^1.2.1"

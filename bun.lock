@@ -587,6 +587,9 @@
     "packages/typegen": {
       "name": "@syncular/typegen",
       "version": "0.0.0",
+      "bin": {
+        "syncular-typegen": "./src/cli.ts",
+      },
       "dependencies": {
         "@electric-sql/pglite": "^0.3.15",
         "@syncular/migrations": "workspace:*",
@@ -661,12 +664,17 @@
     "rust/bindings/javascript": {
       "name": "@syncular/client-javascript-bindings",
       "version": "0.0.0",
+      "devDependencies": {
+        "@syncular/config": "workspace:*",
+      },
     },
     "rust/examples/todo-app": {
       "name": "@syncular/example-todo-rust",
       "dependencies": {
         "@syncular/client": "workspace:*",
         "@syncular/core": "workspace:*",
+        "@syncular/server": "workspace:*",
+        "@syncular/typegen": "workspace:*",
         "hono": "^4.12.15",
         "kysely": "^0.28.0",
       },

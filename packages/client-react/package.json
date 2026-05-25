@@ -38,7 +38,7 @@
     "test": "bun test src/*.test.ts",
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "dependencies": {
     "@syncular/client": "workspace:*",

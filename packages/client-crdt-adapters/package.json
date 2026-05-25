@@ -38,7 +38,7 @@
     "test": "bun test src/*.test.ts",
     "tsgo": "tsgo --noEmit",
     "build": "rm -rf dist && tsgo",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "peerDependencies": {
     "@syncular/client": ">=0.0.0",

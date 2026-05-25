@@ -39,7 +39,7 @@
     "test": "bun test --pass-with-no-tests",
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
-    "release": "bunx syncular-publish"
+    "release": "syncular-publish"
   },
   "sideEffects": false,
   "dependencies": {

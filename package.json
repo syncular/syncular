@@ -60,6 +60,7 @@
     "lint:fix": "biome check --fix --unsafe .",
     "knip": "knip && knip --production --no-exit-code",
     "release": "turbo release --filter='./packages/*' --filter='./rust/bindings/*' --filter='./plugins/*/*' --concurrency=1",
+    "release:npm:dry-run": "SYNCULAR_PUBLISH_DRY_RUN=1 SYNCULAR_NPM_TAG=staging bun run release",
     "release:cargo": "bun scripts/publish-cargo-crates.ts --allow-dirty",
     "release:cargo:dry-run": "bun scripts/publish-cargo-crates.ts --dry-run --allow-dirty",
     "stamp:cargo": "bun scripts/stamp-cargo-versions.ts",
