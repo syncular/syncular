@@ -46,7 +46,7 @@ Start from the question you actually have right now.
 
 <Cards>
   <Card title="Evaluate Syncular" href="/docs/start" description="Fit, demo, trust signals, and honest comparisons before you commit" />
-  <Card title="Choose A Client" href="/docs/clients" description="Pick JavaScript or Rust, then use binding-specific setup, testing, and runtime docs" />
+  <Card title="Choose A Client" href="/docs/clients" description="Pick the host surface for a Rust-owned client runtime: JavaScript, Rust, or a native bridge" />
   <Card title="Build The Server" href="/docs/server" description="Implement handlers, auth scopes, snapshots, pushes, realtime, and deployment targets" />
   <Card title="Run It in Production" href="/docs/operate" description="Deployment, observability, troubleshooting, Console, and maintenance workflows" />
 </Cards>
@@ -69,12 +69,12 @@ The docs are organized by reader intent. Start with the topic that matches what 
 <Cards>
   <Card title="Start" href="/docs/start" description="Overview, quick start, installation, and evaluation paths" />
   <Card title="Learn" href="/docs/learn" description="Commit log, bootstrap, scopes, subscriptions, and conflict semantics" />
-  <Card title="Clients" href="/docs/clients" description="JavaScript and Rust client docs, host bridges, testing, and packaging" />
+  <Card title="Clients" href="/docs/clients" description="Rust runtime plus JavaScript, Rust, and native host surfaces" />
   <Card title="Server" href="/docs/server" description="Authoritative sync server, handlers, auth, realtime, and deployment targets" />
   <Card title="Features" href="/docs/features" description="Schema, migrations, error handling, audit/history, and app shapes" />
   <Card title="Testing" href="/docs/testing" description="JavaScript testkit, Rust testkit, and shared conformance strategy" />
   <Card title="Operate" href="/docs/operate" description="Deployment, observability, troubleshooting, and Console workflows" />
-  <Card title="Reference" href="/docs/reference" description="Client SDK, server reference, and HTTP API material" />
+  <Card title="Reference" href="/docs/reference" description="Packages, crates, server reference, CLI, and HTTP API material" />
 </Cards>
 
 ## How it works
@@ -84,10 +84,11 @@ The docs are organized by reader intent. Start with the topic that matches what 
 flowchart TB
   subgraph App["Your App"]
     direction LR
-    UI["React UI"] <--> Query["Kysely queries"]
-    Query <--> DB["Local SQLite"]
-    UI -->|mutations| Outbox["Outbox"]
-    Incoming["Incoming changes"] --> DB
+    UI["UI or app code"] <--> Query["Kysely or Diesel queries"]
+    Query <--> Runtime["Rust client runtime"]
+    Runtime <--> DB["Local SQLite"]
+    UI -->|generated mutations| Outbox["Outbox"]
+    Incoming["Verified incoming changes"] --> Runtime
   end
 
   subgraph Server["Server"]
@@ -99,7 +100,7 @@ flowchart TB
 
   Outbox -->|push over HTTP| Handlers
   Log -->|pull over HTTP| Incoming
-  Log -. optional realtime .-> UI
+  Log -. realtime delta or wake-up .-> Runtime
 `}
   caption="Queries stay local. HTTP push/pull remains the recovery path, and realtime WebSocket can carry verified deltas or pull-required wake-ups."
 />
@@ -146,7 +147,7 @@ subscriptions: [
 
 | Feature | What it means |
 |---------|---------------|
-| **Local-first** | SQLite on the client. Instant queries. Works offline. |
+| **Local-first** | Rust-owned SQLite on the client. Instant queries. Works offline. |
 | **Type-safe** | Host-native query builders and generated app clients. Queries checked at build time. |
 | **Commit-log sync** | Append-only log. Incremental pulls. Easy to debug and reason about. |
 | **Scope-based auth** | Every change tagged with who can see it. Auditable and composable. |
@@ -159,7 +160,7 @@ subscriptions: [
 
 **Good fit:**
 - Building a new app where offline support matters
-- Existing Postgres + Kysely stack
+- Existing Postgres stack with typed SQL on the server or client
 - Need explicit control over sync behavior and auth
 - Team values type safety and debuggability
 

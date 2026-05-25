@@ -9,10 +9,13 @@ description: Handle concurrent edits with optimistic concurrency
 - How Syncular detects conflicts using optimistic concurrency control
 - How field-level merge works to auto-resolve non-overlapping edits
 - The resolution strategies: keep server, retry local, dismiss, or custom merge
-- How to build a complete conflict resolution UI in React
+- How to surface conflict status and route users to your app's resolution flow
 </Callout>
 
-Conflicts occur when multiple clients edit the same row concurrently. Syncular detects conflicts using version numbers and gives you full control over how to resolve them.
+Conflicts occur when multiple clients edit the same row concurrently. The
+server detects conflicts using version numbers; the Rust client runtime stores
+conflict state locally and exposes generated retry/resolve APIs so your app can
+choose the resolution strategy.
 
 ## How Conflicts Happen
 
@@ -66,7 +69,9 @@ if (existing && op.base_version != null) {
 }
 ```
 
-The entire commit is rolled back if any operation conflicts. The client receives a `rejected` response with per-operation results, and the conflict is stored in the local `sync_conflicts` table for resolution.
+The entire commit is rolled back if any operation conflicts. The client
+receives a `rejected` response with per-operation results, and the runtime
+stores the conflict locally for resolution.
 
 ## Field-Level Merge
 

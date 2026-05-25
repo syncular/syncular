@@ -9,8 +9,8 @@ description: Choose the JavaScript or Rust Syncular client path and wire the ser
 
 ## Run the local checks
 
-If you want to verify the framework repo itself, clone it and run the browser
-binding checks:
+If you want to verify the framework repo itself, clone it and run the canonical
+Rust browser client checks:
 
 ```bash
 git clone https://github.com/syncular/syncular.git
@@ -18,6 +18,7 @@ cd syncular
 bun install
 bun run client:test
 bun run client:tsgo
+bun run javascript-bindings:build:wasm
 ```
 
 ## Build your own app
@@ -39,7 +40,9 @@ If you’re not sure where to start, see [Adoption Paths](/docs/start/adoption-p
 ## JavaScript first
 
 Use this path for browser, React, React Native/Expo, Tauri, or Electron apps
-where app code is TypeScript/JavaScript:
+where app code is TypeScript/JavaScript. This is still the Rust-owned client
+runtime; JavaScript owns the Kysely/read, mutation-helper, React, and host
+bridge surface:
 
 ```bash
 npm install @syncular/client @syncular/react kysely
@@ -75,7 +78,7 @@ sequenceDiagram
   participant Others as Other clients
 
   User->>Client: Click "Add Task"
-  Client->>Client: Write row to SQLite
+  Client->>Client: Runtime writes row to SQLite
   Client->>Client: Queue outbox commit
   Client->>Server: POST /api/sync (push)
   Server->>Server: Validate handler and apply row
@@ -84,7 +87,7 @@ sequenceDiagram
   Server-->>Others: Realtime delta or pull-required wake-up
   Others->>Server: POST /api/sync (pull)
   Server-->>Others: Return commits since cursor
-  Others->>Others: Apply rows to local SQLite
+  Others->>Others: Runtime applies rows to local SQLite
 `}
   caption="Local writes happen first. Syncular persists the change, pushes it when possible, and other clients receive it through realtime deltas or the next pull."
 />

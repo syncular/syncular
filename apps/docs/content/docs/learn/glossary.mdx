@@ -180,11 +180,11 @@ Unique identifier for each device or browser instance. Paired with `clientCommit
 
 ### Handler
 
-Server-side (`ServerTableHandler`) or client-side (`server table handler`) implementation that defines how a table syncs.
+Server-side (`ServerTableHandler`) implementation that defines how a table
+syncs. Client-side table behavior is generated from the app contract and
+executed by the Rust runtime, not hand-authored as a separate handler layer.
 
 **Server handler** responsibilities: resolve scopes, build snapshots, apply operations, extract scopes from rows.
-
-**Client handler** responsibilities: apply incoming changes, apply snapshots, clear scoped data.
 
 ```typescript
 // Server handler key methods
@@ -201,21 +201,17 @@ See [Table Handlers](/docs/server/table-handlers).
 
 ### Transport
 
-The network layer that moves data between client and server. Implements `pull()`, `push()`, and snapshot-chunk fetch (`fetchSnapshotChunk()` with optional `fetchSnapshotChunkStream()` for streaming).
-
-- **HTTP** (`@syncular/transport-http`) -- Uses `fetch` for pull/push and snapshot chunk download (bytes or stream). Supports typed API client generation.
-
-```typescript
-import { createHttpTransport } from '@syncular/transport-http';
-
-const transport = createHttpTransport({ baseUrl: '/api' });
-```
+The network layer that moves data between client and server. The current
+client runtime uses HTTP for push/pull and snapshot/artifact downloads, with
+WebSocket realtime as a verified delta or recovery wake-up path. Most apps
+configure `baseUrl` on the generated client instead of constructing a transport
+directly.
 
 ### Presence
 
 Realtime awareness of other connected users (cursor positions, online status, custom state). Delivered over WebSocket. Not part of the commit log -- presence is ephemeral.
 
-See [Presence Guide](/docs/clients/javascript/browser#presence).
+See [Realtime And Presence](/docs/clients/javascript/realtime-presence).
 
 ### resolveScopes
 

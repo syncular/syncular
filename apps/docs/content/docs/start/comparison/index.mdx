@@ -44,7 +44,8 @@ If you answer "yes" to offline writes + multi-user + custom auth + SQL, you are 
 
 ## Where Syncular is most differentiated
 
-- SQL/Kysely-first app and server model
+- SQL-first app model with a Rust-owned client runtime, Kysely for TypeScript
+  reads, Diesel for Rust reads, and Kysely server handlers
 - Commit-log push/pull with explicit scopes + subscriptions
 - Programmatic, auditable authorization via scopes
 - Fully Apache-2.0 and self-hosted across client and server packages

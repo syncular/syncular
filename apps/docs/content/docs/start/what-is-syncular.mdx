@@ -5,7 +5,11 @@ description: Understanding Syncular's approach to offline-first sync
 
 # What is Syncular?
 
-Syncular is a **sync framework** for building offline-first applications. It handles the hard parts of synchronization — local storage, incremental sync, conflict detection, authorization, and real-time updates — so you can focus on building your app.
+Syncular is a **sync framework** for building offline-first applications. Its
+client side is Rust-first: JavaScript, React, Rust, and native hosts talk to
+the same Rust-owned local SQLite/sync runtime through generated app APIs. It
+handles local storage, incremental sync, conflict detection, authorization, and
+real-time updates so you can focus on building your app.
 
 ## The problem
 
@@ -23,9 +27,13 @@ Most teams underestimate this. They start with REST APIs, add caching, try to pa
 
 Syncular is built on three opinionated choices that make the whole system simpler:
 
-### 1. SQLite on the client
+### 1. Rust-owned SQLite on the client
 
-Your app queries local SQLite, not a remote server. This gives you:
+Your app queries local SQLite, not a remote server. In browser and native
+clients, the SQLite database, outbox, cursors, conflict state, blobs, CRDT
+fields, encryption metadata, and realtime recovery state are owned by the Rust
+runtime. Host code uses the query builder that fits the language: Kysely in
+TypeScript and Diesel in Rust. This gives you:
 
 - **Instant queries** — no network round-trips, sub-millisecond reads
 - **Full SQL power** — joins, aggregations, complex filters
@@ -104,9 +112,10 @@ This makes authorization **automatic** (extracted from data), **explicit** (stor
 flowchart TB
   subgraph Client["Client"]
     direction LR
-    React["React UI"] --> ClientQuery["Kysely"]
-    ClientQuery --> ClientDb["SQLite"]
-    React -->|mutate| Outbox["Outbox"]
+    AppCode["App UI or host code"] --> ClientQuery["Kysely or Diesel"]
+    ClientQuery --> Runtime["Rust client runtime"]
+    Runtime --> ClientDb["SQLite"]
+    AppCode -->|generated mutations| Outbox["Outbox"]
     ClientDb --> Instant["Changes appear instantly"]
   end
 
@@ -118,7 +127,7 @@ flowchart TB
   end
 
   Outbox -->|push over HTTP| Handler
-  CommitLog -->|pull over HTTP| ClientDb
+  CommitLog -->|pull over HTTP or websocket delta| Runtime
 `}
   caption="Your app always reads local data first. The server owns ordering, validation, and authorization through the commit log."
 />
@@ -132,8 +141,9 @@ flowchart TB
 | **Subscriptions** | Client requests for data: a table + scope values. Example: `{ table: 'tasks', scopes: { project_id: 'A' } }` |
 | **Commits** | Atomic bundles of changes in the commit log. Globally ordered by `commit_seq`. |
 | **Cursors** | Client's position in the commit log. Used for incremental sync. |
-| **Outbox** | Client-side queue for pending changes. Survives offline and app restarts. |
-| **Table handlers** | Server-side: validate and apply operations. Client-side: apply incoming changes (defaults provided). |
+| **Outbox** | Runtime-owned queue for pending changes. Survives offline and app restarts. |
+| **Generated app contract** | Schema, subscriptions, mutations, local scope columns, and binding handoff shared by TypeScript, Rust, and native hosts. |
+| **Table handlers** | Server-side definitions that validate writes, build snapshots, extract scopes, and emit sync changes. |
 
 ## When to use Syncular
 

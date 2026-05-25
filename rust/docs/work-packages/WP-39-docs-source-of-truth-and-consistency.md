@@ -82,6 +82,17 @@ app-facing mutation APIs.
 - `[x]` Add a concise native-host pointer from Rust Delivery/Runtime docs.
 - `[x]` Avoid overclaiming Swift/Kotlin/Java guide completeness.
 
+### Follow-up: Intro And Learn Rust-First Pass
+
+- `[x]` Revisit docs root, Start pages, comparison/evaluation pages, and Learn
+  pages for stale JavaScript-first wording.
+- `[x]` Replace old client-handler and transport-construction language with
+  generated app contract, Rust runtime, and generated client `baseUrl` wording.
+- `[x]` Keep bootstrap docs on binary snapshot chunks/scoped artifacts instead
+  of inline JSON or generic rows/chunks language.
+- `[x]` Reframe Kysely-only claims as host-query-builder claims: Kysely for
+  TypeScript, Diesel for Rust, Kysely for server handlers.
+
 ## Accept / Reject Rule
 
 Accept this batch when the docs structure has one generated API tree, the
@@ -121,6 +132,23 @@ that invents an API not present in the repo.
   - Rust Delivery now has a `Native Hosts` page that links Swift/Kotlin/JVM,
     React Native, Tauri, and Electron host boundaries without overclaiming
     full language guides.
+  - Follow-up intro/learn pass updated the docs root, Start, comparison, and
+    Learn pages so they consistently describe the Rust-owned client runtime,
+    generated app contract, generated subscriptions/mutations, binary
+    snapshot chunks/artifacts, and host-specific query builders.
+  - Follow-up gates passed on 2026-05-26:
+    - `git diff --check -- apps/docs/content/docs/index.mdx apps/docs/content/docs/start apps/docs/content/docs/learn rust/docs/work-packages/WP-39-docs-source-of-truth-and-consistency.md rust/docs/ROADMAP.md`
+    - focused stale docs scans for old client APIs, old protocol wording,
+      app-facing `upsert`, client-handler wording, and old transport examples
+    - changed-page internal `/docs` link checker: `185` links across `20`
+      changed docs files, no missing routes
+    - `bun --cwd apps/docs types:check`
+    - `bun --cwd apps/docs build` after regenerating the ignored local
+      `packages/server-hono/openapi.json` copy used by docs builds
+    - local browser smoke on `http://localhost:3210` for `/docs`,
+      `/docs/start`, `/docs/start/what-is-syncular`,
+      `/docs/start/quick-start`, `/docs/learn`, `/docs/learn/architecture`,
+      `/docs/learn/first-sync`, and `/docs/learn/scopes`; no console errors
   - Gates passed:
     - `git diff --check`
     - custom internal `/docs` link checker: no broken `/docs` links across

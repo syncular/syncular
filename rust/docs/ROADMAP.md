@@ -79,6 +79,10 @@ read-only review:
     paths, Reference has a `Packages And Crates` hub, Testing has a decision
     matrix and shipping checklist, and Rust Delivery now has a cautious Native
     Hosts page for Swift/Kotlin/JVM/React Native/Tauri/Electron boundaries.
+    Follow-up intro/learn cleanup now keeps the docs root, Start, comparison,
+    and Learn pages aligned with the Rust-owned client runtime, generated app
+    contract, binary snapshot chunks/artifacts, and Kysely/Diesel host-query
+    split.
 - `[x]` [`WP-38 Release Automation`](work-packages/WP-38-release-automation.md)
   - Accepted. Rust crates now share npm's release version source and staging
     syntax. The `release` branch publishes `0.1.0-staging.<run>` prereleases
