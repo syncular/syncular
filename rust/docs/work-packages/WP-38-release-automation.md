@@ -46,6 +46,12 @@ the npm packages without publishing public crates from every `main` merge.
 - Added Cargo publish dry-runs to the Rust native checks.
 - Bumped the root release version to `0.1.0` so future npm/Cargo prereleases are
   not lower than the already-published Rust `0.1.0` crates.
+- Removed the scheduled `Weekly Soak` workflow so release readiness is driven
+  by explicit checks, branch releases, tags, and manual dispatches instead of
+  unattended nightly/weekly lanes.
+- Deleted scheduled GitHub Actions run history for the old `Weekly Soak`,
+  `Nightly`, and scheduled `Checks` runs, and disabled the remote `Weekly Soak`
+  workflow while the source removal is waiting to land on `main`.
 
 ## Gates
 
@@ -55,4 +61,8 @@ the npm packages without publishing public crates from every `main` merge.
 - `bun scripts/publish-cargo-crates.ts --dry-run --allow-dirty`
 - `bun scripts/publish-cargo-crates.ts --allow-dirty` verified the
   already-published skip path for the current `0.1.0` crates.
+- `gh run list --event schedule --limit 20 --json databaseId --jq 'length'`
+  returned `0` after scheduled-run cleanup.
+- `gh workflow list --all` shows `Checks`, `Deploy`, and `Release` active; the
+  removed `Weekly Soak` workflow is disabled remotely until deleted on `main`.
 - `git diff --check`
