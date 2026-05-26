@@ -14,6 +14,8 @@ interface Options {
   keep: boolean;
 }
 
+const bunBin = process.execPath;
+
 function usage(): string {
   return `usage: bun scripts/post-publish-install-smokes.ts --version <published-version> [options]
 
@@ -341,6 +343,68 @@ console.log('fresh JS package smoke passed');
 `,
     'utf8'
   );
+  await writeFile(
+    join(jsDir, 'runtime-smoke.ts'),
+    `import { getSyncularRuntimeArtifact } from '@syncular/client';
+import { createSyncularReact } from '@syncular/react';
+import {
+  createSyncularAppDatabase,
+  taskSubscription,
+} from './src/generated/syncular.generated';
+
+const react = createSyncularReact();
+if (
+  typeof react.SyncProvider !== 'function' ||
+  typeof react.useSyncQuery !== 'function'
+) {
+  throw new Error('@syncular/react did not expose the expected helpers');
+}
+
+const database = await createSyncularAppDatabase({
+  config: {
+    mode: 'local-sync-compatible',
+    actorId: 'user-js',
+    clientId: 'published-js-client',
+    storage: 'memory',
+    clearOnInit: true,
+  },
+  runtimeArtifacts: [getSyncularRuntimeArtifact('core')],
+  subscriptions: [taskSubscription({ actorId: 'user-js' })],
+});
+
+try {
+  await database.mutations.tasks.insert({
+    id: 'task-published-js',
+    title: 'Published JS app',
+    user_id: 'user-js',
+  });
+
+  const rows = await database.db
+    .selectFrom('tasks')
+    .select(['id', 'title', 'completed', 'user_id', 'server_version'])
+    .orderBy('id')
+    .execute();
+
+  if (
+    rows.length !== 1 ||
+    rows[0]?.id !== 'task-published-js' ||
+    rows[0]?.title !== 'Published JS app' ||
+    rows[0]?.completed !== 0 ||
+    rows[0]?.user_id !== 'user-js' ||
+    rows[0]?.server_version !== 0
+  ) {
+    throw new Error(
+      \`published JS app query returned \${JSON.stringify(rows)}\`
+    );
+  }
+} finally {
+  await database.close();
+}
+
+console.log('published JS runtime smoke passed');
+`,
+    'utf8'
+  );
 
   await run(
     'npm',
@@ -411,6 +475,7 @@ console.log('fresh JS package smoke passed');
       'published JS app did not generate the expected client output'
     );
   }
+  await run(bunBin, ['runtime-smoke.ts'], { cwd: jsDir });
   await run('npm', ['run', 'smoke'], { cwd: jsDir });
 }
 

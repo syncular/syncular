@@ -70,6 +70,11 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-47 Post-Publish JS Runtime Smoke`](work-packages/WP-47-post-publish-js-runtime-smoke.md)
+  - Accepted. The external npm install smoke now opens the generated browser
+    client from published packages, inserts through generated mutations, and
+    queries the row through Kysely. The current public registry cannot complete
+    the run yet because `@syncular/react` is not published.
 - `[x]` [`WP-46 Fresh JS Runtime Smoke`](work-packages/WP-46-fresh-js-runtime-smoke.md)
   - Accepted. The local fresh JavaScript app smoke now proves an actual
     generated browser client open, generated mutation insert, Kysely query, and
