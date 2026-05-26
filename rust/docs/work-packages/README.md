@@ -70,3 +70,4 @@ the status source; this file is the stable package index.
 44. [`WP-44 Observable Universe Rust-First Copy`](WP-44-observable-universe-rust-first-copy.md)
 45. [`WP-45 WASM Test Teardown Stabilization`](WP-45-wasm-test-teardown-stabilization.md)
 46. [`WP-46 Fresh JS Runtime Smoke`](WP-46-fresh-js-runtime-smoke.md)
+47. [`WP-47 Post-Publish JS Runtime Smoke`](WP-47-post-publish-js-runtime-smoke.md)
