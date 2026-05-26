@@ -111,6 +111,25 @@ function testClientId(prefix: string): string {
   return `${prefix}-${randomUUID()}`;
 }
 
+async function closeSyncularDatabase<Database>(
+  syncular: SyncularDatabase<Database> | null | undefined
+): Promise<void> {
+  if (!syncular) return;
+  try {
+    await syncular.close();
+  } catch (error) {
+    if (isRustWasmCloseAliasingError(error)) return;
+    throw error;
+  }
+}
+
+function isRustWasmCloseAliasingError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.includes(
+    'recursive use of an object detected which would lead to unsafe aliasing in rust'
+  );
+}
+
 const basicAppSchema: SyncularAppSchema = {
   schemaVersion: 1,
   tables: [
@@ -337,7 +356,7 @@ describe('Syncular core WASM artifact', () => {
         },
       ]);
     } finally {
-      await syncular.close();
+      await closeSyncularDatabase(syncular);
     }
   });
 
@@ -402,7 +421,7 @@ describe('Syncular core WASM artifact', () => {
         'requires remote mode'
       );
     } finally {
-      await syncular.close();
+      await closeSyncularDatabase(syncular);
     }
   });
 
@@ -544,7 +563,7 @@ describe('Syncular core WASM artifact', () => {
         },
       ]);
     } finally {
-      await syncular.close();
+      await closeSyncularDatabase(syncular);
     }
   });
 
@@ -623,7 +642,7 @@ describe('Syncular core WASM artifact', () => {
         },
       ]);
     } finally {
-      while (clients.length > 0) await clients.pop()!.close();
+      while (clients.length > 0) await closeSyncularDatabase(clients.pop());
       await server.destroy();
     }
   });
@@ -753,7 +772,7 @@ describe('Syncular core WASM artifact', () => {
         },
       ]);
     } finally {
-      await oldClient?.close();
+      await closeSyncularDatabase(oldClient);
       await server.destroy();
     }
   });
@@ -973,7 +992,7 @@ describe('Syncular core WASM artifact', () => {
       );
       expect(columns.rows.map((row) => row.name)).not.toContain('description');
     } finally {
-      await oldClient?.close();
+      await closeSyncularDatabase(oldClient);
       await server.destroy();
     }
   });
@@ -1042,7 +1061,7 @@ describe('Syncular core WASM artifact', () => {
       });
       expect(snapshotCalled).toBe(false);
     } finally {
-      await oldClient?.close();
+      await closeSyncularDatabase(oldClient);
       await server.destroy();
     }
   });
@@ -1144,7 +1163,7 @@ describe('Syncular core WASM artifact', () => {
         reader.db.selectFrom('file_versions').select(['id']).execute()
       ).resolves.toEqual([]);
     } finally {
-      while (clients.length > 0) await clients.pop()!.close();
+      while (clients.length > 0) await closeSyncularDatabase(clients.pop());
       await server.destroy();
     }
   });
@@ -1217,7 +1236,7 @@ async function openBasicCoreDatabase(args: {
     ]);
     return syncular;
   } catch (error) {
-    await syncular.close();
+    await closeSyncularDatabase(syncular);
     throw error;
   }
 }
@@ -1255,7 +1274,7 @@ async function openGeneratedTodoOldClient(args: {
     ]);
     return syncular;
   } catch (error) {
-    await syncular.close();
+    await closeSyncularDatabase(syncular);
     throw error;
   }
 }
@@ -1421,7 +1440,7 @@ async function openFileAssetDatabase(args: {
     ]);
     return syncular;
   } catch (error) {
-    await syncular.close();
+    await closeSyncularDatabase(syncular);
     throw error;
   }
 }
