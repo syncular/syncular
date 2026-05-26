@@ -70,6 +70,10 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-46 Fresh JS Runtime Smoke`](work-packages/WP-46-fresh-js-runtime-smoke.md)
+  - Accepted. The local fresh JavaScript app smoke now proves an actual
+    generated browser client open, generated mutation insert, Kysely query, and
+    React helper import against the Rust-owned SQLite core runtime.
 - `[x]` [`WP-45 WASM Test Teardown Stabilization`](work-packages/WP-45-wasm-test-teardown-stabilization.md)
   - Accepted. Full pre-push exposed a WASM worker close-path recursive-borrow
     trap after the variant-core sync assertions succeeded; variant-core test

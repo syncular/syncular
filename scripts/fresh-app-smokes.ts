@@ -10,7 +10,7 @@ import {
   symlink,
   writeFile,
 } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 interface Options {
   workDir: string;
@@ -164,18 +164,13 @@ exec ${shQuote(bunBin)} ${shQuote(join(repoRoot, 'packages/typegen/src/cli.ts'))
   };
 }
 
-async function linkWorkspacePackage(
+async function linkNodeModule(
   appDir: string,
   packageName: string,
   packageDir: string
 ): Promise<void> {
-  const [scope, name] = packageName.split('/');
-  if (!scope || !name) {
-    throw new Error(`Expected scoped package name, got ${packageName}`);
-  }
-  const scopeDir = join(appDir, 'node_modules', scope);
-  const linkPath = join(scopeDir, name);
-  await mkdir(scopeDir, { recursive: true });
+  const linkPath = join(appDir, 'node_modules', ...packageName.split('/'));
+  await mkdir(dirname(linkPath), { recursive: true });
   await rm(linkPath, { recursive: true, force: true });
   await symlink(join(repoRoot, packageDir), linkPath, 'dir');
 }
@@ -242,7 +237,24 @@ async function runJsSmoke(
 ): Promise<void> {
   const appDir = join(workDir, 'js-browser-app');
   await mkdir(appDir, { recursive: true });
-  await linkWorkspacePackage(appDir, '@syncular/typegen', 'packages/typegen');
+  await linkNodeModule(appDir, '@syncular/client', 'packages/client');
+  await linkNodeModule(
+    appDir,
+    '@syncular/client-javascript-bindings',
+    'rust/bindings/javascript'
+  );
+  await linkNodeModule(appDir, '@syncular/core', 'packages/core');
+  await linkNodeModule(appDir, '@syncular/react', 'packages/react');
+  await linkNodeModule(appDir, '@syncular/typegen', 'packages/typegen');
+  await linkNodeModule(appDir, 'fflate', 'node_modules/fflate');
+  await linkNodeModule(appDir, 'kysely', 'node_modules/kysely');
+  await linkNodeModule(
+    appDir,
+    'kysely-generic-sqlite',
+    'node_modules/kysely-generic-sqlite'
+  );
+  await linkNodeModule(appDir, 'react', 'node_modules/react');
+  await linkNodeModule(appDir, 'zod', 'node_modules/zod');
   await writeTaskMigration(appDir);
   await writeFile(
     join(appDir, 'package.json'),
@@ -285,6 +297,64 @@ export const app = defineSyncularClient({
 `,
     'utf8'
   );
+  await writeFile(
+    join(appDir, 'runtime-smoke.ts'),
+    `import { getSyncularRuntimeArtifact } from '@syncular/client';
+import { createSyncularReact } from '@syncular/react';
+import {
+  createSyncularAppDatabase,
+  taskSubscription,
+} from './src/generated/syncular.generated';
+
+const react = createSyncularReact();
+if (
+  typeof react.SyncProvider !== 'function' ||
+  typeof react.useSyncQuery !== 'function'
+) {
+  throw new Error('@syncular/react did not expose the expected helpers');
+}
+
+const database = await createSyncularAppDatabase({
+  config: {
+    mode: 'local-sync-compatible',
+    actorId: 'user-js',
+    clientId: 'fresh-js-client',
+    storage: 'memory',
+    clearOnInit: true,
+  },
+  runtimeArtifacts: [getSyncularRuntimeArtifact('core')],
+  subscriptions: [taskSubscription({ actorId: 'user-js' })],
+});
+
+try {
+  await database.mutations.tasks.insert({
+    id: 'task-fresh-js',
+    title: 'Fresh JS app',
+    user_id: 'user-js',
+  });
+
+  const rows = await database.db
+    .selectFrom('tasks')
+    .select(['id', 'title', 'completed', 'user_id', 'server_version'])
+    .orderBy('id')
+    .execute();
+
+  if (
+    rows.length !== 1 ||
+    rows[0]?.id !== 'task-fresh-js' ||
+    rows[0]?.title !== 'Fresh JS app' ||
+    rows[0]?.completed !== 0 ||
+    rows[0]?.user_id !== 'user-js' ||
+    rows[0]?.server_version !== 0
+  ) {
+    throw new Error(\`fresh JS app query returned \${JSON.stringify(rows)}\`);
+  }
+} finally {
+  await database.close();
+}
+`,
+    'utf8'
+  );
 
   await runSyncularGenerate(appDir, [], env);
   await runSyncularGenerate(appDir, ['--check'], env);
@@ -305,6 +375,7 @@ export const app = defineSyncularClient({
   if (!generatedClient.includes('sub-tasks')) {
     throw new Error('fresh JS app did not generate the expected client output');
   }
+  await run(bunBin, ['runtime-smoke.ts'], { cwd: appDir });
 }
 
 async function runRustSmoke(
