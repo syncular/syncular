@@ -72,8 +72,17 @@ cargo add --dev syncular-testkit
 cargo install syncular-codegen --version 0.1.0
 ```
 
-Use the same migration shape as the JavaScript app. Rust-only apps can commit
-`generated/syncular.codegen.json` directly:
+Use the same migration shape as the JavaScript app. Rust-only apps can
+initialize `generated/syncular.codegen.json` from migrations:
+
+```bash
+syncular-codegen init --manifest-dir .
+syncular-codegen init --manifest-dir . --check
+```
+
+The generated starter config uses tables with one primary key and a
+`server_version` column as synced tables, and marks tables without
+`server_version` as local-only:
 
 ```json
 {

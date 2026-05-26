@@ -372,34 +372,14 @@ async function runRustSmoke(options: Options): Promise<void> {
 `,
     'utf8'
   );
-  await mkdir(join(rustDir, 'generated'), { recursive: true });
-  await writeFile(
-    join(rustDir, 'generated', 'syncular.codegen.json'),
-    `${JSON.stringify(
-      {
-        typescriptOutputPath: 'generated/typescript/syncular.generated.ts',
-        nativeSwiftOutputPath: 'generated/swift/SyncularApp.swift',
-        nativeKotlinOutputPath: 'generated/kotlin/SyncularApp.kt',
-        tables: {
-          tasks: {
-            subscriptionId: 'sub-tasks',
-            scopes: [
-              {
-                name: 'user_id',
-                column: 'user_id',
-                source: 'actorId',
-                required: true,
-              },
-            ],
-            serverVersionColumn: 'server_version',
-          },
-        },
-      },
-      null,
-      2
-    )}\n`,
-    'utf8'
-  );
+  await run(cargoBin, ['init', '--manifest-dir', rustDir], {
+    cwd: rustDir,
+    env: { CARGO_HOME: cargoHome },
+  });
+  await run(cargoBin, ['init', '--manifest-dir', rustDir, '--check'], {
+    cwd: rustDir,
+    env: { CARGO_HOME: cargoHome },
+  });
 
   await run(cargoBin, ['--manifest-dir', rustDir], {
     cwd: rustDir,

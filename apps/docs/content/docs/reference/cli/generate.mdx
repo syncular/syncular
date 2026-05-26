@@ -12,7 +12,9 @@ It runs the current generation pipeline in order:
 
 1. If `syncular.app.ts` exists, or `--app` is supplied, generate
    `generated/syncular.codegen.json` from the app definition.
-2. Run the Rust generator against the manifest directory.
+2. If there is no app definition and no codegen config, initialize a starter
+   `generated/syncular.codegen.json` from migrations.
+3. Run the Rust generator against the manifest directory.
 
 ## Usage
 

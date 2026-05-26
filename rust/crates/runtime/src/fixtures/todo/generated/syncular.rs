@@ -15,6 +15,7 @@ use syncular_runtime::client::{
 use syncular_runtime::command_history::{
     CommandHistoryEntry, CommandHistoryReceipt, CommandHistoryRecord, CommandHistoryState,
 };
+#[allow(unused_imports)]
 use syncular_runtime::crdt_yjs::{YjsUpdateEnvelope, YJS_PAYLOAD_KEY};
 use syncular_runtime::encryption::FieldEncryptionRule;
 use syncular_runtime::error::{Result, SyncularError};
@@ -1671,6 +1672,7 @@ fn syncular_command_history_payload_for_snapshot(table: &str, snapshot: &Value) 
 fn syncular_command_history_unsafe_fields(
     entry: &CommandHistoryEntry,
 ) -> Result<Vec<&'static str>> {
+    #[allow(unused_mut)]
     let mut fields = Vec::new();
     match entry.table.as_str() {
         "comments" => Ok(fields),
@@ -1692,6 +1694,7 @@ fn syncular_command_history_unsafe_fields(
     }
 }
 
+#[allow(dead_code)]
 fn syncular_command_history_push_unsafe_field(
     fields: &mut Vec<&'static str>,
     entry: &CommandHistoryEntry,
@@ -1705,6 +1708,7 @@ fn syncular_command_history_push_unsafe_field(
     }
 }
 
+#[allow(dead_code)]
 fn syncular_command_history_snapshot_field<'a>(
     snapshot: &'a Option<Value>,
     field: &str,

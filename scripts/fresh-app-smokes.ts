@@ -294,34 +294,6 @@ export const app = defineSyncularClient({
   }
 }
 
-async function writeRustCodegenConfig(appDir: string): Promise<void> {
-  await mkdir(join(appDir, 'generated'), { recursive: true });
-  await writeFile(
-    join(appDir, 'generated/syncular.codegen.json'),
-    `${JSON.stringify(
-      {
-        tables: {
-          tasks: {
-            subscriptionId: 'sub-tasks',
-            scopes: [
-              {
-                name: 'user_id',
-                column: 'user_id',
-                source: 'actorId',
-                required: true,
-              },
-            ],
-            serverVersionColumn: 'server_version',
-          },
-        },
-      },
-      null,
-      2
-    )}\n`,
-    'utf8'
-  );
-}
-
 async function runRustSmoke(
   workDir: string,
   env: Record<string, string>
@@ -329,7 +301,6 @@ async function runRustSmoke(
   const appDir = join(workDir, 'rust-app');
   await mkdir(join(appDir, 'src'), { recursive: true });
   await writeTaskMigration(appDir);
-  await writeRustCodegenConfig(appDir);
   await writeFile(
     join(appDir, 'Cargo.toml'),
     `[package]
@@ -401,6 +372,14 @@ mod tests {
   );
 
   await runSyncularGenerate(appDir, [], env);
+  await run(
+    env.SYNCULAR_CODEGEN_BIN,
+    ['init', '--manifest-dir', appDir, '--check'],
+    {
+      cwd: appDir,
+      env,
+    }
+  );
   await runSyncularGenerate(appDir, ['--check'], env);
   await run('cargo', ['test', '--manifest-path', join(appDir, 'Cargo.toml')], {
     cwd: appDir,

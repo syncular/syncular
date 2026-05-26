@@ -3,7 +3,7 @@ use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::{Integer, Nullable, Text};
 use serde::{Deserialize, Serialize};
-use serde_json::Value as JsonValue;
+use serde_json::{json, Map, Value as JsonValue};
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -4650,6 +4650,7 @@ fn syncular_command_history_payload_for_snapshot(table: &str, snapshot: &Value) 
 }}
 
 fn syncular_command_history_unsafe_fields(entry: &CommandHistoryEntry) -> Result<Vec<&'static str>> {{
+    #[allow(unused_mut)]
     let mut fields = Vec::new();
     match entry.table.as_str() {{
 {unsafe_match}        _ => Err(syncular_command_history_error(
@@ -4659,6 +4660,7 @@ fn syncular_command_history_unsafe_fields(entry: &CommandHistoryEntry) -> Result
     }}
 }}
 
+#[allow(dead_code)]
 fn syncular_command_history_push_unsafe_field(
     fields: &mut Vec<&'static str>,
     entry: &CommandHistoryEntry,
@@ -4672,6 +4674,7 @@ fn syncular_command_history_push_unsafe_field(
     }}
 }}
 
+#[allow(dead_code)]
 fn syncular_command_history_snapshot_field<'a>(
     snapshot: &'a Option<Value>,
     field: &str,
@@ -4944,6 +4947,7 @@ fn generate_generated_module(tables: &[TableInfo], config: &CodegenConfig) -> Re
          #[allow(unused_imports)]\n\
         use {runtime_crate}::client::{{SubscriptionSpec, SyncChangedRow, SyncularClientConfig, SyncularCommandHistoryExecutor, SyncularEncryptedCrdtMutationExecutor, SyncularLeasedMutationExecutor, SyncularMutationExecutor}};\n\
          use {runtime_crate}::command_history::{{CommandHistoryEntry, CommandHistoryReceipt, CommandHistoryRecord, CommandHistoryState}};\n\
+         #[allow(unused_imports)]\n\
          use {runtime_crate}::crdt_yjs::{{YjsUpdateEnvelope, YJS_PAYLOAD_KEY}};\n\
          use {runtime_crate}::encryption::FieldEncryptionRule;\n\
          use {runtime_crate}::error::{{Result, SyncularError}};\n\
@@ -10955,17 +10959,40 @@ struct CodegenArgs {
     rust_output_dir: Option<PathBuf>,
 }
 
-fn usage() -> &'static str {
-    "usage: syncular-codegen [--check] [--manifest-dir <path>] [--codegen-config <path>] [--migrations-dir <path>] [--rust-output-dir <path>]"
+#[derive(Debug)]
+struct InitArgs {
+    check: bool,
+    manifest_dir: PathBuf,
+    migrations_dir: Option<PathBuf>,
+    out: Option<PathBuf>,
 }
 
-fn parse_args() -> Result<CodegenArgs> {
+#[derive(Debug)]
+enum CodegenCommand {
+    Generate(CodegenArgs),
+    Init(InitArgs),
+}
+
+fn usage() -> &'static str {
+    "usage: syncular-codegen [generate] [--check] [--manifest-dir <path>] [--codegen-config <path>] [--migrations-dir <path>] [--rust-output-dir <path>]\n       syncular-codegen init [--check] [--manifest-dir <path>] [--migrations-dir <path>] [--out <path>]"
+}
+
+fn parse_args() -> Result<CodegenCommand> {
+    let raw_args = env::args().skip(1).collect::<Vec<_>>();
+    match raw_args.first().map(String::as_str) {
+        Some("init") => parse_init_args(&raw_args[1..]).map(CodegenCommand::Init),
+        Some("generate") => parse_generate_args(&raw_args[1..]).map(CodegenCommand::Generate),
+        _ => parse_generate_args(&raw_args).map(CodegenCommand::Generate),
+    }
+}
+
+fn parse_generate_args(raw_args: &[String]) -> Result<CodegenArgs> {
     let mut check = false;
     let mut manifest_dir = None;
     let mut codegen_config = None;
     let mut migrations_dir = None;
     let mut rust_output_dir = None;
-    let mut args = env::args().skip(1);
+    let mut args = raw_args.iter();
 
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -11009,8 +11036,56 @@ fn parse_args() -> Result<CodegenArgs> {
     })
 }
 
+fn parse_init_args(raw_args: &[String]) -> Result<InitArgs> {
+    let mut check = false;
+    let mut manifest_dir = None;
+    let mut migrations_dir = None;
+    let mut out = None;
+    let mut args = raw_args.iter();
+
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "--check" => check = true,
+            "--manifest-dir" => {
+                manifest_dir =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        anyhow::anyhow!("--manifest-dir requires a path")
+                    })?));
+            }
+            "--migrations-dir" => {
+                migrations_dir =
+                    Some(PathBuf::from(args.next().ok_or_else(|| {
+                        anyhow::anyhow!("--migrations-dir requires a path")
+                    })?));
+            }
+            "--out" => {
+                out = Some(PathBuf::from(
+                    args.next()
+                        .ok_or_else(|| anyhow::anyhow!("--out requires a path"))?,
+                ));
+            }
+            "--help" | "-h" => bail!(usage()),
+            _ => bail!(usage()),
+        }
+    }
+
+    Ok(InitArgs {
+        check,
+        manifest_dir: manifest_dir
+            .unwrap_or_else(|| env::current_dir().unwrap_or_else(|_| PathBuf::from("."))),
+        migrations_dir,
+        out,
+    })
+}
+
 fn main() -> Result<()> {
-    let args = parse_args()?;
+    match parse_args()? {
+        CodegenCommand::Generate(args) => run_generate(args),
+        CodegenCommand::Init(args) => run_init(args),
+    }
+}
+
+fn run_generate(args: CodegenArgs) -> Result<()> {
     let check = args.check;
     let manifest_dir = args.manifest_dir;
     let migrations_dir = args
@@ -11256,6 +11331,138 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+fn run_init(args: InitArgs) -> Result<()> {
+    let manifest_dir = args.manifest_dir;
+    let migrations_dir = args
+        .migrations_dir
+        .unwrap_or_else(|| manifest_dir.join("migrations"));
+    let output_path = args
+        .out
+        .unwrap_or_else(|| manifest_dir.join("generated/syncular.codegen.json"));
+    let sqlite_path = temp_sqlite_path()?;
+    let _ = fs::remove_file(&sqlite_path);
+
+    let mut conn = SqliteConnection::establish(sqlite_path.to_str().context("utf8 sqlite path")?)
+        .with_context(|| format!("open {}", sqlite_path.display()))?;
+    apply_migrations(&mut conn, &migrations_dir)?;
+    let tables = load_tables(&mut conn)?;
+    let _ = fs::remove_file(&sqlite_path);
+
+    let config = generate_initial_codegen_config(&tables)?;
+    let config_text = format!(
+        "{}\n",
+        serde_json::to_string_pretty(&config).context("serialize initial codegen config")?
+    );
+
+    if args.check {
+        let existing = fs::read_to_string(&output_path)
+            .with_context(|| format!("read {}", output_path.display()))?;
+        if existing != config_text {
+            bail!(
+                "{} is out of date; run `syncular-codegen init --manifest-dir {}`",
+                output_path.display(),
+                manifest_dir.display()
+            );
+        }
+        return Ok(());
+    }
+
+    if let Some(parent) = output_path.parent() {
+        fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    fs::write(&output_path, config_text).with_context(|| format!("write {}", output_path.display()))
+}
+
+fn generate_initial_codegen_config(tables: &[TableInfo]) -> Result<JsonValue> {
+    let mut synced_tables = Map::new();
+    let mut local_only_tables = Vec::new();
+
+    for table in tables
+        .iter()
+        .filter(|table| !table.name.starts_with("sync_"))
+    {
+        let primary_keys = table
+            .columns
+            .iter()
+            .filter(|column| column.pk > 0)
+            .collect::<Vec<_>>();
+        let server_version_column = table
+            .columns
+            .iter()
+            .find(|column| column.name == "server_version")
+            .or_else(|| {
+                table
+                    .columns
+                    .iter()
+                    .find(|column| column.name == "serverVersion")
+            });
+
+        let Some(server_version_column) = server_version_column else {
+            local_only_tables.push(JsonValue::String(table.name.clone()));
+            continue;
+        };
+
+        if primary_keys.len() != 1 {
+            local_only_tables.push(JsonValue::String(table.name.clone()));
+            continue;
+        }
+
+        let mut table_config = Map::new();
+        table_config.insert(
+            "subscriptionId".to_string(),
+            JsonValue::String(format!("sub-{}", table.name)),
+        );
+        table_config.insert(
+            "serverVersionColumn".to_string(),
+            JsonValue::String(server_version_column.name.clone()),
+        );
+
+        let scopes = infer_initial_scopes(table);
+        if !scopes.is_empty() {
+            table_config.insert("scopes".to_string(), JsonValue::Array(scopes));
+        }
+
+        synced_tables.insert(table.name.clone(), JsonValue::Object(table_config));
+    }
+
+    if synced_tables.is_empty() {
+        bail!(
+            "No syncable tables found. Add a table with exactly one primary key and a server_version column, or author generated/syncular.codegen.json manually."
+        );
+    }
+
+    let mut config = Map::new();
+    config.insert("tables".to_string(), JsonValue::Object(synced_tables));
+    if !local_only_tables.is_empty() {
+        config.insert(
+            "localOnlyTables".to_string(),
+            JsonValue::Array(local_only_tables),
+        );
+    }
+
+    Ok(JsonValue::Object(config))
+}
+
+fn infer_initial_scopes(table: &TableInfo) -> Vec<JsonValue> {
+    let mut scopes = Vec::new();
+    for (column_name, source) in [("user_id", "actorId"), ("project_id", "projectId")] {
+        let Some(column) = table
+            .columns
+            .iter()
+            .find(|column| column.name == column_name)
+        else {
+            continue;
+        };
+        scopes.push(json!({
+            "name": column_name,
+            "column": column_name,
+            "source": source,
+            "required": !is_nullable(column),
+        }));
+    }
+    scopes
 }
 
 #[cfg(test)]
