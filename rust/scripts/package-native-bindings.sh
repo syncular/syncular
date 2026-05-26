@@ -637,10 +637,19 @@ EOF
 
 run_boltffi_pack() {
   local platform="$1"
+
   echo "[native-package] pack ${platform}"
   (
     cd "${RUNTIME_DIR}"
-    boltffi pack "${platform}" ${PROFILE_FLAG} --regenerate --overlay "${OVERLAY_PATH}"
+    if [ -n "${PROFILE_FLAG}" ]; then
+      boltffi pack "${platform}" "${PROFILE_FLAG}" --regenerate \
+        --cargo-arg=--package --cargo-arg=syncular-runtime \
+        --overlay "${OVERLAY_PATH}"
+    else
+      boltffi pack "${platform}" --regenerate \
+        --cargo-arg=--package --cargo-arg=syncular-runtime \
+        --overlay "${OVERLAY_PATH}"
+    fi
   )
 }
 

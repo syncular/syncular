@@ -138,10 +138,16 @@ function readArgValue(name: string): string | undefined {
 }
 
 function runOptionalTool(command: string[]): string {
-  const result = Bun.spawnSync(command, {
-    stdout: 'pipe',
-    stderr: 'pipe',
-  });
+  let result: Bun.SyncSubprocess<Buffer, Buffer>;
+  try {
+    result = Bun.spawnSync(command, {
+      stdout: 'pipe',
+      stderr: 'pipe',
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return `Skipped ${command[0]}: ${message}`;
+  }
   if (result.exitCode !== 0) {
     const stderr = result.stderr.toString().trim();
     return `Skipped ${command[0]}: ${stderr || `exit ${result.exitCode}`}`;
