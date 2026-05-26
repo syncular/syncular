@@ -74,9 +74,10 @@ read-only review:
   - Accepted. Shared CI setup now installs Rust, `wasm-pack`, and `wasm-opt`
     before package builds; native FFI fixture expectations match the generated
     app contract; optional WASM size attribution tools are skipped when absent;
-    native packaging explicitly selects `syncular-runtime`; docs typecheck
-    prepares OpenAPI before importing the ignored JSON artifact; the stale
-    always-on `integration-load` job that invoked the removed legacy
+    native packaging explicitly selects `syncular-runtime` with
+    `boltffi-bindings` enabled for generated JNI/Swift/Kotlin/Java exports;
+    docs typecheck prepares OpenAPI before importing the ignored JSON artifact;
+    the stale always-on `integration-load` job that invoked the removed legacy
     TypeScript load entrypoint is gone; audit-blocking dependency pins were
     refreshed so `bun check` and coverage tests pass locally.
 - `[x]` [`WP-47 Post-Publish JS Runtime Smoke`](work-packages/WP-47-post-publish-js-runtime-smoke.md)
