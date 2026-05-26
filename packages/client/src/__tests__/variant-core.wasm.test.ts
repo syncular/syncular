@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'bun:test';
+import { randomUUID } from 'node:crypto';
 import { type BlobRef, codecs } from '@syncular/core';
 import { type Kysely, sql } from 'kysely';
 import { syncularGeneratedApp as todoGeneratedClientApp } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
@@ -104,6 +105,10 @@ interface GeneratedTodoTaskV6ClientRow
 
 interface GeneratedTodoV6ClientDb {
   tasks: GeneratedTodoTaskV6ClientRow;
+}
+
+function testClientId(prefix: string): string {
+  return `${prefix}-${randomUUID()}`;
 }
 
 const basicAppSchema: SyncularAppSchema = {
@@ -287,7 +292,7 @@ describe('Syncular core WASM artifact', () => {
       config: {
         baseUrl: 'http://127.0.0.1:1/sync',
         actorId: 'actor-core',
-        clientId: `client-core-migrated-${Date.now()}`,
+        clientId: testClientId('client-core-migrated'),
         storage: 'memory',
         clearOnInit: true,
         appSchema: basicAppSchemaWithMigrations,
@@ -345,7 +350,7 @@ describe('Syncular core WASM artifact', () => {
           mode: 'local-sync-compatible',
           actorId,
           projectId,
-          clientId: `client-generated-local-${Date.now()}`,
+          clientId: testClientId('client-generated-local'),
           storage: 'memory',
           clearOnInit: true,
           schemaVersion: todoGeneratedSchemaVersion,
@@ -406,7 +411,7 @@ describe('Syncular core WASM artifact', () => {
       config: {
         baseUrl: 'http://127.0.0.1:1/sync',
         actorId: 'actor-core',
-        clientId: `client-core-${Date.now()}`,
+        clientId: testClientId('client-core'),
         storage: 'memory',
         clearOnInit: true,
         appSchema: basicAppSchema,
@@ -567,14 +572,14 @@ describe('Syncular core WASM artifact', () => {
       const writer = await openBasicCoreDatabase({
         baseUrl: `${server.baseUrl}/sync`,
         actorId,
-        clientId: `client-core-writer-${Date.now()}`,
+        clientId: testClientId('client-core-writer'),
         token,
       });
       clients.push(writer);
       const reader = await openBasicCoreDatabase({
         baseUrl: `${server.baseUrl}/sync`,
         actorId,
-        clientId: `client-core-reader-${Date.now()}`,
+        clientId: testClientId('client-core-reader'),
         token,
       });
       clients.push(reader);
@@ -716,7 +721,7 @@ describe('Syncular core WASM artifact', () => {
         actorId,
         projectId,
         schemaVersion: oldSchemaVersion,
-        clientId: `client-generated-v${oldSchemaVersion}-${Date.now()}`,
+        clientId: testClientId(`client-generated-v${oldSchemaVersion}`),
         token,
       });
 
@@ -900,7 +905,9 @@ describe('Syncular core WASM artifact', () => {
         actorId,
         projectId,
         schemaVersion: oldSchemaVersion,
-        clientId: `client-generated-incremental-v${oldSchemaVersion}-${Date.now()}`,
+        clientId: testClientId(
+          `client-generated-incremental-v${oldSchemaVersion}`
+        ),
         token,
       });
 
@@ -915,7 +922,7 @@ describe('Syncular core WASM artifact', () => {
         auth: { actorId },
         request: {
           clientId: 'current-schema-writer',
-          clientCommitId: `current-schema-writer-${Date.now()}`,
+          clientCommitId: testClientId('current-schema-writer'),
           schemaVersion: todoGeneratedSchemaVersion,
           operations: [
             {
@@ -1024,7 +1031,7 @@ describe('Syncular core WASM artifact', () => {
         appSchema: generatedTodoUnsupportedAppSchemaForVersion(
           unsupportedSchemaVersion
         ),
-        clientId: `client-generated-v${unsupportedSchemaVersion}-${Date.now()}`,
+        clientId: testClientId(`client-generated-v${unsupportedSchemaVersion}`),
         token,
       });
 
@@ -1069,14 +1076,14 @@ describe('Syncular core WASM artifact', () => {
       const writer = await openFileAssetDatabase({
         baseUrl: `${server.baseUrl}/sync`,
         actorId,
-        clientId: `client-file-assets-writer-${Date.now()}`,
+        clientId: testClientId('client-file-assets-writer'),
         token,
       });
       clients.push(writer);
       const reader = await openFileAssetDatabase({
         baseUrl: `${server.baseUrl}/sync`,
         actorId,
-        clientId: `client-file-assets-reader-${Date.now()}`,
+        clientId: testClientId('client-file-assets-reader'),
         token,
       });
       clients.push(reader);
@@ -1148,7 +1155,7 @@ describe('Syncular core WASM artifact', () => {
         config: {
           baseUrl: 'http://127.0.0.1:1/sync',
           actorId: 'actor-core',
-          clientId: `client-core-crdt-${Date.now()}`,
+          clientId: testClientId('client-core-crdt'),
           storage: 'memory',
           clearOnInit: true,
           appSchema: crdtAppSchema,
@@ -1165,7 +1172,7 @@ describe('Syncular core WASM artifact', () => {
         config: {
           baseUrl: 'http://127.0.0.1:1/sync',
           actorId: 'actor-core',
-          clientId: `client-core-blob-${Date.now()}`,
+          clientId: testClientId('client-core-blob'),
           storage: 'memory',
           clearOnInit: true,
           appSchema: blobAppSchema,

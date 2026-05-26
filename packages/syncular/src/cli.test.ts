@@ -1,5 +1,9 @@
 import { describe, expect, it } from 'bun:test';
-import { buildGenerateSteps, parseSyncularCliArgs } from './cli';
+import {
+  buildCodegenInstallArgs,
+  buildGenerateSteps,
+  parseSyncularCliArgs,
+} from './cli';
 
 describe('syncular CLI', () => {
   it('parses the unified generate check command', () => {
@@ -27,6 +31,46 @@ describe('syncular CLI', () => {
     });
   });
 
+  it('parses the codegen installer command', () => {
+    expect(
+      parseSyncularCliArgs([
+        'codegen',
+        'install',
+        '--version',
+        '0.1.2',
+        '--root',
+        '/workspace/.cache/codegen',
+        '--force',
+      ])
+    ).toEqual({
+      kind: 'codegen-install',
+      options: {
+        version: '0.1.2',
+        root: '/workspace/.cache/codegen',
+        force: true,
+      },
+    });
+  });
+
+  it('builds stable cargo install args for syncular-codegen', () => {
+    expect(
+      buildCodegenInstallArgs({
+        version: '0.1.2',
+        root: '/workspace/.cache/codegen',
+        force: true,
+      })
+    ).toEqual([
+      'install',
+      'syncular-codegen',
+      '--version',
+      '0.1.2',
+      '--locked',
+      '--root',
+      '/workspace/.cache/codegen',
+      '--force',
+    ]);
+  });
+
   it('runs both generators when a Syncular app definition is present', () => {
     const steps = buildGenerateSteps(
       { check: true, manifestDir: './app' },
@@ -48,6 +92,8 @@ describe('syncular CLI', () => {
           'codegen-config',
           '--app',
           '/workspace/app/syncular.app.ts',
+          '--out',
+          '/workspace/app/generated/syncular.codegen.json',
           '--check',
         ],
       },

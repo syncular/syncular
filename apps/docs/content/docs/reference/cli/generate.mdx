@@ -16,6 +16,14 @@ It runs the current generation pipeline in order:
    `generated/syncular.codegen.json` from migrations.
 3. Run the Rust generator against the manifest directory.
 
+The CLI resolves the Rust `syncular-codegen` binary from, in order:
+
+1. `SYNCULAR_CODEGEN_BIN`, when set.
+2. The repo-local Rust crate while developing Syncular itself.
+3. Syncular's local tool cache.
+4. `PATH`.
+5. A Cargo install into the local tool cache, when Cargo is available.
+
 ## Usage
 
 Generate files:
@@ -36,6 +44,19 @@ Use an explicit app definition:
 npx syncular generate --manifest-dir . --app ./syncular.app.ts
 ```
 
+Pre-install the Rust generator:
+
+```bash
+npx syncular codegen install
+```
+
+Pin or redirect the installed generator:
+
+```bash
+npx syncular codegen install --version 0.1.0 --root ./.syncular/codegen
+SYNCULAR_CODEGEN_BIN=./.syncular/codegen/bin/syncular-codegen npx syncular generate --manifest-dir .
+```
+
 ## Flags
 
 - `--manifest-dir <path>`: project directory containing migrations and generated handoff config
@@ -43,6 +64,13 @@ npx syncular generate --manifest-dir . --app ./syncular.app.ts
 - `--migrations-dir <path>`: override the migrations directory passed to Rust codegen
 - `--rust-output-dir <path>`: override the Rust generated output directory
 - `--check`: fail if generated output is out of date
+
+## Environment
+
+- `SYNCULAR_CODEGEN_BIN`: explicit `syncular-codegen` binary path or command
+- `SYNCULAR_CODEGEN_VERSION`: crate version to install when the package version is not the desired codegen version
+- `SYNCULAR_CODEGEN_AUTO_INSTALL=0`: disable Cargo auto-install during `syncular generate`
+- `SYNCULAR_CACHE_DIR`: override the default Syncular tool cache directory
 
 ## Related Guides
 

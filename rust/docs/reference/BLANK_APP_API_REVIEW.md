@@ -23,15 +23,17 @@ generated app contract, local codegen, and testkit smoke path.
 - Codegen config shape: improved for Rust-only projects. JavaScript apps can
   author `syncular.app.ts` and run `syncular generate`; Rust-only apps can now
   run `syncular-codegen init` to create a starter
-  `generated/syncular.codegen.json` from migrations before generation.
+  `generated/syncular.codegen.json` from migrations before generation. The npm
+  CLI now resolves or installs the Rust generator through
+  `syncular codegen install`, so JS apps no longer need to know the direct
+  `syncular-codegen` setup path first.
 - Generated Rust warnings: improved. The generated Rust facade now suppresses
   local unused-helper/import warnings so blank apps do not see warning noise
   just because optional CRDT/encryption/history surfaces are not configured.
 
 ## Retained Follow-Ups
 
-- Consider shipping an npm-accessible `syncular-codegen` binary or documented
-  installer path so `syncular generate` never fails because only the JavaScript
-  packages are installed.
+- Consider platform-specific npm binary packages for `syncular-codegen` if the
+  Cargo-backed installer becomes too slow or too much setup for JS-only teams.
 - Keep the public docs stale-pattern gate small and app-facing. Historical work
   packages may keep old command text as record, but current docs should not.

@@ -140,7 +140,7 @@ async function writeExecutable(path: string, body: string): Promise<void> {
   await chmod(path, 0o755);
 }
 
-async function createGeneratorBinDir(workDir: string): Promise<{
+async function createTypegenBinDir(workDir: string): Promise<{
   binDir: string;
   env: Record<string, string>;
 }> {
@@ -148,17 +148,10 @@ async function createGeneratorBinDir(workDir: string): Promise<{
   await mkdir(binDir, { recursive: true });
 
   const typegenBin = join(binDir, 'syncular-typegen');
-  const codegenBin = join(binDir, 'syncular-codegen');
   await writeExecutable(
     typegenBin,
     `#!/usr/bin/env sh
 exec ${shQuote(bunBin)} ${shQuote(join(repoRoot, 'packages/typegen/src/cli.ts'))} "$@"
-`
-  );
-  await writeExecutable(
-    codegenBin,
-    `#!/usr/bin/env sh
-exec cargo run --quiet --manifest-path ${shQuote(join(repoRoot, 'rust/Cargo.toml'))} -p syncular-codegen -- "$@"
 `
   );
 
@@ -167,7 +160,6 @@ exec cargo run --quiet --manifest-path ${shQuote(join(repoRoot, 'rust/Cargo.toml
     env: {
       PATH: `${binDir}:${process.env.PATH ?? ''}`,
       SYNCULAR_TYPEGEN_BIN: typegenBin,
-      SYNCULAR_CODEGEN_BIN: codegenBin,
     },
   };
 }
@@ -203,6 +195,27 @@ async function runSyncularGenerate(
       ...args,
     ],
     { cwd: repoRoot, env }
+  );
+}
+
+async function runRepoCodegen(
+  appDir: string,
+  args: string[],
+  env: Record<string, string>
+): Promise<void> {
+  await run(
+    'cargo',
+    [
+      'run',
+      '--quiet',
+      '--manifest-path',
+      join(repoRoot, 'rust/Cargo.toml'),
+      '-p',
+      'syncular-codegen',
+      '--',
+      ...args,
+    ],
+    { cwd: appDir, env }
   );
 }
 
@@ -372,13 +385,10 @@ mod tests {
   );
 
   await runSyncularGenerate(appDir, [], env);
-  await run(
-    env.SYNCULAR_CODEGEN_BIN,
+  await runRepoCodegen(
+    appDir,
     ['init', '--manifest-dir', appDir, '--check'],
-    {
-      cwd: appDir,
-      env,
-    }
+    env
   );
   await runSyncularGenerate(appDir, ['--check'], env);
   await run('cargo', ['test', '--manifest-path', join(appDir, 'Cargo.toml')], {
@@ -395,7 +405,7 @@ async function main(): Promise<void> {
   await mkdir(workDir, { recursive: true });
 
   try {
-    const { env } = await createGeneratorBinDir(workDir);
+    const { env } = await createTypegenBinDir(workDir);
     if (!options.skipJs) {
       await runJsSmoke(workDir, env);
     }
