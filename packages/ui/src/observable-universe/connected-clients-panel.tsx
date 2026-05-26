@@ -47,7 +47,7 @@ export const ConnectedClientsPanel = forwardRef<
     >
       <div className="px-4 py-3 border-b border-border flex items-center justify-between">
         <span className="font-mono text-[11px] text-neutral-400 uppercase tracking-wider">
-          Connected Clients
+          Rust Runtimes
         </span>
         <span className="font-mono text-[11px] text-neutral-600">
           {clients.length} nodes

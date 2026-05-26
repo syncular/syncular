@@ -8,69 +8,41 @@ export interface CodeSectionProps {
   className?: string;
 }
 
-const dialects = [
+const runtimes = [
   {
-    dialect: 'Postgres',
-    runtime: 'Node.js / Bun / Edge',
-    href: '/docs/server/dialects',
+    surface: 'Browser / React',
+    runtime: 'Rust WASM Worker owns SQLite; TypeScript uses Kysely',
+    href: 'https://docs.syncular.dev/clients/javascript/browser',
   },
   {
-    dialect: 'SQLite',
-    runtime: 'Node.js / Bun',
-    href: '/docs/server/dialects',
+    surface: 'Electron',
+    runtime: 'Desktop TypeScript UI over a Rust-owned local runtime',
+    href: 'https://docs.syncular.dev/clients/javascript/electron',
   },
   {
-    dialect: 'Rust SQLite',
-    runtime: 'Browser (WASM)',
-    clientOnly: true,
-    href: '/docs/rust-client/browser',
+    surface: 'React Native / Expo',
+    runtime: 'JavaScript UI bridge to a native Syncular runtime',
+    href: 'https://docs.syncular.dev/clients/javascript/react-native-expo',
   },
   {
-    dialect: 'PGlite',
-    runtime: 'Browser (WASM)',
-    href: '/docs/build/runtimes/web',
+    surface: 'Tauri',
+    runtime: 'Renderer facade over the Rust host runtime',
+    href: 'https://docs.syncular.dev/clients/javascript/tauri',
   },
   {
-    dialect: 'better-sqlite3',
-    runtime: 'Node.js / Electron',
-    href: '/docs/build/runtimes/bun-node',
+    surface: 'Native Rust',
+    runtime: 'Generated Rust client, Diesel reads, real SQLite state',
+    href: 'https://docs.syncular.dev/clients/rust',
   },
   {
-    dialect: 'sqlite3',
-    runtime: 'Node.js',
-    href: '/docs/build/runtimes/bun-node',
+    surface: 'Server',
+    runtime: 'Hono routes, table handlers, Postgres or SQLite dialects',
+    href: 'https://docs.syncular.dev/server/setup-with-hono',
   },
   {
-    dialect: 'Bun SQLite',
-    runtime: 'Bun',
-    href: '/docs/build/runtimes/bun-node',
-  },
-  {
-    dialect: 'Expo SQLite',
-    runtime: 'React Native',
-    clientOnly: true,
-    href: '/docs/build/runtimes/expo',
-  },
-  {
-    dialect: 'Nitro SQLite',
-    runtime: 'React Native',
-    clientOnly: true,
-    href: '/docs/build/runtimes/expo',
-  },
-  {
-    dialect: 'LibSQL',
-    runtime: 'Turso / LibSQL',
-    href: '/docs/server/dialects',
-  },
-  {
-    dialect: 'Neon',
-    runtime: 'Neon Postgres (serverless)',
-    href: '/docs/build/runtimes/cloudflare',
-  },
-  {
-    dialect: 'D1',
-    runtime: 'Cloudflare Workers',
-    href: '/docs/build/runtimes/cloudflare',
+    surface: 'Operations',
+    runtime: 'Console, diagnostics, telemetry, prune, and compact',
+    href: 'https://docs.syncular.dev/operate',
   },
 ];
 
@@ -84,8 +56,8 @@ export const CodeSection = forwardRef<HTMLElement, CodeSectionProps>(
       >
         <div className="max-w-[1400px] mx-auto px-6">
           <SectionHeading
-            label="Runs everywhere"
-            title="Pick the dialect for your runtime. Mix and match client and server."
+            label="Host surfaces"
+            title="Pick the host API. Keep the sync engine in Rust."
           />
 
           <div className="max-w-3xl">
@@ -94,7 +66,7 @@ export const CodeSection = forwardRef<HTMLElement, CodeSectionProps>(
                 <div className="flex items-center gap-2">
                   <span className="w-2 h-2 rounded-full bg-flow inline-block" />
                   <span className="font-mono text-[11px] text-flow uppercase tracking-wider">
-                    Supported dialects
+                    Supported runtimes
                   </span>
                 </div>
               </div>
@@ -102,7 +74,7 @@ export const CodeSection = forwardRef<HTMLElement, CodeSectionProps>(
                 <thead>
                   <tr className="border-b border-border">
                     <th className="text-left text-[11px] font-mono text-neutral-500 uppercase tracking-wider px-6 py-3">
-                      Dialect
+                      Surface
                     </th>
                     <th className="text-left text-[11px] font-mono text-neutral-500 uppercase tracking-wider px-6 py-3">
                       Runtime
@@ -110,14 +82,14 @@ export const CodeSection = forwardRef<HTMLElement, CodeSectionProps>(
                   </tr>
                 </thead>
                 <tbody>
-                  {dialects.map((row) => (
-                    <tr key={row.dialect} className="border-b border-border/50">
+                  {runtimes.map((row) => (
+                    <tr key={row.surface} className="border-b border-border/50">
                       <td className="px-6 py-3 font-mono text-sm text-white">
                         <a
                           href={row.href}
                           className="underline decoration-border underline-offset-4 transition-colors hover:text-flow hover:decoration-flow"
                         >
-                          {row.dialect}
+                          {row.surface}
                         </a>
                       </td>
                       <td className="px-6 py-3 text-sm text-neutral-400">

@@ -70,6 +70,11 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-44 Observable Universe Rust-First Copy`](work-packages/WP-44-observable-universe-rust-first-copy.md)
+  - Accepted. The reusable Observable Universe landing surface now describes
+    the Rust-owned SQLite runtime, current host APIs, current install commands,
+    and the current `docs.syncular.dev` Start/Learn/Clients/Server/Reference
+    hierarchy without changing component APIs.
 - `[x]` [`WP-43 Release Rehearsal Exact Version Worktree`](work-packages/WP-43-release-rehearsal-exact-version-worktree.md)
   - Accepted. Full release rehearsal now creates a clean detached worktree at
     `HEAD`, stamps the requested exact version inside that worktree, and runs

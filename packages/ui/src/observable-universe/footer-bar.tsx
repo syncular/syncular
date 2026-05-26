@@ -25,7 +25,7 @@ export const FooterBar = forwardRef<HTMLElement, FooterBarProps>(
             />
           </div>
           <div className="font-mono text-[11px] text-neutral-600">
-            Offline-first sync for SQLite. Open source.
+            Rust-owned local-first sync for SQLite. Open source.
           </div>
         </div>
       </footer>

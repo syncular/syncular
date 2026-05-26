@@ -21,7 +21,7 @@ export const ArchitectureSection = forwardRef<
       <div className="max-w-[1400px] mx-auto px-6">
         <SectionHeading
           label="How sync works"
-          title="Local SQLite on every client. Commit log for change tracking. Server as the source of truth."
+          title="Rust owns SQLite on every client. The server commit log stays authoritative."
         />
 
         {/* Architecture diagram */}
@@ -33,9 +33,9 @@ export const ArchitectureSection = forwardRef<
                 <div className="font-mono text-[10px] text-neutral-500 uppercase mb-1">
                   Client A
                 </div>
-                <div className="font-mono text-xs text-white">SQLite</div>
+                <div className="font-mono text-xs text-white">Rust Runtime</div>
                 <div className="font-mono text-[10px] text-neutral-600 mt-1">
-                  outbox + local DB
+                  SQLite + outbox
                 </div>
               </div>
             </div>
@@ -155,9 +155,9 @@ export const ArchitectureSection = forwardRef<
                 <div className="font-mono text-[10px] text-neutral-500 uppercase mb-1">
                   Client B
                 </div>
-                <div className="font-mono text-xs text-white">SQLite</div>
+                <div className="font-mono text-xs text-white">Rust Runtime</div>
                 <div className="font-mono text-[10px] text-neutral-600 mt-1">
-                  outbox + local DB
+                  SQLite + outbox
                 </div>
               </div>
             </div>
@@ -180,8 +180,8 @@ export const ArchitectureSection = forwardRef<
               Push
             </div>
             <p className="text-sm text-neutral-400 leading-relaxed">
-              Client writes locally, queues in outbox, pushes to server. Server
-              validates and writes to commit log.
+              Generated mutations apply locally, queue in the Rust outbox, and
+              push to the server. The server validates and appends commits.
             </p>
           </div>
           <div className="dashboard-panel rounded-lg p-5">
@@ -189,8 +189,8 @@ export const ArchitectureSection = forwardRef<
               Pull
             </div>
             <p className="text-sm text-neutral-400 leading-relaxed">
-              Client sends its cursor. Server returns commits since then,
-              filtered by scopes.
+              The runtime sends its cursor. The server returns scoped commits,
+              which the runtime verifies and applies to SQLite.
             </p>
           </div>
           <div className="dashboard-panel rounded-lg p-5">
@@ -198,8 +198,8 @@ export const ArchitectureSection = forwardRef<
               Realtime
             </div>
             <p className="text-sm text-neutral-400 leading-relaxed">
-              WebSocket wakes clients on new commits. Data still flows over
-              HTTP.
+              WebSocket wakes the Rust runtime on new commits. Verified data
+              still flows through the sync protocol.
             </p>
           </div>
         </div>

@@ -10,16 +10,16 @@ export interface ExplanationSectionProps {
 
 const features = [
   {
-    title: 'Instant UI',
+    title: 'Rust-owned local state',
     color: 'healthy',
     description:
-      'Queries hit local SQLite in <1ms. No loading spinners, no network in the hot path.',
+      'The client runtime owns SQLite, the outbox, subscriptions, and local apply. JavaScript and Rust APIs sit above the same engine.',
   },
   {
-    title: 'Offline by default',
+    title: 'Typed local reads',
     color: 'flow',
     description:
-      'Writes queue in a local outbox. Sync happens when connectivity returns.',
+      'Use Kysely from TypeScript apps or generated Diesel types from Rust apps while reads stay local.',
   },
   {
     title: 'Commit-log sync',
@@ -31,25 +31,25 @@ const features = [
     title: 'Scope-based auth',
     color: 'syncing',
     description:
-      'Every change tagged with scope values. Pulls return only what\u2019s requested and allowed.',
+      "Every change is tagged with scope values. Pulls return only what's requested and allowed.",
   },
   {
     title: 'Blob storage',
     color: 'violet-400',
     description:
-      'Sync binary files alongside structured data. Adapters for filesystem, database, and S3-compatible storage (S3/R2/MinIO).',
+      'Sync binary files alongside structured data with content hashes and server-side storage adapters.',
   },
   {
-    title: 'End-to-end encryption',
+    title: 'Field encryption',
     color: 'pink-400',
     description:
-      'Field-level E2E encryption (XChaCha20-Poly1305) with BIP39 key sharing.',
+      'Encrypt selected fields, CRDT streams, and blobs inside the runtime instead of hand-rolling app code.',
   },
   {
     title: 'Observability',
     color: 'healthy',
     description:
-      'Pluggable telemetry \u2014 logs, traces, metrics, exceptions. Sentry adapter or bring your own.',
+      'Capture diagnostics, runtime freshness, logs, traces, metrics, and exceptions from production clients.',
   },
   {
     title: 'Admin console',

@@ -3,7 +3,7 @@ import type { ObservableClient } from './types';
 export const INITIAL_CLIENTS: ObservableClient[] = [
   {
     id: 'client-a',
-    type: 'mobile',
+    type: 'browser worker',
     status: 'online',
     lastSync: 2,
     commits: 847,
@@ -11,7 +11,7 @@ export const INITIAL_CLIENTS: ObservableClient[] = [
   },
   {
     id: 'client-b',
-    type: 'desktop',
+    type: 'tauri host',
     status: 'online',
     lastSync: 0,
     commits: 1203,
@@ -19,7 +19,7 @@ export const INITIAL_CLIENTS: ObservableClient[] = [
   },
   {
     id: 'client-c',
-    type: 'tablet',
+    type: 'react native',
     status: 'syncing',
     lastSync: 0,
     commits: 445,
@@ -28,7 +28,7 @@ export const INITIAL_CLIENTS: ObservableClient[] = [
   },
   {
     id: 'client-d',
-    type: 'edge',
+    type: 'electron',
     status: 'offline',
     lastSync: 240,
     commits: 201,
@@ -36,7 +36,7 @@ export const INITIAL_CLIENTS: ObservableClient[] = [
   },
   {
     id: 'client-e',
-    type: 'mobile',
+    type: 'rust native',
     status: 'online',
     lastSync: 1,
     commits: 312,
@@ -44,7 +44,7 @@ export const INITIAL_CLIENTS: ObservableClient[] = [
   },
   {
     id: 'client-f',
-    type: 'laptop',
+    type: 'browser worker',
     status: 'online',
     lastSync: 3,
     commits: 589,
@@ -52,7 +52,7 @@ export const INITIAL_CLIENTS: ObservableClient[] = [
   },
   {
     id: 'client-g',
-    type: 'iot',
+    type: 'field device',
     status: 'offline',
     lastSync: 180,
     commits: 67,

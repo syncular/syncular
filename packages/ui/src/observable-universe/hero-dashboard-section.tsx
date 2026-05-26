@@ -35,15 +35,15 @@ export const HeroDashboardSection = forwardRef<
       {/* Title bar */}
       <div className="max-w-[1400px] mx-auto w-full px-6 pt-6 pb-4">
         <h1 className="font-display font-bold text-3xl md:text-4xl text-white leading-tight">
-          Offline-first SQL sync you can operate.
+          Rust-owned SQLite sync you can operate.
         </h1>
         <p className="font-display text-base text-neutral-500 mt-2 max-w-2xl">
-          Web, Electron, Expo. Local SQLite read and write path. Commit-log
-          sync. Scopes for partial sync and auth.
+          Build TypeScript, Rust, and native apps on one client runtime. Rust
+          owns SQLite, the outbox, sync, conflicts, and realtime wake-ups.
         </p>
         <div className="mt-3 flex items-center gap-2 flex-wrap">
           <span className="font-mono text-[10px] uppercase tracking-widest text-amber-300 border border-amber-300/30 px-2 py-0.5 rounded">
-            Alpha
+            Rust client runtime
           </span>
           <span className="text-sm text-neutral-500">
             APIs and storage layouts will change. Pin versions and expect manual
