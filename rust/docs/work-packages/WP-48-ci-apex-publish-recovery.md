@@ -17,6 +17,8 @@ landing surface to the public apex site.
   encrypted fields and blob declarations.
 - Make the runtime library target and package selection explicit for native
   package tooling on Windows.
+- Enable the current BoltFFI export feature for native package builds so the
+  generated Windows JVM glue links against the Rust runtime symbols.
 - Generate the ignored OpenAPI spec before docs typechecking imports it.
 - Remove the always-on `integration-load` workflow job that still invoked the
   deleted legacy TypeScript `test:load` entrypoint.
@@ -45,6 +47,10 @@ landing surface to the public apex site.
   ignored `apps/docs/openapi.json` before generation, and failed
   `integration-load` because the workflow still invoked the removed legacy
   `test:load` script.
+- Follow-up baseline: the same run failed `rust-windows-jvm-package` because
+  the runtime package was selected, but the `boltffi-bindings` feature was not
+  enabled for the package build, leaving MSVC with unresolved `boltffi_*`
+  symbols when linking the generated JNI DLL.
 - Local check: current k6 load scenarios require a separate Rust-first binary
   sync-pack/snapshot chunk harness update; they are not used as the always-on
   CI replacement in this recovery slice.
@@ -53,6 +59,9 @@ landing surface to the public apex site.
 - `bun audit`
 - `bun check`
 - `bun run test:coverage`
+- `cargo check --manifest-path rust/crates/runtime/Cargo.toml --features boltffi-bindings --lib`
+- `cargo build --manifest-path rust/Cargo.toml -p syncular-runtime --features boltffi-bindings --release --lib`
+- `strings rust/target/release/libsyncular_runtime.a | rg 'boltffi_syncular_runtime_manifest_json|boltffi_free_buf'`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_ffi`
 - `cargo metadata --manifest-path rust/crates/runtime/Cargo.toml --no-deps --format-version 1`
   reports `syncular_runtime` with `rlib`, `staticlib`, and `cdylib` crate
@@ -75,8 +84,10 @@ Accepted. The shared CI setup now installs Rust, `wasm-pack`, and `wasm-opt`
 before package builds. Native FFI tests match the generated Rust app contract,
 optional WASM size attribution tools are skipped when absent, and native
 packaging passes the runtime package explicitly so BoltFFI cannot select the
-workspace wrapper crate. Docs typecheck now prepares OpenAPI from current Hono
-routes before importing the ignored JSON artifact, and the always-on
+workspace wrapper crate; those package builds now enable `boltffi-bindings` so
+the generated JNI, Swift, Kotlin, and Java surfaces link against the current
+Rust-owned export symbols. Docs typecheck now prepares OpenAPI from current
+Hono routes before importing the ignored JSON artifact, and the always-on
 `integration-load` job was removed because its only command targeted the
 deleted legacy TypeScript load entrypoint. Dependency overrides and direct docs
 tooling pins were refreshed so `bun audit` reports no vulnerabilities and the

@@ -644,10 +644,12 @@ run_boltffi_pack() {
     if [ -n "${PROFILE_FLAG}" ]; then
       boltffi pack "${platform}" "${PROFILE_FLAG}" --regenerate \
         --cargo-arg=--package --cargo-arg=syncular-runtime \
+        --cargo-arg=--features --cargo-arg=boltffi-bindings \
         --overlay "${OVERLAY_PATH}"
     else
       boltffi pack "${platform}" --regenerate \
         --cargo-arg=--package --cargo-arg=syncular-runtime \
+        --cargo-arg=--features --cargo-arg=boltffi-bindings \
         --overlay "${OVERLAY_PATH}"
     fi
   )
