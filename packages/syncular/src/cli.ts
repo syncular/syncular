@@ -46,14 +46,15 @@ examples:
 function generateUsage(): string {
   return `usage: syncular generate [--check] [--manifest-dir <path>] [--migrations-dir <path>] [--rust-output-dir <path>] [--app <path>]
 
-Runs the current Syncular app generation path as one command.
+Generates the Syncular app handoff and language clients in one app-facing command.
 
-If a Syncular app definition exists at syncular.app.ts, or --app is provided,
-Syncular first runs:
-  syncular-typegen codegen-config --app <path>
+When <manifest-dir>/syncular.app.ts exists, or --app is provided, the typed
+TypeScript app contract is used to refresh generated/syncular.codegen.json.
+Rust-only apps can commit generated/syncular.codegen.json directly and omit
+syncular.app.ts.
 
-It then runs:
-  syncular-codegen --manifest-dir <path>
+Use --check in CI to verify generated outputs are current without rewriting
+files.
 `;
 }
 
@@ -179,7 +180,9 @@ export function buildGenerateSteps(
   const hasAppDefinition = options.app !== undefined || fileExists(appPath);
 
   if (options.app !== undefined && !fileExists(appPath)) {
-    throw new Error(`Syncular app definition not found: ${appPath}`);
+    throw new Error(
+      `Syncular app definition not found: ${appPath}. Create syncular.app.ts, pass the correct --app path, or omit --app for a Rust-only project that already has generated/syncular.codegen.json.`
+    );
   }
 
   const steps: GenerateStep[] = [];

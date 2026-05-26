@@ -70,6 +70,16 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-40 Fresh App Release DX`](work-packages/WP-40-fresh-app-release-dx.md)
+  - Accepted. Local fresh JavaScript/Rust app generation smokes now prove
+    `syncular generate`, Rust-only codegen, generated output checks, Rust app
+    compile, and a `syncular-testkit` client smoke. Release now runs
+    post-publish install smokes, publish dry-runs inspect npm tarballs for
+    test junk, Cargo publish dry-runs/package checks passed, app-facing
+    stale-doc checks are scripted, the fresh-app docs path is backed by the
+    fixture, `syncular generate` copy is clearer, React test DOM globals are
+    isolated, `packages/client-react` is renamed to `packages/react`, and the
+    blank-app API review records remaining DX friction.
 - `[x]` [`WP-39 Docs Source Of Truth And Consistency`](work-packages/WP-39-docs-source-of-truth-and-consistency.md)
   - Accepted. Reference API is now the only generated OpenAPI tree, duplicate
     `/docs/api` pages were removed, stale JSON snapshot wording was replaced,

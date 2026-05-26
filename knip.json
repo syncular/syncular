@@ -17,6 +17,7 @@
   ],
   "ignoreBinaries": [
     "k6",
+    "tar",
     "version"
   ],
   "ignoreIssues": {
@@ -83,6 +84,9 @@
     ],
     "packages/client-crdt-adapters/src/yjs-document-field-adapter.ts": [
       "exports"
+    ],
+    "packages/react/src/__tests__/happy-dom.ts": [
+      "files"
     ],
     "packages/console/src/lib/types.ts": [
       "types"
@@ -163,7 +167,7 @@
     "packages/client-expo": {
       "includeEntryExports": false
     },
-    "packages/client-react": {
+    "packages/react": {
       "includeEntryExports": false,
       "entry": [
         "src/**/*.test.ts"

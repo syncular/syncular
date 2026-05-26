@@ -100,8 +100,8 @@ For apps that keep the contract in a module, generate or check the
 Rust-codegen handoff from the typed module:
 
 ```bash
-syncular-typegen codegen-config --app ./syncular.app.ts
-syncular-typegen codegen-config --app ./syncular.app.ts --check
+npx syncular generate --manifest-dir .
+npx syncular generate --manifest-dir . --check
 ```
 
 This is a dev/build-time authoring layer. Generated Rust, Swift, Kotlin, JVM,

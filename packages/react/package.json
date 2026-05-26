@@ -8,7 +8,7 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/syncular/syncular.git",
-    "directory": "packages/client-react"
+    "directory": "packages/react"
   },
   "bugs": {
     "url": "https://github.com/syncular/syncular/issues"
@@ -60,6 +60,10 @@
     "src",
     "!src/**/*.test.ts",
     "!src/**/*.test.tsx",
-    "!src/**/__tests__/**"
+    "!src/**/__tests__/**",
+    "!dist/**/*.test.*",
+    "!dist/**/__tests__/**",
+    "!test/**",
+    "!tests/**"
   ]
 }

@@ -49,8 +49,8 @@ This preset enables:
 
 ## Documentation
 
-- How sync works (push/pull): https://syncular.dev/docs/introduction/architecture
-- API reference: https://syncular.dev/docs/api/postSync
+- How sync works (push/pull): https://syncular.dev/docs/learn/architecture
+- API reference: https://syncular.dev/docs/reference/api/postSync
 
 ## Links
 

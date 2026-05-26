@@ -71,6 +71,10 @@
     "src",
     "!src/**/*.test.ts",
     "!src/**/*.test.tsx",
-    "!src/**/__tests__/**"
+    "!src/**/__tests__/**",
+    "!dist/**/*.test.*",
+    "!dist/**/__tests__/**",
+    "!test/**",
+    "!tests/**"
   ]
 }

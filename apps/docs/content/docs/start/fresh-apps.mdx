@@ -1,0 +1,160 @@
+---
+title: Fresh Apps
+description: Create a new JavaScript or Rust Syncular app, add a server, and run local sync.
+---
+
+# Fresh Apps
+
+This guide is the blank-project path. The repository gate that keeps it honest is:
+
+```bash
+bun run fresh-app-smokes
+```
+
+It creates temporary JavaScript and Rust apps, runs generation from scratch, checks
+generated output, and opens a Rust testkit client.
+
+## Create a new JS app
+
+Install the app-facing packages:
+
+```bash
+npm install syncular @syncular/client @syncular/react kysely react react-dom
+npm install -D @syncular/typegen
+```
+
+Create `migrations/0001_initial/up.sql`:
+
+```sql
+create table tasks (
+  id text primary key not null,
+  title text not null,
+  completed integer not null default 0,
+  user_id text not null,
+  server_version bigint not null default 0
+);
+```
+
+Create `syncular.app.ts`:
+
+```ts
+import { defineSyncularClient, scope, syncedTable } from '@syncular/typegen';
+
+export const app = defineSyncularClient({
+  tables: {
+    tasks: syncedTable({
+      table: 'tasks',
+      subscriptionId: 'sub-tasks',
+      serverVersion: 'server_version',
+      scopes: [scope('user_id', { source: 'actorId', required: true })],
+    }),
+  },
+});
+```
+
+Generate the handoff and client files with one command:
+
+```bash
+npx syncular generate --manifest-dir .
+npx syncular generate --manifest-dir . --check
+```
+
+## Create a new Rust app
+
+Install the Rust crates:
+
+```bash
+cargo add syncular syncular-client
+cargo add diesel --features sqlite,returning_clauses_for_sqlite_3_35
+cargo add serde --features derive
+cargo add serde_json
+cargo add --dev syncular-testkit
+cargo install syncular-codegen --version 0.1.0
+```
+
+Use the same migration shape as the JavaScript app. Rust-only apps can commit
+`generated/syncular.codegen.json` directly:
+
+```json
+{
+  "tables": {
+    "tasks": {
+      "subscriptionId": "sub-tasks",
+      "serverVersionColumn": "server_version",
+      "scopes": [
+        {
+          "name": "user_id",
+          "column": "user_id",
+          "source": "actorId",
+          "required": true
+        }
+      ]
+    }
+  }
+}
+```
+
+Then generate and check:
+
+```bash
+syncular-codegen --manifest-dir .
+syncular-codegen --manifest-dir . --check
+```
+
+## Add a server
+
+Mount Syncular under a stable API prefix so browser and native clients use the
+same base URL:
+
+```ts
+import { Hono } from 'hono';
+import { createSyncServer } from '@syncular/server-hono';
+
+const app = new Hono();
+const { syncRoutes } = createSyncServer({
+  db,
+  dialect,
+  sync: {
+    handlers: [tasksHandler],
+    authenticate: async (request) => {
+      const token = request.headers.get('authorization')?.replace('Bearer ', '');
+      return token ? { actorId: await verifyActorId(token) } : null;
+    },
+  },
+});
+
+app.route('/api/sync', syncRoutes);
+
+export default app;
+```
+
+Use [Server Setup](/docs/server/setup-with-hono) for the full handler and auth
+shape.
+
+## Run sync locally
+
+Point the generated client at the API prefix:
+
+```ts
+const db = await createSyncularAppDatabase({
+  config: {
+    baseUrl: '/api',
+    clientId: crypto.randomUUID(),
+    actorId: currentUser.id,
+  },
+});
+```
+
+In tests, use the package testkits instead of hand-rolled protocol fixtures:
+
+```ts
+import {
+  createSyncCombinedRequest,
+  createSyncSubscription,
+} from '@syncular/testkit';
+```
+
+```rust
+let mut fixture = syncular_testkit::open_todo_client()?;
+let task_id = fixture.client.add_task("Fresh Rust app".to_string(), None)?;
+```

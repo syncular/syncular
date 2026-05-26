@@ -93,6 +93,13 @@
   "files": [
     "dist",
     "src",
-    "web-dist"
+    "web-dist",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__/**",
+    "!dist/**/*.test.*",
+    "!dist/**/__tests__/**",
+    "!test/**",
+    "!tests/**"
   ]
 }

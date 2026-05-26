@@ -75,6 +75,48 @@ function readDryRun(): boolean {
   return value === '1' || value === 'true' || value === 'yes';
 }
 
+async function listTarballFiles(tarball: string): Promise<string[]> {
+  const result = await $`tar -tzf ${tarball}`.nothrow();
+  if (result.exitCode !== 0) {
+    throw new Error(
+      `Failed to inspect npm package archive ${tarball}.\nstderr:\n${decodeOutput(result.stderr)}`
+    );
+  }
+
+  return decodeOutput(result.stdout)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+}
+
+function isForbiddenPackageFile(path: string): boolean {
+  const packagePath = path.replace(/^package\//, '');
+  if (
+    packagePath.startsWith('node_modules/') ||
+    packagePath.startsWith('.context/') ||
+    packagePath.startsWith('.turbo/') ||
+    packagePath.startsWith('tests/') ||
+    packagePath.startsWith('test/') ||
+    packagePath.includes('/tests/') ||
+    packagePath.includes('/test/') ||
+    packagePath.includes('/__tests__/')
+  ) {
+    return true;
+  }
+
+  return /\.(?:test|spec)\.[cm]?[jt]sx?$/.test(packagePath);
+}
+
+async function verifyTarballContents(tarball: string): Promise<void> {
+  const files = await listTarballFiles(tarball);
+  const badFiles = files.filter(isForbiddenPackageFile);
+  if (badFiles.length > 0) {
+    throw new Error(
+      `npm package archive includes release junk:\n${badFiles.join('\n')}`
+    );
+  }
+}
+
 async function isPublishedVersion(
   packageName: string,
   version: string
@@ -120,6 +162,7 @@ if (tarballs.length !== 1) {
 }
 
 const [tarball] = tarballs;
+await verifyTarballContents(tarball);
 const packageMeta = readPackageMeta();
 const npmTag = readNpmTag();
 const dryRun = readDryRun();
