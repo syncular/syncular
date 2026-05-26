@@ -24,11 +24,19 @@ Kysely. Browser/React apps still use the Rust-owned SQLite runtime through
 npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
 npm install kysely pg hono
 
-# Client and React hooks
-npm install @syncular/client @syncular/react kysely
+# Client, React hooks, and app-facing CLI
+npm install syncular @syncular/client @syncular/react kysely
 
 # App contract and generated TypeScript client
 npm install -D @syncular/typegen
+```
+
+`syncular generate` uses the Rust `syncular-codegen` binary for generated app
+clients. The command can auto-install it when Cargo is available; to prepare it
+explicitly, run:
+
+```bash
+npx syncular codegen install
 ```
 
 For React Native/Expo, Tauri, or Electron hosts, add the matching host bridge:
@@ -56,7 +64,7 @@ cargo add serde serde_json uuid
 cargo add --dev syncular-testkit
 
 # Codegen CLI for app schemas
-cargo install syncular-codegen --version 0.1.0
+cargo install syncular-codegen --locked --version 0.1.0
 ```
 
 Rust apps still define the app contract with `@syncular/typegen` at development

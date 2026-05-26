@@ -70,6 +70,10 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-42 Codegen Install And CLI Self Containment`](work-packages/WP-42-codegen-install-and-cli-self-containment.md)
+  - Accepted. `syncular generate` now resolves the Rust generator from explicit
+    env, repo-local source, tool cache, `PATH`, or Cargo auto-install, and
+    `syncular codegen install` gives npm users a documented prewarm path.
 - `[x]` [`WP-41 Codegen Init And Warning Polish`](work-packages/WP-41-codegen-init-and-warning-polish.md)
   - Accepted. Rust-only apps can initialize
     `generated/syncular.codegen.json` from migrations with

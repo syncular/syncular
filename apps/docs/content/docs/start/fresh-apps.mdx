@@ -23,6 +23,13 @@ npm install syncular @syncular/client @syncular/react kysely react react-dom
 npm install -D @syncular/typegen
 ```
 
+Prepare the Rust generator once, or let `syncular generate` do it on demand
+when Cargo is available:
+
+```bash
+npx syncular codegen install
+```
+
 Create `migrations/0001_initial/up.sql`:
 
 ```sql
@@ -69,7 +76,7 @@ cargo add diesel --features sqlite,returning_clauses_for_sqlite_3_35
 cargo add serde --features derive
 cargo add serde_json
 cargo add --dev syncular-testkit
-cargo install syncular-codegen --version 0.1.0
+cargo install syncular-codegen --locked --version 0.1.0
 ```
 
 Use the same migration shape as the JavaScript app. Rust-only apps can

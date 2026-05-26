@@ -45,8 +45,9 @@ runtime; JavaScript owns the Kysely/read, mutation-helper, React, and host
 bridge surface:
 
 ```bash
-npm install @syncular/client @syncular/react kysely
+npm install syncular @syncular/client @syncular/react kysely
 npm install -D @syncular/typegen
+npx syncular codegen install
 ```
 
 Then continue with [JavaScript Quick Start](/clients/javascript/quick-start).
@@ -58,7 +59,7 @@ Use this path for Rust app code or native shells embedding Syncular directly:
 ```bash
 cargo add syncular syncular-client
 cargo add --dev syncular-testkit
-cargo install syncular-codegen --version 0.1.0
+cargo install syncular-codegen --locked --version 0.1.0
 npm install -D @syncular/typegen
 ```
 

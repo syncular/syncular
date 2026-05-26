@@ -27,13 +27,16 @@ npm install syncular
 Run the app-facing generator from the umbrella package:
 
 ```bash
+npx syncular codegen install
 npx syncular generate --manifest-dir .
 npx syncular generate --manifest-dir . --check
 ```
 
 When `syncular.app.ts` is absent and `generated/syncular.codegen.json` does not
 exist, the command initializes a starter config from migrations before
-generating clients.
+generating clients. `syncular generate` can also install the Rust generator on
+demand when Cargo is available; `syncular codegen install` prewarms the same
+tool cache explicitly.
 
 ## Documentation
 

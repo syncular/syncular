@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { mkdir, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 
 interface Options {
@@ -175,9 +175,39 @@ function atVersion(name: string, version: string): string {
   return `${name}@${version}`;
 }
 
+function codegenBinaryPath(root: string): string {
+  return join(
+    root,
+    'bin',
+    process.platform === 'win32' ? 'syncular-codegen.exe' : 'syncular-codegen'
+  );
+}
+
+async function writeTaskMigration(appDir: string): Promise<void> {
+  await mkdir(join(appDir, 'migrations', '0001_initial'), {
+    recursive: true,
+  });
+  await writeFile(
+    join(appDir, 'migrations', '0001_initial', 'up.sql'),
+    `create table tasks (
+  id text primary key not null,
+  title text not null,
+  completed integer not null default 0,
+  user_id text not null,
+  server_version bigint not null default 0
+);
+`,
+    'utf8'
+  );
+}
+
 async function runJsSmoke(options: Options): Promise<void> {
   const jsDir = join(options.workDir, 'js-browser-app');
+  const cargoHome = join(options.workDir, 'js-cargo-home');
+  const codegenRoot = join(options.workDir, 'js-codegen-root');
+  const codegenBin = codegenBinaryPath(codegenRoot);
   await mkdir(jsDir, { recursive: true });
+  await mkdir(cargoHome, { recursive: true });
 
   await writeFile(
     join(jsDir, 'package.json'),
@@ -186,12 +216,38 @@ async function runJsSmoke(options: Options): Promise<void> {
         private: true,
         type: 'module',
         scripts: {
+          generate: 'syncular generate --manifest-dir .',
           smoke: 'node ./smoke.mjs',
         },
       },
       null,
       2
     )}\n`,
+    'utf8'
+  );
+  await writeTaskMigration(jsDir);
+  await writeFile(
+    join(jsDir, 'syncular.app.ts'),
+    `import { defineSyncularClient, scope, syncedTable } from '@syncular/typegen';
+
+export const app = defineSyncularClient({
+  typescriptOutputPath: 'src/generated/syncular.generated.ts',
+  typescriptServerOutputPath: 'src/generated/syncular.server.generated.ts',
+  tables: {
+    tasks: syncedTable({
+      table: 'tasks',
+      subscriptionId: 'sub-tasks',
+      serverVersion: 'server_version',
+      scopes: [
+        scope('user_id', {
+          source: 'actorId',
+          required: true,
+        }),
+      ],
+    }),
+  },
+});
+`,
     'utf8'
   );
 
@@ -306,6 +362,55 @@ console.log('fresh JS package smoke passed');
   await run('npm', ['exec', '--', 'syncular', 'generate', '--help'], {
     cwd: jsDir,
   });
+  await run(
+    'npm',
+    [
+      'exec',
+      '--',
+      'syncular',
+      'codegen',
+      'install',
+      '--version',
+      options.crateVersion,
+      '--root',
+      codegenRoot,
+    ],
+    { cwd: jsDir, env: { CARGO_HOME: cargoHome } }
+  );
+  await run(
+    'npm',
+    ['exec', '--', 'syncular', 'generate', '--manifest-dir', '.'],
+    {
+      cwd: jsDir,
+      env: { CARGO_HOME: cargoHome, SYNCULAR_CODEGEN_BIN: codegenBin },
+    }
+  );
+  await run(
+    'npm',
+    ['exec', '--', 'syncular', 'generate', '--manifest-dir', '.', '--check'],
+    {
+      cwd: jsDir,
+      env: { CARGO_HOME: cargoHome, SYNCULAR_CODEGEN_BIN: codegenBin },
+    }
+  );
+  const config = await readFile(
+    join(jsDir, 'generated/syncular.codegen.json'),
+    'utf8'
+  );
+  const generatedClient = await readFile(
+    join(jsDir, 'src/generated/syncular.generated.ts'),
+    'utf8'
+  );
+  if (!config.includes('"subscriptionId": "sub-tasks"')) {
+    throw new Error(
+      'published JS app did not generate the expected codegen config'
+    );
+  }
+  if (!generatedClient.includes('sub-tasks')) {
+    throw new Error(
+      'published JS app did not generate the expected client output'
+    );
+  }
   await run('npm', ['run', 'smoke'], { cwd: jsDir });
 }
 
@@ -313,11 +418,7 @@ async function runRustSmoke(options: Options): Promise<void> {
   const rustDir = join(options.workDir, 'rust-app');
   const cargoHome = join(options.workDir, 'cargo-home');
   const cargoRoot = join(options.workDir, 'cargo-bin');
-  const cargoBin = join(
-    cargoRoot,
-    'bin',
-    process.platform === 'win32' ? 'syncular-codegen.exe' : 'syncular-codegen'
-  );
+  const cargoBin = codegenBinaryPath(cargoRoot);
   await mkdir(rustDir, { recursive: true });
   await mkdir(cargoHome, { recursive: true });
   await mkdir(cargoRoot, { recursive: true });
@@ -357,21 +458,7 @@ async function runRustSmoke(options: Options): Promise<void> {
     { cwd: rustDir, env: { CARGO_HOME: cargoHome } }
   );
 
-  await mkdir(join(rustDir, 'migrations', '0001_initial'), {
-    recursive: true,
-  });
-  await writeFile(
-    join(rustDir, 'migrations', '0001_initial', 'up.sql'),
-    `create table tasks (
-  id text primary key not null,
-  title text not null,
-  completed integer not null default 0,
-  user_id text not null,
-  server_version bigint not null default 0
-);
-`,
-    'utf8'
-  );
+  await writeTaskMigration(rustDir);
   await run(cargoBin, ['init', '--manifest-dir', rustDir], {
     cwd: rustDir,
     env: { CARGO_HOME: cargoHome },
