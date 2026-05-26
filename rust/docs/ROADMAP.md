@@ -77,6 +77,8 @@ read-only review:
     native packaging explicitly selects `syncular-runtime` with
     `boltffi-bindings` enabled for generated JNI/Swift/Kotlin/Java exports;
     docs typecheck prepares OpenAPI before importing the ignored JSON artifact;
+    the redundant public docs `/docs` root prefix now redirects to canonical
+    root-relative docs paths and is tracked as a temporary route exception;
     the stale always-on `integration-load` job that invoked the removed legacy
     TypeScript load entrypoint is gone; audit-blocking dependency pins were
     refreshed so `bun check` and coverage tests pass locally.
