@@ -70,6 +70,11 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-48 CI And Apex Publish Recovery`](work-packages/WP-48-ci-apex-publish-recovery.md)
+  - Accepted. Shared CI setup now installs Rust, `wasm-pack`, and `wasm-opt`
+    before package builds; native FFI fixture expectations match the generated
+    app contract; the runtime library target is explicit for native package
+    tooling; local Rust/native and WASM package gates passed before push.
 - `[x]` [`WP-47 Post-Publish JS Runtime Smoke`](work-packages/WP-47-post-publish-js-runtime-smoke.md)
   - Accepted. The external npm install smoke now opens the generated browser
     client from published packages, inserts through generated mutations, and

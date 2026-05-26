@@ -12,6 +12,7 @@ categories = ["database", "wasm"]
 exclude = ["tests/**"]
 
 [lib]
+name = "syncular_runtime"
 crate-type = ["rlib", "staticlib", "cdylib"]
 
 [features]
