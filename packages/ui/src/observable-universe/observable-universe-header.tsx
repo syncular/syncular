@@ -20,11 +20,11 @@ export interface ObservableUniverseHeaderProps {
 }
 
 const DEFAULT_TOPIC_LINKS: ObservableUniverseHeaderTopicLink[] = [
-  { label: 'Introduction', href: '/docs/introduction' },
-  { label: 'Build', href: '/docs/build' },
-  { label: 'Client SDK', href: '/docs/client-sdk' },
-  { label: 'Server', href: '/docs/server' },
-  { label: 'API', href: '/docs/api' },
+  { label: 'Start', href: 'https://docs.syncular.dev/start' },
+  { label: 'Learn', href: 'https://docs.syncular.dev/learn' },
+  { label: 'Clients', href: 'https://docs.syncular.dev/clients' },
+  { label: 'Server', href: 'https://docs.syncular.dev/server' },
+  { label: 'Reference', href: 'https://docs.syncular.dev/reference' },
 ];
 
 function GitHubMark({ className }: { className?: string }) {

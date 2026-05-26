@@ -13,7 +13,7 @@ export interface InstallSectionProps {
 export const InstallSection = forwardRef<HTMLElement, InstallSectionProps>(
   function InstallSection(
     {
-      docsHref = '/docs',
+      docsHref = 'https://docs.syncular.dev',
       demoHref,
       githubHref = 'https://github.com/syncular/syncular',
       className,
@@ -31,11 +31,29 @@ export const InstallSection = forwardRef<HTMLElement, InstallSectionProps>(
             Get started
           </span>
           <h2 className="font-display font-bold text-2xl md:text-3xl text-white mt-4">
-            Syncular is modular. Install only what you need.
+            Install the Rust-owned client path and the server pieces you need.
           </h2>
 
           <div className="mt-10 grid grid-cols-1 lg:grid-cols-2 gap-6 max-w-4xl mx-auto text-left">
-            {/* Server install */}
+            <div className="code-block">
+              <div className="code-header">
+                <span className="w-2 h-2 rounded-full bg-flow inline-block" />
+                <span>Browser / React client</span>
+              </div>
+              <pre className="font-mono text-sm px-6 py-4">
+                <code>
+                  <span className="text-neutral-500">$</span>{' '}
+                  <span className="text-white">bun add syncular \</span>
+                  {'\n'}
+                  <span className="text-white">{'  '}@syncular/client \</span>
+                  {'\n'}
+                  <span className="text-white">{'  '}@syncular/react \</span>
+                  {'\n'}
+                  <span className="text-white">{'  '}kysely</span>
+                </code>
+              </pre>
+            </div>
+
             <div className="code-block">
               <div className="code-header">
                 <span className="w-2 h-2 rounded-full bg-healthy inline-block" />
@@ -55,28 +73,6 @@ export const InstallSection = forwardRef<HTMLElement, InstallSectionProps>(
                   </span>
                   {'\n'}
                   <span className="text-white">{'  '}kysely pg hono</span>
-                </code>
-              </pre>
-            </div>
-
-            {/* Client install */}
-            <div className="code-block">
-              <div className="code-header">
-                <span className="w-2 h-2 rounded-full bg-flow inline-block" />
-                <span>Client</span>
-              </div>
-              <pre className="font-mono text-sm px-6 py-4">
-                <code>
-                  <span className="text-neutral-500">$</span>{' '}
-                  <span className="text-white">bun add @syncular/client \</span>
-                  {'\n'}
-                  <span className="text-white">{'  '}@syncular/react \</span>
-                  {'\n'}
-                  <span className="text-white">
-                    {'  '}@syncular/transport-http \
-                  </span>
-                  {'\n'}
-                  <span className="text-white">{'  '}kysely</span>
                 </code>
               </pre>
             </div>
