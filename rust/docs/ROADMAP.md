@@ -70,11 +70,17 @@ read-only review:
 
 ## Now
 
+- `[~]` [`WP-45 WASM Test Teardown Stabilization`](work-packages/WP-45-wasm-test-teardown-stabilization.md)
+  - In progress. Full pre-push exposed a WASM worker close-path recursive-borrow
+    trap after the variant-core sync assertions succeeded; the active slice is
+    narrowing cleanup tolerance to that exact teardown error and rerunning the
+    browser/WASM client gate.
 - `[x]` [`WP-44 Observable Universe Rust-First Copy`](work-packages/WP-44-observable-universe-rust-first-copy.md)
   - Accepted. The reusable Observable Universe landing surface now describes
     the Rust-owned SQLite runtime, current host APIs, current install commands,
     and the current `docs.syncular.dev` Start/Learn/Clients/Server/Reference
-    hierarchy without changing component APIs.
+    hierarchy without changing component APIs, with mobile overflow checked in
+    a local browser preview.
 - `[x]` [`WP-43 Release Rehearsal Exact Version Worktree`](work-packages/WP-43-release-rehearsal-exact-version-worktree.md)
   - Accepted. Full release rehearsal now creates a clean detached worktree at
     `HEAD`, stamps the requested exact version inside that worktree, and runs

@@ -41,11 +41,7 @@ export const SyncTopologyPanel = forwardRef<
           Sync Topology
         </span>
       </div>
-      <svg
-        viewBox="0 0 660 420"
-        className="w-full max-w-[660px] h-auto"
-        style={{ minHeight: 320 }}
-      >
+      <svg viewBox="0 0 660 420" className="w-full max-w-[660px] h-auto">
         {/* Orbit arcs */}
         <ellipse
           cx={server.x}
