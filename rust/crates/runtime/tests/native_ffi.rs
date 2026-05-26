@@ -225,7 +225,7 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
     let encryption_config = CString::new(
         json!({
             "rules": [
-                { "scope": "tasks", "table": "tasks", "fields": ["title"] }
+                { "scope": "tasks", "table": "tasks", "fields": ["description"] }
             ],
             "keys": {
                 "default": "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc"
@@ -250,12 +250,17 @@ fn native_ffi_covers_handle_lifecycle_and_json_methods() {
         .to_string(),
     )
     .unwrap();
-    assert!(syncular_native_client_set_encrypted_crdt_json(
+    assert!(!syncular_native_client_set_encrypted_crdt_json(
         handle,
         encrypted_crdt_config.as_ptr(),
         &mut error
     ));
-    assert!(error.is_null());
+    let error_value: Value = serde_json::from_str(&take_string(error)).unwrap();
+    assert_eq!(error_value["kind"], "Config");
+    assert!(error_value["message"]
+        .as_str()
+        .unwrap()
+        .contains("requires at least one generated encrypted-update-log CRDT field"));
 
     let method = CString::new("generateSymmetricKey").unwrap();
     let args = CString::new("{}").unwrap();
@@ -632,17 +637,7 @@ fn native_ffi_stages_blob_files_locally() {
     std::fs::write(&input_path, [1u8, 2, 3, 4]).unwrap();
 
     let mut error = ptr::null_mut();
-    let config = CString::new(
-        json!({
-            "db_path": path,
-            "base_url": "http://127.0.0.1:9/sync",
-            "client_id": "native-ffi-blobs",
-            "actor_id": "user-rust",
-            "project_id": "p0"
-        })
-        .to_string(),
-    )
-    .unwrap();
+    let config = ffi_config(&path, "native-ffi-blobs");
     let handle = syncular_native_client_open(config.as_ptr(), false, &mut error);
     assert!(!handle.is_null());
 
