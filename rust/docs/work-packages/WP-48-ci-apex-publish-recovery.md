@@ -20,6 +20,8 @@ landing surface to the public apex site.
 - Enable the current BoltFFI export feature for native package builds so the
   generated Windows JVM glue links against the Rust runtime symbols.
 - Generate the ignored OpenAPI spec before docs typechecking imports it.
+- Canonicalize the explicitly requested redundant docs root prefix so
+  `docs.syncular.dev/docs` lands on the root docs site.
 - Remove the always-on `integration-load` workflow job that still invoked the
   deleted legacy TypeScript `test:load` entrypoint.
 - Refresh vulnerable dependency pins and overrides that gate `bun check`.
@@ -77,6 +79,10 @@ landing surface to the public apex site.
 - `env PATH="/Users/bkniffler/.volta/bin:/usr/bin:/bin" bun scripts/size-syncular-wasm.ts --wasm dist/wasm/syncular_bg.wasm --check --report /tmp/syncular-wasm-size-missing-tools.txt`
 - `bash -n rust/scripts/package-native-bindings.sh`
 - `cargo build --manifest-path rust/crates/runtime/Cargo.toml -p syncular-runtime -p syncular-runtime --lib --no-default-features`
+- `bun --cwd apps/docs tsgo`
+- `bun --cwd apps/docs build`
+- `curl -I https://docs.syncular.dev/docs/` showed the pre-fix live behavior
+  redirected to `/docs`, which then returned `404`.
 
 ## Decision
 
@@ -91,5 +97,8 @@ Hono routes before importing the ignored JSON artifact, and the always-on
 `integration-load` job was removed because its only command targeted the
 deleted legacy TypeScript load entrypoint. Dependency overrides and direct docs
 tooling pins were refreshed so `bun audit` reports no vulnerabilities and the
-full `bun check` gate can complete. Apex publish verification remains a
+full `bun check` gate can complete. The docs app now redirects the redundant
+root `/docs` prefix to canonical root-relative docs paths; this is recorded as
+a temporary route exception in the compatibility register because stale links
+must not become a hidden product surface. Apex publish verification remains a
 deployment step after the accepted commit lands on `main`.
