@@ -59,7 +59,7 @@ describe('syncular CLI', () => {
     ]);
   });
 
-  it('runs Rust codegen directly when no app definition exists', () => {
+  it('initializes Rust codegen config when no app definition or config exists', () => {
     const steps = buildGenerateSteps(
       {
         check: false,
@@ -76,6 +76,17 @@ describe('syncular CLI', () => {
 
     expect(steps).toEqual([
       {
+        label: 'Initialize Syncular codegen config',
+        command: 'codegen-bin',
+        args: [
+          'init',
+          '--manifest-dir',
+          '/workspace/app',
+          '--migrations-dir',
+          '/workspace/migrations',
+        ],
+      },
+      {
         label: 'Generate Syncular app clients',
         command: 'codegen-bin',
         args: [
@@ -86,6 +97,29 @@ describe('syncular CLI', () => {
           '--rust-output-dir',
           '/workspace/generated/rust',
         ],
+      },
+    ]);
+  });
+
+  it('runs Rust codegen directly when an existing config is present', () => {
+    const steps = buildGenerateSteps(
+      {
+        check: true,
+        manifestDir: './app',
+      },
+      {
+        cwd: '/workspace',
+        env: { SYNCULAR_CODEGEN_BIN: 'codegen-bin' },
+        fileExists: (path) =>
+          path === '/workspace/app/generated/syncular.codegen.json',
+      }
+    );
+
+    expect(steps).toEqual([
+      {
+        label: 'Generate Syncular app clients',
+        command: 'codegen-bin',
+        args: ['--manifest-dir', '/workspace/app', '--check'],
       },
     ]);
   });

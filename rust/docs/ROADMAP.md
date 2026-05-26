@@ -70,6 +70,13 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-41 Codegen Init And Warning Polish`](work-packages/WP-41-codegen-init-and-warning-polish.md)
+  - Accepted. Rust-only apps can initialize
+    `generated/syncular.codegen.json` from migrations with
+    `syncular-codegen init`, `syncular generate` initializes missing
+    Rust-only config before client generation, fresh/post-publish Rust smokes
+    exercise the path, and simple blank-app generated Rust now compiles
+    without generated-code warning noise.
 - `[x]` [`WP-40 Fresh App Release DX`](work-packages/WP-40-fresh-app-release-dx.md)
   - Accepted. Local fresh JavaScript/Rust app generation smokes now prove
     `syncular generate`, Rust-only codegen, generated output checks, Rust app

@@ -31,6 +31,10 @@ npx syncular generate --manifest-dir .
 npx syncular generate --manifest-dir . --check
 ```
 
+When `syncular.app.ts` is absent and `generated/syncular.codegen.json` does not
+exist, the command initializes a starter config from migrations before
+generating clients.
+
 ## Documentation
 
 - Quick start: https://syncular.dev/docs/start/quick-start

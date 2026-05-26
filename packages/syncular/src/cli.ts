@@ -5,6 +5,7 @@ import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 const DEFAULT_APP_FILE = 'syncular.app.ts';
+const DEFAULT_CODEGEN_CONFIG_FILE = 'generated/syncular.codegen.json';
 
 export interface GenerateCommandOptions {
   check: boolean;
@@ -50,8 +51,9 @@ Generates the Syncular app handoff and language clients in one app-facing comman
 
 When <manifest-dir>/syncular.app.ts exists, or --app is provided, the typed
 TypeScript app contract is used to refresh generated/syncular.codegen.json.
-Rust-only apps can commit generated/syncular.codegen.json directly and omit
-syncular.app.ts.
+Rust-only apps can omit syncular.app.ts; when generated/syncular.codegen.json
+is missing, syncular generate initializes it from migrations before generating
+clients.
 
 Use --check in CI to verify generated outputs are current without rewriting
 files.
@@ -177,6 +179,10 @@ export function buildGenerateSteps(
   const appPath = options.app
     ? resolveFrom(cwd, options.app)
     : resolveFrom(manifestDir, DEFAULT_APP_FILE);
+  const codegenConfigPath = resolveFrom(
+    manifestDir,
+    DEFAULT_CODEGEN_CONFIG_FILE
+  );
   const hasAppDefinition = options.app !== undefined || fileExists(appPath);
 
   if (options.app !== undefined && !fileExists(appPath)) {
@@ -195,6 +201,22 @@ export function buildGenerateSteps(
         'codegen-config',
         '--app',
         appPath,
+        ...(options.check ? ['--check'] : []),
+      ],
+    });
+  }
+
+  if (!hasAppDefinition && !fileExists(codegenConfigPath)) {
+    steps.push({
+      label: 'Initialize Syncular codegen config',
+      command: codegenBin,
+      args: [
+        'init',
+        '--manifest-dir',
+        manifestDir,
+        ...(options.migrationsDir
+          ? ['--migrations-dir', resolveFrom(cwd, options.migrationsDir)]
+          : []),
         ...(options.check ? ['--check'] : []),
       ],
     });
