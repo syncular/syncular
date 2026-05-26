@@ -183,6 +183,8 @@ that invents an API not present in the repo.
       `/reference` without a `/docs` prefix
     - raw Markdown and OpenGraph helper routes moved out of their old nested
       docs segments to `/llms.mdx/*` and `/og/*`
+    - raw Markdown route handling normalizes Cloudflare/OpenNext rewrite slugs
+      so root-relative `*.mdx` helper URLs resolve to the matching page
     - `bun --cwd apps/docs generate`
     - custom root-relative docs link checker: `730` links across `180` MDX
       files, no missing routes
