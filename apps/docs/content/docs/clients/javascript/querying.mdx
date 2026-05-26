@@ -40,7 +40,7 @@ const { data: tasks = [] } = useSyncQuery(
 );
 ```
 
-Use [React](/docs/clients/javascript/react) for hook details.
+Use [React](/clients/javascript/react) for hook details.
 
 ## Raw SQL
 
@@ -49,4 +49,4 @@ specialized local projections, but raw app-table writes must not bypass
 Syncular. Direct inserts, updates, and deletes skip the outbox, conflicts,
 encryption hooks, CRDT metadata, blob queues, and row-change events.
 
-Use [Mutations](/docs/clients/javascript/mutations) for app-table writes.
+Use [Mutations](/clients/javascript/mutations) for app-table writes.

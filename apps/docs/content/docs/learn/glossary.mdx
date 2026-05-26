@@ -19,7 +19,7 @@ The initial full snapshot sent when a client first subscribes to a [Table](#tabl
 { cursor: -1 }  // Triggers bootstrap
 ```
 
-See [Commits -- Pull Lifecycle](/docs/learn/commits#pull-lifecycle-server-to-client).
+See [Commits -- Pull Lifecycle](/learn/commits#pull-lifecycle-server-to-client).
 
 ### Commit
 
@@ -29,7 +29,7 @@ Atomic unit of change in the sync protocol. Every commit has a global `commitSeq
 { commitSeq: 42, actorId: 'user-1', changes: [{ table: 'tasks', ... }] }
 ```
 
-See [Commits](/docs/learn/commits).
+See [Commits](/learn/commits).
 
 ### Change
 
@@ -65,7 +65,7 @@ A compressed (`binary-table-v1` + gzip) bundle of one or more snapshot pages sen
 
 ### Scope
 
-Authorization boundary stored as key-value pairs on each [Change](#change). Scopes define data partitions -- clients only receive changes for scopes they are authorized to access. See [Scopes](/docs/learn/scopes).
+Authorization boundary stored as key-value pairs on each [Change](#change). Scopes define data partitions -- clients only receive changes for scopes they are authorized to access. See [Scopes](/learn/scopes).
 
 ```typescript
 { user_id: '123' }                 // User's private data
@@ -82,7 +82,7 @@ A server-defined sync unit. Clients request [Subscriptions](#subscription) by `t
 { table: 'tasks', scopes: { user_id: '123' } }
 ```
 
-See [Subscriptions](/docs/learn/subscriptions).
+See [Subscriptions](/learn/subscriptions).
 
 ### Subscription
 
@@ -97,7 +97,7 @@ A client's active request to receive data for a specific [Table](#table) and [Sc
 }
 ```
 
-See [Subscriptions](/docs/learn/subscriptions).
+See [Subscriptions](/learn/subscriptions).
 
 ### SyncOperation
 
@@ -116,7 +116,7 @@ the table, row id, payload when present, and optional base version for
 
 ### Outbox
 
-Client-side queue of pending commits waiting to be pushed to the server. Mutations write to the local database and the outbox immediately. When the device is online, the outbox drains in order. See [Commits -- Push Lifecycle](/docs/learn/commits#push-lifecycle-client-to-server).
+Client-side queue of pending commits waiting to be pushed to the server. Mutations write to the local database and the outbox immediately. When the device is online, the outbox drains in order. See [Commits -- Push Lifecycle](/learn/commits#push-lifecycle-client-to-server).
 
 <Mermaid
   chart={`
@@ -131,7 +131,7 @@ flowchart LR
 
 ### Conflict
 
-Occurs when a client's [SyncOperation](#syncoperation) has a `base_version` that does not match the server's current `server_version`. The server rejects the commit and returns the conflict details. Conflicts are stored in the client's `sync_conflicts` table for resolution. See [Conflict Resolution](/docs/learn/conflict-resolution).
+Occurs when a client's [SyncOperation](#syncoperation) has a `base_version` that does not match the server's current `server_version`. The server rejects the commit and returns the conflict details. Conflicts are stored in the client's `sync_conflicts` table for resolution. See [Conflict Resolution](/learn/conflict-resolution).
 
 ### Fingerprinting
 
@@ -197,7 +197,7 @@ executed by the Rust runtime, not hand-authored as a separate handler layer.
 }
 ```
 
-See [Table Handlers](/docs/server/table-handlers).
+See [Table Handlers](/server/table-handlers).
 
 ### Transport
 
@@ -211,7 +211,7 @@ directly.
 
 Realtime awareness of other connected users (cursor positions, online status, custom state). Delivered over WebSocket. Not part of the commit log -- presence is ephemeral.
 
-See [Realtime And Presence](/docs/clients/javascript/realtime-presence).
+See [Realtime And Presence](/clients/javascript/realtime-presence).
 
 ### resolveScopes
 
@@ -227,8 +227,8 @@ async resolveScopes(ctx) {
 
 ## See Also
 
-- [Architecture](/docs/learn/architecture) -- System overview
-- [Scopes](/docs/learn/scopes) -- Authorization model
-- [Subscriptions](/docs/learn/subscriptions) -- How subscriptions work
-- [Commits](/docs/learn/commits) -- Commit structure and lifecycle
-- [Conflict Resolution](/docs/learn/conflict-resolution) -- Handling concurrent edits
+- [Architecture](/learn/architecture) -- System overview
+- [Scopes](/learn/scopes) -- Authorization model
+- [Subscriptions](/learn/subscriptions) -- How subscriptions work
+- [Commits](/learn/commits) -- Commit structure and lifecycle
+- [Conflict Resolution](/learn/conflict-resolution) -- Handling concurrent edits

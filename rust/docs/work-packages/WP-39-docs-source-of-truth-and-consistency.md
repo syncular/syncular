@@ -95,6 +95,8 @@ app-facing mutation APIs.
 - `[x]` Run the same stale-pattern audit across public docs and clean adjacent
   troubleshooting/migration/testing pages that still suggested client handlers,
   old-client compatibility wording, or legacy sample instance names.
+- `[x]` Move the public docs site from the redundant `/docs` mount to the
+  domain root and rewrite internal links to root-relative routes.
 
 ## Accept / Reject Rule
 
@@ -173,6 +175,27 @@ that invents an API not present in the repo.
       `/docs/operate/troubleshooting`, `/docs/features/migrations`,
       `/docs/clients/rust/testing/stateful-server`, and
       `/docs/operate/operations-setup`; no console errors
+  - Root docs URL cleanup passed on 2026-05-26:
+    - docs app route moved from `/docs/[[...slug]]` to root
+      `/[[...slug]]` through a route group; Fumadocs `baseUrl` is now `/`
+    - docs content internal links now point at `/start`, `/learn`,
+      `/clients`, `/server`, `/features`, `/testing`, `/operate`, and
+      `/reference` without a `/docs` prefix
+    - raw Markdown and OpenGraph helper routes moved out of their old nested
+      docs segments to `/llms.mdx/*` and `/og/*`
+    - `bun --cwd apps/docs generate`
+    - custom root-relative docs link checker: `730` links across `180` MDX
+      files, no missing routes
+    - `bun --cwd apps/docs types:check`
+    - `bun --cwd apps/docs build`
+    - local browser smoke on `http://localhost:3210` for `/`, `/start`,
+      `/learn`, `/reference/api`, and `/start/what-is-syncular`; no console
+      errors on valid routes
+    - local HTTP smoke returned `200` for `/`, `/start`, `/learn`,
+      `/reference/api`, `/start/what-is-syncular`, `/index.mdx`,
+      `/start/what-is-syncular.mdx`, and
+      `/og/start/what-is-syncular/image.png`; `/docs/` resolves to `404`
+      after slash normalization
   - Gates passed:
     - `git diff --check`
     - custom internal `/docs` link checker: no broken `/docs` links across

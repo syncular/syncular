@@ -18,39 +18,39 @@ Use `@syncular/testkit` to test TypeScript/server/browser behavior across:
 
 The TypeScript API is test-runner agnostic. You can use Bun, Vitest, Jest, or
 other runners without changing testkit code. For Rust/native generated clients,
-use [Rust Testing](/docs/clients/rust/testing).
+use [Rust Testing](/clients/rust/testing).
 
-If you are still evaluating whether Syncular is trustworthy enough to adopt, start with [Testing & Confidence](/docs/start/testing-and-confidence).
+If you are still evaluating whether Syncular is trustworthy enough to adopt, start with [Testing & Confidence](/start/testing-and-confidence).
 
-If you are still wiring the system itself, use [JavaScript](/docs/clients/javascript),
-[Rust](/docs/clients/rust), [Server](/docs/server), and [Features](/docs/features) for
+If you are still wiring the system itself, use [JavaScript](/clients/javascript),
+[Rust](/clients/rust), [Server](/server), and [Features](/features) for
 implementation guides first.
 
 ## Choose your path
 
 <Cards>
-  <Card title="Quick Start" href="/docs/clients/javascript/testing/quick-start">
+  <Card title="Quick Start" href="/clients/javascript/testing/quick-start">
     Create fixtures, run push/pull/sync, and assert rows/outbox/conflicts
   </Card>
-  <Card title="Testkit Primitives" href="/docs/clients/javascript/testing/primitives">
+  <Card title="Testkit Primitives" href="/clients/javascript/testing/primitives">
     Builders, schema parsers, deterministic IDs/clocks, scenario flow, and realtime WS helpers
   </Card>
-  <Card title="Resource Lifecycle" href="/docs/clients/javascript/testing/lifecycle">
+  <Card title="Resource Lifecycle" href="/clients/javascript/testing/lifecycle">
     Optional `using` resources and callback wrappers to remove `try/finally` cleanup noise
   </Card>
-  <Card title="Fault Injection" href="/docs/clients/javascript/testing/fault-injection">
+  <Card title="Fault Injection" href="/clients/javascript/testing/fault-injection">
     Simulate latency, flaky transport, and deterministic failures
   </Card>
-  <Card title="Runtime Patterns" href="/docs/clients/javascript/testing/runtime">
+  <Card title="Runtime Patterns" href="/clients/javascript/testing/runtime">
     Share server handlers and runtime helpers across node/deno/cloudflare tests
   </Card>
-  <Card title="Rust Testing" href="/docs/clients/rust/testing">
+  <Card title="Rust Testing" href="/clients/rust/testing">
     Test generated Rust/native clients with `syncular-testkit` and real runtime clients
   </Card>
-  <Card title="Real-World Examples" href="/docs/clients/javascript/testing/examples-offline-reconnect">
+  <Card title="Real-World Examples" href="/clients/javascript/testing/examples-offline-reconnect">
     Production-style flows for offline reconnect, realtime collaboration, and runtime release smoke checks
   </Card>
-  <Card title="CLI" href="/docs/reference/cli">
+  <Card title="CLI" href="/reference/cli">
     Scaffold projects and run migration workflows from the CLI section
   </Card>
 </Cards>
@@ -70,11 +70,11 @@ These groups refer to the TypeScript `@syncular/testkit` package:
 | Assertions | `assertOutboxEmpty`, `assertConflictCount`, `assertRowExists`, `waitForOutboxEmpty` |
 | Faults | `withFaults`, `withRecording`, `createMockTransport` |
 
-Need a rollout checklist rather than APIs? See [Testing Strategy](/docs/testing/strategy).
+Need a rollout checklist rather than APIs? See [Testing Strategy](/testing/strategy).
 
 ## Continue with
 
-- Need implementation guides? Go to [JavaScript](/docs/clients/javascript),
-  [Rust](/docs/clients/rust), [Server](/docs/server), and [Features](/docs/features)
-- Debugging a live system rather than writing tests? Use [Operate](/docs/operate)
-- Want exact helper APIs? Go to [Reference](/docs/reference)
+- Need implementation guides? Go to [JavaScript](/clients/javascript),
+  [Rust](/clients/rust), [Server](/server), and [Features](/features)
+- Debugging a live system rather than writing tests? Use [Operate](/operate)
+- Want exact helper APIs? Go to [Reference](/reference)

@@ -93,5 +93,5 @@ client.sync_http()?;
 ```
 
 UI apps should usually enqueue mutations through the
-[Runtime](/docs/clients/rust/runtime) so SQLite/outbox work runs
+[Runtime](/clients/rust/runtime) so SQLite/outbox work runs
 on the worker and emits ordered events back to the host.

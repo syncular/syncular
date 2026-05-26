@@ -25,17 +25,17 @@ bun run javascript-bindings:build:wasm
 
 The implementation path is:
 
-1. [Server Setup](/docs/server/setup-with-hono)
-2. Choose [JavaScript Client](/docs/clients/javascript) or
-   [Rust Client](/docs/clients/rust)
+1. [Server Setup](/server/setup-with-hono)
+2. Choose [JavaScript Client](/clients/javascript) or
+   [Rust Client](/clients/rust)
 3. Define the app schema with migrations and `syncular.app.ts`
 4. Generate the app client for your language
-5. Learn the model: [Scopes](/docs/learn/scopes) and
-   [Subscriptions](/docs/learn/subscriptions)
+5. Learn the model: [Scopes](/learn/scopes) and
+   [Subscriptions](/learn/subscriptions)
 6. Then add features as needed: blobs, encryption, migrations, observability,
    console, relay
 
-If you’re not sure where to start, see [Adoption Paths](/docs/start/adoption-paths).
+If you’re not sure where to start, see [Adoption Paths](/start/adoption-paths).
 
 ## JavaScript first
 
@@ -49,7 +49,7 @@ npm install @syncular/client @syncular/react kysely
 npm install -D @syncular/typegen
 ```
 
-Then continue with [JavaScript Quick Start](/docs/clients/javascript/quick-start).
+Then continue with [JavaScript Quick Start](/clients/javascript/quick-start).
 
 ## Rust first
 
@@ -62,7 +62,7 @@ cargo install syncular-codegen --version 0.1.0
 npm install -D @syncular/typegen
 ```
 
-Then continue with [Rust Quick Start](/docs/clients/rust/quick-start).
+Then continue with [Rust Quick Start](/clients/rust/quick-start).
 
 ## What happens on a write (high level)
 
@@ -92,13 +92,13 @@ sequenceDiagram
   caption="Local writes happen first. Syncular persists the change, pushes it when possible, and other clients receive it through realtime deltas or the next pull."
 />
 
-**Bootstrap:** The first time a subscription syncs, the server returns a snapshot, then switches to incremental commits. For scale/performance details see [Bootstrap Deep Dive](/docs/learn/first-sync).
+**Bootstrap:** The first time a subscription syncs, the server returns a snapshot, then switches to incremental commits. For scale/performance details see [Bootstrap Deep Dive](/learn/first-sync).
 
-**Conflicts:** Version conflicts are detected on push; your app chooses resolution. See [Conflict Resolution](/docs/learn/conflict-resolution).
+**Conflicts:** Version conflicts are detected on push; your app chooses resolution. See [Conflict Resolution](/learn/conflict-resolution).
 
 ## Next steps
 
-- [JavaScript](/docs/clients/javascript) or [Rust](/docs/clients/rust) — generate and wire app clients
-- [Server](/docs/server) — implement the authoritative sync server
-- [Features](/docs/features) — add migrations, audit/history, errors, and app shapes
-- [How Sync Works](/docs/learn/architecture) — canonical deep dive
+- [JavaScript](/clients/javascript) or [Rust](/clients/rust) — generate and wire app clients
+- [Server](/server) — implement the authoritative sync server
+- [Features](/features) — add migrations, audit/history, errors, and app shapes
+- [How Sync Works](/learn/architecture) — canonical deep dive

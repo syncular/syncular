@@ -25,11 +25,11 @@ Best when you are building a new product where offline is a requirement (email c
 6. Add realtime wakeups when the core push/pull path is proven.
 
 Start here:
-- [Quick Start](/docs/start/quick-start)
-- [Server Setup](/docs/server/setup-with-hono)
-- [JavaScript](/docs/clients/javascript) or [Rust](/docs/clients/rust)
-- [Scopes](/docs/learn/scopes)
-- [Subscriptions](/docs/learn/subscriptions)
+- [Quick Start](/start/quick-start)
+- [Server Setup](/server/setup-with-hono)
+- [JavaScript](/clients/javascript) or [Rust](/clients/rust)
+- [Scopes](/learn/scopes)
+- [Subscriptions](/learn/subscriptions)
 
 ## Path B: Existing app with REST/webhooks/pipelines
 
@@ -43,28 +43,28 @@ Best when you already have a production backend and want offline + sync without 
 4. Expand table-by-table.
 
 Relevant docs:
-- [External Changes](/docs/server/external-changes)
-- [Admin Database Proxy](/docs/server/admin-proxy)
-- [Table Handlers](/docs/server/table-handlers)
+- [External Changes](/server/external-changes)
+- [Admin Database Proxy](/server/admin-proxy)
+- [Table Handlers](/server/table-handlers)
 
 ## Path C: Add "business app" features as you scale
 
 These are common add-ons once the core loop is working:
 
 1. Fast first sync for large datasets:
-   - [Architecture (bootstrap + snapshot chunks)](/docs/learn/architecture)
-   - [Performance](/docs/operate/performance)
+   - [Architecture (bootstrap + snapshot chunks)](/learn/architecture)
+   - [Performance](/operate/performance)
 2. Blobs (files) + offline cache/upload queue:
-   - [Blob Storage](/docs/features/recipes/blobs-and-media)
+   - [Blob Storage](/features/recipes/blobs-and-media)
 3. End-to-end encryption:
-   - [Field Encryption](/docs/features/field-encryption)
+   - [Field Encryption](/features/field-encryption)
 4. Operations + observability:
-   - [Operations](/docs/operate/operations-setup)
-   - [Observability](/docs/operate/observability)
+   - [Operations](/operate/operations-setup)
+   - [Observability](/operate/observability)
 5. Relay (intermittent networks / edge):
-   - [Relay](/docs/server/edge-relay)
+   - [Relay](/server/edge-relay)
 6. Migrations + type generation:
-   - [Schema Migrations](/docs/features/migrations)
+   - [Schema Migrations](/features/migrations)
 
 ## What to decide early (to avoid rewrites)
 

@@ -32,7 +32,7 @@ flowchart LR
   caption="Every client talks to the server commit log. Clients never replicate directly from each other."
 />
 
-Data always flows through the server's commit log. Clients never talk to each other directly. The server is the single source of truth; clients hold local replicas filtered by [scopes](/docs/learn/scopes).
+Data always flows through the server's commit log. Clients never talk to each other directly. The server is the single source of truth; clients hold local replicas filtered by [scopes](/learn/scopes).
 
 ## Sync Lifecycle Overview
 
@@ -85,7 +85,7 @@ or scoped snapshot artifacts. The client fetches each chunk separately via
 `GET /sync/snapshot-chunks/:chunkId`, verifies integrity, decodes the typed
 row payload, and applies it to SQLite.
 
-For caching, streaming, and tuning knobs, see [Bootstrap Deep Dive](/docs/learn/first-sync).
+For caching, streaming, and tuning knobs, see [Bootstrap Deep Dive](/learn/first-sync).
 
 ---
 
@@ -107,7 +107,7 @@ sequenceDiagram
 `}
 />
 
-The server only returns commits whose scopes match the client's subscription. Scope filtering is covered in detail on the [Scopes](/docs/learn/scopes) page.
+The server only returns commits whose scopes match the client's subscription. Scope filtering is covered in detail on the [Scopes](/learn/scopes) page.
 
 ---
 
@@ -164,7 +164,7 @@ If another client changed the same row since this client last read it, the serve
 }
 ```
 
-See [Conflict Resolution](/docs/learn/conflict-resolution) for how to handle conflicts.
+See [Conflict Resolution](/learn/conflict-resolution) for how to handle conflicts.
 
 ---
 
@@ -278,7 +278,7 @@ Syncular provides three guarantees that make the sync protocol safe for producti
 
 ## Next Steps
 
-- [Scopes](/docs/learn/scopes) -- How authorization and data filtering work
-- [Subscriptions](/docs/learn/subscriptions) -- How clients declare what data they need
-- [Commits](/docs/learn/commits) -- Commit structure and operation types
-- [Conflict Resolution](/docs/learn/conflict-resolution) -- Handling concurrent edits
+- [Scopes](/learn/scopes) -- How authorization and data filtering work
+- [Subscriptions](/learn/subscriptions) -- How clients declare what data they need
+- [Commits](/learn/commits) -- Commit structure and operation types
+- [Conflict Resolution](/learn/conflict-resolution) -- Handling concurrent edits

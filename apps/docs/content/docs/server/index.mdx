@@ -10,33 +10,33 @@ handlers, scope resolution, snapshot/pull behavior, push/apply behavior,
 realtime wakeups, blob routes, audit APIs, and deployment-specific adapters.
 
 Use this section for implementation guides. Exact API signatures and generated
-HTTP endpoint details stay in [Reference](/docs/reference).
+HTTP endpoint details stay in [Reference](/reference).
 
 ## Core server path
 
 <Cards>
-  <Card title="Setup With Hono" href="/docs/server/setup-with-hono">
+  <Card title="Setup With Hono" href="/server/setup-with-hono">
     Mount Syncular routes, configure table handlers, and expose sync APIs
   </Card>
-  <Card title="Table Handlers" href="/docs/server/table-handlers">
+  <Card title="Table Handlers" href="/server/table-handlers">
     Define the authoritative behavior for each synced table
   </Card>
-  <Card title="Scopes And Auth" href="/docs/server/scopes-and-auth">
+  <Card title="Scopes And Auth" href="/server/scopes-and-auth">
     Authenticate actors and resolve the scopes they can access
   </Card>
-  <Card title="Snapshot / Pull" href="/docs/server/snapshot-pull">
+  <Card title="Snapshot / Pull" href="/server/snapshot-pull">
     Serve bootstrap snapshots and incremental pulls
   </Card>
-  <Card title="Apply Operations / Push" href="/docs/server/apply-push">
+  <Card title="Apply Operations / Push" href="/server/apply-push">
     Apply generated client mutations on the authoritative server
   </Card>
-  <Card title="Realtime WebSocket" href="/docs/server/realtime-websocket">
+  <Card title="Realtime WebSocket" href="/server/realtime-websocket">
     Wake clients through persistent realtime connections
   </Card>
-  <Card title="Blobs" href="/docs/server/blobs">
+  <Card title="Blobs" href="/server/blobs">
     Serve file and media sync routes
   </Card>
-  <Card title="External Changes" href="/docs/server/external-changes">
+  <Card title="External Changes" href="/server/external-changes">
     Feed app-side database changes back into Syncular's commit stream
   </Card>
 </Cards>
@@ -44,10 +44,10 @@ HTTP endpoint details stay in [Reference](/docs/reference).
 ## Deployment targets
 
 <Cards>
-  <Card title="Cloudflare" href="/docs/server/cloudflare">
+  <Card title="Cloudflare" href="/server/cloudflare">
     Run the server on Workers and Durable Objects
   </Card>
-  <Card title="Service Worker Server" href="/docs/server/service-worker-server">
+  <Card title="Service Worker Server" href="/server/service-worker-server">
     Run Syncular server APIs in-browser for local-only and demo setups
   </Card>
 </Cards>
@@ -55,10 +55,10 @@ HTTP endpoint details stay in [Reference](/docs/reference).
 ## Advanced server shapes
 
 <Cards>
-  <Card title="Edge Relay" href="/docs/server/edge-relay">
+  <Card title="Edge Relay" href="/server/edge-relay">
     Run a relay for offline-heavy or edge-heavy environments
   </Card>
-  <Card title="Admin Proxy" href="/docs/server/admin-proxy">
+  <Card title="Admin Proxy" href="/server/admin-proxy">
     Provide controlled SQL access while preserving sync integration
   </Card>
 </Cards>
@@ -66,10 +66,10 @@ HTTP endpoint details stay in [Reference](/docs/reference).
 ## Exact APIs
 
 <Cards>
-  <Card title="Server Reference" href="/docs/reference/server">
+  <Card title="Server Reference" href="/reference/server">
     Look up exact handler, adapter, realtime, and dialect APIs
   </Card>
-  <Card title="HTTP API" href="/docs/reference/api">
+  <Card title="HTTP API" href="/reference/api">
     Inspect the generated HTTP and protocol contract
   </Card>
 </Cards>
