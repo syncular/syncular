@@ -9,20 +9,20 @@ Testing is split by language/runtime so app tests do not accidentally mock the
 wrong layer.
 
 <Cards>
-  <Card title="JavaScript Testing" href="/docs/clients/javascript/testing" description="@syncular/testkit for TypeScript, server, browser, HTTP, and runtime tests" />
-  <Card title="Rust Testing" href="/docs/clients/rust/testing" description="syncular-testkit for generated Rust/native clients and real SQLite state" />
-  <Card title="Conformance" href="/docs/testing/conformance" description="Shared scenarios that should hold across JavaScript, Rust, and host runtimes" />
-  <Card title="Testing Strategy" href="/docs/testing/strategy" description="What to verify before production and how to layer the suites" />
+  <Card title="JavaScript Testing" href="/clients/javascript/testing" description="@syncular/testkit for TypeScript, server, browser, HTTP, and runtime tests" />
+  <Card title="Rust Testing" href="/clients/rust/testing" description="syncular-testkit for generated Rust/native clients and real SQLite state" />
+  <Card title="Conformance" href="/testing/conformance" description="Shared scenarios that should hold across JavaScript, Rust, and host runtimes" />
+  <Card title="Testing Strategy" href="/testing/strategy" description="What to verify before production and how to layer the suites" />
 </Cards>
 
 ## Use the right surface
 
 | Test need | Use |
 |---|---|
-| TypeScript client, server handler, HTTP route, browser runtime, or websocket helper tests | [`@syncular/testkit`](/docs/clients/javascript/testing) |
-| Generated Rust client, native worker, real SQLite fixture, event stream, CRDT/blob queue tests | [`syncular-testkit`](/docs/clients/rust/testing) |
-| Behavior that must match JavaScript, Rust, and native hosts | [Conformance](/docs/testing/conformance) |
-| Server-only handler logic, auth, scopes, and schema-version projection | [Server](/docs/server) plus the JavaScript testkit server fixtures |
+| TypeScript client, server handler, HTTP route, browser runtime, or websocket helper tests | [`@syncular/testkit`](/clients/javascript/testing) |
+| Generated Rust client, native worker, real SQLite fixture, event stream, CRDT/blob queue tests | [`syncular-testkit`](/clients/rust/testing) |
+| Behavior that must match JavaScript, Rust, and native hosts | [Conformance](/testing/conformance) |
+| Server-only handler logic, auth, scopes, and schema-version projection | [Server](/server) plus the JavaScript testkit server fixtures |
 | Product-specific rows, fixtures, and assertions | App-owned test helpers layered above the Syncular testkit |
 
 The goal is the same in both languages: real local SQLite behavior, real sync

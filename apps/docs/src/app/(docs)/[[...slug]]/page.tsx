@@ -10,7 +10,7 @@ import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
 import { LLMCopyButton, ViewOptions } from '@/components/ai/page-actions';
 import { createRelativeLink } from '@/lib/fumadocs-compat';
-import { getPageImage, source } from '@/lib/source';
+import { getPageImage, getPageMarkdownUrl, source } from '@/lib/source';
 import { getMDXComponents } from '@/mdx-components';
 
 // Extended page data type for fumadocs-mdx
@@ -32,6 +32,7 @@ export default async function Page(props: {
   // Type assertion needed due to fumadocs-mdx/fumadocs-core type inference gap
   const pageData = page.data as ExtendedPageData;
   const MDX = pageData.body;
+  const markdownUrl = getPageMarkdownUrl(page);
   const gitConfig = {
     user: 'syncular',
     repo: 'syncular',
@@ -43,9 +44,9 @@ export default async function Page(props: {
       <DocsTitle>{pageData.title}</DocsTitle>
       <DocsDescription className="mb-0">{pageData.description}</DocsDescription>
       <div className="flex flex-row gap-2 items-center border-b pb-6">
-        <LLMCopyButton markdownUrl={`${page.url}.mdx`} />
+        <LLMCopyButton markdownUrl={markdownUrl} />
         <ViewOptions
-          markdownUrl={`${page.url}.mdx`}
+          markdownUrl={markdownUrl}
           githubUrl={`https://github.com/${gitConfig.user}/${gitConfig.repo}/blob/${gitConfig.branch}/apps/docs/content/docs/${page.path}`}
         />
       </div>

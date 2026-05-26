@@ -15,33 +15,33 @@ encryption remain coherent.
 ## Core API
 
 <Cards>
-  <Card title="Quick Start" href="/docs/clients/rust/quick-start" description="Generate Rust app code, open the client, query with Diesel, and mutate through Syncular" />
-  <Card title="Generated Client" href="/docs/clients/rust/generated-client" description="Understand generated schema, row types, migrations, metadata, subscriptions, and table helpers" />
-  <Card title="Querying" href="/docs/clients/rust/querying" description="Use Diesel expressions through client-owned SQLite connections" />
-  <Card title="Mutations" href="/docs/clients/rust/mutations" description="Insert, update, delete, lease, and batch app-table writes through Syncular" />
-  <Card title="Live Updates" href="/docs/clients/rust/live-updates" description="Resolve conflicts and refresh typed Diesel live queries from row change reports" />
+  <Card title="Quick Start" href="/clients/rust/quick-start" description="Generate Rust app code, open the client, query with Diesel, and mutate through Syncular" />
+  <Card title="Generated Client" href="/clients/rust/generated-client" description="Understand generated schema, row types, migrations, metadata, subscriptions, and table helpers" />
+  <Card title="Querying" href="/clients/rust/querying" description="Use Diesel expressions through client-owned SQLite connections" />
+  <Card title="Mutations" href="/clients/rust/mutations" description="Insert, update, delete, lease, and batch app-table writes through Syncular" />
+  <Card title="Live Updates" href="/clients/rust/live-updates" description="Resolve conflicts and refresh typed Diesel live queries from row change reports" />
 </Cards>
 
 ## Runtime Features
 
 <Cards>
-  <Card title="Runtime" href="/docs/clients/rust/runtime" description="Run the worker, event stream, queued commands, and UI lifecycle model" />
-  <Card title="Realtime And Presence" href="/docs/clients/rust/realtime-presence" description="Use websocket wakeups, reconnect recovery, and presence scope membership" />
-  <Card title="CRDT Fields" href="/docs/clients/rust/crdt-fields" description="Persist and materialize Yjs/Yrs-backed fields without editor-specific storage code" />
-  <Card title="Blobs And Encryption" href="/docs/clients/rust/blobs-encryption" description="Store files, process upload queues, cache downloads, and configure field/blob encryption" />
+  <Card title="Runtime" href="/clients/rust/runtime" description="Run the worker, event stream, queued commands, and UI lifecycle model" />
+  <Card title="Realtime And Presence" href="/clients/rust/realtime-presence" description="Use websocket wakeups, reconnect recovery, and presence scope membership" />
+  <Card title="CRDT Fields" href="/clients/rust/crdt-fields" description="Persist and materialize Yjs/Yrs-backed fields without editor-specific storage code" />
+  <Card title="Blobs And Encryption" href="/clients/rust/blobs-encryption" description="Store files, process upload queues, cache downloads, and configure field/blob encryption" />
 </Cards>
 
 ## Testing
 
 <Cards>
-  <Card title="Testing" href="/docs/clients/rust/testing" description="Use syncular-testkit with real generated clients and SQLite state" />
+  <Card title="Testing" href="/clients/rust/testing" description="Use syncular-testkit with real generated clients and SQLite state" />
 </Cards>
 
 ## Delivery
 
 <Cards>
-  <Card title="Native Hosts" href="/docs/clients/rust/native-hosts" description="Embed the Rust runtime from Swift, Kotlin, JVM, React Native, Tauri, or Electron hosts" />
-  <Card title="Packaging" href="/docs/clients/rust/packaging" description="Build native runtime artifacts from the Rust workspace" />
+  <Card title="Native Hosts" href="/clients/rust/native-hosts" description="Embed the Rust runtime from Swift, Kotlin, JVM, React Native, Tauri, or Electron hosts" />
+  <Card title="Packaging" href="/clients/rust/packaging" description="Build native runtime artifacts from the Rust workspace" />
 </Cards>
 
 ## Runtime split
@@ -56,16 +56,16 @@ encryption remain coherent.
 
 ## Recommended path
 
-1. Start with [Quick Start](/docs/clients/rust/quick-start).
-2. Read [Generated Client](/docs/clients/rust/generated-client) before
+1. Start with [Quick Start](/clients/rust/quick-start).
+2. Read [Generated Client](/clients/rust/generated-client) before
    changing migrations or `syncular.app.ts`.
-3. Use [Querying](/docs/clients/rust/querying) and
-   [Mutations](/docs/clients/rust/mutations) for day-to-day app code.
-4. Use [Runtime](/docs/clients/rust/runtime) for UI apps and host bridges.
-5. Use [Native Hosts](/docs/clients/rust/native-hosts) when Swift, Kotlin,
+3. Use [Querying](/clients/rust/querying) and
+   [Mutations](/clients/rust/mutations) for day-to-day app code.
+4. Use [Runtime](/clients/rust/runtime) for UI apps and host bridges.
+5. Use [Native Hosts](/clients/rust/native-hosts) when Swift, Kotlin,
    JVM, React Native, Tauri, or Electron hosts embed the Rust runtime.
-6. Add [Testing](/docs/clients/rust/testing) before building app-specific sync
+6. Add [Testing](/clients/rust/testing) before building app-specific sync
    behavior.
 
 For browser, React, React Native, Tauri, Electron, and TypeScript testing, use
-[JavaScript](/docs/clients/javascript).
+[JavaScript](/clients/javascript).

@@ -232,7 +232,7 @@ scope-column mapping should fail closed instead of clearing the whole table.
 
 ## Effective Scopes: The Intersection Model
 
-When a client pulls data, the server computes **effective scopes** as the intersection of what the client requested (via its [subscription](/docs/learn/subscriptions)) and what `resolveScopes` allows:
+When a client pulls data, the server computes **effective scopes** as the intersection of what the client requested (via its [subscription](/learn/subscriptions)) and what `resolveScopes` allows:
 
 <Mermaid
   chart={`
@@ -450,6 +450,6 @@ createServerHandler({
 
 ## Next Steps
 
-- [Subscriptions](/docs/learn/subscriptions) -- How clients request data using scopes
-- [Authorization Guide](/docs/learn/scopes) -- Implementing auth patterns
-- [Data Modeling with Scopes](/docs/features/data-modeling) -- Practical schema + scope design
+- [Subscriptions](/learn/subscriptions) -- How clients request data using scopes
+- [Authorization Guide](/learn/scopes) -- Implementing auth patterns
+- [Data Modeling with Scopes](/features/data-modeling) -- Practical schema + scope design

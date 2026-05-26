@@ -7,7 +7,7 @@ description: Server-side sync infrastructure for Syncular
 
 This page describes the server-side surfaces that make up a Syncular deployment.
 
-Use [Server Setup](/docs/server/setup-with-hono) for first-time implementation. Use this section when you need to know which package, route, or extension point owns a piece of server behavior.
+Use [Server Setup](/server/setup-with-hono) for first-time implementation. Use this section when you need to know which package, route, or extension point owns a piece of server behavior.
 
 ## Package map
 
@@ -27,8 +27,8 @@ Use [Server Setup](/docs/server/setup-with-hono) for first-time implementation. 
 
 This split is intentional:
 
-- guides in [Server](/docs/server) explain how to wire the server
-- pages in [Reference](/docs/reference/server) document the server API surface and extension points
+- guides in [Server](/server) explain how to wire the server
+- pages in [Reference](/reference/server) document the server API surface and extension points
 
 ## Sync Tables
 
@@ -59,47 +59,47 @@ These routes are relative to where you mount them.
 
 Table handlers define what syncs, who can access it, and how rows are read or applied.
 
-- Use [Table Handlers](/docs/server/table-handlers) for patterns and examples.
-- Use [Table Handlers Reference](/docs/reference/server/table-handlers-reference) for factory options and interfaces.
+- Use [Table Handlers](/server/table-handlers) for patterns and examples.
+- Use [Table Handlers Reference](/reference/server/table-handlers-reference) for factory options and interfaces.
 
 ### Subscription registry
 
 Subscriptions describe the requested data shape, and the registry resolves them into the effective scopes that can actually be read.
 
-See [Subscription Registry](/docs/reference/server/subscription-registry).
+See [Subscription Registry](/reference/server/subscription-registry).
 
 ### Dialects
 
 Dialects encapsulate database-specific behavior for schema setup and sync operations.
 
-See [Dialects](/docs/reference/server/dialects).
+See [Dialects](/reference/server/dialects).
 
 ### Realtime bridge
 
 Realtime is optional. It does not transport row data; it wakes clients so they perform another HTTP pull.
 
-See [Realtime WebSocket](/docs/server/realtime-websocket) for implementation and
-[Realtime Bridge](/docs/reference/server/realtime-bridge) for exact broadcaster
+See [Realtime WebSocket](/server/realtime-websocket) for implementation and
+[Realtime Bridge](/reference/server/realtime-bridge) for exact broadcaster
 interfaces.
 
 ### Blob manager
 
 Blob support is separate from core row sync. The server tracks blob metadata and issues authenticated upload/download flows through dedicated routes.
 
-See [Blob Storage](/docs/features/recipes/blobs-and-media).
+See [Blob Storage](/features/recipes/blobs-and-media).
 
 ## Use the right doc
 
-- Implementing a new server: [Server Setup](/docs/server/setup-with-hono)
-- Designing authorization and row sync behavior: [Table Handlers](/docs/server/table-handlers)
-- Wiring Hono routes: [Hono Adapter](/docs/reference/server/hono-adapter)
-- Running operators workflows: [Operate](/docs/operate)
-- Looking for exact HTTP endpoints: [API Reference](/docs/reference/api)
+- Implementing a new server: [Server Setup](/server/setup-with-hono)
+- Designing authorization and row sync behavior: [Table Handlers](/server/table-handlers)
+- Wiring Hono routes: [Hono Adapter](/reference/server/hono-adapter)
+- Running operators workflows: [Operate](/operate)
+- Looking for exact HTTP endpoints: [API Reference](/reference/api)
 
 ## Next Steps
 
-- [Table Handlers](/docs/server/table-handlers)
-- [Table Handlers Reference](/docs/reference/server/table-handlers-reference)
-- [Subscription Registry](/docs/reference/server/subscription-registry)
-- [Hono Adapter](/docs/reference/server/hono-adapter)
-- [Cloudflare Adapter](/docs/reference/server/cloudflare-adapter)
+- [Table Handlers](/server/table-handlers)
+- [Table Handlers Reference](/reference/server/table-handlers-reference)
+- [Subscription Registry](/reference/server/subscription-registry)
+- [Hono Adapter](/reference/server/hono-adapter)
+- [Cloudflare Adapter](/reference/server/cloudflare-adapter)

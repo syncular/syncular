@@ -9,25 +9,25 @@ The Console is the operator surface for Syncular deployments. Use it to investig
 
 > **You are here:** Console guides (human workflows).
 >
-> **API reference:** use [/docs/reference/api](/docs/reference/api) for request/response schemas.
+> **API reference:** use [/reference/api](/reference/api) for request/response schemas.
 >
-> **Integration paths:** see [Console Integration](/docs/operate/console-integration).
+> **Integration paths:** see [Console Integration](/operate/console-integration).
 
 ## Use Console vs product audit
 
 - Use Console for operator workflows: live incidents, payload forensics, client lag, prune/compact, storage inspection, and maintenance audit trails.
-- Use [Audit & History](/docs/features/audit-and-history) when you are building in-product "who changed what" pages for your own admins or end users.
+- Use [Audit & History](/features/audit-and-history) when you are building in-product "who changed what" pages for your own admins or end users.
 
 ## Start here
 
 <Cards>
-  <Card title="Connect and Auth" href="/docs/operate/console/connect-and-auth">
+  <Card title="Connect and Auth" href="/operate/console/connect-and-auth">
     Configure endpoint, token auth, and partition context
   </Card>
-  <Card title="Command" href="/docs/operate/console/command">
+  <Card title="Command" href="/operate/console/command">
     Read topology, KPIs, and live activity
   </Card>
-  <Card title="Stream Investigation" href="/docs/operate/console/stream-investigation">
+  <Card title="Stream Investigation" href="/operate/console/stream-investigation">
     Drill into commits, events, and payload snapshots
   </Card>
 </Cards>
@@ -35,16 +35,16 @@ The Console is the operator surface for Syncular deployments. Use it to investig
 ## Operate
 
 <Cards>
-  <Card title="Fleet" href="/docs/operate/console/fleet">
+  <Card title="Fleet" href="/operate/console/fleet">
     Monitor client lag, health, and evict behavior
   </Card>
-  <Card title="Operations" href="/docs/operate/console/operations">
+  <Card title="Operations" href="/operate/console/operations">
     Prune, compact, notify-data-change, and audit
   </Card>
-  <Card title="Storage" href="/docs/operate/console/storage">
+  <Card title="Storage" href="/operate/console/storage">
     Browse blob objects, filter by prefix, download, and delete
   </Card>
-  <Card title="Config and API Keys" href="/docs/operate/console/config-and-api-keys">
+  <Card title="Config and API Keys" href="/operate/console/config-and-api-keys">
     Manage credentials, filters, and key lifecycle
   </Card>
 </Cards>
@@ -52,19 +52,19 @@ The Console is the operator surface for Syncular deployments. Use it to investig
 ## Runbooks
 
 <Cards>
-  <Card title="Incident Playbooks" href="/docs/operate/console/incident-playbooks">
+  <Card title="Incident Playbooks" href="/operate/console/incident-playbooks">
     Step-by-step operational responses for common failures
   </Card>
-  <Card title="Troubleshooting" href="/docs/operate/console/troubleshooting">
+  <Card title="Troubleshooting" href="/operate/console/troubleshooting">
     Fast diagnosis for connectivity and data visibility issues
   </Card>
 </Cards>
 
 ## Related API pages
 
-- [Timeline endpoint](/docs/reference/api/getConsoleTimeline)
-- [Operations endpoint](/docs/reference/api/getConsoleOperations)
-- [Request payload endpoint](/docs/reference/api/getConsoleEventsByIdPayload)
-- [Notify data change endpoint](/docs/reference/api/postConsoleNotifyDataChange)
-- [Sync audit endpoints](/docs/reference/api/getSyncAuditCommits)
+- [Timeline endpoint](/reference/api/getConsoleTimeline)
+- [Operations endpoint](/reference/api/getConsoleOperations)
+- [Request payload endpoint](/reference/api/getConsoleEventsByIdPayload)
+- [Notify data change endpoint](/reference/api/postConsoleNotifyDataChange)
+- [Sync audit endpoints](/reference/api/getSyncAuditCommits)
 - Storage endpoints: `GET /console/storage`, `GET /console/storage/{key}/download`, `DELETE /console/storage/{key}`

@@ -24,7 +24,7 @@ This is the canonical server bring-up path: database, sync schema, handlers, rou
 
 - Node.js 18+ or Bun
 - Postgres 14+ (logical replication not required)
-- Familiarity with [How Sync Works](/docs/learn/architecture)
+- Familiarity with [How Sync Works](/learn/architecture)
 
 ## Install packages
 
@@ -156,8 +156,8 @@ const tasksHandler = createServerHandler({
 });
 ```
 
-See [Table Handlers](/docs/server/table-handlers) for advanced patterns and
-[Scopes And Auth](/docs/server/scopes-and-auth) for authorization strategies.
+See [Table Handlers](/server/table-handlers) for advanced patterns and
+[Scopes And Auth](/server/scopes-and-auth) for authorization strategies.
 
 ## 3. Create sync routes
 
@@ -229,7 +229,7 @@ const { syncRoutes } = createSyncServer({
 });
 ```
 
-See [Realtime WebSocket](/docs/server/realtime-websocket) for multi-instance broadcasting and client setup.
+See [Realtime WebSocket](/server/realtime-websocket) for multi-instance broadcasting and client setup.
 
 ## 5. Add the console (optional)
 
@@ -270,7 +270,7 @@ mountConsoleUi(app, {
 });
 ```
 
-See [Operations Guide](/docs/operate/operations-setup) for console API details.
+See [Operations Guide](/operate/operations-setup) for console API details.
 
 ## Configuration reference
 
@@ -367,7 +367,7 @@ Bun.serve({ fetch: app.fetch, port: 3001 });
 
 ## Next steps
 
-- [JavaScript](/docs/clients/javascript) or [Rust](/docs/clients/rust) - set up a client
-- [Table Handlers](/docs/server/table-handlers) - deep dive into handlers
-- [Scopes And Auth](/docs/server/scopes-and-auth) - authorization patterns
-- [Deployment](/docs/operate/deployment) - production deployment
+- [JavaScript](/clients/javascript) or [Rust](/clients/rust) - set up a client
+- [Table Handlers](/server/table-handlers) - deep dive into handlers
+- [Scopes And Auth](/server/scopes-and-auth) - authorization patterns
+- [Deployment](/operate/deployment) - production deployment

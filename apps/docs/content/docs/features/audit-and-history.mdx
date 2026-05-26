@@ -7,7 +7,7 @@ description: Build product-facing history views and long-lived audit trails with
 
 Use this guide for product-facing history views: recent sync history, conflict context, and long-lived app-owned audit trails.
 
-If you are investigating incidents or operating a live deployment, use the Console guides in [Operate](/docs/operate/console) instead.
+If you are investigating incidents or operating a live deployment, use the Console guides in [Operate](/operate/console) instead.
 
 ## Use this page when
 
@@ -25,7 +25,7 @@ If you are investigating incidents or operating a live deployment, use the Conso
 ## Prerequisites
 
 - a working Syncular app with authenticated actors
-- familiarity with [Commits](/docs/learn/commits) and [Scopes](/docs/learn/scopes)
+- familiarity with [Commits](/learn/commits) and [Scopes](/learn/scopes)
 
 ## Choose the right history surface
 
@@ -33,8 +33,8 @@ If you are investigating incidents or operating a live deployment, use the Conso
 |---|---|
 | Product-facing recent sync history for authorized users | This guide plus `GET /sync/audit/commits` |
 | Long-lived business or compliance audit records | Your own `audit_log` table |
-| Incident forensics, request payloads, and client lag investigation | [Console Stream Investigation](/docs/operate/console/stream-investigation) |
-| Maintenance action history such as prune, compact, or notify-data-change | [Console Operations](/docs/operate/console/operations) |
+| Incident forensics, request payloads, and client lag investigation | [Console Stream Investigation](/operate/console/stream-investigation) |
+| Maintenance action history such as prune, compact, or notify-data-change | [Console Operations](/operate/console/operations) |
 
 ## Recommended building blocks
 
@@ -132,6 +132,6 @@ create index audit_log_actor_changed_at_idx
 
 ## Related docs
 
-- [Stream Investigation](/docs/operate/console/stream-investigation)
-- [Operations](/docs/operate/console/operations)
-- [API Reference](/docs/reference/api)
+- [Stream Investigation](/operate/console/stream-investigation)
+- [Operations](/operate/console/operations)
+- [API Reference](/reference/api)

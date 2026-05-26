@@ -11,8 +11,8 @@ Syncular is a sync framework for building **local-first applications** — apps 
 
 > **You are here:** Overview (evaluate if Syncular is a fit).
 >
-> **If you’re building:** start with [JavaScript](/docs/clients/javascript) or
-> [Rust](/docs/clients/rust), then wire the [Server](/docs/server).
+> **If you’re building:** start with [JavaScript](/clients/javascript) or
+> [Rust](/clients/rust), then wire the [Server](/server).
 
 Your app talks to a local SQLite database owned by the Rust client runtime.
 Changes sync through an immutable commit log. Authorization is baked in through
@@ -45,10 +45,10 @@ No loading spinners. No network requests in the hot path. Queries run against lo
 Start from the question you actually have right now.
 
 <Cards>
-  <Card title="Evaluate Syncular" href="/docs/start" description="Fit, demo, trust signals, and honest comparisons before you commit" />
-  <Card title="Choose A Client" href="/docs/clients" description="Pick the host surface for a Rust-owned client runtime: JavaScript, Rust, or a native bridge" />
-  <Card title="Build The Server" href="/docs/server" description="Implement handlers, auth scopes, snapshots, pushes, realtime, and deployment targets" />
-  <Card title="Run It in Production" href="/docs/operate" description="Deployment, observability, troubleshooting, Console, and maintenance workflows" />
+  <Card title="Evaluate Syncular" href="/start" description="Fit, demo, trust signals, and honest comparisons before you commit" />
+  <Card title="Choose A Client" href="/clients" description="Pick the host surface for a Rust-owned client runtime: JavaScript, Rust, or a native bridge" />
+  <Card title="Build The Server" href="/server" description="Implement handlers, auth scopes, snapshots, pushes, realtime, and deployment targets" />
+  <Card title="Run It in Production" href="/operate" description="Deployment, observability, troubleshooting, Console, and maintenance workflows" />
 </Cards>
 
 ## Why teams trust Syncular
@@ -56,10 +56,10 @@ Start from the question you actually have right now.
 A new sync system should earn trust. Syncular tries to do that in visible ways: deterministic tests, runtime coverage, failure injection, operator tooling, and product-facing history.
 
 <Cards>
-  <Card title="Testing & Confidence" href="/docs/start/testing-and-confidence" description="How the test suite is layered, what gets exercised, and how to evaluate risk" />
-  <Card title="Testing" href="/docs/testing" description="Choose JavaScript testkit, Rust testkit, or shared conformance scenarios" />
-  <Card title="Audit & History" href="/docs/features/audit-and-history" description="Product-facing history, app-owned audit logs, and links into operator forensics" />
-  <Card title="Operate" href="/docs/operate" description="Observability, Console workflows, troubleshooting, and deployment guidance" />
+  <Card title="Testing & Confidence" href="/start/testing-and-confidence" description="How the test suite is layered, what gets exercised, and how to evaluate risk" />
+  <Card title="Testing" href="/testing" description="Choose JavaScript testkit, Rust testkit, or shared conformance scenarios" />
+  <Card title="Audit & History" href="/features/audit-and-history" description="Product-facing history, app-owned audit logs, and links into operator forensics" />
+  <Card title="Operate" href="/operate" description="Observability, Console workflows, troubleshooting, and deployment guidance" />
 </Cards>
 
 ## Browse by topic
@@ -67,14 +67,14 @@ A new sync system should earn trust. Syncular tries to do that in visible ways: 
 The docs are organized by reader intent. Start with the topic that matches what you're trying to do.
 
 <Cards>
-  <Card title="Start" href="/docs/start" description="Overview, quick start, installation, and evaluation paths" />
-  <Card title="Learn" href="/docs/learn" description="Commit log, bootstrap, scopes, subscriptions, and conflict semantics" />
-  <Card title="Clients" href="/docs/clients" description="Rust runtime plus JavaScript, Rust, and native host surfaces" />
-  <Card title="Server" href="/docs/server" description="Authoritative sync server, handlers, auth, realtime, and deployment targets" />
-  <Card title="Features" href="/docs/features" description="Schema, migrations, error handling, audit/history, and app shapes" />
-  <Card title="Testing" href="/docs/testing" description="JavaScript testkit, Rust testkit, and shared conformance strategy" />
-  <Card title="Operate" href="/docs/operate" description="Deployment, observability, troubleshooting, and Console workflows" />
-  <Card title="Reference" href="/docs/reference" description="Packages, crates, server reference, CLI, and HTTP API material" />
+  <Card title="Start" href="/start" description="Overview, quick start, installation, and evaluation paths" />
+  <Card title="Learn" href="/learn" description="Commit log, bootstrap, scopes, subscriptions, and conflict semantics" />
+  <Card title="Clients" href="/clients" description="Rust runtime plus JavaScript, Rust, and native host surfaces" />
+  <Card title="Server" href="/server" description="Authoritative sync server, handlers, auth, realtime, and deployment targets" />
+  <Card title="Features" href="/features" description="Schema, migrations, error handling, audit/history, and app shapes" />
+  <Card title="Testing" href="/testing" description="JavaScript testkit, Rust testkit, and shared conformance strategy" />
+  <Card title="Operate" href="/operate" description="Deployment, observability, troubleshooting, and Console workflows" />
+  <Card title="Reference" href="/reference" description="Packages, crates, server reference, CLI, and HTTP API material" />
 </Cards>
 
 ## How it works
@@ -165,16 +165,16 @@ subscriptions: [
 - Team values type safety and debuggability
 
 **Not a good fit:**
-- Need managed infrastructure (consider [PowerSync](/docs/start/comparison/vs-powersync) or [Zero](/docs/start/comparison/vs-zero))
-- Building Google Docs-style real-time collaboration (consider [Jazz](/docs/start/comparison/vs-jazz))
-- Want arbitrary client queries without server-defined table handlers (consider [Zero](/docs/start/comparison/vs-zero))
+- Need managed infrastructure (consider [PowerSync](/start/comparison/vs-powersync) or [Zero](/start/comparison/vs-zero))
+- Building Google Docs-style real-time collaboration (consider [Jazz](/start/comparison/vs-jazz))
+- Want arbitrary client queries without server-defined table handlers (consider [Zero](/start/comparison/vs-zero))
 
-See [Good Fit & Not Fit](/docs/start/good-fit) for a fuller decision guide, including multiplayer games and other workloads that want a different architecture.
+See [Good Fit & Not Fit](/start/good-fit) for a fuller decision guide, including multiplayer games and other workloads that want a different architecture.
 
 ## Next
 
-- Implementing? Start with [JavaScript](/docs/clients/javascript) or
-  [Rust](/docs/clients/rust), then wire the [Server](/docs/server).
-- Learn the model: [How Sync Works](/docs/learn/architecture) and [Scopes](/docs/learn/scopes).
-- Want an honest comparison? See [Comparison](/docs/start/comparison).
-- Looking for endpoints? See the [API Reference](/docs/reference/api).
+- Implementing? Start with [JavaScript](/clients/javascript) or
+  [Rust](/clients/rust), then wire the [Server](/server).
+- Learn the model: [How Sync Works](/learn/architecture) and [Scopes](/learn/scopes).
+- Want an honest comparison? See [Comparison](/start/comparison).
+- Looking for endpoints? See the [API Reference](/reference/api).

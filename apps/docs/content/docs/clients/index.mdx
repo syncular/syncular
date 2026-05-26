@@ -11,22 +11,22 @@ capabilities such as conflicts, blobs, CRDT fields, encryption, presence, and
 offline auth.
 
 <Cards>
-  <Card title="JavaScript" href="/docs/clients/javascript" description="Generated Kysely client, mutations, runtime features, testing, and host integrations" />
-  <Card title="Rust" href="/docs/clients/rust" description="Generated Diesel client, mutations, runtime features, testing, and packaging" />
-  <Card title="Testing" href="/docs/testing" description="Shared conformance strategy across JavaScript, Rust, and host runtimes" />
-  <Card title="Features" href="/docs/features" description="Language-neutral behavior for sync, auth, CRDT fields, blobs, encryption, and performance" />
+  <Card title="JavaScript" href="/clients/javascript" description="Generated Kysely client, mutations, runtime features, testing, and host integrations" />
+  <Card title="Rust" href="/clients/rust" description="Generated Diesel client, mutations, runtime features, testing, and packaging" />
+  <Card title="Testing" href="/testing" description="Shared conformance strategy across JavaScript, Rust, and host runtimes" />
+  <Card title="Features" href="/features" description="Language-neutral behavior for sync, auth, CRDT fields, blobs, encryption, and performance" />
 </Cards>
 
 ## How to choose
 
-- Use [JavaScript](/docs/clients/javascript) when your app layer is
+- Use [JavaScript](/clients/javascript) when your app layer is
   TypeScript/JavaScript and you want typed Kysely reads plus generated
   Syncular mutation helpers.
-- Use [Rust](/docs/clients/rust) when your app layer is Rust or when a native
+- Use [Rust](/clients/rust) when your app layer is Rust or when a native
   shell embeds the Rust runtime directly.
 - Use JavaScript host pages for React Native/Expo, Tauri, and Electron when
   the UI is TypeScript but SQLite/sync should stay inside the Rust runtime.
 
 The server remains authoritative in every path. Client docs cover local
 replicas, generated code, mutations, runtime lifecycle, and testing; server
-handler behavior is documented under [Server](/docs/server).
+handler behavior is documented under [Server](/server).

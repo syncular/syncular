@@ -84,7 +84,10 @@ read-only review:
     contract, binary snapshot chunks/artifacts, and Kysely/Diesel host-query
     split. A final public-docs stale-pattern pass also removed remaining
     client-handler and old-schema wording from adjacent troubleshooting,
-    migration, operations, and Rust testing pages.
+    migration, operations, and Rust testing pages. The public docs site now
+    serves from `https://docs.syncular.dev/` without the redundant `/docs`
+    prefix, and internal docs links, raw Markdown helper routes, and OpenGraph
+    image routes use root-relative paths.
 - `[x]` [`WP-38 Release Automation`](work-packages/WP-38-release-automation.md)
   - Accepted. Rust crates now share npm's release version source and staging
     syntax. The `release` branch publishes `0.1.0-staging.<run>` prereleases

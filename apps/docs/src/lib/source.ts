@@ -3,7 +3,7 @@ import { type InferPageType, loader } from 'fumadocs-core/source';
 import { lucideIconsPlugin } from 'fumadocs-core/source/lucide-icons';
 
 export const source = loader({
-  baseUrl: '/docs',
+  baseUrl: '/',
   source: docs.toFumadocsSource(),
   plugins: [lucideIconsPlugin()],
 });
@@ -24,8 +24,12 @@ export function getPageImage(page: InferPageType<typeof source>) {
 
   return {
     segments,
-    url: `/og/docs/${segments.join('/')}`,
+    url: `/og/${segments.join('/')}`,
   };
+}
+
+export function getPageMarkdownUrl(page: InferPageType<typeof source>) {
+  return page.slugs.length === 0 ? '/index.mdx' : `${page.url}.mdx`;
 }
 
 export async function getLLMText(page: InferPageType<typeof source>) {
