@@ -9,6 +9,7 @@
  *   bun scripts/stamp-versions.ts --version 0.0.1 → 0.0.1
  */
 import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
 import {
   computeStampedVersion,
   listWorkspacePackageJsonPaths,
@@ -26,6 +27,9 @@ type PackageJson = {
   version?: string;
   private?: boolean;
   scripts?: Record<string, string | undefined>;
+  publishConfig?: {
+    access?: string;
+  };
   dependencies?: Record<string, string>;
   devDependencies?: Record<string, string>;
   peerDependencies?: Record<string, string>;
@@ -96,6 +100,8 @@ for (const entry of entries) {
   console.log(`  ${name} → ${version}${dryRun ? ' (dry run)' : ''}`);
 }
 
+stampRuntimeContract(entries, version);
+
 function isPublishableWorkspacePackage(pkg: PackageJson): boolean {
   if (pkg.private === true || typeof pkg.version !== 'string') {
     return false;
@@ -104,8 +110,60 @@ function isPublishableWorkspacePackage(pkg: PackageJson): boolean {
   const releaseScript = pkg.scripts?.release;
   return (
     typeof releaseScript === 'string' &&
-    releaseScript.includes('syncular-publish')
+    releaseScript.trim().length > 0 &&
+    pkg.publishConfig?.access === 'public'
   );
+}
+
+function stampRuntimeContract(entries: PackageEntry[], version: string): void {
+  const clientEntry = entries.find(
+    (entry) => entry.shouldStamp && entry.pkg.name === '@syncular/client'
+  );
+  if (!clientEntry) {
+    return;
+  }
+
+  const packageName = clientEntry.pkg.name;
+  if (typeof packageName !== 'string') {
+    return;
+  }
+
+  const runtimeContractPath = join(
+    import.meta.dirname,
+    '..',
+    'rust/bindings/javascript/src/runtime-contract.ts'
+  );
+  let source = readFileSync(runtimeContractPath, 'utf8');
+  source = replaceExportedStringConstant(
+    source,
+    'SYNCULAR_CLIENT_PACKAGE_NAME',
+    packageName
+  );
+  source = replaceExportedStringConstant(
+    source,
+    'SYNCULAR_CLIENT_PACKAGE_VERSION',
+    version
+  );
+
+  if (!dryRun) {
+    writeFileSync(runtimeContractPath, source);
+  }
+  console.log(
+    `  ${packageName} runtime contract → ${version}${dryRun ? ' (dry run)' : ''}`
+  );
+}
+
+function replaceExportedStringConstant(
+  source: string,
+  name: string,
+  value: string
+): string {
+  const pattern = new RegExp(`export const ${name} = ['"][^'"]+['"];`);
+  const replacement = `export const ${name} = '${value}';`;
+  if (!pattern.test(source)) {
+    throw new Error(`Could not find ${name} in runtime contract`);
+  }
+  return source.replace(pattern, replacement);
 }
 
 function stampInternalDependencies(

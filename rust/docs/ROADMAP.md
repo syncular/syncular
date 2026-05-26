@@ -70,6 +70,13 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-43 Release Rehearsal Exact Version Worktree`](work-packages/WP-43-release-rehearsal-exact-version-worktree.md)
+  - Accepted. Full release rehearsal now creates a clean detached worktree at
+    `HEAD`, stamps the requested exact version inside that worktree, and runs
+    npm/Cargo publish dry-runs from the stamped checkout. The npm stamper now
+    includes the public JavaScript/WASM bindings package and runtime contract
+    metadata, and dirty local rehearsal remains available only when publish
+    dry-runs are skipped.
 - `[x]` [`WP-42 Codegen Install And CLI Self Containment`](work-packages/WP-42-codegen-install-and-cli-self-containment.md)
   - Accepted. `syncular generate` now resolves the Rust generator from explicit
     env, repo-local source, tool cache, `PATH`, or Cargo auto-install, and

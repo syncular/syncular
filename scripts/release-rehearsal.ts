@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import { spawn } from 'node:child_process';
-import { readFile } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { mkdir, readFile, rm } from 'node:fs/promises';
+import { dirname, join, relative, resolve } from 'node:path';
 
 interface Options {
   version: string;
@@ -9,6 +9,8 @@ interface Options {
   skipPublishDryRuns: boolean;
   skipFreshAppSmokes: boolean;
   skipDocsStaleCheck: boolean;
+  keepWorktree: boolean;
+  workDir: string;
 }
 
 const repoRoot = resolve(join(import.meta.dirname, '..'));
@@ -22,6 +24,8 @@ options:
   --skip-publish-dry-runs     Skip npm and Cargo publish dry-runs
   --skip-fresh-app-smokes     Skip local fresh-app generation smokes
   --skip-docs-stale-check     Skip stale public-docs checks
+  --work-dir <path>           Publish dry-run worktree path (default: .context/release-rehearsal/<version>)
+  --keep-worktree             Keep the publish dry-run worktree after the run
 `;
 }
 
@@ -57,6 +61,8 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
   let skipPublishDryRuns = false;
   let skipFreshAppSmokes = false;
   let skipDocsStaleCheck = false;
+  let keepWorktree = false;
+  let workDir = '';
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!;
@@ -86,10 +92,22 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
       continue;
     }
 
+    if (arg === '--keep-worktree') {
+      keepWorktree = true;
+      continue;
+    }
+
     const versionOption = readOptionValue(argv, index, arg, '--version');
     if (versionOption) {
       version = versionOption.value;
       index = versionOption.nextIndex;
+      continue;
+    }
+
+    const workDirOption = readOptionValue(argv, index, arg, '--work-dir');
+    if (workDirOption) {
+      workDir = workDirOption.value;
+      index = workDirOption.nextIndex;
       continue;
     }
 
@@ -112,13 +130,19 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
     skipPublishDryRuns,
     skipFreshAppSmokes,
     skipDocsStaleCheck,
+    keepWorktree,
+    workDir,
   };
 }
 
-async function runCapture(command: string, args: string[]): Promise<string> {
+async function runCapture(
+  command: string,
+  args: string[],
+  cwd = repoRoot
+): Promise<string> {
   return new Promise<string>((resolvePromise, reject) => {
     const child = spawn(command, args, {
-      cwd: repoRoot,
+      cwd,
       stdio: ['ignore', 'pipe', 'inherit'],
       env: process.env,
     });
@@ -135,11 +159,16 @@ async function runCapture(command: string, args: string[]): Promise<string> {
   });
 }
 
-async function run(command: string, args: string[]): Promise<void> {
-  console.log(`$ ${[command, ...args].join(' ')}`);
+async function run(
+  command: string,
+  args: string[],
+  cwd = repoRoot
+): Promise<void> {
+  const cwdLabel = cwd === repoRoot ? '' : ` (${relative(repoRoot, cwd)})`;
+  console.log(`$${cwdLabel} ${[command, ...args].join(' ')}`);
   await new Promise<void>((resolvePromise, reject) => {
     const child = spawn(command, args, {
-      cwd: repoRoot,
+      cwd,
       stdio: 'inherit',
       env: process.env,
     });
@@ -154,7 +183,7 @@ async function run(command: string, args: string[]): Promise<void> {
   });
 }
 
-async function verifyGitState(options: Options): Promise<void> {
+async function verifyGitState(options: Options): Promise<boolean> {
   const ref = (
     await runCapture('git', ['symbolic-ref', '--short', '-q', 'HEAD']).catch(
       async () =>
@@ -174,11 +203,82 @@ async function verifyGitState(options: Options): Promise<void> {
   if (dirty) {
     console.warn('[release-rehearsal] continuing with dirty worktree');
   }
+
+  return dirty.length > 0;
+}
+
+function defaultWorktreeDir(version: string): string {
+  const safeVersion = version.replace(/[^a-zA-Z0-9._-]/g, '_');
+  return join(repoRoot, '.context', 'release-rehearsal', safeVersion);
+}
+
+async function removeWorktree(worktreeDir: string): Promise<void> {
+  await run('git', ['worktree', 'remove', '--force', worktreeDir]).catch(
+    async (error) => {
+      console.warn(
+        `[release-rehearsal] git worktree remove failed; removing directory directly: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      await rm(worktreeDir, { recursive: true, force: true });
+      await run('git', ['worktree', 'prune']).catch(() => undefined);
+    }
+  );
+}
+
+async function runPublishDryRuns(
+  options: Options,
+  sourceDirty: boolean
+): Promise<void> {
+  if (sourceDirty) {
+    throw new Error(
+      'Publish dry-runs require a clean source checkout so the temporary release worktree exactly matches HEAD. Use --skip-publish-dry-runs for dirty local iteration.'
+    );
+  }
+
+  const sourceSha = (
+    await runCapture('git', ['rev-parse', '--verify', 'HEAD'])
+  ).trim();
+  const worktreeDir = resolve(
+    options.workDir || defaultWorktreeDir(options.version)
+  );
+  const usingDefaultWorktree = options.workDir.length === 0;
+  let worktreeCreated = false;
+
+  if (usingDefaultWorktree) {
+    await rm(worktreeDir, { recursive: true, force: true });
+  }
+  await mkdir(dirname(worktreeDir), { recursive: true });
+
+  try {
+    await run('git', ['worktree', 'add', '--detach', worktreeDir, sourceSha]);
+    worktreeCreated = true;
+
+    await run('bun', ['install', '--frozen-lockfile'], worktreeDir);
+    await run(
+      'bun',
+      ['scripts/stamp-versions.ts', '--version', options.version],
+      worktreeDir
+    );
+    await run(
+      'bun',
+      ['scripts/stamp-cargo-versions.ts', '--version', options.version],
+      worktreeDir
+    );
+    await run('bun', ['run', 'release:npm:dry-run'], worktreeDir);
+    await run('bun', ['run', 'release:cargo:dry-run'], worktreeDir);
+  } finally {
+    if (worktreeCreated && options.keepWorktree) {
+      console.log(`[release-rehearsal] kept worktree at ${worktreeDir}`);
+    } else if (worktreeCreated) {
+      await removeWorktree(worktreeDir);
+    }
+  }
 }
 
 async function main(): Promise<void> {
   const options = await parseArgs(process.argv.slice(2));
-  await verifyGitState(options);
+  const sourceDirty = await verifyGitState(options);
 
   await run('bun', [
     'scripts/stamp-versions.ts',
@@ -200,8 +300,7 @@ async function main(): Promise<void> {
     await run('bun', ['run', 'fresh-app-smokes']);
   }
   if (!options.skipPublishDryRuns) {
-    await run('bun', ['run', 'release:npm:dry-run']);
-    await run('bun', ['run', 'release:cargo:dry-run']);
+    await runPublishDryRuns(options, sourceDirty);
   }
 }
 
