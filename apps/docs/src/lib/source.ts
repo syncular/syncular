@@ -29,7 +29,9 @@ export function getPageImage(page: InferPageType<typeof source>) {
 }
 
 export function getPageMarkdownUrl(page: InferPageType<typeof source>) {
-  return page.slugs.length === 0 ? '/index.mdx' : `${page.url}.mdx`;
+  const slug = page.slugs.length === 0 ? 'index' : page.slugs.join('/');
+
+  return `/llms.mdx/${slug}`;
 }
 
 export async function getLLMText(page: InferPageType<typeof source>) {

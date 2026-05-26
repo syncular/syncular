@@ -183,8 +183,9 @@ that invents an API not present in the repo.
       `/reference` without a `/docs` prefix
     - raw Markdown and OpenGraph helper routes moved out of their old nested
       docs segments to `/llms.mdx/*` and `/og/*`
-    - raw Markdown route handling normalizes Cloudflare/OpenNext rewrite slugs
-      so root-relative `*.mdx` helper URLs resolve to the matching page
+    - raw Markdown helper links now use the direct `/llms.mdx/<slug>` route
+      because Cloudflare/OpenNext does not reliably strip root `*.mdx` rewrite
+      suffixes
     - `bun --cwd apps/docs generate`
     - custom root-relative docs link checker: `730` links across `180` MDX
       files, no missing routes
@@ -194,8 +195,8 @@ that invents an API not present in the repo.
       `/learn`, `/reference/api`, and `/start/what-is-syncular`; no console
       errors on valid routes
     - local HTTP smoke returned `200` for `/`, `/start`, `/learn`,
-      `/reference/api`, `/start/what-is-syncular`, `/index.mdx`,
-      `/start/what-is-syncular.mdx`, and
+      `/reference/api`, `/start/what-is-syncular`, `/llms.mdx/index`,
+      `/llms.mdx/start/what-is-syncular`, and
       `/og/start/what-is-syncular/image.png`; `/docs/` resolves to `404`
       after slash normalization
   - Gates passed:
