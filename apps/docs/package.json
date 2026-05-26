@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "prepare:openapi": "cp ../../packages/server-hono/openapi.json ./openapi.json",
+    "prepare:openapi": "bun --cwd ../../packages/server-hono generate:openapi && cp ../../packages/server-hono/openapi.json ./openapi.json",
     "build": "bun run prepare:openapi && next build",
     "build:cf": "opennextjs-cloudflare build",
     "preview:cf": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
@@ -12,7 +12,7 @@
     "start": "next start",
     "types:check": "fumadocs-mdx && next typegen && tsc --noEmit",
     "postinstall": "fumadocs-mdx",
-    "tsgo": "tsgo --noEmit",
+    "tsgo": "bun run prepare:openapi && tsgo --noEmit",
     "generate": "bun generate:schema && bun generate:openapi",
     "generate:schema": "bun --cwd ../../packages/server-hono generate:openapi",
     "generate:openapi": "bun run prepare:openapi && bun scripts/generate-openapi.ts"
@@ -24,8 +24,8 @@
     "fumadocs-openapi": "^10.6.5",
     "fumadocs-ui": "16.7.10",
     "lucide-react": "^1.7.0",
-    "mermaid": "^11.14.0",
-    "next": "16.2.4",
+    "mermaid": "^11.15.0",
+    "next": "16.2.5",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "zod": "^4.3.6"

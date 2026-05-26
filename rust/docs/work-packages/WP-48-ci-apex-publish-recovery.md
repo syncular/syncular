@@ -17,6 +17,10 @@ landing surface to the public apex site.
   encrypted fields and blob declarations.
 - Make the runtime library target and package selection explicit for native
   package tooling on Windows.
+- Generate the ignored OpenAPI spec before docs typechecking imports it.
+- Remove the always-on `integration-load` workflow job that still invoked the
+  deleted legacy TypeScript `test:load` entrypoint.
+- Refresh vulnerable dependency pins and overrides that gate `bun check`.
 - Rebuild and deploy the apex site against `syncular/syncular@main`.
 
 ## Non-Goals
@@ -36,6 +40,19 @@ landing surface to the public apex site.
   reporter before it could write a skipped-tool line; Windows JVM packaging
   still selected the workspace wrapper package when BoltFFI path
   canonicalization missed the runtime manifest on Windows.
+- Follow-up baseline: GitHub Checks on `syncular/syncular@e45cb6eb` passed the
+  Rust packaging/WASM gates but failed `test` because `syncular-docs` imported
+  ignored `apps/docs/openapi.json` before generation, and failed
+  `integration-load` because the workflow still invoked the removed legacy
+  `test:load` script.
+- Local check: current k6 load scenarios require a separate Rust-first binary
+  sync-pack/snapshot chunk harness update; they are not used as the always-on
+  CI replacement in this recovery slice.
+- `bun --cwd apps/docs tsgo`
+- `bunx actionlint -no-color -ignore 'label "blacksmith-4vcpu-ubuntu-2404" is unknown' -ignore 'constant expression "false"' -ignore 'shellcheck reported issue' .github/workflows/checks.yml`
+- `bun audit`
+- `bun check`
+- `bun run test:coverage`
 - `cargo test --manifest-path rust/Cargo.toml -p syncular-runtime --test native_ffi`
 - `cargo metadata --manifest-path rust/crates/runtime/Cargo.toml --no-deps --format-version 1`
   reports `syncular_runtime` with `rlib`, `staticlib`, and `cdylib` crate
@@ -58,5 +75,10 @@ Accepted. The shared CI setup now installs Rust, `wasm-pack`, and `wasm-opt`
 before package builds. Native FFI tests match the generated Rust app contract,
 optional WASM size attribution tools are skipped when absent, and native
 packaging passes the runtime package explicitly so BoltFFI cannot select the
-workspace wrapper crate. Apex publish verification remains a deployment step
-after the accepted commit lands on `main`.
+workspace wrapper crate. Docs typecheck now prepares OpenAPI from current Hono
+routes before importing the ignored JSON artifact, and the always-on
+`integration-load` job was removed because its only command targeted the
+deleted legacy TypeScript load entrypoint. Dependency overrides and direct docs
+tooling pins were refreshed so `bun audit` reports no vulnerabilities and the
+full `bun check` gate can complete. Apex publish verification remains a
+deployment step after the accepted commit lands on `main`.
