@@ -127,3 +127,17 @@ jobs:
         env:
           CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
         run: bun run release:cargo
+
+      - name: Post-publish install smokes
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if bun run release:post-publish-smokes -- --version '${{ steps.release_meta.outputs.version }}'; then
+              exit 0
+            fi
+            if [ "$attempt" = "3" ]; then
+              exit 1
+            fi
+            echo "Post-publish install smoke failed; retrying after registry propagation..."
+            sleep 60
+          done

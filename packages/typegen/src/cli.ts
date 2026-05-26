@@ -35,7 +35,7 @@ async function main(argv: string[]): Promise<void> {
     });
     if (actual !== expected) {
       throw new Error(
-        `${options.out} does not match ${options.app}; run syncular-typegen codegen-config --app ${options.app} --out ${options.out}`
+        `${options.out} does not match ${options.app}; run syncular generate --app ${options.app}`
       );
     }
     return;

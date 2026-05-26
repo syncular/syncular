@@ -99,6 +99,8 @@ describe('syncular CLI', () => {
           fileExists: () => false,
         }
       )
-    ).toThrow('Syncular app definition not found: /workspace/missing.ts');
+    ).toThrow(
+      'Syncular app definition not found: /workspace/missing.ts. Create syncular.app.ts'
+    );
   });
 });

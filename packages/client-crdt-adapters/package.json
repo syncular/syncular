@@ -49,6 +49,13 @@
     "yjs": "^13.6.30"
   },
   "files": [
-    "dist"
+    "dist",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__/**",
+    "!dist/**/*.test.*",
+    "!dist/**/__tests__/**",
+    "!test/**",
+    "!tests/**"
   ]
 }

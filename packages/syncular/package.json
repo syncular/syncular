@@ -251,13 +251,14 @@
     "!dist/**/*.test.*",
     "!dist/**/__tests__/**",
     "!dist/client-plugin-*",
-    "!dist/client-react.*",
     "!dist/dialect-wa-sqlite.*",
     "!dist/encryption.*",
     "!dist/server-dialect-neon.*",
     "!dist/testkit.*",
     "!dist/transport-ws.*",
-    "!dist/yjs.*"
+    "!dist/yjs.*",
+    "!test/**",
+    "!tests/**"
   ],
   "dependencies": {
     "@syncular/client": "workspace:*",

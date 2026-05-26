@@ -124,25 +124,6 @@
         "yjs": "^13.6.30",
       },
     },
-    "packages/client-react": {
-      "name": "@syncular/react",
-      "version": "0.0.0",
-      "dependencies": {
-        "@syncular/client": "workspace:*",
-        "@syncular/core": "workspace:*",
-      },
-      "devDependencies": {
-        "@happy-dom/global-registrator": "^20.8.9",
-        "@syncular/config": "workspace:*",
-        "@testing-library/react": "^16.3.2",
-        "@types/react": "^19.2.14",
-        "react": "*",
-      },
-      "peerDependencies": {
-        "kysely": "^0.28.0",
-        "react": "^18.0.0 || ^19.0.0",
-      },
-    },
     "packages/client-react-native": {
       "name": "@syncular/client-react-native",
       "version": "0.0.0",
@@ -350,6 +331,25 @@
         "@syncular/config": "workspace:*",
       },
     },
+    "packages/react": {
+      "name": "@syncular/react",
+      "version": "0.0.0",
+      "dependencies": {
+        "@syncular/client": "workspace:*",
+        "@syncular/core": "workspace:*",
+      },
+      "devDependencies": {
+        "@happy-dom/global-registrator": "^20.8.9",
+        "@syncular/config": "workspace:*",
+        "@testing-library/react": "^16.3.2",
+        "@types/react": "^19.2.14",
+        "react": "*",
+      },
+      "peerDependencies": {
+        "kysely": "^0.28.0",
+        "react": "^18.0.0 || ^19.0.0",
+      },
+    },
     "packages/relay": {
       "name": "@syncular/relay",
       "version": "0.0.0",
@@ -469,6 +469,9 @@
     "packages/syncular": {
       "name": "syncular",
       "version": "0.0.0",
+      "bin": {
+        "syncular": "./dist/cli.js",
+      },
       "dependencies": {
         "@syncular/client": "workspace:*",
         "@syncular/console": "workspace:*",
@@ -613,9 +616,6 @@
     "rust/bindings/javascript": {
       "name": "@syncular/client-javascript-bindings",
       "version": "0.0.0",
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
-      },
     },
     "rust/examples/todo-app": {
       "name": "@syncular/example-todo-rust",
@@ -1692,7 +1692,7 @@
 
     "@syncular/observability-sentry": ["@syncular/observability-sentry@workspace:packages/observability-sentry"],
 
-    "@syncular/react": ["@syncular/react@workspace:packages/client-react"],
+    "@syncular/react": ["@syncular/react@workspace:packages/react"],
 
     "@syncular/relay": ["@syncular/relay@workspace:packages/relay"],
 

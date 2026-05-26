@@ -1,8 +1,8 @@
-import { afterAll, describe, expect, it } from 'bun:test';
-import { GlobalRegistrator } from '@happy-dom/global-registrator';
+import { describe, expect, it } from 'bun:test';
 import { act, renderHook, waitFor } from '@testing-library/react';
 import type { CompiledQuery } from 'kysely';
 import { createElement, type ReactNode } from 'react';
+import { registerHappyDomForTestFile } from './__tests__/happy-dom';
 import type {
   SyncularBlobUploadQueueStats,
   SyncularBootstrapStatus,
@@ -20,16 +20,7 @@ import type {
 } from './index';
 import { createSyncularReact } from './index';
 
-const registeredHappyDom = !GlobalRegistrator.isRegistered;
-if (registeredHappyDom) {
-  GlobalRegistrator.register();
-}
-
-afterAll(() => {
-  if (registeredHappyDom && GlobalRegistrator.isRegistered) {
-    GlobalRegistrator.unregister();
-  }
-});
+registerHappyDomForTestFile();
 
 describe('@syncular/react', () => {
   it('runs ergonomic sync queries and refreshes on watched table changes', async () => {

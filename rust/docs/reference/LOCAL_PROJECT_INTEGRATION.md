@@ -111,16 +111,13 @@ export const app = defineSyncularClient({
 Generate the low-level handoff JSON from the typed contract:
 
 ```bash
-syncular-typegen codegen-config \
-  --app ./syncular.app.ts
+npx syncular generate --manifest-dir .
 ```
 
 Use the check form in CI:
 
 ```bash
-syncular-typegen codegen-config \
-  --app ./syncular.app.ts \
-  --check
+npx syncular generate --manifest-dir . --check
 ```
 
 This TypeScript file is a build/dev-time authoring layer only. Generated Rust,
