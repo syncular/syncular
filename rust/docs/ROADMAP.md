@@ -70,11 +70,11 @@ read-only review:
 
 ## Now
 
-- `[~]` [`WP-45 WASM Test Teardown Stabilization`](work-packages/WP-45-wasm-test-teardown-stabilization.md)
-  - In progress. Full pre-push exposed a WASM worker close-path recursive-borrow
-    trap after the variant-core sync assertions succeeded; the active slice is
-    narrowing cleanup tolerance to that exact teardown error and rerunning the
-    browser/WASM client gate.
+- `[x]` [`WP-45 WASM Test Teardown Stabilization`](work-packages/WP-45-wasm-test-teardown-stabilization.md)
+  - Accepted. Full pre-push exposed a WASM worker close-path recursive-borrow
+    trap after the variant-core sync assertions succeeded; variant-core test
+    cleanup now tolerates only that exact teardown error, and the full
+    pre-push gate passed.
 - `[x]` [`WP-44 Observable Universe Rust-First Copy`](work-packages/WP-44-observable-universe-rust-first-copy.md)
   - Accepted. The reusable Observable Universe landing surface now describes
     the Rust-owned SQLite runtime, current host APIs, current install commands,
