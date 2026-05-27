@@ -143,8 +143,5 @@
     "apps/*",
     "config",
     "tests/*"
-  ],
-  "dependencies": {
-    "vite": "^8.0.14"
-  }
+  ]
 }
