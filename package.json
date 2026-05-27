@@ -36,7 +36,7 @@
     "next": "^16.2.5",
     "postcss": "^8.5.12",
     "uuid": "^14.0.0",
-    "vite": "^8.0.10",
+    "vite": "^8.0.14",
     "fast-xml-builder": "1.2.0",
     "qs": "6.15.2",
     "ip-address": "10.2.0",
@@ -143,5 +143,8 @@
     "apps/*",
     "config",
     "tests/*"
-  ]
+  ],
+  "dependencies": {
+    "vite": "^8.0.14"
+  }
 }

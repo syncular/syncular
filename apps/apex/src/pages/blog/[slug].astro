@@ -1,0 +1,209 @@
+---
+import BlogHeader from '../../components/BlogHeader.astro';
+import BlogTOC from '../../components/BlogTOC.astro';
+import BaseLayout from '../../layouts/BaseLayout.astro';
+import { formatDate } from '../../utils/github';
+import type { BlogPost } from '../../utils/blog';
+import { getAllBlogPosts, getBlogPostBySlug } from '../../utils/blog';
+import { Marked, type RendererThis, type Tokens } from 'marked';
+
+export async function getStaticPaths() {
+  const posts = getAllBlogPosts();
+  return posts.map((post) => ({
+    params: { slug: post.slug },
+    props: { post },
+  }));
+}
+
+const { post } = Astro.props as { post: BlogPost };
+const fullPost = getBlogPostBySlug(post.slug);
+
+if (!fullPost) {
+  throw new Error(`Missing blog post: ${post.slug}`);
+}
+
+interface TocItem {
+  id: string;
+  text: string;
+  depth: number;
+}
+
+function slugifyHeading(text: string): string {
+  const slug = text
+    .toLowerCase()
+    .trim()
+    .replace(/['"`]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '');
+  return slug || 'section';
+}
+
+const toc: TocItem[] = [];
+const headingIdCounts = new Map<string, number>();
+
+const markdown = new Marked<string, string>();
+markdown.use({
+  renderer: {
+    heading(this: RendererThis<string, string>, token: Tokens.Heading): string {
+      const plainText = token.text.trim();
+      const baseId = slugifyHeading(plainText);
+      const seenCount = headingIdCounts.get(baseId) ?? 0;
+      const id = seenCount === 0 ? baseId : `${baseId}-${seenCount + 1}`;
+      headingIdCounts.set(baseId, seenCount + 1);
+
+      if (token.depth >= 2 && token.depth <= 3) {
+        toc.push({ id, text: plainText, depth: token.depth });
+      }
+
+      const content = this.parser.parseInline(token.tokens);
+      return `<h${token.depth} id="${id}">${content}</h${token.depth}>`;
+    },
+  },
+});
+const html = await markdown.parse(fullPost.body);
+
+const tocIds = toc.map((item) => item.id);
+---
+
+<BaseLayout title={`${fullPost.title} · Syncular Blog`} description={fullPost.description}>
+  <BlogHeader />
+  <main class="apex-blog-post-page">
+    <a class="apex-post-back" href="/blog">
+      <span aria-hidden="true">←</span>
+      <span>Back to blog</span>
+    </a>
+    <header class="apex-post-header animate-fade-up">
+      <div class="apex-post-head-meta">
+        <span class="apex-post-date-badge">
+          <time datetime={new Date(fullPost.date).toISOString()}>{formatDate(fullPost.date)}</time>
+        </span>
+        <span class="apex-post-author">by {fullPost.author}</span>
+      </div>
+      <h1 class="apex-post-headline">{fullPost.title}</h1>
+      {fullPost.description ? (
+        <p class="apex-post-description">{fullPost.description}</p>
+      ) : null}
+    </header>
+
+    <div class="apex-post-content">
+      <article class="blog-prose apex-post-body" set:html={html} />
+
+      <aside class="apex-post-toc-shell">
+        <BlogTOC items={toc} />
+      </aside>
+    </div>
+
+    <script is:inline define:vars={{ tocIds }}>
+      (() => {
+        if (!Array.isArray(tocIds) || tocIds.length === 0) return;
+
+        const links = tocIds
+          .map((id) => {
+            const link = document.querySelector(`.apex-post-toc-link[href="#${id}"]`);
+            const heading = document.getElementById(id);
+            if (!(link instanceof HTMLAnchorElement) || !(heading instanceof HTMLElement)) {
+              return null;
+            }
+            return { id, link, heading };
+          })
+          .filter((entry) => entry !== null);
+
+        if (links.length === 0) return;
+
+        const tocNav = document.querySelector('.apex-post-toc');
+        let activeId = '';
+
+        const keepActiveLinkInView = (link) => {
+          if (!(tocNav instanceof HTMLElement)) return;
+          const padding = 18;
+          const linkTop = link.offsetTop;
+          const linkBottom = linkTop + link.offsetHeight;
+          const viewTop = tocNav.scrollTop;
+          const viewBottom = viewTop + tocNav.clientHeight;
+
+          if (linkTop - padding < viewTop) {
+            tocNav.scrollTop = Math.max(linkTop - padding, 0);
+            return;
+          }
+
+          if (linkBottom + padding > viewBottom) {
+            tocNav.scrollTop = Math.max(linkBottom - tocNav.clientHeight + padding, 0);
+          }
+        };
+
+        const setActive = (id) => {
+          if (!id || activeId === id) return;
+          activeId = id;
+          for (const entry of links) {
+            if (entry.id === id) {
+              entry.link.classList.add('is-active');
+              keepActiveLinkInView(entry.link);
+            } else {
+              entry.link.classList.remove('is-active');
+            }
+          }
+        };
+
+        const orderedIds = links.map((entry) => entry.id);
+        const scrollActivationOffset = 160;
+
+        const updateFromScrollPosition = () => {
+          let candidate = orderedIds[0];
+
+          for (const entry of links) {
+            if (entry.heading.getBoundingClientRect().top <= scrollActivationOffset) {
+              candidate = entry.id;
+            } else {
+              break;
+            }
+          }
+
+          const atBottom =
+            window.scrollY + window.innerHeight >=
+            document.documentElement.scrollHeight - 4;
+          if (atBottom) {
+            candidate = orderedIds[orderedIds.length - 1];
+          }
+
+          setActive(candidate);
+        };
+
+        let ticking = false;
+        const onScroll = () => {
+          if (ticking) return;
+          ticking = true;
+          window.requestAnimationFrame(() => {
+            updateFromScrollPosition();
+            ticking = false;
+          });
+        };
+        window.addEventListener('scroll', onScroll, { passive: true });
+        window.addEventListener('resize', onScroll);
+
+        const syncFromHash = () => {
+          const hash = decodeURIComponent(window.location.hash.replace(/^#/, ''));
+          if (!hash) return;
+          if (!orderedIds.includes(hash)) return;
+          setActive(hash);
+        };
+
+        for (const entry of links) {
+          entry.link.addEventListener('click', () => {
+            setActive(entry.id);
+          });
+        }
+
+        window.addEventListener('hashchange', syncFromHash);
+        syncFromHash();
+
+        if (!activeId) {
+          setActive(orderedIds[0]);
+        }
+
+        window.requestAnimationFrame(() => {
+          onScroll();
+        });
+      })();
+    </script>
+  </main>
+</BaseLayout>
