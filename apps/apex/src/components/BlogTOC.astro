@@ -1,0 +1,30 @@
+---
+interface TocItem {
+  id: string;
+  text: string;
+  depth: number;
+}
+
+interface Props {
+  items: TocItem[];
+}
+
+const { items = [] } = Astro.props;
+---
+
+{
+  items.length > 0 ? (
+    <nav class="apex-post-toc" aria-label="Table of contents">
+      <p class="apex-post-toc-title">On this page</p>
+      <ol class="apex-post-toc-list">
+        {items.map((item) => (
+          <li>
+            <a href={`#${item.id}`} class="apex-post-toc-link" data-depth={item.depth}>
+              {item.text}
+            </a>
+          </li>
+        ))}
+      </ol>
+    </nav>
+  ) : null
+}

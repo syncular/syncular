@@ -13,6 +13,7 @@ on:
         options:
           - docs
           - console
+          - apex
           - all
         default: docs
       ref:
@@ -248,12 +249,100 @@ jobs:
           SENTRY_RELEASE: ${{ steps.sentry_release.outputs.value }}
           SENTRY_AUTH_TOKEN: ${{ secrets.SENTRY_AUTH_TOKEN }}
 
+  deploy-apex:
+    if: |
+      (github.event_name == 'workflow_dispatch' &&
+        (inputs.target == 'apex' || inputs.target == 'all')) ||
+      (github.event_name == 'workflow_run' &&
+        github.event.workflow_run.conclusion == 'success' &&
+        (github.event.workflow_run.event == 'push' ||
+          (github.event.workflow_run.event == 'pull_request' &&
+            github.event.workflow_run.head_repository.full_name == github.repository)))
+    runs-on: ubuntu-latest
+    outputs:
+      url: ${{ steps.preview.outputs.url }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || inputs.ref || github.ref }}
+      - uses: ./.github/actions/setup-environment
+
+      - name: Stamp versions
+        run: bun scripts/stamp-versions.ts ${{ github.run_number }}
+
+      - name: Build UI dependencies
+        run: bun --cwd packages/ui build
+
+      - name: Deploy (production)
+        if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.event == 'push'
+        working-directory: apps/apex
+        run: |
+          bun run build
+
+          attempts=3
+          delay_seconds=20
+
+          for attempt in $(seq 1 "$attempts"); do
+            echo "Apex deploy attempt ${attempt}/${attempts}"
+
+            set +e
+            deploy_output=$(bunx wrangler deploy --config wrangler.jsonc 2>&1)
+            deploy_status=$?
+            set -e
+
+            echo "$deploy_output"
+
+            if [ "$deploy_status" -eq 0 ]; then
+              echo "Apex deploy succeeded on attempt ${attempt}/${attempts}"
+              exit 0
+            fi
+
+            is_transient_error=0
+            if echo "$deploy_output" | grep -qiE 'Internal authentication error|code:\s*10500|A request to the Cloudflare API'; then
+              is_transient_error=1
+            fi
+
+            if [ "$is_transient_error" -eq 1 ] && [ "$attempt" -lt "$attempts" ]; then
+              echo "Transient Cloudflare deploy error detected. Retrying in ${delay_seconds}s..."
+              sleep "$delay_seconds"
+              delay_seconds=$((delay_seconds * 2))
+              continue
+            fi
+
+            echo "Apex deploy failed with a non-retryable error, or retries were exhausted."
+            exit "$deploy_status"
+          done
+
+          exit 1
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+      - name: Deploy (preview)
+        if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request'
+        id: preview
+        working-directory: apps/apex
+        run: |
+          bun run build
+
+          PR_NUMBER=${{ github.event.workflow_run.pull_requests[0].number }}
+          cat wrangler.preview.jsonc | \
+            jq ".name = \"syncular-apex-pr-${PR_NUMBER}\"" \
+            > wrangler.preview-pr.json
+
+          DEPLOY_OUTPUT=$(bunx wrangler deploy --config wrangler.preview-pr.json 2>&1)
+          echo "$DEPLOY_OUTPUT"
+
+          URL=$(echo "$DEPLOY_OUTPUT" | grep -oP 'https://[^\s]+\.workers\.dev' | head -1)
+          echo "url=$URL" >> "$GITHUB_OUTPUT"
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
   comment-urls:
     if: |
       github.event_name == 'workflow_run' &&
       github.event.workflow_run.event == 'pull_request' &&
       github.event.workflow_run.head_repository.full_name == github.repository
-    needs: [deploy-docs, deploy-console]
+    needs: [deploy-docs, deploy-console, deploy-apex]
     runs-on: ubuntu-latest
     steps:
       - name: Comment preview URLs on PR
@@ -268,5 +357,6 @@ jobs:
             |-----|-----|
             | Docs | ${{ needs.deploy-docs.outputs.url || 'N/A' }} |
             | Console | ${{ needs.deploy-console.outputs.url || 'N/A' }} |
+            | Apex | ${{ needs.deploy-apex.outputs.url || 'N/A' }} |
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
