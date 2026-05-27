@@ -36,6 +36,9 @@
     "apps/demo/src/server/sync-server.ts": [
       "files"
     ],
+    "apps/apex/package.json": [
+      "dependencies"
+    ],
     "apps/demo/package.json": [
       "dependencies"
     ],
@@ -246,6 +249,13 @@
     "apps/demo": {
       "entry": [
         "src/server/sync-server.ts"
+      ]
+    },
+    "apps/apex": {
+      "includeEntryExports": false,
+      "entry": [
+        "src/pages/**/*.astro",
+        "src/layouts/**/*.astro"
       ]
     },
     "apps/docs": {
