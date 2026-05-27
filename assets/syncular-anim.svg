@@ -1,40 +1,28 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 140 140" fill="none">
-  <!-- Central singularity core -->
-  <circle cx="70" cy="70" r="18" stroke="#3b82f6" stroke-width="1.8" opacity="0.85" />
-  <circle cx="70" cy="70" r="10" fill="rgba(59,130,246,0.1)" stroke="#3b82f6" stroke-width="0.7" opacity="0.5" />
-  <circle cx="70" cy="70" r="4.5" fill="#3b82f6" />
-  <!-- Orbit path -->
-  <circle cx="70" cy="70" r="44" stroke="#3b82f6" stroke-width="0.4" opacity="0.1" stroke-dasharray="3 5" />
-  <!-- Satellite A (top) — green -->
-  <circle cx="70" cy="26" r="12" stroke="#22c55e" stroke-width="0.4" opacity="0.2" />
-  <circle cx="70" cy="26" r="8" stroke="#22c55e" stroke-width="1" opacity="0.7" />
-  <circle cx="70" cy="26" r="4" fill="rgba(34,197,94,0.1)" stroke="#22c55e" stroke-width="0.5" opacity="0.5" />
-  <circle cx="70" cy="26" r="2" fill="#22c55e" />
-  <!-- Connection A to center (animated) -->
-  <line x1="70" y1="34" x2="70" y2="52" stroke="#22c55e" stroke-width="0.6" opacity="0.25" stroke-dasharray="2 2">
-    <animate attributeName="stroke-dashoffset" from="4" to="0" dur="0.8s" repeatCount="indefinite" />
-  </line>
-  <!-- Satellite B (bottom-right) — purple -->
-  <circle cx="108" cy="92" r="12" stroke="#8b5cf6" stroke-width="0.4" opacity="0.2" />
-  <circle cx="108" cy="92" r="8" stroke="#8b5cf6" stroke-width="1" opacity="0.7" />
-  <circle cx="108" cy="92" r="4" fill="rgba(139,92,246,0.1)" stroke="#8b5cf6" stroke-width="0.5" opacity="0.5" />
-  <circle cx="108" cy="92" r="2" fill="#8b5cf6" />
-  <!-- Connection B to center (animated) -->
-  <line x1="102" y1="87" x2="84" y2="77" stroke="#8b5cf6" stroke-width="0.6" opacity="0.25" stroke-dasharray="2 2">
-    <animate attributeName="stroke-dashoffset" from="4" to="0" dur="0.8s" repeatCount="indefinite" />
-  </line>
-  <!-- Satellite C (bottom-left) — amber -->
-  <circle cx="32" cy="92" r="12" stroke="#f59e0b" stroke-width="0.4" opacity="0.2" />
-  <circle cx="32" cy="92" r="8" stroke="#f59e0b" stroke-width="1" opacity="0.7" />
-  <circle cx="32" cy="92" r="4" fill="rgba(245,158,11,0.1)" stroke="#f59e0b" stroke-width="0.5" opacity="0.5" />
-  <circle cx="32" cy="92" r="2" fill="#f59e0b" />
-  <!-- Connection C to center (animated) -->
-  <line x1="38" y1="87" x2="56" y2="77" stroke="#f59e0b" stroke-width="0.6" opacity="0.25" stroke-dasharray="2 2">
-    <animate attributeName="stroke-dashoffset" from="4" to="0" dur="0.8s" repeatCount="indefinite" />
-  </line>
-  <!-- Subtle pulse from center -->
-  <circle cx="70" cy="70" r="18" fill="none" stroke="#3b82f6" stroke-width="0.4" opacity="0">
-    <animate attributeName="r" from="18" to="44" dur="3s" repeatCount="indefinite" />
-    <animate attributeName="opacity" from="0.3" to="0" dur="3s" repeatCount="indefinite" />
-  </circle>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" fill="none" role="img" aria-label="Syncular">
+  <style>
+    .ink { stroke: #16161a; fill: #16161a; }
+    .ink-soft { stroke: #16161a; fill: none; opacity: 0.28; }
+    @media (prefers-color-scheme: dark) {
+      .ink { stroke: #ededed; fill: #ededed; }
+      .ink-soft { stroke: #ededed; opacity: 0.32; }
+    }
+  </style>
+
+  <circle class="ink-soft" cx="100" cy="100" r="88" stroke-width="1.2" />
+  <circle class="ink-soft" cx="100" cy="100" r="58" stroke-width="1" stroke-dasharray="2 4" />
+
+  <circle class="ink" cx="100" cy="100" r="88" stroke-width="3" fill="none" opacity="0.85" />
+  <circle class="ink" cx="100" cy="100" r="18" />
+
+  <g>
+    <circle class="ink" cx="188" cy="100" r="6">
+      <animateTransform attributeName="transform" type="rotate" from="0 100 100" to="360 100 100" dur="14s" repeatCount="indefinite" />
+    </circle>
+  </g>
+
+  <g>
+    <circle class="ink" cx="158" cy="100" r="3" opacity="0.55">
+      <animateTransform attributeName="transform" type="rotate" from="360 100 100" to="0 100 100" dur="22s" repeatCount="indefinite" />
+    </circle>
+  </g>
 </svg>
