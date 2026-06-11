@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createDatabase } from '@syncular/core';
-import { createPgliteDialect } from '@syncular/dialect-pglite';
+import { createPgliteDialect } from '@syncular/dialects/pglite';
 import { ensureSyncSchema, type SyncCoreDb } from '@syncular/server';
 import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
 import { Hono } from 'hono';

@@ -56,7 +56,7 @@
       "dependencies": {
         "@syncular/client": "workspace:*",
         "@syncular/core": "workspace:*",
-        "@syncular/dialect-bun-sqlite": "workspace:*",
+        "@syncular/dialects": "workspace:*",
         "@syncular/server": "workspace:*",
         "@syncular/server-dialect-sqlite": "workspace:*",
         "@syncular/server-hono": "workspace:*",
@@ -127,6 +127,7 @@
       },
       "devDependencies": {
         "@syncular/config": "workspace:*",
+        "@syncular/dialects": "workspace:*",
         "hono": "^4.12.15",
       },
     },
@@ -222,109 +223,55 @@
         "zod": "^4.0.0",
       },
     },
-    "packages/dialect-better-sqlite3": {
-      "name": "@syncular/dialect-better-sqlite3",
+    "packages/dialects": {
+      "name": "@syncular/dialects",
       "version": "0.0.0",
-      "dependencies": {
-        "@types/better-sqlite3": "^7.6.13",
-        "better-sqlite3": "^12.8.0",
-      },
       "devDependencies": {
-        "@syncular/config": "workspace:*",
-        "kysely": "*",
-      },
-      "peerDependencies": {
-        "kysely": "^0.28.0",
-      },
-    },
-    "packages/dialect-bun-sqlite": {
-      "name": "@syncular/dialect-bun-sqlite",
-      "version": "0.0.0",
-      "dependencies": {
-        "kysely-bun-sqlite": "^0.4.0",
-      },
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
-        "kysely": "*",
-      },
-      "peerDependencies": {
-        "kysely": "^0.28.0",
-      },
-    },
-    "packages/dialect-d1": {
-      "name": "@syncular/dialect-d1",
-      "version": "0.0.0",
-      "dependencies": {
         "@cloudflare/workers-types": "*",
-        "kysely-d1": "^0.4.0",
-      },
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
-        "kysely": "*",
-      },
-      "peerDependencies": {
-        "kysely": "^0.28.0",
-      },
-    },
-    "packages/dialect-libsql": {
-      "name": "@syncular/dialect-libsql",
-      "version": "0.0.0",
-      "dependencies": {
-        "libsql": "^0.5.29",
-      },
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
-        "kysely": "*",
-      },
-      "peerDependencies": {
-        "kysely": "^0.28.0",
-      },
-    },
-    "packages/dialect-neon": {
-      "name": "@syncular/dialect-neon",
-      "version": "0.0.0",
-      "dependencies": {
-        "@neondatabase/serverless": "^1.0.2",
-        "kysely-neon": "^2.0.2",
-      },
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
-        "kysely": "*",
-      },
-      "peerDependencies": {
-        "kysely": "^0.28.0",
-      },
-    },
-    "packages/dialect-pglite": {
-      "name": "@syncular/dialect-pglite",
-      "version": "0.0.0",
-      "dependencies": {
         "@electric-sql/pglite": "^0.3.15",
-        "kysely-pglite-dialect": "^1.2.0",
-      },
-      "devDependencies": {
-        "@syncular/config": "workspace:*",
-        "kysely": "*",
-      },
-      "peerDependencies": {
-        "kysely": "^0.28.0",
-      },
-    },
-    "packages/dialect-sqlite3": {
-      "name": "@syncular/dialect-sqlite3",
-      "version": "0.0.0",
-      "dependencies": {
-        "kysely-generic-sqlite": "^1.2.1",
-        "sqlite3": "^6.0.1",
-      },
-      "devDependencies": {
+        "@neondatabase/serverless": "^1.0.2",
         "@syncular/config": "workspace:*",
         "@syncular/core": "workspace:*",
+        "@types/better-sqlite3": "^7.6.13",
+        "better-sqlite3": "^12.8.0",
         "kysely": "*",
+        "kysely-bun-sqlite": "^0.4.0",
+        "kysely-d1": "^0.4.0",
+        "kysely-generic-sqlite": "^1.2.1",
+        "kysely-neon": "^2.0.2",
+        "kysely-pglite-dialect": "^1.2.0",
+        "libsql": "^0.5.29",
+        "sqlite3": "^6.0.1",
       },
       "peerDependencies": {
+        "@cloudflare/workers-types": "*",
+        "@electric-sql/pglite": "^0.3.15",
+        "@neondatabase/serverless": "^1.0.2",
+        "@types/better-sqlite3": "^7.6.13",
+        "better-sqlite3": "^12.8.0",
         "kysely": "^0.28.0",
+        "kysely-bun-sqlite": "^0.4.0",
+        "kysely-d1": "^0.4.0",
+        "kysely-generic-sqlite": "^1.2.1",
+        "kysely-neon": "^2.0.2",
+        "kysely-pglite-dialect": "^1.2.0",
+        "libsql": "^0.5.29",
+        "sqlite3": "^6.0.1",
       },
+      "optionalPeers": [
+        "@cloudflare/workers-types",
+        "@electric-sql/pglite",
+        "@neondatabase/serverless",
+        "@types/better-sqlite3",
+        "better-sqlite3",
+        "kysely-bun-sqlite",
+        "kysely-d1",
+        "kysely-generic-sqlite",
+        "kysely-neon",
+        "kysely-pglite-dialect",
+        "libsql",
+        "sqlite3",
+      ],
     },
     "packages/migrations": {
       "name": "@syncular/migrations",
@@ -393,6 +340,7 @@
       },
       "devDependencies": {
         "@syncular/config": "workspace:*",
+        "@syncular/dialects": "workspace:*",
         "kysely": "*",
         "zod": "*",
       },
@@ -462,7 +410,7 @@
       },
       "devDependencies": {
         "@syncular/config": "workspace:*",
-        "@syncular/dialect-pglite": "workspace:*",
+        "@syncular/dialects": "workspace:*",
         "@syncular/server-dialect-postgres": "workspace:*",
         "kysely": "*",
         "zod": "*",
@@ -494,13 +442,7 @@
         "@syncular/client": "workspace:*",
         "@syncular/console": "workspace:*",
         "@syncular/core": "workspace:*",
-        "@syncular/dialect-better-sqlite3": "workspace:*",
-        "@syncular/dialect-bun-sqlite": "workspace:*",
-        "@syncular/dialect-d1": "workspace:*",
-        "@syncular/dialect-libsql": "workspace:*",
-        "@syncular/dialect-neon": "workspace:*",
-        "@syncular/dialect-pglite": "workspace:*",
-        "@syncular/dialect-sqlite3": "workspace:*",
+        "@syncular/dialects": "workspace:*",
         "@syncular/migrations": "workspace:*",
         "@syncular/observability-sentry": "workspace:*",
         "@syncular/react": "workspace:*",
@@ -529,8 +471,7 @@
       "dependencies": {
         "@syncular/client": "workspace:*",
         "@syncular/core": "workspace:*",
-        "@syncular/dialect-bun-sqlite": "workspace:*",
-        "@syncular/dialect-pglite": "workspace:*",
+        "@syncular/dialects": "workspace:*",
         "@syncular/server": "workspace:*",
         "@syncular/server-dialect-postgres": "workspace:*",
         "@syncular/server-dialect-sqlite": "workspace:*",
@@ -640,6 +581,7 @@
       "dependencies": {
         "@syncular/client": "workspace:*",
         "@syncular/core": "workspace:*",
+        "@syncular/dialects": "workspace:*",
         "@syncular/server": "workspace:*",
         "@syncular/typegen": "workspace:*",
         "hono": "^4.12.15",
@@ -652,11 +594,7 @@
       "devDependencies": {
         "@syncular/config": "workspace:*",
         "@syncular/core": "workspace:*",
-        "@syncular/dialect-better-sqlite3": "workspace:*",
-        "@syncular/dialect-bun-sqlite": "workspace:*",
-        "@syncular/dialect-libsql": "workspace:*",
-        "@syncular/dialect-pglite": "workspace:*",
-        "@syncular/dialect-sqlite3": "workspace:*",
+        "@syncular/dialects": "workspace:*",
         "kysely": "*",
       },
     },
@@ -666,8 +604,7 @@
       "devDependencies": {
         "@syncular/config": "workspace:*",
         "@syncular/core": "workspace:*",
-        "@syncular/dialect-bun-sqlite": "workspace:*",
-        "@syncular/dialect-pglite": "workspace:*",
+        "@syncular/dialects": "workspace:*",
         "@syncular/server": "workspace:*",
         "@syncular/server-dialect-postgres": "workspace:*",
         "@syncular/server-dialect-sqlite": "workspace:*",
@@ -691,7 +628,7 @@
       "devDependencies": {
         "@syncular/config": "workspace:*",
         "@syncular/core": "workspace:*",
-        "@syncular/dialect-bun-sqlite": "workspace:*",
+        "@syncular/dialects": "workspace:*",
         "@syncular/migrations": "workspace:*",
         "@syncular/server": "workspace:*",
         "@syncular/server-dialect-sqlite": "workspace:*",
@@ -1715,19 +1652,7 @@
 
     "@syncular/demo": ["@syncular/demo@workspace:apps/demo"],
 
-    "@syncular/dialect-better-sqlite3": ["@syncular/dialect-better-sqlite3@workspace:packages/dialect-better-sqlite3"],
-
-    "@syncular/dialect-bun-sqlite": ["@syncular/dialect-bun-sqlite@workspace:packages/dialect-bun-sqlite"],
-
-    "@syncular/dialect-d1": ["@syncular/dialect-d1@workspace:packages/dialect-d1"],
-
-    "@syncular/dialect-libsql": ["@syncular/dialect-libsql@workspace:packages/dialect-libsql"],
-
-    "@syncular/dialect-neon": ["@syncular/dialect-neon@workspace:packages/dialect-neon"],
-
-    "@syncular/dialect-pglite": ["@syncular/dialect-pglite@workspace:packages/dialect-pglite"],
-
-    "@syncular/dialect-sqlite3": ["@syncular/dialect-sqlite3@workspace:packages/dialect-sqlite3"],
+    "@syncular/dialects": ["@syncular/dialects@workspace:packages/dialects"],
 
     "@syncular/example-todo-rust": ["@syncular/example-todo-rust@workspace:rust/examples/todo-app"],
 

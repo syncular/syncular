@@ -192,53 +192,53 @@
         "default": "./dist/observability-sentry.js"
       }
     },
-    "./dialect-bun-sqlite": {
-      "bun": "./src/dialect-bun-sqlite.ts",
+    "./dialects/better-sqlite3": {
+      "bun": "./src/dialects/better-sqlite3.ts",
       "import": {
-        "types": "./dist/dialect-bun-sqlite.d.ts",
-        "default": "./dist/dialect-bun-sqlite.js"
+        "types": "./dist/dialects/better-sqlite3.d.ts",
+        "default": "./dist/dialects/better-sqlite3.js"
       }
     },
-    "./dialect-better-sqlite3": {
-      "bun": "./src/dialect-better-sqlite3.ts",
+    "./dialects/bun-sqlite": {
+      "bun": "./src/dialects/bun-sqlite.ts",
       "import": {
-        "types": "./dist/dialect-better-sqlite3.d.ts",
-        "default": "./dist/dialect-better-sqlite3.js"
+        "types": "./dist/dialects/bun-sqlite.d.ts",
+        "default": "./dist/dialects/bun-sqlite.js"
       }
     },
-    "./dialect-pglite": {
-      "bun": "./src/dialect-pglite.ts",
+    "./dialects/d1": {
+      "bun": "./src/dialects/d1.ts",
       "import": {
-        "types": "./dist/dialect-pglite.d.ts",
-        "default": "./dist/dialect-pglite.js"
+        "types": "./dist/dialects/d1.d.ts",
+        "default": "./dist/dialects/d1.js"
       }
     },
-    "./dialect-sqlite3": {
-      "bun": "./src/dialect-sqlite3.ts",
+    "./dialects/libsql": {
+      "bun": "./src/dialects/libsql.ts",
       "import": {
-        "types": "./dist/dialect-sqlite3.d.ts",
-        "default": "./dist/dialect-sqlite3.js"
+        "types": "./dist/dialects/libsql.d.ts",
+        "default": "./dist/dialects/libsql.js"
       }
     },
-    "./dialect-neon": {
-      "bun": "./src/dialect-neon.ts",
+    "./dialects/neon": {
+      "bun": "./src/dialects/neon.ts",
       "import": {
-        "types": "./dist/dialect-neon.d.ts",
-        "default": "./dist/dialect-neon.js"
+        "types": "./dist/dialects/neon.d.ts",
+        "default": "./dist/dialects/neon.js"
       }
     },
-    "./dialect-libsql": {
-      "bun": "./src/dialect-libsql.ts",
+    "./dialects/pglite": {
+      "bun": "./src/dialects/pglite.ts",
       "import": {
-        "types": "./dist/dialect-libsql.d.ts",
-        "default": "./dist/dialect-libsql.js"
+        "types": "./dist/dialects/pglite.d.ts",
+        "default": "./dist/dialects/pglite.js"
       }
     },
-    "./dialect-d1": {
-      "bun": "./src/dialect-d1.ts",
+    "./dialects/sqlite3": {
+      "bun": "./src/dialects/sqlite3.ts",
       "import": {
-        "types": "./dist/dialect-d1.d.ts",
-        "default": "./dist/dialect-d1.js"
+        "types": "./dist/dialects/sqlite3.d.ts",
+        "default": "./dist/dialects/sqlite3.js"
       }
     }
   },
@@ -264,13 +264,7 @@
     "@syncular/client": "workspace:*",
     "@syncular/console": "workspace:*",
     "@syncular/core": "workspace:*",
-    "@syncular/dialect-better-sqlite3": "workspace:*",
-    "@syncular/dialect-bun-sqlite": "workspace:*",
-    "@syncular/dialect-d1": "workspace:*",
-    "@syncular/dialect-libsql": "workspace:*",
-    "@syncular/dialect-neon": "workspace:*",
-    "@syncular/dialect-pglite": "workspace:*",
-    "@syncular/dialect-sqlite3": "workspace:*",
+    "@syncular/dialects": "workspace:*",
     "@syncular/migrations": "workspace:*",
     "@syncular/observability-sentry": "workspace:*",
     "@syncular/react": "workspace:*",

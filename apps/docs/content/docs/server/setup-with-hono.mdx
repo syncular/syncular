@@ -33,8 +33,9 @@ npm install @syncular/server @syncular/server-hono @syncular/server-dialect-post
 npm install kysely pg hono
 ```
 
-If your runtime uses Neon instead of `pg`, install `@syncular/dialect-neon` and
-use `createNeonServerDialect()` below.
+If your runtime uses Neon instead of `pg`, install `@syncular/dialects` (plus
+the `kysely-neon` and `@neondatabase/serverless` drivers) and use
+`createNeonServerDialect()` below.
 
 ## 1. Database setup
 
@@ -55,7 +56,7 @@ const db = new Kysely({
 
 ```typescript
 import { createDatabase } from '@syncular/core';
-import { createNeonDialect } from '@syncular/dialect-neon';
+import { createNeonDialect } from '@syncular/dialects/neon';
 
 const db = createDatabase({
   dialect: createNeonDialect({

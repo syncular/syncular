@@ -202,25 +202,7 @@
     "packages/observability-sentry": {
       "includeEntryExports": false
     },
-    "packages/dialect-bun-sqlite": {
-      "includeEntryExports": false
-    },
-    "packages/dialect-better-sqlite3": {
-      "includeEntryExports": false
-    },
-    "packages/dialect-pglite": {
-      "includeEntryExports": false
-    },
-    "packages/dialect-sqlite3": {
-      "includeEntryExports": false
-    },
-    "packages/dialect-neon": {
-      "includeEntryExports": false
-    },
-    "packages/dialect-libsql": {
-      "includeEntryExports": false
-    },
-    "packages/dialect-d1": {
+    "packages/dialects": {
       "includeEntryExports": false
     },
     "rust/bindings/javascript": {

@@ -1,5 +1,5 @@
 /**
- * @syncular/dialect-neon - Neon serverless Postgres dialect for sync
+ * @syncular/dialects/neon - Neon serverless Postgres dialect for sync
  *
  * Provides a Kysely dialect for Neon serverless Postgres (HTTP).
  * Postgres-compatible — use with @syncular/server-dialect-postgres.

@@ -7,7 +7,7 @@ import {
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   sha256Hex,
 } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import {
   createServerHandler,
   createServerHandlerCollection,

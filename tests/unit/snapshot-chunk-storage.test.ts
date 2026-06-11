@@ -13,7 +13,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 import type { BlobStorageAdapter } from '@syncular/core';
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import { ensureSyncSchema, type SyncCoreDb } from '@syncular/server';
 import { createDbMetadataChunkStorage } from '@syncular/server/snapshot-chunks';
 import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';

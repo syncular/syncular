@@ -1,5 +1,6 @@
 import type { SyncAuthLeaseCapabilities } from '@syncular/core';
 import { type BlobRef, createDatabase } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import type { Kysely } from 'kysely';
 import { createYjsServerPushPlugin } from '../../../../../plugins/yjs/server/src';
 import {
@@ -9,7 +10,6 @@ import {
   syncularGeneratedSchemaVersion,
 } from '../../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import { syncularGeneratedServerSnapshotBinary } from '../../../../../rust/examples/todo-app/generated/typescript/syncular.server.generated';
-import { createBunSqliteDialect } from '../../../../dialect-bun-sqlite/src';
 import {
   createBlobManager,
   createDatabaseBlobStorageAdapter,
