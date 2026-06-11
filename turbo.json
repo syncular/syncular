@@ -11,12 +11,23 @@
   ],
   "tasks": {
     "tsgo": {
-      "cache": true,
-      "outputs": [".turbo/**"]
+      "dependsOn": ["^tsgo"],
+      "outputs": []
     },
     "build": {
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
+    },
+    "@syncular/client-javascript-bindings#build": {
+      "dependsOn": ["^build"],
+      "inputs": [
+        "$TURBO_DEFAULT$",
+        "../../crates/**",
+        "../../Cargo.toml",
+        "../../Cargo.lock",
+        "../../../packages/client/package.json"
+      ],
+      "outputs": ["dist/**", "src/generated-wasm-bindings.d.ts"]
     },
     "release": {
       "dependsOn": ["build"],
