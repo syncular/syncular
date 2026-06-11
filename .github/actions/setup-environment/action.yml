@@ -14,7 +14,7 @@ runs:
       run: |
         set -euo pipefail
 
-        bun_version="1.3.9"
+        bun_version="1.3.13"
 
         case "$(uname -s)/$(uname -m)" in
           Linux/x86_64)
@@ -40,7 +40,7 @@ runs:
     - name: Setup Bun
       uses: oven-sh/setup-bun@v2
       with:
-        bun-version: 1.3.9
+        bun-version: 1.3.13
         bun-download-url: ${{ steps.setup-bun-url.outputs.url }}
 
     - name: Setup Rust for package builds
