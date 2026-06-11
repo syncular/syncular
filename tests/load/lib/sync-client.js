@@ -95,10 +95,14 @@ export function push(userId, operations, clientId, options) {
     JSON.stringify({
       clientId: cid,
       push: {
-        clientCommitId:
-          opts.clientCommitId || `commit-${Date.now()}-${__VU}-${__ITER}`,
-        schemaVersion,
-        operations,
+        commits: [
+          {
+            clientCommitId:
+              opts.clientCommitId || `commit-${Date.now()}-${__VU}-${__ITER}`,
+            schemaVersion,
+            operations,
+          },
+        ],
       },
     }),
     {
@@ -128,6 +132,9 @@ export function pull(userId, subscriptions, options, clientId) {
     JSON.stringify({
       clientId: cid,
       pull: {
+        schemaVersion: Number.isFinite(opts.schemaVersion)
+          ? opts.schemaVersion
+          : DEFAULT_SCHEMA_VERSION,
         limitCommits: opts.limitCommits ?? 100,
         limitSnapshotRows: opts.limitSnapshotRows ?? 1000,
         maxSnapshotPages: opts.maxSnapshotPages ?? 4,
