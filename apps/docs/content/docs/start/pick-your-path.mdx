@@ -1,0 +1,200 @@
+---
+title: Pick Your Path
+description: Choose how to adopt Syncular — start a fresh app, add sync to an existing app, or evaluate it first.
+---
+
+# Pick Your Path
+
+> **Alpha.** APIs, wire formats, and storage layouts will change between releases. Pin versions and expect manual migrations between versions.
+
+Syncular is modular by design. You can adopt it table-by-table and
+feature-by-feature instead of committing to an all-or-nothing platform
+rewrite. Three paths cover how teams actually start:
+
+<Cards>
+  <Card title="Path 1: Fresh app" href="#path-1-fresh-app">
+    Greenfield product where offline is a requirement from day one
+  </Card>
+  <Card title="Path 2: Add to an existing app" href="#path-2-add-to-an-existing-app">
+    Production backend already exists; adopt sync one table at a time
+  </Card>
+  <Card title="Path 3: Evaluate first" href="#path-3-evaluate-first">
+    Prove the architecture and the trust story before committing
+  </Card>
+</Cards>
+
+## Path 1: Fresh app
+
+Best when you are building a new product where offline is a requirement
+(email client, CRM, internal tool, field app).
+
+Start with [Hello World](/start/hello-world) — it walks the entire loop once
+(schema, app contract, server, client). The outline:
+
+1. Pick the host surface: JavaScript/TypeScript app APIs over the Rust
+   runtime, or direct Rust app code.
+2. Define your SQLite schema in `migrations/` and the app contract in
+   `syncular.app.ts`.
+3. Generate the typed client, then query locally with the host query builder:
+   Kysely for JavaScript or Diesel for Rust.
+4. Add the Syncular server with one table handler.
+5. Add scopes + subscriptions for partial sync and auth.
+6. Add realtime wakeups once the core push/pull path is proven.
+
+{/* TODO: point this path at the create-syncular-app one-liner once it lands. */}
+
+### Fresh JavaScript app
+
+```bash
+npm install @syncular/client @syncular/react kysely react react-dom
+npm install -D syncular @syncular/typegen
+```
+
+`syncular` is the dev-time CLI. `syncular generate` uses the Rust
+`syncular-codegen` binary for generated app clients; it can auto-install the
+binary when Cargo is available, or prepare it explicitly:
+
+```bash
+npx syncular codegen install
+```
+
+Then define `migrations/0001_initial/up.sql` and `syncular.app.ts` exactly as
+in [Hello World](/start/hello-world), and generate (the `--check` form is the
+CI guard):
+
+```bash
+npx syncular generate --manifest-dir .
+npx syncular generate --manifest-dir . --check
+```
+
+### Fresh Rust app
+
+```bash
+cargo add syncular syncular-client
+cargo add diesel --features sqlite,returning_clauses_for_sqlite_3_35
+cargo add serde --features derive
+cargo add serde_json
+cargo add --dev syncular-testkit
+cargo install syncular-codegen --locked --version 0.1.0
+```
+
+Use the same migration shape as the JavaScript app. Rust-only apps can
+initialize `generated/syncular.codegen.json` from migrations:
+
+```bash
+syncular-codegen init --manifest-dir .
+```
+
+The generated starter config treats tables with one primary key and a
+`server_version` column as synced tables, and marks tables without
+`server_version` as local-only:
+
+```json
+{
+  "tables": {
+    "tasks": {
+      "subscriptionId": "sub-tasks",
+      "serverVersionColumn": "server_version",
+      "scopes": [
+        {
+          "name": "user_id",
+          "column": "user_id",
+          "source": "actorId",
+          "required": true
+        }
+      ]
+    }
+  }
+}
+```
+
+Then generate and check:
+
+```bash
+syncular-codegen --manifest-dir .
+syncular-codegen --manifest-dir . --check
+```
+
+In tests, use the package testkits instead of hand-rolled protocol fixtures:
+
+```rust
+let mut fixture = syncular_testkit::open_todo_client()?;
+let task_id = fixture.client.add_task("Fresh Rust app".to_string(), None)?;
+```
+
+The repository gate that keeps the blank-project path honest is
+`bun run fresh-app-smokes`: it creates temporary JavaScript and Rust apps,
+runs generation from scratch, checks generated output, and opens a Rust
+testkit client.
+
+Continue with:
+
+- [Hello World](/start/hello-world)
+- [Server Setup](/server/setup-with-hono)
+- [JavaScript](/clients/javascript) or [Rust](/clients/rust)
+- [Scopes](/learn/scopes) and [Subscriptions](/learn/subscriptions)
+
+## Path 2: Add to an existing app
+
+Best when you already have a production backend and want offline + sync
+without replacing everything.
+
+1. Start with local SQLite as your primary read/write path (your UI talks to
+   the local DB).
+2. Turn on sync for one table: one server handler + one subscription.
+3. Keep existing REST/webhook/pipeline writes, but make them sync-aware:
+   - Use `notifyExternalDataChange` when data changes outside the push flow.
+   - Consider the admin DB proxy for admin tools and data fixes that must
+     emit sync commits.
+4. Expand table-by-table.
+
+Relevant docs:
+
+- [External Changes](/server/external-changes)
+- [Admin Database Proxy](/server/admin-proxy)
+- [Table Handlers](/server/table-handlers)
+
+### What to decide early (to avoid rewrites)
+
+- Your scope keys and how they map to access control.
+- Your row versioning strategy (conflict detection).
+- Whether encrypted data needs search/sort/indexing (design implications).
+- Whether you will have external writers (REST/jobs/admin tools) and how you
+  will notify sync.
+
+## Path 3: Evaluate first
+
+Best when the architecture decision is not yet made and you need evidence.
+
+1. Read [Is Syncular For Me?](/start/is-syncular-for-me) to check the
+   problem and team fit.
+2. Build [Hello World](/start/hello-world) — it takes one sitting and
+   exercises offline writes, push/pull, and scoped auth.
+3. Read [Testing & Confidence](/start/testing-and-confidence) for the layered
+   test story: in-process protocol tests, Rust conformance gates, browser
+   client tests, and performance/load suites — plus the
+   [`@syncular/testkit`](/clients/javascript/testing) and
+   [`syncular-testkit`](/clients/rust/testing) fixtures your own app tests
+   would use.
+4. Skim [Operate](/operate) so you know how incidents would be debugged in a
+   real deployment (console forensics, observability, troubleshooting trees).
+5. Compare against alternatives in [Comparison](/start/comparison).
+
+A useful evaluation prototype is small but mean: two clients of the same
+user, one offline window, one concurrent edit (to see
+[conflict resolution](/learn/conflict-resolution)), and one revoked scope.
+
+## Growing from there
+
+Common add-ons once the core loop is working, whichever path you took:
+
+1. Fast first sync for large datasets:
+   [Architecture (bootstrap + snapshot chunks)](/learn/architecture) and
+   [Performance](/operate/performance)
+2. Blobs (files) + offline cache/upload queue:
+   [Blob Storage](/features/recipes/blobs-and-media)
+3. End-to-end encryption: [Field Encryption](/features/field-encryption)
+4. Operations + observability: [Operations](/operate/operations-setup) and
+   [Observability](/operate/observability)
+5. Relay (intermittent networks / edge): [Relay](/server/edge-relay)
+6. Migrations + type generation: [Schema Migrations](/features/migrations)

@@ -64,3 +64,35 @@ Full per-page tree and per-phase details live in the audit output; phases:
 
 - 2026-06-11: Audit done, plan recorded. Execution pending (after demo app
   rebuild + create-syncular-app land, since hello-world builds on them).
+- 2026-06-11: **Phase 1 done.** Decisions taken:
+  - **Redirects:** apps/docs supports Next.js `redirects()` in
+    `next.config.mjs`; retired slugs get permanent redirects there
+    (`/start/adoption-paths` and `/start/fresh-apps` →
+    `/start/pick-your-path`, `/start/good-fit` → `/start/is-syncular-for-me`,
+    `/start/basic-setup` → `/start/installation`). Stale patterns added in
+    `scripts/check-docs-stale-patterns.ts` so the old paths can't resurface
+    in content.
+  - **New pages:** `start/is-syncular-for-me` (decision guide; absorbs
+    `good-fit`), `start/pick-your-path` (merges `adoption-paths` +
+    `fresh-apps` into fresh/existing/evaluate paths),
+    `start/hello-world` (placeholder framing + real minimal end-to-end
+    snippet adapted from apps/demo; TODO marker for the
+    create-syncular-app one-liner).
+  - **Deleted:** `start/basic-setup` (URL convention folded into
+    `start/installation`, corrected: `config.baseUrl` points at the sync
+    mount itself, e.g. `https://host/api/sync` — matches apps/demo and
+    client tests).
+  - **Nav:** start/ reordered learner-first (what-is → is-it-for-me →
+    hello-world → pick-your-path → installation). `quick-start` kept in nav
+    pending its Phase 2 rewrite; `testing-and-confidence` kept under
+    Evaluate Fit (pick-your-path's "evaluate first" path links to it).
+  - **Scopes canon:** `learn/scopes` is the conceptual canon (now includes
+    the client-subscription request side; deep `authenticate()` wiring
+    removed in favor of a link). `server/scopes-and-auth` is
+    implementation-only and links to the canon.
+  - **Conflicts canon:** `learn/conflict-resolution` is the mechanism canon
+    (React banner/`useConflictStats` UI moved to
+    `features/conflict-resolution`, which keeps the product flow and links
+    back).
+  - Phase 1 hello-world ships without create-syncular-app (it hasn't landed);
+    the page is honest about that and already useful.

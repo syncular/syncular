@@ -9,6 +9,14 @@ Syncular clients request subscriptions, but the server decides what those
 requests mean for the current actor. Authentication produces an actor context;
 `resolveScopes` turns that context into the scope values the actor can access.
 
+<Callout title="Concept lives in Learn">
+This page covers the server implementation: `authenticate()`, `resolveScopes`,
+and write-path authorization. For what scopes *are*, the intersection model,
+revocation behavior, and the standard patterns (user-owned, project
+membership, team-shared), read the canonical [Scopes](/learn/scopes) page
+first.
+</Callout>
+
 ## Authenticate requests
 
 `createSyncServer` expects a `sync.authenticate` function. Return `null` to
@@ -42,8 +50,11 @@ That object is available as `ctx.auth` in table handlers.
 ## Resolve allowed scopes
 
 `resolveScopes` must return the scope values the actor is allowed to access at
-request time. The effective subscription is the intersection of client-requested
-scopes and these allowed scopes.
+request time. The effective subscription is the intersection of
+client-requested scopes and these allowed scopes — the
+[intersection model](/learn/scopes#effective-scopes-the-intersection-model)
+is explained on the canonical page. Query your membership tables here; do not
+derive access from anything the client sent.
 
 ```typescript
 const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks', AppAuth>({
@@ -95,11 +106,12 @@ membership before accepting the push.
 ## Scope shape guidelines
 
 - Use stable IDs, not display names.
-- Model user-owned rows with `user_id`.
-- Model shared data with team, workspace, tenant, or project IDs.
 - Return arrays for multi-membership scopes.
 - Keep scopes coarse enough for efficient pull planning, but specific enough to
   avoid over-syncing.
+
+Key choice and cardinality guidance lives on the canonical
+[Scopes](/learn/scopes#scope-guidelines) page.
 
 ## Next steps
 

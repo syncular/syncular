@@ -1,0 +1,113 @@
+---
+title: Is Syncular For Me?
+description: Decide whether Syncular matches your product shape, team constraints, and operational expectations.
+---
+
+# Is Syncular For Me?
+
+Sync frameworks are a structural commitment, not a library you swap out later.
+Use this page to decide whether Syncular fits before you invest in it.
+
+## What Syncular assumes about your app
+
+Syncular is opinionated. It works best when you want all of the following:
+
+- **Offline writes, not just cached reads.** Users create and edit data while
+  disconnected; the runtime queues those writes in a durable outbox and pushes
+  them when connectivity returns.
+- **Local SQL as the normal read path.** Your app queries a local SQLite
+  database (Kysely in TypeScript, Diesel in Rust) instead of waiting on
+  network round-trips.
+- **Authorization you define yourself.** Access control is modeled explicitly
+  with [scopes](/learn/scopes) — key-value pairs like `user_id` or
+  `project_id` extracted from row data and enforced by your server's
+  `resolveScopes`. There is no hosted auth product to adopt; your existing
+  sessions and membership tables drive access.
+- **Durable local state.** The Rust-owned client runtime persists the
+  database, outbox, cursors, conflict state, blobs, and CRDT fields across
+  restarts — on browser (WASM), mobile, and desktop hosts.
+- **An authoritative server you control.** Changes flow through an append-only
+  commit log on your server (Postgres in production, SQLite for development),
+  validated by table handlers you write.
+
+If most of those describe your product, Syncular removes a large amount of
+hand-rolled sync code. If only one or two do, a smaller tool is probably the
+better trade.
+
+## Team and operations fit
+
+Syncular expects you to own a backend:
+
+- You run the sync server yourself — typically Hono on Node/Bun, or
+  Cloudflare Workers with Durable Objects. There is no managed service.
+- Production deployments use Postgres you operate (including Neon).
+- The team is comfortable with TypeScript on the server, and optionally Rust
+  on the client for native hosts.
+- You want a debuggable system: the commit log is append-only and queryable,
+  the [Console](/operate/console) exposes request forensics and client lag,
+  and [Audit & History](/features/audit-and-history) covers product-facing
+  history.
+
+Teams that want sync infrastructure as a fully managed black box should look
+at hosted alternatives in the [Comparison](/start/comparison) section instead.
+
+## Strong-fit app shapes
+
+- B2B SaaS with tenant, workspace, or project isolation
+- field or warehouse apps with long offline windows
+- desktop or mobile apps that need durable local state
+- media or catalog products with large local datasets and attachment sync
+- collaborative apps with durable shared records and optional Yjs-powered
+  CRDT fields
+
+## Where Syncular is the wrong tool
+
+Be skeptical of adopting it for these:
+
+- **Read-only dashboards and analytics views.** If users never write offline,
+  a query cache or read-path replication tool gives you most of the benefit
+  with far less machinery.
+- **Pure-CRDT collaborative products.** If the whole app model is
+  collaborative text, canvas state, or rich documents, a CRDT-first system
+  like [Jazz](/start/comparison/vs-jazz) fits better. Syncular supports
+  CRDT *fields* on durable records, not document-graph-as-database.
+- **A simple SPA backed by REST.** If the app is online-only and your data
+  fits a request/response model, adding a local database, codegen, and a
+  commit log is complexity you do not need.
+- **Fully managed sync with minimal backend ownership.** See
+  [PowerSync](/start/comparison/vs-powersync) or
+  [Zero](/start/comparison/vs-zero).
+- **Arbitrary ad-hoc client queries against centralized state.** Syncular
+  syncs what server-defined table handlers and subscriptions describe; it is
+  not a general query gateway to your Postgres.
+
+### Not a fit for multiplayer games
+
+Syncular can store durable game data — inventory, progression, quests, match
+history. It is not a transport for moment-to-moment gameplay: frequent
+position updates, authoritative physics, hit detection, or frame-level
+combat state. Those workloads want a game networking model, not a durable
+commit-log sync model.
+
+## Signals you should prototype first
+
+Do a small proof-of-concept before committing if any of these are true:
+
+- one actor can access thousands of fine-grained partitions
+  (scope-cardinality pressure)
+- rows move between scopes very frequently
+- your auth model is still unclear
+- you expect long offline windows and aggressive pruning at the same time
+- you need to mix durable records, blobs, realtime, and rich collaborative
+  fields in one product
+
+[Hello World](/start/hello-world) plus the
+[testing story](/start/testing-and-confidence) is the cheapest way to run
+that experiment.
+
+## What to read next
+
+- [Hello World](/start/hello-world) — the smallest end-to-end app
+- [Pick Your Path](/start/pick-your-path) — fresh app, existing app, or evaluate first
+- [Comparison](/start/comparison) — Syncular vs. Electric SQL, Zero, Jazz, and PowerSync
+- [Testing & Confidence](/start/testing-and-confidence) — how the project earns trust
