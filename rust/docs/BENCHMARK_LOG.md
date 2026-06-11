@@ -7051,3 +7051,61 @@ Decision:
 - Retain. The explicit retry path removes the benchmark-visible wait for
   online/manual recovery without making unattended automatic retry loops more
   aggressive.
+
+## 2026-06-11 - Post-Refactor External Re-Baseline (main)
+
+Context: re-ran the external app-style benchmark against `main` after the
+improvement-plan refactors (turbo caching, server-hono route factory split,
+`@syncular/dialects` consolidation, scope fail-loud fixes). None of these are
+expected to affect runtime; this run re-establishes the external baseline from
+a plain `main` checkout instead of the conductor workspace.
+
+Environment: Apple M4 mini (10 cores, 24 GB), Docker server stack
+(postgres:16 + branch-built server), Bun 1.3.14, release `full` WASM dist.
+
+```bash
+cd /Users/bkniffler/GitHub/sync/offline-sync-bench
+SYNCULAR_BRANCH_ROOT=/Users/bkniffler/GitHub/syncular \
+SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/GitHub/syncular/packages/client/dist \
+SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1 \
+  bun run bench:run -- --stack syncular-rust --scenario <scenario>
+```
+
+Bootstrap, scoped-artifact lane (`SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=1`,
+`SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACT_ROW_LIMIT=40000`), run
+`2026-06-11T07-48-16-491Z`, vs published RESULTS.md medians:
+
+| Rows | This run | Published median | Delta |
+| --- | ---: | ---: | ---: |
+| 1k | 38.05ms | 29.64ms (latest) | noise band |
+| 10k | 39.5ms | 33.22ms (latest) | noise band |
+| 100k | 204.35ms | 226.9ms | ~10% faster |
+| 250k | 491.03ms | 597.1ms (latest) | ~18% faster |
+| 500k | 998.25ms | 1250ms (latest) | ~20% faster |
+
+Bootstrap, row-chunk lane (`SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=0`), run
+`2026-06-11T07-44-40-754Z`: 500k bootstrap `2074.9ms` with
+`server_bootstrap_snapshot_query=390ms` and
+`server_bootstrap_snapshot_binary_encode=237ms` (with
+`snapshotBinaryColumns` metadata supplied by the bench app).
+
+Other scenarios (row-chunk lane): `local-query` list/search/aggregate p95
+`0.35/0.59/0.06ms`; `online-propagation` visible p95 `12.9ms` (published
+`16.04ms`); `reconnect-storm` 100-client convergence `125.33ms`, server
+realtime notify `4.86ms`, zero HTTP recovery pulls.
+
+Harness notes:
+
+- The bench repo's raw-fetch readiness probes and JSON pull bodies predate the
+  `pull.schemaVersion` requirement; patched locally in
+  `src/adapters/syncular.ts` (4 sites) and `src/adapters/syncular-rust.ts`
+  (readiness probe). Patches are uncommitted in the bench clone.
+- The `syncular` (pre-Rust JS product client) stack is permanently
+  incompatible with current `main`: it pins removed packages
+  (`@syncular/transport-ws`, JSON sync-pack protocol). That stack needs to be
+  retired or rebuilt on the current client before it can run again.
+
+Decision:
+
+- Baseline accepted. No regression from the refactors; scoped-artifact lane is
+  10-20% faster than the published numbers at 100k+.

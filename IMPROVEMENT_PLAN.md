@@ -222,6 +222,24 @@ metadata at schema registration so the non-codegen path stops re-inferring.
 
 ---
 
+## External benchmark re-baseline (2026-06-11)
+
+Ran the offline-sync-bench harness (cloned from bkniffler/offline-sync-bench)
+against this branch — server built into Docker from this checkout, client from
+`packages/client/dist` + release WASM. Full entry in
+`rust/docs/BENCHMARK_LOG.md` ("Post-Refactor External Re-Baseline").
+Headline: **no regression from the refactors** — scoped-artifact bootstrap is
+10–20% faster than published RESULTS.md at 100k+ rows (100k: 204ms vs 227ms;
+500k: 998ms vs 1250ms); online-propagation visible p95 12.9ms (published
+16.04ms); reconnect-storm 100-client convergence 125ms with zero recovery
+pulls. Item 12 context: even with `snapshotBinaryColumns` metadata supplied,
+500k row-chunk encode is 237ms (query 390ms) — the generic no-metadata path
+would be slower; item 12 = make default path use precomputed metadata.
+Harness debt found: the bench's `syncular` stack (old JS product client) is
+permanently incompatible with current main (removed packages/protocol) and
+its raw JSON pulls needed `schemaVersion` patches (applied locally,
+uncommitted in the bench clone).
+
 ## Status log
 
 - 2026-06-11: Plan created. Baselines captured (build, test, k6, bundle).
