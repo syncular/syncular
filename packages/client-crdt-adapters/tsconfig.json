@@ -4,10 +4,7 @@
     "rootDir": "src",
     "outDir": "dist",
     "sourceMap": false,
-    "declarationMap": false,
-    "paths": {
-      "@syncular/client": ["../client/src/index.ts"]
-    }
+    "declarationMap": false
   },
   "include": ["src/**/*.ts"],
   "exclude": ["src/**/*.test.ts"]
