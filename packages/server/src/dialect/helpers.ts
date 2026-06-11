@@ -5,7 +5,19 @@
  */
 
 import type { StoredScopes } from '@syncular/core';
+import type { Kysely, Transaction } from 'kysely';
 import type { ServerSyncDialect } from './types';
+
+export function isActiveTransaction<DB>(
+  db: Kysely<DB>
+): db is Kysely<DB> & Transaction<DB> {
+  return (db as { isTransaction?: boolean }).isTransaction === true;
+}
+
+export function createSavepointName(): string {
+  const randomPart = Math.floor(Math.random() * 1_000_000_000).toString(36);
+  return `syncular_sp_${Date.now().toString(36)}_${randomPart}`;
+}
 
 export function coerceNumber(value: unknown): number | null {
   if (value === null || value === undefined) return null;
