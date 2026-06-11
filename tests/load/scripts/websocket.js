@@ -2,6 +2,9 @@
  * k6 Load Test: WebSocket Realtime Scenario
  *
  * Tests realtime wake-up delivery under concurrent websocket connections.
+ * Sync bodies are binary SSP1 packs parsed via lib/ssp1.js; row-id level
+ * convergence tracking stays exact because change row ids travel in the
+ * uncompressed pack metadata.
  * Each VU:
  * 1) performs a pull to register scopes for its realtime clientId
  * 2) opens a websocket connection
@@ -217,10 +220,12 @@ export default function () {
         const operation = taskUpsertOperation(userId);
         const pushRes = push(userId, [operation], writerClientId);
         const pushBody = parseCombinedResponse(pushRes);
+        const pushCommit = pushBody?.push?.commits?.[0];
         const pushOk =
           pushRes.status === 200 &&
           pushBody?.ok === true &&
-          pushBody?.push?.ok === true;
+          pushBody?.push?.ok === true &&
+          (pushCommit?.status === 'applied' || pushCommit?.status === 'cached');
 
         if (!pushOk) {
           wsErrors.add(true);

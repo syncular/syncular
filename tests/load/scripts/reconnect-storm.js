@@ -2,7 +2,9 @@
  * k6 Load Test: Reconnect Storm
  *
  * Repeatedly connects/disconnects realtime sessions while writes continue,
- * then validates catch-up pull semantics and cursor progression.
+ * then validates catch-up pull semantics and cursor progression. Sync
+ * bodies are binary SSP1 packs parsed via lib/ssp1.js; cursor monotonicity
+ * and row-id convergence checks read the uncompressed pack metadata.
  */
 
 import { check, sleep } from 'k6';
@@ -165,10 +167,12 @@ export default function () {
   const operation = taskUpsertOperation(userId);
   const pushRes = push(userId, [operation], writerClientId);
   const pushBody = parseCombinedResponse(pushRes);
+  const pushCommit = pushBody?.push?.commits?.[0];
   const pushOk =
     pushRes.status === 200 &&
     pushBody?.ok === true &&
-    pushBody?.push?.ok === true;
+    pushBody?.push?.ok === true &&
+    (pushCommit?.status === 'applied' || pushCommit?.status === 'cached');
   if (pushOk) {
     state.pendingWrites.set(operation.row_id, Date.now());
   }
