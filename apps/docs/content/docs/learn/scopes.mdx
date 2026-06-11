@@ -48,71 +48,10 @@ You do **not** construct the handler `ctx` yourself. Syncular builds it from:
 - the request-scoped database executor
 - a few sync-specific fields such as `clientId` and `commitId` in write paths
 
-Whatever you return from `authenticate()` becomes `ctx.auth`. Syncular also exposes `ctx.actorId` as a convenience alias for `ctx.auth.actorId`.
-
-```typescript
-import { createSyncServer } from '@syncular/server-hono';
-
-type AppAuth = {
-  actorId: string;
-  partitionId?: string;
-  workspaceId: string;
-  role: 'admin' | 'member';
-};
-
-const { syncRoutes } = createSyncServer<ServerDb, AppAuth>({
-  db,
-  dialect,
-  sync: {
-    handlers: [tasksHandler],
-    authenticate: async (request) => {
-      const token = request.headers
-        .get('authorization')
-        ?.replace('Bearer ', '');
-      if (!token) return null;
-
-      const session = await verifyToken(token);
-      if (!session) return null;
-
-      return {
-        actorId: session.userId,
-        partitionId: session.workspaceId,
-        workspaceId: session.workspaceId,
-        role: session.role,
-      };
-    },
-  },
-});
-```
-
-Once that is in place, your handlers receive the same auth payload on every call:
-
-```typescript
-const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks', AppAuth>({
-  table: 'tasks',
-  scopes: ['user:{user_id}', 'project:{project_id}'],
-
-  async resolveScopes(ctx) {
-    const projects =
-      ctx.auth.role === 'admin'
-        ? await ctx.db
-            .selectFrom('projects')
-            .select('id as project_id')
-            .where('workspace_id', '=', ctx.auth.workspaceId)
-            .execute()
-        : await ctx.db
-            .selectFrom('project_members')
-            .select('project_id')
-            .where('user_id', '=', ctx.actorId)
-            .execute();
-
-    return {
-      user_id: [ctx.actorId],
-      project_id: projects.map((project) => project.project_id),
-    };
-  },
-});
-```
+Whatever you return from `authenticate()` becomes `ctx.auth`. Syncular also
+exposes `ctx.actorId` as a convenience alias for `ctx.auth.actorId`. The full
+`authenticate()` wiring — custom auth payloads, token verification, rejecting
+requests — lives in [Server: Scopes And Auth](/server/scopes-and-auth).
 
 ### What is available on `ctx`
 
@@ -146,6 +85,23 @@ With `createServerHandler`, scope handling is fully automatic:
 4. **Server filters on pull** -- Only changes matching the actor's allowed scopes are returned.
 
 > **You don't manually tag changes.** The system handles scope extraction and tagging based on your pattern.
+
+---
+
+## The Client Side: Subscriptions Request Scopes
+
+Scopes have two halves. The server side tags and filters changes; the client
+side *requests* scope values through its [subscriptions](/learn/subscriptions):
+
+```typescript
+// Client subscription: "give me tasks for project A"
+{ id: 'project-a-tasks', table: 'tasks', scopes: { project_id: 'A' } }
+```
+
+Generated apps express the same request through subscription helpers, for
+example `taskSubscription({ actorId })`. The client never decides what it is
+allowed to see — it only asks. The server intersects the request with what
+`resolveScopes` allows (see below) before returning anything.
 
 ---
 
@@ -451,5 +407,5 @@ createServerHandler({
 ## Next Steps
 
 - [Subscriptions](/learn/subscriptions) -- How clients request data using scopes
-- [Authorization Guide](/learn/scopes) -- Implementing auth patterns
+- [Server: Scopes And Auth](/server/scopes-and-auth) -- `authenticate()` wiring and server-side authorization checks
 - [Data Modeling with Scopes](/features/data-modeling) -- Practical schema + scope design

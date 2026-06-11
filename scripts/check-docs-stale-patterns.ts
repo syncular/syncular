@@ -58,6 +58,11 @@ const stalePatterns: StalePattern[] = [
     message:
       'The `syncular` package is CLI-only (`npx syncular generate`); import from the scoped `@syncular/*` packages instead.',
   },
+  {
+    pattern: /\/start\/(?:adoption-paths|fresh-apps|basic-setup|good-fit)\b/,
+    message:
+      'Retired start/ pages: link to /start/pick-your-path (was adoption-paths, fresh-apps), /start/is-syncular-for-me (was good-fit), or /start/installation (was basic-setup).',
+  },
 ];
 
 const searchableExtensions = new Set(['.md', '.mdx', '.json', '.ts', '.tsx']);

@@ -5,15 +5,14 @@
   "pages": [
     "index",
     "---Start Here---",
-    "quick-start",
-    "fresh-apps",
-    "installation",
-    "basic-setup",
     "what-is-syncular",
+    "is-syncular-for-me",
+    "hello-world",
+    "pick-your-path",
+    "installation",
+    "quick-start",
     "---Evaluate Fit---",
-    "adoption-paths",
-    "good-fit",
-    "testing-and-confidence",
-    "comparison"
+    "comparison",
+    "testing-and-confidence"
   ]
 }

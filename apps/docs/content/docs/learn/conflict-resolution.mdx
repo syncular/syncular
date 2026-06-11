@@ -9,13 +9,16 @@ description: Handle concurrent edits with optimistic concurrency
 - How Syncular detects conflicts using optimistic concurrency control
 - How field-level merge works to auto-resolve non-overlapping edits
 - The resolution strategies: keep server, retry local, dismiss, or custom merge
-- How to surface conflict status and route users to your app's resolution flow
 </Callout>
 
 Conflicts occur when multiple clients edit the same row concurrently. The
 server detects conflicts using version numbers; the Rust client runtime stores
 conflict state locally and exposes generated retry/resolve APIs so your app can
 choose the resolution strategy.
+
+This page is the mechanism canon. For the product side — badges, banners, and
+user-facing resolution flows — see
+[Features: Conflict Resolution](/features/conflict-resolution).
 
 ## How Conflicts Happen
 
@@ -216,45 +219,6 @@ async function mergeAndResolve(syncular, conflict, userChoices) {
 }
 ```
 
-## Conflict Status UI (React)
-
-The Rust-backed React entrypoint exposes the current conflict counters for
-badges, banners, and navigation. Product-specific resolution screens should read
-their conflict rows through your app API and write retries through generated
-mutations.
-
-```tsx
-import { createSyncularReact } from '@syncular/react';
-import { Button } from '@syncular/ui/primitives';
-import type { AppDb } from './db-types';
-
-const { useConflictStats } = createSyncularReact<AppDb>();
-
-function ConflictBanner() {
-  const stats = useConflictStats();
-
-  if (!stats?.unresolved) return null;
-
-  return (
-    <div style={{ padding: 16, background: '#fef3cd', borderRadius: 8 }}>
-      <strong>{stats.unresolved} conflict(s) need resolution</strong>
-      <Button onClick={() => openConflictCenter()}>Review</Button>
-    </div>
-  );
-}
-
-export { ConflictBanner };
-```
-
-### React Hooks Reference
-
-**`useConflictStats()`** -- Returns aggregate conflict counters:
-
-```tsx
-const stats = useConflictStats();
-const unresolved = stats?.unresolved ?? 0;
-```
-
 ## Version handling
 
 Generated mutations read the local `server_version` and attach a base version
@@ -265,13 +229,15 @@ stale offline writes from another device.
 ## Best Practices
 
 1. **Design for low conflicts** -- Structure data to minimize concurrent edits. Per-user data and append-only patterns naturally reduce conflicts.
-2. **Show conflicts promptly** -- Do not let them pile up. A banner or badge draws attention.
-3. **Auto-resolve when safe** -- Use field-level merge or last-write-wins for non-critical data. Reserve manual resolution for cases where data loss matters.
-4. **Provide context** -- Show both the server version and the local intent so the user can make an informed decision.
-5. **Test offline scenarios** -- Conflicts are most common after extended offline periods. Test by disabling the network, making edits on two devices, then reconnecting.
+2. **Auto-resolve when safe** -- Use field-level merge or last-write-wins for non-critical data. Reserve manual resolution for cases where data loss matters.
+3. **Test offline scenarios** -- Conflicts are most common after extended offline periods. Test by disabling the network, making edits on two devices, then reconnecting.
+
+For UX-facing practices (surfacing conflicts promptly, giving users context to
+decide), see [Features: Conflict Resolution](/features/conflict-resolution).
 
 ## Next Steps
 
+- [Features: Conflict Resolution](/features/conflict-resolution) -- Product flow, badges, and resolution UI
 - [Commits](/learn/commits) -- How the commit log works
 - [Glossary](/learn/glossary) -- Key terms (Conflict, Outbox, Scope)
 - [Table Handlers](/server/table-handlers) -- Implement server-side conflict detection

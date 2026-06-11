@@ -22,6 +22,43 @@ mental model. Use this page as the feature checklist for product UI.
 5. Push the resolution through generated mutations so outbox and history stay
    coherent.
 
+## Conflict status UI (React)
+
+The Rust-backed React entrypoint exposes the current conflict counters for
+badges, banners, and navigation. Product-specific resolution screens should
+read their conflict rows through your app API and write retries through
+generated mutations.
+
+```tsx
+import { createSyncularReact } from '@syncular/react';
+import { Button } from '@syncular/ui/primitives';
+import type { AppDb } from './db-types';
+
+const { useConflictStats } = createSyncularReact<AppDb>();
+
+function ConflictBanner() {
+  const stats = useConflictStats();
+
+  if (!stats?.unresolved) return null;
+
+  return (
+    <div style={{ padding: 16, background: '#fef3cd', borderRadius: 8 }}>
+      <strong>{stats.unresolved} conflict(s) need resolution</strong>
+      <Button onClick={() => openConflictCenter()}>Review</Button>
+    </div>
+  );
+}
+
+export { ConflictBanner };
+```
+
+`useConflictStats()` returns aggregate conflict counters:
+
+```tsx
+const stats = useConflictStats();
+const unresolved = stats?.unresolved ?? 0;
+```
+
 ## Binding surfaces
 
 - JavaScript and React expose conflict counters for app chrome.
