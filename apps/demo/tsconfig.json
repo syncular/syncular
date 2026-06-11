@@ -8,5 +8,9 @@
     "noEmit": true,
     "types": ["bun", "node", "vite/client"]
   },
-  "include": ["src", "scripts", "vite.config.ts"]
+  "include": ["src", "scripts", "syncular.app.ts", "vite.config.ts"],
+  // The generated server module currently fails strict type-checking (codegen
+  // emits metadata fields its own interface does not declare). It is excluded
+  // here and unimported until the generator is fixed.
+  "exclude": ["src/generated/syncular.server.generated.ts"]
 }

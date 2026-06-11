@@ -1,4 +1,4 @@
-import { type BlobRef, createDatabase } from '@syncular/core';
+import { createDatabase } from '@syncular/core';
 import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import {
   createServerHandler,
@@ -10,26 +10,20 @@ import { createSyncServer } from '@syncular/server-hono';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import type { Kysely } from 'kysely';
-import { syncularGeneratedCodecs } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
+// NOTE(DX): codecs and row types are imported from the generated client
+// module instead of src/generated/syncular.server.generated.ts because the
+// generated server module currently fails strict type-checking (its
+// SyncularGeneratedColumnSchemaMetadata interface is missing the emitted
+// `defaultSql`/`hasDefault` fields, and `applyOperationBatch` loses its
+// narrowing inside the wrapper callback). The shapes are identical for this
+// schema.
+import {
+  type SyncularAppDb,
+  syncularGeneratedCodecs,
+  type TaskRow,
+} from '../generated/syncular.generated';
 
-interface DemoTaskRow {
-  id: string;
-  title: string;
-  completed: number;
-  user_id: string;
-  project_id: string | null;
-  server_version: number;
-  image: BlobRef | null;
-  title_yjs_state: string | null;
-}
-
-interface DemoServerDb extends SyncCoreDb {
-  tasks: DemoTaskRow;
-}
-
-interface DemoClientDb {
-  tasks: DemoTaskRow;
-}
+interface DemoServerDb extends SyncCoreDb, SyncularAppDb {}
 
 interface DemoSyncServer {
   origin: string;
@@ -61,7 +55,7 @@ export async function startDemoSyncServer(
       handlers: [
         createServerHandler<
           DemoServerDb,
-          DemoClientDb,
+          SyncularAppDb,
           'tasks',
           { actorId: string }
         >({
@@ -136,10 +130,8 @@ async function ensureDemoTables(db: Kysely<DemoServerDb>) {
     .addColumn('title', 'text', (col) => col.notNull())
     .addColumn('completed', 'integer', (col) => col.notNull().defaultTo(0))
     .addColumn('user_id', 'text', (col) => col.notNull())
-    .addColumn('project_id', 'text')
-    .addColumn('server_version', 'integer', (col) => col.notNull().defaultTo(0))
-    .addColumn('image', 'text')
-    .addColumn('title_yjs_state', 'text')
+    .addColumn('created_at', 'bigint', (col) => col.notNull().defaultTo(0))
+    .addColumn('server_version', 'bigint', (col) => col.notNull().defaultTo(0))
     .execute();
 }
 
@@ -176,29 +168,24 @@ async function seedDemoRows(db: Kysely<DemoServerDb>) {
 
   if ((existing?.count ?? 0) > 0) return;
 
-  await db
-    .insertInto('tasks')
-    .values([
-      {
-        id: 'server-seed-plan',
-        title: 'Prepare project brief',
-        completed: 0,
-        user_id: 'demo-user',
-        project_id: null,
-        server_version: 1,
-        image: null,
-        title_yjs_state: null,
-      },
-      {
-        id: 'server-seed-sync',
-        title: 'Review launch checklist',
-        completed: 0,
-        user_id: 'demo-user',
-        project_id: null,
-        server_version: 2,
-        image: null,
-        title_yjs_state: null,
-      },
-    ])
-    .execute();
+  const seeds: TaskRow[] = [
+    {
+      id: 'server-seed-plan',
+      title: 'Prepare project brief',
+      completed: 0,
+      user_id: 'demo-user',
+      created_at: Date.now() - 120_000,
+      server_version: 1,
+    },
+    {
+      id: 'server-seed-sync',
+      title: 'Review launch checklist',
+      completed: 0,
+      user_id: 'demo-user',
+      created_at: Date.now() - 60_000,
+      server_version: 2,
+    },
+  ];
+
+  await db.insertInto('tasks').values(seeds).execute();
 }

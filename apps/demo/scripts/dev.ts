@@ -48,7 +48,7 @@ if (previewMode) {
   const vite = await createViteServer({
     server: {
       host: '127.0.0.1',
-      port: 5173,
+      port: Number(process.env.PORT ?? 5173),
       strictPort: false,
     },
   });
