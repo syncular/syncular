@@ -7109,3 +7109,36 @@ Decision:
 
 - Baseline accepted. No regression from the refactors; scoped-artifact lane is
   10-20% faster than the published numbers at 100k+.
+
+## 2026-06-11 - Generic Snapshot Encode Inference Cost (measured, rescoped)
+
+Question: how much does per-chunk binary snapshot column inference cost on the
+no-codegen server path (`packages/server/src/pull.ts#inferBinarySnapshotColumns`)
+vs supplying `snapshotBinaryColumns` metadata?
+
+Microbenchmark (M4, Bun 1.3.14, 500k task-like rows x 10 columns, 50k-row
+chunks, `encodeBinarySnapshotTable` from @syncular/core):
+
+| Mode | Total encode |
+| --- | ---: |
+| `snapshotBinaryColumns` supplied | 223.5ms |
+| per-chunk inference (default) | 326.7ms |
+
+Inference overhead is ~100ms per 500k rows (+46% on encode, ~5% of the 2.07s
+row-chunk external bootstrap; the scoped-artifact lane is unaffected for
+cached artifacts).
+
+Why not cache inference across chunks: the core encoder is strict (integer
+writer throws on strings, non-nullable throws on null), so reusing chunk-1
+columns for later chunks can hard-fail mid-bootstrap on type drift; a
+validating pass costs the same as inference. Deriving metadata from DB
+introspection at startup is possible but adds dialect-specific surface and
+must handle projected/renamed snapshot() columns - weak ROI for ~5%.
+
+Decision:
+
+- Rejected as a code change for now. The fast path already exists and typegen
+  apps get it automatically (generated `snapshotBinaryColumns`); hand-rolled
+  handlers can supply it manually (document this as the recommended setup).
+  Revisit DB-introspection-derived metadata only if a real app shows encode
+  pain on the generic path.
