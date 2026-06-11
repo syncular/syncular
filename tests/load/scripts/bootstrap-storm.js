@@ -1,7 +1,9 @@
 /**
  * k6 Load Test: Bootstrap Storm
  *
- * Simulates many first-time clients bootstrapping concurrently.
+ * Simulates many first-time clients bootstrapping concurrently against the
+ * binary SSP1 /sync endpoint (parsed via lib/ssp1.js). Cursor and
+ * bootstrapState round-trip from the parsed pack into subsequent requests.
  */
 
 import { check, sleep } from 'k6';
@@ -52,13 +54,24 @@ export const options = {
   },
 };
 
+// Rows readable from the SSP1 pack: inline snapshot rows plus artifact
+// refs' declared rowCount. Rows inside external gzip chunk bodies are not
+// countable in k6 (no zlib); page-progress checks below rely on
+// bootstrapState draining to null rather than absolute row totals.
 function countSnapshotRows(subscription) {
   return (subscription?.snapshots || []).reduce((sum, snapshot) => {
-    const rows = Array.isArray(snapshot?.rows) ? snapshot.rows.length : 0;
+    let rows = Array.isArray(snapshot?.rows) ? snapshot.rows.length : 0;
+    for (const artifact of snapshot?.artifacts || []) {
+      if (Number.isFinite(artifact?.rowCount)) {
+        rows += artifact.rowCount;
+      }
+    }
     return sum + rows;
   }, 0);
 }
 
+// Change metadata is always uncompressed in the pack, so this is exact
+// even when row bodies were grouped into compressed payloads.
 function countCommitRows(subscription) {
   return (subscription?.commits || []).reduce((sum, commit) => {
     const changes = Array.isArray(commit?.changes) ? commit.changes.length : 0;

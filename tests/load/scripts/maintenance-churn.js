@@ -1,7 +1,9 @@
 /**
  * k6 Load Test: Maintenance Churn
  *
- * Runs read/write traffic while prune + compaction are triggered continuously.
+ * Runs read/write traffic while prune + compaction are triggered
+ * continuously. Sync bodies are binary SSP1 packs parsed via lib/ssp1.js;
+ * the maintenance endpoints themselves remain JSON.
  */
 
 import { check, sleep } from 'k6';
@@ -163,10 +165,12 @@ export function writer() {
   const operation = taskUpsertOperation(userId);
   const pushRes = push(userId, [operation], clientId);
   const pushBody = parseCombinedResponse(pushRes);
+  const pushCommit = pushBody?.push?.commits?.[0];
   const pushOk =
     pushRes.status === 200 &&
     pushBody?.ok === true &&
-    pushBody?.push?.ok === true;
+    pushBody?.push?.ok === true &&
+    (pushCommit?.status === 'applied' || pushCommit?.status === 'cached');
 
   writerPushLatency.add(pushRes.timings.duration);
 

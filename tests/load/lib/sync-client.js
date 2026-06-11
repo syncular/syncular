@@ -7,6 +7,7 @@
 
 import http from 'k6/http';
 import ws from 'k6/ws';
+import { isSyncPackBody, parseSyncPack } from './ssp1.js';
 
 const BASE_URL = __ENV.BASE_URL || 'http://localhost:3001';
 const DEFAULT_SCHEMA_VERSION = Number.parseInt(__ENV.SCHEMA_VERSION || '1', 10);
@@ -20,19 +21,46 @@ function jsonHeaders(userId) {
 
 /**
  * Parse a combined /sync response body safely.
- * @param {object} res - k6 http response
+ *
+ * The combined endpoint responds with binary SSP1 sync packs (push/pull
+ * helpers below request `responseType: 'binary'`, so `res.body` is an
+ * ArrayBuffer). Returns the decoded SyncCombinedResponse-shaped object,
+ * or null when the body is missing, not SSP1, or malformed.
+ *
+ * Note: changes the server grouped into compressed binary row groups
+ * come back with `row_json: null` plus a `rowRef` marker (k6 cannot
+ * gunzip); their row_id/op/scopes metadata is complete. See ssp1.js.
+ * @param {object} res - k6 http response (binary)
  * @returns {object|null}
  */
 export function parseCombinedResponse(res) {
-  if (!res || typeof res.body !== 'string' || res.body.length === 0) {
+  if (!res || !isSyncPackBody(res.body)) {
     return null;
   }
 
   try {
-    return JSON.parse(res.body);
-  } catch {
+    return parseSyncPack(res.body);
+  } catch (err) {
+    console.error(`Failed to parse SSP1 sync pack: ${err}`);
     return null;
   }
+}
+
+/**
+ * Summarize a k6 response for error logs. Bodies are binary SSP1 packs,
+ * so printing `res.body` directly is useless; report sizes instead.
+ * @param {object} res - k6 http response
+ * @returns {string}
+ */
+export function describeResponse(res) {
+  if (!res) return 'no response';
+  const byteLength =
+    res.body && typeof res.body.byteLength === 'number'
+      ? res.body.byteLength
+      : typeof res.body === 'string'
+        ? res.body.length
+        : 0;
+  return `status=${res.status}, bodyBytes=${byteLength}`;
 }
 
 function pushRowId(set, value) {
@@ -44,6 +72,11 @@ function pushRowId(set, value) {
 /**
  * Collect row ids that were delivered in a pull subscription payload.
  * Includes both incremental commits and bootstrap snapshots.
+ *
+ * Works on parsed SSP1 subscriptions: change row ids always travel in
+ * the uncompressed change metadata, so this stays exact even when row
+ * bodies were grouped into compressed payloads. Rows that only exist in
+ * external snapshot chunks (refs-only snapshots) are NOT visible here.
  * @param {object|null|undefined} subscription
  * @returns {Set<string>}
  */
@@ -81,7 +114,7 @@ export function collectPulledRowIds(subscription) {
  * @param {object} [options] - Optional push options
  * @param {number} [options.schemaVersion] - Schema version (default: 1)
  * @param {string} [options.clientCommitId] - Custom commit ID
- * @returns {object} k6 http response
+ * @returns {object} k6 http response (binary SSP1 body; use parseCombinedResponse)
  */
 export function push(userId, operations, clientId, options) {
   const opts = options || {};
@@ -107,6 +140,7 @@ export function push(userId, operations, clientId, options) {
     }),
     {
       headers: jsonHeaders(userId),
+      responseType: 'binary',
     }
   );
 }
@@ -121,7 +155,7 @@ export function push(userId, operations, clientId, options) {
  * @param {number} [options.maxSnapshotPages] - Max snapshot pages per response (default: 4)
  * @param {boolean} [options.dedupeRows] - Enable row dedupe
  * @param {string} [clientId] - Optional client ID (auto-generated if not provided)
- * @returns {object} k6 http response
+ * @returns {object} k6 http response (binary SSP1 body; use parseCombinedResponse)
  */
 export function pull(userId, subscriptions, options, clientId) {
   const opts = options || {};
@@ -144,6 +178,7 @@ export function pull(userId, subscriptions, options, clientId) {
     }),
     {
       headers: jsonHeaders(userId),
+      responseType: 'binary',
     }
   );
 }
@@ -201,18 +236,28 @@ export function connectWebSocket(userId, clientId, handlers, duration) {
 }
 
 /**
- * Fetch a snapshot chunk by ID
+ * Fetch a snapshot chunk by ID.
+ * The server authorizes chunk downloads against the subscription scopes,
+ * passed as a JSON `scopes` query parameter (the parsed SSP1 subscription
+ * exposes them as `subscription.scopes`).
  * @param {string} userId - User ID for authentication
  * @param {string} chunkId - Chunk ID to fetch
- * @returns {object} k6 http response
+ * @param {object} [scopes] - Scope values the chunk was produced for
+ * @returns {object} k6 http response (binary gzip body)
  */
-export function fetchSnapshotChunk(userId, chunkId) {
-  return http.get(`${BASE_URL}/api/sync/snapshot-chunks/${chunkId}`, {
-    headers: {
-      'X-User-Id': userId,
-    },
-    responseType: 'binary',
-  });
+export function fetchSnapshotChunk(userId, chunkId, scopes) {
+  const scopesQuery = scopes
+    ? `?scopes=${encodeURIComponent(JSON.stringify(scopes))}`
+    : '';
+  return http.get(
+    `${BASE_URL}/api/sync/snapshot-chunks/${chunkId}${scopesQuery}`,
+    {
+      headers: {
+        'X-User-Id': userId,
+      },
+      responseType: 'binary',
+    }
+  );
 }
 
 /**
