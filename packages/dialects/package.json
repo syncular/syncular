@@ -1,0 +1,176 @@
+{
+  "name": "@syncular/dialects",
+  "version": "0.0.0",
+  "description": "Kysely runtime dialects for Syncular (better-sqlite3, bun:sqlite, D1, LibSQL, Neon, PGlite, sqlite3)",
+  "license": "Apache-2.0",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/dialects"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "kysely",
+    "sqlite",
+    "postgres",
+    "better-sqlite3",
+    "bun",
+    "d1",
+    "libsql",
+    "turso",
+    "neon",
+    "pglite"
+  ],
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "exports": {
+    "./better-sqlite3": {
+      "bun": "./src/better-sqlite3.ts",
+      "import": {
+        "types": "./dist/better-sqlite3.d.ts",
+        "default": "./dist/better-sqlite3.js"
+      }
+    },
+    "./bun-sqlite": {
+      "bun": "./src/bun-sqlite.ts",
+      "import": {
+        "types": "./dist/bun-sqlite.d.ts",
+        "default": "./dist/bun-sqlite.js"
+      }
+    },
+    "./d1": {
+      "bun": "./src/d1.ts",
+      "import": {
+        "types": "./dist/d1.d.ts",
+        "default": "./dist/d1.js"
+      }
+    },
+    "./libsql": {
+      "bun": "./src/libsql.ts",
+      "import": {
+        "types": "./dist/libsql.d.ts",
+        "default": "./dist/libsql.js"
+      }
+    },
+    "./neon": {
+      "bun": "./src/neon.ts",
+      "import": {
+        "types": "./dist/neon.d.ts",
+        "default": "./dist/neon.js"
+      }
+    },
+    "./pglite": {
+      "bun": "./src/pglite.ts",
+      "browser": "./src/pglite.ts",
+      "import": {
+        "types": "./dist/pglite.d.ts",
+        "default": "./dist/pglite.js"
+      }
+    },
+    "./sqlite3": {
+      "bun": "./src/sqlite3.ts",
+      "import": {
+        "types": "./dist/sqlite3.d.ts",
+        "default": "./dist/sqlite3.js"
+      }
+    }
+  },
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "build": "tsgo",
+    "release": "syncular-publish"
+  },
+  "peerDependencies": {
+    "@cloudflare/workers-types": "*",
+    "@electric-sql/pglite": "^0.3.15",
+    "@neondatabase/serverless": "^1.0.2",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.8.0",
+    "kysely": "^0.28.0",
+    "kysely-bun-sqlite": "^0.4.0",
+    "kysely-d1": "^0.4.0",
+    "kysely-generic-sqlite": "^1.2.1",
+    "kysely-neon": "^2.0.2",
+    "kysely-pglite-dialect": "^1.2.0",
+    "libsql": "^0.5.29",
+    "sqlite3": "^6.0.1"
+  },
+  "peerDependenciesMeta": {
+    "@cloudflare/workers-types": {
+      "optional": true
+    },
+    "@electric-sql/pglite": {
+      "optional": true
+    },
+    "@neondatabase/serverless": {
+      "optional": true
+    },
+    "@types/better-sqlite3": {
+      "optional": true
+    },
+    "better-sqlite3": {
+      "optional": true
+    },
+    "kysely-bun-sqlite": {
+      "optional": true
+    },
+    "kysely-d1": {
+      "optional": true
+    },
+    "kysely-generic-sqlite": {
+      "optional": true
+    },
+    "kysely-neon": {
+      "optional": true
+    },
+    "kysely-pglite-dialect": {
+      "optional": true
+    },
+    "libsql": {
+      "optional": true
+    },
+    "sqlite3": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "*",
+    "@electric-sql/pglite": "^0.3.15",
+    "@neondatabase/serverless": "^1.0.2",
+    "@syncular/config": "workspace:*",
+    "@syncular/core": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.8.0",
+    "kysely": "*",
+    "kysely-bun-sqlite": "^0.4.0",
+    "kysely-d1": "^0.4.0",
+    "kysely-generic-sqlite": "^1.2.1",
+    "kysely-neon": "^2.0.2",
+    "kysely-pglite-dialect": "^1.2.0",
+    "libsql": "^0.5.29",
+    "sqlite3": "^6.0.1"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test.tsx",
+    "!src/**/__tests__/**",
+    "!dist/**/*.test.*",
+    "!dist/**/__tests__/**",
+    "!test/**",
+    "!tests/**"
+  ]
+}

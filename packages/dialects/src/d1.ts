@@ -1,5 +1,5 @@
 /**
- * @syncular/dialect-d1 - Cloudflare D1 dialect for sync
+ * @syncular/dialects/d1 - Cloudflare D1 dialect for sync
  *
  * Provides a Kysely dialect for Cloudflare D1.
  * SQLite-compatible — use with @syncular/server-dialect-sqlite.

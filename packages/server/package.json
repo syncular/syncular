@@ -77,6 +77,7 @@
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
+    "@syncular/dialects": "workspace:*",
     "kysely": "*",
     "zod": "*"
   },

@@ -46,6 +46,12 @@ const stalePatterns: StalePattern[] = [
       /\bsyncular\/(?:dialect-wa-sqlite|transport-ws|server-dialect-neon)\b/,
     message: 'Deleted umbrella package aliases must not be suggested.',
   },
+  {
+    pattern:
+      /\bsyncular\/dialect-(?:better-sqlite3|bun-sqlite|d1|libsql|neon|pglite|sqlite3)\b/,
+    message:
+      'The per-driver dialect packages were merged into `@syncular/dialects` subpaths (e.g. `@syncular/dialects/pglite`).',
+  },
 ];
 
 const searchableExtensions = new Set(['.md', '.mdx', '.json', '.ts', '.tsx']);

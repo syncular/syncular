@@ -1,5 +1,5 @@
 /**
- * @syncular/dialect-better-sqlite3 - better-sqlite3 dialect for sync
+ * @syncular/dialects/better-sqlite3 - better-sqlite3 dialect for sync
  *
  * Provides a Kysely dialect for better-sqlite3 (Node.js).
  * SQLite-compatible — use with @syncular/server-dialect-sqlite.

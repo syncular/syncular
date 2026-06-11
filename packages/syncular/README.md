@@ -13,7 +13,7 @@ For plugins and runtime-specific helpers, use explicit umbrella subpaths. Exampl
 - `syncular`
 - `syncular/client`
 - `syncular/react`
-- `syncular/dialect-neon`
+- `syncular/dialects/neon`
 - `syncular/server-dialect-postgres`
 
 ## Install

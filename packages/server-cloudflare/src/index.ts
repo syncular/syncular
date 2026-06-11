@@ -12,8 +12,8 @@
  * - Durable Object cache backend: `@syncular/server-cloudflare/scope-cache`
  *
  * Dialect is user-provided:
- * - D1 + SQLite: `@syncular/dialect-d1` + `@syncular/server-dialect-sqlite`
- * - Neon + Postgres: `@syncular/dialect-neon` + `createNeonServerDialect()` from `@syncular/server-dialect-postgres`
+ * - D1 + SQLite: `@syncular/dialects/d1` + `@syncular/server-dialect-sqlite`
+ * - Neon + Postgres: `@syncular/dialects/neon` + `createNeonServerDialect()` from `@syncular/server-dialect-postgres`
  */
 
 export * from './durable-object';

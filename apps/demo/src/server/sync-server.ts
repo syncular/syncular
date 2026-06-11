@@ -1,5 +1,5 @@
 import { type BlobRef, createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import {
   createServerHandler,
   ensureSyncSchema,

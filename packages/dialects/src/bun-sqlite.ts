@@ -1,5 +1,5 @@
 /**
- * @syncular/dialect-bun-sqlite - Bun SQLite dialect for sync
+ * @syncular/dialects/bun-sqlite - Bun SQLite dialect for sync
  *
  * Provides a Kysely dialect for bun:sqlite.
  */

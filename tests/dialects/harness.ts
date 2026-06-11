@@ -1,9 +1,9 @@
 import { createDatabase } from '@syncular/core';
-import { createBetterSqlite3Dialect } from '@syncular/dialect-better-sqlite3';
-import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
-import { createLibsqlDialect } from '@syncular/dialect-libsql';
-import { createPgliteDialect } from '@syncular/dialect-pglite';
-import { createSqlite3Dialect } from '@syncular/dialect-sqlite3';
+import { createBetterSqlite3Dialect } from '@syncular/dialects/better-sqlite3';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
+import { createLibsqlDialect } from '@syncular/dialects/libsql';
+import { createPgliteDialect } from '@syncular/dialects/pglite';
+import { createSqlite3Dialect } from '@syncular/dialects/sqlite3';
 import { Kysely } from 'kysely';
 import { createConformanceColumnCodecsPlugin } from './column-codecs';
 import type { DialectConformanceDb } from './conformance-db';

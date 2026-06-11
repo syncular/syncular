@@ -4,7 +4,7 @@ import {
   decodeBinarySyncPack,
   isBinarySyncPackContentType,
 } from '@syncular/core';
-import { createPgliteDialect } from '@syncular/dialect-pglite';
+import { createPgliteDialect } from '@syncular/dialects/pglite';
 import {
   createScopedSnapshotArtifactScopeCacheKey,
   createServerHandler,

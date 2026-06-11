@@ -4,9 +4,9 @@ import {
   type BlobStorageAdapter,
   createDatabase,
 } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import type { Kysely } from 'kysely';
 import { syncularGeneratedApp } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
-import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import {
   type BlobTokenSigner,
   createBlobManager,

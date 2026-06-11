@@ -1,5 +1,5 @@
 /**
- * @syncular/dialect-sqlite3 - node-sqlite3 dialect for sync
+ * @syncular/dialects/sqlite3 - node-sqlite3 dialect for sync
  *
  * Provides a Kysely dialect for the callback-based `sqlite3` npm package.
  * SQLite-compatible — use with @syncular/server-dialect-sqlite.

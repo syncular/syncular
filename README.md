@@ -65,7 +65,7 @@ npm install @syncular/server @syncular/server-hono @syncular/server-dialect-post
 npm install @syncular/client @syncular/react kysely
 ```
 
-If your server runtime is Neon-backed, pair `@syncular/dialect-neon` with
+If your server runtime is Neon-backed, pair `@syncular/dialects/neon` with
 `createNeonServerDialect()` from `@syncular/server-dialect-postgres`.
 
 If startup-critical data should bootstrap before large background tables, assign

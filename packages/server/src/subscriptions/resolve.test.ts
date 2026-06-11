@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createDatabase } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import type { Kysely } from 'kysely';
-import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import {
   createServerHandler,
   createServerHandlerCollection,

@@ -22,8 +22,7 @@
   "devDependencies": {
     "@syncular/config": "workspace:*",
     "@syncular/core": "workspace:*",
-    "@syncular/dialect-bun-sqlite": "workspace:*",
-    "@syncular/dialect-pglite": "workspace:*",
+    "@syncular/dialects": "workspace:*",
     "@syncular/server": "workspace:*",
     "@syncular/server-hono": "workspace:*",
     "@syncular/server-dialect-postgres": "workspace:*",

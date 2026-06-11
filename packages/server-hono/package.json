@@ -72,7 +72,7 @@
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
-    "@syncular/dialect-pglite": "workspace:*",
+    "@syncular/dialects": "workspace:*",
     "@syncular/server-dialect-postgres": "workspace:*",
     "kysely": "*",
     "zod": "*"

@@ -33,8 +33,7 @@ jobs:
               - 'packages/core/**'
               - 'packages/testkit/**'
               - 'packages/dialect-wa-sqlite/**'
-              - 'packages/dialect-better-sqlite3/**'
-              - 'packages/dialect-d1/**'
+              - 'packages/dialects/**'
               - 'packages/server/**'
               - 'packages/server-hono/**'
               - 'packages/server-cloudflare/**'
@@ -43,7 +42,7 @@ jobs:
             runtime_relay:
               - 'packages/core/**'
               - 'packages/testkit/**'
-              - 'packages/dialect-bun-sqlite/**'
+              - 'packages/dialects/**'
               - 'packages/relay/**'
               - 'packages/server/**'
               - 'packages/server-hono/**'
@@ -56,7 +55,7 @@ jobs:
               - 'packages/server-hono/**'
               - 'packages/transport-http/**'
               - 'packages/dialect-electron-sqlite/**'
-              - 'packages/dialect-sqlite3/**'
+              - 'packages/dialects/**'
             expo:
               - 'tests/expo-app/**'
               - 'packages/dialect-expo-sqlite/**'
@@ -64,7 +63,7 @@ jobs:
             demo:
               - 'packages/core/**'
               - 'packages/testkit/**'
-              - 'packages/dialect-pglite/**'
+              - 'packages/dialects/**'
               - 'packages/dialect-wa-sqlite/**'
               - 'packages/server/**'
               - 'packages/server-hono/**'
@@ -96,8 +95,7 @@ jobs:
             sync_matrix:
               - 'packages/core/**'
               - 'packages/testkit/**'
-              - 'packages/dialect-bun-sqlite/**'
-              - 'packages/dialect-pglite/**'
+              - 'packages/dialects/**'
               - 'packages/server/**'
               - 'packages/server-hono/**'
               - 'packages/server-dialect-postgres/**'

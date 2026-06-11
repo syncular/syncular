@@ -64,6 +64,7 @@
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
+    "@syncular/dialects": "workspace:*",
     "hono": "^4.12.15"
   },
   "files": [

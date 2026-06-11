@@ -10,7 +10,7 @@
   "devDependencies": {
     "@syncular/core": "workspace:*",
     "@syncular/migrations": "workspace:*",
-    "@syncular/dialect-bun-sqlite": "workspace:*",
+    "@syncular/dialects": "workspace:*",
     "@syncular/server": "workspace:*",
     "@syncular/server-dialect-sqlite": "workspace:*",
     "kysely": "*",

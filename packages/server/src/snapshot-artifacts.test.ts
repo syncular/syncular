@@ -5,8 +5,8 @@ import {
   gunzipBytes,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
 } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import type { Kysely } from 'kysely';
-import { createBunSqliteDialect } from '../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../server-dialect-sqlite/src';
 import { createServerHandler, createServerHandlerCollection } from './handlers';
 import { ensureSyncSchema } from './migrate';

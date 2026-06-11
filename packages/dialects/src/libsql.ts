@@ -1,5 +1,5 @@
 /**
- * @syncular/dialect-libsql - LibSQL/Turso dialect for sync
+ * @syncular/dialects/libsql - LibSQL/Turso dialect for sync
  *
  * Provides a Kysely dialect for LibSQL/Turso.
  * SQLite-compatible — use with @syncular/server-dialect-sqlite.

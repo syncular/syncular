@@ -12,7 +12,7 @@
   "dependencies": {
     "@syncular/client": "workspace:*",
     "@syncular/core": "workspace:*",
-    "@syncular/dialect-bun-sqlite": "workspace:*",
+    "@syncular/dialects": "workspace:*",
     "@syncular/server": "workspace:*",
     "@syncular/server-dialect-sqlite": "workspace:*",
     "@syncular/server-hono": "workspace:*",
