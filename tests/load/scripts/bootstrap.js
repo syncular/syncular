@@ -1,10 +1,12 @@
 /**
  * k6 Load Test: Bootstrap Scenario
  *
- * Measures first-sync bootstrap behavior using the current combined /sync API.
- * For each VU we:
+ * Measures first-sync bootstrap behavior using the current combined /sync API
+ * (binary SSP1 responses, parsed via lib/ssp1.js). For each VU we:
  * 1) discover expected rows for its user (if server exposes /api/stats/user/:id)
  * 2) iterate pull requests while preserving cursor/bootstrapState
+ *    (bootstrapState is readable JSON inside the pack and round-trips
+ *    verbatim into the next request body)
  * 3) download referenced snapshot chunks to include network load
  */
 
@@ -88,6 +90,9 @@ function readExpectedRows(userId) {
   }
 }
 
+// Counts change records from the SSP1 change metadata. Exact even when
+// row bodies were grouped into compressed payloads (metadata is always
+// uncompressed in the pack).
 function countCommitRows(commits) {
   let rows = 0;
   for (const commit of commits || []) {
@@ -97,8 +102,32 @@ function countCommitRows(commits) {
   return rows;
 }
 
-function downloadSnapshotChunks(userId, snapshots) {
+// Counts snapshot rows readable from the SSP1 pack: inline JSON rows plus
+// artifact refs' declared rowCount. Rows that live in external gzip chunk
+// bodies are NOT countable here (k6 cannot gunzip); those snapshots are
+// still exercised by downloadSnapshotChunks (bytes), and overall row
+// completeness is anchored on expectedRows from /api/stats/user/:id.
+function countSnapshotRows(snapshots) {
+  let rows = 0;
+  for (const snapshot of snapshots || []) {
+    if (Array.isArray(snapshot?.rows)) {
+      rows += snapshot.rows.length;
+    }
+    for (const artifact of snapshot?.artifacts || []) {
+      if (Number.isFinite(artifact?.rowCount)) {
+        rows += artifact.rowCount;
+      }
+    }
+  }
+  return rows;
+}
+
+// Downloads referenced snapshot chunk bodies (gzip; byte-level signal
+// only since k6 cannot gunzip). Scope values come from the parsed
+// subscription and authorize the download.
+function downloadSnapshotChunks(userId, scopes, snapshots) {
   let bytes = 0;
+  let failed = 0;
   for (const snapshot of snapshots || []) {
     const chunks = Array.isArray(snapshot?.chunks) ? snapshot.chunks : [];
     for (const chunk of chunks) {
@@ -106,8 +135,11 @@ function downloadSnapshotChunks(userId, snapshots) {
       if (!chunkId) continue;
 
       chunksReceived.add(1);
-      const chunkRes = fetchSnapshotChunk(userId, chunkId);
-      if (chunkRes.status !== 200) continue;
+      const chunkRes = fetchSnapshotChunk(userId, chunkId, scopes);
+      if (chunkRes.status !== 200) {
+        failed += 1;
+        continue;
+      }
 
       const declaredSize = Number.parseInt(chunk?.byteLength, 10);
       if (Number.isFinite(declaredSize) && declaredSize > 0) {
@@ -117,7 +149,7 @@ function downloadSnapshotChunks(userId, snapshots) {
       }
     }
   }
-  return bytes;
+  return { bytes, failed };
 }
 
 function performBootstrap(userId, profileName, pullOptions) {
@@ -171,13 +203,28 @@ function performBootstrap(userId, profileName, pullOptions) {
     totalRows += commitRows;
     rowsReceived.add(commitRows);
 
-    const snapshotRows = (sub.snapshots || []).reduce((sum, snapshot) => {
-      return sum + (Array.isArray(snapshot?.rows) ? snapshot.rows.length : 0);
-    }, 0);
+    const snapshotRows = countSnapshotRows(sub.snapshots);
     totalRows += snapshotRows;
     rowsReceived.add(snapshotRows);
 
-    totalChunkBytes += downloadSnapshotChunks(userId, sub.snapshots);
+    const chunkResult = downloadSnapshotChunks(
+      userId,
+      sub.scopes,
+      sub.snapshots
+    );
+    totalChunkBytes += chunkResult.bytes;
+    if (chunkResult.failed > 0) {
+      // Chunk bodies are part of the bootstrap payload; failed downloads
+      // mean the bootstrap did not complete.
+      bootstrapErrors.add(true);
+      return {
+        success: false,
+        duration: Date.now() - startTime,
+        rows: totalRows,
+        expectedRows,
+        chunkBytes: totalChunkBytes,
+      };
+    }
 
     cursor = Number.isFinite(sub.nextCursor) ? sub.nextCursor : cursor;
     bootstrapState = sub.bootstrapState ?? null;

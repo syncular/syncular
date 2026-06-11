@@ -1,10 +1,9 @@
 /**
  * k6 Baseline: push + bootstrap-pull latency against the binary sync protocol.
  *
- * The legacy scenario scripts in this directory still parse JSON response
- * bodies, but the combined /sync endpoint is binary-only (SSP1) now. Until
- * those scripts grow an SSP1 reader, this script provides an honest baseline:
- * it validates the SSP1 envelope and measures latency/throughput only.
+ * Envelope-level only by design: validates that responses are SSP1 sync
+ * packs and measures latency/throughput. The scenario scripts use the full
+ * reader in ../lib/ssp1.js for body-level checks.
  *
  * Usage:
  *   bun run test:load:server   # in another terminal
@@ -13,6 +12,7 @@
 
 import { check, sleep } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
+import { isSyncPackBody } from '../lib/ssp1.js';
 import { healthCheck, pull, push } from '../lib/sync-client.js';
 import {
   taskUpsertOperation,
@@ -45,11 +45,8 @@ export const options = {
 };
 
 function isSyncPackResponse(res) {
-  return (
-    res.status === 200 &&
-    typeof res.body === 'string' &&
-    res.body.startsWith('SSP1')
-  );
+  // push/pull request binary bodies, so res.body is an ArrayBuffer.
+  return res.status === 200 && isSyncPackBody(res.body);
 }
 
 export default function () {

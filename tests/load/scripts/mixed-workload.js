@@ -5,6 +5,10 @@
  * - readers: frequent pull-only sync
  * - writers: push+pull cycles
  * - websocket listeners: realtime wake-ups triggered by separate writer clientIds
+ *
+ * Sync bodies are binary SSP1 packs parsed via lib/ssp1.js; writer row-id
+ * convergence tracking stays exact because change row ids travel in the
+ * uncompressed pack metadata.
  */
 
 import { check, sleep } from 'k6';
@@ -258,10 +262,12 @@ export function writer() {
   const operation = taskUpsertOperation(userId);
   const pushRes = push(userId, [operation], clientId);
   const pushBody = parseCombinedResponse(pushRes);
+  const pushCommit = pushBody?.push?.commits?.[0];
   const pushOk =
     pushRes.status === 200 &&
     pushBody?.ok === true &&
-    pushBody?.push?.ok === true;
+    pushBody?.push?.ok === true &&
+    (pushCommit?.status === 'applied' || pushCommit?.status === 'cached');
 
   writerPushLatency.add(pushRes.timings.duration);
   writerErrors.add(!pushOk);

@@ -14,6 +14,7 @@ import { check, sleep } from 'k6';
 import { Rate, Trend } from 'k6/metrics';
 import {
   collectPulledRowIds,
+  describeResponse,
   healthCheck,
   parseCombinedResponse,
   pull,
@@ -106,26 +107,30 @@ export default function () {
   };
   pullStateByVu.set(__VU, state);
 
-  // Push a task
+  // Push a task. The SSP1 pack carries per-commit statuses; require the
+  // single pushed commit to be accepted (applied, or cached on a retry).
   const operation = taskUpsertOperation(userId);
   const pushRes = push(userId, [operation], clientId);
   const pushBody = parseCombinedResponse(pushRes);
+  const pushCommit = pushBody?.push?.commits?.[0];
   const pushSucceeded =
     pushRes.status === 200 &&
     pushBody?.ok === true &&
-    pushBody?.push?.ok === true;
+    pushBody?.push?.ok === true &&
+    (pushCommit?.status === 'applied' || pushCommit?.status === 'cached');
 
   pushLatency.add(pushRes.timings.duration);
   pushErrors.add(!pushSucceeded);
 
   const pushOk = check(pushRes, {
     'push status 200': () => pushSucceeded,
-    'push response has push payload': () => pushBody?.push?.status != null,
+    'push commit accepted': () =>
+      pushCommit?.status === 'applied' || pushCommit?.status === 'cached',
   });
 
   if (!pushOk) {
     console.error(
-      `Push failed: status=${pushRes.status}, body=${pushRes.body}`
+      `Push failed: ${describeResponse(pushRes)}, commitStatus=${pushCommit?.status}`
     );
   } else {
     state.pendingWrites.set(operation.row_id, Date.now());
@@ -186,9 +191,7 @@ export default function () {
   });
 
   if (!pullProtocolOk) {
-    console.error(
-      `Pull failed: status=${pullRes.status}, body=${pullRes.body}`
-    );
+    console.error(`Pull failed: ${describeResponse(pullRes)}`);
   } else if (!convergenceOk) {
     console.error(
       `Sync convergence lagged: pending=${state.pendingWrites.size}, timedOut=${timedOutWrites}`
