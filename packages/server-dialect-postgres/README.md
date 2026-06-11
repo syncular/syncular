@@ -37,16 +37,6 @@ const dialect = createNeonServerDialect();
 await ensureSyncSchema(db, dialect);
 ```
 
-### Neon-backed server with umbrella imports
-
-```ts
-import { ensureSyncSchema } from 'syncular/server';
-import { createNeonServerDialect } from 'syncular/server-dialect-postgres';
-
-const dialect = createNeonServerDialect();
-await ensureSyncSchema(db, dialect);
-```
-
 ## Documentation
 
 - Dialects: https://syncular.dev/docs/server/dialects
