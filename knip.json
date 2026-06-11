@@ -230,8 +230,10 @@
       ]
     },
     "apps/demo": {
+      "includeEntryExports": false,
       "entry": [
-        "src/server/sync-server.ts"
+        "src/server/sync-server.ts",
+        "syncular.app.ts"
       ]
     },
     "apps/apex": {
