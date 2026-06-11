@@ -1,5 +1,5 @@
 /**
- * @syncular/dialect-pglite - PGlite dialect for sync
+ * @syncular/dialects/pglite - PGlite dialect for sync
  *
  * Provides a Kysely dialect for PGlite (in-memory/browser Postgres).
  * Uses kysely-pglite-dialect under the hood.

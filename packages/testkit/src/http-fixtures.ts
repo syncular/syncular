@@ -1,6 +1,6 @@
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
-import { createPgliteDialect } from '@syncular/dialect-pglite';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
+import { createPgliteDialect } from '@syncular/dialects/pglite';
 import {
   ensureSyncSchema,
   type ServerSyncDialect,

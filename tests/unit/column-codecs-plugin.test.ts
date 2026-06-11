@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { codecs, createColumnCodecsPlugin } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialect-bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import { Kysely } from 'kysely';
 
 interface TasksRow {

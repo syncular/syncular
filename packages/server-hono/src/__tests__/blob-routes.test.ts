@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { BlobRef, BlobStorageAdapter } from '@syncular/core';
 import { createDatabase } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import {
   type BlobTokenSigner,
   createBlobManager,
@@ -14,7 +15,6 @@ import {
 } from '@syncular/server';
 import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
-import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import { createBlobRoutes } from '../blobs';
 
 interface UploadInitResponse {

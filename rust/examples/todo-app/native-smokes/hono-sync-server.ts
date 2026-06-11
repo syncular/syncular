@@ -1,5 +1,6 @@
 import { writeFile } from 'node:fs/promises';
 import { createDatabase } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import {
@@ -8,7 +9,6 @@ import {
   type HonoSyncClientDb,
   type HonoSyncServerDb,
 } from '../../../../packages/client/src/__tests__/fixtures/hono-sync-harness';
-import { createBunSqliteDialect } from '../../../../packages/dialect-bun-sqlite/src';
 import {
   createBlobManager,
   createDatabaseBlobStorageAdapter,

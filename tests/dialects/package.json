@@ -34,11 +34,7 @@
   "devDependencies": {
     "@syncular/config": "workspace:*",
     "@syncular/core": "workspace:*",
-    "@syncular/dialect-better-sqlite3": "workspace:*",
-    "@syncular/dialect-bun-sqlite": "workspace:*",
-    "@syncular/dialect-libsql": "workspace:*",
-    "@syncular/dialect-pglite": "workspace:*",
-    "@syncular/dialect-sqlite3": "workspace:*",
+    "@syncular/dialects": "workspace:*",
     "kysely": "*"
   }
 }

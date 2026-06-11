@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createDatabase } from '@syncular/core';
 import { Kysely, type Kysely as KyselyType } from 'kysely';
-import { createSqlite3Dialect } from './index';
+import { createSqlite3Dialect } from './sqlite3';
 
 interface TestDb {
   tasks: {

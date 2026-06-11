@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createDatabase } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import {
   createServerHandler,
   ensureSyncSchema,
@@ -8,7 +9,6 @@ import {
 import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
-import { createBunSqliteDialect } from '../../../dialect-bun-sqlite/src';
 import { createSqliteServerDialect } from '../../../server-dialect-sqlite/src';
 import { type CreateSyncRoutesOptions, createSyncRoutes } from '../routes';
 

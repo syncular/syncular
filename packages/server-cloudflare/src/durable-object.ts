@@ -8,7 +8,7 @@
  * @example
  * ```typescript
  * import { SyncDurableObject, createSyncWorkerWithDO } from '@syncular/server-cloudflare/durable-object';
- * import { createD1Dialect } from '@syncular/dialect-d1';
+ * import { createD1Dialect } from '@syncular/dialects/d1';
  * import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
  * import { ensureSyncSchema } from '@syncular/server';
  * import { createSyncServer } from '@syncular/server-hono';
