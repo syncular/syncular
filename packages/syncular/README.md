@@ -1,36 +1,23 @@
 # syncular
 
-Umbrella package that exposes the `@syncular/*` packages under a single import namespace.
+CLI for Syncular app code generation. The `syncular` package ships only the
+`syncular` command; all runtime libraries live in the scoped `@syncular/*`
+packages (for example `@syncular/client`, `@syncular/server`,
+`@syncular/react`).
 
-The root `syncular` import re-exports `@syncular/core`. Runtime-specific
-helpers use explicit subpaths.
+## Usage
 
-If you prefer, you can write imports like `syncular/client` instead of
-`@syncular/client`. Both are supported.
-
-For plugins and runtime-specific helpers, use explicit umbrella subpaths. Examples:
-
-- `syncular`
-- `syncular/client`
-- `syncular/react`
-- `syncular/dialects/neon`
-- `syncular/server-dialect-postgres`
-
-## Install
-
-```bash
-npm install syncular
-```
-
-## Generate
-
-Run the app-facing generator from the umbrella package:
+Run the app-facing generator with your package runner — no install required:
 
 ```bash
 npx syncular codegen install
 npx syncular generate --manifest-dir .
 npx syncular generate --manifest-dir . --check
 ```
+
+`syncular generate` refreshes `generated/syncular.codegen.json` from
+`syncular.app.ts` (via `syncular-typegen`) and then runs the Rust
+`syncular-codegen` binary to generate language clients.
 
 When `syncular.app.ts` is absent and `generated/syncular.codegen.json` does not
 exist, the command initializes a starter config from migrations before

@@ -52,6 +52,12 @@ const stalePatterns: StalePattern[] = [
     message:
       'The per-driver dialect packages were merged into `@syncular/dialects` subpaths (e.g. `@syncular/dialects/pglite`).',
   },
+  {
+    pattern:
+      /(?:\bfrom\s+|\bimport\s+|\brequire\(\s*)['"]syncular(?:\/[^'"]*)?['"]/,
+    message:
+      'The `syncular` package is CLI-only (`npx syncular generate`); import from the scoped `@syncular/*` packages instead.',
+  },
 ];
 
 const searchableExtensions = new Set(['.md', '.mdx', '.json', '.ts', '.tsx']);

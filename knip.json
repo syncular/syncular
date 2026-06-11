@@ -197,7 +197,8 @@
       ]
     },
     "packages/syncular": {
-      "includeEntryExports": false
+      "includeEntryExports": false,
+      "ignoreDependencies": ["@syncular/typegen"]
     },
     "packages/observability-sentry": {
       "includeEntryExports": false

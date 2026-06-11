@@ -1,5 +1,5 @@
 {
-  "extends": "../../config/tsconfig.react.json",
+  "extends": "../../config/tsconfig.bun.json",
   "include": [
     "src/**/*"
   ],
@@ -10,7 +10,6 @@
   },
   "exclude": [
     "src/**/*.test.ts",
-    "src/**/*.test.tsx",
     "src/**/__tests__/**"
   ]
 }
