@@ -18,6 +18,27 @@ const config = {
         destination: '/:path*',
         permanent: true,
       },
+      // Retired start/ slugs (2026-06 docs restructure, Phase 1).
+      {
+        source: '/start/adoption-paths',
+        destination: '/start/pick-your-path',
+        permanent: true,
+      },
+      {
+        source: '/start/fresh-apps',
+        destination: '/start/pick-your-path',
+        permanent: true,
+      },
+      {
+        source: '/start/good-fit',
+        destination: '/start/is-syncular-for-me',
+        permanent: true,
+      },
+      {
+        source: '/start/basic-setup',
+        destination: '/start/installation',
+        permanent: true,
+      },
     ];
   },
 };

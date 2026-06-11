@@ -24,16 +24,17 @@ Kysely. Browser/React apps still use the Rust-owned SQLite runtime through
 npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
 npm install kysely pg hono
 
-# Client, React hooks, and app-facing CLI
-npm install syncular @syncular/client @syncular/react kysely
+# Client and React hooks
+npm install @syncular/client @syncular/react kysely
 
-# App contract and generated TypeScript client
-npm install -D @syncular/typegen
+# CLI plus app contract and generated TypeScript client (dev-time only)
+npm install -D syncular @syncular/typegen
 ```
 
-`syncular generate` uses the Rust `syncular-codegen` binary for generated app
-clients. The command can auto-install it when Cargo is available; to prepare it
-explicitly, run:
+The `syncular` package is the CLI (`npx syncular generate`); application code
+imports only from the scoped `@syncular/*` packages. `syncular generate` uses
+the Rust `syncular-codegen` binary for generated app clients. The command can
+auto-install it when Cargo is available; to prepare it explicitly, run:
 
 ```bash
 npx syncular codegen install
@@ -133,6 +134,18 @@ npm install @syncular/relay
 npm install @syncular/typegen
 ```
 
+## URL convention
+
+Mount the sync routes under a stable prefix and point the generated client's
+`config.baseUrl` at that mount. With routes mounted at `/api/sync`:
+
+- `config.baseUrl: 'https://your-host/api/sync'`
+- pushes and pulls land at `POST /api/sync`
+- realtime deltas and recovery wake-ups use `GET /api/sync/realtime` (WebSocket)
+- snapshot chunks are fetched from `GET /api/sync/snapshot-chunks/:chunkId`
+
+Keeping one prefix means browser and native clients share the same base URL.
+
 ## TypeScript setup
 
 Syncular is written in TypeScript and ships full type definitions. For best results, enable strict mode:
@@ -148,6 +161,7 @@ Syncular is written in TypeScript and ships full type definitions. For best resu
 
 ## Next steps
 
-- [Quick Start](/start/quick-start) — choose the implementation path
+- [Hello World](/start/hello-world) — the smallest end-to-end app
+- [Pick Your Path](/start/pick-your-path) — fresh app, existing app, or evaluate first
 - [Server Setup](/server/setup-with-hono) — full server configuration
 - [JavaScript](/clients/javascript) and [Rust](/clients/rust) — client and testing guides

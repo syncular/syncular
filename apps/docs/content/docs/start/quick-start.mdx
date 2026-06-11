@@ -35,7 +35,8 @@ The implementation path is:
 6. Then add features as needed: blobs, encryption, migrations, observability,
    console, relay
 
-If you’re not sure where to start, see [Adoption Paths](/start/adoption-paths).
+If you’re not sure where to start, see [Pick Your Path](/start/pick-your-path),
+or build the smallest end-to-end app first with [Hello World](/start/hello-world).
 
 ## JavaScript first
 
@@ -45,8 +46,8 @@ runtime; JavaScript owns the Kysely/read, mutation-helper, React, and host
 bridge surface:
 
 ```bash
-npm install syncular @syncular/client @syncular/react kysely
-npm install -D @syncular/typegen
+npm install @syncular/client @syncular/react kysely
+npm install -D syncular @syncular/typegen
 npx syncular codegen install
 ```
 
