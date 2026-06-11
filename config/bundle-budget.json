@@ -6,9 +6,10 @@
       "createSyncularClient",
       "createSyncularDatabase"
     ],
-    "baselineRawKb": 0,
-    "baselineGzipKb": 0,
-    "maxRawKb": 1200,
-    "maxGzipKb": 400
+    "baselineRawKb": 266.81,
+    "baselineGzipKb": 62.06,
+    "maxDriftPercent": 5,
+    "maxRawKb": 600,
+    "maxGzipKb": 150
   }
 }

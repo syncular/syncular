@@ -8,6 +8,7 @@ interface BundleBudgetTarget {
   namedImports: string[];
   baselineRawKb: number;
   baselineGzipKb: number;
+  maxDriftPercent: number;
   maxRawKb: number;
   maxGzipKb: number;
 }
@@ -101,6 +102,24 @@ async function main() {
   if (measured.gzipKb > budget.target.maxGzipKb) {
     failures.push(
       `gzip size ${measured.gzipKb} KB exceeds max ${budget.target.maxGzipKb} KB`
+    );
+  }
+
+  const driftFactor = 1 + budget.target.maxDriftPercent / 100;
+  if (
+    budget.target.baselineRawKb > 0 &&
+    measured.rawKb > budget.target.baselineRawKb * driftFactor
+  ) {
+    failures.push(
+      `raw size ${measured.rawKb} KB drifts >${budget.target.maxDriftPercent}% above baseline ${budget.target.baselineRawKb} KB — if intentional, update config/bundle-budget.json`
+    );
+  }
+  if (
+    budget.target.baselineGzipKb > 0 &&
+    measured.gzipKb > budget.target.baselineGzipKb * driftFactor
+  ) {
+    failures.push(
+      `gzip size ${measured.gzipKb} KB drifts >${budget.target.maxDriftPercent}% above baseline ${budget.target.baselineGzipKb} KB — if intentional, update config/bundle-budget.json`
     );
   }
 
