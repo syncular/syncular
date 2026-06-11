@@ -195,12 +195,15 @@ lines) re-implement version stamping/changelogs. Keep the smoke-test scripts
 Also: prune the 87 root scripts (most are `bun --cwd` forwarders that turbo
 task filters can replace), and remove or fix the disabled `maestro-ios` CI job.
 
-### 10. Decide the umbrella-package story — DECIDED (2026-06-11)
+### 10. Decide the umbrella-package story — DONE (2026-06-11)
 
-Benjamin's call: `@syncular/*` is canonical; the `syncular` package becomes
-CLI-only (`npx syncular generate`). To do: strip the ~31 passthrough re-export
-files and subpath exports, keep the CLI bin, update docs/README, record the
-removal in COMPATIBILITY_REGISTER.md.
+Benjamin's call: `@syncular/*` is canonical; the `syncular` package is now
+CLI-only (`npx syncular generate`). All 31 passthrough re-export modules and
+the exports map removed; deps trimmed to `@syncular/typegen`; apps/apex
+migrated to scoped imports; docs updated; umbrella import forms added to the
+docs stale-pattern checker; removal recorded in COMPATIBILITY_REGISTER.md.
+Breaking for npm users of umbrella imports — release notes must call it out
+alongside the dialects rename.
 
 Further decisions from the same review (2026-06-11):
 - Dialects rename is NOT pushed/released yet; old npm packages stay until
@@ -213,12 +216,18 @@ Further decisions from the same review (2026-06-11):
 
 ## P3 — performance
 
-### 11. Modernize the k6 load suite for the binary protocol
+### 11. Modernize the k6 load suite for the binary protocol — STATUS: DONE (2026-06-11)
 
-All scenario scripts JSON-parse SSP1 binary responses → 100% check failures
-(the CI load smoke has been testing nothing). `lib/sync-client.js` is fixed for
-request shapes; the scripts still need an SSP1 envelope/cursor reader to
-restore convergence tracking. Until then `baseline-smoke.js` is the baseline.
+`tests/load/lib/ssp1.js`: dependency-free SSP1 reader for k6 (manual UTF-8,
+no zlib needed — the envelope is uncompressed; gzip row-group/chunk frames
+are length-prefixed and skipped). Extracts push commit statuses + operation
+results, subscription status/nextCursor/bootstrapState (round-trips into the
+next request), full change metadata, snapshot chunk/artifact refs. Row-id
+convergence tracking stayed exact (ids travel uncompressed). All 8 scenario
+scripts now verify parsed binary responses; no silently-green checks. Bonus
+real bug found: chunk downloads omitted the required `scopes` query param
+(33% silent failures → 0%). Validated: all scenarios green in smoke mode,
+0% error rates.
 
 ### 12. Default-path snapshot encoder metadata caching — MEASURED & REJECTED (2026-06-11)
 
@@ -283,6 +292,14 @@ uncommitted in the bench clone).
   (typecheck + 307 tests green). Item 3 partial: missing WASM artifact now
   throws an actionable error from `loadSyncularWasmGlue` instead of a bare
   module-resolution failure. Item 13a dropped as verified non-issue.
+- 2026-06-11 (cont. 3): Benchmark re-baseline run + committed (no regression;
+  scoped-artifact bootstrap 10–20% faster than published at 100k+). Item 12
+  measured & rejected (evidence in BENCHMARK_LOG). CI turbo cache verified
+  already wired (was dead under --force; now live). Bun WASM-test failures
+  root-caused to an upstream 1.3.14 worker-delivery regression; pins bumped
+  to 1.3.13; issue draft in .context/. Item 10 done (umbrella → CLI-only,
+  breaking). Item 11 done (k6 SSP1 reader; found+fixed silent chunk-download
+  failures). All 13 plan items are now done, decided, or honestly rejected.
 - 2026-06-11 (cont. 2): Item 5 DONE — both mega factories split
   (routes.ts 5,260→70; console/routes.ts 5,557→146; mechanically verified
   verbatim moves; openapi.json zero-diff; 178 tests green; knip clean after
