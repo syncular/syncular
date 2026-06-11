@@ -287,6 +287,13 @@ h2 {
   overflow-wrap: anywhere;
 }
 
+.pane-footnote {
+  margin: 14px 0 0;
+  color: #68736f;
+  font-size: 0.82rem;
+  font-weight: 600;
+}
+
 .replication-rail {
   position: relative;
   display: flex;
