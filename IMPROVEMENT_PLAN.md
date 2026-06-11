@@ -274,6 +274,22 @@ permanently incompatible with current main (removed packages/protocol) and
 its raw JSON pulls needed `schemaVersion` patches (applied locally,
 uncommitted in the bench clone).
 
+## Round 2 (2026-06-11, owner-requested)
+
+- **npm deprecation list** — DONE: 7 old dialect packages + stale
+  `@syncular/cli` to deprecate at next release (commands in session notes);
+  7 legacy packages already deprecated; NOTE: `@syncular/react`,
+  `client-javascript-bindings`, `dialects`, `client-crdt-adapters`,
+  `client-react-native`, `client-tauri`, `config` have never been published —
+  release filters must include them (bindings is a hard dep of client!).
+- **Demo app rebuild** — make apps/demo a real reference app: own
+  schema/codegen, @syncular/react hooks, two-pane live sync. In progress.
+- **create-syncular-app** — scaffolding CLI generating a minimal full-stack
+  app, derived from the rebuilt demo. Pending demo.
+- **Docs restructure** — full audit done; plan + target IA in
+  `apps/docs/DOCS_PLAN.md`; execution in 6 phases, starts after
+  demo/create-app land (hello-world builds on them).
+
 ## Status log
 
 - 2026-06-11: Plan created. Baselines captured (build, test, k6, bundle).
