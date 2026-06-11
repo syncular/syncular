@@ -19,24 +19,15 @@ import {
   BaseServerSyncDialect,
   coerceIsoString,
   coerceNumber,
+  createSavepointName,
   type IncrementalPullRow,
   type IncrementalPullRowsArgs,
+  isActiveTransaction,
   parseScopes,
 } from '@syncular/server';
 import type { SyncChangeRow, SyncCoreDb } from '@syncular/server/schema';
 import type { Kysely, RawBuilder, Transaction } from 'kysely';
 import { sql } from 'kysely';
-
-function isActiveTransaction<DB extends SyncCoreDb>(
-  db: Kysely<DB>
-): db is Kysely<DB> & Transaction<DB> {
-  return (db as { isTransaction?: boolean }).isTransaction === true;
-}
-
-function createSavepointName(): string {
-  const randomPart = Math.floor(Math.random() * 1_000_000_000).toString(36);
-  return `syncular_sp_${Date.now().toString(36)}_${randomPart}`;
-}
 
 function buildJsonbScopeContainmentFilter(
   columnReference: string,
