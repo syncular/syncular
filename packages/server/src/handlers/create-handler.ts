@@ -371,9 +371,31 @@ export function createServerHandler<
     const resolved = await resolveScopes(ctx);
     const normalized: ScopeValues = {};
     for (const [scopeKey, scopeValue] of Object.entries(resolved)) {
-      if (typeof scopeValue === 'string' || Array.isArray(scopeValue)) {
+      // null/undefined means "no access for this scope" and is skipped.
+      if (scopeValue === null || scopeValue === undefined) continue;
+      if (typeof scopeValue === 'string') {
         normalized[scopeKey] = scopeValue;
+        continue;
       }
+      if (Array.isArray(scopeValue)) {
+        const invalidIndex = scopeValue.findIndex(
+          (entry) => typeof entry !== 'string'
+        );
+        if (invalidIndex !== -1) {
+          throw new Error(
+            `resolveScopes() for table "${table}" returned a non-string entry ` +
+              `(${typeof scopeValue[invalidIndex]}) at index ${invalidIndex} of scope "${scopeKey}". ` +
+              'Scope values must be strings or string arrays.'
+          );
+        }
+        normalized[scopeKey] = scopeValue;
+        continue;
+      }
+      throw new Error(
+        `resolveScopes() for table "${table}" returned an invalid value ` +
+          `(${typeof scopeValue}) for scope "${scopeKey}". ` +
+          'Scope values must be strings or string arrays.'
+      );
     }
     return normalized;
   };
@@ -401,7 +423,11 @@ export function createServerHandler<
     let allowedScopes: ScopeValues;
     try {
       allowedScopes = await resolveWriteScopes(ctx);
-    } catch {
+    } catch (resolveErr) {
+      console.error(
+        `[resolveScopes] Failed for table ${table} during write authorization:`,
+        resolveErr
+      );
       return {
         error: 'Forbidden',
         code: 'sync.forbidden',
