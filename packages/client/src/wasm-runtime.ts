@@ -38,9 +38,24 @@ export interface SyncularWasmGlue {
 let modulePromise: Promise<SyncularWasmGlue> | undefined;
 
 export function loadSyncularWasmGlue(): Promise<SyncularWasmGlue> {
-  modulePromise ??= import(
-    /* @vite-ignore */ getSyncularWasmGlueUrl().href
-  ) as Promise<SyncularWasmGlue>;
+  modulePromise ??= (
+    import(
+      /* @vite-ignore */ getSyncularWasmGlueUrl().href
+    ) as Promise<SyncularWasmGlue>
+  ).catch((error: unknown) => {
+    modulePromise = undefined;
+    const message = error instanceof Error ? error.message : String(error);
+    if (/cannot find module|failed to fetch|not found/i.test(message)) {
+      throw new Error(
+        `Syncular WASM runtime artifact is missing (${message}). ` +
+          'In this repo, build it first: `bun run javascript-bindings:build:wasm` ' +
+          '(or `build:wasm:dev` for a fast dev build). In an app, ensure the ' +
+          '@syncular/client-javascript-bindings dist/wasm assets are served.',
+        { cause: error }
+      );
+    }
+    throw error;
+  });
   return modulePromise;
 }
 
