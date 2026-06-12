@@ -1,70 +1,91 @@
 ---
 title: Resource Lifecycle (`using`)
-description: Use optional `using` resources and callback helpers to eliminate cleanup boilerplate.
+description: Use optional `await using` resources and callback helpers to eliminate cleanup boilerplate.
 ---
 
 # Resource Lifecycle (`using`)
 
-`@syncular/testkit` supports two cleanup styles:
+`@syncular/testkit` supports two cleanup styles built on one primitive,
+`AsyncDisposableResource<T>` (`{ value, dispose, [Symbol.asyncDispose] }`):
 
 - callback helpers (`with*`) that work in every environment
-- resource helpers (`create*Resource`) for `await using` style cleanup
+- resource helpers (`create*Resource` / `open*Resource`) for `await using`
+  style cleanup
 
-Both APIs are runner-agnostic and use the same underlying fixtures.
+Both styles are runner-agnostic and disposal is idempotent — calling
+`dispose()` twice is safe.
 
-## Callback style (universal)
+## Wrap any fixture
+
+`createAsyncDisposableResource(value, dispose)` turns anything with a teardown
+into a resource. The most common case is wrapping `createHttpServerFixture`:
 
 ```ts
-import { withSyncFixture } from '@syncular/testkit';
+import {
+  createAsyncDisposableResource,
+  createHttpServerFixture,
+  createProjectScopedTasksHandler,
+  ensureProjectScopedTasksTable,
+} from '@syncular/testkit';
 
-await withSyncFixture(
-  {
+async function openTasksServer() {
+  const server = await createHttpServerFixture({
     serverDialect: 'sqlite',
-    defaultClientDialect: 'bun-sqlite',
-  },
-  async (fixture) => {
-    const client = await fixture.createClient({
-      mode: 'raw',
-      actorId: 'u1',
-      clientId: 'client-a',
-    });
+    createTables: ensureProjectScopedTasksTable,
+    handlers: [createProjectScopedTasksHandler()],
+    authenticate: async (c) => {
+      const actorId = c.req.header('x-actor-id');
+      return actorId ? { actorId } : null;
+    },
+  });
 
-    await client.pull({
-      subscriptions: [
-        { id: 'tasks', table: 'tasks', scopes: { user_id: 'u1' } },
-      ],
-    });
-  }
-);
+  return createAsyncDisposableResource(server, () => server.destroy());
+}
 ```
 
 ## `using` style (optional)
 
 ```ts
-import { createSyncFixtureResource } from '@syncular/testkit';
+await using serverRes = await openTasksServer();
+const server = serverRes.value;
 
-await using fixtureRes = await createSyncFixtureResource({
-  serverDialect: 'sqlite',
-  defaultClientDialect: 'bun-sqlite',
-});
+// ...test body; server.destroy() runs automatically on scope exit
+```
 
-const fixture = fixtureRes.value;
-const client = await fixture.createClient({
-  mode: 'raw',
-  actorId: 'u1',
-  clientId: 'client-a',
+## Callback style (universal)
+
+```ts
+import { withAsyncDisposableFactory } from '@syncular/testkit';
+
+await withAsyncDisposableFactory(openTasksServer, async (server) => {
+  // ...test body; cleanup runs in finally
 });
 ```
 
-## Recommended resource cases
+`withAsyncDisposableResource(resource, run)` does the same for a resource you
+already created.
 
-Use resource APIs for objects that must always be closed:
+## Built-in resource helpers
 
-- `createSyncFixtureResource`, `createTestServerResource`, `createTestClientResource`
-- `createHttpServerFixtureResource`, `createHttpClientFixtureResource`
-- `createEngineSessionResource`
-- `openRealtimeWsResource`
-- `createChildProcessResource`
+| Resource | `await using` | Callback |
+|---|---|---|
+| Node HTTP server for a Hono app | `createNodeHonoServerResource(app, options)` | `withNodeHonoServer(app, run, options)` |
+| Realtime WebSocket | `openRealtimeWsResource({ ..., waitForOpen: true })` | `withRealtimeWs(options, run)` |
+| Child process (spawned server) | `createChildProcessResource(child)` | `withChildProcess(child, run)` |
+| Existing `node:http` server | `createNodeServerResource(server)` | — |
+| Bridge harness | `createClientBridgeHarness(options)` (returns a resource directly) | — |
+
+```ts
+import { openRealtimeWsResource } from '@syncular/testkit';
+
+await using wsRes = await openRealtimeWsResource({
+  baseUrl: 'http://localhost:3000',
+  clientId: 'client-b',
+  actorId: 'u1',
+  waitForOpen: true,
+});
+const ws = wsRes.value;
+```
 
 ## Keep non-resource helpers simple
 
@@ -72,6 +93,6 @@ Do not use `using` for pure helpers:
 
 - protocol builders/parsers
 - deterministic id/clock factories
-- assertions and wait helpers
+- pull-inspection helpers and fault wrappers
 
-Those should remain plain functions.
+Those remain plain functions with nothing to dispose.
