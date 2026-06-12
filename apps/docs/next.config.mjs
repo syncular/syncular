@@ -39,6 +39,12 @@ const config = {
         destination: '/start/installation',
         permanent: true,
       },
+      // Retired server/ slugs (2026-06 docs restructure, Phase 3).
+      {
+        source: '/server/setup-with-hono',
+        destination: '/server/getting-started',
+        permanent: true,
+      },
     ];
   },
 };

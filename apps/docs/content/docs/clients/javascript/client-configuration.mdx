@@ -1,0 +1,160 @@
+---
+title: Client Configuration
+description: Every JavaScript client option — config, pull/push tuning, storage, auth lifecycle, sync cadence, and diagnostics — with defaults and when to change them.
+---
+
+# Client Configuration
+
+`createSyncularAppDatabase(options)` (generated) and the underlying
+`createSyncularDatabase(options)` accept the same `CreateSyncularDatabaseOptions`
+shape. The generated factory fills in schema, codecs, and table metadata for
+you; everything below is yours to tune. Defaults are sensible — start with
+`config` plus `getHeaders` and only reach for tuning options when you have a
+measured reason.
+
+```ts
+const database = await createSyncularAppDatabase({
+  config: {
+    baseUrl: 'https://app.example.com/api/sync',
+    actorId: userId,
+    clientId: deviceId,
+    fileName: 'app-v1.sqlite',
+  },
+  getHeaders: async () => ({ authorization: `Bearer ${await token()}` }),
+  runtimeArtifacts: [getSyncularRuntimeArtifact('full')],
+  subscriptions: [taskSubscription({ actorId: userId })],
+});
+```
+
+## Core identity (`config`)
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `mode` | `'remote'` | `'local-sync-compatible'` runs the same engine without a server (no push/pull); `baseUrl` becomes optional. |
+| `baseUrl` | — (required for remote) | The sync mount itself, e.g. `https://host/api/sync`. |
+| `clientId` | — (required) | Unique per device/replica. Two replicas sharing a `clientId` corrupt each other's cursors. |
+| `actorId` | — (required) | The authenticated user; feeds `actorId`-sourced scopes. |
+| `projectId` | `null` | Feeds `projectId`-sourced scopes for multi-tenant apps. |
+| `fileName` | runtime default | Local SQLite file name. Version it (`app-v3.sqlite`) when you want a clean local slate. |
+| `clearOnInit` | `false` | Wipe local storage on open. For dev/test, not production. |
+| `stateId` | `'default'` | Namespaces sync cursors; lets one local database hold independent sync states. |
+| `schemaVersion`, `appSchema` | set by the generated factory | Leave alone unless you bypass codegen. |
+
+## Storage (`config.storage`)
+
+`'memory' | 'indexedDb' | 'opfsSahPool'` — default `'opfsSahPool'`.
+
+- `opfsSahPool` — OPFS-backed SQLite, the fastest persistent option. Needs a
+  browser with OPFS support. If you leave `storage` unset and OPFS fails to
+  open, the client automatically retries with `indexedDb` and emits a
+  `storage.fallback` diagnostic (visible as `storageFallback` in
+  `connectionState()`). Explicitly setting `storage: 'opfsSahPool'` disables
+  the fallback and surfaces the error instead.
+- `indexedDb` — works everywhere, slower on large writes. Good default for
+  embedded webviews.
+- `memory` — no persistence; tests and ephemeral sessions.
+
+## Pull tuning (`config.pull`)
+
+Defaults come from the Rust runtime (`rust/crates/runtime/src/core/limits.rs`):
+
+| Option | Default | When to tune |
+| --- | --- | --- |
+| `limitCommits` | `1000` | Max commits per pull round. Lower it on constrained devices to bound per-round work. |
+| `limitSnapshotRows` | `50000` | Max bootstrap snapshot rows per page. Lower for memory-constrained clients; raise to cut round trips on fat pipes. |
+| `maxSnapshotPages` | `10` | Snapshot pages fetched per sync call. With `limitSnapshotRows` this caps one call at 500k bootstrap rows. |
+| `includeSnapshotRows` | `false` | When `false`, snapshot rows hydrate local SQLite directly instead of being returned to JS. Leave off unless you are building custom bootstrap handling. |
+| `dedupeRows` | off | Ask the server to collapse multiple commits touching the same row into the latest row state during incremental pull. Saves bandwidth for hot rows at some server CPU cost. |
+| `criticalBootstrapPhase` | `0` | Phase treated as "critical" in bootstrap status (`criticalReady`). |
+| `interactiveBootstrapPhase` | `1` | Phase treated as "interactive" (`interactiveReady`). Pair with `bootstrapPhases` on subscriptions to stage startup. |
+| `collectChangedRows` | `true` | Emit per-row change details in `rowsChanged` events. Disable only if you ignore row deltas entirely. |
+| `maxSnapshotChangedRows` | `5000` | Caps changed-row collection during snapshot apply (`changedRowsTruncated` flags the cut). |
+| `collectServerTimings` | `false` | Adds server-side timing breakdowns to `diagnosticSnapshot().transportStats`. Enable while profiling, not in production. |
+
+## Push tuning (`config.push`)
+
+| Option | Default | When to tune |
+| --- | --- | --- |
+| `outboxBatchLimit` | unset (adaptive) | Fixed commits per push request. Setting it disables adaptive batching. |
+| `adaptiveOutboxBatchLimit` | `1000` | Ceiling for adaptive batches (also the hard maximum). |
+| `adaptiveOutboxBatchThreshold` | `100` | Due-outbox size that must be exceeded before adaptive batching engages. |
+
+By default the runtime pushes `20` commits per request and scales up to
+`adaptiveOutboxBatchLimit` when more than `adaptiveOutboxBatchThreshold`
+commits are due — e.g. after a long offline stretch.
+
+## Auth (`getHeaders`, `authLifecycle`)
+
+`getHeaders` is called before sync/realtime requests to (re)attach
+credentials. On a 401/403 the client runs the `authLifecycle` flow
+(`packages/client/src/worker-client.ts`):
+
+```ts
+authLifecycle: {
+  onAuthExpired: async ({ operation, status }) => markSessionStale(),
+  refreshToken: async () => attemptTokenRefresh(),   // single-flight; true = retry
+  retryWithFreshToken: async ({ refreshResult }) => refreshResult,
+}
+```
+
+When `refreshToken` returns `true`, the failed sync request is retried once
+with fresh headers from `getHeaders`. Concurrent failures share one refresh
+(`auth.refresh_succeeded` / `auth.refresh_failed` diagnostics). Without an
+`authLifecycle`, auth errors surface as `sync.auth_required` and the
+lifecycle phase becomes `authRequired`.
+
+## Sync cadence (`sync`)
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `autoSyncAfterMutation` | `true` (remote mode) | Push after local writes automatically. |
+| `mutationSyncDebounceMs` | `10` | Coalesces bursts of mutations into one push. `false` syncs immediately per write. |
+| `rowsChangedDebounceMs` | `0` | Debounce for `rowsChanged` events feeding live queries/UI. Raise (e.g. `25`) for very chatty tables. |
+| `network` | browser online/offline | A `SyncularNetworkStatusSource`; pass your own to integrate app-level connectivity, or `false` to disable gating. |
+| `autoProcessBlobUploadsAfterStore` | `false` | Start blob uploads right after `blobs.store(...)`. |
+| `blobUploadDebounceMs` | `10` | Debounce for the automatic blob upload queue. |
+
+## Runtime, transport, and the rest
+
+- `requestTimeoutMs` — default `30000`. Per worker request; raise it if huge
+  bootstraps legitimately exceed 30s, lower it to fail fast.
+- `runtimeArtifacts` / `runtime` / `requiredRuntimeFeatures` — select the WASM
+  build, e.g. `getSyncularRuntimeArtifact('full')`. Generated clients assert
+  required features at open time.
+- `worker` — bring your own `Worker` (or factory) instead of the bundled one.
+- `realtime` — `true` or options: `wsUrl`, `params`/`getParams` (e.g. tokens),
+  reconnect backoff (`initialReconnectDelayMs` `1000`, `maxReconnectDelayMs`
+  `30000`, factor `2`), `heartbeatTimeoutMs` (`60000`). Most apps configure
+  realtime via `SyncularClientLifecycle` instead.
+- `blobLimits.maxPayloadBytes` — default 64 MiB; `blob.too_large` beyond it.
+- `diagnostics` — a sink receiving every structured diagnostic event.
+- `consoleDiagnostics` — `true` or `{ baseUrl, token, partitionId, debounceMs (100), maxPayloadBytes (48 KiB) }`
+  to stream client state to the [Console](/operate/console). With `true`, the endpoint
+  is derived from `config.baseUrl`.
+- Generated factory extras: `subscriptions` (specs, a factory function, or
+  `false`), `bootstrapPhases` (per-subscription phase map), and
+  `schemaInstallMode` (`'derived'` default).
+
+## Worked tuning scenarios
+
+**Low bandwidth / flaky mobile network.** Keep payloads small and retries
+cheap: `pull: { limitCommits: 250, limitSnapshotRows: 10_000, dedupeRows: true }`,
+`requestTimeoutMs: 60_000` so slow links don't abort mid-bootstrap, and a
+custom `sync.network` source wired to your connectivity API so the engine
+doesn't burn retries while offline.
+
+**Memory-constrained device (kiosk, old tablets).** Bound per-round work:
+`pull: { limitSnapshotRows: 5_000, maxSnapshotPages: 4, maxSnapshotChangedRows: 1_000 }`,
+`storage: 'indexedDb'` if OPFS is unavailable, and stage startup with
+`bootstrapPhases` so only phase-0 subscriptions block first paint.
+
+**High-throughput bulk writer (importer, batch editor).** Let pushes batch up:
+`push: { adaptiveOutboxBatchThreshold: 50 }` so adaptive batching engages
+earlier, `mutationSyncDebounceMs: 100` to coalesce write bursts, and
+`rowsChangedDebounceMs: 50` so the UI re-renders per batch instead of per row.
+
+## Related
+
+- [Generated Client](/clients/javascript/generated-client) — where these options meet codegen
+- [Troubleshooting](/clients/javascript/troubleshooting) — symptom → cause → fix
+- [Realtime And Presence](/clients/javascript/realtime-presence) — websocket wakeups in depth

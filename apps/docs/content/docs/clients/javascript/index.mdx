@@ -10,17 +10,23 @@ JavaScript client shape keeps app reads in typed Kysely, routes writes through
 generated Syncular mutations, and delegates SQLite/sync internals to the
 Rust-owned runtime where the target supports it.
 
-## Core API
+## Getting Started
 
 <Cards>
   <Card title="Quick Start" href="/clients/javascript/quick-start" description="Generate TypeScript types and open a typed Kysely client" />
-  <Card title="Generated Client" href="/clients/javascript/generated-client" description="Understand generated Kysely types, runtime helpers, mutations, subscriptions, and row-delta helpers" />
+  <Card title="Generated Client" href="/clients/javascript/generated-client" description="syncular.app.ts, the generate workflow, generated outputs, and version handling" />
+  <Card title="Client Configuration" href="/clients/javascript/client-configuration" description="Every client option with defaults — pull/push tuning, storage, auth lifecycle, sync cadence" />
+</Cards>
+
+## Core APIs
+
+<Cards>
   <Card title="Querying" href="/clients/javascript/querying" description="Use Kysely query-builder reads against the local SQLite replica" />
   <Card title="Mutations" href="/clients/javascript/mutations" description="Write through generated mutation namespaces instead of raw app-table SQL" />
   <Card title="Live Updates" href="/clients/javascript/live-updates" description="Refresh views from row deltas, query hooks, outbox state, and conflicts" />
 </Cards>
 
-## Runtime Features
+## Advanced Features
 
 <Cards>
   <Card title="Runtime" href="/clients/javascript/runtime" description="Understand the browser worker and native host bridge boundary" />
@@ -29,13 +35,21 @@ Rust-owned runtime where the target supports it.
   <Card title="Blobs And Encryption" href="/clients/javascript/blobs-encryption" description="Store files, process blob queues, and configure encryption" />
 </Cards>
 
-## Testing
+## Testing And Troubleshooting
 
 <Cards>
   <Card title="Testing" href="/clients/javascript/testing" description="Use @syncular/testkit for TypeScript, server, browser, and runtime tests" />
+  <Card title="Troubleshooting" href="/clients/javascript/troubleshooting" description="Symptom → cause → fix for stalled sync, missing WASM, schema mismatches, conflicts, and blobs" />
 </Cards>
 
 ## Host Integrations
+
+Every host runs the same Rust-owned runtime — one engine for SQLite, sync,
+outbox, and conflicts. What changes per host is only the bridge: browsers run
+the runtime as WASM in a dedicated Worker, while React Native, Tauri, and
+Electron bridge JavaScript calls to the native runtime over a host-specific
+channel. Your app code (generated client, Kysely reads, mutations) is
+identical across all of them.
 
 <Cards>
   <Card title="Browser" href="/clients/javascript/browser" description="Use Kysely against Rust-owned SQLite in a dedicated Worker" />
