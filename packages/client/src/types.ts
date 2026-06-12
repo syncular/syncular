@@ -53,14 +53,14 @@ export interface SyncularPullOptions {
 export interface SyncularPushOptions {
   /**
    * Fixed maximum pending outbox commits to send in one push request.
-   * When omitted, Rust uses 20 for normal queues and adapts up to 100 for
+   * When omitted, Rust uses 20 for normal queues and adapts up to 1000 for
    * large due outboxes. Configured values disable that adaptive default and
    * must remain bounded.
    */
   outboxBatchLimit?: number;
   /**
    * Maximum adaptive outbox batch size used when outboxBatchLimit is omitted.
-   * Defaults to 100.
+   * Defaults to 1000.
    */
   adaptiveOutboxBatchLimit?: number;
   /**
