@@ -6,6 +6,7 @@
     "---Getting Started---",
     "quick-start",
     "generated-client",
+    "client-configuration",
     "---Core APIs---",
     "querying",
     "mutations",
@@ -19,6 +20,8 @@
     "crdt-fields",
     "blobs-encryption",
     "---Testing---",
-    "testing"
+    "testing",
+    "---Troubleshooting---",
+    "troubleshooting"
   ]
 }
