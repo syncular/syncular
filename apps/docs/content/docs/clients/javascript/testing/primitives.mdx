@@ -1,11 +1,12 @@
 ---
 title: Testkit Primitives
-description: Protocol builders, response parsers, deterministic IDs/clocks, and scenario flow helpers.
+description: Protocol builders, response parsers, pull-change inspection, deterministic IDs/clocks, and realtime WebSocket helpers.
 ---
 
 # Testkit Primitives
 
-Use these helpers to remove test boilerplate without binding your tests to a specific runner.
+Use these helpers to remove test boilerplate without binding your tests to a
+specific runner.
 
 ## Protocol builders
 
@@ -14,9 +15,9 @@ Build sync payloads with typed helpers instead of hand-writing JSON objects:
 - `createSyncUpsertOperation(...)`
 - `createSyncDeleteOperation(...)`
 - `createSyncSubscription(...)`
-- `createSyncPushRequest(...)`
+- `createSyncPushRequest(...)` — wraps one commit into a push batch
 - `createSyncPullRequest(...)`
-- `createSyncCombinedRequest(...)`
+- `createSyncCombinedRequest(...)` — combined push + pull body
 
 ```ts
 import {
@@ -28,21 +29,26 @@ import {
 const request = createSyncCombinedRequest({
   clientId: 'client-a',
   push: {
-    clientCommitId: 'commit-1',
-    schemaVersion: 1,
-    operations: [
-      createSyncUpsertOperation({
-        table: 'tasks',
-        rowId: 't1',
-        payload: { title: 'Task', completed: 0, project_id: 'p0' },
-      }),
+    commits: [
+      {
+        clientCommitId: 'commit-1',
+        schemaVersion: 1,
+        operations: [
+          createSyncUpsertOperation({
+            table: 'tasks',
+            rowId: 't1',
+            payload: { title: 'Task', completed: 0, project_id: 'p0' },
+          }),
+        ],
+      },
     ],
   },
   pull: {
+    schemaVersion: 1,
     limitCommits: 50,
     subscriptions: [
       createSyncSubscription({
-        id: 'tasks',
+        id: 'tasks-p0',
         table: 'tasks',
         scopes: { user_id: 'u1', project_id: 'p0' },
       }),
@@ -51,26 +57,73 @@ const request = createSyncCombinedRequest({
 });
 ```
 
+`push` takes a `commits` array — the same `SyncPushBatchRequest` shape a real
+client sends — so multi-commit batches are just more array entries.
+`createSyncUpsertOperation` accepts an optional `baseVersion` for conflict
+tests (see
+[Testing Strategy — layer 4](/testing/strategy#layer-4--conflict-resolution)).
+
+## HTTP protocol calls
+
+Post protocol payloads to a fixture (or any running server) with actor headers
+and schema-validated responses in one call:
+
+- `postSyncCombinedRequest({ fetch, url, actorId, body })`
+- `postSyncPushRequest(...)` / `postSyncPullRequest(...)`
+- `postJsonWithActor(...)` — generic JSON POST with actor headers
+- `createJsonActorHeaders(...)` — headers only (defaults to `x-actor-id`,
+  override with `actorHeader`)
+
+Each returns `{ response, json }` where `json` has already passed the protocol
+parser.
+
 ## Response parsing
 
-Validate sync responses at runtime with schema-backed parsers:
+When you make raw `fetch` calls yourself, validate responses at runtime with
+the schema-backed parsers:
 
-- `parseSyncCombinedResponse(...)`
-- `parseSyncPushResponse(...)`
-- `parseSyncPullResponse(...)`
-- `readSyncCombinedResponse(response)`
-- `readSyncPushResponse(response)`
-- `readSyncPullResponse(response)`
+- `parseSyncCombinedResponse(value)` / `parseSyncPushResponse(value)` /
+  `parseSyncPullResponse(value)` — for already-parsed JSON
+- `readSyncCombinedResponse(response)` / `readSyncPushResponse(response)` /
+  `readSyncPullResponse(response)` — read + parse a `Response`
 
-Use these when tests hit real HTTP routes and you want strict protocol validation.
+## Inspecting pull results
+
+Pull responses nest changes inside `subscriptions[].commits[].changes`. These
+helpers flatten the digging:
+
+```ts
+import {
+  findSubscriptionChange,
+  subscriptionChangeRow,
+  subscriptionChanges,
+} from '@syncular/testkit';
+
+// All changes delivered for one subscription id:
+const changes = subscriptionChanges(json.pull?.subscriptions, 'tasks-p0');
+
+// One row's change and its row payload:
+const change = findSubscriptionChange(json.pull?.subscriptions, 'tasks-p0', 't1');
+const row = subscriptionChangeRow(change); // Record<string, unknown> | undefined
+```
+
+## Reference tasks schema
+
+The testkit bundles a complete project-scoped `tasks` table so tests do not
+need their own schema: `PROJECT_SCOPED_TASKS_DDL`,
+`ensureProjectScopedTasksTable(db)`, `createProjectScopedTasksHandler()` (a
+full `ServerTableHandler` with scope checks, snapshot paging, version
+conflicts), plus shorthand builders `createProjectScopedTasksSubscription` and
+`createProjectScopedTaskUpsertOperation`. See the
+[Quick Start](/clients/javascript/testing/quick-start) for them in action.
 
 ## Deterministic IDs and clock
 
 Use deterministic helpers instead of ad-hoc counters and `Date.now()` coupling:
 
-- `createIdFactory(...)`
-- `createCommitIdFactory(...)`
-- `createFakeClock(...)`
+- `createIdFactory(...)` — `next()`, `peek()`, `reset()`
+- `createCommitIdFactory(...)` — id factory with a `commit` prefix
+- `createFakeClock(...)` — `now()`, `iso()`, `set()`, `advance()`, `tick()`
 
 ```ts
 import { createCommitIdFactory, createFakeClock } from '@syncular/testkit';
@@ -78,64 +131,47 @@ import { createCommitIdFactory, createFakeClock } from '@syncular/testkit';
 const commits = createCommitIdFactory({ prefix: 'commit', startAt: 1 });
 const clock = createFakeClock({ startMs: 1_700_000_000_000, tickMs: 1000 });
 
-const id1 = commits.next();
-const t1 = clock.tick();
+const id1 = commits.next(); // 'commit-1'
+const t1 = clock.tick(); // 1_700_000_001_000
 ```
 
-## Scenario flow helpers
+## Realtime WebSocket helpers
 
-Wrap existing client fixtures/harness clients to avoid repeated sync plumbing:
+For suites that hit a realtime-enabled server
+(see [Realtime WebSocket](/server/realtime-websocket)):
 
-- `createScenarioFlow(client)`
-- `runPushPullCycle(client, options)`
+- `createRealtimeWsUrl(...)` — builds the `ws(s)://.../sync/realtime` URL with
+  `clientId` and actor query params
+- `openRealtimeWs(...)` — opens a socket from the same options
+- `waitForWsOpen(ws)` / `waitForWsMessage(ws, { predicate })` /
+  `waitForWsJsonMessage(ws, { predicate })`
+- `parseWsJsonMessage(event)`
+- `closeWsSafe(ws)`
 
-```ts
-import {
-  createScenarioFlow,
-  createSyncSubscription,
-  createSyncUpsertOperation,
-} from '@syncular/testkit';
+See the
+[multi-client realtime example](/clients/javascript/testing/examples-multi-client-realtime)
+for a full flow.
 
-const flow = createScenarioFlow(client);
+## Bridge harness (Tauri / React Native shells)
 
-const subscription = createSyncSubscription({
-  id: 'tasks',
-  table: 'tasks',
-  scopes: { user_id: 'u1', project_id: 'p1' },
-});
+`createClientBridgeHarness()` provides an in-process `SyncularBridge` backed by
+real SQLite, with recorded invocations, mutation batches, fake Tauri
+`invoke`/`listen`, and a React Native native-module stand-in — for testing
+host-shell glue without a device.
 
-await flow.pull({ subscriptions: [subscription] });
+## Audit assertions
 
-await flow.pushThenPull({
-  enqueue: {
-    operations: [
-      createSyncUpsertOperation({
-        table: 'tasks',
-        rowId: 'new-task',
-        payload: { title: 'New Task', completed: 0, project_id: 'p1' },
-      }),
-    ],
-  },
-  pull: { subscriptions: [subscription] },
-});
-```
-
-## Runtime WebSocket helpers
-
-For runtime suites (node/deno/cloudflare/browser), use:
-
-- `createRealtimeWsUrl(...)`
-- `openRealtimeWs(...)`
-- `waitForWsOpen(...)`
-- `waitForWsMessage(...)`
-- `waitForWsJsonMessage(...)`
-- `closeWsSafe(...)`
-
-These keep realtime tests concise and consistent while staying runner-agnostic.
+For server audit/redaction tests: `assertAuditChangeRedacted`,
+`assertAuditJsonExcludes`, `assertAuditDebugExportRedacted`, plus
+`readJsonResponse`/`readTextResponse` response readers.
 
 ## Resource lifecycle helpers
 
-If you want to remove cleanup boilerplate, use [Resource Lifecycle (`using`)](/clients/javascript/testing/lifecycle):
+If you want to remove cleanup boilerplate, use
+[Resource Lifecycle (`using`)](/clients/javascript/testing/lifecycle):
 
-- callback wrappers: `withSyncFixture`, `withTestServer`, `withTestClient`, `withRealtimeWs`
-- resource wrappers: `createSyncFixtureResource`, `createTestServerResource`, `createTestClientResource`, `openRealtimeWsResource`
+- callback wrappers: `withAsyncDisposableFactory`, `withNodeHonoServer`,
+  `withRealtimeWs`, `withChildProcess`
+- resource wrappers: `createAsyncDisposableResource`,
+  `createNodeHonoServerResource`, `openRealtimeWsResource`,
+  `createChildProcessResource`

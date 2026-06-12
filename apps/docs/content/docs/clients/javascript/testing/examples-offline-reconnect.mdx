@@ -5,85 +5,102 @@ description: Verify offline writes, reconnect replay, and outbox cleanup.
 
 # Offline Reconnect Flow
 
-This pattern matches mobile and field apps where users write data offline, then reconnect later.
+This pattern matches mobile and field apps where users write data offline,
+then reconnect later.
 
 ## What this test should prove
 
-- local writes are stored while network is unavailable
-- outbox commits are replayed when transport recovers
+- writes made while the network is down are not lost
+- queued commits are replayed when the transport recovers
+- replay is idempotent — a retried commit is not applied twice
 - server and client converge to the same row state
 
-## Example
+## Transport-level drill
+
+The compact version works directly against a server fixture: every push
+fails while "offline", then the same commit (same `clientCommitId`) is
+retried after recovery. Idempotency on the server makes the replay safe.
 
 ```ts
+import { createHttpTransport } from '@syncular/transport-http';
 import {
-  assertOutboxEmpty,
-  assertOutboxHas,
-  assertRowExists,
-  createScenarioFlow,
-  createSyncFixture,
-  createSyncSubscription,
-  createSyncUpsertOperation,
+  createHttpServerFixture,
+  createProjectScopedTasksHandler,
+  createProjectScopedTaskUpsertOperation,
+  createSyncCombinedRequest,
+  ensureProjectScopedTasksTable,
   withFaults,
 } from '@syncular/testkit';
 
-const fixture = await createSyncFixture({
+const server = await createHttpServerFixture({
   serverDialect: 'sqlite',
-  defaultClientDialect: 'bun-sqlite',
+  createTables: ensureProjectScopedTasksTable,
+  handlers: [createProjectScopedTasksHandler()],
+  authenticate: async (c) => {
+    const actorId = c.req.header('x-actor-id');
+    return actorId ? { actorId } : null;
+  },
 });
 
-const client = await fixture.createClient({
-  mode: 'raw',
-  actorId: 'u1',
-  clientId: 'device-a',
-});
-
-const { transport: flakyTransport, setOptions } = withFaults(client.transport, {
-  failOnPush: true,
-  failAfter: 0,
-});
-
-const flow = createScenarioFlow({
-  ...client,
-  transport: flakyTransport,
-});
-
-const sub = createSyncSubscription({
-  id: 'tasks-p1',
-  table: 'tasks',
-  scopes: { user_id: 'u1', project_id: 'p1' },
-});
-
-await flow.pull({ subscriptions: [sub] });
-
-await flow.enqueue({
-  operations: [
-    createSyncUpsertOperation({
-      table: 'tasks',
-      rowId: 'task-1',
-      payload: { title: 'Inspect site', completed: 0, project_id: 'p1' },
+try {
+  const wrapped = withFaults(
+    createHttpTransport({
+      baseUrl: server.baseUrl,
+      getHeaders: () => ({ 'x-actor-id': 'u1' }),
     }),
-  ],
-});
+    { failOnPush: true, failWith: new Error('OFFLINE') }
+  );
 
-await assertOutboxHas(client.db, 1);
+  const request = createSyncCombinedRequest({
+    clientId: 'device-a',
+    push: {
+      commits: [
+        {
+          clientCommitId: 'commit-offline-1',
+          schemaVersion: 1,
+          operations: [
+            createProjectScopedTaskUpsertOperation({
+              taskId: 'task-1',
+              title: 'Inspect site',
+            }),
+          ],
+        },
+      ],
+    },
+  });
 
-// Offline push fails and remains retryable
-await flow.push().catch(() => {});
+  // Offline: the push fails and the commit stays queued on the client side.
+  await expect(wrapped.transport.sync(request)).rejects.toThrow('OFFLINE');
 
-// Network recovers
-setOptions({ failAfter: undefined, failOnPush: false });
+  // Network recovers.
+  wrapped.setOptions({ failOnPush: false });
 
-await flow.push();
-await flow.pull({ subscriptions: [sub] });
+  // Replay the same clientCommitId: applied exactly once.
+  const replay = await wrapped.transport.sync(request);
+  expect(replay.push?.commits[0]?.status).toBe('applied');
 
-await assertOutboxEmpty(client.db);
-await assertRowExists(client.db, 'tasks', 'task-1', { title: 'Inspect site' });
+  const retry = await wrapped.transport.sync(request);
+  expect(retry.push?.commits[0]?.status).toBe('applied'); // idempotency cache
 
-await fixture.destroyAll();
+  const rows = await server.db.selectFrom('tasks').select('id').execute();
+  expect(rows).toHaveLength(1);
+} finally {
+  await server.destroy();
+}
 ```
+
+## Client-level version
+
+To prove the same flow through the real client outbox (local write while
+offline, automatic replay, `outboxStats` draining to zero), use the layered
+example in [Testing Strategy — Layer 3](/testing/strategy): it opens a
+generated client, blocks the network, writes locally, reconnects, and
+asserts `client.diagnosticSnapshot().outboxStats` is empty after sync.
 
 ## Production tips
 
-- Add a second actor updating the same row while device A is offline to verify conflict behavior.
-- Keep this flow in your CI "core behavior" suite, not only in slow end-to-end tests.
+- Add a second actor updating the same row while device A is offline to
+  verify conflict behavior — see
+  [Testing Strategy — Layer 4](/testing/strategy).
+- Keep this flow in your CI "core behavior" suite, not only in slow
+  end-to-end tests.
