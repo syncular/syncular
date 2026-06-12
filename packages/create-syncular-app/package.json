@@ -1,0 +1,47 @@
+{
+  "name": "create-syncular-app",
+  "version": "0.0.0",
+  "description": "Scaffold a local-first Syncular app (`bunx create-syncular-app my-app`)",
+  "license": "Apache-2.0",
+  "author": "Benjamin Kniffler",
+  "homepage": "https://syncular.dev",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/syncular/syncular.git",
+    "directory": "packages/create-syncular-app"
+  },
+  "bugs": {
+    "url": "https://github.com/syncular/syncular/issues"
+  },
+  "keywords": [
+    "sync",
+    "offline-first",
+    "realtime",
+    "database",
+    "typescript",
+    "create",
+    "scaffold"
+  ],
+  "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
+  "type": "module",
+  "bin": {
+    "create-syncular-app": "./dist/cli.js"
+  },
+  "scripts": {
+    "tsgo": "tsgo --noEmit",
+    "build": "rm -rf dist && bun run build:cli",
+    "build:cli": "bun build ./src/cli.ts --target=node --format=esm --outfile=./dist/cli.js",
+    "smoke": "bun scripts/smoke.ts",
+    "release": "bun run build:cli && syncular-publish"
+  },
+  "files": [
+    "dist",
+    "template"
+  ],
+  "devDependencies": {
+    "@syncular/config": "workspace:*"
+  }
+}
