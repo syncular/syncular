@@ -348,3 +348,22 @@ Full per-page tree and per-phase details live in the audit output; phases:
   - **Verification:** `bun run docs:stale-check` green (260 files);
     `bun --cwd apps/docs types:check` green; full `next build` green; scripted
     link check over operate/** + testing/** found no broken internal links.
+- 2026-06-12: **Rust client-configuration + troubleshooting written** (the
+  Phase 2 deferral closed). `clients/rust/client-configuration` grounds the
+  embed-direct native surface in `rust/crates/runtime/src/native/facade.rs`
+  (`NativeClientConfig` 6 fields, `NativeSyncularClientBuilder` 8 switches,
+  async open task), `core/limits.rs` (pull 1000/50k/10, push 20→1000 over
+  threshold 100 — explicitly *not* per-client tunable on native, unlike JS),
+  `transport/mod.rs` (fixed `SyncTransportTimeouts`, ws URL derived from
+  `base_url` + `/realtime`, reconnect backoff 1s→30s floor 250ms), and the
+  header-map auth model (`SyncAuthHeaders` + `AuthExpired` events — no
+  `getHeaders`/`authLifecycle`). `clients/rust/troubleshooting` maps
+  symptoms to `ErrorKind` + the shared `sync.*`/`blob.*` codes (catalog
+  linked at /reference/errors, not duplicated): auth/transport failures,
+  the open-time `Syncular app schema version mismatch` (diesel_sqlite.rs),
+  stalled outbox (closed worker / conflicts / 10k unresolved cap), realtime
+  reconnect expectations, and SQLite file locking (5s busy timeout). Both
+  added to rust meta.json (Getting Started after generated-client;
+  Troubleshooting section last) and the Rust index cards. Verification:
+  `bun run docs:stale-check` green; `bun --cwd apps/docs types:check` green;
+  `bun --cwd apps/docs run build` green.
