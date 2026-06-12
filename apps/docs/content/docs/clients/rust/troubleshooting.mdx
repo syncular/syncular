@@ -1,0 +1,82 @@
+---
+title: Troubleshooting
+description: Symptom → cause → fix for native Rust client failures, grounded in real error kinds and codes.
+---
+
+# Troubleshooting
+
+Every failure surfaces as a `SyncularError` with an `ErrorKind` (`Busy`,
+`Config`, `Storage`, `Transport`, `Protocol`, `Schema`, `Codegen`, `Internal`
+— `rust/crates/runtime/src/core/error.rs`), and events carry a
+`NativeErrorInfo` envelope: `kind`, `code`, `category`, `retryable`,
+`recommendedAction`, `message`. The `sync.*` / `blob.*` codes are the shared
+protocol catalog — see [Errors](/reference/errors) for the full list. Start
+with `diagnostic_snapshot_json()` and `local_health_check_json()`.
+
+## Connection and auth failures
+
+Watch `SyncFailed` events and the `lifecycle` they carry:
+
+- **`sync.transport_failed` / category `offline`** — retryable; the worker
+  backs off 1s doubling to 30s, up to 5 attempts per commit. Check
+  `base_url` (it must be the sync mount itself) and connectivity.
+- **`AuthExpired` event / code `sync.auth_required`, phase `authRequired`** —
+  the 401 path. Native has no refresh callback: refresh the token in app code
+  and call `set_auth_headers_json(..)`, which also resets realtime backoff.
+- **`sync.forbidden`** — not retryable; the actor lacks scope access. Fresh
+  tokens will not help.
+
+## Schema version mismatch on open
+
+Open fails with `Syncular app schema version mismatch: local N, generated M`
+(`ErrorKind::Schema`, `rust/crates/runtime/src/storage/diesel_sqlite.rs`): the
+database file was written by a *newer* generated client than the code now
+running — usually a rollback. Ship the newer build or delete the local file.
+Server-side `sync.schema_mismatch` (`regenerateClient`) means your generated
+client drifted: re-run `npx syncular generate`. See
+[Generated Client](/clients/rust/generated-client).
+
+## Stalled outbox
+
+Writes succeed locally but `outbox_stats.pending` never drains:
+
+- **Worker stopped** — calls fail with `native sync client is closed` after
+  `close()`/`pause_sync_worker()`. Call `resume_sync_worker()` (or
+  `resume_from_background()`); check
+  `diagnostic_snapshot().connection.sync_worker_running`.
+- **`auto_sync_local_writes(false)`** and nothing calls `trigger_sync()`.
+- **Unresolved conflicts** — `sync.version_conflict` parks the commit. Use
+  `conflict_summaries()`, then `resolve_conflict(id, ..)` or
+  `retry_conflict_keep_local(id)`.
+- **`maxUnresolvedOutboxCommits` exceeded** — new writes are rejected past
+  10,000 unresolved commits (`rust/crates/runtime/src/core/limits.rs`). Drain
+  or resolve before writing more.
+
+## Realtime keeps reconnecting
+
+Reconnect churn is expected behavior, not an error: the worker silently
+retries with backoff and rejoins presence scopes on success. HTTP catchup
+stays authoritative, so no data is lost while the socket is down. If
+`connection.realtime_worker_running` is `false`, you stopped it
+(`stop_realtime_worker()`) or never enabled `realtime(true)`. Persistent
+failure to connect usually means the server has no realtime mount
+(`sync.websocket_not_configured`) or stale auth headers.
+
+## Database file issues
+
+- **`database is locked` (`ErrorKind::Storage`)** — another process holds the
+  file, or two clients share one `db_path` past the 5s SQLite busy timeout.
+  One client per file; give each replica its own path.
+- **Open fails with a missing path** — the runtime creates the file but not
+  parent directories; create the data directory first.
+- **Moving/backing up** — move `db_path` together with its `-wal`/`-shm`
+  sidecars, never while a client is open.
+
+## Last resorts
+
+`sync.integrity_rejected` recommends `forceResync`:
+`reset_local_sync_state_json(..)` re-bootstraps subscriptions without
+dropping local rows, and `repair_local_health_json(..)` applies fixes from a
+health-check finding. An `EventsOverflowed` event (`resyncRequired: true`)
+means a slow consumer lost events — resubscribe and refresh projections from
+SQLite before trusting new deltas.
