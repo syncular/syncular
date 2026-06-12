@@ -12,12 +12,10 @@ import { createSyncServer } from '@syncular/server-hono';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import type { Kysely } from 'kysely';
-// Codecs and row types come from the generated client module; regenerate it
-// with `bun run codegen` after changing migrations/ or syncular.app.ts.
-import {
-  type SyncularAppDb,
-  syncularGeneratedCodecs,
-} from '../generated/syncular.generated';
+// Regenerate the generated modules with `bun run codegen` after changing
+// migrations/ or syncular.app.ts.
+import { syncularGeneratedCodecs } from '../generated/syncular.generated';
+import type { SyncularAppDb } from '../generated/syncular.server.generated';
 
 interface AppServerDb extends SyncCoreDb, SyncularAppDb {}
 

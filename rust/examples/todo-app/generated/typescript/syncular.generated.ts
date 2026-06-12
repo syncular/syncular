@@ -4,7 +4,7 @@
 import { SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, withSyncularSchemaWrites } from '../../../../../packages/client/src';
 import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope } from '../../../../../packages/client/src';
 
-import { sql, type Kysely } from 'kysely';
+import { sql, type Generated, type Kysely } from 'kysely';
 import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';
 
 export interface SyncularGeneratedOperation {
@@ -34,10 +34,10 @@ function syncularBootstrapPhase(args: SyncularSubscriptionArgs, table: string, s
 }
 
 export interface SyncularAppDb {
-  comments: CommentRow;
-  projects: ProjectRow;
-  tasks: TaskRow;
-  syncular_task_counts: SyncularTaskCountRow;
+  comments: CommentTable;
+  projects: ProjectTable;
+  tasks: TaskTable;
+  syncular_task_counts: SyncularTaskCountTable;
 }
 
 export interface SyncularGeneratedTableConfig {
@@ -1018,10 +1018,26 @@ export function defaultSyncularSubscriptions(args: SyncularSubscriptionArgs): Sy
   ];
 }
 
+export interface SyncularTaskCountTable {
+  user_id: string;
+  completed: Generated<number>;
+  task_count: Generated<number>;
+}
+
 export interface SyncularTaskCountRow {
   user_id: string;
   completed: number;
   task_count: number;
+}
+
+export interface CommentTable {
+  id: string;
+  task_id: string;
+  project_id: string | null;
+  body: string;
+  author_id: string;
+  deleted: Generated<number>;
+  server_version: Generated<number>;
 }
 
 export interface CommentRow {
@@ -1119,6 +1135,14 @@ export function commentSubscription(args: SyncularSubscriptionArgs): SyncularSub
   };
 }
 
+export interface ProjectTable {
+  id: string;
+  name: string;
+  owner_id: string;
+  archived: Generated<number>;
+  server_version: Generated<number>;
+}
+
 export interface ProjectRow {
   id: string;
   name: string;
@@ -1201,6 +1225,18 @@ export function projectSubscription(args: SyncularSubscriptionArgs): SyncularSub
     params: {},
     bootstrapPhase: syncularBootstrapPhase(args, 'projects', 'sub-projects'),
   };
+}
+
+export interface TaskTable {
+  id: string;
+  title: string;
+  completed: Generated<number>;
+  user_id: string;
+  project_id: string | null;
+  server_version: Generated<number>;
+  image: BlobRef | null;
+  title_yjs_state: string | null;
+  description: string | null;
 }
 
 export interface TaskRow {

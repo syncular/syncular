@@ -1713,6 +1713,13 @@ fn has_sql_default(column: &ColumnRow) -> bool {
     column.dflt_value.is_some()
 }
 
+/// Whether the database supplies a value for this column when an insert omits
+/// it: either an explicit SQL `DEFAULT`, or the server-managed version column
+/// (`server_version`), which the sync engine always assigns.
+fn ts_column_has_db_default(column: &ColumnRow, config: &TableCodegenConfig) -> bool {
+    has_sql_default(column) || is_server_managed_column(column, config)
+}
+
 fn is_server_managed_column(column: &ColumnRow, config: &TableCodegenConfig) -> bool {
     config
         .server_version_column
@@ -5528,7 +5535,7 @@ fn push_typescript_app_db_rows(
     out.push_str("export interface SyncularAppDb {\n");
     for table in user_tables {
         out.push_str(&format!(
-            "  {}: {}Row;\n",
+            "  {}: {}Table;\n",
             ts_property_name(&table.name),
             singular_pascal_case(&table.name)
         ));
@@ -5537,6 +5544,7 @@ fn push_typescript_app_db_rows(
     for table in user_tables {
         let table_config = config.table(&table.name);
         let type_name = singular_pascal_case(&table.name);
+        push_typescript_kysely_table_interface(out, table, &table_config, &type_name);
         out.push_str(&format!("export interface {type_name}Row {{\n"));
         for column in &table.columns {
             out.push_str(&format!(
@@ -5547,6 +5555,43 @@ fn push_typescript_app_db_rows(
         }
         out.push_str("}\n\n");
     }
+}
+
+/// Emits the Kysely-facing table interface: columns the database defaults
+/// (SQL `DEFAULT` or the server-managed version column) are wrapped in
+/// Kysely's `Generated<T>` so `Insertable<>` treats them as optional while
+/// `Selectable<>` still yields the concrete value.
+fn push_typescript_kysely_table_interface(
+    out: &mut String,
+    table: &TableInfo,
+    table_config: &TableCodegenConfig,
+    type_name: &str,
+) {
+    out.push_str(&format!("export interface {type_name}Table {{\n"));
+    for column in &table.columns {
+        let app_type = ts_app_type(column, table_config);
+        let column_type = if ts_column_has_db_default(column, table_config) {
+            format!("Generated<{app_type}>")
+        } else {
+            app_type
+        };
+        out.push_str(&format!(
+            "  {}: {};\n",
+            ts_property_name(&column.name),
+            column_type
+        ));
+    }
+    out.push_str("}\n\n");
+}
+
+fn tables_use_generated_columns(user_tables: &[TableInfo], config: &CodegenConfig) -> bool {
+    user_tables.iter().any(|table| {
+        let table_config = config.table(&table.name);
+        table
+            .columns
+            .iter()
+            .any(|column| ts_column_has_db_default(column, &table_config))
+    })
 }
 
 fn schema_column_ts_type(column: &SchemaJsonColumn) -> String {
@@ -5689,16 +5734,30 @@ fn push_typescript_client_schema_metadata(
     out.push_str("  nullable: boolean;\n");
     out.push_str("  notnullRequired: boolean;\n");
     out.push_str("  primaryKey: boolean;\n");
+    out.push_str("  hasDefault: boolean;\n");
+    out.push_str("  defaultSql: string | null;\n");
+    out.push_str("  serverVersion: boolean;\n");
+    out.push_str("  softDelete: boolean;\n");
     out.push_str("  blobRef: boolean;\n");
+    out.push_str("  scope: string | null;\n");
     out.push_str("}\n\n");
     out.push_str("export interface SyncularGeneratedTableSchemaMetadata {\n");
     out.push_str("  name: string;\n");
     out.push_str("  primaryKeyColumn: string;\n");
     out.push_str("  serverVersionColumn: string;\n");
+    out.push_str("  softDeleteColumn: string | null;\n");
     out.push_str("  columns: readonly SyncularGeneratedColumnSchemaMetadata[];\n");
+    out.push_str("  indexes?: readonly { name: string; sql: string; unique: boolean; partial: boolean; columns: readonly { name: string | null; descending: boolean }[] }[];\n");
+    out.push_str("  blobColumns: readonly string[];\n");
+    out.push_str("  crdtYjsFields: readonly { field: string; stateColumn: string; containerKey: string; rowIdField: string; kind: string; syncMode: string }[];\n");
+    out.push_str(
+        "  encryptedFields: readonly { field: string; scope: string; rowIdField: string }[];\n",
+    );
     out.push_str(
         "  scopes: readonly { name: string; column: string; source: string; required: boolean }[];\n",
     );
+    out.push_str("  subscription: { id: string; params: Record<string, unknown> };\n");
+    out.push_str("  sqliteWithoutRowid?: boolean;\n");
     out.push_str("}\n\n");
     out.push_str("export interface SyncularGeneratedClientSchemaMetadata {\n");
     out.push_str("  schemaVersion: number;\n");
@@ -5925,6 +5984,7 @@ fn push_typescript_app_server_handler_helpers(
     out.push_str("export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreDb, Auth extends SyncServerAuth = SyncServerAuth>(options: CreateSyncularAppServerHandlerOptions<DB, Auth>): ServerTableHandler<DB, Auth> {\n");
     out.push_str("  const table = syncularResolveGeneratedAppTable(options.table);\n");
     out.push_str("  const tableName = table.name;\n");
+    out.push_str("  const applyOperationBatch = options.applyOperationBatch;\n");
     out.push_str("  const handler: ServerTableHandler<DB, Auth> = {\n");
     out.push_str("    table: tableName,\n");
     out.push_str("    primaryKeyColumn: table.primaryKeyColumn,\n");
@@ -5970,9 +6030,7 @@ fn push_typescript_app_server_handler_helpers(
     out.push_str("      syncularAssertGeneratedApplyOperationResult(tableName, result, ctx.schemaVersion);\n");
     out.push_str("      return result;\n");
     out.push_str("    },\n");
-    out.push_str(
-        "    applyOperationBatch: options.applyOperationBatch ? async (ctx, operations) => {\n",
-    );
+    out.push_str("    applyOperationBatch: applyOperationBatch ? async (ctx, operations) => {\n");
     out.push_str("      for (const { op, opIndex } of operations) {\n");
     out.push_str("        if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {\n");
     out.push_str("          return [syncularUnsupportedClientSchemaResult({ opIndex, schemaVersion: ctx.schemaVersion })];\n");
@@ -5980,7 +6038,7 @@ fn push_typescript_app_server_handler_helpers(
     out.push_str("        const validation = syncularValidateGeneratedOperation(tableName, op, ctx.schemaVersion);\n");
     out.push_str("        if (!validation.ok) return [syncularGeneratedValidationErrorResult(opIndex, validation.errors)];\n");
     out.push_str("      }\n");
-    out.push_str("      const results = await options.applyOperationBatch(ctx, operations);\n");
+    out.push_str("      const results = await applyOperationBatch(ctx, operations);\n");
     out.push_str("      for (const result of results) syncularAssertGeneratedApplyOperationResult(tableName, result, ctx.schemaVersion);\n");
     out.push_str("      return results;\n");
     out.push_str("    } : undefined,\n");
@@ -6007,7 +6065,11 @@ fn generate_typescript_server_module(
     out.push_str(
         "import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';\n",
     );
-    out.push_str("import { SyncClientSchemaUnsupportedError, type ApplyOperationResult, type ScopeValues, type ServerApplyOperationContext, type ServerContext, type ServerSnapshotContext, type ServerTableHandler, type StoredScopes, type SyncCoreDb, type SyncOperation, type SyncServerAuth } from '@syncular/server';\n\n");
+    out.push_str("import { SyncClientSchemaUnsupportedError, type ApplyOperationResult, type ScopeValues, type ServerApplyOperationContext, type ServerContext, type ServerSnapshotContext, type ServerTableHandler, type StoredScopes, type SyncCoreDb, type SyncOperation, type SyncServerAuth } from '@syncular/server';\n");
+    if tables_use_generated_columns(&user_tables, config) {
+        out.push_str("import type { Generated } from 'kysely';\n");
+    }
+    out.push('\n');
     let client_schema_support = client_schema_support_from_config(config, schema_version)?;
     push_typescript_client_schema_support(&mut out, &client_schema_support);
     push_typescript_unsupported_client_schema_result(&mut out);
@@ -6064,7 +6126,19 @@ fn generate_typescript_module(
         "import type {{ CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope }} from {};\n\n",
         ts_string(runtime_import_path)
     ));
-    out.push_str("import { sql, type Kysely } from 'kysely';\n");
+    let read_model_table_config = TableCodegenConfig::default();
+    let uses_generated_columns = tables_use_generated_columns(&user_tables, config)
+        || local_read_model_tables.iter().any(|table| {
+            table
+                .columns
+                .iter()
+                .any(|column| ts_column_has_db_default(column, &read_model_table_config))
+        });
+    if uses_generated_columns {
+        out.push_str("import { sql, type Generated, type Kysely } from 'kysely';\n");
+    } else {
+        out.push_str("import { sql, type Kysely } from 'kysely';\n");
+    }
     out.push_str(
         "import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';\n\n",
     );
@@ -6095,14 +6169,14 @@ fn generate_typescript_module(
     out.push_str("export interface SyncularAppDb {\n");
     for table in &user_tables {
         out.push_str(&format!(
-            "  {}: {}Row;\n",
+            "  {}: {}Table;\n",
             ts_property_name(&table.name),
             singular_pascal_case(&table.name)
         ));
     }
     for table in &local_read_model_tables {
         out.push_str(&format!(
-            "  {}: {}Row;\n",
+            "  {}: {}Table;\n",
             ts_property_name(&table.name),
             singular_pascal_case(&table.name)
         ));
@@ -7008,9 +7082,14 @@ fn generate_typescript_module(
     out.push_str("  ];\n");
     out.push_str("}\n\n");
 
-    let read_model_table_config = TableCodegenConfig::default();
     for table in &local_read_model_tables {
         let type_name = singular_pascal_case(&table.name);
+        push_typescript_kysely_table_interface(
+            &mut out,
+            table,
+            &read_model_table_config,
+            &type_name,
+        );
         out.push_str(&format!("export interface {type_name}Row {{\n"));
         for column in &table.columns {
             out.push_str(&format!(
@@ -7031,6 +7110,7 @@ fn generate_typescript_module(
             .find(|column| column.pk > 0)
             .with_context(|| format!("table {} has no primary key", table.name))?;
 
+        push_typescript_kysely_table_interface(&mut out, table, &config, &type_name);
         out.push_str(&format!("export interface {type_name}Row {{\n"));
         for column in &table.columns {
             out.push_str(&format!(
@@ -12267,7 +12347,7 @@ CREATE TABLE tasks (
         assert!(output.contains(
             "import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope } from '@app/sync-runtime';"
         ));
-        assert!(output.contains("import { sql, type Kysely } from 'kysely';"));
+        assert!(output.contains("import { sql, type Generated, type Kysely } from 'kysely';"));
         assert!(output.contains(
             "import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';"
         ));
@@ -12390,8 +12470,11 @@ CREATE TABLE tasks (
         assert!(output.contains(
             "  for (const statement of syncularGeneratedAppSchema.localBaseSchema.tableSetupSql)"
         ));
-        assert!(output.contains("  tasks: TaskRow;"));
-        assert!(output.contains("  projects: ProjectRow;"));
+        assert!(output.contains("  tasks: TaskTable;"));
+        assert!(output.contains("  projects: ProjectTable;"));
+        assert!(output.contains("export interface TaskTable {"));
+        assert!(output.contains("  server_version: Generated<number>;"));
+        assert!(output.contains("export interface TaskRow {"));
         assert!(output.contains("export interface SyncularGeneratedTableConfig"));
         assert!(output.contains("export const syncularGeneratedTableConfig = {"));
         assert!(output.contains("export const syncularGeneratedAppSchema = {"));
@@ -12489,7 +12572,10 @@ CREATE TABLE tasks (
         assert!(!output.contains("@app/sync-runtime"));
         assert!(!output.contains("createSyncularRustSqliteDatabase"));
         assert!(!output.contains("withSyncularSchemaWrites"));
-        assert!(!output.contains("from 'kysely'"));
+        assert!(output.contains("import type { Generated } from 'kysely';"));
+        assert!(output.contains("export interface TaskTable {"));
+        assert!(output.contains("  server_version: Generated<number>;"));
+        assert!(output.contains("  tasks: TaskTable;"));
         assert!(output.contains("export const syncularGeneratedSchemaVersion = 7 as const;"));
         assert!(output.contains("export const syncularGeneratedClientSchemaSupport = {"));
         assert!(output.contains(
@@ -12717,7 +12803,8 @@ CREATE TABLE tasks (
 
         let output = generate_typescript_module(&[tasks], &config, 3, None)?;
 
-        assert!(output.contains("syncular_task_counts: SyncularTaskCountRow;"));
+        assert!(output.contains("syncular_task_counts: SyncularTaskCountTable;"));
+        assert!(output.contains("export interface SyncularTaskCountTable"));
         assert!(output.contains("export interface SyncularTaskCountRow"));
         assert!(output.contains("task_count: number;"));
         assert!(output.contains("export const syncularGeneratedLocalReadModels"));
