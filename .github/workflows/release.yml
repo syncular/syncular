@@ -111,7 +111,24 @@ jobs:
           echo "npm_tag=$npm_tag" >> "$GITHUB_OUTPUT"
           echo "Publishing $channel release version $version with npm tag $npm_tag"
 
-      - name: Stamp npm and Cargo versions
+      # Stable versions are committed by Changesets (`bun run version`), so the
+      # checkout already carries the right npm + Cargo versions; we only verify.
+      # Staging releases stamp an ephemeral prerelease version that is never
+      # committed.
+      - name: Verify committed release versions (stable)
+        if: steps.release_meta.outputs.channel == 'stable'
+        run: |
+          set -euo pipefail
+          committed="$(bun -e 'console.log(require("./packages/core/package.json").version)')"
+          expected='${{ steps.release_meta.outputs.version }}'
+          if [ "$committed" != "$expected" ]; then
+            echo "Committed package version ($committed) does not match release version ($expected)." >&2
+            echo "Run 'bun run version' (changeset version + sync) and commit before tagging a stable release." >&2
+            exit 1
+          fi
+
+      - name: Stamp ephemeral npm and Cargo versions (staging)
+        if: steps.release_meta.outputs.channel == 'staging'
         run: |
           bun scripts/stamp-versions.ts --version '${{ steps.release_meta.outputs.version }}'
           bun scripts/stamp-cargo-versions.ts --version '${{ steps.release_meta.outputs.version }}'

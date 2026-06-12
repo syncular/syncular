@@ -1,0 +1,48 @@
+{
+  "$schema": "https://unpkg.com/@changesets/config@3.1.1/schema.json",
+  "changelog": "@changesets/cli/changelog",
+  "commit": false,
+  "fixed": [
+    [
+      "syncular",
+      "create-syncular-app",
+      "@syncular/client",
+      "@syncular/client-crdt-adapters",
+      "@syncular/client-javascript-bindings",
+      "@syncular/client-react-native",
+      "@syncular/client-tauri",
+      "@syncular/console",
+      "@syncular/core",
+      "@syncular/dialects",
+      "@syncular/migrations",
+      "@syncular/observability-sentry",
+      "@syncular/react",
+      "@syncular/relay",
+      "@syncular/server",
+      "@syncular/server-cloudflare",
+      "@syncular/server-dialect-postgres",
+      "@syncular/server-dialect-sqlite",
+      "@syncular/server-hono",
+      "@syncular/server-plugin-yjs",
+      "@syncular/server-service-worker",
+      "@syncular/server-storage-filesystem",
+      "@syncular/server-storage-s3",
+      "@syncular/testkit",
+      "@syncular/transport-http",
+      "@syncular/typegen",
+      "@syncular/ui"
+    ]
+  ],
+  "linked": [],
+  "access": "public",
+  "baseBranch": "main",
+  "updateInternalDependencies": "patch",
+  "privatePackages": {
+    "version": false,
+    "tag": false
+  },
+  "ignore": [],
+  "___experimentalUnsafeOptions_WILL_CHANGE_IN_PATCH": {
+    "onlyUpdatePeerDependentsWhenOutOfRange": true
+  }
+}

@@ -1,4 +1,5 @@
 .context/
+.claude/
 .ignore/
 node_modules/
 .DS_Store
