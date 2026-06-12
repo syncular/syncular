@@ -5,6 +5,7 @@
       "**/*.ts",
       "**/*.tsx",
       "!**/*.d.ts",
+      "!.claude",
       "!.ignore",
       "!**/.source",
       "!**/.next",

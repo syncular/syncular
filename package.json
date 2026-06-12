@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "devDependencies": {
     "@biomejs/biome": "2.4.10",
+    "@changesets/cli": "2.31.0",
     "@types/bun": "^1.3.11",
     "@types/node": "^25.5.2",
     "@typescript/native-preview": "7.0.0-dev.20260403.1",
@@ -56,6 +57,8 @@
     "demo": "bun --cwd apps/demo dev",
     "docs": "bun --cwd apps/docs dev",
     "docs:build": "bun --cwd apps/docs build",
+    "changeset": "changeset",
+    "version": "changeset version && bun scripts/sync-versions.ts",
     "check": "bun tsgo && bun lint && bun run knip && bun run bundle:check && bun run audit",
     "check:fix": "bun tsgo && bun lint:fix && bun run knip && bun run bundle:check && bun run audit",
     "audit": "bun audit",
