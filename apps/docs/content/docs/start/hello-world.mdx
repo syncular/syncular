@@ -7,13 +7,17 @@ description: The smallest end-to-end Syncular app — one table, one server, one
 
 > **Alpha.** APIs, wire formats, and storage layouts will change between releases. Pin versions and expect manual migrations between versions.
 
-<Callout title="create-syncular-app is coming">
-This page will start with a single `create-syncular-app` command that scaffolds
-everything below. Until that ships, the manual path is short enough to follow
-end to end — and it shows you every moving part once.
-</Callout>
+<Callout title="Fastest start">
+Scaffold everything on this page with one command, then run it:
 
-{/* TODO: replace the manual steps below with the create-syncular-app one-liner once it lands. */}
+```bash
+bunx create-syncular-app my-app
+cd my-app && bun install && bun dev
+```
+
+The rest of this page walks through the same app manually so you see every
+moving part once.
+</Callout>
 
 This walkthrough builds the smallest real Syncular app: a `tasks` table that
 syncs between a Bun + Hono server and a browser client. It is adapted directly
