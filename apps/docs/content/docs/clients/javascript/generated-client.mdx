@@ -1,77 +1,133 @@
 ---
 title: Generated Client
-description: Understand the TypeScript files generated for JavaScript apps and how they connect Kysely to the Syncular runtime.
+description: What syncular.app.ts is, how `npx syncular generate` works, what it emits, and how schema versions are enforced at runtime.
 ---
 
 # Generated Client
 
 JavaScript apps should not hand-write table metadata, mutation namespaces, or
 runtime feature contracts. Generate them from your SQLite migrations and
-`syncular.app.ts`.
+`syncular.app.ts`, commit the output, and regenerate whenever either input
+changes.
 
-## Inputs
+## The app contract: `syncular.app.ts`
 
-The generator reads:
+The generator reads two inputs:
 
-- `migrations/**/up.sql`: the local SQLite replica shape.
-- `syncular.app.ts`: Syncular semantics that SQL cannot express, such as
-  scopes, server-version columns, blob columns, CRDT fields, encrypted fields,
-  local read models, and output paths.
+- `migrations/**/up.sql` — the local SQLite replica shape, in plain SQL.
+- `syncular.app.ts` — the app contract: Syncular semantics that SQL cannot
+  express, such as subscription ids, scopes, server-version columns, blob
+  columns, CRDT fields, encrypted fields, and output paths.
 
 ```ts
 import { defineSyncularClient, scope, syncedTable } from '@syncular/typegen';
 
 export const app = defineSyncularClient({
-  typescriptOutputPath: 'src/generated/syncular.browser.ts',
+  typescriptOutputPath: 'src/generated/syncular.generated.ts',
+  typescriptServerOutputPath: 'src/generated/syncular.server.generated.ts',
   tables: {
     tasks: syncedTable({
       table: 'tasks',
-      subscriptionId: 'tasks-by-user',
-      primaryKey: 'id',
-      serverVersion: 'server_version',
+      subscriptionId: 'sub-tasks',
       scopes: [scope('user_id', { source: 'actorId', required: true })],
+      serverVersion: 'server_version',
     }),
   },
 });
 ```
 
-## Outputs
+This is the same contract shape used by `apps/demo` and the
+`create-syncular-app` template.
 
-The TypeScript output gives your app:
-
-- a typed Kysely `AppDb` interface;
-- generated runtime/open helpers;
-- generated mutation namespaces;
-- generated subscription helpers;
-- changed-row helpers for row/field deltas;
-- feature metadata for blobs, CRDT fields, encryption, and local read models.
-
-```ts
-import {
-  createSyncularAppDatabase,
-  taskSubscription,
-  syncularChangedRows,
-} from './generated/syncular.browser';
-import type { AppDb } from './generated/syncular.browser';
-```
-
-## Runtime validation
-
-Generated clients validate that the loaded runtime supports the features your
-app schema requires. If the runtime is missing required features, fail at open
-time instead of letting app code run with partial sync behavior.
-
-## What not to edit
-
-Do not edit generated files by hand. Change migrations or `syncular.app.ts`,
-then regenerate:
+## The generate workflow
 
 ```bash
-npx syncular generate --manifest-dir .
+npx syncular generate
 ```
 
-Run the check form in CI:
+One command runs the whole pipeline (`packages/syncular`):
+
+1. `syncular.app.ts` is evaluated and serialized to
+   `generated/syncular.codegen.json` — a language-neutral handoff.
+2. The Rust `syncular-codegen` binary combines that handoff with your
+   migrations and emits the language clients. The binary is auto-installed
+   into Syncular's tool cache on first run (or install it explicitly with
+   `npx syncular codegen install`; `SYNCULAR_CODEGEN_BIN` points at a custom
+   binary).
+
+Useful flags: `--manifest-dir <path>` (where `syncular.app.ts` and
+`generated/` live, default `.`), `--migrations-dir <path>`, `--app <path>`,
+and `--check`. Rust-only projects can omit `syncular.app.ts` entirely;
+`syncular generate` then initializes the codegen config from migrations.
+
+Keep the check form in CI so generated files never drift from the contract:
 
 ```bash
-npx syncular generate --manifest-dir . --check
+npx syncular generate --check
 ```
+
+## What gets generated
+
+For a TypeScript app the interesting outputs are:
+
+- **`src/generated/syncular.generated.ts`** — the client module:
+  - a typed Kysely `SyncularAppDb` interface plus per-table row types
+    (`TaskRow`, `NewTask`, `TaskPatch`, payload builders);
+  - `createSyncularAppDatabase(options)` — the open helper that wires
+    schema version, embedded migrations, codecs, table config, and required
+    runtime features into [`CreateSyncularDatabaseOptions`](/clients/javascript/client-configuration),
+    installs the local schema, sets default subscriptions, and wraps
+    mutations with command history (undo/redo);
+  - mutation namespaces (`mutations.tasks.insert/update/...`) and
+    subscription helpers (`taskSubscription({ actorId })`);
+  - changed-row helpers for row/field deltas;
+  - `assertSyncularAppRuntime(...)` runtime/feature assertions.
+- **`src/generated/syncular.server.generated.ts`** — server-side table
+  handler scaffolding and codecs for `@syncular/server`.
+- **`generated/syncular.codegen.json`** — the contract handoff (input to the
+  Rust binary; also what Rust-only apps edit).
+- **`syncular.schema.json`** — a readable summary of the app schema:
+  `appSchemaVersion`, `clientSchemaSupport`, migrations, and table metadata.
+
+The same run can emit Rust (Diesel), Swift, and Kotlin clients for native
+hosts — the `create-syncular-app` template keeps them under `generated/`.
+
+Generated files are app code: commit them so TypeScript, React, and bridge
+code can see concrete table types, and so the app builds without the codegen
+toolchain installed.
+
+## When to regenerate
+
+Regenerate after changing:
+
+- any migration SQL (new table, new column, index with semantic meaning);
+- anything in `syncular.app.ts` (scopes, subscription ids, blob/CRDT/encrypted
+  fields, output paths);
+- the Syncular package versions (the generated header pins runtime
+  expectations).
+
+Do not edit generated files by hand — the next `generate` run overwrites
+them, and `--check` in CI will flag the drift.
+
+## Version handling
+
+Every generated client carries a schema version
+(`syncularGeneratedSchemaVersion`, derived from your migrations) and a
+support window (`syncularGeneratedClientSchemaSupport` with
+`current`/`minSupported`/`supported`). Three layers enforce it:
+
+- **Open time:** `createSyncularAppDatabase` stamps `config.schemaVersion`
+  and embeds migrations; `assertSyncularAppRuntime` fails fast if the loaded
+  WASM runtime's package version, worker protocol version, or feature set
+  does not match what the client was generated against, or if the local
+  database was written by a *newer* schema than the generated code.
+- **Local migrations:** older local databases are migrated forward using the
+  embedded migration SQL.
+- **Sync time:** the server rejects pushes from incompatible clients with
+  `sync.schema_mismatch` (regenerate and ship) or
+  `sync.client_schema_unsupported` (the client is older than the server's
+  `minSupported` — users must upgrade).
+
+See [Troubleshooting](/clients/javascript/troubleshooting#schema-version-mismatch)
+for the recovery paths, and [Migrations](/features/migrations) for how to
+evolve the schema safely.

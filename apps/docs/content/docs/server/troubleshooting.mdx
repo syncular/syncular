@@ -1,0 +1,81 @@
+---
+title: Troubleshooting
+description: Diagnose common server-side sync failures by symptom.
+---
+
+# Server Troubleshooting
+
+Symptom-first fixes for the server half of sync. For client-side and
+end-to-end symptoms (looping bootstraps, rows disappearing after first sync),
+see the [operations troubleshooting tree](/operate/troubleshooting).
+
+## Handler never called
+
+Pulls return nothing and breakpoints in `resolveScopes` or `snapshot` never
+hit:
+
+- The subscription `table` must match the handler `table` exactly. An unknown
+  table rejects the whole pull with `Unknown table: <name>`.
+- The handler must be in `sync.handlers` of `createSyncServer` — it throws at
+  startup if the array is empty, but not if one table is missing.
+- Check that `authenticate` is not returning `null` — that fails the request
+  with 401 before any handler runs.
+
+## Subscription unexpectedly revoked
+
+The pull response shows `status: 'revoked'` and clients delete local rows:
+
+- **`resolveScopes` threw.** The server logs
+  `[resolveScopes] Failed for table <t>, subscription <id>` and revokes rather
+  than leaking. Check server logs first.
+- **Malformed scope values.** `resolveScopes` now fails loudly: non-string
+  values throw a descriptive error naming the table, scope key, and entry
+  type. The same applies to scope keys not declared in the handler's
+  `scopes` patterns — requested or resolved — which reject with
+  `Invalid scope key "<key>" … Expected keys: …`.
+- **Empty intersection.** The client requested values the actor is not
+  allowed, or any single requested key lost all access. Compare the client's
+  requested scopes with what `resolveScopes` returns for that actor.
+- Membership genuinely changed — then revocation is correct behavior.
+
+## Snapshot timeouts
+
+Bootstrap pulls hang or time out on large tables:
+
+- Custom `snapshot` implementations must honor `ctx.limit` and `ctx.cursor`;
+  returning the whole table in one page stalls encoding and the response.
+- Add an index on the scope columns and the primary key — the default
+  snapshot filters by scope and keyset-paginates by primary key.
+- Supply `snapshotBinaryColumns` on hand-rolled handlers so the server skips
+  per-page column inference ([Bootstrap & Snapshots](/server/snapshot-pull)).
+- Move chunk bodies to external storage (`chunkStorage`) so the database is
+  not serving 64 MiB chunk rows.
+
+## Cursor stalled
+
+A client pulls repeatedly but `nextCursor` never advances past a point:
+
+- Check commit pruning: if history behind the client's cursor was pruned, the
+  client must re-bootstrap. Tune `routes.prune` watermarks against your
+  offline window.
+- A pull returns at most `limitCommits` (capped by
+  `routes.maxPullLimitCommits`, default 100) per request — a backlog drains
+  over several pulls; that is progress, not a stall.
+- Confirm the client sends back the `nextCursor` it received; replaying an
+  old cursor returns the same commits forever.
+
+## Payload too large (413)
+
+Responses with `runtime.limit_exceeded` and HTTP 413 mean a byte limit
+tripped. Defaults: request JSON 4 MiB (`maxSyncRequestJsonBytes`), binary
+sync-pack responses 16 MiB (`maxSyncBinaryPackBytes`), snapshot chunks 64 MiB
+(`maxSnapshotChunkResponseBytes`), snapshot artifacts 256 MiB
+(`maxSnapshotArtifactResponseBytes`) — all tunable under `routes`. If pushes
+hit the request limit, lower `maxOperationsPerPush` batching on the client or
+move binary data to [Blobs](/server/blobs).
+
+## Next steps
+
+- [Operations Troubleshooting](/operate/troubleshooting)
+- [Authorization](/server/scopes-and-auth)
+- [Getting Started](/server/getting-started)

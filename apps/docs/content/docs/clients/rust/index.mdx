@@ -12,17 +12,34 @@ query-builder expressions, while writes go through generated Syncular mutation
 namespaces so local rows, outbox commits, conflicts, blobs, CRDT fields, and
 encryption remain coherent.
 
-## Core API
+## Getting Started
 
 <Cards>
   <Card title="Quick Start" href="/clients/rust/quick-start" description="Generate Rust app code, open the client, query with Diesel, and mutate through Syncular" />
   <Card title="Generated Client" href="/clients/rust/generated-client" description="Understand generated schema, row types, migrations, metadata, subscriptions, and table helpers" />
+</Cards>
+
+## Core APIs
+
+<Cards>
   <Card title="Querying" href="/clients/rust/querying" description="Use Diesel expressions through client-owned SQLite connections" />
   <Card title="Mutations" href="/clients/rust/mutations" description="Insert, update, delete, lease, and batch app-table writes through Syncular" />
   <Card title="Live Updates" href="/clients/rust/live-updates" description="Resolve conflicts and refresh typed Diesel live queries from row change reports" />
 </Cards>
 
-## Runtime Features
+## Host Integration
+
+There is one Rust runtime; native hosts embed it directly instead of bridging
+to it. Swift, Kotlin, JVM, React Native, Tauri, and Electron shells consume
+the same engine through FFI bindings, so sync behavior is identical to the
+in-process Rust SDK.
+
+<Cards>
+  <Card title="Native Hosts" href="/clients/rust/native-hosts" description="Embed the Rust runtime from Swift, Kotlin, JVM, React Native, Tauri, or Electron hosts" />
+  <Card title="Packaging" href="/clients/rust/packaging" description="Build native runtime artifacts from the Rust workspace" />
+</Cards>
+
+## Advanced Features
 
 <Cards>
   <Card title="Runtime" href="/clients/rust/runtime" description="Run the worker, event stream, queued commands, and UI lifecycle model" />
@@ -35,13 +52,6 @@ encryption remain coherent.
 
 <Cards>
   <Card title="Testing" href="/clients/rust/testing" description="Use syncular-testkit with real generated clients and SQLite state" />
-</Cards>
-
-## Delivery
-
-<Cards>
-  <Card title="Native Hosts" href="/clients/rust/native-hosts" description="Embed the Rust runtime from Swift, Kotlin, JVM, React Native, Tauri, or Electron hosts" />
-  <Card title="Packaging" href="/clients/rust/packaging" description="Build native runtime artifacts from the Rust workspace" />
 </Cards>
 
 ## Runtime split

@@ -1,9 +1,9 @@
 ---
-title: Scopes And Auth
+title: Authorization
 description: Authenticate actors and resolve the scopes they can sync.
 ---
 
-# Scopes And Auth
+# Authorization
 
 Syncular clients request subscriptions, but the server decides what those
 requests mean for the current actor. Authentication produces an actor context;
@@ -19,8 +19,9 @@ first.
 
 ## Authenticate requests
 
-`createSyncServer` expects a `sync.authenticate` function. Return `null` to
-reject the request, or return an auth object with at least `actorId`.
+`createSyncServer` expects a `sync.authenticate` function. It receives the raw
+`Request`; return `null` to reject (the client gets a 401), or return an auth
+object with at least `actorId`.
 
 ```typescript
 import type { SyncServerAuth } from '@syncular/server';
@@ -45,7 +46,9 @@ export async function authenticate(request: Request): Promise<AppAuth | null> {
 }
 ```
 
-That object is available as `ctx.auth` in table handlers.
+That object is available as `ctx.auth` in table handlers — load everything
+your handlers need for authorization decisions here (roles, membership ids)
+so `resolveScopes` stays cheap.
 
 ## Resolve allowed scopes
 
@@ -68,8 +71,47 @@ const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks', AppAuth>({
 });
 ```
 
-If the intersection is empty, the client subscription is revoked. The client
-runtime removes matching local rows and stops syncing that subscription.
+Two server-side details beyond the conceptual model:
+
+- **Wildcard:** returning `'*'` (or including it in an array) for a scope key
+  allows any value the client requests for that key. Reserve it for genuinely
+  global access such as admin tooling.
+- **Caching:** `resolveScopes` runs per request per table. Results are
+  memoized within a request; pass a `scopeCache` backend to `createSyncServer`
+  to share resolved scopes across requests when membership queries get
+  expensive.
+
+## Validation is fail-loud
+
+Both sides of the intersection are validated against the scope keys declared
+in the handler's `scopes` patterns:
+
+- A **requested** scope key the handler does not declare rejects the request
+  with a descriptive `InvalidSubscriptionScopeError` naming the subscription,
+  table, offending key, and the expected keys.
+- A **resolved** scope key that the handler does not declare throws the same
+  way — a typo in `resolveScopes` surfaces as a server error instead of
+  silently never matching.
+- Malformed scope **values** from `resolveScopes` (anything other than
+  strings, string arrays, or `null`/`undefined` for "no access") throw with
+  the table, key, and offending entry type.
+
+## When subscriptions become revoked
+
+A pull response marks a subscription `status: 'revoked'` instead of `active`
+when any of these hold:
+
+- `resolveScopes` threw (the error is logged server-side; the client is not
+  told why).
+- The intersection of requested and allowed scopes is empty.
+- Any single requested scope key ends up with no allowed values — partial
+  access does not degrade into a narrower subscription; it revokes, to avoid
+  partially-scoped leaks.
+
+The client runtime reacts by removing matching local rows and stopping that
+subscription. If users "lose their data" unexpectedly, check
+[Troubleshooting](/server/troubleshooting#subscription-unexpectedly-revoked)
+first.
 
 ## Keep authorization server-owned
 
@@ -77,7 +119,10 @@ Do not trust client-provided scope values, row fields, or mutation payloads as
 authorization. Use them as requests. The handler should still check current
 server state and membership before returning rows or applying writes.
 
-For push paths, validate the mutation against current auth:
+On the write path the default handler already enforces scope columns
+automatically ([Table Handlers](/server/table-handlers#authorization-hooks-and-write-path-checks)).
+For checks beyond scope columns, use the `authorize` hook or reject inside a
+custom `applyOperation`:
 
 ```typescript
 async applyOperation(ctx, op, opIndex) {
@@ -87,9 +132,10 @@ async applyOperation(ctx, op, opIndex) {
     return {
       result: {
         opIndex,
-        status: 'rejected',
-        code: 'forbidden',
-        message: 'Actor cannot write this project.',
+        status: 'error',
+        error: 'Actor cannot write this project.',
+        code: 'sync.forbidden',
+        retriable: false,
       },
       emittedChanges: [],
     };

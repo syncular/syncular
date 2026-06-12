@@ -12,36 +12,51 @@ realtime wakeups, blob routes, audit APIs, and deployment-specific adapters.
 Use this section for implementation guides. Exact API signatures and generated
 HTTP endpoint details stay in [Reference](/reference).
 
-## Core server path
+## Getting started
 
 <Cards>
-  <Card title="Setup With Hono" href="/server/setup-with-hono">
-    Mount Syncular routes, configure table handlers, and expose sync APIs
+  <Card title="Getting Started" href="/server/getting-started">
+    From zero to a first synced commit: database, one handler, mounted routes, curl
   </Card>
+</Cards>
+
+## Core
+
+<Cards>
   <Card title="Table Handlers" href="/server/table-handlers">
     Define the authoritative behavior for each synced table
   </Card>
-  <Card title="Scopes And Auth" href="/server/scopes-and-auth">
+  <Card title="Authorization" href="/server/scopes-and-auth">
     Authenticate actors and resolve the scopes they can access
   </Card>
-  <Card title="Snapshot / Pull" href="/server/snapshot-pull">
+  <Card title="Bootstrap & Snapshots" href="/server/snapshot-pull">
     Serve bootstrap snapshots and incremental pulls
   </Card>
-  <Card title="Apply Operations / Push" href="/server/apply-push">
-    Apply generated client mutations on the authoritative server
+  <Card title="Push & Conflicts" href="/server/apply-push">
+    Apply client mutations and report conflicts
   </Card>
+</Cards>
+
+## Realtime & blobs
+
+<Cards>
   <Card title="Realtime WebSocket" href="/server/realtime-websocket">
     Wake clients through persistent realtime connections
   </Card>
   <Card title="Blobs" href="/server/blobs">
     Serve file and media sync routes
   </Card>
+</Cards>
+
+## Integration
+
+<Cards>
   <Card title="External Changes" href="/server/external-changes">
     Feed app-side database changes back into Syncular's commit stream
   </Card>
 </Cards>
 
-## Deployment targets
+## Deployment
 
 <Cards>
   <Card title="Cloudflare" href="/server/cloudflare">
@@ -52,7 +67,7 @@ HTTP endpoint details stay in [Reference](/reference).
   </Card>
 </Cards>
 
-## Advanced server shapes
+## Advanced
 
 <Cards>
   <Card title="Edge Relay" href="/server/edge-relay">
@@ -60,6 +75,14 @@ HTTP endpoint details stay in [Reference](/reference).
   </Card>
   <Card title="Admin Proxy" href="/server/admin-proxy">
     Provide controlled SQL access while preserving sync integration
+  </Card>
+</Cards>
+
+## When something breaks
+
+<Cards>
+  <Card title="Troubleshooting" href="/server/troubleshooting">
+    Diagnose handler, snapshot, cursor, scope, and payload-size failures
   </Card>
 </Cards>
 

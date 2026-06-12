@@ -1,0 +1,303 @@
+---
+title: Getting Started
+description: Bring up a Syncular server from zero — database, one table handler, mounted routes, and a first sync over curl.
+---
+
+# Server Getting Started
+
+This page brings up a working Syncular server from zero, in order: install,
+database, one table handler, mounted routes, and a first sync you can verify
+with curl. Every snippet uses the current APIs.
+
+If you want the client side too, the [Hello World](/start/hello-world)
+walkthrough builds both halves of the smallest app. This page goes deeper on
+the server half only.
+
+## 1. Install
+
+```bash
+npm install @syncular/server @syncular/server-hono @syncular/core hono kysely
+```
+
+Then add one server dialect package:
+
+```bash
+# Postgres (recommended for production)
+npm install @syncular/server-dialect-postgres pg
+
+# or SQLite (fastest local start, zero provisioning)
+npm install @syncular/server-dialect-sqlite @syncular/dialects
+```
+
+All application imports come from scoped `@syncular/*` packages. The bare
+`syncular` package is the CLI only (`npx syncular generate`).
+
+## 2. Database setup
+
+Syncular needs two things from your database: a Kysely instance and a server
+dialect. Pick one path.
+
+### Postgres
+
+```typescript
+import { Kysely, PostgresDialect } from 'kysely';
+import { Pool } from 'pg';
+import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
+
+const db = new Kysely({
+  dialect: new PostgresDialect({
+    pool: new Pool({ connectionString: process.env.DATABASE_URL }),
+  }),
+});
+const dialect = createPostgresServerDialect();
+```
+
+Neon works through the same dialect: build the Kysely instance with
+`createNeonDialect` from `@syncular/dialects/neon` and use
+`createNeonServerDialect()` (an alias of the Postgres server dialect) from
+`@syncular/server-dialect-postgres`.
+
+### SQLite (quick path)
+
+```typescript
+import { createDatabase } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
+import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+
+const db = createDatabase({
+  dialect: createBunSqliteDialect({ path: 'app.sqlite' }),
+  family: 'sqlite',
+});
+const dialect = createSqliteServerDialect();
+```
+
+Use `path: ':memory:'` for throwaway experiments — the runnable demo app
+(`apps/demo` in the repository) does exactly that.
+
+### Create the sync infrastructure tables
+
+```typescript
+import { ensureSyncSchema } from '@syncular/server';
+
+await ensureSyncSchema(db, dialect);
+```
+
+This creates the commit log and bookkeeping tables (`sync_commits`,
+`sync_changes`, `sync_client_cursors`, `sync_snapshot_chunks`, …). It is
+idempotent — run it on every boot.
+
+### Create your app table
+
+Every synced table needs a primary key and a version column for conflict
+detection (`server_version` by default):
+
+```sql
+CREATE TABLE IF NOT EXISTS tasks (
+  id             TEXT PRIMARY KEY,
+  title          TEXT NOT NULL,
+  completed      INTEGER NOT NULL DEFAULT 0,
+  user_id        TEXT NOT NULL,
+  created_at     BIGINT NOT NULL DEFAULT 0,
+  server_version BIGINT NOT NULL DEFAULT 0
+);
+```
+
+## 3. Define a table handler
+
+A table handler answers two questions for one table: *which rows may this
+actor sync* and *how does a client mutation become an authoritative write*.
+For a user-owned table, `createServerHandler` answers both from a scope
+pattern:
+
+```typescript
+import { createServerHandler } from '@syncular/server';
+
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: async (ctx) => ({
+    user_id: [ctx.actorId],
+  }),
+});
+```
+
+- `scopes: ['user:{user_id}']` declares that each row belongs to the scope
+  value found in its `user_id` column.
+- `resolveScopes` returns what the current actor is *allowed* to access. Here:
+  only their own rows. The effective subscription is the intersection of what
+  the client requested and what this function allows — see
+  [Scopes](/learn/scopes) for the model.
+
+That is the whole handler. Snapshots, conflict detection, scope extraction,
+and `server_version` increments come from defaults you can override later —
+see [Table Handlers](/server/table-handlers).
+
+## 4. Mount the routes
+
+`createSyncServer` from `@syncular/server-hono` takes the database, dialect,
+and a `sync` contract (handlers + `authenticate`) and returns Hono routes:
+
+```typescript
+import { Hono } from 'hono';
+import { createSyncServer } from '@syncular/server-hono';
+
+const { syncRoutes } = createSyncServer({
+  db,
+  dialect,
+  sync: {
+    handlers: [tasksHandler],
+    authenticate: async (request) => {
+      const token = request.headers.get('authorization')?.replace('Bearer ', '');
+      if (!token) return null;
+      const session = await verifyToken(token); // your auth system
+      return session ? { actorId: session.userId } : null;
+    },
+  },
+});
+
+const app = new Hono();
+app.route('/api/sync', syncRoutes);
+
+export default { port: 3001, fetch: app.fetch };
+```
+
+`authenticate` receives the raw `Request` and returns `null` (reject) or an
+auth object with at least `actorId`. Whatever you return is available as
+`ctx.auth` inside handlers — see [Authorization](/server/scopes-and-auth).
+
+The mounted surface (relative to `/api/sync`):
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/` | POST | Combined sync: push commits and/or pull changes in one round-trip |
+| `/health` | GET | Liveness check |
+| `/snapshot-chunks/:chunkId` | GET | Download large bootstrap snapshot chunks |
+| `/snapshot-artifacts/:artifactId` | GET | Download scoped snapshot artifacts |
+| `/realtime` | GET | WebSocket wakeups (only when `upgradeWebSocket` is configured) |
+
+There are no separate `/push` and `/pull` endpoints — both travel in the
+single `POST /` body, and clients usually send them together.
+
+Useful options you will reach for next (all optional):
+
+```typescript
+createSyncServer({
+  db,
+  dialect,
+  sync: { handlers, authenticate },
+  upgradeWebSocket,            // enable GET /realtime (see Realtime WebSocket)
+  routes: {
+    cors: ['http://localhost:5173'],  // CORS for browser clients
+    rateLimit: false,                 // on by default; disable for local dev
+  },
+  console: {                   // opt-in admin console routes
+    token: process.env.SYNC_CONSOLE_TOKEN,
+    corsOrigins: ['https://console.example.com'],
+  },
+});
+```
+
+`console` also returns `consoleRoutes` to mount separately (e.g. at
+`/api/console`). See [Operations Setup](/operate/operations-setup).
+
+## 5. Run a first sync
+
+Start the server, then pull as `demo-user` (assuming your `verifyToken` accepts
+the bearer token below). A pull request needs your `schemaVersion`, a commit
+limit, and the subscriptions you want:
+
+```bash
+curl -s http://localhost:3001/api/sync \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer <token>' \
+  -d '{
+    "clientId": "curl-demo",
+    "pull": {
+      "schemaVersion": 1,
+      "limitCommits": 50,
+      "subscriptions": [
+        {
+          "id": "my-tasks",
+          "table": "tasks",
+          "scopes": { "user_id": "demo-user" },
+          "cursor": 0
+        }
+      ]
+    }
+  }'
+```
+
+The response contains one entry per subscription with its `status`
+(`active` or `revoked`), a bootstrap snapshot on first contact, and a
+`nextCursor` to send back on the next pull.
+
+Now push a commit. Pushes are batched: the body carries `commits[]`, each with
+a unique `clientCommitId` (the idempotency key), the client `schemaVersion`,
+and `operations[]`:
+
+```bash
+curl -s http://localhost:3001/api/sync \
+  -H 'content-type: application/json' \
+  -H 'authorization: Bearer <token>' \
+  -d '{
+    "clientId": "curl-demo",
+    "push": {
+      "commits": [
+        {
+          "clientCommitId": "commit-0001",
+          "schemaVersion": 1,
+          "operations": [
+            {
+              "table": "tasks",
+              "row_id": "task-1",
+              "op": "upsert",
+              "base_version": 0,
+              "payload": {
+                "title": "First synced task",
+                "completed": 0,
+                "user_id": "demo-user",
+                "created_at": 0
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }'
+```
+
+You should get back `"status": "applied"` with a `commitSeq` and one
+per-operation result. Repeat the pull with `"cursor": <nextCursor>` and the
+new commit comes back; repeat the push unchanged and the server replies
+`"status": "cached"` instead of applying it twice. Try a payload with
+`"user_id": "someone-else"` and the operation is rejected with
+`sync.forbidden` — that is your handler's scope authorization working.
+
+Real clients never hand-craft these bodies — the client runtime (and the
+binary sync-pack encoding it prefers) does it for you. curl is just the
+fastest way to see the server working on its own.
+
+## What you learned
+
+- `ensureSyncSchema(db, dialect)` creates the commit log; your app tables just
+  need a primary key and a `server_version` column.
+- A table handler plus `resolveScopes` defines who can sync which rows;
+  everything else has defaults.
+- `createSyncServer({ db, dialect, sync })` returns Hono routes with a single
+  combined `POST /` sync endpoint.
+- Pull requires `schemaVersion` and subscriptions with cursors; push sends
+  idempotent `commits[]` and returns per-operation results.
+
+## Next steps
+
+- [Table Handlers](/server/table-handlers) — worked examples: multi-scope,
+  codecs, custom apply
+- [Authorization](/server/scopes-and-auth) — `authenticate()`, scope
+  resolution, revocation
+- [Bootstrap & Snapshots](/server/snapshot-pull) — how first sync and catch-up
+  pulls work
+- [Push & Conflicts](/server/apply-push) — conflict detection and response
+  shapes
+- [Realtime WebSocket](/server/realtime-websocket) — replace polling with
+  wakeups
+- [Troubleshooting](/server/troubleshooting) — when one of the above misbehaves

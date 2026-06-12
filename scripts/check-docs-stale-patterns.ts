@@ -63,6 +63,11 @@ const stalePatterns: StalePattern[] = [
     message:
       'Retired start/ pages: link to /start/pick-your-path (was adoption-paths, fresh-apps), /start/is-syncular-for-me (was good-fit), or /start/installation (was basic-setup).',
   },
+  {
+    pattern: /\/server\/setup-with-hono\b/,
+    message:
+      'Retired server page: link to /server/getting-started (was setup-with-hono).',
+  },
 ];
 
 const searchableExtensions = new Set(['.md', '.mdx', '.json', '.ts', '.tsx']);

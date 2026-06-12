@@ -41,114 +41,108 @@ increment `server_version`, extract scopes, and classify conflicts.
 ### Different client and server table shape
 
 When the server database shape differs from the generated client schema, use the
-generated app server helper. It keeps the public client contract typed while
-letting the server read and write its own tables.
+generated app server helper (`createSyncularAppServerHandler` from your
+generated server module). It keeps the public client contract typed while
+letting the server read and write its own tables through custom `snapshot` and
+`applyOperation` implementations. The
+[Push & Conflicts](/server/apply-push) page shows the full custom
+`applyOperation` shape; [Bootstrap & Snapshots](/server/snapshot-pull) shows
+the custom `snapshot` shape.
+
+## Worked examples
+
+### Simple user-owned table
+
+The smallest useful handler. The scope pattern `user:{user_id}` declares that
+each row belongs to the value in its `user_id` column; `resolveScopes` allows
+each actor exactly their own id:
 
 ```typescript
-import {
-  createSyncularAppServerHandler,
-  syncularGeneratedApp,
-  type TaskMutationPayloadV6,
-  type TaskMutationPayloadV7,
-  type TaskRow,
-} from './generated/typescript/syncular.server.generated';
-import type { SyncCoreDb, SyncServerAuth } from '@syncular/server';
-
-interface Auth extends SyncServerAuth {
-  workspaceIds: string[];
-}
-
-interface ServerDb extends SyncCoreDb {
-  documents: {
-    id: string;
-    content: string;
-    done: number;
-    owner_id: string;
-    workspace_id: string | null;
-    revision: number;
-  };
-}
-
-type TaskMutationPayload =
-  | TaskMutationPayloadV6
-  | TaskMutationPayloadV7
-  | Partial<Omit<TaskRow, 'id' | 'server_version'>>;
-
-export function createTaskHandler(repo: TaskRepository) {
-  return createSyncularAppServerHandler<ServerDb, Auth>({
-    table: syncularGeneratedApp.tables.tasks,
-
-    resolveScopes: (ctx) => ({
-      user_id: [ctx.actorId],
-      project_id: ctx.auth.workspaceIds,
-    }),
-
-    async snapshot(ctx) {
-      const rows = await repo.snapshotTasks(ctx);
-      return {
-        rows: rows.map((row) =>
-          syncularGeneratedApp.projectClientRowForVersion(
-            'tasks',
-            documentToTaskRow(row),
-            ctx.schemaVersion
-          )
-        ),
-        nextCursor: null,
-      };
-    },
-
-    async applyOperation(ctx, op, opIndex) {
-      if (op.op === 'delete') {
-        const deleted = await repo.deleteTask({
-          rowId: op.row_id,
-          actorId: ctx.actorId,
-        });
-
-        return {
-          result: { opIndex, status: 'applied' },
-          emittedChanges: [
-            {
-              table: 'tasks',
-              row_id: deleted.rowId,
-              op: 'delete',
-              row_json: null,
-              row_version: deleted.revision,
-              scopes: { user_id: ctx.actorId },
-            },
-          ],
-        };
-      }
-
-      const stored = await repo.saveTask({
-        rowId: op.row_id,
-        actorId: ctx.actorId,
-        payload: op.payload as TaskMutationPayload,
-        schemaVersion: ctx.schemaVersion,
-      });
-
-      const row = documentToTaskRow(stored);
-      return {
-        result: { opIndex, status: 'applied' },
-        emittedChanges: [
-          {
-            table: 'tasks',
-            row_id: row.id,
-            // Internal emitted-change storage uses the row-write operation
-            // marker; generated app mutations still expose insert/update/delete.
-            op: 'upsert',
-            row_json: row,
-            row_version: row.server_version,
-            scopes: {
-              user_id: row.user_id,
-              ...(row.project_id == null ? {} : { project_id: row.project_id }),
-            },
-          },
-        ],
-      };
-    },
-  });
-}
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: async (ctx) => ({
+    user_id: [ctx.actorId],
+  }),
+});
 ```
+
+Defaults you inherit: primary key `id` (override with `primaryKey`), version
+column `server_version` (override with `versionColumn`), keyset-paginated
+snapshots filtered by scope columns, and upsert/delete application with
+optimistic version checks.
+
+### Multi-scope table (membership lookup)
+
+Rows can carry several scope columns. Query your membership tables inside
+`resolveScopes` — it runs per request (cacheable, see below), so the result
+always reflects current membership:
+
+```typescript
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}', 'project:{project_id}'],
+
+  resolveScopes: async (ctx) => {
+    const memberships = await ctx.db
+      .selectFrom('project_members')
+      .select('project_id')
+      .where('user_id', '=', ctx.actorId)
+      .execute();
+
+    return {
+      user_id: [ctx.actorId],
+      project_id: memberships.map((m) => m.project_id),
+    };
+  },
+});
+```
+
+A row matches a subscription when its stored scope values intersect the
+effective scopes. If the pattern variable does not match the column name, map
+it explicitly: `scopes: [{ pattern: 'user:{user_id}', column: 'owner_id' }]`.
+
+`resolveScopes` is **fail-loud about shape**: every value must be a string or
+an array of strings. Returning anything else (numbers, objects, mixed arrays)
+throws with a descriptive error naming the table, scope key, and offending
+entry — a malformed membership query fails your tests instead of silently
+granting or denying access. `null`/`undefined` values are the one exception:
+they mean "no access for this scope key" and are skipped.
+
+### Table with codecs
+
+When client column types differ from storage types (booleans as integers,
+`Date` as milliseconds, JSON columns), pass a codec source. Typegen emits one
+for your whole app contract:
+
+```typescript
+import { syncularGeneratedCodecs } from './generated/syncular.generated';
+
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  codecs: syncularGeneratedCodecs,
+  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+});
+```
+
+The default snapshot and apply paths run the codecs in both directions. If you
+need full control instead, provide `transformInbound` /
+`transformOutbound` — when either is set, it wins over codecs for that
+direction. `codecDialect` defaults to `'sqlite'`; set `'postgres'` when your
+server database is Postgres.
+
+### Deletes and soft deletes
+
+The built-in `applyOperation` treats `op: 'delete'` as a **hard delete**: the
+row is removed and a `delete` change (with `row_json: null`) is emitted so
+clients drop their local copy. Deleting an already-missing row reports
+`applied` (idempotent).
+
+There is no built-in soft-delete option. If you need tombstones, model the
+flag as ordinary data — add a `deleted_at` column, ship deletes as updates
+from the client, and filter in your app queries. Use a custom `applyOperation`
+if you want the server to translate protocol deletes into tombstone updates.
 
 ## Handler responsibilities
 
@@ -158,15 +152,87 @@ Handlers own these decisions:
   access now.
 - **`snapshot`**: return the client row shape for the requested table, scopes,
   cursor, limit, and client schema version.
-- **`applyOperation`**: translate a generated client mutation into an
-  authoritative server write.
+- **`applyOperation`**: translate a client operation into an authoritative
+  server write.
 - **`emittedChanges`**: record the committed row, version, operation, and scopes
   so later pulls and realtime wakeups see the change.
 
-The emitted-change `op` field is a server storage/protocol detail. App code
-should stay on generated `insert`, `update`, and `delete` mutations, and client
-runtime events report row-level deltas as `insert`, `update`, or `delete` after
-the local replica applies the change.
+The emitted-change `op` field is a server storage/protocol detail
+(`upsert`/`delete`). App code should stay on generated `insert`, `update`, and
+`delete` mutations, and client runtime events report row-level deltas as
+`insert`, `update`, or `delete` after the local replica applies the change.
+
+## Authorization hooks and write-path checks
+
+Two layers guard the write path:
+
+1. **Scope authorization (automatic).** Before any write, the default handler
+   resolves the actor's allowed scopes and checks the affected row's scope
+   columns against them — the existing row for updates/deletes, the incoming
+   payload for inserts. Every declared scope column must be non-empty on the
+   row and inside the allowed values (a `'*'` entry allows any value); a
+   mismatch rejects the operation with
+   `sync.forbidden`. The default upsert also strips scope columns and the
+   primary key from `UPDATE` sets, so a payload cannot move a row into another
+   user's scope.
+2. **`authorize` (optional hook).** Runs first, before the row is touched. Use
+   it for checks beyond scope columns — roles, payload validation, quotas:
+
+```typescript
+const tasksHandler = createServerHandler({
+  table: 'tasks',
+  scopes: ['user:{user_id}'],
+  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
+
+  authorize: async (ctx, op) => {
+    if (op.op === 'delete' && ctx.auth.role !== 'admin') {
+      return {
+        error: 'Only admins can delete tasks',
+        code: 'sync.forbidden',
+        retriable: false,
+      };
+    }
+    return true;
+  },
+});
+```
+
+`authorize` returns `true` to allow, or
+`{ error: string; code: SyncularErrorCode; retriable?: boolean }` to reject.
+
+## applyOperation results and error shapes
+
+Every operation produces an `ApplyOperationResult`:
+
+```typescript
+interface ApplyOperationResult {
+  result: SyncOperationResult;   // returned to the client, per operation
+  emittedChanges: EmittedChange[]; // stored in the commit log
+}
+```
+
+`SyncOperationResult` is one of three shapes:
+
+| Status | Fields | Meaning |
+|--------|--------|---------|
+| `applied` | `opIndex` | Write committed; emitted changes recorded |
+| `conflict` | `opIndex`, `message`, `code?`, `server_version`, `server_row` | Valid write lost an optimistic version check; client resolves with the returned server state |
+| `error` | `opIndex`, `error`, `code?`, `retriable?` | Rejected: authorization, validation, constraint, or unknown table |
+
+Error codes the default implementation produces:
+
+- `sync.forbidden` — scope or `authorize` rejection
+- `sync.version_conflict` — `base_version` did not match the current
+  `server_version` (reported as status `conflict`, with the winning row)
+- `sync.row_missing` — `base_version` set but the row does not exist (and
+  `base_version` was not `0`; `0` means "insert if missing")
+- `sync.constraint_violation` — database constraint failures (NOT NULL,
+  UNIQUE, foreign key)
+- `sync.unknown_table` — operation routed to a handler for a different table
+
+Only `applied` operations may emit changes — never emit for conflicts or
+errors. See [Push & Conflicts](/server/apply-push) for how these results
+travel back to the client and how the client reacts.
 
 ## Version-aware handlers
 
@@ -181,9 +247,21 @@ Use `ctx.schemaVersion` when you need to:
 - reject a version your server no longer supports with an explicit update
   required error.
 
+## Performance options
+
+- `snapshotBinaryColumns` / `snapshotBinaryEncoder`: column metadata and
+  encoder for binary snapshot chunks. Typegen-generated handlers supply these
+  automatically; supply them on hand-rolled handlers for faster bootstrap
+  encoding ([Bootstrap & Snapshots](/server/snapshot-pull)).
+- `snapshotChunkTtlMs`: cache lifetime for reusable snapshot chunks.
+- `dependsOn`: list parent tables so bootstrap order respects foreign keys.
+- The handler batches uniform upserts (same payload columns, no
+  `base_version`, no `authorize`, no scope columns) into one multi-row
+  statement automatically; anything else falls back to sequential application.
+
 ## Next steps
 
-- [Scopes And Auth](/server/scopes-and-auth)
-- [Snapshot / Pull](/server/snapshot-pull)
-- [Apply Operations / Push](/server/apply-push)
+- [Authorization](/server/scopes-and-auth)
+- [Bootstrap & Snapshots](/server/snapshot-pull)
+- [Push & Conflicts](/server/apply-push)
 - [Table Handlers Reference](/reference/server/table-handlers-reference)

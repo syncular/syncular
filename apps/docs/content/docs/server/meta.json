@@ -4,20 +4,25 @@
   "icon": "Server",
   "pages": [
     "index",
-    "---Core Server---",
-    "setup-with-hono",
+    "---Getting Started---",
+    "getting-started",
+    "---Core---",
     "table-handlers",
     "scopes-and-auth",
     "snapshot-pull",
     "apply-push",
+    "---Realtime & Blobs---",
     "realtime-websocket",
     "blobs",
+    "---Integration---",
     "external-changes",
-    "---Deployment Targets---",
+    "---Deployment---",
     "cloudflare",
     "service-worker-server",
-    "---Advanced Server Shapes---",
+    "---Advanced---",
     "edge-relay",
-    "admin-proxy"
+    "admin-proxy",
+    "---Troubleshooting---",
+    "troubleshooting"
   ]
 }
