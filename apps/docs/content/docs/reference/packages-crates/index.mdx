@@ -9,7 +9,14 @@ Use this page as a package index. Guided setup lives under
 [Installation](/start/installation), [JavaScript](/clients/javascript),
 and [Rust](/clients/rust).
 
-## JavaScript packages
+## Scaffolding and CLI
+
+| Package | Use |
+|---|---|
+| `create-syncular-app` | Project scaffolder: `bunx create-syncular-app my-app` (see [Quick Start](/start/quick-start)) |
+| `syncular` | CLI-only package: `npx syncular generate` and `npx syncular codegen install`. It re-exports nothing — import from the scoped `@syncular/*` packages |
+
+## Client packages
 
 | Package | Use |
 |---|---|
@@ -18,8 +25,31 @@ and [Rust](/clients/rust).
 | `@syncular/client-react-native` | React Native/Expo bridge package for JavaScript UI code talking to the native runtime |
 | `@syncular/client-tauri` | Tauri bridge package for TypeScript UI code talking to the native runtime |
 | `@syncular/client-crdt-adapters` | Optional Yjs/editor adapters above Syncular CRDT field APIs |
-| `@syncular/testkit` | TypeScript/server/browser testkit |
-| `@syncular/typegen` | App contract and generated client handoff |
+| `@syncular/core` | Shared protocol types, error definitions, scopes, sync-pack codecs — dependency of everything else |
+| `@syncular/dialects` | Kysely runtime dialects via subpaths: `@syncular/dialects/better-sqlite3`, `/bun-sqlite`, `/d1`, `/libsql`, `/neon`, `/pglite`, `/sqlite3` (drivers are optional peer dependencies) |
+| `@syncular/transport-http` | HTTP sync transport used by clients and the relay |
+
+## Server packages
+
+| Package | Use |
+|---|---|
+| `@syncular/server` | Core sync engine, `createServerHandler`, push/pull, pruning, compaction, snapshots |
+| `@syncular/server-hono` | Hono HTTP/WebSocket adapter (`createSyncServer`), OpenAPI routes, console routes |
+| `@syncular/server-dialect-postgres` | Postgres/Neon sync SQL dialect |
+| `@syncular/server-dialect-sqlite` | SQLite sync SQL dialect |
+| `@syncular/server-cloudflare` | Cloudflare Workers/Durable Objects/R2 helpers |
+| `@syncular/server-service-worker` | Service-worker server/runtime + wake transport helpers |
+| `@syncular/relay` | Edge relay for distributed sync topologies |
+
+## Tooling and operations packages
+
+| Package | Use |
+|---|---|
+| `@syncular/typegen` | App contract (`syncular.app.ts`) and generated client handoff |
+| `@syncular/migrations` | Database migration utilities |
+| `@syncular/testkit` | TypeScript/server/browser testing fixtures and helpers |
+| `@syncular/console` | Embeddable operator console UI (static assets + components) |
+| `@syncular/observability-sentry` | Sentry adapters for Syncular telemetry |
 
 ## Rust crates
 
@@ -28,24 +58,15 @@ and [Rust](/clients/rust).
 | `syncular` | Convenience crate and generated Rust extension traits |
 | `syncular-client` | Developer-facing Rust SDK for typed reads, generated writes, sync, conflicts, and live queries |
 | `syncular-runtime` | Runtime internals: SQLite, protocol, worker events, blobs, CRDT fields, encryption, and realtime |
-| `syncular-codegen` | Rust app-client code generator |
+| `syncular-codegen` | Rust app-client code generator (installed by `npx syncular codegen install`) |
 | `syncular-testkit` | Rust/native fixtures, stateful app server, transports, assertions, and conformance data |
 | `syncular-protocol` | Shared protocol structures for runtime/server integration work |
-
-## Server packages
-
-| Package | Use |
-|---|---|
-| `@syncular/server` | Core sync engine and handler factory |
-| `@syncular/server-hono` | Hono HTTP/WebSocket adapter, OpenAPI routes, console routes |
-| `@syncular/server-dialect-postgres` | Postgres/Neon sync SQL dialect |
-| `@syncular/server-dialect-sqlite` | SQLite sync SQL dialect |
-| `@syncular/server-cloudflare` | Cloudflare Workers/Durable Objects/R2 helpers |
 
 ## Related guides
 
 - [Installation](/start/installation)
+- [Quick Start](/start/quick-start)
 - [JavaScript Quick Start](/clients/javascript/quick-start)
 - [Rust Quick Start](/clients/rust/quick-start)
 - [Server Getting Started](/server/getting-started)
-- [Testing](/testing)
+- [Upgrade Guide](/reference/upgrade-guide)

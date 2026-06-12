@@ -5,27 +5,95 @@ description: Replay generated mutations from command history.
 
 # Undo / Redo
 
-Undo and redo are built on command history. Generated mutations can record the
-before and after rows for a user command, then replay the inverse mutation later
-through the same Syncular write path.
+Undo and redo are built on command history. Generated mutations record the
+before and after rows for a user command; undo replays the inverse mutation
+later through the same Syncular write path. Because undo is itself a normal
+mutation, outbox, conflicts, encryption, CRDT metadata, and sync events all
+stay coherent — other devices simply see another commit.
+
+## How it works
+
+The generated app database wraps its mutation surface with command-history
+capture (`createSyncularCommandHistory` under the hood). Every mutation
+records a command with the affected rows' before-snapshots; `undoLast()`
+checks that the current local row still matches the recorded state, then
+writes the inverse through the same generated mutation path and returns a
+receipt with the new `commandId`.
+
+The history surface (`SyncularCommandHistory`):
+
+```ts
+interface SyncularCommandHistory {
+  canUndo(): Promise<boolean>;
+  canRedo(): Promise<boolean>;
+  undoLast(): Promise<SyncularCommandHistoryReceipt>;
+  redoLast(): Promise<SyncularCommandHistoryReceipt>;
+}
+```
 
 ## Recommended shape
 
 - Use generated mutations, not raw SQL, for commands that should be undoable.
-- Group multi-row user actions into one command when the UI treats them as one
-  action.
-- Replay undo and redo as normal mutations so outbox, conflicts, encryption,
-  CRDT metadata, and sync events remain coherent.
-- Refuse undo when the current local row no longer matches the recorded command
-  precondition.
+- Group multi-row user actions into one command when the UI treats them as
+  one action.
+- Replay undo and redo as normal mutations so the whole pipeline stays
+  coherent.
+- Refuse undo when the current local row no longer matches the recorded
+  command precondition — the runtime enforces this and throws
+  `sync.command_history_conflict`.
 
-## Binding examples
+## Browser TypeScript
 
-Command history is generated-client behavior. Rust and browser TypeScript expose
-it today; other host bindings should follow the same command-history
-semantics when their generated mutation APIs are mature enough.
+The generated app database exposes history as `database.commandHistory`:
 
-### Rust
+```ts
+const database = await createSyncularAppDatabase({ config });
+
+await database.mutations.tasks.update(taskId, { title: 'Next title' });
+
+if (await database.commandHistory.canUndo()) {
+  await database.commandHistory.undoLast();
+}
+
+await database.commandHistory.redoLast();
+```
+
+Failures are typed `SyncularCommandHistoryError`s with stable codes:
+`sync.command_history_empty`, `sync.command_history_conflict` (the row
+changed since the command was recorded), `sync.command_history_storage_unavailable`,
+`sync.command_history_table_unsupported`, and
+`sync.command_history_unsafe_field`.
+
+## React pattern
+
+There is no built-in hook yet; the demo app
+(`apps/demo/src/app.tsx`) keeps undo/redo buttons fresh by re-checking the
+history whenever the pane's rows change:
+
+```tsx
+function useCommandHistory(history: SyncularCommandHistory) {
+  const [state, setState] = useState({ canUndo: false, canRedo: false });
+
+  const refresh = useCallback(() => {
+    void Promise.all([history.canUndo(), history.canRedo()]).then(
+      ([canUndo, canRedo]) => setState({ canUndo, canRedo })
+    );
+  }, [history]);
+
+  // Re-check after local mutations, undo/redo, and remote changes —
+  // they all surface as row changes.
+  useEffect(() => refresh(), [refresh]);
+  useRowsChanged(refresh, { tables: ['tasks'] });
+
+  return {
+    ...state,
+    undo: () => history.undoLast().then(refresh),
+    redo: () => history.redoLast().then(refresh),
+  };
+}
+```
+
+## Rust
 
 ```rust
 client.commit_with_history("rename-task", |mutations| {
@@ -41,30 +109,18 @@ if client.command_history().can_redo()? {
 }
 ```
 
-### Browser TypeScript
-
-```ts
-await syncular.mutations.tasks.update(taskId, {
-  title: 'Next title',
-});
-
-if (await syncular.commandHistory.canUndo()) {
-  await syncular.commandHistory.undoLast();
-}
-
-await syncular.commandHistory.redoLast();
-```
-
-Browser generated clients wrap mutation surfaces with command-history capture
-when command history is available on the generated app database.
-
 ## Watch-outs
 
 - Do not use command history as product audit; use
   [Audit And History](/features/audit-and-history) for durable history.
-- Decide how undo behaves for leased offline commands after auth is revoked.
-- Keep editor-internal undo stacks separate from Syncular row mutation history.
-- Test undo after remote changes, conflict resolution, and app restart.
+  Command history is local, per device, and prunable.
+- Decide how undo behaves for leased offline commands after auth is revoked —
+  the inverse mutation also needs a valid lease to push.
+- Keep editor-internal undo stacks (Yjs/ProseMirror) separate from Syncular
+  row mutation history; a rich-text field undoes inside the editor, the row
+  undoes through command history.
+- Test undo after remote changes (expect `sync.command_history_conflict`),
+  after conflict resolution, and after app restart.
 
 ## Related docs
 
