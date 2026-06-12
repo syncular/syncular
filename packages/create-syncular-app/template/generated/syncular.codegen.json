@@ -1,0 +1,19 @@
+{
+  "tables": {
+    "tasks": {
+      "serverVersionColumn": "server_version",
+      "subscriptionId": "sub-tasks",
+      "scopes": [
+        {
+          "name": "user_id",
+          "column": "user_id",
+          "source": "actorId",
+          "required": true
+        }
+      ],
+      "sqliteWithoutRowid": true
+    }
+  },
+  "typescriptOutputPath": "src/generated/syncular.generated.ts",
+  "typescriptServerOutputPath": "src/generated/syncular.server.generated.ts"
+}
