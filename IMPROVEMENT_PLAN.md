@@ -187,11 +187,14 @@ Real gaps found & fixed:
 Deferred (per roadmap: WP-14 DX work reopens only on concrete app feedback):
 `forUser` shorthand and testkit scope tester.
 
-### 9. Replace custom release machinery with changesets/release-please
+### 9. Replace custom release machinery with changesets/release-please — DONE (2026-06-12)
 
-`stamp-versions.ts`, `stamp-cargo-versions.ts`, `release-rehearsal.ts` (~620
-lines) re-implement version stamping/changelogs. Keep the smoke-test scripts
-(`fresh-app-smokes.ts`, `post-publish-install-smokes.ts`) as release hooks.
+Changesets adopted for committed versioning (fixed group over all publishable
+packages, see `.changeset/config.json` and `RELEASING.md`); `bun run version`
+runs `changeset version` + `scripts/sync-versions.ts` (root version, runtime
+contract, create-app fallback range, Cargo stamping). `stamp-versions.ts`
+stays only for ephemeral never-committed stamps (staging channel, deploy.yml
+builds, release rehearsal). Smoke-test scripts kept as release hooks.
 Also: prune the 87 root scripts (most are `bun --cwd` forwarders that turbo
 task filters can replace), and remove or fix the disabled `maestro-ios` CI job.
 

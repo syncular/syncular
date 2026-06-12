@@ -1,11 +1,19 @@
 /**
- * Stamps all publishable workspace packages with a suffixed version.
+ * Stamps all publishable workspace packages with an EPHEMERAL version.
+ *
+ * Committed release versions are owned by Changesets (`bun run version`, see
+ * RELEASING.md). This script remains for the flows that need a throwaway
+ * version that is never committed:
+ *   - staging npm releases (.github/workflows/release.yml, staging channel)
+ *   - app deploy builds / Sentry release identity (.github/workflows/deploy.yml)
+ *   - release rehearsal worktrees (scripts/release-rehearsal.ts)
+ *
  * Usage:
  *   bun scripts/stamp-versions.ts <suffix>
  *   bun scripts/stamp-versions.ts --version <version>
  *
  * Examples:
- *   bun scripts/stamp-versions.ts staging.123 → 0.0.1-staging.123
+ *   bun scripts/stamp-versions.ts staging.123 → <root version>-staging.123
  *   bun scripts/stamp-versions.ts --version 0.0.1 → 0.0.1
  */
 import { readFileSync, writeFileSync } from 'node:fs';
