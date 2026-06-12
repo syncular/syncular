@@ -1,0 +1,105 @@
+---
+title: Upgrade Guide
+description: How to upgrade Syncular while it is in alpha - version pinning, recent breaking changes, and how schema versions interact with releases.
+---
+
+# Upgrade Guide
+
+Syncular is **alpha software**. The compatibility policy is deliberately
+disruptive: old client, protocol, and generated-API behavior is removed
+rather than carried as fallbacks, unless an explicit migration release is
+made. This page tells you how to upgrade safely under that policy.
+
+## Pin your versions
+
+- Pin exact versions of every `@syncular/*` package (no `^`/`~` ranges) and
+  upgrade them **together** — packages within one release are tested against
+  each other, not across releases.
+- Keep server and client packages on the same release. The binary sync
+  protocol is versioned in lockstep: a decoder rejects packs from a
+  different wire version instead of negotiating.
+- After every upgrade, re-run `npx syncular generate` so generated client
+  code matches the installed runtime (a mismatch surfaces as
+  `runtime.codegen_mismatch`).
+- The Rust `syncular-codegen` binary version follows the installed
+  `syncular` npm package version by default; `SYNCULAR_CODEGEN_VERSION`
+  exists if you must pin it separately.
+
+## Breaking changes in the current release line
+
+These renames/removals have landed (the old names are gone, not deprecated):
+
+### Dialect packages merged into `@syncular/dialects`
+
+The seven per-driver client dialect packages (one `@syncular/dialect-<driver>`
+package each for better-sqlite3, bun:sqlite, D1, LibSQL, Neon, PGlite, and
+sqlite3) were consolidated into the single `@syncular/dialects` package with
+per-dialect subpaths:
+
+```ts
+// Before: one package per driver
+import { ... } from '@syncular/dialect-<driver>';
+// After: one package, per-driver subpaths
+import { ... } from '@syncular/dialects/pglite';
+```
+
+Drivers are optional peer dependencies — install only the driver you use.
+
+### The `syncular` package is CLI-only
+
+All umbrella re-exports (`syncular`, `syncular/client`, `syncular/react`,
+`syncular/server*`, `syncular/dialects/*`, and the other passthrough
+subpaths) were deleted. The scoped `@syncular/*` packages are the canonical
+import surface; the `syncular` package now only ships the CLI
+(`npx syncular generate`, `npx syncular codegen install`).
+
+### Other notable removals
+
+- The JS-owned client stack was replaced: `@syncular/client` is now the
+  Rust-owned browser package, with `@syncular/react` on top. The old client
+  plugin packages (`@syncular/client-plugin-*`), the Expo alias client
+  package, the standalone WebSocket transport package, and the JS-owned
+  native SQLite dialect packages (Expo/Electron/React Native) are gone —
+  native hosts use `@syncular/client-react-native` / `@syncular/client-tauri`.
+- Conflict resolution accepts only `keep-local`, `keep-server`, and
+  `dismiss` (`accept-server` and free-form strings were removed).
+- Realtime is binary sync-pack deltas or explicit pull-required wakeups;
+  websocket JSON inline deltas no longer exist.
+
+The authoritative, continuously updated list lives in the repository:
+`rust/docs/COMPATIBILITY_REGISTER.md` (the "Recently Removed" table). Check
+it before upgrading across more than one release.
+
+## Schema versions vs. package versions
+
+Package upgrades and **app schema versions** are independent axes:
+
+- Your app's schema version advances when you add migrations; deployed
+  clients keep working against newer servers as long as the server's
+  handlers still support their schema version.
+- `clientSchemaSupport` in `syncular.app.ts` (e.g.
+  `{ minSupported: 5, supported: [5, 6, 7] }`) declares which client schema
+  versions the generated server modules accept and project rows for.
+- On the wire, the server advertises `requiredSchemaVersion` /
+  `latestSchemaVersion` on every response; clients below the required
+  version receive `sync.client_schema_unsupported` and must update.
+
+So the safe upgrade order is: migrate the server schema with
+`clientSchemaSupport` covering the fleet's deployed versions, deploy the
+server, ship updated clients, then raise `minSupported` /
+`requiredSchemaVersion` once old clients have aged out. See
+[Schema Migrations](/features/migrations) for the full workflow.
+
+## Where breaking changes are recorded
+
+- `rust/docs/COMPATIBILITY_REGISTER.md` — every removal and retained
+  fallback, with reasons (source of truth today).
+- Package release notes will take over once Syncular leaves alpha; until
+  then, assume any release may contain breaking changes and read the
+  register.
+
+## Related pages
+
+- [Packages And Crates](/reference/packages-crates) — the current package map
+- [Generated Client](/clients/javascript/generated-client) — regeneration workflow
+- [Error Codes](/reference/errors) — `sync.schema_mismatch`, `sync.client_schema_unsupported`, `runtime.codegen_mismatch`

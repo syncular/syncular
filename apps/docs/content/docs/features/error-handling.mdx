@@ -56,7 +56,9 @@ Server-originated codes use stable `sync.*` names such as
 `sync.forbidden`, `sync.version_conflict`, `sync.invalid_request`, and
 `sync.constraint_violation`. Browser/runtime diagnostics use source-specific
 codes such as `realtime.reconnect_scheduled`, `sync.auth_required`,
-`auth.refresh_failed`, or `blob.upload_failed`.
+`auth.refresh_failed`, or `blob.upload_failed`. This page covers how to
+handle errors; the full per-code catalog lives in the
+[error reference](/reference/errors).
 
 ## Browser TypeScript diagnostics
 
@@ -188,22 +190,11 @@ mutation can queue successfully and later conflict during push. Use
 
 ## Conflict handling
 
-```tsx
-function ConflictBanner() {
-  const stats = useConflictStats();
-
-  if (!stats?.unresolved) return null;
-
-  return (
-    <button onClick={() => openConflictCenter()}>
-      Review {stats.unresolved} conflicts
-    </button>
-  );
-}
-```
-
-Resolution policy is product-specific: keep the server value, retry the local
-intent, or write a merged update through generated mutations.
+Conflicts are a normal recovery state, not an error to toast away. Surface
+them from `useConflictStats()` / `syncular.conflicts.list()` and route the
+user to a product conflict flow. Resolution policy, the conflict API, and
+test patterns are covered in
+[Conflict Resolution](/features/conflict-resolution).
 
 ## Migration and schema failures
 

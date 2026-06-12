@@ -1,175 +1,294 @@
 ---
 title: Troubleshooting
-description: Diagnose and fix common sync issues
+description: Symptom-by-symptom diagnosis tree for sync incidents — first console check, likely causes, and where the fix lives.
 ---
 
 # Troubleshooting
 
-Use this page when sync behavior looks wrong and you need a practical debugging order instead of theory.
+Use this page when sync looks wrong in a running deployment and you need a
+diagnosis order, not theory. Each symptom gives you: the first thing to check
+in the [Console](/operate/console), the likely causes ranked, and the page
+where the fix is documented.
 
-## Use this page when
+Deeper, code-level checklists live next to the code they debug:
+[JavaScript client troubleshooting](/clients/javascript/troubleshooting) and
+[server troubleshooting](/server/troubleshooting). This page routes you to the
+right one.
 
-- a subscription is empty, revoked, or unexpectedly re-bootstrapping
-- writes are not appearing on other clients
-- realtime connections or scope boundaries are behaving unexpectedly
+## Before anything: the three wiring checks
 
-## What you'll learn
+Most "sync is broken" reports during bring-up are one of these:
 
-- How to verify URL wiring, table names, and scope alignment
-- How to debug revoked subscriptions
-- How to fix bootstrap loops
-- How to diagnose missing writes across clients
-- How to resolve WebSocket connection issues
+1. **URL wiring.** The client `baseUrl` must point at the sync mount itself
+   (e.g. `https://host/api/sync`). A trailing `/sync` too many or too few
+   produces 404s on every request.
+2. **Table names.** The server handler's `table` and the client subscription's
+   `table` must match exactly.
+3. **Scope keys.** Handler scope patterns (`'project:{project_id}'`), row
+   columns (`project_id`), and subscription scopes
+   (`{ project_id: 'proj-a' }`) must use the same key names — `project_id`,
+   not `projectId`.
 
-## Prerequisites
-
-- access to the running client and server configuration
-- the ability to inspect logs, Console, or browser devtools
-- familiarity with your table names and scope keys
-
-## First: confirm the basics
-
-### 1) Verify your URL wiring
-
-One recommended convention:
-
-- API base: `/api`
-- Sync routes mounted at: `/api/sync`
-- Console routes mounted at: `/api/console`
-- Client transport `baseUrl`: `/api` (prefix before `/sync`)
-
-If the client is configured with `baseUrl: '/api/sync'`, requests will go to `/api/sync/sync` and fail.
-
-### 2) Verify your table names
-
-- Server: `createServerHandler({ table: 'tasks', ... })` registers a table named `tasks`
-- Client subscription: `{ table: 'tasks', ... }` must match exactly
-
-### 3) Verify scopes are present and aligned
-
-If your server handler declares:
+Grab the client's view of the world in one call when filing or debugging:
 
 ```ts
-scopes: ['project:{project_id}']
+const snapshot = await database.client.diagnosticSnapshot();
+// connection state, subscriptions + scopes, recent diagnostics,
+// recent sync timings, outbox/conflict stats
 ```
 
-Then each row **must** have a `project_id` column value, and clients must subscribe using:
+## Sync stalled (no data moving in either direction)
 
-```ts
-{ scopes: { project_id: 'proj-a' } }
-```
+**Symptom:** mutations stay local, nothing arrives from the server, no errors
+surface in the UI.
 
-## “My subscription is revoked”
+**First console check:** Fleet → find the client. Is its cursor advancing? Is
+its activity state stale? If the client never appears in Fleet at all, requests
+are not reaching the server (wiring or auth).
 
-Revoked means the server computed an empty effective scope intersection:
+**Likely causes, in order:**
 
-- the client requested scopes that aren’t allowed, or
-- `resolveScopes` returned no values (bug, missing membership, or unauthenticated actor)
+1. Auth failing — `authenticate()` returns `null`, so every request is 401.
+   Check Stream for request events with `outcome: error`.
+2. Rate limiting — sustained 429s (defaults: 120 pulls/60 pushes per minute
+   per client). Visible as errors in Stream; fix limits in
+   [Deployment](/operate/deployment#rate-limiting).
+3. The client lifecycle never started or the host put it to sleep —
+   check `connection` in the diagnostic snapshot.
 
-Checklist:
+**Fix links:** [client troubleshooting](/clients/javascript/troubleshooting),
+[server troubleshooting](/server/troubleshooting).
 
-- Confirm your `authenticate()` returns `{ actorId }` (not `null`).
-- Log/inspect `resolveScopes(ctx)` for the actor.
-- Confirm requested keys match your handler’s scope variables (e.g. `project_id`, not `projectId`).
+## Writes don't appear on other clients
 
-## “Bootstrap keeps happening” (looping snapshots)
+**Symptom:** writer pushes fine; reader never sees the row.
 
-Common causes:
+**First console check:** Stream → find the writer's push event → inspect the
+commit's emitted changes and their **scopes**. If the emitted scope values
+don't match what the reader subscribes to, fan-out is filtering the row.
 
-- The client never persists the cursor/state (database not persisted, stateId changes, or app resets DB).
-- Pruning removed commits the client still needs, so the server forces a bootstrap.
-- The app changes `actorId`, `clientId`, `fileName`, or generated app schema
-  without closing the current client and opening a new one.
+**Likely causes:**
 
-Checklist:
+1. Handler emits changes with wrong/missing scope values (`extractScopes` or
+   emitted-change scopes) — see [Table Handlers](/server/table-handlers).
+2. Reader's subscription scopes don't cover the row.
+3. Realtime is down and the reader simply hasn't pulled yet — pull-required
+   wake-ups recover via HTTP; check the reader's cursor in Fleet.
 
-- Ensure `actorId` and `clientId` are stable for the lifetime of the opened
-  client.
-- If they change in React, create a new Syncular client and remount
-  `SyncProvider` with a `key`.
-- Confirm you are not deleting the local DB between reloads.
-- If pruning is enabled, validate your prune settings match your offline window.
+**Fix links:** [Push & Conflicts](/server/apply-push),
+[Scopes](/learn/scopes).
 
-## “Writes don’t show up on other clients”
+## Subscription unexpectedly revoked
 
-Checklist:
+**Symptom:** a subscription returns `status: 'revoked'`; locally scoped rows
+get cleared.
 
-- Ensure the write is actually pushed (check outbox and sync status).
-- Ensure the server emitted changes for the correct scopes.
-- Ensure the other client has a subscription that matches those scopes.
-- If realtime is enabled, check whether the server sent a verified delta or a pull-required wake-up. Pull-required events still recover through HTTP pull.
+**First console check:** Stream → the reader's pull event → which subscription
+was revoked and with which requested scopes.
 
-In React, inspect:
+**Likely causes:**
 
-- `useSyncConnection()` (realtime connection state)
-- `useOutboxStats()` (queued commits)
-- `useConflictStats()` (conflicts blocking commits)
+1. `resolveScopes` returned no value for a requested key (missing membership,
+   unauthenticated actor, or a bug — the server fails loudly on undeclared
+   scope keys).
+2. Requested scope key doesn't match the handler's declared variables.
+3. Authorization genuinely changed (user removed from project) — working as
+   intended; the client clears revoked rows.
 
-## “I’m seeing lots of conflicts”
+**Fix links:** [Authorization](/server/scopes-and-auth),
+[server troubleshooting](/server/troubleshooting).
 
-Conflicts typically mean optimistic concurrency is enabled but the client is not providing a correct `base_version`.
+## Conflicts not resolving / conflict count climbing
 
-Checklist:
+**Symptom:** `useConflictStats` keeps growing, or the same commit conflicts
+repeatedly and blocks the outbox.
 
-- Ensure synced tables include a `server_version` column (or your configured version column).
-- Ensure your write path is sending the right `base_version`. Generated
-  mutations read `server_version` automatically by default; low-level helpers
-  should pass `baseVersion` explicitly.
-- Ensure your server handler increments the version column on each successful write.
+**First console check:** Stream → the rejected push events → the conflict
+result carries the server's `server_version` and winning `server_row`; compare
+against what the client thought (`base_version`).
 
-See: [Conflict Resolution](/learn/conflict-resolution).
+**Likely causes:**
 
-## “WebSocket doesn’t connect”
+1. The resolution path never runs — conflicts queue up with no UI or policy
+   resolving them. A conflicted commit blocks subsequent commits to the same
+   rows.
+2. Wrong `base_version` plumbing in hand-rolled mutations (generated mutations
+   read `server_version` automatically).
+3. Handler doesn't increment the version column on every write, so every
+   second writer conflicts.
+4. Genuinely hot rows — consider CRDT fields for concurrently edited text or
+   counters.
 
-Checklist:
+**Fix links:** [Conflict Resolution](/learn/conflict-resolution) (mechanism +
+client commands), [Push & Conflicts](/server/apply-push) (server semantics),
+[features/conflict-resolution](/features/conflict-resolution) (product flow).
 
-- Confirm the server enabled WebSockets (`sync.websocket.enabled` + `upgradeWebSocket`).
-- Confirm the URL matches your mountpoint (example: `/api/sync/realtime`).
-- Confirm `sync.websocket.allowedOrigins` includes the browser/Tauri origin
-  (`http://localhost:5173`, `http://localhost:1420`, your production app
-  origin, etc.). Hono CORS does not configure Syncular's WebSocket origin
-  guard.
-- In browsers, you cannot send custom headers with WebSocket:
-  - Prefer same-origin cookie auth, or
-  - Use a short-lived non-sensitive query param token.
-- `@syncular/server-hono` authenticates realtime during HTTP upgrade and does not consume first-message `{ type: 'auth' }` tokens.
-- If the browser reports `WebSocket is closed before the connection is
-  established`, check both server-side 403 origin rejections and client-side
-  connection churn. The built-in transport guards reconnect attempts; custom
-  transports should close stale sockets and ignore stale callbacks.
+## Realtime keeps dropping / never connects
 
-See: [Realtime](/server/realtime-websocket).
+**Symptom:** `connection.realtime` flaps between `connecting` and
+`disconnected`, or never opens; sync still works on a delay (HTTP pull
+recovers).
 
-## “Rows appear, then disappear after first sync”
+**First console check:** Command → live feed. Are realtime sessions starting
+at all? Server-side, `sync.transport.reconnects` climbing fast indicates a
+reconnect storm.
 
-This is usually a scoped bootstrap clearing issue.
+**Likely causes:**
 
-Checklist:
+1. **Origin guard:** `routes.websocket.allowedOrigins` doesn't include the
+   browser/Tauri origin (`http://localhost:5173`, `http://localhost:1420`,
+   production origin). Hono CORS does not configure the WebSocket origin
+   guard. Server logs a 403 on upgrade.
+2. **Proxy:** reverse proxy not forwarding `Upgrade`/`Connection` headers, or
+   its read timeout is below the 30s heartbeat —
+   [Deployment](/operate/deployment#self-hosted--vps).
+3. **Auth:** browsers can't send custom WebSocket headers; realtime
+   authenticates during HTTP upgrade (cookies or a short-lived query token) —
+   not via a first `{ type: 'auth' }` message.
+4. **Connection limits:** `maxConnectionsPerClient` (default 3) exceeded by
+   many tabs, or `maxConnectionsTotal` reached on the instance.
+5. **Multi-instance without a broadcaster:** connects fine, but wake-ups only
+   reach one instance's clients — configure `routes.realtime.broadcaster`.
 
-- Confirm the server handler and generated app contract use the same scope
-  variables (`user_id`, `project_id`, etc.).
-- Confirm the local table has the columns referenced by the generated scope
-  mapping. For example, `scope('user_id', { column: 'owner_user_id', ... })`
-  requires a local `owner_user_id` column.
-- Confirm the server includes required local ownership columns in snapshot and
-  change row payloads. If the runtime cannot map a revoked scope to local
-  rows, Syncular should fail closed instead of clearing the whole table.
-- Use `useSyncInspector()` or `client.getInspectorSnapshot()` to inspect active
-  subscriptions, subscription scopes, recent sync events, transport state, and
-  outbox counts.
+**Fix links:** [Realtime](/server/realtime-websocket),
+[client troubleshooting](/clients/javascript/troubleshooting).
 
-## “Bootstrap is slow / huge”
+## Bootstrap slow, huge, or timing out
 
-Checklist:
+**Symptom:** first sync takes forever, hammers the database, or times out on
+big scopes.
 
-- Reduce scope cardinality (prefer `project_id`/`team_id` over many fine-grained scopes).
-- Tune snapshot limits (`limitSnapshotRows`, `maxSnapshotPages`) carefully; don’t default to “huge”.
-- Use snapshot chunks (`binary-table-v1` + gzip) and ensure the `/sync/snapshot-chunks/:chunkId` route is reachable.
-- If chunk downloads return `400 sync.invalid_request`, make sure the client is sending `X-Syncular-Snapshot-Scopes`. The built-in HTTP transport does this automatically; manual callers must send the subscription scopes themselves.
-- Index your scope columns and primary keys appropriately (especially on the server DB).
+**First console check:** Stream → the bootstrap pull events: duration, snapshot
+page counts, and whether the same scopes re-bootstrap repeatedly.
+
+**Likely causes:**
+
+1. Missing indexes on scope columns for your handler's snapshot query.
+2. Snapshot limits set tiny (thousands of round-trips) or huge (memory
+   spikes) — tune `limitSnapshotRows`/`maxSnapshotPages` within the server
+   caps, [Performance](/operate/performance#bootstrap-at-scale).
+3. Chunk downloads failing: `400 sync.invalid_request` on
+   `/snapshot-chunks/:chunkId` means the `X-Syncular-Snapshot-Scopes` header
+   is missing (manual fetchers must send it; the built-in transport does).
+4. Over-broad scopes — a subscription that pulls the whole table when the
+   product needs one project.
+5. For very large scopes: snapshot artifacts not enabled —
+   [Bootstrap & Snapshots](/server/snapshot-pull).
+
+## Bootstrap loops (client re-bootstraps every start)
+
+**Symptom:** every app start does a full snapshot instead of an incremental
+pull.
+
+**First console check:** Fleet → the client's cursor. Resetting to a fresh
+cursor on each start means local state isn't persisting; a cursor behind the
+prune watermark means pruning outran the client.
+
+**Likely causes:**
+
+1. Local database not persisted (`storage: 'memory'`, `clearOnInit: true`
+   left on, or the host clears site data).
+2. Unstable identity — `actorId`, `clientId`, `stateId`, or `fileName` changes
+   between runs. In React, remount `SyncProvider` with a `key` when identity
+   legitimately changes.
+3. Pruning window shorter than your users' offline window —
+   `activeWindowMs` in [Performance](/operate/performance#pruning); spikes in
+   `sync.server.pull.bootstrap_subscriptions` confirm it.
+
+## Outbox overflow (pending commits piling up)
+
+**Symptom:** `outboxStats.pending` grows; storage use climbs; pushes seem to
+do nothing.
+
+**First console check:** Fleet → client diagnostics → outbox stats; Stream →
+this client's push events (failing? rejected? absent?).
+
+**Likely causes:**
+
+1. A conflicted or permanently rejected commit at the head of the queue
+   blocking everything behind it — resolve or discard it (see conflicts
+   above).
+2. Pushes failing (auth expiry, 413s from `maxOperationsPerPush`/byte limits,
+   rate limiting) — Stream shows which.
+3. Offline-heavy usage that's actually fine — set expectations with the
+   product; the outbox is durable by design.
+
+**Fix links:** [client troubleshooting](/clients/javascript/troubleshooting),
+[server troubleshooting](/server/troubleshooting) (byte-limit defaults).
+
+## Blob uploads/downloads stuck
+
+**Symptom:** rows sync but images/files never appear; blob queue stats show
+retries.
+
+**First console check:** Storage view — does the object exist in the bucket at
+the expected key? Then Fleet → client blob queue stats.
+
+**Likely causes:**
+
+1. Blob routes/storage adapter not mounted or misconfigured server-side.
+2. Upload size over your adapter/platform limits.
+3. Cache eviction expectations — downloads re-fetch on demand; verify the
+   download path separately from upload.
+
+**Fix links:** [Blobs](/features/blobs), [server blobs](/server/blobs),
+[Console Storage](/operate/console/storage).
+
+## Schema version mismatch
+
+**Symptom:** clients on an old app release stop syncing, or new columns stay
+empty on old clients.
+
+**First console check:** Stream → request events from affected clients — the
+pull carries the client's `schemaVersion`; compare with the server's latest.
+
+**Likely causes:**
+
+1. Server upgraded with a breaking schema change while old clients still run —
+   ensure handlers project rows for every supported `schemaVersion`
+   (generated server modules do this for you).
+2. Client schema migration didn't run (host packaging issue) — the runtime
+   refuses to open when the local schema is newer than the generated one.
+
+**Fix links:** [Migrations](/features/migrations),
+[Generated Client](/clients/javascript/generated-client).
+
+## Auth expiry mid-session
+
+**Symptom:** sync works after login, then silently stops; Stream shows 401s
+from a client that was previously fine.
+
+**Likely causes:**
+
+1. `getHeaders` returns a cached, expired token — make it async and re-read
+   the current token each call.
+2. Offline writes outliving the session: if users must write while logged
+   out-ish, look at [auth leases](/features/offline-auth-leases) instead of
+   long-lived tokens.
+3. Realtime authenticated at upgrade time keeps an old identity after token
+   rotation — reconnect after refreshing credentials.
+
+## High latency (everything works, slowly)
+
+**Symptom:** pushes/pulls succeed but p95 latency is bad.
+
+**First console check:** `GET /stats/latency` (or the Command KPI strip) — is
+it push, pull, or both? Correlate with `GET /stats/timeseries` volume.
+
+**Likely causes:**
+
+1. Database: missing indexes, exhausted connection pool, or the DB is far from
+   the server region.
+2. Large payloads: huge `limitCommits`/snapshot pages per request — smaller,
+   more frequent pulls are usually faster end-to-end.
+3. Maintenance churn: prune/compact running during peak on an undersized DB —
+   verify with the `maintenance-churn` load scenario
+   ([Performance](/operate/performance#load-testing)).
+4. One hot scope fanning out to thousands of subscribers — check
+   `sync.server.push.emitted_changes`.
 
 ## Next steps
 
-- [Data Modeling with Scopes](/features/data-modeling)
-- [Server Getting Started](/server/getting-started)
-- [JavaScript](/clients/javascript) or [Rust](/clients/rust)
+- [Console incident playbooks](/operate/console/incident-playbooks) — step-by-step operator flows
+- [Observability](/operate/observability) — get the signals this page assumes you have
+- [JavaScript client troubleshooting](/clients/javascript/troubleshooting) · [Server troubleshooting](/server/troubleshooting)

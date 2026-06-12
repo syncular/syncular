@@ -28,8 +28,7 @@ import { createSyncServer } from '@syncular/server-hono';
 const { syncRoutes, consoleRoutes } = createSyncServer({
   db,
   dialect,
-  handlers,
-  authenticate,
+  sync: { handlers, authenticate },
   console: {
     token: process.env.SYNC_CONSOLE_TOKEN,
     blobBucket: {

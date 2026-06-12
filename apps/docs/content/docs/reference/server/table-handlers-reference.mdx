@@ -1,9 +1,14 @@
 ---
 title: Table Handlers Reference
-description: createServerHandler options and ServerTableHandler interface
+description: Every createServerHandler option with type, default, and guidance, plus the ServerTableHandler interface.
 ---
 
-Table handlers define how each table syncs. Pass them as an array to `createSyncServer`:
+# Table Handlers Reference
+
+This is the option-by-option reference for `createServerHandler` from
+`@syncular/server` (source: `packages/server/src/handlers/create-handler.ts`).
+For patterns, worked examples, and authorization narrative, read the
+[Table Handlers guide](/server/table-handlers).
 
 ```typescript
 import { createSyncServer } from '@syncular/server-hono';
@@ -18,134 +23,170 @@ const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
 const { syncRoutes } = createSyncServer({
   db,
   dialect,
-  sync: {
-    handlers: [tasksHandler, projectsHandler],
-    authenticate,
-  },
+  sync: { handlers: [tasksHandler, projectsHandler], authenticate },
 });
 ```
 
-## createServerHandler Options
+## CreateServerHandlerOptions
 
-The `createServerHandler` factory builds a `ServerTableHandler` with sensible defaults for snapshot, apply, authorization, scope extraction, and version tracking.
+### Identity and scopes
+
+| Option | Type | Default | Guidance |
+|---|---|---|---|
+| `table` | `string` | required | Table name; must match the client table and operation `table` |
+| `scopes` | `ScopeDefinition[]` | required | Scope patterns: plain strings (`'user:{user_id}'`, column auto-derived from the placeholder) or `{ pattern, column }` when the column name differs (`{ pattern: 'user:{user_id}', column: 'owner_id' }`) |
+| `resolveScopes` | `(ctx) => Promise<ScopeValues>` | required | Allowed scope values for the current actor; values must be strings or string arrays — anything else throws (fail-loud). `null`/`undefined` per key means "no access for this scope" |
+| `extractScopes` | `(row) => StoredScopes` | derived from `scopes` | Override when scope values cannot be read directly from the row's scope columns |
+| `primaryKey` | `string` | `'id'` | Primary key column used for row ids, keyset pagination, and conflict lookups |
+| `versionColumn` | `string` | `'server_version'` | Optimistic-concurrency counter; must hold a safe integer |
+| `dependsOn` | `string[]` | unset | Tables that must bootstrap before this one (e.g. parents of foreign keys) |
+
+### Snapshots
+
+| Option | Type | Default | Guidance |
+|---|---|---|---|
+| `snapshotChunkTtlMs` | `number` | 24 hours | TTL for cached snapshot chunks |
+| `snapshotBinaryColumns` | `BinarySnapshotColumn[]` | unset | Stable column metadata for binary bootstrap chunks. Typegen wires this for generated handlers; hand-rolled handlers should supply it so the server skips per-page column inference |
+| `snapshotBinaryColumnsForVersion` | `(schemaVersion) => columns \| null` | unset | Version-aware variant for divergent client schemas; returning `null` intentionally disables fallback to current metadata |
+| `snapshotBinaryEncoder` | `BinarySnapshotRowsEncoder` | unset | Generated encoder for binary bootstrap chunks (faster than the generic object-row encoder) |
+| `snapshotBinaryEncoderForVersion` | `(schemaVersion) => encoder \| null` | unset | Version-aware encoder variant |
+| `snapshot` | custom implementation | keyset-paginated `SELECT` | Full override of the snapshot query — see "What the defaults do" below |
+
+### Row transforms and codecs
+
+| Option | Type | Default | Guidance |
+|---|---|---|---|
+| `codecs` | `ColumnCodecSource` | unset | Per-column codec resolver (`{ table, column, sqlType?, dialect? }` → codec) translating app values on the wire to DB values at the storage boundary, e.g. `codecs.numberBoolean()`, `codecs.stringJson()`. Used by the default snapshot/apply paths only when the corresponding transform hook is absent |
+| `codecDialect` | `'sqlite' \| 'postgres'` | `'sqlite'` | Dialect for codec overrides |
+| `transformInbound` | `(clientRow, { schemaVersion }) => serverRow` | passthrough/codecs | Client → server row mapping on writes; use `schemaVersion` to upgrade payloads from older clients |
+| `transformOutbound` | `(serverRow) => clientRow` | passthrough/codecs | Server → client row mapping on reads (snapshots, emitted changes, conflict rows) |
+
+### Authorization and apply
+
+| Option | Type | Default | Guidance |
+|---|---|---|---|
+| `authorize` | `(ctx, op) => Promise<true \| { error, code, retriable? }>` | unset | Per-operation business authorization, run before scope checks; reject with a [Syncular error code](/reference/errors) |
+| `applyOperation` | custom implementation | built-in upsert/delete | Full override of the write path. Providing it disables the built-in batch fast path and the savepoint optimization unless you opt back in |
+| `canRejectSingleOperationWithoutSavepoint` | `boolean` | `true` built-in, `false` with custom `applyOperation` | Set `true` on a custom `applyOperation` only if a rejected single operation is guaranteed to leave no durable writes; allows the push engine to skip SAVEPOINT overhead |
+
+## What the defaults do
+
+- **Snapshot** — paginated `SELECT *` filtered by the scope columns
+  (intersected with the subscription's effective scopes), keyset pagination
+  ordered by `primaryKey`, outbound transform/codecs applied per page.
+- **Write-path scope authorization** — runs on every operation when the
+  handler declares scope keys: the target row's scopes (existing row for
+  updates/deletes, payload for inserts) must be allowed by `resolveScopes`,
+  otherwise the operation is rejected with `sync.forbidden`. `resolveScopes`
+  results are memoized per push context.
+- **Upsert with `base_version`** — conditional update where
+  `versionColumn = base_version`; on miss it distinguishes
+  `sync.row_missing` (no row) from a `conflict` result carrying
+  `server_version` and the outbound-transformed `server_row`.
+  `base_version: 0` inserts if absent.
+- **Upsert without `base_version`** — last-write-wins insert-or-update with
+  `versionColumn` incremented; primary key and scope columns are never
+  overwritten by the update set.
+- **Delete** — loads the row, scope-authorizes it, hard-deletes, and emits a
+  `delete` change with the row's scopes. Deleting a missing row is `applied`
+  (idempotent). There is no built-in soft delete — model tombstones at the
+  app level if you need them.
+- **Constraint errors** — NOT NULL / unique / foreign-key violations come
+  back as `sync.constraint_violation` instead of throwing.
+- **Batching** — multiple no-`base_version` upserts with identical payload
+  shape and distinct row ids are applied as a single multi-row
+  insert-on-conflict; anything else (deletes, versions, custom `authorize`,
+  declared scope keys) falls back to sequential application that stops at
+  the first non-applied result.
+
+## ServerTableHandler interface
+
+`createServerHandler` returns this interface; implement it directly when the
+factory does not fit (source: `packages/server/src/handlers/types.ts`).
 
 ```typescript
-import { createServerHandler } from '@syncular/server';
-import { codecs } from '@syncular/core';
-
-const handler = createServerHandler<ServerDb, ClientDb, 'tasks'>({
-  // Required
-  table: 'tasks',
-  scopes: ['user:{user_id}'],
-  resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
-
-  // Optional
-  primaryKey: 'id',              // default: 'id'
-  versionColumn: 'server_version', // default: 'server_version'
-  dependsOn: ['users'],           // bootstrap ordering
-  snapshotChunkTtlMs: 60_000,     // TTL for cached snapshots
-
-  // Column codecs: App values on wire, DB values at storage boundary
-  // Match by table/column in runtime paths (`sqlType` is optional here)
-  codecs: (col) => {
-    if (col.table === 'tasks' && col.column === 'completed') {
-      return codecs.numberBoolean();
-    }
-    if (col.table === 'tasks' && col.column === 'metadata') {
-      return codecs.stringJson();
-    }
-    return undefined;
-  },
-  codecDialect: 'sqlite',         // default: 'sqlite'
-
-  // Advanced transforms (optional escape hatch)
-  transformInbound: (row, ctx) => ({ ...row }),
-  transformOutbound: (row) => ({ ...row }),
-
-  // Per-operation authorization
-  authorize: async (ctx, op) => true,
-
-  // Custom scope extraction (when column name differs from pattern)
-  extractScopes: (row) => ({ user_id: String(row.owner_id) }),
-
-  // Override default snapshot/apply entirely
-  snapshot: async (ctx, params) => ({ rows: [], nextCursor: null }),
-  applyOperation: async (ctx, op, opIndex) => ({ result: { opIndex, status: 'applied' }, emittedChanges: [] }),
-});
-```
-
-### What the defaults handle
-
-- **Snapshot**: Paginated `SELECT *` filtered by scope columns, cursor-based pagination by primary key
-- **Apply row writes**: Insert or update with automatic `server_version` increment, constraint error classification, and version conflict detection
-- **Apply (delete)**: Delete by primary key with scope extraction from the existing row
-- **Scope extraction**: Reads scope values from row columns derived from scope patterns
-
-## ServerTableHandler Interface
-
-For advanced use cases where `createServerHandler` doesn't fit, you can implement the interface directly and pass it in the `handlers` array:
-
-```typescript
-interface ServerTableHandler<DB extends SyncCoreDb = SyncCoreDb> {
+interface ServerTableHandler<DB extends SyncCoreDb, Auth extends SyncServerAuth> {
   table: string;
-  scopePatterns: string[];
+  primaryKeyColumn?: string;
+  scopePatterns: ScopePattern[];
   dependsOn?: string[];
   snapshotChunkTtlMs?: number;
+  snapshotBinaryColumns?: readonly BinarySnapshotColumn[];
+  snapshotBinaryColumnsForVersion?: (schemaVersion: number) => readonly BinarySnapshotColumn[] | null | undefined;
+  snapshotBinaryEncoder?: BinarySnapshotRowsEncoder;
+  snapshotBinaryEncoderForVersion?: (schemaVersion: number) => BinarySnapshotRowsEncoder | null | undefined;
+  /** Project a persisted change row to an older client schema before encoding. */
+  projectChangeForVersion?: (change: SyncChange, schemaVersion: number) => SyncChange;
+  canRejectSingleOperationWithoutSavepoint?: boolean;
 
-  resolveScopes(ctx: ServerContext<DB>): Promise<ScopeValues>;
+  resolveScopes(ctx: ServerContext<DB, Auth>): Promise<ScopeValues>;
   extractScopes(row: Record<string, unknown>): StoredScopes;
-  snapshot(ctx: ServerSnapshotContext<DB>, params: Record<string, unknown> | undefined): Promise<{ rows: unknown[]; nextCursor: string | null }>;
-  applyOperation(ctx: ServerApplyOperationContext<DB>, op: SyncOperation, opIndex: number): Promise<ApplyOperationResult>;
+  snapshot(
+    ctx: ServerSnapshotContext<DB, string, Auth>,
+    params: Record<string, unknown> | undefined
+  ): Promise<{ rows: unknown[]; nextCursor: string | null }>;
+  applyOperation(
+    ctx: ServerApplyOperationContext<DB, Auth>,
+    op: SyncOperation,
+    opIndex: number
+  ): Promise<ApplyOperationResult>;
+  /** Optional batch path; must preserve sequential semantics. */
+  applyOperationBatch?(
+    ctx: ServerApplyOperationContext<DB, Auth>,
+    operations: BatchApplyOperationInput[]
+  ): Promise<ApplyOperationResult[]>;
 }
 ```
 
-### Context Types
+### Context types
 
 ```typescript
-interface ServerContext<DB extends SyncCoreDb> {
-  db: Kysely<DB> | Transaction<DB>;
-  actorId: string;
+interface ServerContext<DB, Auth> {
+  db: DbExecutor<DB>;     // transaction inside applyOperation
+  actorId: string;        // from authenticate()
+  auth: Auth;             // full auth payload ({ actorId, partitionId?, ...yours })
 }
 
-interface ServerSnapshotContext<DB extends SyncCoreDb> extends ServerContext<DB> {
-  scopeValues: ScopeValues;
-  cursor: string | null;
-  limit: number;
+interface ServerSnapshotContext<DB, ScopeKeys, Auth> extends ServerContext<DB, Auth> {
+  scopeValues: ScopeValuesForKeys<ScopeKeys>;  // effective scopes for this subscription
+  cursor: string | null;                       // keyset cursor (primary key)
+  limit: number;                               // max rows for this page
+  schemaVersion: number;                       // client schema targeted by this snapshot
 }
 
-interface ServerApplyOperationContext<DB extends SyncCoreDb> extends ServerContext<DB> {
-  trx: Transaction<DB>;
+interface ServerApplyOperationContext<DB, Auth> extends ServerContext<DB, Auth> {
+  trx: DbExecutor<DB>;    // the push transaction
   clientId: string;
-  commitId: string;
-  schemaVersion?: number;
+  commitId: string;       // the client commit id (idempotency key)
+  schemaVersion: number;  // client schema when the commit was created
+  authLease?: SyncAuthLeaseProvenance;  // audit/replay context only
 }
 ```
 
-### Result Types
+### Result types
 
 ```typescript
 interface ApplyOperationResult {
-  result: SyncOperationResult;
+  result: SyncOperationResult;   // { opIndex, status: 'applied' } or conflict/error shapes
   emittedChanges: EmittedChange[];
+}
+
+interface EmittedChange {
+  table: string;
+  row_id: string;
+  op: 'upsert' | 'delete';       // internal row-write marker (clients still see insert/update/delete)
+  row_json: unknown | null;      // null for deletes
+  row_version: number | null;
+  scopes: StoredScopes;          // required — drives realtime fan-out and pull visibility
 }
 ```
 
-When emitting changes, include scopes so the realtime system knows which clients to notify:
+Always include `scopes` on emitted changes; a change emitted without scope
+metadata fails with `sync.missing_scopes`.
 
-```typescript
-emittedChanges.push({
-  table: 'tasks',
-  row_id: op.row_id,
-  // Internal emitted-change storage uses the row-write operation marker.
-  // Generated app mutations still expose insert/update/delete.
-  op: 'upsert',
-  row_json: updated,
-  row_version: updated.server_version,
-  scopes: { user_id: row.user_id, project_id: row.project_id },
-});
-```
+## Related pages
 
-## Next Steps
-
-- [Table Handlers Guide](/server/table-handlers) -- Patterns and authorization
-- [Subscription Registry](/reference/server/subscription-registry) -- Configure scopes
+- [Table Handlers guide](/server/table-handlers) — worked examples and patterns
+- [Authorization](/server/scopes-and-auth) — requested-vs-resolved scope validation
+- [Error Codes](/reference/errors) — codes used in operation results
+- [Configuration](/reference/configuration) — push/pull limits around handlers

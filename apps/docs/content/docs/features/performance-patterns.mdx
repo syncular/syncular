@@ -5,37 +5,59 @@ description: Design schemas, scopes, queries, and runtime usage for measured per
 
 # Performance Patterns
 
-Syncular performance work should follow product shape, not benchmark shortcuts.
-Optimize for scoped subscriptions, generated mutations, binary snapshot
-chunks, event-driven realtime, and local query ergonomics.
+Syncular performance work should follow product shape, not benchmark
+shortcuts. The system is already built around scoped subscriptions, generated
+mutations, binary snapshot chunks, and event-driven realtime — most
+performance problems come from working against those defaults, not from
+missing tuning knobs.
 
 ## Baseline principles
 
-- Scope data by the way users actually access it.
-- Keep bootstrap table-shaped and binary; avoid generic JSON row materialization
-  in hot paths.
+- Scope data by the way users actually access it. Bootstrap and steady-state
+  cost both scale with effective scopes, so the scope model is the biggest
+  performance decision you make — see
+  [Data Modeling](/features/data-modeling).
+- Keep bootstrap table-shaped and binary; avoid generic JSON row
+  materialization in hot paths.
 - Use generated mutation paths so local apply, outbox, encryption, blobs, and
-  events stay coherent.
+  events stay coherent — hand-rolled SQL bypasses the batching the runtime
+  already does.
 - Use row/field deltas to refresh only affected views.
 - Add local read models only for measured repeated work.
-- Run the benchmark gate before and after performance-sensitive changes.
+- Measure before and after every performance-sensitive change.
 
 ## Client patterns
 
-- Keep one hot runtime per app session.
-- Use the persistent realtime worker instead of scheduled polling.
-- Use queued native APIs from UI threads.
+- Keep one hot runtime per app session; opening and closing clients per
+  screen throws away caches, prepared statements, and the realtime
+  connection.
+- Use the persistent realtime worker instead of scheduled polling; leave
+  `pollIntervalMs: false` when realtime is on (see
+  [Realtime & Presence](/features/presence)).
+- Use queued native APIs from UI threads — editor bursts and large writes go
+  through the worker, not the main thread.
 - Subscribe to event streams and live-query deltas instead of reloading the
-  entire bootstrap after every change.
-- Use prepared query paths and generated read models for repeated local reads.
+  entire dataset after every change; `rowsChangedDebounceMs` and
+  `mutationSyncDebounceMs` batch UI refreshes under write bursts.
+- Use prepared query paths and
+  [generated read models](/features/local-read-models) for repeated local
+  reads.
+- Compact local storage (`compactStorage`) on a product cadence so acked
+  outbox commits, resolved conflicts, and CRDT update logs do not accumulate.
 
 ## Server patterns
 
-- Emit binary snapshot chunks for supported generated client schemas.
-- Keep table handlers schema-version aware.
+- Emit binary snapshot chunks for supported generated client schemas; typegen
+  wires `snapshotBinaryColumns`, hand-rolled handlers should supply it (see
+  [Bootstrap & Snapshots](/server/snapshot-pull)).
+- Keep table handlers schema-version aware so old clients do not force
+  lowest-common-denominator paths.
 - Use effective scopes and scoped snapshot artifacts instead of broad
   partition snapshots.
-- Use realtime wakeups for changed scopes and HTTP pull as the recovery path.
+- Use realtime wake-ups for changed scopes and HTTP pull as the recovery
+  path; do not add server-side polling loops.
+- Cache `resolveScopes` with the scope cache when membership lookups are hot
+  (see [Authorization](/server/scopes-and-auth)).
 
 ## Measurement
 
@@ -46,12 +68,16 @@ Every performance-sensitive change should record:
 - the delta;
 - whether the change was kept, revised, or reverted.
 
-Use `rust/docs/BENCHMARK_LOG.md` in the repository for Rust-first benchmark
-evidence and keep app-style external benchmarks in the relevant work package.
+Benchmark with realistic dataset sizes and scope shapes — a 50-row fixture
+will not show bootstrap chunking, snapshot caching, or read-model wins. The
+Syncular repository keeps its own Rust benchmark evidence in
+`rust/docs/BENCHMARK_LOG.md`; keep an equivalent log next to your app's
+benchmarks.
 
 ## Related docs
 
 - [Local Read Models](/features/local-read-models)
+- [Data Modeling](/features/data-modeling)
+- [Realtime & Presence](/features/presence)
 - [Operate: Performance](/operate/performance)
-- [Realtime WebSocket](/server/realtime-websocket)
 - [Testing](/testing)

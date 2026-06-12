@@ -9,10 +9,10 @@ Testing is split by language/runtime so app tests do not accidentally mock the
 wrong layer.
 
 <Cards>
+  <Card title="Testing Strategy" href="/testing/strategy" description="The four test layers to cover before shipping, with runnable testkit examples" />
   <Card title="JavaScript Testing" href="/clients/javascript/testing" description="@syncular/testkit for TypeScript, server, browser, HTTP, and runtime tests" />
   <Card title="Rust Testing" href="/clients/rust/testing" description="syncular-testkit for generated Rust/native clients and real SQLite state" />
-  <Card title="Conformance" href="/testing/conformance" description="Shared scenarios that should hold across JavaScript, Rust, and host runtimes" />
-  <Card title="Testing Strategy" href="/testing/strategy" description="What to verify before production and how to layer the suites" />
+  <Card title="Conformance" href="/testing/conformance" description="What the framework's own gates prove across JavaScript, Rust, and native hosts" />
 </Cards>
 
 ## Use the right surface
@@ -30,13 +30,9 @@ semantics, deterministic fixtures, and app-owned domain assertions.
 
 ## Minimum suite before shipping
 
-- Handler/scope tests for every synced table.
-- Two-client convergence tests for the tables your product depends on.
-- Offline queue and reconnect tests for mutations that users can make offline.
-- Conflict tests for every user-visible resolution path.
-- Realtime recovery tests if your UI depends on websocket wakeups.
-- Blob, CRDT, and encryption roundtrips for every enabled capability.
-- Schema-version tests for the oldest app version you still support.
+The layered walkthrough — handler tests, two-client convergence,
+offline/reconnect, conflicts — plus the full pre-production checklist lives in
+[Testing Strategy](/testing/strategy).
 
 ## What not to mock
 

@@ -1,0 +1,184 @@
+---
+title: Configuration
+description: Every Syncular configuration surface - createSyncServer options, sync route limits, websocket, rate limiting, prune/compact, console, relay, and environment variables.
+---
+
+# Configuration
+
+This page is the index of Syncular's configuration surfaces with types and
+defaults. Client-side tuning has its own full page — this one covers the
+server, console, relay, and environment variables.
+
+| Surface | Where it's configured | Reference |
+|---|---|---|
+| Client (JS/browser) | `createSyncularDatabase(...)` options | [Client Configuration](/clients/javascript/client-configuration) |
+| Sync server | `createSyncServer(...)` from `@syncular/server-hono` | this page |
+| Table handlers | `createServerHandler(...)` per table | [Table Handlers Reference](/reference/server/table-handlers-reference) |
+| Console | `console` option of `createSyncServer` | this page |
+| Relay | `@syncular/relay` `RelayServerOptions` | this page |
+| CLI / codegen | flags + env vars | [CLI](/reference/cli) |
+
+## createSyncServer options
+
+`createSyncServer` (`@syncular/server-hono`) is the top-level server factory.
+
+```ts
+import { createSyncServer } from '@syncular/server-hono';
+
+const { syncRoutes, consoleRoutes } = createSyncServer({
+  db,            // Kysely database instance
+  dialect,       // server sync dialect (postgres or sqlite)
+  sync,          // { authenticate, handlers, plugins? }
+  routes: { /* limits, cors, websocket, rate limit, prune, compact */ },
+  upgradeWebSocket, // enables realtime when provided
+  console: { token: process.env.SYNC_CONSOLE_TOKEN },
+});
+```
+
+| Option | Type | Required | Notes |
+|---|---|---|---|
+| `db` | `Kysely<DB>` | yes | Server database instance |
+| `dialect` | `ServerSyncDialect` | yes | From `@syncular/server-dialect-postgres` or `@syncular/server-dialect-sqlite` |
+| `sync` | `ServerSyncConfig` | yes | `authenticate(request)` plus at least one table handler; optional push `plugins` |
+| `chunkStorage` | `SnapshotChunkStorage` | no | External body storage (R2/S3) for snapshot chunks; default stores inline in the DB |
+| `snapshotArtifactStorage` | `SnapshotArtifactStorage` | no | External body storage for scoped snapshot artifacts (bodies are always external when used) |
+| `scopeCache` | `ScopeCacheBackend` | no | Cross-request cache for `resolveScopes()` results; request-local memoization always applies |
+| `routes` | `SyncRoutesConfigWithRateLimit` | no | All sync route tuning — see below |
+| `upgradeWebSocket` | `UpgradeWebSocket` | no | Runtime websocket upgrader (e.g. from `hono/bun`); realtime is disabled without it |
+| `console` | `false \| { token?, corsOrigins?, metrics?, maintenance?, blobBucket? }` | no | Console routes; omit/false to disable. Throws at startup if enabled without a token (option or `SYNC_CONSOLE_TOKEN`) |
+
+## Sync route options (`routes`)
+
+### Request and response limits
+
+| Option | Default | What it bounds |
+|---|---|---|
+| `maxPullLimitCommits` | 100 | Commits returned per pull request |
+| `maxSubscriptionsPerPull` | 200 | Subscriptions per pull request |
+| `maxPullLimitSnapshotRows` | 5,000 | Snapshot rows per snapshot page |
+| `maxPullMaxSnapshotPages` | 50 | Snapshot pages per subscription per pull response |
+| `maxOperationsPerPush` | 200 | Operations per pushed commit (`sync.too_many_operations` beyond it) |
+| `maxSyncRequestJsonBytes` | 4 MiB | JSON request body of `POST /` (413 beyond it) |
+| `maxSyncBinaryPackBytes` | 16 MiB | Binary sync-pack response body of `POST /` |
+| `maxSnapshotChunkResponseBytes` | 64 MiB | `GET /snapshot-chunks/:chunkId` body |
+| `maxSnapshotArtifactResponseBytes` | 256 MiB | `GET /snapshot-artifacts/:artifactId` body |
+| `snapshotChunkGzipLevel` | 1 (range 0–9) | Gzip level for generated snapshot chunks; lower = less CPU, larger bodies |
+
+### Schema version gating
+
+| Option | Default | Meaning |
+|---|---|---|
+| `requiredSchemaVersion` | unset | Minimum client schema version accepted; older clients get `sync.client_schema_unsupported` |
+| `latestSchemaVersion` | unset | Informational "latest known" version surfaced to clients; never blocks |
+
+### CORS (`routes.cors`)
+
+Either a Hono-style origin value (`string`, `string[]`, `'*'`, or a resolver
+function) or `{ origin, allowHeaders?, exposeHeaders? }`. Custom headers are
+appended to the built-in Syncular transport/tracing headers, not replacing
+them. Credentials are allowed for non-wildcard origins; preflight max-age is
+86,400 seconds.
+
+### Rate limiting (`routes.rateLimit`)
+
+Set to `false` to disable. Defaults:
+
+| Path | Default |
+|---|---|
+| Pull | 120 requests / 60 s window per client |
+| Push | 60 requests / 60 s window per client |
+
+Each entry accepts `{ maxRequests, windowMs, includeHeaders, onRateLimited,
+skipInTest }` or `false`. Exceeding it returns `sync.rate_limited` with
+rate-limit headers when `includeHeaders` is on.
+
+### WebSocket realtime (`routes.websocket`)
+
+Realtime requires `upgradeWebSocket` to be passed to `createSyncServer`.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `heartbeatIntervalMs` | adapter default | Heartbeat ping interval |
+| `maxConnectionsTotal` | 5,000 | Concurrent websocket connections per process |
+| `maxConnectionsPerClient` | 3 | Concurrent connections per `clientId` |
+| `maxMessageBytes` | 1 MiB | Max inbound message size |
+| `maxSyncPackBytes` | 64 KiB | Max sync-pack sent inline over a frame; larger payloads fall back to HTTP pull recovery |
+| `maxMessagesPerWindow` | 120 | Inbound messages per connection per window (0/negative disables) |
+| `messageRateWindowMs` | 10,000 ms | Window for the message rate limit |
+| `maxInFlightSyncsPerConnection` | 64 | Outbound sync notifications without a newer client ACK before cursor-only resync frames (0 disables) |
+| `replayWindowSize` | 64 | Recent outbound notifications retained for reconnect replay before HTTP pull recovery (0 disables) |
+| `allowedOrigins` | same-origin + origin-less | `'*'`, exact origin list, or unset (same-origin browser upgrades plus non-browser clients) |
+
+### Maintenance (`routes.prune`, `routes.compact`)
+
+| Option | Default | Meaning |
+|---|---|---|
+| `prune.minIntervalMs` | 5 min | Minimum time between automatic prune runs |
+| `prune.options.activeWindowMs` | 14 days | Clients idle longer than this are ignored for the prune watermark |
+| `prune.options.fallbackMaxAgeMs` | 30 days | Hard age cap — commits older than this are pruned even with a stuck watermark |
+| `prune.options.keepNewestCommits` | 1,000 | Always keep at least this many newest commits |
+| `compact.minIntervalMs` | 30 min | Minimum time between compaction runs |
+| `compact.options.fullHistoryHours` | required | Keep full (non-compacted) history for the most recent N hours |
+
+### Payload snapshots and multi-instance realtime
+
+| Option | Default | Meaning |
+|---|---|---|
+| `requestPayloadSnapshots.enabled` | false | Record request/response payloads in `sync_request_payloads` for console inspection (opt-in) |
+| `requestPayloadSnapshots.maxBytes` | 128 KiB | Truncation threshold per recorded payload |
+| `realtime.broadcaster` | unset | `SyncRealtimeBroadcaster` for multi-instance commit wakeups |
+| `realtime.instanceId` | random | Stable instance id (useful in tests) |
+
+## Console options (`console`)
+
+| Option | Default | Meaning |
+|---|---|---|
+| `token` | `SYNC_CONSOLE_TOKEN` env | Bearer token for console auth; startup error if console is enabled with no token anywhere |
+| `corsOrigins` | `['http://localhost:5173', 'https://console.sync.dev']` | Allowed console origins; `'*'` allows all (not recommended in production) |
+| `metrics.aggregationMode` | `'auto'` | `raw` (in-memory), `aggregated` (DB-level), or `auto` (raw for small windows) |
+| `metrics.rawFallbackMaxEvents` | implementation default | Max events for raw mode under `auto` |
+| `maintenance.autoPruneIntervalMs` | 5 min | Automatic console event-prune interval (0 disables) |
+| `maintenance.requestEventsMaxAgeMs` | 7 days | Request-event retention by age (0 disables) |
+| `maintenance.requestEventsMaxRows` | 10,000 | Request-event retention by count (0 disables) |
+| `maintenance.operationEventsMaxAgeMs` | 30 days | Operation audit event retention by age (0 disables) |
+| `blobBucket` | unset | Storage adapter enabling `/console/storage*` object browsing |
+
+The console websocket reuses the sync websocket settings
+(`heartbeatIntervalMs`, `maxMessageBytes`, message rate limits, allowed
+origins) from `routes.websocket`.
+
+## Relay options (`@syncular/relay`)
+
+`createRelayServer` runs an edge relay that syncs a scoped slice from the
+main server and serves local clients.
+
+| Option | Default | Meaning |
+|---|---|---|
+| `db`, `dialect` | required | Relay-local database + dialect |
+| `mainServerTransport` | required | `SyncTransport` to the main server |
+| `mainServerClientId` / `mainServerActorId` | required | Identity the relay uses upstream |
+| `tables` | required | Tables the relay subscribes to |
+| `scopes` | required | Scope values for the upstream subscriptions |
+| `handlers` | required | Handler collection for applying local operations |
+| `heartbeatIntervalMs` | 30,000 | WebSocket heartbeat |
+| `forwardRetryIntervalMs` | 5,000 | Forward-engine retry interval |
+| `pullIntervalMs` | 10,000 | Pull-engine polling interval |
+| `healthCheckIntervalMs` | 30,000 | Upstream health check interval |
+| `pruneIntervalMs` | 1 hour | Relay data prune interval (0 disables) |
+| `pruneMaxAgeMs` | 7 days | Max age of completed relay data before pruning |
+
+## Environment variables
+
+| Variable | Read by | Meaning |
+|---|---|---|
+| `SYNC_CONSOLE_TOKEN` | server console routes | Console bearer token when `console.token` is not set |
+| `SYNCULAR_CODEGEN_BIN` | `syncular generate` | Explicit `syncular-codegen` binary path/command |
+| `SYNCULAR_CODEGEN_VERSION` | `syncular codegen install` | Crate version to install when it should differ from the npm package version |
+| `SYNCULAR_CODEGEN_AUTO_INSTALL=0` | `syncular generate` | Disable Cargo auto-install of the generator |
+| `SYNCULAR_CACHE_DIR` | CLI | Override the Syncular tool cache directory |
+
+## Related pages
+
+- [Client Configuration](/clients/javascript/client-configuration) — the full client option surface with defaults and tuning scenarios
+- [Server Getting Started](/server/getting-started) — guided bring-up using these options
+- [Error Codes](/reference/errors) — what the limits return when exceeded

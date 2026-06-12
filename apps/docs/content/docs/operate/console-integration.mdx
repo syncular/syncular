@@ -9,37 +9,18 @@ Use one of these integration paths depending on how much control you need.
 
 | Path | Best for | What you manage |
 |---|---|---|
-| CLI + distributables | Local ops tooling, quick usage | `syncular console` flags |
-| Backend route helper (`mountConsoleUi`) | Fast server integration | mount path + token resolver |
+| Backend route helper (`mountConsoleUi`) | Fast Hono server integration | mount path + token resolver |
+| Generic static responder | Non-Hono backends, standalone serving | one request handler |
 | Mount API | Embed full Console app in your frontend | container + config props |
 | Component composition | Build a custom dashboard shell | routing/layout/page composition |
 
-## 1) Distributables (CLI-backed)
+All paths serve the same prebuilt distributables shipped in
+`@syncular/console` (Vite-built JS/CSS plus `index.html` with injected runtime
+config). The supported programmatic API for serving them is
+`createConsoleStaticResponder` from `@syncular/console/server` — do not
+resolve `@syncular/console/static/index.html` directly in application code.
 
-`syncular console` serves prebuilt assets from `@syncular/console/static/*`.
-
-Published distributables include:
-
-- `@syncular/console/static/index.html`
-- `@syncular/console/static/console.css`
-- JS/assets under `@syncular/console/static/*`
-
-```bash
-export SYNC_CONSOLE_TOKEN="your-operator-token"
-syncular console \
-  --server-url http://localhost:9811/api \
-  --token-env SYNC_CONSOLE_TOKEN \
-  --open
-```
-
-This is the fastest path when your app server is already running and you want a dedicated Console UI immediately.
-
-See full command details in [CLI Console Command](/reference/cli/console).
-
-For programmatic serving, the supported API is `createConsoleStaticResponder` from `@syncular/console/server`.
-Do not resolve `@syncular/console/static/index.html` directly in application code.
-
-## 2) Backend helper (`@syncular/server-hono`)
+## 1) Backend helper (`@syncular/server-hono`)
 
 If you already run Hono, use `mountConsoleUi` to serve the Console app and prefill runtime config.
 
@@ -62,9 +43,10 @@ This automatically serves `@syncular/console/static/*` and injects:
 - `syncular-console-server-url`
 - `syncular-console-token`
 
-## 3) Generic backend helper (`@syncular/console/server`, recommended)
+## 2) Generic backend helper (`@syncular/console/server`)
 
-Use this when your backend is not Hono.
+Use this when your backend is not Hono, or to serve Console from a small
+standalone server next to your ops tooling.
 
 ```ts
 import { createConsoleStaticResponder } from '@syncular/console/server';
@@ -81,7 +63,7 @@ const response = await serveConsole(request, {
 if (response) return response; // otherwise continue your normal router
 ```
 
-## 4) Mount API (embed full app)
+## 3) Mount API (embed full app)
 
 Use `mountSyncularConsoleApp` to mount the full Console app into your own page.
 
@@ -114,7 +96,7 @@ If Console renders without styling in a Tailwind v4 app:
 
 You do not need to add `@syncular/*` paths to Tailwind scanning for the mount/distributable paths.
 
-## 5) Component composition (custom shell)
+## 4) Component composition (custom shell)
 
 If you want your own route structure or layout, compose from exported components.
 
@@ -158,11 +140,11 @@ Then map pages (`Command`, `Stream`, `Fleet`, `Ops`, `Storage`, `Config`) into y
 ## Security guidance
 
 - Use short-lived operator tokens when possible.
-- Prefer environment-based token injection server-side or via `--token-env` in CLI.
+- Prefer server-side token injection (`resolveToken` / `prefill.token` from a
+  session) over hardcoding tokens in frontend builds.
 - Avoid putting permanent tokens in URLs.
 
 ## Related guides
 
 - [Operations Console route setup](/operate/operations-setup)
 - [Console operator workflows](/operate/console)
-- [CLI Console Command](/reference/cli/console)

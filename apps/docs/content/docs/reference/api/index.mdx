@@ -1,105 +1,158 @@
 ---
 title: API Reference
-description: Syncular HTTP API reference for sync and console endpoints
+description: Syncular HTTP API reference for sync and console endpoints, organized by feature, with shared request/response semantics.
 ---
 
 # API Reference
 
 The Syncular server exposes two API families:
 
-- `sync` endpoints for client synchronization and product-facing audit history
+- `sync` endpoints for client synchronization, blobs, and product-facing audit history
 - `console` endpoints for operator dashboards, forensics, and maintenance workflows
 
-All paths below are shown as they appear in the OpenAPI docs (i.e. mounted at `/sync` and `/console/*`).
+All paths below are shown as they appear in the OpenAPI docs (i.e. mounted at
+`/sync` and `/console/*`). In your app they live wherever you mount the
+routes — the docs examples assume `/api/sync` and `/api/console`.
 
-## Choose the right API family
+## Semantics that apply across endpoints
 
-| Need | Surface |
-|---|---|
-| Push and pull application data | `POST /sync` |
-| Show recent sync history inside your product | `/sync/audit/*` |
-| Upload and download blobs | `/sync/blobs/*` |
-| Investigate incidents or inspect request payloads | `/console/events*`, `/console/timeline`, `/console/commits` |
-| Inspect retained Rust client runtime evidence | `/console/client-diagnostics*` |
-| Run maintenance actions | `/console/prune*`, `/console/compact`, `/console/notify-data-change` |
-| Manage operator credentials | `/console/api-keys*` |
+### One combined sync call
 
-For human workflows, use [Operate](/operate). For product-facing history UX, use [Audit & History](/features/audit-and-history).
+There are no separate push/pull endpoints. [`POST /sync`](/reference/api/postSync)
+carries an optional `push` and an optional `pull` section in one JSON body;
+push is processed first, then pull, so a client sees its own writes in the
+same round-trip.
 
-## Base Endpoints
+### Binary responses (SSP1)
 
-### Sync Endpoints
+`POST /sync` accepts JSON but always responds with a binary sync pack
+(content type `application/vnd.syncular.sync-pack.v1`). Generated clients
+decode this transparently; if you are probing with curl, expect bytes
+starting with the `SSP1` magic, not JSON. Errors are returned as plain JSON.
+See [Sync Protocol](/reference/protocol) for the encoding.
+
+### Push idempotency
+
+Every pushed commit carries a client-generated `clientCommitId`. Replaying a
+commit (after a timeout or crash) is safe: the server detects the id and
+returns the cached result with commit status `cached` instead of applying it
+twice. Commit statuses are `applied`, `cached`, or `rejected`; rejection
+rolls back the whole commit atomically.
+
+### Cursor model
+
+Each pull subscription tracks a `cursor` — the last server commit sequence
+the client has applied. The server returns commits after the cursor plus a
+`nextCursor`. A subscription with no usable cursor (or after revocation)
+goes through bootstrap: snapshot pages with inline rows, chunk refs, or
+artifact refs, resumable via the opaque `bootstrapState` the client echoes
+back unchanged.
+
+### Snapshot chunk downloads require scopes
+
+`GET /sync/snapshot-chunks/{chunkId}` and
+`GET /sync/snapshot-artifacts/{artifactId}` re-authorize on every request:
+pass the subscription's scope values as a JSON-encoded `scopes` query
+parameter (or the `x-syncular-snapshot-scopes` header). Without them the
+server returns `400 sync.invalid_request`; with scopes that fail
+authorization it returns `403 sync.forbidden`.
+
+### Error shape
+
+All error responses use one JSON envelope with a stable `code`, `category`,
+`retryable`, and `recommendedAction` — see [Error Codes](/reference/errors)
+for the full catalog:
+
+```json
+{
+  "error": "sync.auth_required",
+  "code": "sync.auth_required",
+  "message": "Authentication is required.",
+  "category": "auth-required",
+  "retryable": true,
+  "recommendedAction": "refreshAuth"
+}
+```
+
+### Authentication
+
+Syncular does not prescribe an authentication mechanism. The server calls
+your `authenticate()` function with the raw request and uses whatever you
+decide (Bearer tokens, cookies, session headers). Console routes use a
+dedicated bearer token (`console.token` / `SYNC_CONSOLE_TOKEN`).
+
+## Endpoints by feature
+
+### Sync
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `POST` | `/sync` | Combined sync (`push` and/or `pull`) |
-| `GET` | `/sync/audit/commits` | List commit audit history (auth/partition scoped) |
-| `GET` | `/sync/audit/commits/{commitSeq}` | Get one commit with operation-level changes |
-| `GET` | `/sync/audit/rows/{table}/{rowId}` | Read scoped row audit history |
-| `GET` | `/sync/audit/debug-export` | Export a redacted sync debug bundle |
+| `POST` | [`/sync`](/reference/api/postSync) | Combined sync (`push` and/or `pull` in one request) |
 | `GET` | `/sync/realtime` | WebSocket realtime connection for verified deltas and pull-required wake-ups (not part of OpenAPI) |
-| `GET` | `/sync/snapshot-artifacts/{artifactId}` | Download a verified scoped bootstrap snapshot artifact |
-| `GET` | `/sync/snapshot-chunks/{chunkId}` | Download snapshot chunks for large bootstraps |
-| `POST` | `/sync/blobs/upload` | Initiate a blob upload (optional feature) |
-| `POST` | `/sync/blobs/{hash}/complete` | Mark a blob upload complete |
-| `GET` | `/sync/blobs/{hash}/url` | Get a signed download URL for a blob |
+| `GET` | [`/sync/snapshot-chunks/{chunkId}`](/reference/api/getSyncSnapshotChunksByChunkId) | Download a gzip `binary-table-v1` bootstrap chunk (requires `scopes`) |
+| `GET` | [`/sync/snapshot-artifacts/{artifactId}`](/reference/api/getSyncSnapshotArtifactsByArtifactId) | Download a verified scoped bootstrap snapshot artifact (requires `scopes`) |
 
-### Console Endpoints
+### Audit (product-facing history)
 
 | Method | Path | Description |
 |--------|------|-------------|
-| `GET` | `/console/stats` | Get server stats |
-| `GET` | `/console/commits` | Browse commit history |
-| `GET` | `/console/clients` | List connected clients |
-| `POST` | `/console/client-diagnostics` | Ingest a redacted Rust client diagnostic snapshot |
-| `GET` | `/console/client-diagnostics` | List latest redacted Rust client diagnostic snapshots |
-| `GET` | `/console/client-diagnostics/{id}` | Get the latest redacted snapshot for one client |
-| `GET` | `/console/client-diagnostics/{id}/history` | Page retained redacted snapshots for one client |
-| `GET` | `/console/handlers` | List table handlers |
-| `GET` | `/console/row-history/{table}/{rowId}` | Read retained row history |
-| `GET` | `/console/row-investigation/{table}/{rowId}` | Investigate why a row is or is not visible |
-| `GET` | `/console/debug-export` | Export a redacted console debug bundle |
-| `GET` | `/console/storage` | List storage/blob objects (optional, requires `console.blobBucket`) |
-| `GET` | `/console/storage/{key}/download` | Download a storage/blob object (optional) |
-| `DELETE` | `/console/storage/{key}` | Delete a storage/blob object (optional) |
+| `GET` | [`/sync/audit/commits`](/reference/api/getSyncAuditCommits) | List commit audit history (auth/partition scoped, cursor-paginated) |
+| `GET` | [`/sync/audit/commits/{commitSeq}`](/reference/api/getSyncAuditCommitsByCommitSeq) | One commit with operation-level changes (payloads redacted by default) |
+| `GET` | [`/sync/audit/rows/{table}/{rowId}`](/reference/api/getSyncAuditRowsByTableByRowId) | Scoped row audit history |
+| `GET` | [`/sync/audit/debug-export`](/reference/api/getSyncAuditDebugExport) | Export a redacted sync debug bundle |
 
-## Endpoint groups in this reference
+### Blobs
 
-- **Sync and Audit**: client sync, audit history, row audit, debug export, and
-  snapshot artifacts/chunks
-- **Blobs**: blob upload and download flow
-- **Console Read Model**: stats, commits, clients, diagnostics, handlers,
-  timeline, row history, row investigation, and debug export
-- **Console Events and Storage**: request events, payload snapshots, and object storage
-- **Console Auth**: API keys and token lifecycle
-- **Console Maintenance**: notify-data-change, prune, and compact
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | [`/sync/blobs/upload`](/reference/api/postSyncBlobsUpload) | Initiate a content-addressed blob upload |
+| `POST` | [`/sync/blobs/{hash}/complete`](/reference/api/postSyncBlobsByHashComplete) | Mark a blob upload complete (hash/size verified) |
+| `GET` | [`/sync/blobs/{hash}/url`](/reference/api/getSyncBlobsByHashUrl) | Get a signed download URL for a blob |
 
-## Authentication
+### Console — read model and forensics
 
-Syncular does not prescribe an authentication mechanism. The server calls your `authenticate()` function and uses whatever you decide (Bearer tokens, cookies, session headers, etc).
+Stats ([`/console/stats`](/reference/api/getConsoleStats),
+[latency](/reference/api/getConsoleStatsLatency),
+[timeseries](/reference/api/getConsoleStatsTimeseries)), commit browsing
+([`/console/commits`](/reference/api/getConsoleCommits)), client inventory
+([`/console/clients`](/reference/api/getConsoleClients)) and Rust client
+diagnostics ([`/console/client-diagnostics*`](/reference/api/getConsoleClientDiagnostics)),
+handlers ([`/console/handlers`](/reference/api/getConsoleHandlers)), the
+activity [timeline](/reference/api/getConsoleTimeline), row
+[history](/reference/api/getConsoleRowHistoryByTableByRowId) and
+[visibility investigation](/reference/api/getConsoleRowInvestigationByTableByRowId),
+and a redacted [debug export](/reference/api/getConsoleDebugExport).
 
-Typical Bearer token auth looks like:
+### Console — events and storage
 
-```http
-Authorization: Bearer <your-token>
-```
+Request events ([`/console/events*`](/reference/api/getConsoleEvents),
+including stored request/response [payload snapshots](/reference/api/getConsoleEventsByIdPayload)
+when `requestPayloadSnapshots` is enabled) and optional object-storage
+browsing ([`/console/storage*`](/reference/api/getConsoleStorage), requires
+`console.blobBucket`).
 
-## Request/Response Format
+### Console — operator auth
 
-All endpoints use JSON for request and response bodies:
+API key lifecycle: [list/create](/reference/api/getConsoleApiKeys),
+[rotate](/reference/api/postConsoleApiKeysByIdRotate),
+[staged rotation](/reference/api/postConsoleApiKeysByIdRotateStage), and
+[bulk revoke](/reference/api/postConsoleApiKeysBulkRevoke).
 
-```http
-Content-Type: application/json
-Accept: application/json
-```
+### Console — maintenance
 
-## OpenAPI Specification
+[Operations log](/reference/api/getConsoleOperations),
+[notify-data-change](/reference/api/postConsoleNotifyDataChange) (wake
+clients after out-of-band writes),
+[prune preview](/reference/api/postConsolePrunePreview) /
+[prune](/reference/api/postConsolePrune), and
+[compact](/reference/api/postConsoleCompact).
 
-The repo includes a generated OpenAPI spec:
+## OpenAPI specification
 
-- **Source**: `packages/server-hono/openapi.json`
-
-If you want to serve it at runtime, mount the handler:
+The per-endpoint pages in this section are generated from the OpenAPI spec at
+`packages/server-hono/openapi.json` (regenerate with
+`bun --cwd apps/docs generate:openapi`; do not edit the generated pages by
+hand). To serve the spec from your own app:
 
 ```ts
 import { createOpenAPIHandler } from '@syncular/server-hono';
@@ -107,7 +160,7 @@ import { createOpenAPIHandler } from '@syncular/server-hono';
 app.get('/openapi.json', createOpenAPIHandler(app, { title: 'Syncular API' }));
 ```
 
-If you also want a Scalar reference page, use the paired helper:
+For a paired Scalar reference page at `/spec`:
 
 ```ts
 import { createOpenAPIDocsRoutes } from '@syncular/server-hono';
@@ -115,21 +168,9 @@ import { createOpenAPIDocsRoutes } from '@syncular/server-hono';
 app.route('/', createOpenAPIDocsRoutes(app, { title: 'Syncular API' }));
 ```
 
-This serves both:
-- `/openapi.json`
-- `/spec`
+## Related pages
 
-### Regenerating OpenAPI
-
-To regenerate the OpenAPI specification:
-
-```bash
-bun generate:openapi
-```
-
-This will update the `openapi.json` file based on the current route definitions.
-
-`GET /sync/realtime` is intentionally not part of the OpenAPI document because
-it is a WebSocket channel rather than a JSON HTTP endpoint. Rust-first clients
-use it for verified realtime sync-pack deltas when possible and explicit
-pull-required wake-ups when HTTP recovery is needed.
+- [Error Codes](/reference/errors) — every code these endpoints return
+- [Sync Protocol](/reference/protocol) — the binary response encoding
+- [Configuration](/reference/configuration) — the limits behind 400/413 responses
+- [Operate](/operate) — human workflows on top of the console API

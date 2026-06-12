@@ -12,14 +12,54 @@ For integration options (CLI serve, mount API, components), see [Console Integra
 
 ## Setup
 
+### Simple path: `createSyncServer`
+
+If you build your server with `createSyncServer`, console routes are one
+option away — the event emitter, schema setup, and WebSocket wiring are
+handled for you:
+
+```typescript
+import { createSyncServer } from '@syncular/server-hono';
+
+const { syncRoutes, consoleRoutes } = createSyncServer({
+  db,
+  dialect,
+  sync: { handlers, authenticate },
+  upgradeWebSocket,
+  console: {
+    token: process.env.SYNC_CONSOLE_TOKEN, // or rely on the env var directly
+    corsOrigins: ['https://console.example.com'],
+  },
+});
+
+app.route('/api/sync', syncRoutes);
+app.route('/api/console', consoleRoutes!);
+```
+
+### Full control: `createConsoleRoutes`
+
+For custom console auth or separate deployment of the console API, create the
+routes yourself. Pass the same event emitter to your sync routes
+(`consoleLiveEmitter`) — that is what records request events and feeds the
+live feed:
+
 ```typescript
 import {
   createConsoleRoutes,
   createConsoleEventEmitter,
+  createSyncRoutes,
   createTokenAuthenticator,
 } from '@syncular/server-hono';
 
 const eventEmitter = createConsoleEventEmitter();
+
+const syncRoutes = createSyncRoutes({
+  db,
+  dialect,
+  handlers: [tasksHandler],
+  authenticate,
+  consoleLiveEmitter: eventEmitter,
+});
 
 const consoleRoutes = createConsoleRoutes({
   db,
@@ -44,7 +84,8 @@ const consoleRoutes = createConsoleRoutes({
 app.route('/api/console', consoleRoutes);
 ```
 
-All paths below are **relative to where you mount** `createConsoleRoutes` (example above mounts at `/api/console`).
+All paths below are **relative to where you mount** the console routes
+(example above mounts at `/api/console`).
 
 To serve the Console UI itself, add:
 
@@ -228,6 +269,18 @@ Removes client cursor record, forcing the client to bootstrap on next sync.
 { evicted: boolean }
 ```
 
+## Client Diagnostics
+
+Clients opt into publishing runtime diagnostics
+(`consoleDiagnostics` in the client config — see
+[Observability](/operate/observability)); the Console's
+[Fleet view](/operate/console/fleet) renders them per client.
+
+- **POST /client-diagnostics** — ingestion endpoint the client publisher posts to
+- **GET /client-diagnostics** — latest snapshot per client
+- **GET /client-diagnostics/:id** — one client's latest snapshot
+- **GET /client-diagnostics/:id/history** — recent snapshot history
+
 ## Maintenance Operations
 
 ### Pruning
@@ -352,7 +405,7 @@ Automatic pruning cadence is controlled with `maintenance.autoPruneIntervalMs` o
 Connect via WebSocket for real-time activity monitoring:
 
 ```typescript
-const ws = new WebSocket('wss://api.example.com/console/events/live');
+const ws = new WebSocket('wss://api.example.com/api/console/events/live');
 
 ws.addEventListener('open', () => {
   ws.send(JSON.stringify({ type: 'auth', token: 'YOUR_TOKEN' }));
@@ -531,15 +584,22 @@ Monitor these metrics:
 Schedule regular operations:
 
 ```bash
-# Daily: Prune old console events immediately (manual trigger)
-curl -X POST https://api.example.com/console/events/prune
+AUTH="Authorization: Bearer $SYNC_CONSOLE_TOKEN"
 
-# Weekly: Compact changes
-curl -X POST https://api.example.com/console/compact
+# Prune old console events immediately (manual trigger)
+curl -X POST -H "$AUTH" https://api.example.com/api/console/events/prune
 
-# Monthly: Prune old commits
-curl -X POST https://api.example.com/console/prune
+# Compact changes
+curl -X POST -H "$AUTH" https://api.example.com/api/console/compact
+
+# Preview, then prune old commits
+curl -X POST -H "$AUTH" https://api.example.com/api/console/prune/preview
+curl -X POST -H "$AUTH" https://api.example.com/api/console/prune
 ```
+
+If you enabled `routes.prune` / `routes.compact` on the sync routes
+([Deployment](/operate/deployment#pruning-and-compaction)), these run
+automatically — the endpoints remain useful for previews and one-off runs.
 
 ### Dashboard Integration
 
@@ -547,9 +607,12 @@ Use the stats endpoints to build monitoring dashboards:
 
 ```typescript
 // Fetch metrics every minute
-const stats = await fetch('/console/stats').then((r) => r.json());
-const timeseries = await fetch('/console/stats/timeseries?interval=minute&range=1h')
-  .then((r) => r.json());
+const headers = { authorization: `Bearer ${consoleToken}` };
+const stats = await fetch('/api/console/stats', { headers }).then((r) => r.json());
+const timeseries = await fetch(
+  '/api/console/stats/timeseries?interval=minute&range=1h',
+  { headers }
+).then((r) => r.json());
 
 // Push to your monitoring system
 metrics.gauge('syncular.commits', stats.commitCount);

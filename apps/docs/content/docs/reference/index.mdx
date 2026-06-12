@@ -1,6 +1,6 @@
 ---
 title: Reference
-description: Package, crate, server, CLI, and HTTP API reference material for Syncular.
+description: Package, configuration, server, CLI, HTTP API, error, protocol, and upgrade reference material for Syncular.
 ---
 
 # Reference
@@ -13,25 +13,42 @@ Use this section when you already know what you want to build or operate and nee
 > [JavaScript](/clients/javascript) or [Rust](/clients/rust), then
 > [Server](/server) and [Features](/features).
 
-## Packages, server, and CLI
+## Packages and configuration
 
 <Cards>
   <Card title="Packages And Crates" href="/reference/packages-crates">
-    JavaScript packages, Rust crates, server packages, and generated-client entry points
+    JavaScript packages, Rust crates, server packages, and the CLI/scaffolder split
+  </Card>
+  <Card title="Configuration" href="/reference/configuration">
+    createSyncServer options, route limits, websocket, rate limiting, console, relay, and env vars
   </Card>
   <Card title="Server" href="/reference/server">
-    Server adapters, table handlers, dialects, and realtime bridge details
+    Server adapters, table handler options, dialects, and realtime bridge details
   </Card>
   <Card title="CLI" href="/reference/cli">
-    Project scaffolding, migration, and console command reference
+    syncular generate, codegen install, and the create-syncular-app scaffolder
   </Card>
 </Cards>
 
-## HTTP API
+## HTTP API and protocol
 
 <Cards>
   <Card title="API Reference" href="/reference/api">
     Sync, blobs, audit, console, events, storage, and maintenance endpoints
+  </Card>
+  <Card title="Error Codes" href="/reference/errors">
+    Every error code with category, retryability, recommended action, cause, and fix
+  </Card>
+  <Card title="Sync Protocol" href="/reference/protocol">
+    The SSP1 binary sync-pack envelope for binding implementers
+  </Card>
+</Cards>
+
+## Upgrades
+
+<Cards>
+  <Card title="Upgrade Guide" href="/reference/upgrade-guide">
+    Version pinning, recent breaking changes, and schema-version interplay
   </Card>
 </Cards>
 

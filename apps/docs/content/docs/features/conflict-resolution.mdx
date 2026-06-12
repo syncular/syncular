@@ -5,33 +5,53 @@ description: Build user-facing resolution flows for concurrent writes.
 
 # Conflict Resolution
 
-Syncular detects row conflicts with optimistic concurrency. When a client pushes
-a mutation based on an older `server_version`, the server rejects that operation
-as a conflict and the client stores it for resolution.
+Syncular detects row conflicts with optimistic concurrency: when a client
+pushes a mutation based on an older `server_version`, the server rejects that
+operation as a conflict and the client stores it locally for resolution.
 
-Use [Learn: Conflict Resolution](/learn/conflict-resolution) for the
-mental model. Use this page as the feature checklist for product UI.
+[Learn: Conflict Resolution](/learn/conflict-resolution) is the canonical
+explanation of the mechanism — detection, `base_version` checks, field-level
+merge, and auto-resolution patterns. Use this page as the feature checklist
+for building and testing the product flow on top of it.
 
 ## Product flow
 
 1. Show a badge or banner from conflict counters.
 2. Fetch conflict details for the affected rows.
 3. Show the server version, local intent, and field-level context.
-4. Resolve by keeping server, retrying local intent, or applying a custom
-   merged mutation.
+4. Resolve by keeping the server row, retrying the local intent, or applying a
+   custom merged mutation.
 5. Push the resolution through generated mutations so outbox and history stay
    coherent.
 
+## Client conflict API
+
+The managed client exposes conflicts as data, not just counters:
+
+```ts
+// List stored conflicts: clientCommitId, opIndex, code, serverVersion, ...
+const conflicts = await syncular.conflicts.list();
+
+// Retry the local intent against the current server version.
+await syncular.conflicts.retryKeepLocal(conflictId);
+
+// Or settle it explicitly.
+await syncular.conflicts.resolve(conflictId, 'keep-server');
+await syncular.conflicts.resolve(conflictId, 'dismiss');
+```
+
+Resolutions are `'keep-local'`, `'keep-server'`, or `'dismiss'`. For merges
+that need product logic, read the conflicting rows, build the merged value in
+app code, write it through a generated mutation, then resolve the stored
+conflict record.
+
 ## Conflict status UI (React)
 
-The Rust-backed React entrypoint exposes the current conflict counters for
-badges, banners, and navigation. Product-specific resolution screens should
-read their conflict rows through your app API and write retries through
-generated mutations.
+The React entrypoint exposes the current conflict counters for badges,
+banners, and navigation:
 
 ```tsx
 import { createSyncularReact } from '@syncular/react';
-import { Button } from '@syncular/ui/primitives';
 import type { AppDb } from './db-types';
 
 const { useConflictStats } = createSyncularReact<AppDb>();
@@ -42,36 +62,127 @@ function ConflictBanner() {
   if (!stats?.unresolved) return null;
 
   return (
-    <div style={{ padding: 16, background: '#fef3cd', borderRadius: 8 }}>
+    <div role="status">
       <strong>{stats.unresolved} conflict(s) need resolution</strong>
-      <Button onClick={() => openConflictCenter()}>Review</Button>
+      <button onClick={() => openConflictCenter()}>Review</button>
     </div>
   );
 }
-
-export { ConflictBanner };
 ```
 
-`useConflictStats()` returns aggregate conflict counters:
-
-```tsx
-const stats = useConflictStats();
-const unresolved = stats?.unresolved ?? 0;
-```
-
-## Binding surfaces
-
-- JavaScript and React expose conflict counters for app chrome.
-- Rust exposes typed conflict helpers from the generated client.
-
-Do not write conflict resolution through raw SQL. Resolution is a sync
-operation and should go through the generated mutation surface.
+Product-specific resolution screens should read their conflict rows through
+`syncular.conflicts.list()` plus your app queries and write retries through
+generated mutations. Do not write conflict resolution through raw SQL —
+resolution is a sync operation and should go through the generated mutation
+surface.
 
 ## Server responsibilities
 
 Table handlers should return structured conflict results and emit no changes
 for rejected operations. If a table has app-specific merge rules, put the
-authoritative decision in `applyOperation`.
+authoritative decision in `applyOperation`. See
+[Push & Conflicts](/server/apply-push) for the batch response shape and the
+`sync.version_conflict` payload.
+
+## Testing conflict flows
+
+`@syncular/testkit` ships fixtures and request builders so conflict paths can
+be tested against the real push pipeline instead of mocks. The shortest loop
+is a server-level test: seed a row, then push a second operation with a stale
+`base_version` and assert the structured conflict result.
+
+```ts
+import { expect, it } from 'bun:test';
+import { createDatabase } from '@syncular/core';
+import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
+import {
+  createServerHandlerCollection,
+  ensureSyncSchema,
+  pushCommit,
+} from '@syncular/server';
+import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+import {
+  createProjectScopedTasksHandler,
+  createProjectScopedTaskUpsertOperation,
+  ensureProjectScopedTasksTable,
+  type ProjectScopedTasksDb,
+} from '@syncular/testkit';
+
+it('rejects a stale write with sync.version_conflict', async () => {
+  const db = createDatabase<ProjectScopedTasksDb>({
+    dialect: createBunSqliteDialect({ path: ':memory:' }),
+    family: 'sqlite',
+  });
+  const dialect = createSqliteServerDialect();
+  await ensureSyncSchema(db, dialect);
+  await ensureProjectScopedTasksTable(db);
+
+  const handlers = createServerHandlerCollection<ProjectScopedTasksDb>([
+    createProjectScopedTasksHandler(),
+  ]);
+
+  // Seed task-1 at server_version 1.
+  await pushCommit({
+    db,
+    dialect,
+    handlers,
+    auth: { actorId: 'u1' },
+    request: {
+      clientId: 'client-a',
+      clientCommitId: 'commit-seed',
+      schemaVersion: 1,
+      operations: [
+        createProjectScopedTaskUpsertOperation({
+          taskId: 'task-1',
+          title: 'first title',
+        }),
+      ],
+    },
+  });
+
+  // A second writer pushes against the version it last saw (0): conflict.
+  const stale = await pushCommit({
+    db,
+    dialect,
+    handlers,
+    auth: { actorId: 'u1' },
+    request: {
+      clientId: 'client-b',
+      clientCommitId: 'commit-stale',
+      schemaVersion: 1,
+      operations: [
+        createProjectScopedTaskUpsertOperation({
+          taskId: 'task-1',
+          title: 'stale title',
+          baseVersion: 0,
+        }),
+      ],
+    },
+  });
+
+  expect(stale.response).toMatchObject({
+    status: 'rejected',
+    results: [{ status: 'conflict', code: 'sync.version_conflict' }],
+  });
+});
+```
+
+Useful testkit pieces for conflict suites:
+
+- `createProjectScopedTasksHandler()` / `ensureProjectScopedTasksTable()` — a
+  ready-made scoped table fixture so tests do not hand-roll handlers.
+- `createSyncUpsertOperation` / `createSyncDeleteOperation` /
+  `createSyncPushRequest` — build raw operations and push batches (including
+  the `base_version` that drives conflict detection) for any table.
+- `createNodeHonoServer` plus `postSyncCombinedRequest` — run the same
+  scenario over HTTP against real routes when you need transport coverage.
+- `withFaults` — wrap a client transport with scripted push/pull failures to
+  test long-offline sessions and duplicate-push retries that produce
+  conflicts.
+
+End-to-end, also assert the client side: after a rejected push the conflict
+must show up in `syncular.conflicts.list()` and `useConflictStats()`, and
+`retryKeepLocal` must produce a new commit instead of mutating history.
 
 ## Watch-outs
 
@@ -83,8 +194,11 @@ authoritative decision in `applyOperation`.
 
 ## Related docs
 
-- [Learn: Conflict Resolution](/learn/conflict-resolution)
-- [Apply Operations / Push](/server/apply-push)
-- [Rust Live Updates](/clients/rust/live-updates)
+- [Learn: Conflict Resolution](/learn/conflict-resolution) — the mechanism
+  canon
+- [Push & Conflicts](/server/apply-push) — server-side detection and response
+  shape
+- [Undo / Redo](/features/undo-redo) — command history interacts with conflict
+  retries
 - [React](/clients/javascript/react)
-- [Testkit](/testing)
+- [Testing](/testing)
