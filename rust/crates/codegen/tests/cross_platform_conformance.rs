@@ -78,8 +78,13 @@ fn generated_targets_share_the_same_app_schema_contract() {
 
         assert_contains(
             &generated.typescript,
-            &format!("{table_name}: {type_name}Row;"),
+            &format!("{table_name}: {type_name}Table;"),
             "typescript db table mapping",
+        );
+        assert_contains(
+            &generated.typescript,
+            &format!("export interface {type_name}Table"),
+            "typescript kysely table type",
         );
         assert_contains(
             &generated.typescript,

@@ -14,6 +14,5 @@
     "noEmit": true,
     "types": ["bun", "vite/client"]
   },
-  "include": ["src", "scripts", "syncular.app.ts", "vite.config.ts"],
-  "exclude": ["src/generated/syncular.server.generated.ts"]
+  "include": ["src", "scripts", "syncular.app.ts", "vite.config.ts"]
 }

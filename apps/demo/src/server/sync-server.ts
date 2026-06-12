@@ -10,18 +10,11 @@ import { createSyncServer } from '@syncular/server-hono';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import type { Kysely } from 'kysely';
-// NOTE(DX): codecs and row types are imported from the generated client
-// module instead of src/generated/syncular.server.generated.ts because the
-// generated server module currently fails strict type-checking (its
-// SyncularGeneratedColumnSchemaMetadata interface is missing the emitted
-// `defaultSql`/`hasDefault` fields, and `applyOperationBatch` loses its
-// narrowing inside the wrapper callback). The shapes are identical for this
-// schema.
-import {
-  type SyncularAppDb,
-  syncularGeneratedCodecs,
-  type TaskRow,
-} from '../generated/syncular.generated';
+import { syncularGeneratedCodecs } from '../generated/syncular.generated';
+import type {
+  SyncularAppDb,
+  TaskRow,
+} from '../generated/syncular.server.generated';
 
 interface DemoServerDb extends SyncCoreDb, SyncularAppDb {}
 

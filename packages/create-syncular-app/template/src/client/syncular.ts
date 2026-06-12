@@ -6,25 +6,21 @@ import {
   type SyncularClientStatus,
   type SyncularLiveQueries,
 } from '@syncular/client';
-import type { Generated, Kysely, Selectable } from 'kysely';
+import type { Selectable } from 'kysely';
 import {
   createSyncularAppDatabase,
   type SyncularAppDatabase,
-  type TaskRow,
+  type SyncularAppDb,
   taskSubscription,
 } from '../generated/syncular.generated';
 
 /**
- * Kysely-style database schema for the React hooks.
- *
- * `server_version` is assigned by the server, so it is wrapped in
- * `Generated<>` to keep `useMutations().tasks.insert(...)` from requiring it.
+ * Kysely-style database schema for the React hooks. Columns the database
+ * defaults (like the server-assigned `server_version`) are emitted as
+ * Kysely `Generated<>` columns, so `useMutations().tasks.insert(...)` does
+ * not require them.
  */
-export interface AppDb {
-  tasks: Omit<TaskRow, 'server_version'> & {
-    server_version: Generated<number>;
-  };
-}
+export type AppDb = SyncularAppDb;
 
 export type Task = Selectable<AppDb['tasks']>;
 
@@ -96,7 +92,7 @@ function toManagedClient(
   let closed = false;
 
   return {
-    db: database.db as unknown as Kysely<AppDb>,
+    db: database.db,
     dialect: database.dialect,
     mutations: database.mutations as unknown as MutationsApi<AppDb, undefined>,
     leasedMutations: database.leasedMutations as unknown as MutationsApi<
