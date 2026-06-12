@@ -68,6 +68,16 @@ const stalePatterns: StalePattern[] = [
     message:
       'Retired server page: link to /server/getting-started (was setup-with-hono).',
   },
+  {
+    pattern: /\/reference\/cli\/(?:create|migrate)\b/,
+    message:
+      'Retired reference/cli pages: the CLI has no create/migrate subcommands. Link /start/quick-start (scaffolding via create-syncular-app), /features/migrations, or /reference/cli.',
+  },
+  {
+    pattern: /\bsyncular (?:create|migrate|doctor|dev|typegen|login|deploy)\b/,
+    message:
+      'The syncular CLI only ships `generate` and `codegen install`. Scaffolding is `bunx create-syncular-app`; migrations/console are app-owned.',
+  },
 ];
 
 const searchableExtensions = new Set(['.md', '.mdx', '.json', '.ts', '.tsx']);

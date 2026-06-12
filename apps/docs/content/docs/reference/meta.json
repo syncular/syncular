@@ -4,11 +4,19 @@
   "icon": "Library",
   "pages": [
     "index",
-    "---Packages, Server, and CLI---",
+    "---Packages---",
     "packages-crates",
+    "---Configuration---",
+    "configuration",
     "server",
+    "---CLI---",
     "cli",
     "---HTTP API---",
-    "api"
+    "api",
+    "---Errors and Protocol---",
+    "errors",
+    "protocol",
+    "---Upgrades---",
+    "upgrade-guide"
   ]
 }
