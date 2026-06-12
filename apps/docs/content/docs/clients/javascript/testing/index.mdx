@@ -1,80 +1,88 @@
 ---
 title: Testing
-description: Test TypeScript, browser, server, HTTP, websocket, and runtime behavior with @syncular/testkit.
+description: Test sync behavior with @syncular/testkit — real server fixtures, protocol builders, fault injection, and realtime WebSocket helpers.
 ---
 
 # Testing
 
-Use `@syncular/testkit` instead of mocking Syncular internals in TypeScript
-tests. It gives JavaScript apps real local SQLite behavior, real sync
-semantics, deterministic fixtures, HTTP/websocket helpers, and app-owned domain
-assertions.
+`@syncular/testkit` lets TypeScript tests run against real pieces instead of
+mocks: real `@syncular/server-hono` routes served over `node:http`, real
+in-memory SQLite/Postgres (PGLite) databases, real protocol payloads validated
+by the shared schemas, and transport wrappers for deterministic fault
+injection.
 
-Use `@syncular/testkit` to test TypeScript/server/browser behavior across:
+```bash
+bun add -d @syncular/testkit
+```
 
-- fast in-process tests
-- real HTTP integration tests
-- runtime-oriented tests (node, deno, cloudflare)
+The API is test-runner agnostic — Bun, Vitest, Jest, and other runners work
+without changing testkit code. For Rust/native generated clients, use
+[Rust Testing](/clients/rust/testing).
 
-The TypeScript API is test-runner agnostic. You can use Bun, Vitest, Jest, or
-other runners without changing testkit code. For Rust/native generated clients,
-use [Rust Testing](/clients/rust/testing).
-
-If you are still evaluating whether Syncular is trustworthy enough to adopt, start with [Testing & Confidence](/start/testing-and-confidence).
-
-If you are still wiring the system itself, use [JavaScript](/clients/javascript),
-[Rust](/clients/rust), [Server](/server), and [Features](/features) for
-implementation guides first.
+Looking for the what-to-verify-before-shipping guide (the four test layers,
+each with a runnable example)? Start at
+[Testing Strategy](/testing/strategy). This section is the API-by-API guide
+to the testkit itself.
 
 ## Choose your path
 
 <Cards>
   <Card title="Quick Start" href="/clients/javascript/testing/quick-start">
-    Create fixtures, run push/pull/sync, and assert rows/outbox/conflicts
+    Boot a real server fixture and write your first push/pull protocol test
   </Card>
   <Card title="Testkit Primitives" href="/clients/javascript/testing/primitives">
-    Builders, schema parsers, deterministic IDs/clocks, scenario flow, and realtime WS helpers
+    Protocol builders, response parsers, pull-change inspection, deterministic IDs/clocks, realtime WS helpers
   </Card>
   <Card title="Resource Lifecycle" href="/clients/javascript/testing/lifecycle">
-    Optional `using` resources and callback wrappers to remove `try/finally` cleanup noise
+    Optional `await using` resources and callback wrappers to remove `try/finally` cleanup noise
   </Card>
   <Card title="Fault Injection" href="/clients/javascript/testing/fault-injection">
-    Simulate latency, flaky transport, and deterministic failures
+    Simulate latency, flaky transport, ack loss, and scripted failure plans
   </Card>
   <Card title="Runtime Patterns" href="/clients/javascript/testing/runtime">
-    Share server handlers and runtime helpers across node/deno/cloudflare tests
+    Share server handlers and process helpers across node/deno/cloudflare suites
   </Card>
   <Card title="Rust Testing" href="/clients/rust/testing">
-    Test generated Rust/native clients with `syncular-testkit` and real runtime clients
+    Test generated Rust/native clients with `syncular-testkit`
   </Card>
   <Card title="Real-World Examples" href="/clients/javascript/testing/examples-offline-reconnect">
-    Production-style flows for offline reconnect, realtime collaboration, and runtime release smoke checks
+    Worked flows for offline reconnect, realtime collaboration, and runtime release smoke checks
   </Card>
-  <Card title="CLI" href="/reference/cli">
-    Scaffold projects and run migration workflows from the CLI section
+  <Card title="Testing Strategy" href="/testing/strategy">
+    The four test layers to cover before shipping, bottom-up
   </Card>
 </Cards>
 
 ## API groups
 
-These groups refer to the TypeScript `@syncular/testkit` package:
+These groups cover the TypeScript `@syncular/testkit` package:
 
 | Group | Main exports |
 |---|---|
-| Fixtures | `createSyncFixture`, `createTestServer`, `createTestClient`, `createEngineTestClient` |
-| HTTP fixtures | `createHttpServerFixture`, `createHttpClientFixture`, `createNodeHonoServer` |
-| Protocol + parsing | `createSyncUpsertOperation`, `createSyncSubscription`, `createSyncCombinedRequest`, `parseSyncCombinedResponse` |
-| Lifecycle resources | `withSyncFixture`, `createSyncFixtureResource`, `withTestServer`, `openRealtimeWsResource` |
-| Scenario + deterministic | `createScenarioFlow`, `runPushPullCycle`, `createIdFactory`, `createFakeClock` |
-| Runtime realtime | `createRealtimeWsUrl`, `openRealtimeWs`, `waitForWsJsonMessage`, `closeWsSafe` |
-| Assertions | `assertOutboxEmpty`, `assertConflictCount`, `assertRowExists`, `waitForOutboxEmpty` |
-| Faults | `withFaults`, `withRecording`, `createMockTransport` |
+| HTTP server fixture | `createHttpServerFixture`, `createNodeHonoServer`, `closeNodeServer` |
+| Reference tasks schema | `createProjectScopedTasksHandler`, `ensureProjectScopedTasksTable`, `createProjectScopedTasksSubscription`, `createProjectScopedTaskUpsertOperation` |
+| Protocol builders | `createSyncUpsertOperation`, `createSyncDeleteOperation`, `createSyncSubscription`, `createSyncPushRequest`, `createSyncPullRequest`, `createSyncCombinedRequest` |
+| HTTP protocol calls | `postSyncCombinedRequest`, `postSyncPushRequest`, `postSyncPullRequest`, `postJsonWithActor`, `createJsonActorHeaders` |
+| Response parsing | `parseSyncCombinedResponse`, `parseSyncPushResponse`, `parseSyncPullResponse`, `readSyncCombinedResponse`, `readSyncPushResponse`, `readSyncPullResponse` |
+| Pull inspection | `subscriptionChanges`, `findSubscriptionChange`, `subscriptionChangeRow` |
+| Faults + recording | `withFaults`, `createMockTransport`, `withRecording` |
+| Deterministic IDs/clocks | `createIdFactory`, `createCommitIdFactory`, `createFakeClock` |
+| Realtime WebSocket | `createRealtimeWsUrl`, `openRealtimeWs`, `waitForWsOpen`, `waitForWsMessage`, `waitForWsJsonMessage`, `parseWsJsonMessage`, `closeWsSafe` |
+| Resource lifecycle | `createAsyncDisposableResource`, `withAsyncDisposableFactory`, `createNodeHonoServerResource`, `withNodeHonoServer`, `openRealtimeWsResource`, `withRealtimeWs`, `createChildProcessResource`, `withChildProcess` |
+| Child processes | `waitForJsonPortFromStdout`, `stopChildProcess` |
+| Bridge harness | `createClientBridgeHarness` (in-process `SyncularBridge` for Tauri/React Native shell tests) |
+| Audit assertions | `assertAuditChangeRedacted`, `assertAuditJsonExcludes`, `assertAuditDebugExportRedacted` |
 
-Need a rollout checklist rather than APIs? See [Testing Strategy](/testing/strategy).
+Tests that exercise the full client runtime (two-device convergence, offline
+outbox drain) use your generated app client from `@syncular/client` pointed at
+a testkit server fixture — see
+[Testing Strategy, layers 2 and 3](/testing/strategy#layer-2--two-client-convergence)
+for the pattern.
 
 ## Continue with
 
 - Need implementation guides? Go to [JavaScript](/clients/javascript),
   [Rust](/clients/rust), [Server](/server), and [Features](/features)
 - Debugging a live system rather than writing tests? Use [Operate](/operate)
-- Want exact helper APIs? Go to [Reference](/reference)
+- Still evaluating Syncular? Start with
+  [Testing & Confidence](/start/testing-and-confidence)
