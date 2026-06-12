@@ -4,7 +4,7 @@
 import { SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, withSyncularSchemaWrites } from '@syncular/client';
 import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope } from '@syncular/client';
 
-import { sql, type Kysely } from 'kysely';
+import { sql, type Generated, type Kysely } from 'kysely';
 import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';
 
 export interface SyncularGeneratedOperation {
@@ -34,7 +34,7 @@ function syncularBootstrapPhase(args: SyncularSubscriptionArgs, table: string, s
 }
 
 export interface SyncularAppDb {
-  tasks: TaskRow;
+  tasks: TaskTable;
 }
 
 export interface SyncularGeneratedTableConfig {
@@ -661,6 +661,15 @@ export function defaultSyncularSubscriptions(args: SyncularSubscriptionArgs): Sy
   return [
     taskSubscription(args),
   ];
+}
+
+export interface TaskTable {
+  id: string;
+  title: string;
+  completed: Generated<number>;
+  user_id: string;
+  created_at: Generated<number>;
+  server_version: Generated<number>;
 }
 
 export interface TaskRow {

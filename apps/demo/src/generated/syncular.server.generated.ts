@@ -3,6 +3,7 @@
 
 import { BinarySnapshotTableWriter, createSyncularErrorResponse, type BinarySnapshotColumn, type BinarySnapshotRowsEncoder, type BlobRef } from '@syncular/core';
 import { SyncClientSchemaUnsupportedError, type ApplyOperationResult, type ScopeValues, type ServerApplyOperationContext, type ServerContext, type ServerSnapshotContext, type ServerTableHandler, type StoredScopes, type SyncCoreDb, type SyncOperation, type SyncServerAuth } from '@syncular/server';
+import type { Generated } from 'kysely';
 
 export const syncularGeneratedSchemaVersion = 1 as const;
 export const syncularGeneratedClientSchemaSupport = {
@@ -45,15 +46,27 @@ export interface SyncularGeneratedColumnSchemaMetadata {
   nullable: boolean;
   notnullRequired: boolean;
   primaryKey: boolean;
+  hasDefault: boolean;
+  defaultSql: string | null;
+  serverVersion: boolean;
+  softDelete: boolean;
   blobRef: boolean;
+  scope: string | null;
 }
 
 export interface SyncularGeneratedTableSchemaMetadata {
   name: string;
   primaryKeyColumn: string;
   serverVersionColumn: string;
+  softDeleteColumn: string | null;
   columns: readonly SyncularGeneratedColumnSchemaMetadata[];
+  indexes?: readonly { name: string; sql: string; unique: boolean; partial: boolean; columns: readonly { name: string | null; descending: boolean }[] }[];
+  blobColumns: readonly string[];
+  crdtYjsFields: readonly { field: string; stateColumn: string; containerKey: string; rowIdField: string; kind: string; syncMode: string }[];
+  encryptedFields: readonly { field: string; scope: string; rowIdField: string }[];
   scopes: readonly { name: string; column: string; source: string; required: boolean }[];
+  subscription: { id: string; params: Record<string, unknown> };
+  sqliteWithoutRowid?: boolean;
 }
 
 export interface SyncularGeneratedClientSchemaMetadata {
@@ -269,7 +282,16 @@ export function syncularValidateGeneratedOperation(table: string, op: SyncOperat
 }
 
 export interface SyncularAppDb {
-  tasks: TaskRow;
+  tasks: TaskTable;
+}
+
+export interface TaskTable {
+  id: string;
+  title: string;
+  completed: Generated<number>;
+  user_id: string;
+  created_at: Generated<number>;
+  server_version: Generated<number>;
 }
 
 export interface TaskRow {
@@ -427,6 +449,7 @@ export interface CreateSyncularAppServerHandlerOptions<DB extends SyncCoreDb = S
 export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreDb, Auth extends SyncServerAuth = SyncServerAuth>(options: CreateSyncularAppServerHandlerOptions<DB, Auth>): ServerTableHandler<DB, Auth> {
   const table = syncularResolveGeneratedAppTable(options.table);
   const tableName = table.name;
+  const applyOperationBatch = options.applyOperationBatch;
   const handler: ServerTableHandler<DB, Auth> = {
     table: tableName,
     primaryKeyColumn: table.primaryKeyColumn,
@@ -472,7 +495,7 @@ export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreD
       syncularAssertGeneratedApplyOperationResult(tableName, result, ctx.schemaVersion);
       return result;
     },
-    applyOperationBatch: options.applyOperationBatch ? async (ctx, operations) => {
+    applyOperationBatch: applyOperationBatch ? async (ctx, operations) => {
       for (const { op, opIndex } of operations) {
         if (!syncularIsSupportedClientSchemaVersion(ctx.schemaVersion)) {
           return [syncularUnsupportedClientSchemaResult({ opIndex, schemaVersion: ctx.schemaVersion })];
@@ -480,7 +503,7 @@ export function createSyncularAppServerHandler<DB extends SyncCoreDb = SyncCoreD
         const validation = syncularValidateGeneratedOperation(tableName, op, ctx.schemaVersion);
         if (!validation.ok) return [syncularGeneratedValidationErrorResult(opIndex, validation.errors)];
       }
-      const results = await options.applyOperationBatch(ctx, operations);
+      const results = await applyOperationBatch(ctx, operations);
       for (const result of results) syncularAssertGeneratedApplyOperationResult(tableName, result, ctx.schemaVersion);
       return results;
     } : undefined,
