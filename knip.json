@@ -10,7 +10,8 @@
   "typescript": true,
   "ignore": [
     "**/generated/**",
-    "types/**"
+    "types/**",
+    "packages/create-syncular-app/template/**"
   ],
   "ignoreDependencies": [
     "tailwindcss"
@@ -199,6 +200,13 @@
     "packages/syncular": {
       "includeEntryExports": false,
       "ignoreDependencies": ["@syncular/typegen"]
+    },
+    "packages/create-syncular-app": {
+      "includeEntryExports": false,
+      "entry": [
+        "src/cli.ts",
+        "scripts/*.ts"
+      ]
     },
     "packages/observability-sentry": {
       "includeEntryExports": false

@@ -225,6 +225,16 @@
         "zod": "^4.0.0",
       },
     },
+    "packages/create-syncular-app": {
+      "name": "create-syncular-app",
+      "version": "0.0.0",
+      "bin": {
+        "create-syncular-app": "./dist/cli.js",
+      },
+      "devDependencies": {
+        "@syncular/config": "workspace:*",
+      },
+    },
     "packages/dialects": {
       "name": "@syncular/dialects",
       "version": "0.0.0",
@@ -2091,6 +2101,8 @@
     "core-util-is": ["core-util-is@1.0.3", "", {}, "sha512-ZQBvi1DcpJ4GDqanjucZ2Hj3wEO5pZDS89BWbkcrvdxksJorwUDDZamX9ldFkp9aw2lmBDLgkObEA4DWNJ9FYQ=="],
 
     "cose-base": ["cose-base@1.0.3", "", { "dependencies": { "layout-base": "^1.0.0" } }, "sha512-s9whTXInMSgAp/NVXVNuVxVKzGH2qck3aQlVHxDCdAEPgtMKwc4Wq6/QKhgdEdgbLSi9rBTAcPoRa6JpiG4ksg=="],
+
+    "create-syncular-app": ["create-syncular-app@workspace:packages/create-syncular-app"],
 
     "cross-spawn": ["cross-spawn@7.0.6", "", { "dependencies": { "path-key": "^3.1.0", "shebang-command": "^2.0.0", "which": "^2.0.1" } }, "sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA=="],
 

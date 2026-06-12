@@ -1,0 +1,12 @@
+{
+  "extends": "../../config/tsconfig.bun.json",
+  "include": ["src/**/*", "scripts/**/*"],
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["bun", "node"]
+  },
+  // The template is a standalone app with placeholder (`workspace:*`)
+  // dependency versions; it is type-checked end-to-end by `bun run smoke`
+  // against a real scaffolded install instead of by the repo-wide tsgo pass.
+  "exclude": ["template", "src/**/*.test.ts"]
+}
