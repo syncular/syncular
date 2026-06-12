@@ -3,21 +3,22 @@
   "icon": "Workflow",
   "pages": [
     "index",
-    "---Core API---",
+    "---Getting Started---",
     "quick-start",
     "generated-client",
+    "---Core APIs---",
     "querying",
     "mutations",
     "live-updates",
-    "---Runtime Features---",
+    "---Host Integration---",
+    "native-hosts",
+    "packaging",
+    "---Advanced Features---",
     "runtime",
     "realtime-presence",
     "crdt-fields",
     "blobs-encryption",
     "---Testing---",
-    "testing",
-    "---Delivery---",
-    "native-hosts",
-    "packaging"
+    "testing"
   ]
 }
