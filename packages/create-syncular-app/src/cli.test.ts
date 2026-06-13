@@ -47,8 +47,11 @@ describe('syncularDependencyRange', () => {
   });
 
   test('falls back for the unstamped development version', () => {
-    expect(syncularDependencyRange('0.0.0')).toBe('^0.0.6');
-    expect(syncularDependencyRange(undefined)).toBe('^0.0.6');
+    // The fallback range is release-stamped (sync-versions.ts), so assert its
+    // shape and self-consistency rather than a literal version.
+    const fallback = syncularDependencyRange('0.0.0');
+    expect(fallback).toMatch(/^\^\d+\.\d+\.\d+$/);
+    expect(syncularDependencyRange(undefined)).toBe(fallback);
   });
 });
 

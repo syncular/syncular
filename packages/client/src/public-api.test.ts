@@ -18,7 +18,10 @@ import {
 describe('@syncular/client public API', () => {
   it('exports the stable runtime contract', () => {
     expect(SYNCULAR_PACKAGE_NAME).toBe('@syncular/client');
-    expect(SYNCULAR_PACKAGE_VERSION).toBe('0.0.0');
+    // Release-stamped (sync-versions.ts); assert SemVer shape, not a literal.
+    expect(SYNCULAR_PACKAGE_VERSION).toMatch(
+      /^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/
+    );
     expect(SYNCULAR_WASM_GLUE_FILE).toBe('syncular.js');
     expect(SYNCULAR_WASM_BINARY_FILE).toBe('syncular_bg.wasm');
     expect(SYNCULAR_WASM_ARTIFACT_FILE).toBe('syncular-runtime-artifact.json');
