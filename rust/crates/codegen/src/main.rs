@@ -7008,9 +7008,7 @@ fn generate_typescript_module(
     out.push_str("export async function createSyncularAppDatabase(\n");
     out.push_str("  options: CreateSyncularAppDatabaseOptions\n");
     out.push_str("): Promise<SyncularAppDatabase> {\n");
-    out.push_str(
-        "  const { subscriptions: _appSubscriptions, ...databaseOptions } = options;\n",
-    );
+    out.push_str("  const { subscriptions: _appSubscriptions, ...databaseOptions } = options;\n");
     out.push_str("  const database = await createSyncularDatabase<SyncularAppDb>({\n");
     out.push_str("    ...databaseOptions,\n");
     out.push_str("    // The app factory installs the generated schema first; the lifecycle\n");
