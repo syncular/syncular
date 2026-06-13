@@ -1,6 +1,6 @@
 {
   "name": "@syncular/client-javascript-bindings",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Generated JavaScript and WASM bindings for the Syncular Rust browser runtime",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

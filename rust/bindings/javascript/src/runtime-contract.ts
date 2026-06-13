@@ -1,5 +1,5 @@
 export const SYNCULAR_CLIENT_PACKAGE_NAME = '@syncular/client';
-export const SYNCULAR_CLIENT_PACKAGE_VERSION = '0.0.0';
+export const SYNCULAR_CLIENT_PACKAGE_VERSION = '0.1.0';
 export const SYNCULAR_WASM_OUT_NAME = 'syncular';
 export const SYNCULAR_WASM_GLUE_FILE = `${SYNCULAR_WASM_OUT_NAME}.js`;
 export const SYNCULAR_WASM_BINARY_FILE = `${SYNCULAR_WASM_OUT_NAME}_bg.wasm`;

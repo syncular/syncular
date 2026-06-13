@@ -1,6 +1,6 @@
 {
   "name": "@syncular/client-react-native",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "React Native bridge client for the Syncular Rust runtime",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

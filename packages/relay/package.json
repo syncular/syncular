@@ -1,6 +1,6 @@
 {
   "name": "@syncular/relay",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Edge relay for Syncular distributed sync",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

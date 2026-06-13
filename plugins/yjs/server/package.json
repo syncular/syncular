@@ -1,6 +1,6 @@
 {
   "name": "@syncular/server-plugin-yjs",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Yjs CRDT server integration primitives for Syncular handlers",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

@@ -1,6 +1,6 @@
 {
   "name": "@syncular/transport-http",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "HTTP transport for Syncular client-server communication",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
