@@ -3,11 +3,10 @@
     "label": "@syncular/client Rust browser client",
     "entrypoint": "./packages/client/src/index.ts",
     "namedImports": [
-      "createSyncularClient",
       "createSyncularDatabase"
     ],
-    "baselineRawKb": 266.81,
-    "baselineGzipKb": 62.06,
+    "baselineRawKb": 266.66,
+    "baselineGzipKb": 62.15,
     "maxDriftPercent": 5,
     "maxRawKb": 600,
     "maxGzipKb": 150
