@@ -1807,12 +1807,6 @@ describe('Syncular worker client', () => {
     const promise = createSyncularWorkerClient({
       worker: worker.asWorker(),
       requestTimeoutMs: 100,
-      realtime: {
-        wsUrl: 'wss://example.test/sync/realtime',
-        params: { static: '1' },
-        getParams: ({ clientId }) => ({ token: `token-for-${clientId}` }),
-        initialReconnectDelayMs: 25,
-      },
       config: {
         baseUrl: '/sync',
         actorId: 'actor',
@@ -1827,6 +1821,15 @@ describe('Syncular worker client', () => {
       protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
       ok: true,
       value: true,
+    });
+    const client = await promise;
+    expect(client).toBeInstanceOf(SyncularWorkerClient);
+
+    const startPromise = client.startRealtime({
+      wsUrl: 'wss://example.test/sync/realtime',
+      params: { static: '1' },
+      getParams: ({ clientId }) => ({ token: `token-for-${clientId}` }),
+      initialReconnectDelayMs: 25,
     });
 
     await waitForMessages(worker, 2);
@@ -1845,7 +1848,7 @@ describe('Syncular worker client', () => {
       value: true,
     });
 
-    await expect(promise).resolves.toBeInstanceOf(SyncularWorkerClient);
+    await startPromise;
   });
 
   it('restarts active realtime with fresh params after auth headers change', async () => {

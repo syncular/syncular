@@ -1,10 +1,9 @@
 import type { BlobRef, SyncAuthLeaseIssueRequest } from '@syncular/core';
-import { createSyncularDatabase, type SyncularDatabase } from './database';
+import type { SyncularDatabase } from './database';
 import { isSyncularOfflineError } from './errors';
 import type { MutationsApi } from './mutations';
 import { browserSyncularNetworkStatusSource } from './network';
 import type {
-  CreateSyncularDatabaseOptions,
   SyncularAuthLeaseRecord,
   SyncularBlobUploadQueueProcessOptions,
   SyncularBlobUploadQueueStats,
@@ -30,26 +29,12 @@ import type {
 } from './types';
 
 export interface SyncularClientLifecycleOptions {
-  autoStart?: boolean;
   initialSync?: boolean;
   realtime?: boolean | SyncularRealtimeOptions;
   syncOnRealtimeConnect?: boolean;
   pollIntervalMs?: number | false;
   network?: SyncularNetworkStatusSource | false;
-}
-
-export interface CreateSyncularClientOptions
-  extends Omit<CreateSyncularDatabaseOptions, 'realtime'> {
   subscriptions?: readonly SyncularSubscriptionSpec[];
-  lifecycle?: SyncularClientLifecycleOptions;
-  realtime?: boolean | SyncularRealtimeOptions;
-}
-
-export interface SyncularManagedClient<DB> extends SyncularDatabase<DB> {
-  start(): Promise<void>;
-  stop(): Promise<void>;
-  destroy(): Promise<void>;
-  sync(): Promise<SyncularSyncResult>;
 }
 
 export interface SyncularClientStatus {
@@ -62,32 +47,6 @@ export interface SyncularClientStatus {
   hasPendingMutations: boolean;
   hasConflicts: boolean;
   requiresAction: boolean;
-}
-
-export interface SyncularClient<DB> extends SyncularManagedClient<DB> {
-  on<T extends SyncularClientEventType>(
-    event: T,
-    listener: SyncularClientEventSink<T>
-  ): () => void;
-  getStatus(): SyncularClientStatus;
-  setSubscriptions(
-    subscriptions: readonly SyncularSubscriptionSpec[]
-  ): Promise<void>;
-  resumeFromBackground(
-    options?: SyncularSyncRequestOptions
-  ): Promise<SyncularSyncResult>;
-  issueAuthLease(
-    request: SyncAuthLeaseIssueRequest
-  ): Promise<SyncularAuthLeaseRecord>;
-  upsertAuthLease(lease: SyncularAuthLeaseRecord): Promise<void>;
-  authLease(leaseId: string): Promise<SyncularAuthLeaseRecord | null>;
-  activeAuthLeases(
-    actorId?: string | null,
-    nowMs?: number
-  ): Promise<SyncularAuthLeaseRecord[]>;
-  diagnosticSnapshot(): Promise<SyncularDiagnosticSnapshot>;
-  presence: SyncularPresenceClientLike;
-  conflicts: SyncularConflictsClientLike;
 }
 
 export interface SyncularBlobClientLike {
@@ -148,7 +107,7 @@ export interface SyncularClientLike<DB> {
   start(): Promise<void>;
   stop(): Promise<void>;
   sync(): Promise<SyncularSyncResult>;
-  destroy(): Promise<void>;
+  close(): Promise<void>;
 }
 
 type LifecycleClient = Pick<
@@ -162,78 +121,7 @@ type LifecycleClient = Pick<
   | 'syncOnce'
 >;
 
-export async function createSyncularClient<DB>(
-  options: CreateSyncularClientOptions
-): Promise<SyncularClient<DB>> {
-  const { lifecycle, realtime, subscriptions, ...databaseOptions } = options;
-  const database = await createSyncularDatabase<DB>({
-    ...databaseOptions,
-    realtime: false,
-  });
-  const controller = new SyncularClientLifecycle(database.client, {
-    subscriptions,
-    realtime: lifecycle?.realtime ?? realtime ?? true,
-    initialSync: lifecycle?.initialSync,
-    syncOnRealtimeConnect: lifecycle?.syncOnRealtimeConnect,
-    pollIntervalMs: lifecycle?.pollIntervalMs,
-    network: lifecycle?.network,
-  });
-  const closeDatabase = database.close.bind(database);
-  let closed = false;
-  const close = async () => {
-    if (closed) return;
-    closed = true;
-    try {
-      await controller.stop();
-    } finally {
-      await closeDatabase();
-    }
-  };
-
-  const managed = {
-    ...database,
-    on: (event, listener) => database.client.addEventListener(event, listener),
-    getStatus: () => getSyncularClientStatus(database.client),
-    setSubscriptions: (nextSubscriptions) =>
-      database.client.setSubscriptions(nextSubscriptions),
-    resumeFromBackground: (syncOptions) =>
-      database.client.resumeFromBackground(syncOptions),
-    issueAuthLease: (request) => database.client.issueAuthLease(request),
-    upsertAuthLease: (lease) => database.client.upsertAuthLease(lease),
-    authLease: (leaseId) => database.client.authLease(leaseId),
-    activeAuthLeases: (actorId, nowMs) =>
-      database.client.activeAuthLeases(actorId, nowMs),
-    diagnosticSnapshot: () => database.client.diagnosticSnapshot(),
-    presence: {
-      get: (scopeKey) => database.client.getPresence(scopeKey),
-      join: (scopeKey, metadata) =>
-        database.client.joinPresence(scopeKey, metadata),
-      leave: (scopeKey) => database.client.leavePresence(scopeKey),
-      updateMetadata: (scopeKey, metadata) =>
-        database.client.updatePresenceMetadata(scopeKey, metadata),
-      onChange: (listener) => database.client.addPresenceListener(listener),
-    },
-    conflicts: {
-      list: () => database.client.conflictSummaries(),
-      retryKeepLocal: (id) => database.client.retryConflictKeepLocal(id),
-      resolve: (id, resolution) =>
-        database.client.resolveConflict(id, resolution),
-    },
-    start: () => controller.start(),
-    stop: () => controller.stop(),
-    sync: () => controller.sync(),
-    close,
-    destroy: close,
-  } satisfies SyncularClient<DB>;
-
-  if (lifecycle?.autoStart !== false) {
-    await managed.start();
-  }
-
-  return managed;
-}
-
-function getSyncularClientStatus(
+export function getSyncularClientStatus(
   client: Pick<SyncularRuntimeClient, 'connectionState' | 'lifecycleState'>
 ): SyncularClientStatus {
   const lifecycle = client.lifecycleState();
@@ -267,14 +155,7 @@ export class SyncularClientLifecycle {
 
   constructor(
     private readonly client: LifecycleClient,
-    private readonly options: {
-      subscriptions?: readonly SyncularSubscriptionSpec[];
-      realtime?: boolean | SyncularRealtimeOptions;
-      initialSync?: boolean;
-      syncOnRealtimeConnect?: boolean;
-      pollIntervalMs?: number | false;
-      network?: SyncularNetworkStatusSource | false;
-    } = {}
+    private readonly options: SyncularClientLifecycleOptions = {}
   ) {
     this.#network =
       options.network === false

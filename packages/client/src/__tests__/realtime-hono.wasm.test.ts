@@ -587,6 +587,8 @@ describe('Syncular worker realtime against Hono websocket routes', () => {
     authorization?: string;
   }): Promise<SyncularRuntimeClient> {
     const database = await createSyncularAppDatabase({
+      // Realtime scenarios start/stop realtime explicitly.
+      lifecycle: { autoStart: false },
       requestTimeoutMs: 10_000,
       getHeaders: () => ({
         authorization: options.authorization ?? AUTHORIZATION,

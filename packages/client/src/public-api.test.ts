@@ -1,7 +1,6 @@
 import { describe, expect, it } from 'bun:test';
 import * as clientApi from './index';
 import {
-  createSyncularClient,
   createSyncularCommandHistory,
   createSyncularDatabase,
   getSyncularPackagedRuntimeArtifacts,
@@ -40,12 +39,12 @@ describe('@syncular/client public API', () => {
     expect(artifacts[2]?.wasmUrl?.toString()).toContain('wasm-perf');
   });
 
-  it('exports the ergonomic managed browser client constructor', () => {
-    expect(typeof createSyncularClient).toBe('function');
+  it('exports the managed database constructor', () => {
+    expect(typeof createSyncularDatabase).toBe('function');
   });
 
-  it('exports the database constructor', () => {
-    expect(typeof createSyncularDatabase).toBe('function');
+  it('does not expose the removed standalone managed-client constructor', () => {
+    expect('createSyncularClient' in clientApi).toBe(false);
   });
 
   it('exports generated command-history helpers', () => {

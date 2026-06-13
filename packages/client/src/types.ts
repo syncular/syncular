@@ -1,3 +1,4 @@
+import type { SyncularWasmArtifactVariant } from '@syncular/client-javascript-bindings';
 import type {
   BlobRef,
   ColumnCodecSource,
@@ -250,11 +251,34 @@ export interface SyncularConsoleDiagnosticsOptions {
   network?: SyncularNetworkStatusSource | false;
 }
 
+/**
+ * Advanced lifecycle controls for `createSyncularDatabase`. The common knobs
+ * (`realtime`, `pollIntervalMs`, `subscriptions`) live on
+ * {@link CreateSyncularDatabaseOptions} directly.
+ */
+export interface SyncularDatabaseLifecycleOptions {
+  /**
+   * Start the sync lifecycle while opening the database. Defaults to `true`
+   * for remote databases and `false` for local
+   * (`mode: 'local-sync-compatible'`) databases. When disabled, call
+   * `database.start()` yourself.
+   */
+  autoStart?: boolean;
+  /** Run an initial sync when the lifecycle starts. Defaults to `true`. */
+  initialSync?: boolean;
+  /** Sync after realtime (re)connects. Defaults to `true`. */
+  syncOnRealtimeConnect?: boolean;
+}
+
 export interface CreateSyncularDatabaseOptions {
   config: SyncularClientConfig;
   worker?: Worker | (() => Worker);
   requestTimeoutMs?: number;
-  runtime?: SyncularRuntimeArtifact;
+  /**
+   * WASM runtime artifact to load. Defaults to the packaged 'full' artifact;
+   * pass a variant name ('core', 'full-perf') or an explicit artifact.
+   */
+  runtime?: SyncularRuntimeArtifact | SyncularWasmArtifactVariant;
   runtimeArtifacts?: readonly SyncularRuntimeArtifactCandidate[];
   requiredRuntimeFeatures?: readonly string[];
   blobLimits?: SyncularBlobLimits;
@@ -265,7 +289,18 @@ export interface CreateSyncularDatabaseOptions {
   authLifecycle?: SyncAuthLifecycle;
   diagnostics?: SyncularDiagnosticSink;
   consoleDiagnostics?: boolean | SyncularConsoleDiagnosticsOptions;
+  /**
+   * Realtime websocket options for the managed sync lifecycle. Defaults to
+   * `true` (connect with default options) when the lifecycle starts.
+   */
   realtime?: boolean | SyncularRealtimeOptions;
+  /**
+   * Interval polling fallback for the managed sync lifecycle. Off by default.
+   */
+  pollIntervalMs?: number | false;
+  /** Sync subscriptions registered while opening the database. */
+  subscriptions?: readonly SyncularSubscriptionSpec[];
+  lifecycle?: SyncularDatabaseLifecycleOptions;
   sync?: SyncularDatabaseSyncOptions;
 }
 

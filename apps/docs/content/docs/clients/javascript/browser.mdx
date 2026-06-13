@@ -34,13 +34,15 @@ const syncular = await createSyncularAppDatabase({
 });
 ```
 
-Apps that want startup and shutdown handled in one place can use the managed
-browser preset:
+The database owns the sync lifecycle: opening it registers subscriptions, runs
+the initial sync, and connects realtime (on by default for remote databases),
+and `close()` shuts everything down. Without generated code, the same
+single-step open is available directly from `@syncular/client`:
 
 ```ts
-import { createSyncularClient } from '@syncular/client';
+import { createSyncularDatabase } from '@syncular/client';
 
-const syncular = await createSyncularClient<AppDb>({
+const syncular = await createSyncularDatabase<AppDb>({
   config: {
     baseUrl: '/sync',
     actorId: 'user-1',
@@ -53,14 +55,13 @@ const syncular = await createSyncularClient<AppDb>({
       scopes: { user_id: 'user-1' },
     },
   ],
-  realtime: true,
 });
 ```
 
-The preset sets subscriptions, runs the initial sync, starts realtime when
-requested, and shuts everything down through `destroy()`/`close()`. Realtime is
-treated as a wakeup path: websocket reconnects trigger HTTP catchup sync, and
-interval polling stays opt-in through `lifecycle.pollIntervalMs`.
+Realtime is treated as a wakeup path: websocket reconnects trigger HTTP
+catchup sync, and interval polling stays opt-in through `pollIntervalMs`. Pass
+`lifecycle: { autoStart: false }` to open the database without starting sync,
+then call `syncular.start()` yourself.
 
 ## React apps
 
@@ -168,13 +169,11 @@ Realtime presence uses the same websocket connection as sync messages. Join a
 scope only after the client has subscribed and completed an initial sync, since
 the server authorizes presence by the websocket connection's active scope keys.
 
-```ts
-await syncular.setSubscriptions([
-  taskSubscription({ actorId: 'user-1' }),
-]);
-await syncular.sync();
-await syncular.start();
+A generated `createSyncularAppDatabase` (or `createSyncularDatabase` with
+`subscriptions`) has already subscribed and completed the initial sync by the
+time it resolves, so presence can be joined right away:
 
+```ts
 const unsubscribePresence = syncular.presence.onChange((event) => {
   renderPresence(event.scopeKey, event.presence);
 });
@@ -230,7 +229,9 @@ log entries without treating derived app columns as canonical.
 
 The package ships runtime artifact metadata. Generated clients declare required
 features from schema metadata, such as blobs, CRDT/Yjs, or E2EE, and the
-browser package selects a compatible WASM artifact.
+browser package selects a compatible WASM artifact. When nothing is specified,
+the packaged `full` artifact is used.
 
-Use the full artifact for schemas that need blobs, CRDT/Yjs, or field-level
-encryption. The core artifact is for schemas that do not need those features.
+The full artifact covers blobs, CRDT/Yjs, and field-level encryption. Schemas
+that need none of those can opt into the smaller core artifact with
+`runtime: 'core'`.

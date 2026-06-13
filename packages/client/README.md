@@ -142,14 +142,14 @@ Do not treat missing scopes as empty data while `bootstrap.complete` is false.
 Use `bootstrap.pendingSubscriptionIds`, `bootstrap.phases`, or generated
 subscription ids to decide which views can render complete results.
 
-For apps that want a lifecycle-managed surface instead of wiring startup by
-hand, `createSyncularClient` wraps the Rust-owned database with subscription
-setup, initial sync, realtime, reconnect catchup, and coordinated shutdown:
+The database owns the sync lifecycle. `createSyncularDatabase` registers
+subscriptions, runs the initial sync, starts realtime, schedules reconnect
+catchup, and coordinates shutdown through `close()`:
 
 ```ts
-import { createSyncularClient } from '@syncular/client';
+import { createSyncularDatabase } from '@syncular/client';
 
-const syncular = await createSyncularClient<AppDb>({
+const syncular = await createSyncularDatabase<AppDb>({
   config: {
     baseUrl: '/sync',
     actorId: 'user-1',
@@ -172,14 +172,15 @@ const status = syncular.getStatus();
 if (status.hasPendingMutations) showSavingIndicator();
 
 await syncular.resumeFromBackground();
-await syncular.destroy();
+await syncular.close();
 ```
 
-The managed client starts realtime by default. Pass `realtime: false` only for a
-host policy that cannot hold a websocket. Interval polling is still off by
+The database starts realtime by default. Pass `realtime: false` only for a
+host policy that cannot hold a websocket, and `lifecycle: { autoStart: false }`
+to open without starting sync at all. Interval polling is still off by
 default: websocket reconnects trigger HTTP catchup sync, and failed
 websocket binary sync-pack applies recover through HTTP pull. Use
-`lifecycle.pollIntervalMs` only for environments that explicitly need polling.
+`pollIntervalMs` only for environments that explicitly need polling.
 
 ## React
 
