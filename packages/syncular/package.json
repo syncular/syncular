@@ -1,6 +1,6 @@
 {
   "name": "syncular",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Syncular CLI (`npx syncular generate`) for the @syncular/* packages",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

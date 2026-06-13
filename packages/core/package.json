@@ -1,6 +1,6 @@
 {
   "name": "@syncular/core",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Core protocol types and shared utilities for the Syncular sync framework",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

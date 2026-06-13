@@ -1,6 +1,6 @@
 {
   "name": "@syncular/server",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Server-side sync engine with push/pull, pruning, and snapshot support",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

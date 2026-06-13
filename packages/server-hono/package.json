@@ -1,6 +1,6 @@
 {
   "name": "@syncular/server-hono",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Hono adapter for the Syncular server with OpenAPI support",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

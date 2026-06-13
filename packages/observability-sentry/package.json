@@ -1,6 +1,6 @@
 {
   "name": "@syncular/observability-sentry",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Sentry adapters for Syncular telemetry",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

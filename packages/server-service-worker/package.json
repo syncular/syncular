@@ -1,6 +1,6 @@
 {
   "name": "@syncular/server-service-worker",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Service Worker server/runtime + wake transport helpers for Syncular",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
