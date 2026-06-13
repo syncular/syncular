@@ -136,8 +136,18 @@ jobs:
       - name: Publish npm packages
         env:
           SYNCULAR_NPM_TAG: ${{ steps.release_meta.outputs.npm_tag }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          if [ -z "${NPM_TOKEN}" ]; then
+            echo "NPM_TOKEN secret is not set. Add an npm granular automation" >&2
+            echo "token (publish scope for @syncular + the 'syncular' and" >&2
+            echo "'create-syncular-app' packages) as the repo secret NPM_TOKEN." >&2
+            exit 1
+          fi
           npm config set registry https://registry.npmjs.org/
+          # `--provenance` (id-token: write) attests the build but does not
+          # authenticate the publish; the token does. Both run together.
+          npm config set //registry.npmjs.org/:_authToken "${NPM_TOKEN}"
           bun run release
 
       # Trusted Publishing: exchange the workflow's OIDC identity for a
