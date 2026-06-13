@@ -64,8 +64,15 @@ pack time.
 
 ## Publish credentials
 
-- **npm** uses OIDC provenance (`id-token: write` + `npm publish --provenance`);
-  no `NPM_TOKEN` secret.
+- **npm** authenticates with the `NPM_TOKEN` repo secret and adds an OIDC
+  provenance attestation (`id-token: write` + `npm publish --provenance`).
+  Provenance alone does not authenticate the publish, so the token is required.
+  **One-time setup:** create an npm **granular automation token** with
+  read-write/publish access to the `@syncular` scope and the unscoped
+  `syncular` + `create-syncular-app` packages, and add it as the repo secret
+  `NPM_TOKEN`. (npm Trusted Publishing is tokenless but must be configured per
+  package on npmjs.com, which is impractical for a first multi-package release
+  where most packages do not exist yet.)
 - **crates.io** uses [Trusted Publishing](https://crates.io/docs/trusted-publishing):
   the release workflow's `rust-lang/crates-io-auth-action` step exchanges the
   job's OIDC identity for a short-lived (30 min) token, so there is no
