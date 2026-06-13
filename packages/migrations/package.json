@@ -1,6 +1,6 @@
 {
   "name": "@syncular/migrations",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Database migration utilities for Syncular",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

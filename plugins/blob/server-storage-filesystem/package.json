@@ -1,6 +1,6 @@
 {
   "name": "@syncular/server-storage-filesystem",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Filesystem blob storage adapter for Syncular server",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

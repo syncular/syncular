@@ -1,6 +1,6 @@
 {
   "name": "@syncular/dialects",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "Kysely runtime dialects for Syncular (better-sqlite3, bun:sqlite, D1, LibSQL, Neon, PGlite, sqlite3)",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
