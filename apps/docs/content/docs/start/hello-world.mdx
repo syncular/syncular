@@ -149,17 +149,12 @@ The generated module exports a typed database factory and subscription
 helpers. In your browser app:
 
 ```typescript
-import {
-  getSyncularRuntimeArtifact,
-  SyncularClientLifecycle,
-} from '@syncular/client';
-import {
-  createSyncularAppDatabase,
-  taskSubscription,
-} from './generated/syncular.generated';
+import { createSyncularAppDatabase } from './generated/syncular.generated';
 
 const actorId = 'demo-user';
 
+// One call: opens local SQLite, installs the generated schema, registers the
+// default subscriptions, runs the initial sync, and connects realtime.
 const database = await createSyncularAppDatabase({
   config: {
     baseUrl: 'http://127.0.0.1:4101/sync',
@@ -169,15 +164,7 @@ const database = await createSyncularAppDatabase({
     storage: 'indexedDb',
   },
   getHeaders: async () => ({ authorization: 'Bearer demo-user' }),
-  runtimeArtifacts: [getSyncularRuntimeArtifact('full')],
-  subscriptions: [taskSubscription({ actorId })],
 });
-
-// Push/pull loop. Add `realtime` options for websocket deltas instead of polling.
-const lifecycle = new SyncularClientLifecycle(database.client, {
-  pollIntervalMs: 5_000,
-});
-await lifecycle.start();
 
 // Write through the generated mutation — applied to local SQLite instantly,
 // queued in the outbox, pushed to the server when online.

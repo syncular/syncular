@@ -325,6 +325,7 @@ describe('Syncular core WASM artifact', () => {
       },
       requiredRuntimeFeatures: ['web-owned-sqlite-core'],
       runtimeArtifacts: [coreRuntimeArtifact()],
+      lifecycle: { autoStart: false },
     });
 
     try {
@@ -444,6 +445,7 @@ describe('Syncular core WASM artifact', () => {
       },
       requiredRuntimeFeatures: ['web-owned-sqlite-core'],
       runtimeArtifacts: [coreRuntimeArtifact()],
+      lifecycle: { autoStart: false },
     });
 
     try {
@@ -1181,6 +1183,7 @@ describe('Syncular core WASM artifact', () => {
         },
         requiredRuntimeFeatures: ['web-owned-sqlite-core'],
         runtimeArtifacts: [coreRuntimeArtifact()],
+        lifecycle: { autoStart: false },
       })
     ).rejects.toThrow('crdt-yjs');
   });
@@ -1198,6 +1201,7 @@ describe('Syncular core WASM artifact', () => {
         },
         requiredRuntimeFeatures: ['web-owned-sqlite-core'],
         runtimeArtifacts: [coreRuntimeArtifact()],
+        lifecycle: { autoStart: false },
       })
     ).rejects.toThrow('blobs');
   });
@@ -1228,6 +1232,7 @@ async function openBasicCoreDatabase(args: {
     },
     requiredRuntimeFeatures: ['web-owned-sqlite-core'],
     runtimeArtifacts: [coreRuntimeArtifact()],
+    lifecycle: { autoStart: false },
   });
   try {
     await installBasicClientSchema(syncular);
@@ -1267,6 +1272,7 @@ async function openGeneratedTodoOldClient(args: {
     appTables: todoGeneratedClientApp.tableNames,
     tableConfig: todoGeneratedClientApp.tableConfig,
     requiredRuntimeFeatures: ['web-owned-sqlite'],
+    lifecycle: { autoStart: false },
   });
   try {
     await syncular.client.setSubscriptions([
@@ -1432,6 +1438,7 @@ async function openFileAssetDatabase(args: {
       },
     },
     requiredRuntimeFeatures: ['web-owned-sqlite'],
+    lifecycle: { autoStart: false },
   });
   try {
     await installFileAssetClientSchema(syncular);

@@ -97,7 +97,7 @@ describe('Syncular bridge client', () => {
       await client.resumeFromBackground();
       expect(client.getStatus().isConnected).toBe(true);
 
-      await client.destroy();
+      await client.close();
       expect(harness.listenerCount('rowsChanged')).toBe(0);
     } finally {
       await resource.dispose();

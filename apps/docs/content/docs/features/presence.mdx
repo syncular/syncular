@@ -54,10 +54,11 @@ applies to live connections too.
 
 ## Fallback and polling
 
-The managed lifecycle treats realtime as optional:
+The database's managed lifecycle treats realtime as optional:
 
 ```ts
-const lifecycle = new SyncularClientLifecycle(database.client, {
+const database = await createSyncularAppDatabase({
+  config,
   realtime: {
     params: { token },
     initialReconnectDelayMs: 500,
