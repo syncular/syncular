@@ -62,6 +62,19 @@ Internal `workspace:*` dependency ranges stay as-is in the repo; `bun pm pack`
 (inside `syncular-publish`) resolves them to the exact workspace version at
 pack time.
 
+## Publish credentials
+
+- **npm** uses OIDC provenance (`id-token: write` + `npm publish --provenance`);
+  no `NPM_TOKEN` secret.
+- **crates.io** uses [Trusted Publishing](https://crates.io/docs/trusted-publishing):
+  the release workflow's `rust-lang/crates-io-auth-action` step exchanges the
+  job's OIDC identity for a short-lived (30 min) token, so there is no
+  long-lived `CARGO_REGISTRY_TOKEN` secret. **One-time setup:** add this repo +
+  the `release.yml` workflow as a Trusted Publisher for each published crate on
+  crates.io (crate Settings → Trusted Publishing) before the first
+  trusted-publishing release. The local `bun run release:cargo` path still
+  reads `CARGO_REGISTRY_TOKEN` from the environment for manual publishes.
+
 ## Staging releases
 
 Pushing the `release` branch (after Checks pass) publishes an ephemeral
