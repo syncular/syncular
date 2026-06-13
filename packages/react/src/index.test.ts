@@ -485,10 +485,9 @@ class FakeManagedClient {
         },
       };
     },
-    close: async () => undefined,
     start: async () => undefined,
     stop: async () => undefined,
-    destroy: async () => undefined,
+    close: async () => undefined,
     sync: async () => {
       this.syncCount += 1;
       return {

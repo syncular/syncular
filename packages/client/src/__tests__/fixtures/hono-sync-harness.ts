@@ -333,6 +333,8 @@ export async function createHonoSyncHarness(
       clientOptions: HonoWorkerClientOptions
     ): Promise<SyncularAppDatabase> => {
       const database = await createSyncularAppDatabase({
+        // The harness drives sync/realtime explicitly per scenario.
+        lifecycle: { autoStart: false },
         requestTimeoutMs: clientOptions.requestTimeoutMs ?? 10_000,
         getHeaders: clientOptions.getHeaders,
         authLifecycle: clientOptions.authLifecycle,

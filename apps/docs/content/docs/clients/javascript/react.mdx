@@ -15,21 +15,22 @@ bridge, or the React Native bridge.
 npm install @syncular/client @syncular/react kysely
 ```
 
-For browser apps, create the client with `@syncular/client` and pass it into
-the generated React surface:
+For browser apps, open the database (which owns the sync lifecycle) and pass
+it into the generated React surface:
 
 ```tsx
-import { createSyncularClient } from '@syncular/client';
 import { createSyncularReact } from '@syncular/react';
-import type { AppDb } from './generated/syncular.browser';
+import {
+  createSyncularAppDatabase,
+  type SyncularAppDb as AppDb,
+} from './generated/syncular.browser';
 
-const syncular = await createSyncularClient<AppDb>({
+const syncular = await createSyncularAppDatabase({
   config: {
     baseUrl: '/sync',
     actorId: 'user-1',
     clientId: 'device-1',
   },
-  realtime: true,
 });
 
 const {
@@ -53,6 +54,10 @@ export function App() {
   );
 }
 ```
+
+`SyncProvider` can also own the database itself: pass
+`options` (`CreateSyncularDatabaseOptions`) instead of `client` and it opens
+the database on mount; add `closeOnUnmount` to close it on unmount.
 
 Platform clients provide matching React factories:
 

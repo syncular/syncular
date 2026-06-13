@@ -76,8 +76,9 @@ For a TypeScript app the interesting outputs are:
   - `createSyncularAppDatabase(options)` — the open helper that wires
     schema version, embedded migrations, codecs, table config, and required
     runtime features into [`CreateSyncularDatabaseOptions`](/clients/javascript/client-configuration),
-    installs the local schema, sets default subscriptions, and wraps
-    mutations with command history (undo/redo);
+    installs the local schema, sets default subscriptions, wraps
+    mutations with command history (undo/redo), and starts the sync
+    lifecycle (initial sync plus realtime) before resolving;
   - mutation namespaces (`mutations.tasks.insert/update/...`) and
     subscription helpers (`taskSubscription({ actorId })`);
   - changed-row helpers for row/field deltas;

@@ -1,6 +1,6 @@
 import {
-  type CreateSyncularClientOptions,
-  createSyncularClient,
+  type CreateSyncularDatabaseOptions,
+  createSyncularDatabase,
   type MutationReceipt,
   type MutationsApi,
   type SyncularBlobUploadQueueStats,
@@ -39,9 +39,9 @@ export type SyncularReactStatus = 'idle' | 'loading' | 'ready' | 'error';
 export interface SyncProviderProps<DB> {
   children?: ReactNode;
   client?: SyncularClientLike<DB>;
-  options?: CreateSyncularClientOptions;
+  options?: CreateSyncularDatabaseOptions;
   optionsKey?: unknown;
-  destroyOnUnmount?: boolean;
+  closeOnUnmount?: boolean;
   onClient?: (client: SyncularClientLike<DB>) => void;
   onError?: (error: unknown) => void;
 }
@@ -230,7 +230,7 @@ export function createSyncularReact<DB>() {
     const {
       children,
       client: providedClient,
-      destroyOnUnmount,
+      closeOnUnmount,
       onClient,
       onError,
       options,
@@ -255,8 +255,8 @@ export function createSyncularReact<DB>() {
         setValue({ client: providedClient, status: 'ready', error: null });
         onClientRef.current?.(providedClient);
         return () => {
-          if (destroyOnUnmount) {
-            void providedClient.destroy().catch(() => undefined);
+          if (closeOnUnmount) {
+            void providedClient.close().catch(() => undefined);
           }
         };
       }
@@ -272,10 +272,10 @@ export function createSyncularReact<DB>() {
         status: 'loading',
         error: null,
       }));
-      void createSyncularClient<DB>(currentOptions)
+      void createSyncularDatabase<DB>(currentOptions)
         .then((client) => {
           if (cancelled) {
-            void client.destroy().catch(() => undefined);
+            void client.close().catch(() => undefined);
             return;
           }
           ownedClient = client;
@@ -290,10 +290,10 @@ export function createSyncularReact<DB>() {
 
       return () => {
         cancelled = true;
-        if (ownedClient) void ownedClient.destroy().catch(() => undefined);
+        if (ownedClient) void ownedClient.close().catch(() => undefined);
       };
     }, [
-      destroyOnUnmount,
+      closeOnUnmount,
       lifecycleKey,
       onClientRef,
       onErrorRef,

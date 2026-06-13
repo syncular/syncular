@@ -30,7 +30,7 @@ export function App() {
     void openAppClient()
       .then((nextClient) => {
         if (disposed) {
-          void nextClient.destroy().catch(() => undefined);
+          void nextClient.close().catch(() => undefined);
           return;
         }
         opened = nextClient;
@@ -42,7 +42,7 @@ export function App() {
 
     return () => {
       disposed = true;
-      if (opened) void opened.destroy().catch(() => undefined);
+      if (opened) void opened.close().catch(() => undefined);
     };
   }, []);
 

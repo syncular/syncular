@@ -81,6 +81,7 @@ import type {
   SyncularRealtimeConnectionState,
   SyncularRealtimeOptions,
   SyncularRowsChangedSink,
+  SyncularRuntimeArtifact,
   SyncularRuntimeClient,
   SyncularRuntimeInfo,
   SyncularSchemaState,
@@ -94,7 +95,10 @@ import type {
   SyncularSyncTimings,
   SyncularTransportStats,
 } from './types';
-import { selectSyncularRuntimeArtifact } from './wasm-runtime';
+import {
+  getSyncularRuntimeArtifact,
+  selectSyncularRuntimeArtifact,
+} from './wasm-runtime';
 import type {
   SyncularWorkerErrorPayload,
   SyncularWorkerOutboundMessage,
@@ -134,11 +138,13 @@ export async function createSyncularWorkerClient(
 ): Promise<SyncularWorkerClient> {
   const config = resolveSyncularClientConfig(options.config);
   const runtime =
-    options.runtime ??
-    selectSyncularRuntimeArtifact(
-      options.requiredRuntimeFeatures,
-      options.runtimeArtifacts
-    );
+    typeof options.runtime === 'string'
+      ? getSyncularRuntimeArtifact(options.runtime)
+      : (options.runtime ??
+        selectSyncularRuntimeArtifact(
+          options.requiredRuntimeFeatures,
+          options.runtimeArtifacts
+        ));
   const worker =
     typeof options.worker === 'function'
       ? options.worker()
@@ -174,9 +180,6 @@ export async function createSyncularWorkerClient(
     } else {
       throw err;
     }
-  }
-  if (options.realtime) {
-    await client.startRealtime(options.realtime);
   }
   return client;
 }
@@ -337,10 +340,14 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
     runtime?: CreateSyncularDatabaseOptions['runtime']
   ): Promise<void> {
     const resolvedConfig = resolveSyncularClientConfig(config);
+    const resolvedRuntime =
+      typeof runtime === 'string'
+        ? getSyncularRuntimeArtifact(runtime)
+        : runtime;
     await this.#request({
       type: 'open',
       config: resolvedConfig,
-      runtime: serializeRuntimeArtifact(runtime),
+      runtime: serializeRuntimeArtifact(resolvedRuntime),
     });
     this.#config = resolvedConfig;
     this.#realtimeOptions = undefined;
@@ -2064,7 +2071,7 @@ function cloneAuthHeaders(headers: SyncularAuthHeaders): SyncularAuthHeaders {
 }
 
 function serializeRuntimeArtifact(
-  runtime: CreateSyncularDatabaseOptions['runtime'] | undefined
+  runtime: SyncularRuntimeArtifact | undefined
 ): SyncularWorkerRuntimeArtifact | undefined {
   if (!runtime) return undefined;
   return {

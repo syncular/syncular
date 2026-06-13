@@ -21,10 +21,12 @@ const database = await createSyncularAppDatabase({
     fileName: 'app-v1.sqlite',
   },
   getHeaders: async () => ({ authorization: `Bearer ${await token()}` }),
-  runtimeArtifacts: [getSyncularRuntimeArtifact('full')],
-  subscriptions: [taskSubscription({ actorId: userId })],
 });
 ```
+
+The returned database owns the sync lifecycle: the factory registers the
+generated subscriptions, runs the initial sync, and connects realtime before
+resolving, and `close()` stops sync and shuts the worker down.
 
 ## Core identity (`config`)
 
@@ -118,21 +120,32 @@ lifecycle phase becomes `authRequired`.
 
 - `requestTimeoutMs` — default `30000`. Per worker request; raise it if huge
   bootstraps legitimately exceed 30s, lower it to fail fast.
-- `runtimeArtifacts` / `runtime` / `requiredRuntimeFeatures` — select the WASM
-  build, e.g. `getSyncularRuntimeArtifact('full')`. Generated clients assert
-  required features at open time.
+- `runtime` — which WASM build to load. Defaults to the packaged `'full'`
+  artifact; pass `'core'` or `'full-perf'` to pick another packaged variant, or
+  an explicit artifact object. `runtimeArtifacts` / `requiredRuntimeFeatures`
+  select by feature set instead. Generated clients assert required features at
+  open time.
 - `worker` — bring your own `Worker` (or factory) instead of the bundled one.
-- `realtime` — `true` or options: `wsUrl`, `params`/`getParams` (e.g. tokens),
-  reconnect backoff (`initialReconnectDelayMs` `1000`, `maxReconnectDelayMs`
-  `30000`, factor `2`), `heartbeatTimeoutMs` (`60000`). Most apps configure
-  realtime via `SyncularClientLifecycle` instead.
+- `realtime` — defaults to `true` for remote databases. `false` disables the
+  websocket; an options object tunes `wsUrl`, `params`/`getParams` (e.g.
+  tokens), reconnect backoff (`initialReconnectDelayMs` `1000`,
+  `maxReconnectDelayMs` `30000`, factor `2`), and `heartbeatTimeoutMs`
+  (`60000`).
+- `pollIntervalMs` — interval sync fallback for the managed lifecycle. Off by
+  default; realtime reconnects already trigger catchup syncs.
+- `subscriptions` — sync subscriptions registered while the database opens
+  (the generated factory defaults these from the schema).
+- `lifecycle` — advanced startup knobs: `autoStart` (default `true` for remote
+  databases, `false` for local mode), `initialSync` (default `true`), and
+  `syncOnRealtimeConnect` (default `true`). With `autoStart: false`, call
+  `database.start()` yourself.
 - `blobLimits.maxPayloadBytes` — default 64 MiB; `blob.too_large` beyond it.
 - `diagnostics` — a sink receiving every structured diagnostic event.
 - `consoleDiagnostics` — `true` or `{ baseUrl, token, partitionId, debounceMs (100), maxPayloadBytes (48 KiB) }`
   to stream client state to the [Console](/operate/console). With `true`, the endpoint
   is derived from `config.baseUrl`.
-- Generated factory extras: `subscriptions` (specs, a factory function, or
-  `false`), `bootstrapPhases` (per-subscription phase map), and
+- Generated factory extras: `subscriptions` widens to specs, a factory
+  function, or `false`; `bootstrapPhases` (per-subscription phase map); and
   `schemaInstallMode` (`'derived'` default).
 
 ## Worked tuning scenarios

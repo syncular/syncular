@@ -208,7 +208,7 @@ export async function createSyncularBridgeClient<DB>(
       }
       return await options.bridge.sync();
     },
-    async destroy() {
+    async close() {
       if (closed) return;
       closed = true;
       await options.bridge.stop?.();

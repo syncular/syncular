@@ -6951,7 +6951,7 @@ fn generate_typescript_module(
     out.push_str(
         "  | ((args: SyncularSubscriptionArgs) => readonly SyncularSubscriptionSpec[]);\n\n",
     );
-    out.push_str("export interface CreateSyncularAppDatabaseOptions extends CreateSyncularDatabaseOptions {\n");
+    out.push_str("export interface CreateSyncularAppDatabaseOptions extends Omit<CreateSyncularDatabaseOptions, 'subscriptions'> {\n");
     out.push_str("  subscriptions?: SyncularAppSubscriptionsOption;\n");
     out.push_str("  bootstrapPhases?: Record<string, number>;\n");
     out.push_str("  schemaInstallMode?: 'derived' | 'full' | 'base' | 'none';\n");
@@ -7008,8 +7008,14 @@ fn generate_typescript_module(
     out.push_str("export async function createSyncularAppDatabase(\n");
     out.push_str("  options: CreateSyncularAppDatabaseOptions\n");
     out.push_str("): Promise<SyncularAppDatabase> {\n");
+    out.push_str(
+        "  const { subscriptions: _appSubscriptions, ...databaseOptions } = options;\n",
+    );
     out.push_str("  const database = await createSyncularDatabase<SyncularAppDb>({\n");
-    out.push_str("    ...options,\n");
+    out.push_str("    ...databaseOptions,\n");
+    out.push_str("    // The app factory installs the generated schema first; the lifecycle\n");
+    out.push_str("    // starts below once subscriptions and command history are wired.\n");
+    out.push_str("    lifecycle: { ...options.lifecycle, autoStart: false },\n");
     out.push_str("    config: {\n");
     out.push_str("      ...options.config,\n");
     out.push_str(
@@ -7051,6 +7057,9 @@ fn generate_typescript_module(
     out.push_str("    appDatabase.commandHistory = commandHistory.history;\n");
     out.push_str("    appDatabase.mutations = commandHistory.wrapMutations(database.mutations, 'mutations') as SyncularAppMutations;\n");
     out.push_str("    appDatabase.leasedMutations = commandHistory.wrapMutations(database.leasedMutations, 'leasedMutations') as SyncularAppMutations;\n");
+    out.push_str("    if (options.lifecycle?.autoStart ?? (options.config.mode ?? 'remote') === 'remote') {\n");
+    out.push_str("      await database.start();\n");
+    out.push_str("    }\n");
     out.push_str("    return appDatabase;\n");
     out.push_str("  } catch (err) {\n");
     out.push_str("    await database.close();\n");
@@ -12361,7 +12370,11 @@ CREATE TABLE tasks (
         assert!(output.contains("commandHistory: SyncularCommandHistory;"));
         assert!(output.contains("export async function createSyncularAppDatabase("));
         assert!(output.contains(
-            "export interface CreateSyncularAppDatabaseOptions extends CreateSyncularDatabaseOptions"
+            "export interface CreateSyncularAppDatabaseOptions extends Omit<CreateSyncularDatabaseOptions, 'subscriptions'>"
+        ));
+        assert!(output.contains("lifecycle: { ...options.lifecycle, autoStart: false },"));
+        assert!(output.contains(
+            "if (options.lifecycle?.autoStart ?? (options.config.mode ?? 'remote') === 'remote') {"
         ));
         assert!(output.contains("subscriptions?: SyncularAppSubscriptionsOption;"));
         assert!(output.contains("bootstrapPhases?: Record<string, number>;"));

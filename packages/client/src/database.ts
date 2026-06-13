@@ -6,6 +6,7 @@ import {
   createColumnCodecsPlugin,
   createTableColumnCodecsResolver,
   randomId,
+  type SyncAuthLeaseIssueRequest,
   type SyncOperation,
 } from '@syncular/core';
 import {
@@ -22,6 +23,13 @@ import {
   type SyncularBlobLimitInput,
   syncularBlobInputSize,
 } from './blob-limits';
+import {
+  getSyncularClientStatus,
+  SyncularClientLifecycle,
+  type SyncularClientStatus,
+  type SyncularConflictsClientLike,
+  type SyncularPresenceClientLike,
+} from './client';
 import { createSyncularConsoleDiagnosticsPublisher } from './console-diagnostics';
 import { isSyncularOfflineError } from './errors';
 import {
@@ -34,9 +42,13 @@ import { browserSyncularNetworkStatusSource } from './network';
 import { assertSyncularReadonlySql } from './sql-safety';
 import type {
   CreateSyncularDatabaseOptions,
+  SyncularAuthLeaseRecord,
   SyncularBlobStoreOptions,
   SyncularBlobs,
+  SyncularClientEventSink,
+  SyncularClientEventType,
   SyncularCrdtYjsFieldConfig,
+  SyncularDiagnosticSnapshot,
   SyncularLiveQueries,
   SyncularLiveQueryDependencyHint,
   SyncularLiveQueryEvent,
@@ -45,6 +57,9 @@ import type {
   SyncularNetworkStatusSource,
   SyncularRuntimeClient,
   SyncularSqlClient,
+  SyncularSubscriptionSpec,
+  SyncularSyncRequestOptions,
+  SyncularSyncResult,
   SyncularTableConfigMap,
   SyncularUnsafeSqlClient,
 } from './types';
@@ -72,6 +87,39 @@ export interface SyncularDatabase<DB> extends SyncularLiveQueries {
   mutations: MutationsApi<DB, undefined>;
   leasedMutations: MutationsApi<DB, undefined>;
   blobs: SyncularBlobs;
+  /**
+   * The sync lifecycle owned by this database. It starts automatically while
+   * the database opens (remote mode, unless `lifecycle.autoStart` is false)
+   * and stops on `close()`. Reach for it directly only for advanced control;
+   * `start`/`stop`/`sync` proxy to it.
+   */
+  lifecycle: SyncularClientLifecycle;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+  sync(): Promise<SyncularSyncResult>;
+  on<T extends SyncularClientEventType>(
+    event: T,
+    listener: SyncularClientEventSink<T>
+  ): () => void;
+  getStatus(): SyncularClientStatus;
+  setSubscriptions(
+    subscriptions: readonly SyncularSubscriptionSpec[]
+  ): Promise<void>;
+  resumeFromBackground(
+    options?: SyncularSyncRequestOptions
+  ): Promise<SyncularSyncResult>;
+  issueAuthLease(
+    request: SyncAuthLeaseIssueRequest
+  ): Promise<SyncularAuthLeaseRecord>;
+  upsertAuthLease(lease: SyncularAuthLeaseRecord): Promise<void>;
+  authLease(leaseId: string): Promise<SyncularAuthLeaseRecord | null>;
+  activeAuthLeases(
+    actorId?: string | null,
+    nowMs?: number
+  ): Promise<SyncularAuthLeaseRecord[]>;
+  diagnosticSnapshot(): Promise<SyncularDiagnosticSnapshot>;
+  presence: SyncularPresenceClientLike;
+  conflicts: SyncularConflictsClientLike;
   close(): Promise<void>;
 }
 
@@ -202,15 +250,50 @@ export async function createSyncularDatabase<DB>(
       blobUploadScheduler.schedule();
     },
   });
+  const lifecycle = new SyncularClientLifecycle(client, {
+    realtime: options.realtime ?? true,
+    initialSync: options.lifecycle?.initialSync,
+    syncOnRealtimeConnect: options.lifecycle?.syncOnRealtimeConnect,
+    pollIntervalMs: options.pollIntervalMs,
+    network: options.sync?.network,
+  });
 
-  return {
+  const database: SyncularDatabase<DB> = {
     db,
     client,
     dialect,
     mutations,
     leasedMutations,
     blobs,
+    lifecycle,
     live: (query, liveOptions) => dialect.live(query, liveOptions),
+    start: () => lifecycle.start(),
+    stop: () => lifecycle.stop(),
+    sync: () => lifecycle.sync(),
+    on: (event, listener) => client.addEventListener(event, listener),
+    getStatus: () => getSyncularClientStatus(client),
+    setSubscriptions: (subscriptions) => client.setSubscriptions(subscriptions),
+    resumeFromBackground: (syncOptions) =>
+      client.resumeFromBackground(syncOptions),
+    issueAuthLease: (request) => client.issueAuthLease(request),
+    upsertAuthLease: (lease) => client.upsertAuthLease(lease),
+    authLease: (leaseId) => client.authLease(leaseId),
+    activeAuthLeases: (actorId, nowMs) =>
+      client.activeAuthLeases(actorId, nowMs),
+    diagnosticSnapshot: () => client.diagnosticSnapshot(),
+    presence: {
+      get: (scopeKey) => client.getPresence(scopeKey),
+      join: (scopeKey, metadata) => client.joinPresence(scopeKey, metadata),
+      leave: (scopeKey) => client.leavePresence(scopeKey),
+      updateMetadata: (scopeKey, metadata) =>
+        client.updatePresenceMetadata(scopeKey, metadata),
+      onChange: (listener) => client.addPresenceListener(listener),
+    },
+    conflicts: {
+      list: () => client.conflictSummaries(),
+      retryKeepLocal: (id) => client.retryConflictKeepLocal(id),
+      resolve: (id, resolution) => client.resolveConflict(id, resolution),
+    },
     async close() {
       if (closed) return;
       closed = true;
@@ -218,6 +301,7 @@ export async function createSyncularDatabase<DB>(
       blobUploadScheduler.destroy();
       consoleDiagnostics?.destroy();
       try {
+        await lifecycle.stop().catch(() => undefined);
         await dialect.destroyLiveQueries();
         await db.destroy();
       } finally {
@@ -225,6 +309,20 @@ export async function createSyncularDatabase<DB>(
       }
     },
   };
+
+  try {
+    if (options.subscriptions) {
+      await client.setSubscriptions(options.subscriptions);
+    }
+    if (options.lifecycle?.autoStart ?? !localClientMode) {
+      await lifecycle.start();
+    }
+  } catch (error) {
+    await database.close().catch(() => undefined);
+    throw error;
+  }
+
+  return database;
 }
 
 function createMutationSyncScheduler(

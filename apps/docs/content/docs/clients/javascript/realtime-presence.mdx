@@ -10,21 +10,21 @@ missed commits, reconnects, auth refresh, and recovery after event overflow.
 
 ## Start realtime
 
-Managed browser clients can start realtime during open:
+Realtime is on by default for remote databases — opening one registers
+subscriptions, runs the initial sync, and connects the websocket:
 
 ```ts
-const syncular = await createSyncularClient<AppDb>({
+const syncular = await createSyncularDatabase<AppDb>({
   config,
   subscriptions,
-  realtime: true,
 });
 ```
 
-Or start it explicitly after initial setup:
+To defer startup, open with `lifecycle: { autoStart: false }` and start
+explicitly later:
 
 ```ts
 await syncular.setSubscriptions(subscriptions);
-await syncular.sync();
 await syncular.start();
 ```
 

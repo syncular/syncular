@@ -52,7 +52,7 @@ export function App() {
         try {
           const handle = await openDemoClient(name);
           if (disposed) {
-            await handle.client.destroy();
+            await handle.client.close();
             return;
           }
           opened.push(handle);
@@ -67,7 +67,7 @@ export function App() {
     return () => {
       disposed = true;
       for (const handle of opened) {
-        void handle.client.destroy().catch(() => undefined);
+        void handle.client.close().catch(() => undefined);
       }
     };
   }, []);

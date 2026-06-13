@@ -92,7 +92,7 @@ describe('@syncular/client-tauri', () => {
       });
       expect(presenceScopes).toEqual(['document:one']);
     } finally {
-      await client.destroy();
+      await client.close();
       await resource.dispose();
     }
   });

@@ -559,7 +559,7 @@ export type SyncularAppSubscriptionsOption =
   | readonly SyncularSubscriptionSpec[]
   | ((args: SyncularSubscriptionArgs) => readonly SyncularSubscriptionSpec[]);
 
-export interface CreateSyncularAppDatabaseOptions extends CreateSyncularDatabaseOptions {
+export interface CreateSyncularAppDatabaseOptions extends Omit<CreateSyncularDatabaseOptions, 'subscriptions'> {
   subscriptions?: SyncularAppSubscriptionsOption;
   bootstrapPhases?: Record<string, number>;
   schemaInstallMode?: 'derived' | 'full' | 'base' | 'none';
@@ -615,8 +615,12 @@ export async function finalizeSyncularAppDatabaseSchema(database: Pick<SyncularA
 export async function createSyncularAppDatabase(
   options: CreateSyncularAppDatabaseOptions
 ): Promise<SyncularAppDatabase> {
+  const { subscriptions: _appSubscriptions, ...databaseOptions } = options;
   const database = await createSyncularDatabase<SyncularAppDb>({
-    ...options,
+    ...databaseOptions,
+    // The app factory installs the generated schema first; the lifecycle
+    // starts below once subscriptions and command history are wired.
+    lifecycle: { ...options.lifecycle, autoStart: false },
     config: {
       ...options.config,
       schemaVersion: options.config.schemaVersion ?? syncularGeneratedSchemaVersion,
@@ -650,6 +654,9 @@ export async function createSyncularAppDatabase(
     appDatabase.commandHistory = commandHistory.history;
     appDatabase.mutations = commandHistory.wrapMutations(database.mutations, 'mutations') as SyncularAppMutations;
     appDatabase.leasedMutations = commandHistory.wrapMutations(database.leasedMutations, 'leasedMutations') as SyncularAppMutations;
+    if (options.lifecycle?.autoStart ?? (options.config.mode ?? 'remote') === 'remote') {
+      await database.start();
+    }
     return appDatabase;
   } catch (err) {
     await database.close();

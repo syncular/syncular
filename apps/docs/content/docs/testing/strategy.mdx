@@ -145,7 +145,6 @@ Use your generated app client against the same fixture. The pattern below
 mirrors the framework's own conformance tests:
 
 ```ts
-import { getSyncularRuntimeArtifact } from '@syncular/client';
 import {
   createSyncularAppDatabase,
   taskSubscription,
@@ -161,7 +160,7 @@ async function openClient(baseUrl: string, actorId: string, clientId: string) {
       clearOnInit: true,
     },
     getHeaders: () => ({ 'x-actor-id': actorId }),
-    runtimeArtifacts: [getSyncularRuntimeArtifact('core')],
+    runtime: 'core',
     subscriptions: [taskSubscription({ actorId })],
   });
 }

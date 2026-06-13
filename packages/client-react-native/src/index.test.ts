@@ -82,7 +82,7 @@ describe('@syncular/client-react-native', () => {
         cursor: 2,
       });
     } finally {
-      await client.destroy();
+      await client.close();
       await resource.dispose();
     }
   });

@@ -62,3 +62,15 @@ Fixes and internals:
   factories split by domain.
 - Docs fully restructured and source-verified; client bundle-size baseline
   enforced in CI; Bun pinned to 1.3.13.
+
+BREAKING — single-step client init; the database owns the sync lifecycle:
+`createSyncularClient` / `SyncularClient` / `SyncularManagedClient` are
+removed. `createSyncularDatabase` (and the generated
+`createSyncularAppDatabase`) now registers `subscriptions`, runs the initial
+sync, and starts realtime while opening (disable with
+`lifecycle: { autoStart: false }`; realtime defaults to on for remote
+databases), and exposes `start`/`stop`/`sync`/`on`/`getStatus`/presence/
+conflicts directly on the database. `destroy()` is renamed to `close()`
+everywhere, `@syncular/react`'s `SyncProvider` takes
+`CreateSyncularDatabaseOptions` and `closeOnUnmount`, and `runtime` accepts a
+packaged artifact variant name (defaults to `'full'`).
