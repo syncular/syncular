@@ -87,19 +87,20 @@ or build the dev artifact automatically. Also document the one-command dev
 setup (DEVELOPMENT.md), including toolchain prerequisites discovered missing
 locally: `wasm-pack`, `binaryen` (wasm-opt), `k6`, wasm32 rustup target.
 
-WASM test failures under latest Bun — ROOT-CAUSED (2026-06-11): a **Bun
-1.3.14 runtime regression** (1.3.13 fine, 1.4.0 canary still broken), not a
-syncular bug. Worker→main postMessage replies stall ~10s when posted after
-WASM+fetch activity, released only by the next main→worker message; later
-worker messages overtake the stuck one (non-FIFO), so this isn't fixable from
-JS — verified by trying string posts, MessageChannel ports, forced loop
-ticks, keep-alive pokes, and deferred sends (all ineffective; experiments
-reverted). Resolution: pins bumped 1.3.9 → **1.3.13** (newest working) in
-`packageManager` + CI; full WASM gates green under 1.3.13 (62+10 tests,
-14s instead of timeout cascades). Upstream issue draft in
-`.context/bun-1.3.14-worker-delivery-issue-draft.md` — file it, and re-test
-on the next Bun release. Local note: volta can't pin bun per-project; run
-wasm gates with Bun ≤1.3.13 until upstream fixes.
+WASM test failures under newer Bun — ROOT-CAUSED (2026-06-11, corrected
+2026-06-14): a **Bun worker-delivery regression**, not a syncular bug.
+Worker→main postMessage replies stall ~10s when posted after WASM+fetch
+activity, released only by the next main→worker message; later worker
+messages overtake the stuck one (non-FIFO), so this isn't fixable from JS
+(string posts, MessageChannel ports, forced loop ticks, keep-alive pokes,
+deferred sends all ineffective). **Affected: 1.3.14 AND 1.3.13** — 1.3.13
+looked fine on a partial macOS auth-suite run but mass-fails the full suite on
+Linux CI (72 worker-test failures). The last known-good version is **1.3.9**
+(the original pin; full client suite 232/0). Resolution: pin stays/returns to
+**1.3.9** in `packageManager` + CI. A bump to 1.3.13 was tried and reverted —
+do not bump again without running the FULL suite on Linux. Upstream issue
+draft in `.context/bun-1.3.14-worker-delivery-issue-draft.md` — file it and
+re-test each new Bun release; only bump when the full suite is green on Linux.
 
 ## P1 — drastic code reduction (~20–25% of TS)
 
