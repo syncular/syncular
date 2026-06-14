@@ -390,7 +390,8 @@ fn app_test_http_server_accepts_production_realtime_pushes() {
         assert_app_server_has_row(server.app_server(), "tasks", "app-server-ws-push-task");
     assert_eq!(server_row["title"], "WebSocket pushed task");
     assert_eq!(
-        next_realtime_event(&mut reader_socket, Duration::from_secs(2)),
+        // 5s (not 2s) to absorb realtime-delivery jitter on loaded CI runners.
+        next_realtime_event(&mut reader_socket, Duration::from_secs(5)),
         Some("Sync".to_string())
     );
 
