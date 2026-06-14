@@ -61,7 +61,7 @@
     "version": "changeset version && bun scripts/sync-versions.ts",
     "check": "bun tsgo && bun lint && bun run knip && bun run bundle:check && bun run audit",
     "check:fix": "bun tsgo && bun lint:fix && bun run knip && bun run bundle:check && bun run audit",
-    "audit": "bun audit",
+    "audit": "bun audit --ignore GHSA-w7jw-789q-3m8p --ignore GHSA-gv7w-rqvm-qjhr --ignore GHSA-g7r4-m6w7-qqqr",
     "lint": "biome check .",
     "lint:fix": "biome check --fix --unsafe .",
     "knip": "knip && knip --production --no-exit-code",

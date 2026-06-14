@@ -127,3 +127,18 @@ Never-published packages (`@syncular/react`,
 `@syncular/client-tauri`, `create-syncular-app`) need no special handling —
 the release filter already includes them and `syncular-publish` only skips
 versions that are already on the registry.
+
+## CI audit exceptions
+
+`bun run audit` (part of `bun check`) ignores three advisories that come from
+dev/build tooling and a peer dependency — none ship in the published
+`@syncular/*` libraries:
+
+- `GHSA-w7jw-789q-3m8p` (shell-quote, critical) — transitive via
+  `@syncular/client-react-native` → `react-native` (peer/dev only).
+- `GHSA-gv7w-rqvm-qjhr` (esbuild, high) and `GHSA-g7r4-m6w7-qqqr` (esbuild, low)
+  — transitive via app/build tooling (astro, vite, wrangler, fumadocs-mdx).
+
+Re-evaluate when the upstream chains (`react-native`, `vite`/`astro`/`wrangler`)
+ship patched releases, and drop the corresponding `--ignore` from the `audit`
+script.
