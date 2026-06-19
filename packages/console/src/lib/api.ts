@@ -1,8 +1,8 @@
 /**
- * Console API client - uses generated types from @syncular/transport-http
+ * Console API client - uses generated types from @syncular/core/http
  */
 
-import { createApiClient, type SyncClient } from '@syncular/transport-http';
+import { createApiClient, type SyncClient } from '@syncular/core/http';
 
 export interface ConnectionConfig {
   serverUrl: string;

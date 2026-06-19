@@ -112,8 +112,7 @@ Electric streams reads. Writes are separate (via your API).
 ### Syncular
 
 ```typescript
-	import { createSyncularReact } from '@syncular/react';
-	import { Button } from '@syncular/ui/primitives';
+	import { createSyncularReact } from '@syncular/client/react';
 	import type { AppDb } from './db-types';
 
 	const { useSyncQuery, useMutations } = createSyncularReact<AppDb>();
@@ -133,9 +132,9 @@ Electric streams reads. Writes are separate (via your API).
       {tasks?.map(task => (
         <li key={task.id}>
           {task.title}
-          <Button onClick={() => m.tasks.update(task.id, { completed: 1 })}>
+          <button onClick={() => m.tasks.update(task.id, { completed: 1 })}>
             Complete
-          </Button>
+          </button>
         </li>
       ))}
     </ul>

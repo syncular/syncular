@@ -1,3 +1,13 @@
+import { Link, Outlet, useRouterState } from '@tanstack/react-router';
+import { ArrowLeft, Settings } from 'lucide-react';
+import type { ReactNode } from 'react';
+import { useMemo } from 'react';
+import { useConnection } from './hooks/ConnectionContext';
+import { useStats } from './hooks/useConsoleApi';
+import { useInstanceContext } from './hooks/useInstanceContext';
+import { usePartitionContext } from './hooks/usePartitionContext';
+import { usePreferences } from './hooks/usePreferences';
+import { SYNCULAR_CONSOLE_ROOT_CLASS } from './theme-scope';
 import {
   Badge,
   BottomBar,
@@ -9,17 +19,7 @@ import {
   navActionLinkClassName,
   SyncularBrand,
   TopNavigation,
-} from '@syncular/ui';
-import { Link, Outlet, useRouterState } from '@tanstack/react-router';
-import { ArrowLeft, Settings } from 'lucide-react';
-import type { ReactNode } from 'react';
-import { useMemo } from 'react';
-import { useConnection } from './hooks/ConnectionContext';
-import { useStats } from './hooks/useConsoleApi';
-import { useInstanceContext } from './hooks/useInstanceContext';
-import { usePartitionContext } from './hooks/usePartitionContext';
-import { usePreferences } from './hooks/usePreferences';
-import { SYNCULAR_CONSOLE_ROOT_CLASS } from './theme-scope';
+} from './ui';
 
 interface ConsoleLayoutProps {
   basePath?: string;

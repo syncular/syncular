@@ -238,13 +238,7 @@ async function runJsSmoke(
   const appDir = join(workDir, 'js-browser-app');
   await mkdir(appDir, { recursive: true });
   await linkNodeModule(appDir, '@syncular/client', 'packages/client');
-  await linkNodeModule(
-    appDir,
-    '@syncular/client-javascript-bindings',
-    'rust/bindings/javascript'
-  );
   await linkNodeModule(appDir, '@syncular/core', 'packages/core');
-  await linkNodeModule(appDir, '@syncular/react', 'packages/react');
   await linkNodeModule(appDir, '@syncular/typegen', 'packages/typegen');
   await linkNodeModule(appDir, 'fflate', 'node_modules/fflate');
   await linkNodeModule(appDir, 'kysely', 'node_modules/kysely');
@@ -264,7 +258,6 @@ async function runJsSmoke(
         type: 'module',
         dependencies: {
           '@syncular/client': 'workspace:*',
-          '@syncular/react': 'workspace:*',
           '@syncular/typegen': 'workspace:*',
         },
       },
@@ -300,7 +293,7 @@ export const app = defineSyncularClient({
   await writeFile(
     join(appDir, 'runtime-smoke.ts'),
     `import { getSyncularRuntimeArtifact } from '@syncular/client';
-import { createSyncularReact } from '@syncular/react';
+import { createSyncularReact } from '@syncular/client/react';
 import {
   createSyncularAppDatabase,
   taskSubscription,
@@ -311,7 +304,7 @@ if (
   typeof react.SyncProvider !== 'function' ||
   typeof react.useSyncQuery !== 'function'
 ) {
-  throw new Error('@syncular/react did not expose the expected helpers');
+  throw new Error('@syncular/client/react did not expose the expected helpers');
 }
 
 const database = await createSyncularAppDatabase({

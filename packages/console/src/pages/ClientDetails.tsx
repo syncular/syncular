@@ -1,16 +1,3 @@
-import {
-  Badge,
-  Button,
-  EmptyState,
-  PanelShell,
-  Spinner,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from '@syncular/ui';
 import { Link } from '@tanstack/react-router';
 import { Activity, Database, RefreshCw } from 'lucide-react';
 import { useMemo } from 'react';
@@ -27,6 +14,19 @@ import type {
   ConsoleClientDiagnosticRecord,
   ConsoleTimelineItem,
 } from '../lib/types';
+import {
+  Badge,
+  Button,
+  EmptyState,
+  PanelShell,
+  Spinner,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '../ui';
 
 interface ClientDetailsProps {
   clientId: string;

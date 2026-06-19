@@ -43,11 +43,7 @@
   "dependencies": {
     "@syncular/client": "workspace:*",
     "@syncular/core": "workspace:*",
-    "@syncular/dialects": "workspace:*",
     "@syncular/server": "workspace:*",
-    "@syncular/server-dialect-postgres": "workspace:*",
-    "@syncular/server-dialect-sqlite": "workspace:*",
-    "@syncular/server-hono": "workspace:*",
     "hono": "^4.12.15"
   },
   "devDependencies": {

@@ -2,7 +2,7 @@
 
 Framework-agnostic server sync engine for Syncular: commit log, push/pull, scopes/subscriptions, snapshots, blobs, pruning/compaction, and proxy support.
 
-Typically used with `@syncular/server-hono` for HTTP routes, WebSocket realtime, and the admin console API.
+Typically used with `@syncular/server/hono` for HTTP routes, WebSocket realtime, and the admin console API.
 
 ## Install
 

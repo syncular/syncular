@@ -62,8 +62,8 @@ Rust-first client clearly.
   legacy React client implementation, old client plugin packages, old JS
   client docs, demo app, and JS-client integration/runtime/perf suites were
   deleted.
-- `@syncular/react` is the remaining first-party React entrypoint, and
-  `@syncular/client-crdt-adapters` replaces the old client-side CRDT adapter
+- `@syncular/client/react` is the remaining first-party React entrypoint, and
+  `@syncular/client/crdt-yjs` replaces the old client-side CRDT adapter
   package name.
 - The Rust todo example is now a Bun workspace package so generated TypeScript
   conformance imports resolve their declared dependencies directly.

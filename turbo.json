@@ -18,16 +18,15 @@
       "dependsOn": ["^build"],
       "outputs": ["dist/**"]
     },
-    "@syncular/client-javascript-bindings#build": {
+    "@syncular/client#build": {
       "dependsOn": ["^build"],
       "inputs": [
         "$TURBO_DEFAULT$",
-        "../../crates/**",
-        "../../Cargo.toml",
-        "../../Cargo.lock",
-        "../../../packages/client/package.json"
+        "../../rust/crates/**",
+        "../../rust/Cargo.toml",
+        "../../rust/Cargo.lock"
       ],
-      "outputs": ["dist/**", "src/generated-wasm-bindings.d.ts"]
+      "outputs": ["dist/**", "src/wasm-bindings/generated-wasm-bindings.d.ts"]
     },
     "release": {
       "dependsOn": ["build"],

@@ -10,7 +10,7 @@
   `@syncular/dialect-better-sqlite3`, `@syncular/dialect-bun-sqlite`,
   `@syncular/dialect-d1`, `@syncular/dialect-libsql`, `@syncular/dialect-neon`,
   `@syncular/dialect-pglite`, and `@syncular/dialect-sqlite3` are replaced by
-  subpath exports, e.g. `import { createNeonDialect } from '@syncular/dialects/neon'`.
+  subpath exports, e.g. `import { createNeonDialect } from '@syncular/server/neon'`.
   Exported symbol names are unchanged; drivers stay optional peerDependencies.
   The old packages will be deprecated on npm.
 
@@ -22,11 +22,11 @@
 
   - `create-syncular-app` scaffolding CLI (`bun create syncular-app`) that
     generates a minimal full-stack app.
-  - `apps/demo` rebuilt as a self-contained `@syncular/react` reference app
+  - `apps/demo` rebuilt as a self-contained `@syncular/client/react` reference app
     (own schema + codegen, two-pane live sync).
-  - First publish for `@syncular/react`, `@syncular/client-javascript-bindings`,
-    `@syncular/dialects`, `@syncular/client-crdt-adapters`,
-    `@syncular/client-react-native`, `@syncular/client-tauri`, and
+  - First publish for `@syncular/client/react`, `@syncular/client-javascript-bindings`,
+    `@syncular/dialects`, `@syncular/client/crdt-yjs`,
+    `@syncular/client/react-native`, `@syncular/client/tauri`, and
     `create-syncular-app`.
 
   Fixes and internals:
@@ -47,7 +47,7 @@
   `lifecycle: { autoStart: false }`; realtime defaults to on for remote
   databases), and exposes `start`/`stop`/`sync`/`on`/`getStatus`/presence/
   conflicts directly on the database. `destroy()` is renamed to `close()`
-  everywhere, `@syncular/react`'s `SyncProvider` takes
+  everywhere, `@syncular/client/react`'s `SyncProvider` takes
   `CreateSyncularDatabaseOptions` and `closeOnUnmount`, and `runtime` accepts a
   packaged artifact variant name (defaults to `'full'`).
 
@@ -57,7 +57,7 @@
   - @syncular/client@0.1.0
   - @syncular/core@0.1.0
   - @syncular/dialects@0.1.0
-  - @syncular/server-dialect-postgres@0.1.0
-  - @syncular/server-dialect-sqlite@0.1.0
-  - @syncular/server-hono@0.1.0
+  - @syncular/server/postgres@0.1.0
+  - @syncular/server/sqlite@0.1.0
+  - @syncular/server/hono@0.1.0
   - @syncular/server@0.1.0

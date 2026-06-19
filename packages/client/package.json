@@ -1,7 +1,7 @@
 {
   "name": "@syncular/client",
   "version": "0.1.0",
-  "description": "Syncular Rust-owned SQLite browser client",
+  "description": "Syncular Rust-owned SQLite browser client with optional React, host bridge, and CRDT adapter subpaths",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
@@ -44,31 +44,96 @@
         "types": "./dist/worker-entry.d.ts",
         "default": "./dist/worker-entry.js"
       }
+    },
+    "./sentry": {
+      "bun": "./src/sentry.ts",
+      "browser": "./src/sentry.ts",
+      "import": {
+        "types": "./dist/sentry.d.ts",
+        "default": "./dist/sentry.js"
+      }
+    },
+    "./react": {
+      "bun": "./src/react/index.ts",
+      "browser": "./src/react/index.ts",
+      "import": {
+        "types": "./dist/react/index.d.ts",
+        "default": "./dist/react/index.js"
+      }
+    },
+    "./tauri": {
+      "bun": "./src/tauri/index.ts",
+      "import": {
+        "types": "./dist/tauri/index.d.ts",
+        "default": "./dist/tauri/index.js"
+      }
+    },
+    "./react-native": {
+      "bun": "./src/react-native/index.ts",
+      "import": {
+        "types": "./dist/react-native/index.d.ts",
+        "default": "./dist/react-native/index.js"
+      }
+    },
+    "./crdt-yjs": {
+      "bun": "./src/crdt-yjs/index.ts",
+      "browser": "./src/crdt-yjs/index.ts",
+      "import": {
+        "types": "./dist/crdt-yjs/index.d.ts",
+        "default": "./dist/crdt-yjs/index.js"
+      }
     }
   },
   "scripts": {
     "generate:bridge": "bun scripts/generate-bridge.ts",
-    "test": "bun test src/*.test.ts",
-    "test:wasm:auth": "bun --cwd ../../rust/bindings/javascript build:wasm:dev && bun test src/__tests__/auth-hono.wasm.test.ts",
-    "test:wasm:hono": "bun --cwd ../../rust/bindings/javascript build:wasm:dev && bun test src/__tests__/*-hono.wasm.test.ts",
-    "test:wasm:variants": "bun --cwd ../../rust/bindings/javascript build:wasm:core && bun test src/__tests__/variant-core.wasm.test.ts",
+    "generate:wasm-types": "bun scripts/generate-wasm-bindings.ts",
+    "test": "bun test src/*.test.ts src/react/*.test.ts src/tauri/*.test.ts src/react-native/*.test.ts src/crdt-yjs/*.test.ts",
+    "test:wasm:auth": "bun run build:wasm:dev && bun test src/__tests__/auth-hono.wasm.test.ts",
+    "test:wasm:hono": "bun run build:wasm:dev && bun test src/__tests__/*-hono.wasm.test.ts",
+    "test:wasm:variants": "bun run build:wasm:core && bun test src/__tests__/variant-core.wasm.test.ts",
     "tsgo": "tsgo --noEmit",
-    "build": "tsgo",
+    "build:wasm": "bun scripts/build-syncular-wasm.ts --variant full && bun run generate:wasm-types && bun scripts/size-syncular-wasm.ts --check --report ../../.context/wasm-size/syncular-wasm-size.txt",
+    "build:wasm:perf": "bun scripts/build-syncular-wasm.ts --out-dir dist/wasm-perf --variant full-perf --artifact-name full-perf --release-opt-level 3",
+    "build:wasm:core": "bun scripts/build-syncular-wasm.ts --out-dir dist/wasm-core --features web-owned-sqlite-core --variant core",
+    "build:wasm:variants": "bun run build:wasm && bun run build:wasm:perf && bun run build:wasm:core && bun run catalog:wasm && bun run size:wasm:core && bun run size:wasm:perf",
+    "build:wasm:dev": "bun scripts/build-syncular-wasm.ts --dev && bun run generate:wasm-types",
+    "catalog:wasm": "bun scripts/write-syncular-wasm-catalog.ts --artifact dist/wasm-core --artifact dist/wasm --artifact dist/wasm-perf",
+    "size:wasm": "bun scripts/size-syncular-wasm.ts",
+    "size:wasm:check": "bun scripts/size-syncular-wasm.ts --check --attribution --report ../../.context/wasm-size/syncular-wasm-size.txt",
+    "size:wasm:core": "bun scripts/size-syncular-wasm.ts --wasm dist/wasm-core/syncular_bg.wasm --report ../../.context/wasm-size/syncular-wasm-core-size.txt",
+    "size:wasm:perf": "bun scripts/size-syncular-wasm.ts --wasm dist/wasm-perf/syncular_bg.wasm --report ../../.context/wasm-size/syncular-wasm-perf-size.txt",
+    "build": "bun run build:wasm:variants && tsgo",
     "release": "syncular-publish"
   },
   "dependencies": {
-    "@syncular/client-javascript-bindings": "workspace:*",
     "@syncular/core": "workspace:*",
     "kysely": "^0.28.0",
     "kysely-generic-sqlite": "^1.2.1"
   },
   "devDependencies": {
+    "@happy-dom/global-registrator": "^20.8.9",
+    "@sentry/react": "^10.47.0",
     "@syncular/config": "workspace:*",
-    "@syncular/dialects": "workspace:*",
-    "hono": "^4.12.15"
+    "@testing-library/react": "^16.3.2",
+    "@types/react": "^19.2.14",
+    "hono": "^4.12.15",
+    "react": "*",
+    "yjs": "^13.6.30"
   },
   "files": [
-    "dist",
+    "dist/*.d.ts",
+    "dist/*.d.ts.map",
+    "dist/*.js",
+    "dist/*.js.map",
+    "dist/crdt-yjs",
+    "dist/react",
+    "dist/react-native",
+    "dist/syncular-runtime-artifacts.json",
+    "dist/tauri",
+    "dist/wasm",
+    "dist/wasm-bindings",
+    "dist/wasm-core",
+    "dist/wasm-perf",
     "src",
     "!src/**/*.test.ts",
     "!src/**/*.test.tsx",
@@ -77,5 +142,25 @@
     "!dist/**/__tests__/**",
     "!test/**",
     "!tests/**"
-  ]
+  ],
+  "peerDependencies": {
+    "@sentry/react": "^10.47.0",
+    "react": "^18.0.0 || ^19.0.0",
+    "react-native": "*",
+    "yjs": "^13.6.30"
+  },
+  "peerDependenciesMeta": {
+    "@sentry/react": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    },
+    "react-native": {
+      "optional": true
+    },
+    "yjs": {
+      "optional": true
+    }
+  }
 }

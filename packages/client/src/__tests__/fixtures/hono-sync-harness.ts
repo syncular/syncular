@@ -1,8 +1,6 @@
 import type { SyncAuthLeaseCapabilities } from '@syncular/core';
 import { type BlobRef, createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import type { Kysely } from 'kysely';
-import { createYjsServerPushPlugin } from '../../../../../plugins/yjs/server/src';
 import {
   createSyncularAppDatabase,
   type SyncularAppDatabase,
@@ -26,10 +24,14 @@ import {
   type SyncBlobDb,
   type SyncCoreDb,
 } from '../../../../server/src';
+import { createBunSqliteDialect } from '../../../../server/src/bun-sqlite';
+import { createYjsServerPushPlugin } from '../../../../server/src/crdt-yjs';
+import {
+  createBlobRoutes,
+  createSyncRoutes,
+} from '../../../../server/src/hono';
 import { createBunSqliteSnapshotArtifactEncoder } from '../../../../server/src/snapshot-artifacts/sqlite-bun';
-import { createSqliteServerDialect } from '../../../../server-dialect-sqlite/src';
-import { createBlobRoutes } from '../../../../server-hono/src/blobs';
-import { createSyncRoutes } from '../../../../server-hono/src/routes';
+import { createSqliteServerDialect } from '../../../../server/src/sqlite';
 import {
   closeNodeServer,
   createNodeHonoServer,

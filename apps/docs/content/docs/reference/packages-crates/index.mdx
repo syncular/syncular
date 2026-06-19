@@ -16,30 +16,35 @@ and [Rust](/clients/rust).
 | `create-syncular-app` | Project scaffolder: `bunx create-syncular-app my-app` (see [Quick Start](/start/quick-start)) |
 | `syncular` | CLI-only package: `npx syncular generate` and `npx syncular codegen install`. It re-exports nothing — import from the scoped `@syncular/*` packages |
 
-## Client packages
+## Client package surfaces
 
-| Package | Use |
+| Package / subpath | Use |
 |---|---|
 | `@syncular/client` | Rust-owned browser worker runtime, Kysely local DB, generated TypeScript client integration, blobs, encryption, CRDT fields, and diagnostics |
-| `@syncular/react` | React provider, query hooks, mutation hooks, status hooks, presence, and conflict helpers |
-| `@syncular/client-react-native` | React Native/Expo bridge package for JavaScript UI code talking to the native runtime |
-| `@syncular/client-tauri` | Tauri bridge package for TypeScript UI code talking to the native runtime |
-| `@syncular/client-crdt-adapters` | Optional Yjs/editor adapters above Syncular CRDT field APIs |
+| `@syncular/client/react` | React provider, query hooks, mutation hooks, status hooks, presence, and conflict helpers |
+| `@syncular/client/react-native` | React Native/Expo bridge package for JavaScript UI code talking to the native runtime |
+| `@syncular/client/tauri` | Tauri bridge package for TypeScript UI code talking to the native runtime |
+| `@syncular/client/crdt-yjs` | Optional Yjs/editor adapters above Syncular CRDT field APIs |
+| `@syncular/client/sentry` | Browser Sentry telemetry adapter; install `@sentry/react` in apps that import it |
 | `@syncular/core` | Shared protocol types, error definitions, scopes, sync-pack codecs — dependency of everything else |
-| `@syncular/dialects` | Kysely runtime dialects via subpaths: `@syncular/dialects/better-sqlite3`, `/bun-sqlite`, `/d1`, `/libsql`, `/neon`, `/pglite`, `/sqlite3` (drivers are optional peer dependencies) |
-| `@syncular/transport-http` | HTTP sync transport used by clients and the relay |
+| `@syncular/core/http` | HTTP sync transport used by clients and the relay |
+| `@syncular/core/sentry` | SDK-neutral Sentry telemetry adapter shared by the client and server Sentry bridges |
 
-## Server packages
+## Server package surfaces
 
-| Package | Use |
+| Package / subpath | Use |
 |---|---|
 | `@syncular/server` | Core sync engine, `createServerHandler`, push/pull, pruning, compaction, snapshots |
-| `@syncular/server-hono` | Hono HTTP/WebSocket adapter (`createSyncServer`), OpenAPI routes, console routes |
-| `@syncular/server-dialect-postgres` | Postgres/Neon sync SQL dialect |
-| `@syncular/server-dialect-sqlite` | SQLite sync SQL dialect |
-| `@syncular/server-cloudflare` | Cloudflare Workers/Durable Objects/R2 helpers |
-| `@syncular/server-service-worker` | Service-worker server/runtime + wake transport helpers |
-| `@syncular/relay` | Edge relay for distributed sync topologies |
+| `@syncular/server/hono` | Hono HTTP/WebSocket adapter (`createSyncServer`), OpenAPI routes, console routes |
+| `@syncular/server/postgres` | Postgres/Neon sync SQL dialect |
+| `@syncular/server/sqlite` | SQLite sync SQL dialect |
+| `@syncular/server/better-sqlite3`, `/bun-sqlite`, `/d1`, `/libsql`, `/neon`, `/pglite`, `/sqlite3` | Kysely runtime dialect helpers. Drivers are optional peer dependencies |
+| `@syncular/server/cloudflare` | Cloudflare Workers/Durable Objects/R2 helpers |
+| `@syncular/server/cloudflare/sentry` | Cloudflare Sentry telemetry and worker wrapper helpers; install `@sentry/cloudflare` in apps that import it |
+| `@syncular/server/service-worker` | Service-worker server/runtime + wake transport helpers |
+| `@syncular/server/relay` | Edge relay for distributed sync topologies |
+| `@syncular/server/filesystem`, `/s3` | External snapshot/blob storage adapters |
+| `@syncular/server/crdt-yjs` | Optional Yjs CRDT merge helpers for server-side CRDT fields |
 
 ## Tooling and operations packages
 
@@ -49,7 +54,6 @@ and [Rust](/clients/rust).
 | `@syncular/migrations` | Database migration utilities |
 | `@syncular/testkit` | TypeScript/server/browser testing fixtures and helpers |
 | `@syncular/console` | Embeddable operator console UI (static assets + components) |
-| `@syncular/observability-sentry` | Sentry adapters for Syncular telemetry |
 
 ## Rust crates
 

@@ -13,8 +13,9 @@
     "tsgo": "tsgo --noEmit"
   },
   "dependencies": {
+    "@sentry/react": "^10.47.0",
+    "@syncular/client": "workspace:*",
     "@syncular/console": "workspace:*",
-    "@syncular/observability-sentry": "workspace:*",
     "react": "^19",
     "react-dom": "^19"
   },

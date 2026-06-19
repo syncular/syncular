@@ -17,10 +17,10 @@ JavaScript.
 ## Scope
 
 - Canonical browser TypeScript host API in `@syncular/client`.
-- React hooks and provider surface in `@syncular/react`.
+- React hooks and provider surface in `@syncular/client/react`.
 - Platform bridge packages:
-  - `@syncular/client-tauri`
-  - `@syncular/client-react-native`
+  - `@syncular/client/tauri`
+  - `@syncular/client/react-native`
 - Shared bridge contract and testkit fixtures in `@syncular/testkit`.
 - Generated TypeScript app client output and docs where host APIs are surfaced.
 - Interface-impact tracking for feature work packages that change app-facing

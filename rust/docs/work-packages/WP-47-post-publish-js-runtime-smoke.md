@@ -11,7 +11,7 @@ only install packages and inspect generated files.
 ## Scope
 
 - Keep installing the published `syncular`, `@syncular/client`,
-  `@syncular/react`, `@syncular/typegen`, and `@syncular/testkit` packages from
+  `@syncular/client/react`, `@syncular/typegen`, and `@syncular/testkit` packages from
   the configured npm registry.
 - Generate the fresh app with `syncular generate` and `syncular generate
   --check`.
@@ -55,7 +55,7 @@ only install packages and inspect generated files.
 - `bunx tsgo --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --types bun --skipLibCheck scripts/post-publish-install-smokes.ts`
 - `bun scripts/post-publish-install-smokes.ts --help`
 - `bun scripts/post-publish-install-smokes.ts --version 0.0.6-248 --crate-version 0.1.0 --skip-rust --work-dir .context/post-publish-js-runtime-smoke`
-  blocked during npm install because `@syncular/react@0.0.6-248` is not
+  blocked during npm install because `@syncular/client/react@0.0.6-248` is not
   published on npm. The current registry versions are `syncular`,
   `@syncular/client`, `@syncular/typegen`, and `@syncular/testkit`
   `0.0.6-248`; `syncular-codegen` is `0.1.0` on crates.io.
@@ -68,4 +68,4 @@ Accepted. The post-publish JavaScript smoke now includes generated browser
 runtime execution: open the packaged Rust-owned SQLite core runtime, insert a
 task through generated mutations, query it through Kysely, and keep React helper
 imports in the install proof. The real public-registry run is blocked before
-that step until the next coordinated npm publish includes `@syncular/react`.
+that step until the next coordinated npm publish includes `@syncular/client/react`.

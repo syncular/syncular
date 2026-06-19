@@ -1,3 +1,7 @@
+import { Link } from '@tanstack/react-router';
+import { useState } from 'react';
+import { usePartitionContext, useRowInvestigation } from '../hooks';
+import type { ConsoleRowInvestigationResponse } from '../lib/types';
 import {
   Alert,
   AlertDescription,
@@ -16,11 +20,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@syncular/ui';
-import { Link } from '@tanstack/react-router';
-import { useState } from 'react';
-import { usePartitionContext, useRowInvestigation } from '../hooks';
-import type { ConsoleRowInvestigationResponse } from '../lib/types';
+} from '../ui';
 
 interface RowInvestigationProps {
   table: string;

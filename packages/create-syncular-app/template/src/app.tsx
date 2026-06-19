@@ -1,5 +1,5 @@
 import type { SyncularClientStatus } from '@syncular/client';
-import { createSyncularReact } from '@syncular/react';
+import { createSyncularReact } from '@syncular/client/react';
 import type { FormEvent } from 'react';
 import { useEffect, useRef, useState } from 'react';
 import {

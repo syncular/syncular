@@ -21,11 +21,11 @@ Kysely. Browser/React apps still use the Rust-owned SQLite runtime through
 
 ```bash
 # Server
-npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres
+npm install @syncular/server
 npm install kysely pg hono
 
 # Client and React hooks
-npm install @syncular/client @syncular/react kysely
+npm install @syncular/client kysely react react-dom
 
 # CLI plus app contract and generated TypeScript client (dev-time only)
 npm install -D syncular @syncular/typegen
@@ -40,11 +40,11 @@ auto-install it when Cargo is available; to prepare it explicitly, run:
 npx syncular codegen install
 ```
 
-For React Native/Expo, Tauri, or Electron hosts, add the matching host bridge:
+For React Native/Expo, Tauri, or Electron hosts, import the matching host
+bridge from `@syncular/client` subpaths:
 
 ```bash
-npm install @syncular/client-react-native
-npm install @syncular/client-tauri
+npm install @syncular/client
 ```
 
 Electron apps normally use `@syncular/client` plus an app-owned preload/main
@@ -81,10 +81,10 @@ npm install -D @syncular/typegen
 | Package | Description |
 |---------|-------------|
 | `@syncular/server` | Core sync engine (push, pull, pruning, compaction) |
-| `@syncular/server-hono` | Hono adapter with HTTP routes, WebSocket, and console |
-| `@syncular/server-dialect-postgres` | Postgres and Neon-backed Postgres dialect for sync SQL (`createPostgresServerDialect()` / `createNeonServerDialect()`) |
-| `@syncular/server-dialect-sqlite` | SQLite dialect for sync SQL |
-| `@syncular/server-cloudflare` | Cloudflare Workers + Durable Objects adapter |
+| `@syncular/server/hono` | Hono adapter with HTTP routes, WebSocket, and console |
+| `@syncular/server/postgres` | Postgres and Neon-backed Postgres dialect for sync SQL (`createPostgresServerDialect()` / `createNeonServerDialect()`) |
+| `@syncular/server/sqlite` | SQLite dialect for sync SQL |
+| `@syncular/server/cloudflare` | Cloudflare Workers + Durable Objects adapter |
 
 ### Server database drivers
 
@@ -96,10 +96,10 @@ the client SQLite runtime.
 npm install kysely pg
 
 # SQLite server dialect for development/testing servers
-npm install @syncular/dialects better-sqlite3
+npm install @syncular/server better-sqlite3
 
 # Neon-backed server runtimes
-npm install @syncular/dialects kysely-neon @neondatabase/serverless
+npm install @syncular/server kysely-neon @neondatabase/serverless
 ```
 
 ## Client packages
@@ -107,8 +107,8 @@ npm install @syncular/dialects kysely-neon @neondatabase/serverless
 | Package | Description |
 |---------|-------------|
 | `@syncular/client` | Rust-owned browser client package with TypeScript bindings, worker runtime, Kysely local DB, blob APIs, encryption configuration, and CRDT integration |
-| `@syncular/react` | React hooks and provider for the Rust-owned client |
-| `@syncular/client-crdt-adapters` | Optional Yjs/editor adapters above the Rust client CRDT field APIs |
+| `@syncular/client/react` | React hooks and provider subpath for the Rust-owned client |
+| `@syncular/client/crdt-yjs` | Optional Yjs/editor adapter subpath above the Rust client CRDT field APIs |
 
 ## Rust crates
 
@@ -125,10 +125,10 @@ npm install @syncular/dialects kysely-neon @neondatabase/serverless
 
 ```bash
 # Optional client editor adapters above Syncular CRDT fields
-npm install @syncular/client-crdt-adapters yjs
+npm install @syncular/client yjs
 
 # Edge relay server
-npm install @syncular/relay
+npm install @syncular/server
 
 # Type generation from server schema
 npm install @syncular/typegen

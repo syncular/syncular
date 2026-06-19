@@ -1,18 +1,18 @@
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
-import { createPgliteDialect } from '@syncular/dialects/pglite';
 import {
   ensureSyncSchema,
   type ServerSyncDialect,
   type ServerTableHandler,
   type SyncCoreDb,
 } from '@syncular/server';
-import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
 import {
   type CreateSyncRoutesOptions,
   createSyncRoutes,
-} from '@syncular/server-hono';
+} from '@syncular/server/hono';
+import { createPgliteDialect } from '@syncular/server/pglite';
+import { createPostgresServerDialect } from '@syncular/server/postgres';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import { Hono } from 'hono';
 import type { Kysely } from 'kysely';
 import { createNodeHonoServer } from './hono-node-server';

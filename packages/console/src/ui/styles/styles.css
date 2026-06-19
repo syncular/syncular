@@ -1,0 +1,181 @@
+@import 'tailwindcss' source(none);
+@import './tokens.css';
+
+/* Explicitly scan UI component source files for Tailwind class usage */
+@source "..";
+
+/* ── Base ── */
+:where(.syncular-console-root, .syncular-ui-root) {
+  background: var(--syncular-color-background);
+  color: var(--syncular-color-foreground);
+  font-family: var(--syncular-font-display), ui-sans-serif, system-ui,
+    sans-serif;
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+:where(.syncular-console-root, .syncular-ui-root) .font-mono {
+  font-family: var(--syncular-font-mono), ui-monospace, monospace;
+}
+
+/* ── Scrollbar ── */
+:where(.syncular-console-root, .syncular-ui-root) ::-webkit-scrollbar {
+  width: 3px;
+  height: 3px;
+}
+:where(.syncular-console-root, .syncular-ui-root) ::-webkit-scrollbar-track {
+  background: transparent;
+}
+:where(.syncular-console-root, .syncular-ui-root) ::-webkit-scrollbar-thumb {
+  background: #333;
+  border-radius: 2px;
+}
+
+/* ── Animations ── */
+@keyframes dotPulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}
+
+@keyframes dashFlow {
+  0% {
+    stroke-dashoffset: 20;
+  }
+  100% {
+    stroke-dashoffset: 0;
+  }
+}
+
+@keyframes streamSlide {
+  0% {
+    opacity: 0;
+    transform: translateY(-6px);
+  }
+  15% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pageIn {
+  0% {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  100% {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes scanSweep {
+  0% {
+    top: 0;
+    opacity: 0;
+  }
+  10% {
+    opacity: 0.6;
+  }
+  90% {
+    opacity: 0.6;
+  }
+  100% {
+    top: 100%;
+    opacity: 0;
+  }
+}
+
+@keyframes heartbeat {
+  0%,
+  40%,
+  100% {
+    transform: scaleY(1);
+  }
+  10% {
+    transform: scaleY(2.5);
+  }
+  25% {
+    transform: scaleY(1.5);
+  }
+}
+
+@keyframes fadeUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+:where(.syncular-console-root, .syncular-ui-root) .line-active {
+  stroke-dasharray: 4 2;
+  animation: dashFlow 1s linear infinite;
+}
+
+:where(.syncular-console-root, .syncular-ui-root) .stream-entry {
+  animation: streamSlide 0.35s ease-out;
+}
+
+:where(.syncular-console-root, .syncular-ui-root) .dot-pulse {
+  animation: dotPulse 1.4s ease-in-out infinite;
+}
+
+@keyframes flowPulse {
+  0% {
+    opacity: 0.15;
+  }
+  50% {
+    opacity: 0.6;
+  }
+  100% {
+    opacity: 0.15;
+  }
+}
+
+:where(.syncular-console-root, .syncular-ui-root) .flow-arrow {
+  animation: flowPulse 2s ease-in-out infinite;
+}
+
+@keyframes mediaLoad {
+  0% {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+:where(.syncular-console-root, .syncular-ui-root) .dot-grid {
+  background-image: radial-gradient(
+    circle at 1px 1px,
+    #1a1a1a 1px,
+    transparent 0
+  );
+  background-size: 24px 24px;
+}
+
+:where(.syncular-console-root, .syncular-ui-root) .scan-line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(
+    90deg,
+    transparent,
+    rgba(59, 130, 246, 0.3),
+    transparent
+  );
+  animation: scanSweep 6s ease-in-out infinite;
+  pointer-events: none;
+}

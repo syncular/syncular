@@ -1,4 +1,3 @@
-import type { SyncularWasmArtifactVariant } from '@syncular/client-javascript-bindings';
 import type {
   BlobRef,
   ColumnCodecSource,
@@ -10,6 +9,7 @@ import type {
   SyncOperation,
 } from '@syncular/core';
 import type { CompiledQuery } from 'kysely';
+import type { SyncularWasmArtifactVariant } from './wasm-bindings/runtime-contract';
 
 export type SyncularClientMode = 'remote' | 'local-sync-compatible';
 

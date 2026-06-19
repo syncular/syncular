@@ -165,9 +165,9 @@ function makeSnapshot(args: {
       workerUrl:
         'http://localhost:5173/@fs/packages/client/src/worker-entry.ts',
       wasmGlueUrl:
-        'http://localhost:5173/@fs/rust/bindings/javascript/dist/wasm/syncular.js',
+        'http://localhost:5173/@fs/packages/client/dist/wasm/syncular.js',
       wasmUrl:
-        'http://localhost:5173/@fs/rust/bindings/javascript/dist/wasm/syncular_bg.wasm',
+        'http://localhost:5173/@fs/packages/client/dist/wasm/syncular_bg.wasm',
     },
     connection: {
       closed: false,

@@ -22,7 +22,7 @@ fails while "offline", then the same commit (same `clientCommitId`) is
 retried after recovery. Idempotency on the server makes the replay safe.
 
 ```ts
-import { createHttpTransport } from '@syncular/transport-http';
+import { createHttpTransport } from '@syncular/core/http';
 import {
   createHttpServerFixture,
   createProjectScopedTasksHandler,

@@ -1,4 +1,13 @@
-import type { SyncClientNode } from '@syncular/ui';
+import { useNavigate } from '@tanstack/react-router';
+import { useEffect, useState } from 'react';
+import {
+  useClients,
+  useEvictClientMutation,
+  usePartitionContext,
+  usePreferences,
+  useStats,
+} from '../hooks';
+import type { SyncClientNode } from '../ui';
 import {
   Button,
   Dialog,
@@ -12,16 +21,7 @@ import {
   PanelShell,
   Spinner,
   SyncHorizon,
-} from '@syncular/ui';
-import { useNavigate } from '@tanstack/react-router';
-import { useEffect, useState } from 'react';
-import {
-  useClients,
-  useEvictClientMutation,
-  usePartitionContext,
-  usePreferences,
-  useStats,
-} from '../hooks';
+} from '../ui';
 
 function inferClientType(clientId: string): string {
   const lower = clientId.toLowerCase();

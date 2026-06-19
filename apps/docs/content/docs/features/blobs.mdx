@@ -64,7 +64,7 @@ keep them consistent across client and server.
 ## Server routes
 
 Mount blob routes next to sync routes and authorize them with the same actor
-boundary. `createBlobRoutes` from `@syncular/server-hono` provides:
+boundary. `createBlobRoutes` from `@syncular/server/hono` provides:
 
 - `POST /blobs/upload` — initiate an upload, returns a presigned URL (or
   reports the blob already exists — content addressing dedupes).
@@ -75,7 +75,7 @@ boundary. `createBlobRoutes` from `@syncular/server-hono` provides:
 
 ```ts
 import { createBlobManager } from '@syncular/server';
-import { createBlobRoutes } from '@syncular/server-hono';
+import { createBlobRoutes } from '@syncular/server/hono';
 
 const blobRoutes = createBlobRoutes({
   blobManager,
@@ -102,11 +102,11 @@ The blob manager (`createBlobManager`) tracks upload state and delegates the
 bytes to a storage adapter:
 
 - **S3 / R2** — `createS3BlobStorageAdapter` from
-  `@syncular/server-storage-s3`; pass an `S3Client`, bucket, the AWS SDK
+  `@syncular/server/s3`; pass an `S3Client`, bucket, the AWS SDK
   command constructors, and `getSignedUrl`. SHA-256 checksum validation is on
   by default. Works with Cloudflare R2 (see [Cloudflare](/server/cloudflare)).
 - **Filesystem** — `createFilesystemBlobStorageAdapter` from
-  `@syncular/server-storage-filesystem`; content-addressed files under
+  `@syncular/server/filesystem`; content-addressed files under
   `basePath`, with a `tokenSigner` authorizing the direct upload/download
   routes. Good for single-node and self-hosted deployments.
 - **Database** — `storeBlobInDatabase` / `readBlobFromDatabase` from

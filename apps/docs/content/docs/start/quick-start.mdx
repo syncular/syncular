@@ -36,7 +36,7 @@ my-app/
 ├── src/generated/             # committed generated client + server modules
 ├── src/server/sync-server.ts  # Hono sync server on Bun + SQLite
 ├── src/client/syncular.ts     # opens the local DB, starts the sync lifecycle
-└── src/app.tsx                # React UI on @syncular/react live queries
+└── src/app.tsx                # React UI on @syncular/client/react live queries
 ```
 
 The pieces flow in one direction:
@@ -52,7 +52,7 @@ The pieces flow in one direction:
    any schema or contract change. See
    [Generated Client](/clients/javascript/generated-client).
 4. **The server** (`src/server/sync-server.ts`) registers a generated table
-   handler with `@syncular/server-hono` and owns the commit log and
+   handler with `@syncular/server/hono` and owns the commit log and
    authorization. See [Server Getting Started](/server/getting-started).
 5. **The client** (`src/client/syncular.ts`) calls the generated
    `createSyncularAppDatabase(...)`, subscribes, and starts the sync

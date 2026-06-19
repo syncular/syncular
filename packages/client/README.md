@@ -184,12 +184,12 @@ websocket binary sync-pack applies recover through HTTP pull. Use
 
 ## React
 
-React apps can import the separate `@syncular/react` package.
+React apps can import the `@syncular/client/react` subpath.
 The adapter owns the Rust browser client lifecycle when passed `options`, or
 can wrap an already-created managed client:
 
 ```ts
-import { createSyncularReact } from '@syncular/react';
+import { createSyncularReact } from '@syncular/client/react';
 
 const {
   SyncProvider,
@@ -413,12 +413,12 @@ offline writes.
 
 ## Platform Bridges
 
-`@syncular/client-tauri` and `@syncular/client-react-native` expose TypeScript
+`@syncular/client/tauri` and `@syncular/client/react-native` expose TypeScript
 host bindings over a native Rust runtime. They are bridge adapters, not separate
 JavaScript sync clients:
 
 ```ts
-import { createSyncularTauriClient } from '@syncular/client-tauri';
+import { createSyncularTauriClient } from '@syncular/client/tauri';
 
 const client = await createSyncularTauriClient<AppDb>({
   invoke,
@@ -430,7 +430,7 @@ await client.leasedMutations.tasks.update('task-1', { title: 'Offline edit' });
 await client.resumeFromBackground();
 ```
 
-Bridge packages preserve row/field metadata on `rowsChanged` events and expose
+Bridge subpaths preserve row/field metadata on `rowsChanged` events and expose
 the same leased mutation, auth lease, lifecycle, presence, conflict, and blob
 client shape where the native module provides those commands. They do not
 pretend to support live-query registration by rerunning table-level events; app
@@ -614,7 +614,7 @@ methods. Keep editor-specific code above this package: TipTap schemas,
 ProseMirror transforms, Excalidraw save policy, selection, undo, and WebView
 messages belong in app code or optional app adapters.
 
-Use `@syncular/client-crdt-adapters` for app-layer editor glue above this
+Use `@syncular/client/crdt-yjs` for app-layer editor glue above this
 package. It connects Yjs binary update streams to Syncular's durable CRDT field
 API, preserves pending updates across failed writes, exposes backpressure,
 prefers queued native host writes when available, and refreshes app view models
@@ -632,8 +632,8 @@ prune old acked log entries without touching the canonical compact state.
 
 ## Assets
 
-The generated JavaScript/WASM binding package under `rust/bindings/javascript`
-writes the full Rust WASM artifact to `dist/wasm`:
+The `@syncular/client` package writes the full Rust WASM artifact to
+`dist/wasm`:
 
 - `syncular.js`
 - `syncular_bg.wasm`
@@ -672,12 +672,12 @@ section stripping. The current checked budgets are `3.25 MiB` raw and
 ```bash
 SYNCULAR_WASM_RAW_BUDGET_BYTES=3407872 \
 SYNCULAR_WASM_GZIP_BUDGET_BYTES=1415578 \
-  bun --cwd rust/bindings/javascript run size:wasm:check
+  bun --cwd packages/client run size:wasm:check
 ```
 
 The check writes an attribution report to
 `.context/wasm-size/syncular-wasm-size.txt` when run through
-`rust/bindings/javascript` `build:wasm` or `size:wasm:check`. Release builds
+`packages/client` `build:wasm` or `size:wasm:check`. Release builds
 also write a non-shipping optimized profile WASM to
 `.context/wasm-size/syncular_bg.profile.wasm` before final custom section
 stripping so attribution can keep symbol names when available.
@@ -685,18 +685,18 @@ stripping so attribution can keep symbol names when available.
 The current browser client is the canonical Rust-owned SQLite runtime wrapper
 for generated clients. The no-CRDT/no-E2EE core binding artifact has measured
 byte savings; the current core artifact also omits blob upload/cache helpers.
-The JavaScript binding package `build` runs `build:wasm:variants`, which writes
-both artifacts plus the catalog, and generated loading can select the smallest
+The client package `build` runs `build:wasm:variants`, which writes both
+artifacts plus the catalog, and generated loading can select the smallest
 matching artifact when an app serves the catalog. Publishing separate wrapper
 packages around the same WASM would not remove bytes.
 
 For local measurement or app experiments:
 
 ```bash
-bun --cwd rust/bindings/javascript run build:wasm:core
-bun --cwd rust/bindings/javascript run build:wasm:variants
-bun --cwd rust/bindings/javascript run catalog:wasm
-bun --cwd rust/bindings/javascript run size:wasm:core
+bun --cwd packages/client run build:wasm:core
+bun --cwd packages/client run build:wasm:variants
+bun --cwd packages/client run catalog:wasm
+bun --cwd packages/client run size:wasm:core
 ```
 
 `build:wasm:core` writes `dist/wasm-core/syncular.js` and
@@ -720,6 +720,6 @@ bun run test:wasm:variants
 smokes for auth retry, sync protocol edge cases, realtime wakeups, and blob
 transport behavior.
 
-`rust/bindings/javascript` `build:wasm`, `size:wasm:check`, and the conformance
+`packages/client` `build:wasm`, `size:wasm:check`, and the conformance
 gates are the current browser runtime validation path. The old JS/wa-sqlite
 comparison benchmark was removed with the legacy TypeScript client runtime.

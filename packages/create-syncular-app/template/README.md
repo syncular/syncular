@@ -23,11 +23,11 @@ server while the page stays open: edits queue locally and sync when the
 server is back.
 
 > **Why Bun?** The dev script and sync server run on Bun (`Bun.serve`,
-> `bun:sqlite` via `@syncular/dialects/bun-sqlite`) because Bun runs
+> `bun:sqlite` via `@syncular/server/bun-sqlite`) because Bun runs
 > TypeScript directly and ships SQLite with zero native build steps — one
 > runtime for the server, scripts and tooling. The browser client and the
 > Vite build are runtime-agnostic. If you need a Node server instead, swap
-> the dialect for `@syncular/dialects/better-sqlite3` and serve the Hono app
+> the dialect for `@syncular/server/better-sqlite3` and serve the Hono app
 > with `@hono/node-server` + `@hono/node-ws`.
 
 ## Project structure
@@ -39,7 +39,7 @@ generated/             Codegen handoff (syncular.codegen.json, Rust/Swift/Kotlin
 src/generated/         Generated TypeScript client + server modules (committed)
 src/server/            Hono sync server (auth, handlers, server-side tables)
 src/client/syncular.ts Client wiring: local DB, sync lifecycle, managed client
-src/app.tsx            React UI built on @syncular/react hooks
+src/app.tsx            React UI built on @syncular/client/react hooks
 scripts/dev.ts         Runs sync server + Vite together
 ```
 

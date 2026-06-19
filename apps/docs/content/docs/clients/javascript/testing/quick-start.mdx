@@ -16,7 +16,7 @@ bun add -d @syncular/testkit
 
 ## Your first test
 
-`createHttpServerFixture` boots real `@syncular/server-hono` routes against an
+`createHttpServerFixture` boots real `@syncular/server/hono` routes against an
 in-memory database and serves them over `node:http` on a random port. The
 testkit also ships a ready-made `tasks` table (DDL + server handler + protocol
 builders), so the first test needs no schema of your own:

@@ -10,7 +10,6 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import type { SyncOperation } from '@syncular/core';
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import {
   createServerHandlerCollection,
   ensureSyncSchema,
@@ -18,7 +17,8 @@ import {
   type ServerApplyOperationContext,
   type SyncCoreDb,
 } from '@syncular/server';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import type { Kysely } from 'kysely';
 import { sql } from 'kysely';
 

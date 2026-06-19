@@ -20,9 +20,7 @@
     "ui",
     "react"
   ],
-  "publishConfig": {
-    "access": "public"
-  },
+  "private": true,
   "type": "module",
   "exports": {
     ".": {
@@ -108,8 +106,7 @@
   "scripts": {
     "tsgo": "tsgo --noEmit",
     "build:css": "bunx @tailwindcss/cli -i src/styles/styles.css -o dist/styles.css",
-    "build": "tsgo && bun run build:css",
-    "release": "syncular-publish"
+    "build": "tsgo && bun run build:css"
   },
   "peerDependencies": {
     "react": "^19.0.0",

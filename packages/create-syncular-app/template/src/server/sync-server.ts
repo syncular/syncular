@@ -1,14 +1,14 @@
 import { mkdirSync } from 'node:fs';
 import path from 'node:path';
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import {
   createServerHandler,
   ensureSyncSchema,
   type SyncCoreDb,
 } from '@syncular/server';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
-import { createSyncServer } from '@syncular/server-hono';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
+import { createSyncServer } from '@syncular/server/hono';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import type { Kysely } from 'kysely';

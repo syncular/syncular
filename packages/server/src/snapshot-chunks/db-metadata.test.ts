@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { type BlobStorageAdapter, createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import { type Kysely, sql } from 'kysely';
-import { createSqliteServerDialect } from '../../../server-dialect-sqlite/src';
 import { ensureSyncSchema } from '../migrate';
 import type { SyncCoreDb } from '../schema';
 import { createDbMetadataChunkStorage } from './db-metadata';

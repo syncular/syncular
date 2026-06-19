@@ -86,7 +86,7 @@ Latest accepted slice:
 - Server-side pull resolution preserves those scoped CRDT state-vector hints
   through authorization/scope intersection and exposes a generic pull-change
   plugin hook before wire integrity is calculated.
-- `@syncular/server-plugin-yjs` now uses the hints for incremental pulls:
+- `@syncular/server/crdt-yjs` now uses the hints for incremental pulls:
   eligible server-merge CRDT fields are emitted as `__yjs` update envelopes
   instead of full state columns, while non-CRDT row fields remain in the row
   payload.

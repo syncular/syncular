@@ -174,7 +174,7 @@ SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indiana
 - Slice 1 retained a TypeScript/Hono helper for payload-rich external row-change
   notifications:
   - shared normal push and external notification binary pack construction in
-    `@syncular/server-hono`;
+    `@syncular/server/hono`;
   - external benchmark `/benchmark/external-write` now builds a scoped binary
     sync-pack from the synthetic external `SyncCommit`;
   - client reconnect jitter is capped at `maxReconnectDelayMs`, which is the

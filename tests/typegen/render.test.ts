@@ -231,7 +231,7 @@ describe('renderTypes', () => {
 
   it('generated api.ts matches snapshot', () => {
     const content = readFileSync(
-      resolve(__dirname, '../../packages/transport-http/src/generated/api.ts'),
+      resolve(__dirname, '../../packages/core/src/http/generated/api.ts'),
       'utf-8'
     );
     expect(content).toMatchSnapshot();
