@@ -88,6 +88,7 @@ import {
   getSyncularWasmGlueUrl,
   getSyncularWasmUrl,
   loadSyncularWasmGlue,
+  prepareSyncularWasmModuleInput,
   readSyncularRustRuntimeInfo,
   type SyncularRustOwnedSqliteClient,
   type SyncularWasmGlue,
@@ -226,7 +227,9 @@ export async function openSyncularRustClient(
   const wasmUrl =
     options.runtime?.wasmUrl ?? options.wasmUrl ?? getSyncularWasmUrl();
   const config = resolveSyncularClientConfig(options.config);
-  await mod.default(wasmUrl);
+  await mod.default({
+    module_or_path: await prepareSyncularWasmModuleInput(wasmUrl),
+  });
   const rustRuntimeInfo = readSyncularRustRuntimeInfo(mod);
   return new SyncularRustClient(
     await mod.openSyncularRustOwnedSqliteClient(config),
