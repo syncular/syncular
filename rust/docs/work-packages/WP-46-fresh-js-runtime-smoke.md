@@ -16,7 +16,7 @@ only code generation.
 - Open the generated browser database with the Rust-owned SQLite core runtime
   in local-sync-compatible mode.
 - Insert through generated mutations and query through Kysely.
-- Keep `@syncular/react` in the fresh-app proof by importing its generated
+- Keep `@syncular/client/react` in the fresh-app proof by importing its generated
   provider/hooks factory.
 
 ## Non-Goals
@@ -32,7 +32,7 @@ only code generation.
   passed before this change, but only checked generated JS files.
 - Probe: the generated fresh JS app opened a local Rust-owned SQLite core
   runtime, inserted a task through generated mutations, queried it through
-  Kysely, and imported `@syncular/react` helpers.
+  Kysely, and imported `@syncular/client/react` helpers.
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/fresh-js-runtime-smoke`
 - `bunx biome check scripts/fresh-app-smokes.ts rust/docs/ROADMAP.md rust/docs/work-packages/README.md rust/docs/work-packages/WP-46-fresh-js-runtime-smoke.md`
 - `bunx tsgo --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --types bun --skipLibCheck scripts/fresh-app-smokes.ts`

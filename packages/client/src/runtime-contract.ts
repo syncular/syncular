@@ -1,12 +1,12 @@
-import {
-  SYNCULAR_CLIENT_PACKAGE_NAME,
-  SYNCULAR_CLIENT_PACKAGE_VERSION,
-} from '@syncular/client-javascript-bindings';
 import type {
   SyncularRuntimeInfo,
   SyncularRustRuntimeInfo,
   SyncularStorage,
 } from './types';
+import {
+  SYNCULAR_CLIENT_PACKAGE_NAME,
+  SYNCULAR_CLIENT_PACKAGE_VERSION,
+} from './wasm-bindings/runtime-contract';
 import { SYNCULAR_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
 export {
@@ -17,7 +17,7 @@ export {
   SYNCULAR_WASM_BINARY_FILE,
   SYNCULAR_WASM_GLUE_FILE,
   SYNCULAR_WASM_OUT_NAME,
-} from '@syncular/client-javascript-bindings';
+} from './wasm-bindings/runtime-contract';
 export { SYNCULAR_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 
 export const SYNCULAR_PACKAGE_NAME = SYNCULAR_CLIENT_PACKAGE_NAME;

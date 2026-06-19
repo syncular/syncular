@@ -4,7 +4,6 @@ import {
   type BlobStorageAdapter,
   createDatabase,
 } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import type { Kysely } from 'kysely';
 import { syncularGeneratedApp } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import {
@@ -15,7 +14,8 @@ import {
   ensureBlobStorageSchemaSqlite,
   type SyncBlobDb,
 } from '../../../server/src';
-import { createBlobRoutes } from '../../../server-hono/src/blobs';
+import { createBunSqliteDialect } from '../../../server/src/bun-sqlite';
+import { createBlobRoutes } from '../../../server/src/hono';
 import {
   closeNodeServer,
   createNodeHonoServer,

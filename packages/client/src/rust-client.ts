@@ -267,6 +267,14 @@ export class SyncularRustClient {
     private readonly blobLimits: SyncularBlobLimits | undefined
   ) {}
 
+  #assertRuntimeFeature(feature: 'crdt-yjs' | 'e2ee', apiName: string): void {
+    if (this.runtime.rust?.features.includes(feature)) return;
+    throw new Error(
+      `Syncular runtime feature "${feature}" is required for ${apiName}. ` +
+        'Select the full browser WASM runtime artifact.'
+    );
+  }
+
   setSubscriptions(subscriptions: readonly SyncularSubscriptionSpec[]): void {
     this.#subscriptions = [...subscriptions];
     this.#bootstrapById.clear();
@@ -347,6 +355,8 @@ export class SyncularRustClient {
   }
 
   setFieldEncryption(config: SyncularFieldEncryptionConfig | null): void {
+    if (config == null && !this.runtime.rust?.features.includes('e2ee')) return;
+    this.#assertRuntimeFeature('e2ee', 'setFieldEncryption');
     this.raw.setFieldEncryptionJson(
       config == null
         ? 'null'
@@ -355,6 +365,8 @@ export class SyncularRustClient {
   }
 
   setEncryptedCrdt(config: SyncularEncryptedCrdtConfig | null): void {
+    if (config == null && !this.runtime.rust?.features.includes('e2ee')) return;
+    this.#assertRuntimeFeature('e2ee', 'setEncryptedCrdt');
     this.raw.setEncryptedCrdtJson(
       config == null
         ? 'null'
@@ -363,6 +375,8 @@ export class SyncularRustClient {
   }
 
   setBlobEncryption(config: SyncularBlobEncryptionConfig | null): void {
+    if (config == null && !this.runtime.rust?.features.includes('e2ee')) return;
+    this.#assertRuntimeFeature('e2ee', 'setBlobEncryption');
     this.raw.setBlobEncryptionJson(
       config == null
         ? 'null'
@@ -786,18 +800,21 @@ export class SyncularRustClient {
   buildYjsTextUpdate(
     args: SyncularBuildYjsTextUpdateArgs
   ): SyncularBuildYjsTextUpdateResult {
+    this.#assertRuntimeFeature('crdt-yjs', 'buildYjsTextUpdate');
     return parseJson(this.raw.buildYjsTextUpdateJson(JSON.stringify(args)));
   }
 
   applyYjsTextUpdates(
     args: SyncularApplyYjsTextUpdatesArgs
   ): SyncularApplyYjsTextUpdatesResult {
+    this.#assertRuntimeFeature('crdt-yjs', 'applyYjsTextUpdates');
     return parseJson(this.raw.applyYjsTextUpdatesJson(JSON.stringify(args)));
   }
 
   applyYjsEnvelopeToPayload(
     args: SyncularApplyYjsEnvelopeToPayloadArgs
   ): Record<string, unknown> {
+    this.#assertRuntimeFeature('crdt-yjs', 'applyYjsEnvelopeToPayload');
     const result = parseJson<{ payload: Record<string, unknown> }>(
       this.raw.applyYjsEnvelopeToPayloadJson(JSON.stringify(args))
     );
@@ -807,12 +824,14 @@ export class SyncularRustClient {
   async openCrdtField(
     request: SyncularCrdtFieldRequest
   ): Promise<SyncularCrdtFieldDescriptor> {
+    this.#assertRuntimeFeature('crdt-yjs', 'openCrdtField');
     return parseJson(this.raw.openCrdtFieldJson(JSON.stringify(request)));
   }
 
   async applyCrdtFieldText(
     request: SyncularCrdtFieldTextRequest
   ): Promise<SyncularCrdtFieldWriteReceipt> {
+    this.#assertRuntimeFeature('crdt-yjs', 'applyCrdtFieldText');
     const receipt = parseJson<SyncularCrdtFieldWriteReceipt>(
       this.raw.applyCrdtFieldTextJson(JSON.stringify(request))
     );
@@ -823,6 +842,7 @@ export class SyncularRustClient {
   async applyCrdtFieldYjsUpdate(
     request: SyncularCrdtFieldYjsUpdateRequest
   ): Promise<SyncularCrdtFieldWriteReceipt> {
+    this.#assertRuntimeFeature('crdt-yjs', 'applyCrdtFieldYjsUpdate');
     const receipt = parseJson<SyncularCrdtFieldWriteReceipt>(
       this.raw.applyCrdtFieldYjsUpdateJson(JSON.stringify(request))
     );
@@ -833,6 +853,7 @@ export class SyncularRustClient {
   async materializeCrdtField(
     request: SyncularCrdtFieldRequest
   ): Promise<SyncularCrdtFieldMaterialization> {
+    this.#assertRuntimeFeature('crdt-yjs', 'materializeCrdtField');
     return parseJson(
       this.raw.materializeCrdtFieldJson(JSON.stringify(request))
     );
@@ -841,6 +862,7 @@ export class SyncularRustClient {
   async crdtDocumentSnapshot(
     request: SyncularCrdtFieldRequest
   ): Promise<SyncularCrdtDocumentSnapshot> {
+    this.#assertRuntimeFeature('crdt-yjs', 'crdtDocumentSnapshot');
     return parseJson(
       this.raw.crdtDocumentSnapshotJson(JSON.stringify(request))
     );
@@ -849,12 +871,14 @@ export class SyncularRustClient {
   async crdtUpdateLog(
     request: SyncularCrdtFieldRequest & { limit?: number }
   ): Promise<SyncularCrdtUpdateLogEntry[]> {
+    this.#assertRuntimeFeature('crdt-yjs', 'crdtUpdateLog');
     return parseJson(this.raw.crdtUpdateLogJson(JSON.stringify(request)));
   }
 
   async snapshotCrdtFieldStateVector(
     request: SyncularCrdtFieldRequest
   ): Promise<{ stateVectorBase64: string }> {
+    this.#assertRuntimeFeature('crdt-yjs', 'snapshotCrdtFieldStateVector');
     return parseJson(
       this.raw.snapshotCrdtFieldStateVectorJson(JSON.stringify(request))
     );
@@ -863,6 +887,7 @@ export class SyncularRustClient {
   async compactCrdtField(
     request: SyncularCrdtFieldCompactionRequest
   ): Promise<SyncularCrdtFieldCompactionReceipt> {
+    this.#assertRuntimeFeature('crdt-yjs', 'compactCrdtField');
     const receipt = parseJson<SyncularCrdtFieldCompactionReceipt>(
       this.raw.compactCrdtFieldJson(JSON.stringify(request))
     );
@@ -874,6 +899,7 @@ export class SyncularRustClient {
     method: SyncularEncryptionHelperMethod,
     args: unknown = {}
   ): T {
+    this.#assertRuntimeFeature('e2ee', 'encryptionHelper');
     return parseJson(
       this.raw.encryptionHelperJson(method, JSON.stringify(args))
     );

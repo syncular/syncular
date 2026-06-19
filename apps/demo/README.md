@@ -12,7 +12,7 @@ real project wires it up:
 - **Two clients, one user**: each pane opens its own local SQLite database
   (persisted in IndexedDB) via the generated `createSyncularAppDatabase` and
   syncs over HTTP + WebSocket realtime.
-- **React layer** (`src/app.tsx`): `@syncular/react` hooks — `SyncProvider`
+- **React layer** (`src/app.tsx`): `@syncular/client/react` hooks — `SyncProvider`
   per pane, `useSyncQuery` live queries, `useMutations` for add/toggle/delete,
   `useSyncStatus`/`useSyncConnection` for the status badge and the offline
   toggle, `useOutboxStats` for queued changes, plus undo/redo backed by the

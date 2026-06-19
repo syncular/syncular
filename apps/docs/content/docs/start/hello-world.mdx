@@ -31,7 +31,7 @@ in a clone to see the finished version with two side-by-side clients.
 npm install @syncular/client kysely
 
 # Server
-npm install @syncular/server @syncular/server-hono @syncular/server-dialect-sqlite @syncular/core @syncular/dialects hono
+npm install @syncular/server @syncular/core hono
 
 # CLI and app-contract definitions (dev-time only)
 npm install -D syncular @syncular/typegen
@@ -40,7 +40,7 @@ npm install -D syncular @syncular/typegen
 The `syncular` package is the CLI (`npx syncular generate`) — application code
 always imports from the scoped `@syncular/*` packages. The example server uses
 SQLite so there is nothing else to provision; production servers use Postgres
-via `@syncular/server-dialect-postgres`.
+via `@syncular/server/postgres`.
 
 ## 2. Define the schema and app contract
 
@@ -89,14 +89,14 @@ The server owns the commit log and decides who may sync what. Create
 
 ```typescript
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
 import {
   createServerHandler,
   ensureSyncSchema,
   type SyncCoreDb,
 } from '@syncular/server';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
-import { createSyncServer } from '@syncular/server-hono';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
+import { createSyncServer } from '@syncular/server/hono';
 import { Hono } from 'hono';
 import {
   type SyncularAppDb,
@@ -192,7 +192,7 @@ same user pulls it. Kill the network and the app keeps working; reconnect and
 it catches up.
 
 React apps wrap the same client in `SyncProvider` and use `useSyncQuery` /
-`useMutations` from [`@syncular/react`](/clients/javascript/react) for live,
+`useMutations` from [`@syncular/client/react`](/clients/javascript/react) for live,
 re-rendering queries.
 
 ## Where to go next

@@ -1,4 +1,22 @@
-import type { PreferenceRow } from '@syncular/ui';
+import { useEffect, useMemo, useState } from 'react';
+import {
+  PAGE_SIZE_OPTIONS,
+  REFRESH_INTERVAL_OPTIONS,
+  useApiKeys,
+  useBulkRevokeApiKeysMutation,
+  useCreateApiKeyMutation,
+  useLocalStorage,
+  usePreferences,
+  useRevokeApiKeyMutation,
+  useRotateApiKeyMutation,
+  useStageRotateApiKeyMutation,
+} from '../hooks';
+import { useConnection } from '../hooks/ConnectionContext';
+import type {
+  ConsoleApiKey,
+  ConsoleApiKeyBulkRevokeResponse,
+} from '../lib/types';
+import type { PreferenceRow } from '../ui';
 import {
   Alert,
   AlertDescription,
@@ -28,25 +46,7 @@ import {
   TableRow,
   Toggle,
   ToggleGroup,
-} from '@syncular/ui';
-import { useEffect, useMemo, useState } from 'react';
-import {
-  PAGE_SIZE_OPTIONS,
-  REFRESH_INTERVAL_OPTIONS,
-  useApiKeys,
-  useBulkRevokeApiKeysMutation,
-  useCreateApiKeyMutation,
-  useLocalStorage,
-  usePreferences,
-  useRevokeApiKeyMutation,
-  useRotateApiKeyMutation,
-  useStageRotateApiKeyMutation,
-} from '../hooks';
-import { useConnection } from '../hooks/ConnectionContext';
-import type {
-  ConsoleApiKey,
-  ConsoleApiKeyBulkRevokeResponse,
-} from '../lib/types';
+} from '../ui';
 
 const ToggleGroupItem = Toggle;
 

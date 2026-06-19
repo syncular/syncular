@@ -6,7 +6,6 @@ import {
   SYNC_SNAPSHOT_CHUNK_ENCODING_BINARY_TABLE_V1,
   type SyncPullRequest,
 } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import {
   createServerHandler,
   createServerHandlerCollection,
@@ -16,7 +15,8 @@ import {
   type SyncCoreDb,
   type SyncSnapshot,
 } from '@syncular/server';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 
 interface ProjectsTable {
   id: string;

@@ -5,7 +5,7 @@ description: Bridge React Native UI code to the native Syncular runtime.
 
 # React Native / Expo
 
-React Native apps use `@syncular/client-react-native` on the JavaScript side
+React Native apps use `@syncular/client/react-native` on the JavaScript side
 and a native Syncular module on the host side. JavaScript gets typed Kysely
 reads, generated mutations, events, presence, conflicts, and React hooks. The
 native module owns SQLite, sync, outbox, realtime, blobs, CRDT fields,
@@ -18,13 +18,13 @@ integration.
 ## Install
 
 ```bash
-npm install @syncular/client @syncular/client-react-native @syncular/react kysely
+npm install @syncular/client kysely react
 ```
 
 ## Create the bridge client
 
 ```ts
-import { createSyncularNativeClient } from '@syncular/client-react-native';
+import { createSyncularNativeClient } from '@syncular/client/react-native';
 import type { AppDb } from './generated/syncular.browser';
 
 const syncular = await createSyncularNativeClient<AppDb>({
@@ -39,17 +39,15 @@ presence, conflicts, auth leases, and diagnostics.
 ## React usage
 
 ```tsx
-import {
-  createSyncularNativeClient,
-  createSyncularNativeReact,
-} from '@syncular/client-react-native';
+import { createSyncularNativeClient } from '@syncular/client/react-native';
+import { createSyncularReact } from '@syncular/client/react';
 
 const syncular = await createSyncularNativeClient<AppDb>({
   module: SyncularNativeModule,
 });
 
 const { SyncProvider, useSyncQuery, useMutations, useSyncConnection } =
-  createSyncularNativeReact<AppDb>();
+  createSyncularReact<AppDb>();
 
 export function App() {
   return (

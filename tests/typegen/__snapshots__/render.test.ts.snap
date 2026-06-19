@@ -991,7 +991,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1107,7 +1107,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1181,7 +1181,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1202,7 +1202,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1280,7 +1280,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1301,7 +1301,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1507,7 +1507,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1528,7 +1528,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1580,7 +1580,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1601,7 +1601,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1622,7 +1622,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1674,7 +1674,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1695,7 +1695,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1716,7 +1716,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1776,7 +1776,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1833,7 +1833,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -1890,7 +1890,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2012,7 +2012,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2070,7 +2070,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2142,7 +2142,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2163,7 +2163,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2184,7 +2184,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2265,7 +2265,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2286,7 +2286,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2307,7 +2307,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2511,7 +2511,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2532,7 +2532,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2663,7 +2663,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2684,7 +2684,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2757,7 +2757,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -2952,7 +2952,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -3274,7 +3274,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -3295,7 +3295,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -3491,7 +3491,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -3680,7 +3680,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -3727,7 +3727,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -3788,7 +3788,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -3832,7 +3832,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -3875,7 +3875,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -3918,7 +3918,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -3970,7 +3970,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -3991,7 +3991,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4038,7 +4038,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4059,7 +4059,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4162,7 +4162,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4205,7 +4205,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4296,7 +4296,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4317,7 +4317,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4338,7 +4338,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4389,7 +4389,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4410,7 +4410,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4431,7 +4431,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4478,7 +4478,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4542,7 +4542,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4609,7 +4609,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4630,7 +4630,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4685,7 +4685,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4706,7 +4706,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4751,7 +4751,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4806,7 +4806,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4827,7 +4827,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4885,7 +4885,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4906,7 +4906,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4964,7 +4964,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -4985,7 +4985,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -5041,7 +5041,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -5082,7 +5082,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -5103,7 +5103,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -5148,7 +5148,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -5208,7 +5208,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -5229,7 +5229,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -5284,7 +5284,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -5305,7 +5305,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -5359,7 +5359,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -5380,7 +5380,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };
@@ -5401,7 +5401,7 @@ export interface operations {
                         category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
                         retryable?: boolean;
                         /** @enum {string} */
-                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
                         details?: {
                             [key: string]: unknown;
                         };

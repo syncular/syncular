@@ -86,7 +86,7 @@ read-only review:
   - Accepted. The external npm install smoke now opens the generated browser
     client from published packages, inserts through generated mutations, and
     queries the row through Kysely. The current public registry cannot complete
-    the run yet because `@syncular/react` is not published.
+    the run yet because `@syncular/client/react` is not published.
 - `[x]` [`WP-46 Fresh JS Runtime Smoke`](work-packages/WP-46-fresh-js-runtime-smoke.md)
   - Accepted. The local fresh JavaScript app smoke now proves an actual
     generated browser client open, generated mutation insert, Kysely query, and
@@ -128,8 +128,8 @@ read-only review:
     test junk, Cargo publish dry-runs/package checks passed, app-facing
     stale-doc checks are scripted, the fresh-app docs path is backed by the
     fixture, `syncular generate` copy is clearer, React test DOM globals are
-    isolated, `packages/client-react` is renamed to `packages/react`, and the
-    blank-app API review records remaining DX friction.
+    isolated, React helpers now live under `packages/client/src/react`, and
+    the blank-app API review records remaining DX friction.
 - `[x]` [`WP-39 Docs Source Of Truth And Consistency`](work-packages/WP-39-docs-source-of-truth-and-consistency.md)
   - Accepted. Reference API is now the only generated OpenAPI tree, duplicate
     `/docs/api` pages were removed, stale JSON snapshot wording was replaced,
@@ -207,8 +207,8 @@ read-only review:
     deltas as the fast path and HTTP pull as recovery/checkpoint. Current slice
     removes the legacy wa-sqlite browser dialect package, TypeScript
     transport-ws package, and unnecessary umbrella aliases
-    `syncular/dialect-wa-sqlite`, `syncular/transport-ws`, and
-    `syncular/server-dialect-neon`; targeted package/doc gates passed, while
+    `syncular/dialect-wa-sqlite`, `syncular/transport-ws`, and the stale
+    Neon server-dialect alias; targeted package/doc gates passed, while
     full `knip` is still blocked by unrelated WP-27+ relay findings. The
     migration legacy source-checksum upgrade branch is also removed; migration
     tracking now only supports generated `sql_trace_v1` checksums or disabled
@@ -527,7 +527,7 @@ read-only review:
     The Rust-owned browser binding is now the canonical `@syncular/client`
     package, with ergonomic `createSyncularClient()` and
     `createSyncularReact()` entrypoints, bridge packages for Tauri, React
-    Native, and Expo, and CRDT adapters at `@syncular/client-crdt-adapters`.
+    Native, and Expo, and CRDT adapters at `@syncular/client/crdt-yjs`.
     Docs and package metadata now point at the Rust-first client path.
 - `[x]` [`WP-05 Adaptive Bootstrap`](work-packages/WP-05-adaptive-bootstrap.md)
   - First retained slice restores the pre-Rust staged-bootstrap principle in

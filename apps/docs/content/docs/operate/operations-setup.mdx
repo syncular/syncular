@@ -19,7 +19,7 @@ option away — the event emitter, schema setup, and WebSocket wiring are
 handled for you:
 
 ```typescript
-import { createSyncServer } from '@syncular/server-hono';
+import { createSyncServer } from '@syncular/server/hono';
 
 const { syncRoutes, consoleRoutes } = createSyncServer({
   db,
@@ -49,7 +49,7 @@ import {
   createConsoleEventEmitter,
   createSyncRoutes,
   createTokenAuthenticator,
-} from '@syncular/server-hono';
+} from '@syncular/server/hono';
 
 const eventEmitter = createConsoleEventEmitter();
 
@@ -90,7 +90,7 @@ All paths below are **relative to where you mount** the console routes
 To serve the Console UI itself, add:
 
 ```typescript
-import { mountConsoleUi } from '@syncular/server-hono';
+import { mountConsoleUi } from '@syncular/server/hono';
 
 mountConsoleUi(app, {
   mountPath: '/console',
@@ -110,7 +110,7 @@ Use `createConsoleGatewayRoutes` when operators need one Console view across mul
 import {
   createConsoleGatewayRoutes,
   createTokenAuthenticator,
-} from '@syncular/server-hono';
+} from '@syncular/server/hono';
 
 const authenticate = createTokenAuthenticator(process.env.SYNC_CONSOLE_TOKEN);
 
@@ -491,7 +491,7 @@ Revokes old key and creates new one with same properties.
 Use `validateApiKey` for authenticating API requests:
 
 ```typescript
-import { validateApiKey } from '@syncular/server-hono';
+import { validateApiKey } from '@syncular/server/hono';
 
 const authenticate = async (c: Context) => {
   const result = await validateApiKey(db, dialect, c.req.header('Authorization'));
@@ -512,7 +512,7 @@ const authenticate = async (c: Context) => {
 Simple bearer token:
 
 ```typescript
-import { createTokenAuthenticator } from '@syncular/server-hono';
+import { createTokenAuthenticator } from '@syncular/server/hono';
 
 const authenticate = createTokenAuthenticator(process.env.SYNC_CONSOLE_TOKEN);
 ```

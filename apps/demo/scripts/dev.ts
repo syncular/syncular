@@ -8,18 +8,15 @@ const previewMode = process.argv.includes('--preview');
 const repoRoot = path.resolve(import.meta.dir, '../../..');
 
 async function ensureBrowserWasmArtifact() {
-  const javascriptBindingsDir = path.join(repoRoot, 'rust/bindings/javascript');
-  const wasmPath = path.join(
-    javascriptBindingsDir,
-    'dist/wasm/syncular_bg.wasm'
-  );
+  const clientDir = path.join(repoRoot, 'packages/client');
+  const wasmPath = path.join(clientDir, 'dist/wasm/syncular_bg.wasm');
 
   if (existsSync(wasmPath)) {
     return;
   }
 
   console.log('[syncular-demo] building Rust browser WASM artifact');
-  await $`bun --cwd ${javascriptBindingsDir} build:wasm`;
+  await $`bun --cwd ${clientDir} build:wasm`;
 }
 
 await ensureBrowserWasmArtifact();

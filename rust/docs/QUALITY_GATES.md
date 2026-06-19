@@ -81,7 +81,7 @@ CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \
 ```
 
 ```bash
-bun run --cwd rust/bindings/javascript build:wasm
+bun run --cwd packages/client build:wasm
 ```
 
 ## TypeScript Packages
@@ -89,8 +89,8 @@ bun run --cwd rust/bindings/javascript build:wasm
 ```bash
 bun run --cwd packages/core tsgo
 bun run --cwd packages/server tsgo
-bun run --cwd packages/server-dialect-sqlite tsgo
-bun run --cwd packages/server-dialect-postgres tsgo
+bun run --cwd packages/client tsgo
+bun run --cwd packages/testkit tsgo
 ```
 
 ## Browser E2E Performance Guardrails
@@ -101,8 +101,8 @@ changes until the next Rust-only external benchmark harness is checked in.
 
 ```bash
 bun run client:test
-bun run javascript-bindings:build:wasm
-bun run javascript-bindings:size
+bun run client:build:wasm
+bun run client:size
 ```
 
 Performance-sensitive runtime changes still need before/after evidence in
@@ -133,14 +133,14 @@ cargo run --manifest-path /Users/bkniffler/conductor/workspaces/syncular/indiana
   --manifest-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/stacks/syncular/syncular-app \
   --rust-output-dir /Users/bkniffler/GitHub/sync/offline-sync-bench/.tmp/syncular-bench-codegen/rust
 
-bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/javascript build:wasm
+bun run --cwd /Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client build:wasm
 
 SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis \
 SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=0 \
   docker compose -f stacks/syncular/docker-compose.yml up --build -d
 
 export SYNCULAR_BENCH_CAPTURE_BOOTSTRAP_TIMINGS=1
-export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/rust/bindings/javascript/dist
+export SYNCULAR_RUST_CLIENT_DIST=/Users/bkniffler/conductor/workspaces/syncular/indianapolis/packages/client/dist
 export SYNCULAR_BRANCH_ROOT=/Users/bkniffler/conductor/workspaces/syncular/indianapolis
 export SYNCULAR_BENCH_SCOPED_SQLITE_ARTIFACTS=0
 

@@ -29,7 +29,7 @@ walkthrough of handlers and auth):
 
 ```typescript
 import { Hono } from 'hono';
-import { createSyncServer } from '@syncular/server-hono';
+import { createSyncServer } from '@syncular/server/hono';
 
 const { syncRoutes, consoleRoutes } = createSyncServer({
   db,
@@ -168,15 +168,15 @@ a release step) so a fresh database is usable on first boot.
 ## Cloudflare Workers
 
 Cloudflare deployment uses the dedicated adapter package
-`@syncular/server-cloudflare` (Workers + Durable Objects + R2 helpers) instead
+`@syncular/server/cloudflare` (Workers + Durable Objects + R2 helpers) instead
 of hand-rolling the Hono wiring. The full setup — including the
 D1-vs-Neon/Hyperdrive database choice and WebSocket realtime via Durable
 Objects — is on the [Cloudflare](/server/cloudflare) page.
 
 The short version of the platform constraints:
 
-- **Database:** `@syncular/dialects/d1` + the SQLite server dialect, or
-  Neon/Postgres via `@syncular/dialects/neon` + `createNeonServerDialect()`
+- **Database:** `@syncular/server/d1` + the SQLite server dialect, or
+  Neon/Postgres via `@syncular/server/neon` + `createNeonServerDialect()`
   (Hyperdrive in front of regular Postgres also works).
 - **WebSockets:** Workers need Durable Objects for realtime connections; the
   adapter provides this. Clients recover via HTTP pull either way.

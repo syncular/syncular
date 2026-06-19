@@ -34,7 +34,7 @@
   "devDependencies": {
     "@syncular/config": "workspace:*",
     "@syncular/core": "workspace:*",
-    "@syncular/dialects": "workspace:*",
-    "kysely": "*"
+    "kysely": "*",
+    "@syncular/server": "workspace:*"
   }
 }

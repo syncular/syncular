@@ -21,24 +21,32 @@ use crate::compaction::{
     StorageCompactionOptions, StorageCompactionReport,
 };
 use crate::crdt_field::{validate_crdt_field, CrdtField, CrdtFieldId, CrdtFieldSyncMode};
+#[cfg(feature = "crdt-yjs")]
 use crate::crdt_yjs::{
     apply_yjs_envelope_to_payload_json as crdt_apply_yjs_envelope_to_payload_json,
     apply_yjs_text_updates_json as crdt_apply_yjs_text_updates_json, build_yjs_text_update,
-    build_yjs_text_update_json as crdt_build_yjs_text_update_json, materialize_row_for_metadata,
+    build_yjs_text_update_json as crdt_build_yjs_text_update_json,
     materialize_yjs_row_json as crdt_materialize_yjs_row_json, materialize_yjs_state,
-    transform_local_row_for_metadata, validate_crdt_request_json_size,
-    validate_yjs_text_input_size, validate_yjs_update_envelope_size,
-    yjs_state_vector_base64 as crdt_yjs_state_vector_base64, BuildYjsTextUpdateArgs,
-    YjsUpdateEnvelope, YJS_PAYLOAD_KEY,
+    validate_crdt_request_json_size, validate_yjs_text_input_size,
+    validate_yjs_update_envelope_size, yjs_state_vector_base64 as crdt_yjs_state_vector_base64,
+    BuildYjsTextUpdateArgs, YjsUpdateEnvelope,
+};
+use crate::crdt_yjs::{
+    materialize_row_for_metadata, transform_local_row_for_metadata, YJS_PAYLOAD_KEY,
 };
 use crate::encrypted_crdt::{
     apply_encrypted_crdt_plaintext_to_row, encrypted_crdt_identity_column,
     encrypted_crdt_normalize_row, encrypted_crdt_row_matches_scopes, encrypted_crdt_scopes_json,
-    encrypted_crdt_stream_id, is_encrypted_crdt_system_table, BuildEncryptedCrdtCheckpointArgs,
-    BuildEncryptedCrdtTextUpdateArgs, BuildEncryptedCrdtYjsUpdateArgs, EncryptedCrdtStreamStats,
-    CRDT_CHECKPOINTS_TABLE, CRDT_UPDATES_TABLE,
+    is_encrypted_crdt_system_table, CRDT_CHECKPOINTS_TABLE, CRDT_UPDATES_TABLE,
 };
+#[cfg(feature = "crdt-yjs")]
+use crate::encrypted_crdt::{
+    encrypted_crdt_stream_id, BuildEncryptedCrdtCheckpointArgs, BuildEncryptedCrdtTextUpdateArgs,
+    BuildEncryptedCrdtYjsUpdateArgs, EncryptedCrdtStreamStats,
+};
+#[cfg(feature = "e2ee")]
 use crate::encryption::encryption_helpers_json;
+#[cfg(feature = "crdt-yjs")]
 use crate::encryption::FieldEncryptionContext;
 use crate::error::{ErrorKind, Result, SyncularError};
 #[cfg(feature = "web-blobs")]
@@ -162,6 +170,7 @@ struct RustOwnedLocalOperationBatchEntry {
     local_row: Option<Value>,
 }
 
+#[cfg(feature = "crdt-yjs")]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RustOwnedCrdtFieldRequest {
@@ -170,6 +179,7 @@ struct RustOwnedCrdtFieldRequest {
     field: String,
 }
 
+#[cfg(feature = "crdt-yjs")]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RustOwnedCrdtFieldTextRequest {
@@ -179,6 +189,7 @@ struct RustOwnedCrdtFieldTextRequest {
     next_text: String,
 }
 
+#[cfg(feature = "crdt-yjs")]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RustOwnedCrdtFieldYjsUpdateRequest {
@@ -188,6 +199,7 @@ struct RustOwnedCrdtFieldYjsUpdateRequest {
     update: YjsUpdateEnvelope,
 }
 
+#[cfg(feature = "crdt-yjs")]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RustOwnedCrdtFieldCompactionRequest {
@@ -198,6 +210,7 @@ struct RustOwnedCrdtFieldCompactionRequest {
     min_uncheckpointed_updates: Option<i64>,
 }
 
+#[cfg(feature = "crdt-yjs")]
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct RustOwnedCrdtFieldLogRequest {
@@ -208,30 +221,35 @@ struct RustOwnedCrdtFieldLogRequest {
     limit: Option<i64>,
 }
 
+#[cfg(feature = "crdt-yjs")]
 impl RustOwnedCrdtFieldRequest {
     fn id(&self) -> CrdtFieldId {
         CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
     }
 }
 
+#[cfg(feature = "crdt-yjs")]
 impl RustOwnedCrdtFieldTextRequest {
     fn id(&self) -> CrdtFieldId {
         CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
     }
 }
 
+#[cfg(feature = "crdt-yjs")]
 impl RustOwnedCrdtFieldYjsUpdateRequest {
     fn id(&self) -> CrdtFieldId {
         CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
     }
 }
 
+#[cfg(feature = "crdt-yjs")]
 impl RustOwnedCrdtFieldCompactionRequest {
     fn id(&self) -> CrdtFieldId {
         CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
     }
 }
 
+#[cfg(feature = "crdt-yjs")]
 impl RustOwnedCrdtFieldLogRequest {
     fn id(&self) -> CrdtFieldId {
         CrdtFieldId::new(self.table.clone(), self.row_id.clone(), self.field.clone())
@@ -311,6 +329,7 @@ pub fn syncular_runtime_info_json() -> String {
     .expect("runtime info serializes")
 }
 
+#[cfg(feature = "crdt-yjs")]
 #[wasm_bindgen(js_name = syncularBuildYjsTextUpdateJson)]
 pub fn syncular_build_yjs_text_update_json(
     args_json: &str,
@@ -318,6 +337,7 @@ pub fn syncular_build_yjs_text_update_json(
     crdt_build_yjs_text_update_json(args_json).map_err(error_to_js)
 }
 
+#[cfg(feature = "crdt-yjs")]
 #[wasm_bindgen(js_name = syncularApplyYjsTextUpdatesJson)]
 pub fn syncular_apply_yjs_text_updates_json(
     args_json: &str,
@@ -325,6 +345,7 @@ pub fn syncular_apply_yjs_text_updates_json(
     crdt_apply_yjs_text_updates_json(args_json).map_err(error_to_js)
 }
 
+#[cfg(feature = "crdt-yjs")]
 #[wasm_bindgen(js_name = syncularApplyYjsEnvelopeToPayloadJson)]
 pub fn syncular_apply_yjs_envelope_to_payload_json(
     args_json: &str,
@@ -332,28 +353,19 @@ pub fn syncular_apply_yjs_envelope_to_payload_json(
     crdt_apply_yjs_envelope_to_payload_json(args_json).map_err(error_to_js)
 }
 
+#[cfg(feature = "crdt-yjs")]
 #[wasm_bindgen(js_name = syncularMaterializeYjsRowJson)]
 pub fn syncular_materialize_yjs_row_json(args_json: &str) -> std::result::Result<String, JsValue> {
     crdt_materialize_yjs_row_json(args_json).map_err(error_to_js)
 }
 
+#[cfg(feature = "e2ee")]
 #[wasm_bindgen(js_name = syncularEncryptionHelperJson)]
 pub fn syncular_encryption_helper_json(
     method: &str,
     args_json: &str,
 ) -> std::result::Result<String, JsValue> {
     encryption_helpers_json(method, args_json).map_err(error_to_js)
-}
-
-#[wasm_bindgen(js_name = openSyncularRustOwnedSqlite)]
-pub async fn open_syncular_rust_owned_sqlite(
-    config: JsValue,
-) -> std::result::Result<SyncularRustOwnedSqlite, JsValue> {
-    let config: RustOwnedSqliteConfig = serde_wasm_bindgen::from_value(config)
-        .map_err(|err| JsValue::from_str(&format!("decode rust-owned sqlite config: {err}")))?;
-    SyncularRustOwnedSqlite::open(config)
-        .await
-        .map_err(error_to_js)
 }
 
 #[wasm_bindgen(js_name = openSyncularRustOwnedSqliteClient)]
@@ -369,7 +381,6 @@ pub async fn open_syncular_rust_owned_sqlite_client(
         .map_err(error_to_js)
 }
 
-#[wasm_bindgen(js_name = SyncularRustOwnedSqlite)]
 pub struct SyncularRustOwnedSqlite {
     db: *mut ffi::sqlite3,
     state_id: String,
@@ -481,7 +492,6 @@ pub struct SyncularRustOwnedSqliteClient {
     inner: WebSyncularClient<WebSyncTransport, SyncularRustOwnedSqlite>,
 }
 
-#[wasm_bindgen(js_class = SyncularRustOwnedSqlite)]
 impl SyncularRustOwnedSqlite {
     async fn open(config: RustOwnedSqliteConfig) -> Result<Self> {
         let storage = config.storage.unwrap_or(RustOwnedSqliteStorage::Memory);
@@ -576,7 +586,6 @@ impl SyncularRustOwnedSqlite {
         Ok(store)
     }
 
-    #[wasm_bindgen(js_name = applyMutationsBatchJson)]
     pub fn apply_mutations_batch_json(
         &mut self,
         operations_json: &str,
@@ -585,7 +594,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = applyMutationsCommitJson)]
     pub fn apply_mutations_commit_json(
         &mut self,
         operations_json: &str,
@@ -594,18 +602,15 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = countRows)]
     pub fn count_rows(&self, table: &str) -> std::result::Result<i32, JsValue> {
         self.count_rows_inner(table).map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = generatedSchemaStateJson)]
     pub fn generated_schema_state_json(&self) -> std::result::Result<String, JsValue> {
         self.generated_schema_state_json_inner()
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = executeSqlJson)]
     pub fn execute_sql_json(
         &mut self,
         sql: &str,
@@ -615,7 +620,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = executeSqlValue)]
     pub fn execute_sql_value(
         &mut self,
         sql: &str,
@@ -625,7 +629,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = executeUnsafeSqlJson)]
     pub fn execute_unsafe_sql_json(
         &mut self,
         sql: &str,
@@ -635,7 +638,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = executeUnsafeSqlValue)]
     pub fn execute_unsafe_sql_value(
         &mut self,
         sql: &str,
@@ -645,7 +647,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = subscribeQueryJson)]
     pub fn subscribe_query_json(
         &mut self,
         sql: &str,
@@ -657,7 +658,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = unsubscribeQuery)]
     pub fn unsubscribe_query(&mut self, id: &str) {
         if let Some(index) = self.live_queries.iter().position(|query| query.id == id) {
             let query = self.live_queries.remove(index);
@@ -666,7 +666,6 @@ impl SyncularRustOwnedSqlite {
         self.live_events.retain(|event| event.query_id != id);
     }
 
-    #[wasm_bindgen(js_name = drainLiveQueryEventsJson)]
     pub fn drain_live_query_events_json(&mut self) -> std::result::Result<String, JsValue> {
         let events = std::mem::take(&mut self.live_events);
         serde_json::to_string(&events)
@@ -674,13 +673,11 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = liveQueryDiagnosticsJson)]
     pub fn live_query_diagnostics_json(&self) -> std::result::Result<String, JsValue> {
         self.live_query_diagnostics_json_inner()
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = drainRowsChangedEventsJson)]
     pub fn drain_rows_changed_events_json(&mut self) -> std::result::Result<String, JsValue> {
         let events = std::mem::take(&mut self.row_events);
         serde_json::to_string(&events)
@@ -688,7 +685,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = pendingOutboxJson)]
     pub async fn pending_outbox_json(
         &mut self,
         limit: usize,
@@ -699,7 +695,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = upsertAuthLeaseJson)]
     pub fn upsert_auth_lease_json(&mut self, lease_json: &str) -> std::result::Result<(), JsValue> {
         let lease: AuthLeaseRecord = serde_json::from_str(lease_json)
             .map_err(SyncularError::protocol)
@@ -707,14 +702,12 @@ impl SyncularRustOwnedSqlite {
         self.upsert_auth_lease_sync(&lease).map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = authLeaseJson)]
     pub fn auth_lease_json(&self, lease_id: &str) -> std::result::Result<String, JsValue> {
         self.auth_lease_sync(lease_id)
             .and_then(|lease| Ok(serde_json::to_string(&lease)?))
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = activeAuthLeasesJson)]
     pub fn active_auth_leases_json(
         &self,
         actor_id: Option<String>,
@@ -725,7 +718,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = setOutboxAuthLeaseJson)]
     pub fn set_outbox_auth_lease_json(
         &mut self,
         client_commit_id: &str,
@@ -741,7 +733,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = insertConflictJson)]
     pub async fn insert_conflict_json(
         &mut self,
         outbox_json: &str,
@@ -758,7 +749,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = conflictSummariesJson)]
     pub async fn conflict_summaries_json(&mut self) -> std::result::Result<String, JsValue> {
         AsyncWebStore::conflict_summaries(self)
             .await
@@ -766,7 +756,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = retryConflictKeepLocal)]
     pub async fn retry_conflict_keep_local(
         &mut self,
         id: &str,
@@ -776,7 +765,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = resolveConflict)]
     pub async fn resolve_conflict(
         &mut self,
         id: &str,
@@ -787,7 +775,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = subscriptionStateJson)]
     pub async fn subscription_state_json(
         &mut self,
         subscription_id: &str,
@@ -798,7 +785,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = upsertSubscriptionStateJson)]
     pub async fn upsert_subscription_state_json(
         &mut self,
         state_json: &str,
@@ -811,7 +797,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = deleteSubscriptionState)]
     pub async fn delete_subscription_state(
         &mut self,
         subscription_id: &str,
@@ -821,7 +806,6 @@ impl SyncularRustOwnedSqlite {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = clearTableForScopesJson)]
     pub async fn clear_table_for_scopes_json(
         &mut self,
         table: &str,
@@ -837,7 +821,6 @@ impl SyncularRustOwnedSqlite {
         .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = applyChangeJson)]
     pub async fn apply_change_json(
         &mut self,
         change_json: &str,
@@ -853,14 +836,12 @@ impl SyncularRustOwnedSqlite {
         .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = listTableJson)]
     pub async fn list_table_json(&mut self, table: &str) -> std::result::Result<String, JsValue> {
         AsyncWebStore::list_table_json(self, table)
             .await
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = close)]
     pub fn close(&mut self) {
         close_db(self.db);
         self.db = ptr::null_mut();
@@ -1061,6 +1042,7 @@ impl SyncularRustOwnedSqliteClient {
         Ok(())
     }
 
+    #[cfg(feature = "e2ee")]
     #[wasm_bindgen(js_name = setFieldEncryptionJson)]
     pub fn set_field_encryption_json(
         &mut self,
@@ -1071,6 +1053,7 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[cfg(feature = "e2ee")]
     #[wasm_bindgen(js_name = setEncryptedCrdtJson)]
     pub fn set_encrypted_crdt_json(
         &mut self,
@@ -1081,6 +1064,7 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[cfg(feature = "e2ee")]
     #[wasm_bindgen(js_name = setBlobEncryptionJson)]
     pub fn set_blob_encryption_json(
         &mut self,
@@ -1091,6 +1075,7 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[cfg(feature = "e2ee")]
     #[wasm_bindgen(js_name = encryptionHelperJson)]
     pub fn encryption_helper_json(
         &mut self,
@@ -1118,18 +1103,6 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = executeSqlJson)]
-    pub fn execute_sql_json(
-        &mut self,
-        sql: &str,
-        params_json: &str,
-    ) -> std::result::Result<String, JsValue> {
-        self.inner
-            .store_mut()
-            .execute_sql_json_inner(sql, params_json)
-            .map_err(error_to_js)
-    }
-
     #[wasm_bindgen(js_name = executeSqlValue)]
     pub fn execute_sql_value(
         &mut self,
@@ -1139,18 +1112,6 @@ impl SyncularRustOwnedSqliteClient {
         self.inner
             .store_mut()
             .execute_sql_value_inner_with_mode(sql, params, SqlExecutionMode::Readonly)
-            .map_err(error_to_js)
-    }
-
-    #[wasm_bindgen(js_name = executeUnsafeSqlJson)]
-    pub fn execute_unsafe_sql_json(
-        &mut self,
-        sql: &str,
-        params_json: &str,
-    ) -> std::result::Result<String, JsValue> {
-        self.inner
-            .store_mut()
-            .execute_unsafe_sql_json_inner(sql, params_json)
             .map_err(error_to_js)
     }
 
@@ -1166,6 +1127,7 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     #[wasm_bindgen(js_name = buildYjsTextUpdateJson)]
     pub fn build_yjs_text_update_json(
         &mut self,
@@ -1174,6 +1136,7 @@ impl SyncularRustOwnedSqliteClient {
         crdt_build_yjs_text_update_json(args_json).map_err(error_to_js)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     #[wasm_bindgen(js_name = applyYjsTextUpdatesJson)]
     pub fn apply_yjs_text_updates_json(
         &mut self,
@@ -1182,6 +1145,7 @@ impl SyncularRustOwnedSqliteClient {
         crdt_apply_yjs_text_updates_json(args_json).map_err(error_to_js)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     #[wasm_bindgen(js_name = applyYjsEnvelopeToPayloadJson)]
     pub fn apply_yjs_envelope_to_payload_json(
         &mut self,
@@ -1190,22 +1154,7 @@ impl SyncularRustOwnedSqliteClient {
         crdt_apply_yjs_envelope_to_payload_json(args_json).map_err(error_to_js)
     }
 
-    #[wasm_bindgen(js_name = materializeYjsRowJson)]
-    pub fn materialize_yjs_row_json(
-        &mut self,
-        args_json: &str,
-    ) -> std::result::Result<String, JsValue> {
-        crdt_materialize_yjs_row_json(args_json).map_err(error_to_js)
-    }
-
-    #[wasm_bindgen(js_name = yjsStateVectorBase64)]
-    pub fn yjs_state_vector_base64(
-        &mut self,
-        state_base64: Option<String>,
-    ) -> std::result::Result<String, JsValue> {
-        crdt_yjs_state_vector_base64(state_base64.as_deref()).map_err(error_to_js)
-    }
-
+    #[cfg(feature = "crdt-yjs")]
     #[wasm_bindgen(js_name = openCrdtFieldJson)]
     pub fn open_crdt_field_json(
         &mut self,
@@ -1223,6 +1172,7 @@ impl SyncularRustOwnedSqliteClient {
         Ok(crdt_field_descriptor_json(&field).to_string())
     }
 
+    #[cfg(feature = "crdt-yjs")]
     #[wasm_bindgen(js_name = applyCrdtFieldTextJson)]
     pub fn apply_crdt_field_text_json(
         &mut self,
@@ -1236,6 +1186,7 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     #[wasm_bindgen(js_name = applyCrdtFieldYjsUpdateJson)]
     pub fn apply_crdt_field_yjs_update_json(
         &mut self,
@@ -1249,6 +1200,7 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     #[wasm_bindgen(js_name = materializeCrdtFieldJson)]
     pub fn materialize_crdt_field_json(
         &mut self,
@@ -1262,6 +1214,7 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     #[wasm_bindgen(js_name = crdtDocumentSnapshotJson)]
     pub fn crdt_document_snapshot_json(
         &mut self,
@@ -1275,6 +1228,7 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     #[wasm_bindgen(js_name = crdtUpdateLogJson)]
     pub fn crdt_update_log_json(
         &mut self,
@@ -1288,6 +1242,7 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     #[wasm_bindgen(js_name = snapshotCrdtFieldStateVectorJson)]
     pub fn snapshot_crdt_field_state_vector_json(
         &mut self,
@@ -1301,6 +1256,7 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     #[wasm_bindgen(js_name = compactCrdtFieldJson)]
     pub fn compact_crdt_field_json(
         &mut self,
@@ -1314,6 +1270,7 @@ impl SyncularRustOwnedSqliteClient {
             .map_err(error_to_js)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn validate_crdt_field_encryption(&self, field: CrdtField) -> Result<CrdtField> {
         if field.sync_mode() == CrdtFieldSyncMode::EncryptedUpdateLog
             && self.inner.encrypted_crdt().is_none()
@@ -1325,6 +1282,7 @@ impl SyncularRustOwnedSqliteClient {
         Ok(field)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn open_validated_crdt_field(&self, id: CrdtFieldId) -> Result<CrdtField> {
         self.inner
             .store()
@@ -1332,6 +1290,7 @@ impl SyncularRustOwnedSqliteClient {
             .and_then(|field| self.validate_crdt_field_encryption(field))
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn apply_crdt_field_text(&mut self, request: RustOwnedCrdtFieldTextRequest) -> Result<Value> {
         validate_yjs_text_input_size(&request.next_text)?;
         let field = self.open_validated_crdt_field(request.id())?;
@@ -1406,6 +1365,7 @@ impl SyncularRustOwnedSqliteClient {
         }
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn apply_crdt_field_yjs_update(
         &mut self,
         request: RustOwnedCrdtFieldYjsUpdateRequest,
@@ -1468,6 +1428,7 @@ impl SyncularRustOwnedSqliteClient {
         }
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn materialize_crdt_field(&mut self, request: RustOwnedCrdtFieldRequest) -> Result<Value> {
         let field = self.open_validated_crdt_field(request.id())?;
         let row = self.require_crdt_field_row(&field)?;
@@ -1487,11 +1448,13 @@ impl SyncularRustOwnedSqliteClient {
         }))
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn crdt_document_snapshot(&mut self, request: RustOwnedCrdtFieldRequest) -> Result<Value> {
         let field = self.open_validated_crdt_field(request.id())?;
         self.inner.store().crdt_document_snapshot(&field)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn crdt_update_log(&mut self, request: RustOwnedCrdtFieldLogRequest) -> Result<Value> {
         let field = self.open_validated_crdt_field(request.id())?;
         self.inner
@@ -1499,6 +1462,7 @@ impl SyncularRustOwnedSqliteClient {
             .crdt_update_log(&field, request.limit.unwrap_or(100))
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn snapshot_crdt_field_state_vector(
         &mut self,
         request: RustOwnedCrdtFieldRequest,
@@ -1515,6 +1479,7 @@ impl SyncularRustOwnedSqliteClient {
         }))
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn compact_crdt_field(
         &mut self,
         request: RustOwnedCrdtFieldCompactionRequest,
@@ -1620,6 +1585,7 @@ impl SyncularRustOwnedSqliteClient {
         }
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn encrypted_crdt_stream_stats_for_field(
         &self,
         field: &CrdtField,
@@ -1637,6 +1603,7 @@ impl SyncularRustOwnedSqliteClient {
             .map(Some)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn require_crdt_field_row(&self, field: &CrdtField) -> Result<Value> {
         self.inner
             .store()
@@ -1651,6 +1618,7 @@ impl SyncularRustOwnedSqliteClient {
             })
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn crdt_encryption_context(&self) -> FieldEncryptionContext {
         FieldEncryptionContext {
             actor_id: self.inner.config().actor_id.clone(),
@@ -1743,17 +1711,6 @@ impl SyncularRustOwnedSqliteClient {
         now_ms: i64,
     ) -> std::result::Result<String, JsValue> {
         self.inner.store().active_auth_leases_json(actor_id, now_ms)
-    }
-
-    #[wasm_bindgen(js_name = setOutboxAuthLeaseJson)]
-    pub fn set_outbox_auth_lease_json(
-        &mut self,
-        client_commit_id: &str,
-        provenance_json: Option<String>,
-    ) -> std::result::Result<(), JsValue> {
-        self.inner
-            .store_mut()
-            .set_outbox_auth_lease_json(client_commit_id, provenance_json)
     }
 
     #[wasm_bindgen(js_name = conflictSummariesJson)]
@@ -2942,10 +2899,12 @@ impl SyncularRustOwnedSqlite {
         }
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn open_crdt_field(&self, id: CrdtFieldId) -> Result<CrdtField> {
         validate_crdt_field(self.app_schema, &id)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn current_crdt_field_row(&self, field: &CrdtField) -> Result<Option<Value>> {
         self.current_row_json(field.metadata(), field.table(), field.row_id())
     }
@@ -2997,6 +2956,7 @@ impl SyncularRustOwnedSqlite {
         Ok(orphaned)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn crdt_document_snapshot(&self, field: &CrdtField) -> Result<Value> {
         let row = self.current_crdt_field_row(field)?;
         let state_base64 = crdt_field_state_base64(field, row.as_ref());
@@ -3054,6 +3014,7 @@ impl SyncularRustOwnedSqlite {
         Ok(hints)
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn crdt_update_log(&self, field: &CrdtField, limit: i64) -> Result<Value> {
         let document_key = sql_string(&field.document_key());
         let rows = self.query_rows(
@@ -3083,6 +3044,7 @@ impl SyncularRustOwnedSqlite {
         Ok(Value::Array(rows))
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn compact_crdt_document(&self, field: &CrdtField) -> Result<Value> {
         let row = self.current_crdt_field_row(field)?;
         let state_base64 = crdt_field_state_base64(field, row.as_ref());
@@ -3096,6 +3058,7 @@ impl SyncularRustOwnedSqlite {
         self.select_crdt_document_snapshot(&field.document_key())
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn assert_crdt_document_capacity(
         &self,
         document_key: &str,
@@ -3129,6 +3092,7 @@ impl SyncularRustOwnedSqlite {
         Ok(())
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn upsert_crdt_document_snapshot(
         &self,
         field: &CrdtField,
@@ -3170,6 +3134,7 @@ impl SyncularRustOwnedSqlite {
         self.refresh_crdt_document_counts(&field.document_key())
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn record_crdt_update_log(
         &self,
         field: &CrdtField,
@@ -3210,6 +3175,7 @@ impl SyncularRustOwnedSqlite {
         self.refresh_crdt_document_counts(&field.document_key())
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn select_crdt_document_snapshot(&self, document_key: &str) -> Result<Value> {
         let document_key_sql = sql_string(document_key);
         self.query_rows(
@@ -3353,6 +3319,7 @@ impl SyncularRustOwnedSqlite {
         }
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn apply_crdt_field_operation(
         &mut self,
         field: &CrdtField,
@@ -3410,6 +3377,7 @@ impl SyncularRustOwnedSqlite {
         }
     }
 
+    #[cfg(feature = "crdt-yjs")]
     fn encrypted_crdt_stream_stats(
         &self,
         partition_id: &str,
@@ -6637,6 +6605,7 @@ fn row_needs_crdt_materialization(row: &Value, metadata: &AppTableMetadata) -> b
     })
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn crdt_field_descriptor_json(field: &CrdtField) -> Value {
     json!({
         "table": field.table(),
@@ -6650,6 +6619,7 @@ fn crdt_field_descriptor_json(field: &CrdtField) -> Value {
     })
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn crdt_field_write_receipt(client_commit_id: &str, sync_mode: CrdtFieldSyncMode) -> Value {
     json!({
         "clientCommitId": client_commit_id,
@@ -6657,6 +6627,7 @@ fn crdt_field_write_receipt(client_commit_id: &str, sync_mode: CrdtFieldSyncMode
     })
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn crdt_compaction_stats_from_snapshot(snapshot: &Value) -> Value {
     json!({
         "pendingUpdates": snapshot.get("pendingUpdates").cloned().unwrap_or(Value::Null),
@@ -6669,6 +6640,7 @@ fn crdt_compaction_stats_from_snapshot(snapshot: &Value) -> Value {
     })
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn crdt_field_state_base64(field: &CrdtField, row: Option<&Value>) -> Option<String> {
     row.and_then(|row| {
         row.get(field.state_column())
@@ -7640,6 +7612,7 @@ impl<'a> SqliteRow<'a> {
     }
 }
 
+#[cfg(feature = "crdt-yjs")]
 fn crdt_field_compacted_changed_row(
     field: &CrdtField,
     client_commit_id: Option<String>,

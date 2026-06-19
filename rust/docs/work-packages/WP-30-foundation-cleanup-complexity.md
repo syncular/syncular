@@ -134,7 +134,7 @@ Initial audit inputs:
      lockfiles only with targeted gates.
 
 3. Public API alias cleanup.
-   - Audit `@syncular/client`, `@syncular/react`, generated TypeScript, native
+   - Audit `@syncular/client`, `@syncular/client/react`, generated TypeScript, native
      bindings, and umbrella `syncular` exports for transitional aliases.
    - Keep canonical Rust-first names; delete old names instead of preserving
      compatibility shims.
@@ -357,7 +357,7 @@ decision, not from the deleted protocol/package paths closed here.
   test to tolerate startup diagnostic events before the initial sync-completed
   event.
 - Removed the `@syncular/client-expo` alias package. Apps should use the
-  canonical `@syncular/client-react-native` bridge rather than package aliases.
+  canonical `@syncular/client/react-native` bridge rather than package aliases.
 - Removed host JSON CRDT snake_case aliases from runtime/native/browser request
   parsing. Generated host APIs already emit the canonical camelCase fields
   (`rowId`, `nextText`, `minUncheckpointedUpdates`, `serverPayload`,

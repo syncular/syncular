@@ -1,8 +1,21 @@
+import { type ReactNode, useState } from 'react';
+import {
+  useCompactMutation,
+  useHandlers,
+  useLocalStorage,
+  useNotifyDataChangeMutation,
+  useOperationEvents,
+  usePartitionContext,
+  usePruneMutation,
+  usePrunePreview,
+  useStats,
+} from '../hooks';
 import type {
-  AlertThresholds,
-  HandlerEntry,
-  MaintenanceStat,
-} from '@syncular/ui';
+  ConsoleNotifyDataChangeResponse,
+  ConsoleOperationEvent,
+  ConsoleOperationType,
+} from '../lib/types';
+import type { AlertThresholds, HandlerEntry, MaintenanceStat } from '../ui';
 import {
   Alert,
   AlertDescription,
@@ -29,24 +42,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@syncular/ui';
-import { type ReactNode, useState } from 'react';
-import {
-  useCompactMutation,
-  useHandlers,
-  useLocalStorage,
-  useNotifyDataChangeMutation,
-  useOperationEvents,
-  usePartitionContext,
-  usePruneMutation,
-  usePrunePreview,
-  useStats,
-} from '../hooks';
-import type {
-  ConsoleNotifyDataChangeResponse,
-  ConsoleOperationEvent,
-  ConsoleOperationType,
-} from '../lib/types';
+} from '../ui';
 
 interface AlertConfig {
   latencyThresholdMs: number;

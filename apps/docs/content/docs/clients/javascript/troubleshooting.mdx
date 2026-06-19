@@ -34,11 +34,10 @@ Check `lifecycleState()` and the outbox stats (`outbox.pending`,
 
 Open fails with `Syncular WASM runtime artifact is missing (...)`
 (`packages/client/src/wasm-runtime.ts`). The WASM glue module could not be
-fetched. In this repo, build it first: `bun run javascript-bindings:build:wasm`
-(or `build:wasm:dev`). In an app, make sure the
-`@syncular/client-javascript-bindings` `dist/wasm` assets are served by your
-bundler/host — and that your dev server isn't rewriting the `.js`/`.wasm`
-URLs to `index.html`.
+fetched. In this repo, build it first: `bun run client:build:wasm`
+(or `bun --cwd packages/client build:wasm:dev`). In an app, make sure the
+`@syncular/client` `dist/wasm` assets are served by your bundler/host — and
+that your dev server isn't rewriting the `.js`/`.wasm` URLs to `index.html`.
 
 ## Schema version mismatch
 

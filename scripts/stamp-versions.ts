@@ -139,7 +139,7 @@ function stampRuntimeContract(entries: PackageEntry[], version: string): void {
   const runtimeContractPath = join(
     import.meta.dirname,
     '..',
-    'rust/bindings/javascript/src/runtime-contract.ts'
+    'packages/client/src/wasm-bindings/runtime-contract.ts'
   );
   let source = readFileSync(runtimeContractPath, 'utf8');
   source = replaceExportedStringConstant(

@@ -3,7 +3,7 @@ title: Cloudflare Adapter
 description: Deploy Syncular on Cloudflare Workers and Durable Objects
 ---
 
-The `@syncular/server-cloudflare` package provides adapters for deploying Syncular on Cloudflare's edge infrastructure.
+The `@syncular/server/cloudflare` package provides adapters for deploying Syncular on Cloudflare's edge infrastructure.
 
 ## Two Deployment Modes
 
@@ -15,13 +15,13 @@ The `@syncular/server-cloudflare` package provides adapters for deploying Syncul
 ## Installation
 
 ```bash
-bun add @syncular/server-cloudflare @syncular/server-hono @syncular/dialects kysely-d1 @syncular/server-dialect-sqlite hono
+bun add @syncular/server kysely-d1 hono
 ```
 
 For Postgres (Neon) instead of D1:
 
 ```bash
-bun add @syncular/dialects kysely-neon @neondatabase/serverless @syncular/server-dialect-postgres
+bun add @syncular/server kysely-neon @neondatabase/serverless
 ```
 
 ## Worker (Polling Only)
@@ -30,11 +30,11 @@ Use `createSyncWorker` for stateless polling-only deployments. No WebSocket supp
 
 ```typescript
 // src/index.ts
-import { createSyncWorker } from '@syncular/server-cloudflare/worker';
+import { createSyncWorker } from '@syncular/server/cloudflare/worker';
 import { createDatabase } from '@syncular/core';
-import { createD1Dialect } from '@syncular/dialects/d1';
-import { createSqliteServerDialect, ensureSyncSchema } from '@syncular/server-dialect-sqlite';
-import { createSyncServer } from '@syncular/server-hono';
+import { createD1Dialect } from '@syncular/server/d1';
+import { createSqliteServerDialect, ensureSyncSchema } from '@syncular/server/sqlite';
+import { createSyncServer } from '@syncular/server/hono';
 import { tasksHandler } from './handlers/tasks';
 
 type Env = { DB: D1Database };
@@ -87,11 +87,11 @@ When a Durable Object wakes from hibernation, previously attached sockets are cl
 import {
   SyncDurableObject,
   createSyncWorkerWithDO,
-} from '@syncular/server-cloudflare/durable-object';
+} from '@syncular/server/cloudflare/durable-object';
 import { createDatabase } from '@syncular/core';
-import { createD1Dialect } from '@syncular/dialects/d1';
-import { createSqliteServerDialect, ensureSyncSchema } from '@syncular/server-dialect-sqlite';
-import { createSyncServer } from '@syncular/server-hono';
+import { createD1Dialect } from '@syncular/server/d1';
+import { createSqliteServerDialect, ensureSyncSchema } from '@syncular/server/sqlite';
+import { createSyncServer } from '@syncular/server/hono';
 import { tasksHandler } from './handlers/tasks';
 
 type Env = {
@@ -190,8 +190,8 @@ Replace D1 with Neon for Postgres:
 
 ```typescript
 import { createDatabase } from '@syncular/core';
-import { createNeonDialect } from '@syncular/dialects/neon';
-import { createPostgresServerDialect, ensureSyncSchema } from '@syncular/server-dialect-postgres';
+import { createNeonDialect } from '@syncular/server/neon';
+import { createPostgresServerDialect, ensureSyncSchema } from '@syncular/server/postgres';
 
 export default createSyncWorker<Env>(async (app, env) => {
   const db = createDatabase({
@@ -221,10 +221,10 @@ For blob storage (images, files, etc.), use the R2 adapter with native R2Bucket 
 
 ```typescript
 import { createDatabase } from '@syncular/core';
-import { createD1Dialect } from '@syncular/dialects/d1';
+import { createD1Dialect } from '@syncular/server/d1';
 import { createBlobManager } from '@syncular/server';
-import { createR2BlobStorageAdapter, createHmacTokenSigner } from '@syncular/server-cloudflare/r2';
-import { createBlobRoutes } from '@syncular/server-hono';
+import { createR2BlobStorageAdapter, createHmacTokenSigner } from '@syncular/server/cloudflare/r2';
+import { createBlobRoutes } from '@syncular/server/hono';
 
 type Env = {
   DB: D1Database;

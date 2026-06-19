@@ -56,17 +56,17 @@ Building your own app instead?
 **Server**
 
 ```bash
-npm install @syncular/server @syncular/server-hono @syncular/server-dialect-postgres kysely pg hono
+npm install @syncular/server kysely pg hono
 ```
 
 **Client (React + browser)**
 
 ```bash
-npm install @syncular/client @syncular/react kysely
+npm install @syncular/client kysely react react-dom
 ```
 
-If your server runtime is Neon-backed, pair `@syncular/dialects/neon` with
-`createNeonServerDialect()` from `@syncular/server-dialect-postgres`.
+If your server runtime is Neon-backed, pair `@syncular/server/neon` with
+`createNeonServerDialect()` from `@syncular/server/postgres`.
 
 If startup-critical data should bootstrap before large background tables, assign
 `bootstrapPhase` on client subscriptions. Lower phases bootstrap first, while
@@ -106,7 +106,7 @@ That separation is intentional: your server schema models the domain, your clien
 
 New sync systems should be met with skepticism. Syncular is tested across multiple layers so you can validate behavior before trusting it in an app.
 
-- **Rust browser gates** — `bun run client:test`, `bun run client:tsgo`, and `bun run javascript-bindings:build:wasm` cover the canonical browser client package
+- **Rust browser gates** — `bun run client:test`, `bun run client:tsgo`, and `bun run client:build:wasm` cover the canonical browser client package
 - **Rust conformance** — `bun run rust:conformance:fast` covers the shared client/server protocol scenarios
 - **Server and package tests** — `bun test` covers remaining TypeScript server, core, dialect, migration, and typegen packages
 
@@ -135,11 +135,11 @@ client implementations are no longer a product path.
 
 | Dialect / runtime | Use case | Package |
 |---|---|---|
-| Postgres | Production (Node, Bun, Workers, …) | `@syncular/server-dialect-postgres` |
-| Neon-backed Postgres | Production serverless / edge runtimes | `@syncular/server-dialect-postgres` via `createNeonServerDialect()` |
-| SQLite | Dev / testing | `@syncular/server-dialect-sqlite` |
-| Cloudflare Worker + D1 | Cloudflare Workers (HTTP only) | `@syncular/server-cloudflare` |
-| Cloudflare Durable Object + D1 | Cloudflare Workers + WebSocket realtime | `@syncular/server-cloudflare` |
+| Postgres | Production (Node, Bun, Workers, …) | `@syncular/server/postgres` |
+| Neon-backed Postgres | Production serverless / edge runtimes | `@syncular/server/postgres` via `createNeonServerDialect()` |
+| SQLite | Dev / testing | `@syncular/server/sqlite` |
+| Cloudflare Worker + D1 | Cloudflare Workers (HTTP only) | `@syncular/server/cloudflare` |
+| Cloudflare Durable Object + D1 | Cloudflare Workers + WebSocket realtime | `@syncular/server/cloudflare` |
 
 ## Core packages
 
@@ -149,13 +149,13 @@ Most packages are published under the `@syncular` scope on npm. The umbrella pac
 |---|---|
 | `syncular` | Umbrella package with re-exports for one-package imports |
 | `@syncular/server` | Server sync engine (push, pull, pruning, snapshots, blobs) |
-| `@syncular/server-hono` | Hono adapter with HTTP routes, OpenAPI, WebSocket, and console routes |
-| `@syncular/server-cloudflare` | Cloudflare adapter for Workers and Durable Objects |
+| `@syncular/server/hono` | Hono adapter with HTTP routes, OpenAPI, WebSocket, and console routes |
+| `@syncular/server/cloudflare` | Cloudflare adapter for Workers and Durable Objects |
 | `@syncular/client` | Rust-owned browser client package with TypeScript runtime bindings |
-| `@syncular/react` | React hooks and provider for the Rust-owned client |
-| `@syncular/client-tauri` | Tauri JS/React bridge facade over a Rust Syncular host |
-| `@syncular/client-react-native` | React Native/Nitro bridge facade over a native Syncular host |
-| `@syncular/transport-http` | HTTP push/pull transport |
+| `@syncular/client/react` | React hooks and provider for the Rust-owned client |
+| `@syncular/client/tauri` | Tauri JS/React bridge facade over a Rust Syncular host |
+| `@syncular/client/react-native` | React Native/Nitro bridge facade over a native Syncular host |
+| `@syncular/core/http` | HTTP push/pull transport |
 | `@syncular/console` | Embeddable console UI for commits, clients, events, and operations |
 | `@syncular/testkit` | Server fixtures, protocol request builders, realtime helpers, and fault injection |
 | `@syncular/migrations` | Versioned migrations with checksum tracking |

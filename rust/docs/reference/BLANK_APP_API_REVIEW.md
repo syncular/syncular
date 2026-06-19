@@ -14,7 +14,7 @@ generated app contract, local codegen, and testkit smoke path.
 - Generated mutation names: acceptable. The app-facing TypeScript and React
   surfaces use table-shaped `insert`, `update`, and `delete` helpers rather than
   protocol-level operation names.
-- Live query setup: acceptable for React. The `@syncular/react` test now keeps
+- Live query setup: acceptable for React. The `@syncular/client/react` test now keeps
   happy-dom registration scoped to the test file so hook tests do not leak
   browser globals.
 - Testkit setup: acceptable but split by host. JavaScript apps use

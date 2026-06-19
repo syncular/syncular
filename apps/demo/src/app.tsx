@@ -2,7 +2,7 @@ import type {
   SyncularClientStatus,
   SyncularCommandHistory,
 } from '@syncular/client';
-import { createSyncularReact } from '@syncular/react';
+import { createSyncularReact } from '@syncular/client/react';
 import {
   CheckCircle2,
   Circle,

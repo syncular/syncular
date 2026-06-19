@@ -68,11 +68,11 @@ handlers.
 ## Server-merge setup
 
 For `server-merge` tables, add the Yjs push plugin from
-`@syncular/server-plugin-yjs` so pushed update envelopes are merged before
+`@syncular/server/crdt-yjs` so pushed update envelopes are merged before
 your table handler applies the row:
 
 ```ts
-import { createYjsServerPushPlugin } from '@syncular/server-plugin-yjs';
+import { createYjsServerPushPlugin } from '@syncular/server/crdt-yjs';
 
 const yjsPlugin = createYjsServerPushPlugin({
   rules: [
@@ -109,7 +109,7 @@ runtime client:
 - `compactCrdtField` — fold acknowledged updates into the snapshot.
 
 Most editor integrations should not call these directly. The
-`@syncular/client-crdt-adapters` package binds a Yjs `Y.Doc` to a row field
+`@syncular/client/crdt-yjs` package binds a Yjs `Y.Doc` to a row field
 (`yjs-document-field-adapter`) with queued update flushing
 (`enqueueCrdtFieldYjsUpdate`), backpressure events, and restore handling, so
 editor bursts never block the UI thread. Pair it with TipTap/ProseMirror or

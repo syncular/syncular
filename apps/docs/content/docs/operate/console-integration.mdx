@@ -20,12 +20,12 @@ config). The supported programmatic API for serving them is
 `createConsoleStaticResponder` from `@syncular/console/server` — do not
 resolve `@syncular/console/static/index.html` directly in application code.
 
-## 1) Backend helper (`@syncular/server-hono`)
+## 1) Backend helper (`@syncular/server/hono`)
 
 If you already run Hono, use `mountConsoleUi` to serve the Console app and prefill runtime config.
 
 ```ts
-import { mountConsoleUi } from '@syncular/server-hono';
+import { mountConsoleUi } from '@syncular/server/hono';
 
 mountConsoleUi(app, {
   mountPath: '/console',

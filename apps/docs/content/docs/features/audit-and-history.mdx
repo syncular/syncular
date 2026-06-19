@@ -71,7 +71,7 @@ const unsubscribeOutbox = syncular.on('outboxChanged', (stats) => {
 ### Conflict notifications
 
 ```tsx
-import { createSyncularReact } from '@syncular/react';
+import { createSyncularReact } from '@syncular/client/react';
 
 const { useConflictStats } = createSyncularReact<AppDb>();
 

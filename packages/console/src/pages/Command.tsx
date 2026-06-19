@@ -1,22 +1,3 @@
-import type {
-  ActivityBarData,
-  ActivityTimeRange,
-  FeedEntry,
-  LatencyBucket,
-  MetricItem,
-} from '@syncular/ui';
-import {
-  ActivityBars,
-  Alert,
-  AlertDescription,
-  AlertTitle,
-  CommitTable,
-  KpiStrip,
-  LatencyPercentilesBar,
-  LiveActivityFeed,
-  Spinner,
-  TopologyHero,
-} from '@syncular/ui';
 import { useNavigate } from '@tanstack/react-router';
 import { useMemo, useState } from 'react';
 import {
@@ -33,6 +14,25 @@ import {
   useTimeseriesStats,
 } from '../hooks';
 import { adaptConsoleClientsToTopology } from '../lib/topology';
+import type {
+  ActivityBarData,
+  ActivityTimeRange,
+  FeedEntry,
+  LatencyBucket,
+  MetricItem,
+} from '../ui';
+import {
+  ActivityBars,
+  Alert,
+  AlertDescription,
+  AlertTitle,
+  CommitTable,
+  KpiStrip,
+  LatencyPercentilesBar,
+  LiveActivityFeed,
+  Spinner,
+  TopologyHero,
+} from '../ui';
 
 interface AlertConfig {
   enabled: boolean;

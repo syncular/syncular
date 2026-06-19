@@ -51,7 +51,7 @@ The React entrypoint exposes the current conflict counters for badges,
 banners, and navigation:
 
 ```tsx
-import { createSyncularReact } from '@syncular/react';
+import { createSyncularReact } from '@syncular/client/react';
 import type { AppDb } from './db-types';
 
 const { useConflictStats } = createSyncularReact<AppDb>();
@@ -94,13 +94,13 @@ is a server-level test: seed a row, then push a second operation with a stale
 ```ts
 import { expect, it } from 'bun:test';
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
 import {
   createServerHandlerCollection,
   ensureSyncSchema,
   pushCommit,
 } from '@syncular/server';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import {
   createProjectScopedTasksHandler,
   createProjectScopedTaskUpsertOperation,

@@ -2,7 +2,7 @@
  * Console API types derived from generated OpenAPI operations.
  */
 
-import type { operations } from '@syncular/transport-http';
+import type { operations } from '@syncular/core/http';
 
 type OperationName = keyof operations;
 

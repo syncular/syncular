@@ -1,3 +1,9 @@
+import { useState } from 'react';
+import {
+  useBlobDownload,
+  useBlobs,
+  useDeleteBlobMutation,
+} from '../hooks/useConsoleApi';
 import {
   Badge,
   Button,
@@ -16,13 +22,7 @@ import {
   TableHead,
   TableHeader,
   TableRow,
-} from '@syncular/ui';
-import { useState } from 'react';
-import {
-  useBlobDownload,
-  useBlobs,
-  useDeleteBlobMutation,
-} from '../hooks/useConsoleApi';
+} from '../ui';
 
 function formatFileSize(bytes: number): string {
   if (bytes === 0) return '0 B';

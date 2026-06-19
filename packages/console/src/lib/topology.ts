@@ -1,4 +1,4 @@
-import type { SyncClientNode } from '@syncular/ui';
+import type { SyncClientNode } from '../ui';
 import type { ConsoleClient, SyncStats } from './types';
 
 interface TopologyAdapterOptions {

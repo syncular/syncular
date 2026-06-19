@@ -1,0 +1,22 @@
+/**
+ * @syncular/server/cloudflare - Cloudflare adapters for Syncular
+ *
+ * Two deployment modes:
+ * - Worker (polling only): `@syncular/server/cloudflare/worker`
+ * - Durable Object (WebSocket + polling): `@syncular/server/cloudflare/durable-object`
+ *
+ * Blob storage:
+ * - R2 native: `@syncular/server/cloudflare/r2`
+ *
+ * Scope cache:
+ * - Durable Object cache backend: `@syncular/server/cloudflare/scope-cache`
+ *
+ * Dialect is user-provided:
+ * - D1 + SQLite: `@syncular/server/d1` + `@syncular/server/sqlite`
+ * - Neon + Postgres: `@syncular/server/neon` + `createNeonServerDialect()` from `@syncular/server/postgres`
+ */
+
+export * from './durable-object';
+export * from './r2';
+export * from './scope-cache';
+export * from './worker';

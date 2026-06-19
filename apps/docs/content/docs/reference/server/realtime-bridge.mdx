@@ -13,7 +13,7 @@ client should recover through HTTP pull.
 Manages WebSocket connections on a single instance. Connections are grouped by **scopes** (e.g. `user:123`, `project:456`).
 
 ```typescript
-import { WebSocketConnectionManager } from '@syncular/server-hono';
+import { WebSocketConnectionManager } from '@syncular/server/hono';
 
 const wsManager = new WebSocketConnectionManager({
   heartbeatIntervalMs: 30000,

@@ -4,6 +4,10 @@
     "src/**/*"
   ],
   "compilerOptions": {
+    "types": [
+      "bun",
+      "@cloudflare/workers-types"
+    ],
     "rootDir": "src",
     "outDir": "dist"
   },

@@ -54,8 +54,8 @@ export const app = defineSyncularClient({
 
 ```ts
 import { createServerHandler } from '@syncular/server';
-import { createSyncServer } from '@syncular/server-hono';
-import { createYjsServerPushPlugin } from '@syncular/server-plugin-yjs';
+import { createSyncServer } from '@syncular/server/hono';
+import { createYjsServerPushPlugin } from '@syncular/server/crdt-yjs';
 import { upgradeWebSocket } from 'hono/bun';
 
 const { syncRoutes } = createSyncServer<ServerDb, Auth>({
@@ -122,7 +122,7 @@ await syncular.mutations.documents.update(documentId, { title: nextTitle });
 ```
 
 Bind the rich-text field to the editor through
-`@syncular/client-crdt-adapters`, which connects a Yjs `Y.Doc` to the row
+`@syncular/client/crdt-yjs`, which connects a Yjs `Y.Doc` to the row
 field with queued update flushing and backpressure handling — the editor
 (TipTap/ProseMirror or any Yjs-compatible editor) never blocks on sync. See
 [CRDT Fields](/features/crdt-fields#client-apis).

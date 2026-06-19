@@ -34,6 +34,30 @@
         "types": "./dist/index.d.ts",
         "default": "./dist/index.js"
       }
+    },
+    "./http": {
+      "bun": "./src/http/index.ts",
+      "browser": "./src/http/index.ts",
+      "import": {
+        "types": "./dist/http/index.d.ts",
+        "default": "./dist/http/index.js"
+      }
+    },
+    "./http/blob": {
+      "bun": "./src/http/blob.ts",
+      "browser": "./src/http/blob.ts",
+      "import": {
+        "types": "./dist/http/blob.d.ts",
+        "default": "./dist/http/blob.js"
+      }
+    },
+    "./sentry": {
+      "bun": "./src/sentry.ts",
+      "browser": "./src/sentry.ts",
+      "import": {
+        "types": "./dist/sentry.d.ts",
+        "default": "./dist/sentry.js"
+      }
     }
   },
   "scripts": {
@@ -41,16 +65,20 @@
     "test": "bun test src/__tests__",
     "tsgo": "tsgo --noEmit",
     "build": "tsgo",
-    "release": "syncular-publish"
+    "release": "syncular-publish",
+    "generate:http-types": "openapi-typescript ../server/openapi.json -o src/http/generated/api.ts"
   },
   "peerDependencies": {
     "kysely": "^0.28.0",
-    "zod": "^4.0.0"
+    "zod": "^4.0.0",
+    "openapi-fetch": "^0.17.0"
   },
   "devDependencies": {
     "@syncular/config": "workspace:*",
     "kysely": "*",
-    "zod": "*"
+    "zod": "*",
+    "openapi-fetch": "^0.17.0",
+    "openapi-typescript": "^7.13.0"
   },
   "files": [
     "dist",
@@ -65,5 +93,10 @@
   ],
   "dependencies": {
     "fflate": "^0.8.2"
+  },
+  "peerDependenciesMeta": {
+    "openapi-fetch": {
+      "optional": true
+    }
   }
 }

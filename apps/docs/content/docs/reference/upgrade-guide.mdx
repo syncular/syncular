@@ -29,18 +29,17 @@ made. This page tells you how to upgrade safely under that policy.
 
 These renames/removals have landed (the old names are gone, not deprecated):
 
-### Dialect packages merged into `@syncular/dialects`
+### Dialect packages merged into `@syncular/server`
 
 The seven per-driver client dialect packages (one `@syncular/dialect-<driver>`
 package each for better-sqlite3, bun:sqlite, D1, LibSQL, Neon, PGlite, and
-sqlite3) were consolidated into the single `@syncular/dialects` package with
-per-dialect subpaths:
+sqlite3) were consolidated into `@syncular/server/<driver>` subpaths:
 
 ```ts
 // Before: one package per driver
 import { ... } from '@syncular/dialect-<driver>';
-// After: one package, per-driver subpaths
-import { ... } from '@syncular/dialects/pglite';
+// After: one server package, per-driver subpaths
+import { ... } from '@syncular/server/pglite';
 ```
 
 Drivers are optional peer dependencies — install only the driver you use.
@@ -56,11 +55,11 @@ import surface; the `syncular` package now only ships the CLI
 ### Other notable removals
 
 - The JS-owned client stack was replaced: `@syncular/client` is now the
-  Rust-owned browser package, with `@syncular/react` on top. The old client
+  Rust-owned browser package, with `@syncular/client/react` on top. The old client
   plugin packages (`@syncular/client-plugin-*`), the Expo alias client
   package, the standalone WebSocket transport package, and the JS-owned
   native SQLite dialect packages (Expo/Electron/React Native) are gone —
-  native hosts use `@syncular/client-react-native` / `@syncular/client-tauri`.
+  native hosts use `@syncular/client/react-native` / `@syncular/client/tauri`.
 - Conflict resolution accepts only `keep-local`, `keep-server`, and
   `dismiss` (`accept-server` and free-form strings were removed).
 - Realtime is binary sync-pack deltas or explicit pull-required wakeups;

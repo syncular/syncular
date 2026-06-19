@@ -12,7 +12,7 @@ deterministic failures. Two base transports are common in tests:
 - `createMockTransport()` from the testkit — an in-memory transport that acks
   every push and returns empty pulls; ideal for unit-testing code that
   consumes a transport
-- `createHttpTransport({ baseUrl })` from `@syncular/transport-http` — the
+- `createHttpTransport({ baseUrl })` from `@syncular/core/http` — the
   real HTTP transport, pointed at a
   [`createHttpServerFixture`](/clients/javascript/testing/quick-start) for
   end-to-end fault drills
@@ -56,7 +56,7 @@ client never saw the ack. Push delivery is idempotent per `clientCommitId`,
 so the retry must not double-apply; this test proves it end to end:
 
 ```ts
-import { createHttpTransport } from '@syncular/transport-http';
+import { createHttpTransport } from '@syncular/core/http';
 import {
   createHttpServerFixture,
   createProjectScopedTasksHandler,
