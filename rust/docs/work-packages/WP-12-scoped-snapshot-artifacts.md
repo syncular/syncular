@@ -118,7 +118,7 @@ Retained third slice:
 - Added an explicit `SnapshotArtifactStorage` interface for artifact body
   reads.
 - Added authenticated `GET /snapshot-artifacts/:artifactId` route in
-  `@syncular/server-hono`.
+  `@syncular/server/hono`.
 - The route requires caller-provided scope values, recomputes effective scopes
   through normal handler auth, verifies the scoped artifact key, honors ETag
   caching, and serves artifact body bytes with artifact metadata headers.

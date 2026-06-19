@@ -112,7 +112,8 @@ Existing pieces to build on:
 
 - `@syncular/core` already exposes a vendor-neutral telemetry abstraction with
   logging, tracing, metrics, and exception capture.
-- `@syncular/observability-sentry` already adapts Syncular telemetry to Sentry.
+- `@syncular/client/sentry` and `@syncular/server/cloudflare/sentry` already
+  adapt Syncular telemetry to Sentry.
 - Server dialects persist `sync_request_events` with request, trace, span,
   transport, sync path, duration, outcome, tables, scopes summary, and optional
   payload references.

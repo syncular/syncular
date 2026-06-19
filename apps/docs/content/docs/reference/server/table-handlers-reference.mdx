@@ -11,7 +11,7 @@ For patterns, worked examples, and authorization narrative, read the
 [Table Handlers guide](/server/table-handlers).
 
 ```typescript
-import { createSyncServer } from '@syncular/server-hono';
+import { createSyncServer } from '@syncular/server/hono';
 import { createServerHandler } from '@syncular/server';
 
 const tasksHandler = createServerHandler<ServerDb, ClientDb, 'tasks'>({

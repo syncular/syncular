@@ -15,7 +15,6 @@
 import { beforeEach, describe, expect, it } from 'bun:test';
 import { rm } from 'node:fs/promises';
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import {
   clearAppliedMigrations,
   createMigrationTrackingTableName,
@@ -29,6 +28,7 @@ import {
   runMigrations,
   runMigrationsToVersion,
 } from '@syncular/migrations';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
 import type { Kysely } from 'kysely';
 import { createMigrationChecksums } from '../../packages/typegen/src/checksums';
 

@@ -18,8 +18,6 @@
  */
 
 import { createDatabase, type SyncOperation } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
-import { createPgliteDialect } from '@syncular/dialects/pglite';
 import {
   type ApplyOperationResult,
   computePruneWatermarkCommitSeq,
@@ -30,9 +28,11 @@ import {
   type ServerTableHandler,
   type SyncCoreDb,
 } from '@syncular/server';
-import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
-import { createSyncRoutes } from '@syncular/server-hono';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
+import { createSyncRoutes } from '@syncular/server/hono';
+import { createPgliteDialect } from '@syncular/server/pglite';
+import { createPostgresServerDialect } from '@syncular/server/postgres';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import { cors } from 'hono/cors';

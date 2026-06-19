@@ -1,12 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { BlobStorageAdapter } from '@syncular/core';
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import {
   createBlobManager,
   ensureBlobStorageSchemaSqlite,
   type SyncBlobDb,
 } from '@syncular/server';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
 import type { Kysely } from 'kysely';
 
 describe('BlobManager cleanup tuning', () => {

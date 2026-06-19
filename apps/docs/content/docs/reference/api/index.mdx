@@ -150,12 +150,12 @@ clients after out-of-band writes),
 ## OpenAPI specification
 
 The per-endpoint pages in this section are generated from the OpenAPI spec at
-`packages/server-hono/openapi.json` (regenerate with
+`packages/server/openapi.json` (regenerate with
 `bun --cwd apps/docs generate:openapi`; do not edit the generated pages by
 hand). To serve the spec from your own app:
 
 ```ts
-import { createOpenAPIHandler } from '@syncular/server-hono';
+import { createOpenAPIHandler } from '@syncular/server/hono';
 
 app.get('/openapi.json', createOpenAPIHandler(app, { title: 'Syncular API' }));
 ```
@@ -163,7 +163,7 @@ app.get('/openapi.json', createOpenAPIHandler(app, { title: 'Syncular API' }));
 For a paired Scalar reference page at `/spec`:
 
 ```ts
-import { createOpenAPIDocsRoutes } from '@syncular/server-hono';
+import { createOpenAPIDocsRoutes } from '@syncular/server/hono';
 
 app.route('/', createOpenAPIDocsRoutes(app, { title: 'Syncular API' }));
 ```

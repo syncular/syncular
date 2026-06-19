@@ -126,14 +126,19 @@ export function encodeBunSqliteSnapshotArtifact(args: {
       const insert = db.prepare(
         `insert into ${table} (${columnNames}) values (${placeholders})`
       );
-      db.transaction((rows: readonly Record<string, unknown>[]) => {
-        for (const row of rows) {
+      db.exec('begin');
+      try {
+        for (const row of args.rows) {
           const values = args.columns.map((column) =>
             sqliteValueForColumn(column, row)
           ) as Parameters<typeof insert.run>;
           insert.run(...values);
         }
-      })(args.rows);
+        db.exec('commit');
+      } catch (error) {
+        db.exec('rollback');
+        throw error;
+      }
     }
 
     const bytes = (db as unknown as { serialize(): Uint8Array }).serialize();

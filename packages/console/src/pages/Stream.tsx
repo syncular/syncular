@@ -1,16 +1,3 @@
-import type { FilterGroup, StreamOperation } from '@syncular/ui';
-import {
-  Button,
-  Dialog,
-  DialogContent,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-  FilterBar,
-  Pagination,
-  Spinner,
-  StreamLog,
-} from '@syncular/ui';
 import { Link } from '@tanstack/react-router';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -24,6 +11,19 @@ import {
   useTimeRangeState,
 } from '../hooks';
 import type { ConsoleTimelineItem, TimeseriesRange } from '../lib/types';
+import type { FilterGroup, StreamOperation } from '../ui';
+import {
+  Button,
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  FilterBar,
+  Pagination,
+  Spinner,
+  StreamLog,
+} from '../ui';
 
 type ViewMode = 'all' | 'commits' | 'events';
 type EventTypeFilter = 'all' | 'sync' | 'push' | 'pull';

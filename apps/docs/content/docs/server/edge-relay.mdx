@@ -21,15 +21,15 @@ This is useful for:
 ## Installation
 
 ```bash
-npm install @syncular/relay @syncular/server-dialect-sqlite
+npm install @syncular/server
 ```
 
 ## Basic Setup
 
 ```typescript
-import { createRelayServer } from '@syncular/relay';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
-import { createHttpTransport } from '@syncular/transport-http';
+import { createRelayServer } from '@syncular/server/relay';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
+import { createHttpTransport } from '@syncular/core/http';
 import Database from 'better-sqlite3';
 import { Kysely, SqliteDialect } from 'kysely';
 

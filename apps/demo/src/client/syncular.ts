@@ -25,7 +25,7 @@ export type DemoDb = SyncularAppDb;
 export type DemoTask = Selectable<DemoDb['tasks']>;
 
 /**
- * The managed client surface that `@syncular/react` consumes, plus live
+ * The managed client surface that `@syncular/client/react` consumes, plus live
  * queries so `useSyncQuery` can subscribe instead of polling.
  */
 export type DemoSyncClient = SyncularClientLike<DemoDb> & SyncularLiveQueries;
@@ -150,7 +150,7 @@ export async function openDemoClient(
 
 /**
  * The generated database already satisfies the `SyncularClientLike` surface
- * that `@syncular/react`'s `SyncProvider` expects. The demo only layers its
+ * that `@syncular/client/react`'s `SyncProvider` expects. The demo only layers its
  * controllable network source on top: `useSyncConnection().reconnect/
  * disconnect` map to `start`/`stop`, and flipping the network source as well
  * keeps mutation-triggered auto-sync from leaking through while a pane is

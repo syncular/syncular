@@ -8,7 +8,6 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import {
   compactChanges,
   ensureSyncSchema,
@@ -17,7 +16,8 @@ import {
   readSyncStats,
   type SyncCoreDb,
 } from '@syncular/server';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import type { Kysely } from 'kysely';
 
 describe('server utilities', () => {

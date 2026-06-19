@@ -12,18 +12,18 @@ server, console, relay, and environment variables.
 | Surface | Where it's configured | Reference |
 |---|---|---|
 | Client (JS/browser) | `createSyncularDatabase(...)` options | [Client Configuration](/clients/javascript/client-configuration) |
-| Sync server | `createSyncServer(...)` from `@syncular/server-hono` | this page |
+| Sync server | `createSyncServer(...)` from `@syncular/server/hono` | this page |
 | Table handlers | `createServerHandler(...)` per table | [Table Handlers Reference](/reference/server/table-handlers-reference) |
 | Console | `console` option of `createSyncServer` | this page |
-| Relay | `@syncular/relay` `RelayServerOptions` | this page |
+| Relay | `@syncular/server/relay` `RelayServerOptions` | this page |
 | CLI / codegen | flags + env vars | [CLI](/reference/cli) |
 
 ## createSyncServer options
 
-`createSyncServer` (`@syncular/server-hono`) is the top-level server factory.
+`createSyncServer` (`@syncular/server/hono`) is the top-level server factory.
 
 ```ts
-import { createSyncServer } from '@syncular/server-hono';
+import { createSyncServer } from '@syncular/server/hono';
 
 const { syncRoutes, consoleRoutes } = createSyncServer({
   db,            // Kysely database instance
@@ -38,7 +38,7 @@ const { syncRoutes, consoleRoutes } = createSyncServer({
 | Option | Type | Required | Notes |
 |---|---|---|---|
 | `db` | `Kysely<DB>` | yes | Server database instance |
-| `dialect` | `ServerSyncDialect` | yes | From `@syncular/server-dialect-postgres` or `@syncular/server-dialect-sqlite` |
+| `dialect` | `ServerSyncDialect` | yes | From `@syncular/server/postgres` or `@syncular/server/sqlite` |
 | `sync` | `ServerSyncConfig` | yes | `authenticate(request)` plus at least one table handler; optional push `plugins` |
 | `chunkStorage` | `SnapshotChunkStorage` | no | External body storage (R2/S3) for snapshot chunks; default stores inline in the DB |
 | `snapshotArtifactStorage` | `SnapshotArtifactStorage` | no | External body storage for scoped snapshot artifacts (bodies are always external when used) |
@@ -147,7 +147,7 @@ The console websocket reuses the sync websocket settings
 (`heartbeatIntervalMs`, `maxMessageBytes`, message rate limits, allowed
 origins) from `routes.websocket`.
 
-## Relay options (`@syncular/relay`)
+## Relay options (`@syncular/server/relay`)
 
 `createRelayServer` runs an edge relay that syncs a scoped slice from the
 main server and serves local clients.

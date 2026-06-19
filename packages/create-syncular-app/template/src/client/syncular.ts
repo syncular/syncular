@@ -15,7 +15,7 @@ export type AppDb = SyncularAppDb;
 
 export type Task = Selectable<AppDb['tasks']>;
 
-/** The managed client surface that `@syncular/react` consumes. */
+/** The managed client surface that `@syncular/client/react` consumes. */
 export type AppSyncClient = SyncularClientLike<AppDb> & SyncularLiveQueries;
 
 /**

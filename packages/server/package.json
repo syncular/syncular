@@ -1,7 +1,7 @@
 {
   "name": "@syncular/server",
   "version": "0.1.0",
-  "description": "Server-side sync engine with push/pull, pruning, and snapshot support",
+  "description": "Server-side Syncular engine with opt-in Hono, database, storage, Cloudflare, relay, and CRDT subpaths",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
   "homepage": "https://syncular.dev",
@@ -60,25 +60,234 @@
         "types": "./dist/snapshot-artifacts/sqlite-bun.d.ts",
         "default": "./dist/snapshot-artifacts/sqlite-bun.js"
       }
+    },
+    "./hono": {
+      "bun": "./src/hono/index.ts",
+      "import": {
+        "types": "./dist/hono/index.d.ts",
+        "default": "./dist/hono/index.js"
+      }
+    },
+    "./hono/blobs": {
+      "bun": "./src/hono/blobs.ts",
+      "import": {
+        "types": "./dist/hono/blobs.d.ts",
+        "default": "./dist/hono/blobs.js"
+      }
+    },
+    "./hono/create-server": {
+      "bun": "./src/hono/create-server.ts",
+      "import": {
+        "types": "./dist/hono/create-server.d.ts",
+        "default": "./dist/hono/create-server.js"
+      }
+    },
+    "./cloudflare": {
+      "bun": "./src/cloudflare/index.ts",
+      "import": {
+        "types": "./dist/cloudflare/index.d.ts",
+        "default": "./dist/cloudflare/index.js"
+      }
+    },
+    "./cloudflare/worker": {
+      "bun": "./src/cloudflare/worker.ts",
+      "import": {
+        "types": "./dist/cloudflare/worker.d.ts",
+        "default": "./dist/cloudflare/worker.js"
+      }
+    },
+    "./cloudflare/durable-object": {
+      "bun": "./src/cloudflare/durable-object.ts",
+      "import": {
+        "types": "./dist/cloudflare/durable-object.d.ts",
+        "default": "./dist/cloudflare/durable-object.js"
+      }
+    },
+    "./cloudflare/r2": {
+      "bun": "./src/cloudflare/r2.ts",
+      "import": {
+        "types": "./dist/cloudflare/r2.d.ts",
+        "default": "./dist/cloudflare/r2.js"
+      }
+    },
+    "./cloudflare/scope-cache": {
+      "bun": "./src/cloudflare/scope-cache.ts",
+      "import": {
+        "types": "./dist/cloudflare/scope-cache.d.ts",
+        "default": "./dist/cloudflare/scope-cache.js"
+      }
+    },
+    "./cloudflare/sentry": {
+      "bun": "./src/cloudflare/sentry.ts",
+      "import": {
+        "types": "./dist/cloudflare/sentry.d.ts",
+        "default": "./dist/cloudflare/sentry.js"
+      }
+    },
+    "./service-worker": {
+      "bun": "./src/service-worker/index.ts",
+      "browser": "./src/service-worker/index.ts",
+      "import": {
+        "types": "./dist/service-worker/index.d.ts",
+        "default": "./dist/service-worker/index.js"
+      }
+    },
+    "./relay": {
+      "bun": "./src/relay/index.ts",
+      "import": {
+        "types": "./dist/relay/index.d.ts",
+        "default": "./dist/relay/index.js"
+      }
+    },
+    "./better-sqlite3": {
+      "bun": "./src/better-sqlite3.ts",
+      "import": {
+        "types": "./dist/better-sqlite3.d.ts",
+        "default": "./dist/better-sqlite3.js"
+      }
+    },
+    "./bun-sqlite": {
+      "bun": "./src/bun-sqlite.ts",
+      "import": {
+        "types": "./dist/bun-sqlite.d.ts",
+        "default": "./dist/bun-sqlite.js"
+      }
+    },
+    "./d1": {
+      "bun": "./src/d1.ts",
+      "import": {
+        "types": "./dist/d1.d.ts",
+        "default": "./dist/d1.js"
+      }
+    },
+    "./libsql": {
+      "bun": "./src/libsql.ts",
+      "import": {
+        "types": "./dist/libsql.d.ts",
+        "default": "./dist/libsql.js"
+      }
+    },
+    "./neon": {
+      "bun": "./src/neon.ts",
+      "import": {
+        "types": "./dist/neon.d.ts",
+        "default": "./dist/neon.js"
+      }
+    },
+    "./pglite": {
+      "bun": "./src/pglite.ts",
+      "browser": "./src/pglite.ts",
+      "import": {
+        "types": "./dist/pglite.d.ts",
+        "default": "./dist/pglite.js"
+      }
+    },
+    "./sqlite3": {
+      "bun": "./src/sqlite3.ts",
+      "import": {
+        "types": "./dist/sqlite3.d.ts",
+        "default": "./dist/sqlite3.js"
+      }
+    },
+    "./sqlite": {
+      "bun": "./src/sqlite/index.ts",
+      "import": {
+        "types": "./dist/sqlite/index.d.ts",
+        "default": "./dist/sqlite/index.js"
+      }
+    },
+    "./postgres": {
+      "bun": "./src/postgres/index.ts",
+      "import": {
+        "types": "./dist/postgres/index.d.ts",
+        "default": "./dist/postgres/index.js"
+      }
+    },
+    "./filesystem": {
+      "bun": "./src/filesystem/index.ts",
+      "import": {
+        "types": "./dist/filesystem/index.d.ts",
+        "default": "./dist/filesystem/index.js"
+      }
+    },
+    "./s3": {
+      "bun": "./src/s3/index.ts",
+      "import": {
+        "types": "./dist/s3/index.d.ts",
+        "default": "./dist/s3/index.js"
+      }
+    },
+    "./crdt-yjs": {
+      "bun": "./src/crdt-yjs/index.ts",
+      "import": {
+        "types": "./dist/crdt-yjs/index.d.ts",
+        "default": "./dist/crdt-yjs/index.js"
+      }
     }
   },
   "scripts": {
-    "test": "bun test --pass-with-no-tests",
+    "test": "bun test src",
     "tsgo": "tsgo --noEmit",
+    "generate:openapi": "bun scripts/generate-openapi.ts",
     "build": "tsgo",
-    "release": "syncular-publish"
+    "release": "syncular-publish",
+    "evaluate:relay-paths": "bun scripts/evaluate-relay-paths.ts",
+    "evaluate:rust-boundary": "bun scripts/evaluate-relay-rust-boundary.ts"
   },
   "dependencies": {
     "@syncular/core": "workspace:*"
   },
   "peerDependencies": {
+    "@cloudflare/workers-types": "*",
+    "@electric-sql/pglite": "^0.3.15",
+    "@hono/standard-validator": "^0.2.2",
+    "@neondatabase/serverless": "^1.0.2",
+    "@sentry/cloudflare": "^10.47.0",
+    "@scalar/hono-api-reference": "^0.10.6",
+    "@standard-community/standard-json": "^0.3.5",
+    "@standard-community/standard-openapi": "^0.2.9",
+    "@types/better-sqlite3": "^7.6.13",
+    "better-sqlite3": "^12.8.0",
+    "hono": "^4.0.0",
+    "hono-openapi": "^1.3.0",
     "kysely": "^0.28.0",
+    "kysely-bun-sqlite": "^0.4.0",
+    "kysely-d1": "^0.4.0",
+    "kysely-generic-sqlite": "^1.2.1",
+    "kysely-neon": "^2.0.2",
+    "kysely-pglite-dialect": "^1.2.0",
+    "libsql": "^0.5.29",
+    "openapi-types": "^12.1.3",
+    "sqlite3": "^6.0.1",
+    "yjs": "^13.6.30",
     "zod": "^4.0.0"
   },
   "devDependencies": {
+    "@cloudflare/workers-types": "*",
+    "@electric-sql/pglite": "^0.3.15",
+    "@hono/standard-validator": "^0.2.2",
+    "@neondatabase/serverless": "^1.0.2",
+    "@sentry/cloudflare": "^10.47.0",
+    "@scalar/hono-api-reference": "^0.10.6",
+    "@standard-community/standard-json": "^0.3.5",
+    "@standard-community/standard-openapi": "^0.2.9",
     "@syncular/config": "workspace:*",
-    "@syncular/dialects": "workspace:*",
+    "@syncular/console": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/json-schema": "^7.0.15",
+    "better-sqlite3": "^12.8.0",
+    "hono": "^4.12.15",
+    "hono-openapi": "^1.3.0",
     "kysely": "*",
+    "kysely-bun-sqlite": "^0.4.0",
+    "kysely-d1": "^0.4.0",
+    "kysely-generic-sqlite": "^1.2.1",
+    "kysely-neon": "^2.0.2",
+    "kysely-pglite-dialect": "^1.2.0",
+    "libsql": "^0.5.29",
+    "openapi-types": "^12.1.3",
+    "sqlite3": "^6.0.1",
+    "yjs": "^13.6.30",
     "zod": "*"
   },
   "files": [
@@ -91,5 +300,70 @@
     "!dist/**/__tests__/**",
     "!test/**",
     "!tests/**"
-  ]
+  ],
+  "peerDependenciesMeta": {
+    "@cloudflare/workers-types": {
+      "optional": true
+    },
+    "@electric-sql/pglite": {
+      "optional": true
+    },
+    "@hono/standard-validator": {
+      "optional": true
+    },
+    "@neondatabase/serverless": {
+      "optional": true
+    },
+    "@sentry/cloudflare": {
+      "optional": true
+    },
+    "@scalar/hono-api-reference": {
+      "optional": true
+    },
+    "@standard-community/standard-json": {
+      "optional": true
+    },
+    "@standard-community/standard-openapi": {
+      "optional": true
+    },
+    "@types/better-sqlite3": {
+      "optional": true
+    },
+    "better-sqlite3": {
+      "optional": true
+    },
+    "hono": {
+      "optional": true
+    },
+    "hono-openapi": {
+      "optional": true
+    },
+    "kysely-bun-sqlite": {
+      "optional": true
+    },
+    "kysely-d1": {
+      "optional": true
+    },
+    "kysely-generic-sqlite": {
+      "optional": true
+    },
+    "kysely-neon": {
+      "optional": true
+    },
+    "kysely-pglite-dialect": {
+      "optional": true
+    },
+    "libsql": {
+      "optional": true
+    },
+    "openapi-types": {
+      "optional": true
+    },
+    "sqlite3": {
+      "optional": true
+    },
+    "yjs": {
+      "optional": true
+    }
+  }
 }

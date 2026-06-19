@@ -56,7 +56,7 @@ never reach projects the actor is not a member of:
 
 ```ts
 import { createServerHandler } from '@syncular/server';
-import { createSyncServer } from '@syncular/server-hono';
+import { createSyncServer } from '@syncular/server/hono';
 import { syncularGeneratedCodecs } from './generated/syncular.generated';
 
 const tasksHandler = createServerHandler<ServerDb, AppDb, 'tasks', Auth>({

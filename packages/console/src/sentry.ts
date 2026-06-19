@@ -1,4 +1,4 @@
-import type { BrowserSentryInitOptions } from '@syncular/observability-sentry';
+import type { BrowserSentryInitOptions } from '@syncular/client/sentry';
 
 declare global {
   var __SYNCULAR_SENTRY_DSN__: string | undefined;

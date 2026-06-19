@@ -57,7 +57,7 @@ Native hosts can read these through `native_runtime_manifest_json()` and through
 
 ## Server Route Defaults
 
-`@syncular/server-hono` enforces these boundaries at HTTP route edges. They are
+`@syncular/server/hono` enforces these boundaries at HTTP route edges. They are
 configured through `createSyncRoutes({ sync: ... })` / `createSyncServer({
 routes: ... })` and return `runtime.limit_exceeded` envelopes when exceeded.
 

@@ -8,7 +8,7 @@
  *   2. Root package.json version (base version for ephemeral CI stamping in
  *      deploy.yml and staging releases via scripts/stamp-versions.ts).
  *   3. The runtime contract constants in
- *      rust/bindings/javascript/src/runtime-contract.ts.
+ *      packages/client/src/wasm-bindings/runtime-contract.ts.
  *   4. create-syncular-app's FALLBACK_SYNCULAR_VERSION_RANGE.
  *   5. Cargo crate versions via scripts/stamp-cargo-versions.ts.
  *
@@ -103,7 +103,7 @@ function replaceConstant(
 function syncRuntimeContract(version: string): void {
   const runtimeContractPath = join(
     repoRoot,
-    'rust/bindings/javascript/src/runtime-contract.ts'
+    'packages/client/src/wasm-bindings/runtime-contract.ts'
   );
   let source = readFileSync(runtimeContractPath, 'utf8');
   source = replaceConstant(

@@ -3,7 +3,7 @@
 CLI for Syncular app code generation. The `syncular` package ships only the
 `syncular` command; all runtime libraries live in the scoped `@syncular/*`
 packages (for example `@syncular/client`, `@syncular/server`,
-`@syncular/react`).
+`@syncular/client/react`).
 
 ## Usage
 

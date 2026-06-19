@@ -11,15 +11,15 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import type { BlobStorageAdapter } from '@syncular/core';
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import {
   ensureSyncSchema,
   insertSnapshotChunk,
   readSnapshotChunk,
   type SyncCoreDb,
 } from '@syncular/server';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
 import { createDbMetadataChunkStorage } from '@syncular/server/snapshot-chunks';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import type { Kysely } from 'kysely';
 
 async function chunkBodyToUint8Array(

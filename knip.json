@@ -22,12 +22,6 @@
     "version"
   ],
   "ignoreIssues": {
-    "plugins/blob/server-storage-filesystem/src/index.ts": [
-      "types"
-    ],
-    "plugins/blob/server-storage-s3/src/index.ts": [
-      "types"
-    ],
     "apps/console/build.ts": [
       "files"
     ],
@@ -49,17 +43,11 @@
     "rust/examples/todo-app/package.json": [
       "dependencies"
     ],
-    "packages/server-hono/src/websocket-origin.ts": [
-      "exports"
-    ],
     "config/tsconfig.react-native.json": [
       "unlisted"
     ],
     "packages/core/src/snapshot-chunks.ts": [
       "duplicates"
-    ],
-    "packages/server-hono/src/validation.ts": [
-      "exports"
     ],
     "packages/client/src/client.ts": [
       "duplicates"
@@ -83,17 +71,27 @@
     "packages/client/src/generated-bridge.ts": [
       "types"
     ],
-    "packages/client-crdt-adapters/src/webview-host-facade.ts": [
-      "exports"
-    ],
-    "packages/client-crdt-adapters/src/yjs-document-field-adapter.ts": [
-      "exports"
-    ],
-    "packages/react/src/__tests__/happy-dom.ts": [
-      "files"
-    ],
     "packages/console/src/lib/types.ts": [
       "types"
+    ],
+    "packages/console/src/ui/**": [
+      "exports",
+      "types"
+    ],
+    "packages/server/src/hono/websocket-origin.ts": [
+      "exports"
+    ],
+    "packages/server/src/hono/console/ui.ts": [
+      "files"
+    ],
+    "packages/client/src/crdt-yjs/webview-host-facade.ts": [
+      "exports"
+    ],
+    "packages/client/src/crdt-yjs/yjs-document-field-adapter.ts": [
+      "exports"
+    ],
+    "packages/client/src/react/__tests__/happy-dom.ts": [
+      "files"
     ]
   },
   "workspaces": {
@@ -109,54 +107,16 @@
         "src/**/*.test.ts"
       ]
     },
-    "plugins/yjs/server": {
-      "includeEntryExports": false
-    },
-    "plugins/blob/server-storage-filesystem": {
-      "includeEntryExports": false
-    },
-    "plugins/blob/server-storage-s3": {
-      "includeEntryExports": false
-    },
     "packages/console": {
       "includeEntryExports": false
     },
     "packages/server": {
-      "includeEntryExports": false
-    },
-    "packages/server-hono": {
-      "includeEntryExports": false,
-      "entry": [
-        "src/**/*.test.ts",
-        "scripts/*.ts"
-      ]
-    },
-    "packages/server-cloudflare": {
-      "includeEntryExports": false
-    },
-    "packages/server-dialect-sqlite": {
-      "includeEntryExports": false
-    },
-    "packages/server-dialect-postgres": {
-      "includeEntryExports": false
-    },
-    "packages/server-service-worker": {
-      "includeEntryExports": false
-    },
-    "packages/server-storage-filesystem": {
-      "includeEntryExports": false
-    },
-    "packages/server-storage-s3": {
-      "includeEntryExports": false
-    },
-    "packages/transport-http": {
-      "includeEntryExports": false
-    },
-    "packages/relay": {
       "includeEntryExports": false,
       "entry": [
         "scripts/*.ts",
-        "src/evaluation/*.ts"
+        "src/**/*.test.ts",
+        "src/**/__tests__/**/*.ts",
+        "src/relay/evaluation/*.ts"
       ]
     },
     "packages/migrations": {
@@ -168,21 +128,6 @@
     "packages/testkit": {
       "includeEntryExports": false
     },
-    "packages/client-expo": {
-      "includeEntryExports": false
-    },
-    "packages/react": {
-      "includeEntryExports": false,
-      "entry": [
-        "src/**/*.test.ts"
-      ]
-    },
-    "packages/client-react-native": {
-      "includeEntryExports": false
-    },
-    "packages/client-tauri": {
-      "includeEntryExports": false
-    },
     "packages/client": {
       "includeEntryExports": false,
       "entry": [
@@ -191,32 +136,16 @@
         "scripts/*.ts"
       ]
     },
-    "packages/client-crdt-adapters": {
-      "includeEntryExports": false,
-      "entry": [
-        "src/**/*.test.ts"
-      ]
-    },
     "packages/syncular": {
       "includeEntryExports": false,
-      "ignoreDependencies": ["@syncular/typegen"]
+      "ignoreDependencies": [
+        "@syncular/typegen"
+      ]
     },
     "packages/create-syncular-app": {
       "includeEntryExports": false,
       "entry": [
         "src/cli.ts",
-        "scripts/*.ts"
-      ]
-    },
-    "packages/observability-sentry": {
-      "includeEntryExports": false
-    },
-    "packages/dialects": {
-      "includeEntryExports": false
-    },
-    "rust/bindings/javascript": {
-      "includeEntryExports": false,
-      "entry": [
         "scripts/*.ts"
       ]
     },

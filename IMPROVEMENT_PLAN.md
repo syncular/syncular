@@ -55,7 +55,8 @@ ordering-defeating `--parallel` on tsgo). The likely original reason for
 `--force` was real: the WASM bindings build compiles `rust/crates/runtime`,
 which is outside the package, so turbo's default hash missed Rust changes.
 Fixed with a package-specific task in `turbo.json`
-(`@syncular/client-javascript-bindings#build`) declaring
+(`@syncular/client#build`, after the WASM bindings were folded into the client
+package) declaring
 `../../crates/**`, `../../Cargo.{toml,lock}`, and
 `packages/client/package.json` as inputs; `tsgo` now has
 `dependsOn: ["^tsgo"]` so dependency changes cascade. Verified by hash probe:
@@ -68,7 +69,8 @@ path-mapped `@syncular/client` to `../client/src/index.ts`, so its build
 emitted ~20 stray `.js`/`.d.ts` files into `packages/client/src/` (untracked,
 would have shipped to npm since client's `files` includes `src`, and poisoned
 turbo input hashes). Removed the mapping; it typechecks against client's
-`dist` types like every other dependent. Tests + full tsgo pass.
+`dist` types like every other dependent. This package was later folded into
+`@syncular/client/crdt-yjs`. Tests + full tsgo pass.
 
 ### 2. Set a real client bundle baseline — STATUS: DONE (2026-06-11)
 
@@ -81,7 +83,7 @@ pointer to update the budget intentionally), hard ceilings tightened
 ### 3. `bun test` must not require a pre-built WASM artifact (or fail clearly)
 
 Fresh checkout → `bun test` → 72 confusing failures because
-`rust/bindings/javascript/dist/wasm/syncular.js` is missing. Either: skip
+`packages/client/dist/wasm/syncular.js` is missing. Either: skip
 WASM-dependent suites with a single clear message when the artifact is absent,
 or build the dev artifact automatically. Also document the one-command dev
 setup (DEVELOPMENT.md), including toolchain prerequisites discovered missing
@@ -144,15 +146,15 @@ packages into `@syncular/server` dialect helpers.
 Follow-up done same day: console `routes/shared.ts` now re-exports
 `parseScopesSummary` from the sync `routes/shared.ts` — single definition.
 
-### 6. Merge the 7 micro dialect packages into `@syncular/dialects` — STATUS: DONE (2026-06-11)
+### 6. Merge the 7 micro dialect packages into `@syncular/server` subpaths — STATUS: DONE (supersedes the 2026-06-11 `@syncular/dialects` intermediate)
 
-All seven packages consolidated into `packages/dialects` with one subpath per
-dialect (`@syncular/dialects/neon`, …), sources moved via `git mv`, exported
-symbol names unchanged, no "." barrel (so drivers stay optional). All drivers
-and per-driver kysely adapters are optional peerDependencies. Umbrella now
-exposes `syncular/dialects/<name>`. ~40 consumer files updated (packages,
-tests, apps/demo, rust example, docs + install commands), knip/workflow
-filters updated, old names added to the docs stale-pattern checker, removal
+All seven packages ultimately consolidated into `@syncular/server/<driver>`
+subpaths (`@syncular/server/neon`, …), sources moved via `git mv`, exported
+symbol names unchanged, and the server root does not re-export driver modules
+so drivers stay optional. All drivers and per-driver Kysely adapters are
+optional peer dependencies. ~40 consumer files updated (packages, tests,
+apps/demo, rust example, docs + install commands), knip/workflow filters
+updated, old names added to the docs stale-pattern checker, removal
 recorded in `rust/docs/COMPATIBILITY_REGISTER.md`. Verified: tsgo 35/35, 687
 tests pass, build, bundle:check, docs:stale-check, load server boots.
 Breaking for npm users of the old package names (intentional per AGENTS.md
@@ -281,13 +283,14 @@ uncommitted in the bench clone).
 ## Round 2 (2026-06-11, owner-requested)
 
 - **npm deprecation list** — DONE: 7 old dialect packages + stale
-  `@syncular/cli` to deprecate at next release (commands in session notes);
-  7 legacy packages already deprecated; NOTE: `@syncular/react`,
-  `client-javascript-bindings`, `dialects`, `client-crdt-adapters`,
-  `client-react-native`, `client-tauri`, `config` have never been published —
-  release filters must include them (bindings is a hard dep of client!).
+  `@syncular/cli` to deprecate at next release (commands in `RELEASING.md`);
+  7 legacy packages already deprecated. The intermediate never-published
+  package names (`@syncular/client/react`, `@syncular/client-javascript-bindings`,
+  `@syncular/dialects`, `@syncular/client/crdt-yjs`,
+  `@syncular/client/react-native`, `@syncular/client/tauri`) are export-map
+  subpaths or deleted package names now; do not publish them as packages.
 - **Demo app rebuild** — make apps/demo a real reference app: own
-  schema/codegen, @syncular/react hooks, two-pane live sync. In progress.
+  schema/codegen, @syncular/client/react hooks, two-pane live sync. In progress.
 - **create-syncular-app** — scaffolding CLI generating a minimal full-stack
   app, derived from the rebuilt demo. Pending demo.
 - **Docs restructure** — full audit done; plan + target IA in
@@ -302,8 +305,8 @@ uncommitted in the bench clone).
   cross-package inputs for the WASM build (verified by hash-invalidation
   probes); warm build 2m23s → 53ms, warm tsgo 7.3s → 55ms. Bundle baseline
   set + 5% drift gate. Fixed client-crdt-adapters emitting compiled JS into
-  packages/client/src. `bun lint` clean, full tsgo clean, crdt-adapters and
-  client unit tests pass.
+  packages/client/src; that code is now folded into `@syncular/client/crdt-yjs`.
+  `bun lint` clean, full tsgo clean, crdt-adapters and client unit tests pass.
 - 2026-06-11 (cont.): Item 4 rescoped after verification — TS worker bridge is
   the accepted architecture, not deletable legacy (knip clean; import trace
   documented above). Item 5 in progress (route factory split running).
@@ -324,9 +327,9 @@ uncommitted in the bench clone).
   (routes.ts 5,260→70; console/routes.ts 5,557→146; mechanically verified
   verbatim moves; openapi.json zero-diff; 178 tests green; knip clean after
   pruning two dead type re-exports + two over-exported header constants;
-  `parseScopesSummary` deduped). Item 6 DONE — `@syncular/dialects` with
-  7 subpaths replaces the 7 micro packages; ~40 consumers, docs, umbrella,
-  CI filters, stale-pattern checker, compatibility register all updated;
+  `parseScopesSummary` deduped). Item 6 DONE — the old dialect packages now
+  resolve through `@syncular/server/<driver>` subpaths; ~40 consumers, docs,
+  umbrella, CI filters, stale-pattern checker, compatibility register all updated;
   full verification green (tsgo 35/35, 687 tests, build, bundle, docs check).
   Item 8 DONE (rescoped — most of it already existed; fixed silent malformed
   scope value drop + unlogged authorize failure). Item 9 partial: deleted the

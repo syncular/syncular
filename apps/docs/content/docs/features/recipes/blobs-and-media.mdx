@@ -48,8 +48,8 @@ Mount blob routes next to the sync routes and pick an adapter for the bytes:
 
 ```ts
 import { createBlobManager } from '@syncular/server';
-import { createBlobRoutes } from '@syncular/server-hono';
-import { createS3BlobStorageAdapter } from '@syncular/server-storage-s3';
+import { createBlobRoutes } from '@syncular/server/hono';
+import { createS3BlobStorageAdapter } from '@syncular/server/s3';
 
 const adapter = createS3BlobStorageAdapter({
   client: s3Client,
@@ -75,7 +75,7 @@ app.route('/sync', syncRoutes);
 app.route('/sync', blobRoutes);
 ```
 
-`@syncular/server-storage-filesystem` is the single-node equivalent;
+`@syncular/server/filesystem` is the single-node equivalent;
 the database adapter (`storeBlobInDatabase` / `readBlobFromDatabase`) is the
 zero-infrastructure option for small deployments. See
 [File / Blob Sync](/features/blobs) for the full route and adapter surface.

@@ -453,7 +453,17 @@ describe('Syncular core WASM artifact', () => {
       expect(runtimeInfo.rust?.features).toContain('web-owned-sqlite-core');
       expect(runtimeInfo.rust?.features).not.toContain('blobs');
       expect(runtimeInfo.rust?.features).not.toContain('crdt-yjs');
+      expect(runtimeInfo.rust?.features).not.toContain('e2ee');
       expect(runtimeInfo.wasmUrl).toContain('/dist/wasm-core/');
+      syncular.client.setFieldEncryption(null);
+      syncular.client.setEncryptedCrdt(null);
+      syncular.client.setBlobEncryption(null);
+      expect(() =>
+        syncular.client.buildYjsTextUpdate({ nextText: 'core' })
+      ).toThrow('crdt-yjs');
+      expect(() =>
+        syncular.client.encryptionHelper('generateSymmetricKey')
+      ).toThrow('e2ee');
 
       await withSyncularSchemaWrites(syncular, async (db) => {
         await db.schema
@@ -564,6 +574,81 @@ describe('Syncular core WASM artifact', () => {
           server_version: 0,
         },
       ]);
+    } finally {
+      await closeSyncularDatabase(syncular);
+    }
+  });
+
+  it('keeps FTS5 and omits trimmed optional SQLite extensions', async () => {
+    const syncular = await createSyncularDatabase<BasicDb>({
+      config: {
+        baseUrl: 'http://127.0.0.1:1/sync',
+        actorId: 'actor-core-sqlite-features',
+        clientId: testClientId('client-core-sqlite-features'),
+        storage: 'memory',
+        clearOnInit: true,
+        appSchema: basicAppSchema,
+      },
+      appTables: ['basic_tasks'],
+      tableConfig: {
+        basic_tasks: {
+          primaryKeyColumn: 'id',
+          serverVersionColumn: 'server_version',
+        },
+      },
+      requiredRuntimeFeatures: ['web-owned-sqlite-core'],
+      runtimeArtifacts: [coreRuntimeArtifact()],
+      lifecycle: { autoStart: false },
+    });
+
+    try {
+      const unsafe = syncular.client as unknown as SyncularUnsafeSqlClient;
+      const compileOptionEnabled = async (option: string): Promise<number> => {
+        const result = await unsafe.executeUnsafeSql<{ enabled: number }>(
+          'select sqlite_compileoption_used(?) as enabled',
+          [option]
+        );
+        return Number(result.rows[0]?.enabled ?? 0);
+      };
+
+      await expect(compileOptionEnabled('ENABLE_FTS5')).resolves.toBe(1);
+      for (const option of [
+        'ENABLE_RTREE',
+        'ENABLE_SESSION',
+        'ENABLE_MATH_FUNCTIONS',
+        'ENABLE_DBSTAT_VTAB',
+        'ENABLE_BYTECODE_VTAB',
+        'ENABLE_STMTVTAB',
+        'ENABLE_COLUMN_METADATA',
+        'ENABLE_UNLOCK_NOTIFY',
+      ]) {
+        await expect(compileOptionEnabled(option)).resolves.toBe(0);
+      }
+
+      await unsafe.executeUnsafeSql(
+        'create virtual table syncular_fts_probe using fts5(title)'
+      );
+      await unsafe.executeUnsafeSql(
+        'insert into syncular_fts_probe(rowid, title) values (?, ?)',
+        [1, 'hello offline search']
+      );
+      await expect(
+        unsafe.executeUnsafeSql<{ title: string }>(
+          'select title from syncular_fts_probe where syncular_fts_probe match ?',
+          ['offline']
+        )
+      ).resolves.toMatchObject({
+        rows: [{ title: 'hello offline search' }],
+      });
+
+      await expect(
+        unsafe.executeUnsafeSql(
+          'create virtual table syncular_rtree_probe using rtree(id, min_x, max_x)'
+        )
+      ).rejects.toThrow(/rtree/i);
+      await expect(
+        unsafe.executeUnsafeSql('select sqrt(4) as value')
+      ).rejects.toThrow(/sqrt/i);
     } finally {
       await closeSyncularDatabase(syncular);
     }

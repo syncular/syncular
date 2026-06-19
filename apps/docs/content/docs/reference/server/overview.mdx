@@ -11,11 +11,12 @@ Use [Server Getting Started](/server/getting-started) for first-time implementat
 
 ## Package map
 
-| Package | Responsibility |
+| Package / subpath | Responsibility |
 |---|---|
 | `@syncular/server` | Core sync engine, schema helpers, handler factory, pruning/compaction primitives, blob manager |
-| `@syncular/server-hono` | Hono route factories, realtime wiring, console routes, OpenAPI handler |
-| `@syncular/server-dialect-*` | Dialect-specific schema and SQL behavior |
+| `@syncular/server/hono` | Hono route factories, realtime wiring, console routes, OpenAPI handler |
+| `@syncular/server/sqlite`, `@syncular/server/postgres` | Dialect-specific schema and SQL behavior |
+| `@syncular/server/<driver>` | Optional Kysely runtime driver helpers such as `/bun-sqlite`, `/neon`, and `/pglite` |
 
 ## Server lifecycle
 

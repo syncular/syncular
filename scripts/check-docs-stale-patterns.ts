@@ -22,11 +22,17 @@ const stalePatterns: StalePattern[] = [
   },
   {
     pattern: /@syncular\/client-react(?![-\w])/,
-    message: 'Use the published `@syncular/react` package name.',
+    message: 'Use the `@syncular/client/react` subpath.',
   },
   {
     pattern: /packages\/client-react(?![-\w])/,
-    message: 'Use the current `packages/react` workspace path.',
+    message: 'React helpers now live under `packages/client/src/react`.',
+  },
+  {
+    pattern:
+      /@syncular\/(?:client-javascript-bindings|client-crdt-adapters|client-react-native|client-tauri|react)\b/,
+    message:
+      'Client add-ons now live in `@syncular/client` subpaths: `/react`, `/react-native`, `/tauri`, and `/crdt-yjs`.',
   },
   {
     pattern: /\/docs\/api\//,
@@ -39,7 +45,23 @@ const stalePatterns: StalePattern[] = [
   },
   {
     pattern: /@syncular\/client-expo\b/,
-    message: 'React Native docs should use `@syncular/client-react-native`.',
+    message: 'React Native docs should use `@syncular/client/react-native`.',
+  },
+  {
+    pattern: /@syncular\/dialects\b/,
+    message:
+      'Database driver helpers now live in `@syncular/server/<driver>` subpaths.',
+  },
+  {
+    pattern:
+      /@syncular\/(?:server-hono|server-cloudflare|server-service-worker|server-dialect-(?:sqlite|postgres)|server-storage-(?:filesystem|s3)|server-plugin-yjs|relay|transport-http)\b/,
+    message:
+      'Server add-ons now live in `@syncular/server` subpaths; HTTP transport lives in `@syncular/core/http`.',
+  },
+  {
+    pattern: /@syncular\/observability-sentry\b/,
+    message:
+      'Sentry adapters now live in `@syncular/client/sentry` and `@syncular/server/cloudflare/sentry`.',
   },
   {
     pattern:
@@ -50,7 +72,7 @@ const stalePatterns: StalePattern[] = [
     pattern:
       /\bsyncular\/dialect-(?:better-sqlite3|bun-sqlite|d1|libsql|neon|pglite|sqlite3)\b/,
     message:
-      'The per-driver dialect packages were merged into `@syncular/dialects` subpaths (e.g. `@syncular/dialects/pglite`).',
+      'Database driver helpers now live in `@syncular/server/<driver>` subpaths (e.g. `@syncular/server/pglite`).',
   },
   {
     pattern:

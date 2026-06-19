@@ -16,17 +16,17 @@ the server half only.
 ## 1. Install
 
 ```bash
-npm install @syncular/server @syncular/server-hono @syncular/core hono kysely
+npm install @syncular/server @syncular/core hono kysely
 ```
 
 Then add one server dialect package:
 
 ```bash
 # Postgres (recommended for production)
-npm install @syncular/server-dialect-postgres pg
+npm install @syncular/server pg
 
 # or SQLite (fastest local start, zero provisioning)
-npm install @syncular/server-dialect-sqlite @syncular/dialects
+npm install @syncular/server better-sqlite3
 ```
 
 All application imports come from scoped `@syncular/*` packages. The bare
@@ -42,7 +42,7 @@ dialect. Pick one path.
 ```typescript
 import { Kysely, PostgresDialect } from 'kysely';
 import { Pool } from 'pg';
-import { createPostgresServerDialect } from '@syncular/server-dialect-postgres';
+import { createPostgresServerDialect } from '@syncular/server/postgres';
 
 const db = new Kysely({
   dialect: new PostgresDialect({
@@ -53,16 +53,16 @@ const dialect = createPostgresServerDialect();
 ```
 
 Neon works through the same dialect: build the Kysely instance with
-`createNeonDialect` from `@syncular/dialects/neon` and use
+`createNeonDialect` from `@syncular/server/neon` and use
 `createNeonServerDialect()` (an alias of the Postgres server dialect) from
-`@syncular/server-dialect-postgres`.
+`@syncular/server/postgres`.
 
 ### SQLite (quick path)
 
 ```typescript
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 
 const db = createDatabase({
   dialect: createBunSqliteDialect({ path: 'app.sqlite' }),
@@ -134,12 +134,12 @@ see [Table Handlers](/server/table-handlers).
 
 ## 4. Mount the routes
 
-`createSyncServer` from `@syncular/server-hono` takes the database, dialect,
+`createSyncServer` from `@syncular/server/hono` takes the database, dialect,
 and a `sync` contract (handlers + `authenticate`) and returns Hono routes:
 
 ```typescript
 import { Hono } from 'hono';
-import { createSyncServer } from '@syncular/server-hono';
+import { createSyncServer } from '@syncular/server/hono';
 
 const { syncRoutes } = createSyncServer({
   db,

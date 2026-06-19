@@ -4,7 +4,6 @@ import {
   createDatabase,
   type SyncOperation,
 } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import { Kysely, sql } from 'kysely';
 import {
   ensureSyncularAppSchema,
@@ -14,6 +13,7 @@ import {
   syncularGeneratedSchemaVersion,
   syncularGeneratedTableConfig,
 } from '../../../rust/examples/todo-app/generated/typescript/syncular.generated';
+import { createBunSqliteDialect } from '../../server/src/bun-sqlite';
 import { createServerHandler } from '../../server/src/handlers';
 import type { SyncCoreDb } from '../../server/src/schema';
 import {

@@ -25,7 +25,7 @@ bun add -d @syncular/testkit
 **What it proves:** your server table handlers apply writes, enforce scope
 authorization, and reject what they should — before any client code exists.
 
-`createHttpServerFixture` boots real `@syncular/server-hono` routes against an
+`createHttpServerFixture` boots real `@syncular/server/hono` routes against an
 in-memory database (`serverDialect: 'sqlite'` for SQLite semantics, `'pglite'`
 for Postgres semantics). The protocol builders construct the same combined
 `POST /` request a real client sends:

@@ -4,9 +4,9 @@ import {
   SYNC_SCOPED_SNAPSHOT_ARTIFACT_KIND_SQLITE_V1,
   SYNC_SNAPSHOT_CHUNK_COMPRESSION,
 } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import type { Kysely } from 'kysely';
-import { createSqliteServerDialect } from '../../server-dialect-sqlite/src';
 import { createServerHandler, createServerHandlerCollection } from './handlers';
 import { ensureSyncSchema } from './migrate';
 import { notifyExternalDataChange } from './notify';

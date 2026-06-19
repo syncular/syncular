@@ -12,14 +12,14 @@ bridge, or the React Native bridge.
 ## Install
 
 ```bash
-npm install @syncular/client @syncular/react kysely
+npm install @syncular/client kysely react react-dom
 ```
 
 For browser apps, open the database (which owns the sync lifecycle) and pass
 it into the generated React surface:
 
 ```tsx
-import { createSyncularReact } from '@syncular/react';
+import { createSyncularReact } from '@syncular/client/react';
 import {
   createSyncularAppDatabase,
   type SyncularAppDb as AppDb,
@@ -59,11 +59,14 @@ export function App() {
 `options` (`CreateSyncularDatabaseOptions`) instead of `client` and it opens
 the database on mount; add `closeOnUnmount` to close it on unmount.
 
-Platform clients provide matching React factories:
+Platform clients use the same React factory. Create the bridge client from the
+host subpath, then pass that client to `SyncProvider` from
+`@syncular/client/react`.
 
 ```ts
-import { createSyncularNativeReact } from '@syncular/client-react-native';
-import { createSyncularTauriReact } from '@syncular/client-tauri';
+import { createSyncularReact } from '@syncular/client/react';
+import { createSyncularNativeClient } from '@syncular/client/react-native';
+import { createSyncularTauriClient } from '@syncular/client/tauri';
 ```
 
 ## Query

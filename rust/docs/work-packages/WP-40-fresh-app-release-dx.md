@@ -22,7 +22,7 @@ Make the first developer experience and release confidence explicit:
 - Wire post-publish install smokes into the release job after npm and Cargo
   publish steps.
 - Rename `packages/client-react` to `packages/react` while keeping the
-  published package name `@syncular/react`.
+  published package name `@syncular/client/react`.
 - Harden browser-global test setup for React package tests.
 - Add a blank-app API review note for remaining DX friction.
 
@@ -60,4 +60,4 @@ Make the first developer experience and release confidence explicit:
 
 No compatibility branch, protocol fallback, or legacy alias is added. The
 workspace folder rename is repo-internal; the published package remains
-`@syncular/react`.
+`@syncular/client/react`.

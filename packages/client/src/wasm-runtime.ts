@@ -1,17 +1,17 @@
-import {
-  getSyncularWasmGlueUrl,
-  getSyncularWasmUrl,
-  type SyncularRustOwnedSqliteClient,
-} from '@syncular/client-javascript-bindings';
 import type {
   ResolvedSyncularClientConfig,
   SyncularRustRuntimeInfo,
 } from './types';
+import {
+  getSyncularWasmGlueUrl,
+  getSyncularWasmUrl,
+  type SyncularRustOwnedSqliteClient,
+} from './wasm-bindings/runtime-contract';
 
 export type {
   SyncularRustOwnedSqliteClient,
   SyncularWasmArtifactVariant,
-} from '@syncular/client-javascript-bindings';
+} from './wasm-bindings/runtime-contract';
 export {
   getSyncularPackagedRuntimeArtifacts,
   getSyncularRuntimeArtifact,
@@ -20,7 +20,7 @@ export {
   getSyncularWasmUrl,
   resolveSyncularRuntimeArtifactCatalog,
   selectSyncularRuntimeArtifact,
-} from '@syncular/client-javascript-bindings';
+} from './wasm-bindings/runtime-contract';
 
 export interface SyncularWasmGlue {
   default(moduleOrPath?: string | URL | Request): Promise<unknown>;
@@ -48,9 +48,10 @@ export function loadSyncularWasmGlue(): Promise<SyncularWasmGlue> {
     if (/cannot find module|failed to fetch|not found/i.test(message)) {
       throw new Error(
         `Syncular WASM runtime artifact is missing (${message}). ` +
-          'In this repo, build it first: `bun run javascript-bindings:build:wasm` ' +
-          '(or `build:wasm:dev` for a fast dev build). In an app, ensure the ' +
-          '@syncular/client-javascript-bindings dist/wasm assets are served.',
+          'In this repo, build it first: `bun run client:build:wasm` ' +
+          '(or `bun --cwd packages/client build:wasm:dev` for a fast dev ' +
+          'build). In an app, ensure the @syncular/client dist/wasm assets ' +
+          'are served.',
         { cause: error }
       );
     }

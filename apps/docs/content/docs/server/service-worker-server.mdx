@@ -5,7 +5,7 @@ description: Run Syncular server APIs in-browser via Service Worker with wake-up
 
 # Service Worker Server
 
-`@syncular/server-service-worker` lets you run Syncular server endpoints entirely in the browser.
+`@syncular/server/service-worker` lets you run Syncular server endpoints entirely in the browser.
 
 This is useful for:
 
@@ -26,7 +26,7 @@ This is useful for:
 import {
   attachServiceWorkerServer,
   createServiceWorkerServer,
-} from '@syncular/server-service-worker';
+} from '@syncular/server/service-worker';
 
 const server = createServiceWorkerServer({
   serviceWorkerScriptPath: '/__demo/sw-server.js',
@@ -45,7 +45,7 @@ attachServiceWorkerServer(self, server, { logger: console });
 ## 2) Browser bootstrap + health check
 
 ```ts
-import { configureServiceWorkerServer } from '@syncular/server-service-worker';
+import { configureServiceWorkerServer } from '@syncular/server/service-worker';
 
 const ok = await configureServiceWorkerServer({
   scriptPath: '/__demo/sw-server.js',
@@ -66,7 +66,7 @@ if (!ok) {
 ## 3) Optional wake-up transport on the client
 
 ```ts
-import { createServiceWorkerWakeTransport } from '@syncular/server-service-worker';
+import { createServiceWorkerWakeTransport } from '@syncular/server/service-worker';
 
 const transport = createServiceWorkerWakeTransport({
   baseUrl: '/api',

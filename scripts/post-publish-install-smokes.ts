@@ -258,7 +258,7 @@ export const app = defineSyncularClient({
     `import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { getSyncularWasmUrl } from '@syncular/client';
-import { createSyncularReact } from '@syncular/react';
+import { createSyncularReact } from '@syncular/client/react';
 import { generateTypes } from '@syncular/typegen';
 import {
   createSyncCombinedRequest,
@@ -302,7 +302,7 @@ if (!generated.includes('tasks: TasksTable') || result.tableCount !== 1) {
 
 const react = createSyncularReact();
 if (typeof react.SyncProvider !== 'function' || typeof react.useSyncQuery !== 'function') {
-  throw new Error('@syncular/react did not expose the expected React helpers');
+  throw new Error('@syncular/client/react did not expose the expected React helpers');
 }
 
 const wasmUrl = getSyncularWasmUrl();
@@ -346,7 +346,7 @@ console.log('fresh JS package smoke passed');
   await writeFile(
     join(jsDir, 'runtime-smoke.ts'),
     `import { getSyncularRuntimeArtifact } from '@syncular/client';
-import { createSyncularReact } from '@syncular/react';
+import { createSyncularReact } from '@syncular/client/react';
 import {
   createSyncularAppDatabase,
   taskSubscription,
@@ -357,7 +357,7 @@ if (
   typeof react.SyncProvider !== 'function' ||
   typeof react.useSyncQuery !== 'function'
 ) {
-  throw new Error('@syncular/react did not expose the expected helpers');
+  throw new Error('@syncular/client/react did not expose the expected helpers');
 }
 
 const database = await createSyncularAppDatabase({
@@ -414,7 +414,6 @@ console.log('published JS runtime smoke passed');
       options.npmRegistry,
       atVersion('syncular', options.version),
       atVersion('@syncular/client', options.version),
-      atVersion('@syncular/react', options.version),
       atVersion('@syncular/typegen', options.version),
       atVersion('@syncular/testkit', options.version),
       'kysely',

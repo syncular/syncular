@@ -13,10 +13,10 @@ import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createHash } from 'node:crypto';
 import type { BlobStorageAdapter } from '@syncular/core';
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import { ensureSyncSchema, type SyncCoreDb } from '@syncular/server';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
 import { createDbMetadataChunkStorage } from '@syncular/server/snapshot-chunks';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import type { Kysely } from 'kysely';
 
 function expectedBlobHash(args: {

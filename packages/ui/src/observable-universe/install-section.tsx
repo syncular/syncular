@@ -47,7 +47,9 @@ export const InstallSection = forwardRef<HTMLElement, InstallSectionProps>(
                   {'\n'}
                   <span className="text-white">{'  '}@syncular/client \</span>
                   {'\n'}
-                  <span className="text-white">{'  '}@syncular/react \</span>
+                  <span className="text-white">
+                    {'  '}@syncular/client/react \
+                  </span>
                   {'\n'}
                   <span className="text-white">{'  '}kysely</span>
                 </code>
@@ -65,11 +67,11 @@ export const InstallSection = forwardRef<HTMLElement, InstallSectionProps>(
                   <span className="text-white">bun add @syncular/server \</span>
                   {'\n'}
                   <span className="text-white">
-                    {'  '}@syncular/server-hono \
+                    {'  '}@syncular/server/hono \
                   </span>
                   {'\n'}
                   <span className="text-white">
-                    {'  '}@syncular/server-dialect-postgres \
+                    {'  '}@syncular/server/postgres \
                   </span>
                   {'\n'}
                   <span className="text-white">{'  '}kysely pg hono</span>

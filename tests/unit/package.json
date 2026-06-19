@@ -8,12 +8,10 @@
     "test": "bun test ."
   },
   "devDependencies": {
+    "@syncular/config": "workspace:*",
     "@syncular/core": "workspace:*",
     "@syncular/migrations": "workspace:*",
-    "@syncular/dialects": "workspace:*",
     "@syncular/server": "workspace:*",
-    "@syncular/server-dialect-sqlite": "workspace:*",
-    "kysely": "*",
-    "@syncular/config": "workspace:*"
+    "kysely": "*"
   }
 }

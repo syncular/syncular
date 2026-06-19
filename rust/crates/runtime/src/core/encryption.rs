@@ -639,9 +639,7 @@ impl FieldEncryption {
 
         match decrypt() {
             Ok(value) => Ok(value),
-            Err(error)
-                if self.decryption_error_mode == FieldDecryptionErrorMode::KeepCiphertext =>
-            {
+            Err(_) if self.decryption_error_mode == FieldDecryptionErrorMode::KeepCiphertext => {
                 Ok(value)
             }
             Err(error) => Err(SyncularError::protocol_message(format!(

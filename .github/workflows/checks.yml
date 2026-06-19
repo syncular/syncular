@@ -30,79 +30,48 @@ jobs:
         with:
           filters: |
             runtime:
+              - 'packages/client/**'
               - 'packages/core/**'
               - 'packages/testkit/**'
-              - 'packages/dialect-wa-sqlite/**'
-              - 'packages/dialects/**'
               - 'packages/server/**'
-              - 'packages/server-hono/**'
-              - 'packages/server-cloudflare/**'
-              - 'packages/server-dialect-sqlite/**'
-              - 'packages/transport-http/**'
             runtime_relay:
               - 'packages/core/**'
               - 'packages/testkit/**'
-              - 'packages/dialects/**'
-              - 'packages/relay/**'
               - 'packages/server/**'
-              - 'packages/server-hono/**'
-              - 'packages/server-dialect-sqlite/**'
-              - 'packages/transport-http/**'
             runtime_electron:
+              - 'packages/client/**'
               - 'packages/core/**'
               - 'packages/testkit/**'
               - 'packages/server/**'
-              - 'packages/server-hono/**'
-              - 'packages/transport-http/**'
-              - 'packages/dialect-electron-sqlite/**'
-              - 'packages/dialects/**'
             expo:
-              - 'tests/expo-app/**'
-              - 'packages/dialect-expo-sqlite/**'
+              - 'packages/client/**'
               - 'packages/core/src/kysely-serialize.ts'
             demo:
+              - 'packages/client/**'
               - 'packages/core/**'
               - 'packages/testkit/**'
-              - 'packages/dialects/**'
-              - 'packages/dialect-wa-sqlite/**'
               - 'packages/server/**'
-              - 'packages/server-hono/**'
-              - 'packages/server-dialect-postgres/**'
-              - 'packages/server-dialect-sqlite/**'
-              - 'packages/transport-http/**'
-              - 'packages/transport-ws/**'
               - 'packages/observability-sentry/**'
             load:
               - 'tests/load/**'
               - 'packages/core/**'
               - 'packages/testkit/**'
               - 'packages/server/**'
-              - 'packages/server-hono/**'
-              - 'packages/server-dialect-postgres/**'
-              - 'packages/server-dialect-sqlite/**'
-              - 'packages/transport-http/**'
-              - 'packages/transport-ws/**'
             rust:
               - 'rust/**'
               - '.github/workflows/checks.yml'
               - '.github/actions/setup-environment/action.yml'
               - 'package.json'
               - 'bun.lock'
+              - 'packages/client/**'
               - 'packages/core/**'
               - 'packages/server/**'
-              - 'packages/server-hono/**'
               - 'packages/testkit/**'
             sync_matrix:
+              - 'packages/client/**'
               - 'packages/core/**'
               - 'packages/testkit/**'
-              - 'packages/dialects/**'
               - 'packages/server/**'
-              - 'packages/server-hono/**'
-              - 'packages/server-dialect-postgres/**'
-              - 'packages/server-dialect-sqlite/**'
-              - 'packages/transport-http/**'
-              - 'packages/transport-ws/**'
-              - 'packages/relay/**'
 
   test:
     runs-on: blacksmith-4vcpu-ubuntu-2404
@@ -201,15 +170,14 @@ jobs:
         run: |
           bun --cwd packages/client test
           bun --cwd packages/client tsgo
-          bun --cwd rust/bindings/javascript tsgo
-          bun --cwd rust/bindings/javascript build:wasm:dev
-          bun --cwd rust/bindings/javascript size:wasm
+          bun --cwd packages/client build:wasm:dev
+          bun --cwd packages/client size:wasm
 
       - name: Upload browser WASM artifact
         uses: actions/upload-artifact@v4
         with:
           name: syncular-rust-browser-wasm-${{ github.run_id }}
-          path: rust/bindings/javascript/dist/wasm
+          path: packages/client/dist/wasm
 
   rust-native-package:
     needs: changes

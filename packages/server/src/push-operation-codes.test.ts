@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'bun:test';
 import { createDatabase, type SyncPushRequest } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
-import { createSqliteServerDialect } from '../../server-dialect-sqlite/src';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import { parseJsonValue } from './dialect/helpers';
 import { createServerHandler, createServerHandlerCollection } from './handlers';
 import { ensureSyncSchema } from './migrate';

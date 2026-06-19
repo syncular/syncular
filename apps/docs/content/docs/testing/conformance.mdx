@@ -19,7 +19,7 @@ repo scripts. They run in lanes, smallest first:
 | Lane | Command | What it executes |
 |---|---|---|
 | Fast | `bun run rust:conformance:fast` | `syncular-testkit` crate tests, the Rust runtime's protocol/blob/CRDT contract tests, the generated Rust todo-app example, and the browser generated-app contract test |
-| Browser/Hono | `bun run rust:conformance` | Fast lane plus browser WASM tests against real `@syncular/server-hono` routes: auth, sync, realtime, and blob conformance |
+| Browser/Hono | `bun run rust:conformance` | Fast lane plus browser WASM tests against real `@syncular/server/hono` routes: auth, sync, realtime, and blob conformance |
 | Native | `bun run rust:conformance:native` | Swift/Kotlin/JVM native smoke suites against the generated app |
 | App shell | `bash rust/scripts/run-conformance-gates.sh --native-app-shell` | Real iOS and Android app-shell lifecycle smokes (needs simulator/emulator toolchains) |
 

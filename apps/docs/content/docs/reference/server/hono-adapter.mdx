@@ -3,13 +3,13 @@ title: Hono Adapter
 description: Configure sync routes with Hono
 ---
 
-The `@syncular/server-hono` package provides Hono routes for sync endpoints.
+The `@syncular/server/hono` package provides Hono routes for sync endpoints.
 
 ## Basic Setup
 
 ```typescript
 import { Hono } from 'hono';
-import { createSyncRoutes } from '@syncular/server-hono';
+import { createSyncRoutes } from '@syncular/server/hono';
 
 const syncRoutes = createSyncRoutes({
   db,

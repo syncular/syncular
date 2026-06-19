@@ -171,16 +171,18 @@ captureSyncException(new Error('Payment failed'), { orderId: 'ord_456' });
 
 ## Sentry backend
 
-`@syncular/observability-sentry` adapts the hooks to Sentry.
-
-```bash
-bun add @syncular/observability-sentry
-```
+Syncular ships Sentry adapters from the package that owns the runtime surface:
+browser apps import from `@syncular/client/sentry`, and Cloudflare Workers
+import from `@syncular/server/cloudflare/sentry`.
 
 ### Browser app
 
+```bash
+bun add @sentry/react
+```
+
 ```ts
-import { initAndConfigureBrowserSentry } from '@syncular/observability-sentry';
+import { initAndConfigureBrowserSentry } from '@syncular/client/sentry';
 
 initAndConfigureBrowserSentry({
   dsn: import.meta.env.VITE_SENTRY_DSN,
@@ -193,11 +195,15 @@ initAndConfigureBrowserSentry({
 
 ### Cloudflare Worker
 
+```bash
+bun add @sentry/cloudflare
+```
+
 ```ts
 import {
   configureCloudflareSentryTelemetry,
   withCloudflareSentry,
-} from '@syncular/observability-sentry';
+} from '@syncular/server/cloudflare/sentry';
 
 configureCloudflareSentryTelemetry();
 

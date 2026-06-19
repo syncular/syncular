@@ -1,6 +1,12 @@
 import { writeFile } from 'node:fs/promises';
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
+import {
+  createBlobRoutes,
+  createSyncRoutes,
+  getSyncWebSocketConnectionManager,
+} from '@syncular/server/hono';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import {
@@ -17,12 +23,6 @@ import {
   ensureBlobStorageSchemaSqlite,
   ensureSyncSchema,
 } from '../../../../packages/server/src';
-import { createSqliteServerDialect } from '../../../../packages/server-dialect-sqlite/src';
-import { createBlobRoutes } from '../../../../packages/server-hono/src/blobs';
-import {
-  createSyncRoutes,
-  getSyncWebSocketConnectionManager,
-} from '../../../../packages/server-hono/src/routes';
 import { syncConformance } from '../conformance/sync-conformance';
 import {
   syncularGeneratedCodecs,

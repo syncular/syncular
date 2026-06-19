@@ -18,6 +18,465 @@ Decision:
 Notes:
 ```
 
+## 2026-06-18 - Browser WASM Cargo Strip Profile Probe
+
+Commit: uncommitted local size investigation
+
+Work package:
+Rust-first browser WASM package size investigation
+
+Reference:
+[`Browser WASM Size Analysis`](reference/BROWSER_WASM_SIZE_ANALYSIS.md)
+
+Commands:
+
+```bash
+cd rust
+# Temporary probe: add `strip = true` under `[profile.release]`.
+cd ../packages/client
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  CARGO_TARGET_DIR=/tmp/syncular-wasm-strip-true \
+  bun scripts/build-syncular-wasm.ts --out-dir dist/wasm-core-strip-true --features web-owned-sqlite-core --variant core-strip-true
+cd ../..
+cd rust
+# Temporary probe: replace `strip = true` with `strip = "debuginfo"`.
+cd ../packages/client
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  CARGO_TARGET_DIR=/tmp/syncular-wasm-strip-debuginfo \
+  bun scripts/build-syncular-wasm.ts --out-dir dist/wasm-core-strip-debuginfo --features web-owned-sqlite-core --variant core-strip-debuginfo
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun scripts/size-syncular-wasm.ts --wasm dist/wasm-core-strip-debuginfo/syncular_bg.wasm --json
+```
+
+Probe:
+
+- Tested the Rust/Wasm guide's debug/name stripping advice against the current
+  retained core artifact.
+
+| Candidate | Raw bytes | Gzip bytes | Delta |
+| --- | ---: | ---: | --- |
+| Current retained core | `1,700,974` | `768,133` | reference |
+| `strip = "debuginfo"` | `1,700,974` | `768,133` | `0` raw, `0` gzip |
+| `strip = true` | n/a | n/a | build rejected |
+
+Verification:
+
+- `strip = true` failed during wasm-pack's optimizer step. `wasm-opt` rejected
+  the stripped module because bulk-memory and nontrapping-float operations were
+  present without the required feature metadata.
+- `strip = "debuginfo"` built successfully but produced the same shipped size
+  as the current core artifact.
+
+Decision:
+
+- Reject. wasm-bindgen/wasm-opt already remove shipped debuginfo; full symbol
+  stripping is unsafe with the current build pipeline.
+
+## 2026-06-18 - Browser WASM Core CRDT/E2EE Export Gate Retained
+
+Commit: uncommitted local size investigation
+
+Work package:
+Rust-first browser WASM package size investigation
+
+Reference:
+[`Browser WASM Size Analysis`](reference/BROWSER_WASM_SIZE_ANALYSIS.md)
+
+Commands:
+
+```bash
+cd packages/client
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  CARGO_TARGET_DIR=/tmp/syncular-wasm-feature-export-gate \
+  bun scripts/build-syncular-wasm.ts --out-dir dist/wasm-core-feature-export-gate --features web-owned-sqlite-core --variant core-feature-export-gate
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun scripts/size-syncular-wasm.ts --wasm dist/wasm-core-feature-export-gate/syncular_bg.wasm --json
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  CARGO_TARGET_DIR=/tmp/syncular-wasm-feature-export-gate-full \
+  bun scripts/build-syncular-wasm.ts --out-dir dist/wasm-feature-export-gate-full --features web-owned-sqlite --variant full-feature-export-gate
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun scripts/size-syncular-wasm.ts --wasm dist/wasm-feature-export-gate-full/syncular_bg.wasm --json
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  CARGO_TARGET_DIR=/tmp/syncular-wasm-feature-export-gate-variants \
+  bun run build:wasm:variants
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun test src/__tests__/variant-core.wasm.test.ts
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun test src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "CRDT|encrypted|encrypts"
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun test src/public-api.test.ts
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun run tsgo
+```
+
+Change:
+
+- Compiled CRDT/Yjs and E2EE WASM exports only when the matching Rust feature
+  is enabled.
+- Kept those exports in the full artifact.
+- Added TypeScript runtime-feature guards so core artifact users get clear
+  `crdt-yjs` / `e2ee` errors instead of missing-method failures.
+- Treated null E2EE config setters as no-ops on the core runtime.
+- Cfg-gated the private CRDT/E2EE helper code that became unreachable in core
+  so fresh core builds stay warning-clean.
+
+| Candidate | Raw bytes | Gzip bytes | Delta |
+| --- | ---: | ---: | --- |
+| Core after productized SQLite trim | `1,784,524` | `798,508` | reference |
+| Core with CRDT/Yjs and E2EE export gate | `1,700,974` | `768,133` | `-83,550` raw, `-30,375` gzip |
+| Final core after warning-clean cfg cleanup | `1,700,974` | `768,136` | `0` raw, `+3` gzip vs export gate |
+| Full artifact with CRDT/Yjs and E2EE exports retained | `2,276,149` | `1,018,294` | unchanged/noise |
+| Full perf artifact after variant rebuild | `3,385,081` | `1,383,478` | unchanged/noise |
+
+Verification:
+
+- `variant-core.wasm.test.ts`: `11 pass`, `0 fail`.
+- `sync-hono.wasm.test.ts --test-name-pattern "CRDT|encrypted|encrypts"`:
+  `6 pass`, `0 fail`.
+- `public-api.test.ts`: `7 pass`, `0 fail`.
+- `bun run tsgo`: pass.
+- Full artifact declarations still expose CRDT/Yjs and E2EE methods; core
+  artifact declarations no longer expose those unavailable methods.
+- A fresh core rebuild after the private-helper cfg cleanup emitted no
+  unused-code warning noise.
+
+Decision:
+
+- Retain. This is a meaningful core artifact size win that matches the product
+  feature split and keeps full-runtime CRDT/E2EE behavior intact.
+
+## 2026-06-18 - Browser WASM Support Diagnostics Gate Probe
+
+Commit: uncommitted local size investigation
+
+Work package:
+Rust-first browser WASM package size investigation
+
+Reference:
+[`Browser WASM Size Analysis`](reference/BROWSER_WASM_SIZE_ANALYSIS.md)
+
+Commands:
+
+```bash
+cd packages/client
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  CARGO_TARGET_DIR=/tmp/syncular-wasm-health-gate \
+  bun scripts/build-syncular-wasm.ts --out-dir dist/wasm-core-health-gate --features web-owned-sqlite-core --variant core-health-gate
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun scripts/size-syncular-wasm.ts --wasm dist/wasm-core-health-gate/syncular_bg.wasm --json
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  CARGO_TARGET_DIR=/tmp/syncular-wasm-diagnostics-gate \
+  bun scripts/build-syncular-wasm.ts --out-dir dist/wasm-core-diagnostics-gate --features web-owned-sqlite-core --variant core-diagnostics-gate
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun scripts/size-syncular-wasm.ts --wasm dist/wasm-core-diagnostics-gate/syncular_bg.wasm --json
+```
+
+Probe:
+
+- Temporarily removed the WASM exports for local health, support-bundle,
+  repair, and reset APIs.
+- Separately temporarily removed the WASM exports for transport stats and
+  live-query diagnostics.
+- Restored both groups after measuring because the deltas were effectively
+  zero and the APIs are product support/observability surfaces.
+
+| Candidate | Raw bytes | Gzip bytes | Delta vs baseline |
+| --- | ---: | ---: | --- |
+| Baseline after productized SQLite trim | `1,784,524` | `798,508` | reference |
+| Gate local health/support/repair/reset exports | `1,784,542` | `798,511` | `+18` raw, `+3` gzip |
+| Gate transport stats/live-query diagnostics exports | `1,784,531` | `798,509` | `+7` raw, `+1` gzip |
+
+Decision:
+
+- Reject. Support and diagnostics export gating does not reduce size, and it
+  would remove tested product support APIs from the browser runtime.
+- Keep local health, repair, reset, support-bundle, transport stats, and
+  live-query diagnostics in the default browser artifact.
+
+## 2026-06-18 - Browser WASM SQLite FTS5 Trim Productized
+
+Commit: uncommitted local size investigation
+
+Work package:
+Rust-first browser WASM package size investigation
+
+Reference:
+[`Browser WASM Size Analysis`](reference/BROWSER_WASM_SIZE_ANALYSIS.md)
+
+Commands:
+
+```bash
+cd packages/client
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  CARGO_TARGET_DIR=/tmp/syncular-wasm-sqlite-trim-productized \
+  bun run build:wasm:core
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun scripts/size-syncular-wasm.ts --wasm dist/wasm-core/syncular_bg.wasm --json
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  CARGO_TARGET_DIR=/tmp/syncular-wasm-sqlite-trim-full \
+  bun run build:wasm
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun scripts/size-syncular-wasm.ts --wasm dist/wasm/syncular_bg.wasm --json
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  CARGO_TARGET_DIR=/tmp/syncular-wasm-sqlite-trim-variants \
+  bun run build:wasm:variants
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun test src/__tests__/variant-core.wasm.test.ts
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun test src/__tests__/sync-hono.wasm.test.ts --test-name-pattern "keeps readonly executeSql"
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun test src/public-api.test.ts
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun run tsgo
+```
+
+Change:
+
+- Added a local Cargo patch at `rust/vendor/sqlite-wasm-rs-0.5.3-syncular`
+  for `sqlite-wasm-rs 0.5.3`.
+- Kept base WASM SQLite flags and `SQLITE_ENABLE_FTS5`.
+- Removed optional extension/debug/introspection enables from the browser
+  SQLite compile: `UNLOCK_NOTIFY`, `API_ARMOR`, `BYTECODE_VTAB`,
+  `DBPAGE_VTAB`, `DBSTAT_VTAB`, `MATH_FUNCTIONS`, `OFFSET_SQL_FUNC`,
+  `PREUPDATE_HOOK`, `RTREE`, `SESSION`, `STMTVTAB`,
+  `UNKNOWN_SQL_FUNCTION`, and `COLUMN_METADATA`.
+
+| Candidate | Raw bytes | Gzip bytes | Delta |
+| --- | ---: | ---: | --- |
+| Core after export-surface audit, upstream SQLite flags | `1,841,350` | `826,918` | reference |
+| Core with productized keep-FTS5 SQLite trim | `1,784,524` | `798,508` | `-56,826` raw, `-28,410` gzip |
+| Full artifact with productized keep-FTS5 SQLite trim | `2,276,149` | `1,018,283` | under budget |
+| Full perf artifact with productized keep-FTS5 SQLite trim | `3,385,081` | `1,383,471` | under budget |
+
+Verification:
+
+- `variant-core.wasm.test.ts`: `11 pass`, `0 fail`; includes a retained
+  feature-contract test that proves FTS5 works, JSON remains available, and the
+  trimmed optional extensions are absent.
+- `bun run build:wasm:variants`: pass; rebuilt core, full, perf, and the
+  runtime artifact catalog.
+- `sync-hono.wasm.test.ts --test-name-pattern "keeps readonly executeSql"`:
+  `1 pass`, `0 fail`.
+- `public-api.test.ts`: `7 pass`, `0 fail`.
+- `bun run tsgo`: pass.
+
+Decision:
+
+- Retain. This is the largest safe WASM-size win found so far that does not
+  remove browser persistence, FTS5, or the single full-featured database SKU.
+- Longer-term maintenance target: upstream configurable `sqlite-wasm-rs` flags
+  and drop the local patch when upstream supports the retained flag profile.
+
+## 2026-06-18 - Rust/Wasm Code Size Guide Probe
+
+Commit: uncommitted local size investigation
+
+Work package:
+Rust-first browser WASM package size investigation
+
+Reference:
+[`Browser WASM Size Analysis`](reference/BROWSER_WASM_SIZE_ANALYSIS.md)
+
+Commands:
+
+```bash
+cd packages/client
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun run build:wasm:core
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun scripts/size-syncular-wasm.ts --wasm dist/wasm-core/syncular_bg.wasm --json
+cd ../..
+wasm-snip --snip-rust-panicking-code .context/wasm-size/article-probes/profile.wasm -o .context/wasm-size/article-probes/profile-snip-panic.raw.wasm
+wasm-opt --all-features -Oz --converge --strip-producers --zero-filled-memory --vacuum packages/client/dist/wasm-core/syncular_bg.wasm -o .context/wasm-size/article-probes/current-converge.wasm
+cd packages/client
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun test src/__tests__/variant-core.wasm.test.ts
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun test src/public-api.test.ts
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun run tsgo
+```
+
+Probe:
+
+- Followed the Rust/Wasm code-size guide ideas against the current
+  `web-owned-sqlite-core` artifact after export-surface pruning.
+- Tested Cargo profile knobs, allocator swap, panic-hook simplification,
+  `wasm-snip`, and additional Binaryen post-processing variants.
+
+| Candidate | Raw bytes | Gzip bytes | Delta vs baseline | Decision |
+| --- | ---: | ---: | --- | --- |
+| Baseline after export-surface audit | `1,841,350` | `826,918` | reference | current retained build |
+| `wee_alloc` global allocator | `1,834,734` | `824,030` | `-6,616` raw, `-2,888` gzip | rejected: too little for allocator/runtime-risk tradeoff |
+| Static panic hook message | `1,840,756` | `826,675` | `-594` raw, `-243` gzip | rejected: loses useful panic detail |
+| No panic hook | `1,839,894` | `826,264` | `-1,456` raw, `-654` gzip | rejected: loses panic logging |
+| `opt-level = "s"` | `2,024,553` | `882,595` | `+183,203` raw, `+55,677` gzip | rejected |
+| `opt-level = 3` | `2,761,907` | `1,123,805` | `+920,557` raw, `+296,887` gzip | rejected |
+| LTO off | `1,841,556` | `826,951` | `+206` raw, `+33` gzip | keep current LTO setting |
+| `codegen-units = 16` | `1,886,384` | `845,719` | `+45,034` raw, `+18,801` gzip | rejected |
+| Re-run current `wasm-opt -Oz` pipeline | `1,840,927` | `826,714` | `-423` raw, `-204` gzip | rejected: too small for an extra optimizer pass |
+| Re-run current pipeline with `--converge` | `1,840,924` | `826,507` after rebuild | `-426` raw, `-411` gzip | rejected: failed WASM gate |
+| Re-run as `wasm-opt -Os` | `1,840,939` | `826,704` | `-411` raw, `-214` gzip | rejected: tiny post-pass delta |
+| Re-run as `wasm-opt -O3` | `1,884,110` | `834,645` | `+42,760` raw, `+7,727` gzip | rejected |
+| Extra strip flags | `1,840,927` | `826,714` | `-423` raw, `-204` gzip | rejected: same as plain rerun |
+| Closed-world optimization | `1,842,576` | `827,195` | `+1,226` raw, `+277` gzip | rejected |
+| Closed-world + signature pruning/refining | `1,842,577` | `827,195` | `+1,227` raw, `+277` gzip | rejected |
+
+Verification:
+
+- `wasm-snip 0.4.0` failed before measurement:
+  `failed to parse type section`; the archived tool does not understand the
+  current artifact's modern wasm type section.
+- Temporary `--converge` build failed `variant-core.wasm.test.ts`: `5 pass`,
+  `5 fail`, with `CompileError: WebAssembly.Module doesn't parse at byte 285:
+  can't get 1th argument Type`.
+- After reverting `--converge` and rebuilding the baseline artifact,
+  `variant-core.wasm.test.ts`: `10 pass`, `0 fail`.
+- `public-api.test.ts`: `7 pass`, `0 fail`.
+- `bun run tsgo`: pass.
+
+Decision:
+
+- Reject all Rust/Wasm-guide probes for now; retain only the documentation.
+- The existing release profile and optimizer path are already close to the safe
+  local optimum for this artifact.
+- The next meaningful size lever remains the SQLite feature contract, not
+  panic-hook, allocator, or generic Binaryen tuning.
+
+## 2026-06-17 - Browser WASM Export Surface Audit
+
+Commit: uncommitted local size investigation
+
+Work package:
+Rust-first browser WASM package size investigation
+
+Reference:
+[`Browser WASM Size Analysis`](reference/BROWSER_WASM_SIZE_ANALYSIS.md)
+
+Commands:
+
+```bash
+cd packages/client
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun run build:wasm:core
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun run build:wasm
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun scripts/size-syncular-wasm.ts --wasm dist/wasm-core/syncular_bg.wasm --json
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun test src/__tests__/variant-core.wasm.test.ts
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun test src/public-api.test.ts
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun run tsgo
+```
+
+Probe:
+
+- Removed unused `SyncularRustOwnedSqliteClient` JS exports:
+  `executeSqlJson`, `executeUnsafeSqlJson`, class-level
+  `materializeYjsRowJson`, class-level `yjsStateVectorBase64`, and
+  `setOutboxAuthLeaseJson`.
+- Removed the unused direct lower-level `openSyncularRustOwnedSqlite` /
+  `SyncularRustOwnedSqlite` JS export surface.
+- Kept the Rust store itself; `SyncularRustOwnedSqliteClient` still uses it
+  internally.
+
+| Candidate | Raw bytes | Gzip bytes | Delta vs baseline |
+| --- | ---: | ---: | --- |
+| Baseline core artifact | `1,882,560` | `842,366` | reference |
+| Five unused client exports removed | `1,881,228` | `842,343` | `-1,332` raw, `-23` gzip |
+| Client exports + low-level store JS class removed | `1,841,350` | `826,918` | `-41,210` raw, `-15,448` gzip |
+
+Verification:
+
+- `variant-core.wasm.test.ts`: `10 pass`, `0 fail`.
+- `public-api.test.ts`: `7 pass`, `0 fail`.
+- `bun run tsgo`: pass.
+- Regenerated WASM bindings no longer expose the low-level store class or the
+  five unused client methods.
+
+Decision:
+
+- Retain. The size win is modest but real, the WASM surface is cleaner, and the
+  removed exports were not used by the TypeScript package path.
+
+## 2026-06-17 - Browser WASM SQLite Extension-Trim Probe
+
+Commit: uncommitted local size investigation
+
+Work package:
+Rust-first browser WASM package size investigation
+
+Reference:
+[`Browser WASM Size Analysis`](reference/BROWSER_WASM_SIZE_ANALYSIS.md)
+
+Commands:
+
+```bash
+cd packages/client
+CARGO_TARGET_DIR=/tmp/syncular-sqlite-probe-target \
+  PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun run build:wasm:core
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun scripts/size-syncular-wasm.ts --wasm dist/wasm-core/syncular_bg.wasm --json
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH \
+  bun test src/__tests__/variant-core.wasm.test.ts
+```
+
+Probe:
+
+- Patched the local cargo-registry `sqlite-wasm-rs 0.5.3` build script for a
+  temporary extension-trim build.
+- Kept base WASM flags.
+- Removed explicit optional extension/enhancement enables:
+  `UNLOCK_NOTIFY`, `API_ARMOR`, `BYTECODE_VTAB`, `DBPAGE_VTAB`,
+  `DBSTAT_VTAB`, `FTS5`, `MATH_FUNCTIONS`, `OFFSET_SQL_FUNC`,
+  `PREUPDATE_HOOK`, `RTREE`, `SESSION`, `STMTVTAB`,
+  `UNKNOWN_SQL_FUNCTION`, `COLUMN_METADATA`.
+
+| Candidate | Raw bytes | Gzip bytes | Delta vs baseline |
+| --- | ---: | ---: | --- |
+| Baseline upstream `sqlite-wasm-rs` flags | `1,882,560` | `842,366` | reference |
+| Keep FTS5, trim other optional extensions | `1,825,790` | `814,049` | `-56,770` raw, `-28,317` gzip |
+| SQLite extension trim | `1,702,685` | `750,038` | `-179,875` raw, `-92,328` gzip |
+
+Verification:
+
+- `variant-core.wasm.test.ts`: `10 pass`, `0 fail` for both SQLite probes.
+- One-off SQL probe: `json_extract` still works in both probes.
+- Keep-FTS5 probe: `ENABLE_FTS5` reports `1`, `create virtual table ... using fts5` works, and `ENABLE_RTREE`, `ENABLE_SESSION`, `ENABLE_MATH_FUNCTIONS`, `ENABLE_DBSTAT_VTAB`, `ENABLE_BYTECODE_VTAB` all report `0`; RTREE and `sqrt(4)` fail as expected.
+- No-FTS probe confirmed removed features are absent:
+  `ENABLE_FTS5`, `ENABLE_RTREE`, `ENABLE_SESSION`,
+  `ENABLE_MATH_FUNCTIONS`, `ENABLE_DBSTAT_VTAB`, `ENABLE_BYTECODE_VTAB`
+  all report `0`; FTS5, RTREE, and `sqrt(4)` fail as expected.
+
+Decision:
+
+- Strong size candidate, not retained yet because it changes public SQL feature availability through `executeSql*`.
+- Recommended default candidate is keeping FTS5 and trimming the other optional extension/enhancement flags: FTS5 is useful for normal offline-first local search, while the others are niche or diagnostics/embedding features for Syncular's browser runtime.
+- Runtime source changes were not made; cargo-registry probe was restored and
+  the local core artifact was rebuilt back to the baseline size.
+
+## 2026-06-17 - Browser WASM JSON Parser Probe
+
+Commit: uncommitted local size investigation
+
+Work package:
+Rust-first browser WASM package size investigation
+
+Reference:
+[`Browser WASM Size Analysis`](reference/BROWSER_WASM_SIZE_ANALYSIS.md)
+
+Commands:
+
+```bash
+cd packages/client
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun run build:wasm:core
+PATH=/tmp/syncular-bun-1.3.9/bun-darwin-aarch64:$PATH bun scripts/size-syncular-wasm.ts --wasm dist/wasm-core/syncular_bg.wasm --json
+```
+
+| Candidate | Scope | Raw bytes | Gzip bytes | Delta vs baseline |
+| --- | --- | ---: | ---: | --- |
+| Baseline | current `web-owned-sqlite-core` | `1,882,560` | `842,366` | reference |
+| `nanoserde` | CRDT field request DTOs + Yjs envelope parse | `1,903,719` | `849,982` | `+21,159` raw, `+7,616` gzip |
+| `miniserde` narrow | same CRDT field request DTO slice | `1,881,559` | `845,095` | `-1,001` raw, `+2,729` gzip |
+| `miniserde` widened | CRDT field DTOs, subscription ids, auth headers, live-query table/hint DTOs | `1,881,402` | `844,916` | `-1,158` raw, `+2,550` gzip |
+
+Decision:
+
+- Reject nanoserde/miniserde for piecemeal typed boundary DTO replacement.
+- The added parser dependency was not amortized and gzip got worse.
+- Parser experiment source changes were reverted; retain only the measurement
+  and analysis docs.
+
 ## 2026-05-23 - WP-31 Originless Non-Browser WebSocket Guard
 
 Commit: uncommitted local websocket-origin fix
@@ -3153,7 +3612,7 @@ Work package: [`WP-12 Scoped Snapshot Artifacts`](work-packages/WP-12-scoped-sna
 
 Change:
 
-- `@syncular/server-hono` `createSyncServer(...)` now accepts and forwards
+- `@syncular/server/hono` `createSyncServer(...)` now accepts and forwards
   `snapshotArtifactStorage`, so app-style servers can use the high-level Hono
   factory instead of dropping down to `createSyncRoutes(...)` just to serve
   scoped SQLite artifacts.
@@ -7142,3 +7601,26 @@ Decision:
   handlers can supply it manually (document this as the recommended setup).
   Revisit DB-introspection-derived metadata only if a real app shows encode
   pain on the generic path.
+
+## 2026-06-19 - Browser WASM NPM Tarball Guardrail
+
+Context: the npm release dry-run for the package-consolidation branch exposed a
+packaging-size issue separate from runtime WASM size. `@syncular/client`
+published all of `dist`, so scratch WASM measurement directories from local
+experiments were included in the package tarball.
+
+Measured with `SYNCULAR_PUBLISH_DRY_RUN=1 SYNCULAR_NPM_TAG=staging bun run
+release` and `npm pack --dry-run --json` from `packages/client`:
+
+| Package files policy | Packed | Unpacked | Files |
+| --- | ---: | ---: | ---: |
+| Publish all `dist` | `15.2 MB` | `36.7 MB` | `260` |
+| Explicit runtime artifact allowlist | `3.5 MB` | `9.1 MB` | `182` |
+
+Decision:
+
+- Retain the `@syncular/client` `files` allowlist for root dist outputs,
+  subpath builds, and the three intended WASM runtime directories:
+  `dist/wasm`, `dist/wasm-core`, and `dist/wasm-perf`.
+- Do not rely on cleaning local scratch directories before publish; the
+  package manifest should make accidental artifact shipping impossible.

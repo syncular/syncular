@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "scripts": {
-    "prepare:openapi": "bun --cwd ../../packages/server-hono generate:openapi && cp ../../packages/server-hono/openapi.json ./openapi.json",
+    "prepare:openapi": "bun --cwd ../../packages/server generate:openapi && cp ../../packages/server/openapi.json ./openapi.json",
     "build": "bun run prepare:openapi && next build",
     "build:cf": "opennextjs-cloudflare build",
     "preview:cf": "opennextjs-cloudflare build && opennextjs-cloudflare preview",
@@ -14,7 +14,7 @@
     "postinstall": "fumadocs-mdx",
     "tsgo": "bun run prepare:openapi && tsgo --noEmit",
     "generate": "bun generate:schema && bun generate:openapi",
-    "generate:schema": "bun --cwd ../../packages/server-hono generate:openapi",
+    "generate:schema": "bun --cwd ../../packages/server generate:openapi",
     "generate:openapi": "bun run prepare:openapi && bun scripts/generate-openapi.ts"
   },
   "dependencies": {

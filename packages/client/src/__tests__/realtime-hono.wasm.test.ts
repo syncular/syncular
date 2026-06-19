@@ -1,6 +1,5 @@
 import { afterEach, describe, expect, it } from 'bun:test';
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
 import { Hono } from 'hono';
 import { upgradeWebSocket, websocket } from 'hono/bun';
 import { type Kysely, sql } from 'kysely';
@@ -11,11 +10,12 @@ import {
   taskSubscription,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import { createServerHandler, ensureSyncSchema } from '../../../server/src';
-import { createSqliteServerDialect } from '../../../server-dialect-sqlite/src';
+import { createBunSqliteDialect } from '../../../server/src/bun-sqlite';
 import {
   createSyncRoutes,
   getSyncWebSocketConnectionManager,
-} from '../../../server-hono/src/routes';
+} from '../../../server/src/hono';
+import { createSqliteServerDialect } from '../../../server/src/sqlite';
 import type {
   SyncularDiagnosticEvent,
   SyncularLiveQueryEvent,

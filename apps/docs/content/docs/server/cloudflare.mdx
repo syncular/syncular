@@ -5,7 +5,7 @@ description: Deploy the Syncular server on Cloudflare Workers + Durable Objects 
 
 # Cloudflare
 
-Syncular can run on the edge with Cloudflare Workers + Durable Objects via `@syncular/server-cloudflare`.
+Syncular can run on the edge with Cloudflare Workers + Durable Objects via `@syncular/server/cloudflare`.
 
 This is a good fit when you want:
 - Low-latency sync endpoints near users
@@ -16,10 +16,10 @@ This is a good fit when you want:
 
 Cloudflare deployment is **adapter + dialect**:
 
-- **Adapter:** `@syncular/server-cloudflare` (Workers + Durable Objects + R2 helpers)
+- **Adapter:** `@syncular/server/cloudflare` (Workers + Durable Objects + R2 helpers)
 - **Database dialect:** choose one based on your DB:
-  - D1/SQLite: `@syncular/dialects/d1` + `@syncular/server-dialect-sqlite`
-  - Neon/Postgres: `@syncular/dialects/neon` + `createNeonServerDialect()` from `@syncular/server-dialect-postgres`
+  - D1/SQLite: `@syncular/server/d1` + `@syncular/server/sqlite`
+  - Neon/Postgres: `@syncular/server/neon` + `createNeonServerDialect()` from `@syncular/server/postgres`
 
 ## Next steps
 

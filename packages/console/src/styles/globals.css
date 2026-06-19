@@ -1,4 +1,4 @@
-@import '@syncular/ui/styles.source.css';
+@import '../ui/styles/styles.css';
 
 /* Scan console page source files for Tailwind class usage */
 @source "..";

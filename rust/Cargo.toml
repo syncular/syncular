@@ -15,3 +15,8 @@ opt-level = "z"
 lto = true
 codegen-units = 1
 panic = "abort"
+
+[patch.crates-io]
+# Keep FTS5 but trim optional SQLite extension/debug/introspection flags from
+# the browser WASM build. See docs/reference/BROWSER_WASM_SIZE_ANALYSIS.md.
+sqlite-wasm-rs = { path = "vendor/sqlite-wasm-rs-0.5.3-syncular" }

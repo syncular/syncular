@@ -27,10 +27,10 @@ handling built in). Wire the shared DDL and handler into real sync routes:
 
 ```ts
 import { createDatabase } from '@syncular/core';
-import { createBunSqliteDialect } from '@syncular/dialects/bun-sqlite';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
 import { ensureSyncSchema } from '@syncular/server';
-import { createSqliteServerDialect } from '@syncular/server-dialect-sqlite';
-import { createSyncRoutes } from '@syncular/server-hono';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
+import { createSyncRoutes } from '@syncular/server/hono';
 import {
   createNodeHonoServer,
   createProjectScopedTasksHandler,

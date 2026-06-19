@@ -2,7 +2,7 @@
  * Connection context for shared connection state across components
  */
 
-import type { SyncClient } from '@syncular/transport-http';
+import type { SyncClient } from '@syncular/core/http';
 import {
   createContext,
   type ReactNode,
