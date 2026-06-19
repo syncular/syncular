@@ -48,6 +48,12 @@ runs:
       with:
         targets: wasm32-unknown-unknown
 
+    - name: Harden Cargo registry downloads
+      shell: bash
+      run: |
+        echo "CARGO_HTTP_MULTIPLEXING=false" >> "$GITHUB_ENV"
+        echo "CARGO_NET_RETRY=10" >> "$GITHUB_ENV"
+
     - name: Setup wasm-pack
       uses: jetli/wasm-pack-action@v0.4.0
 
