@@ -362,6 +362,7 @@ fn app_test_http_server_accepts_production_realtime_pushes() {
     let mut reader_socket = reader_transport
         .connect_realtime()
         .expect("reader websocket");
+    assert_eq!(server.wait_for_realtime_peers(2, Duration::from_secs(5)), 2);
 
     let response = writer_socket
         .push_commit(PushCommitRequest {

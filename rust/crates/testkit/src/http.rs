@@ -451,6 +451,21 @@ impl AppTestHttpServer {
         }
     }
 
+    pub fn wait_for_realtime_peers(&self, expected: usize, timeout: Duration) -> usize {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let peers = self
+                .broadcaster
+                .lock()
+                .expect("app test ws broadcaster")
+                .len();
+            if peers >= expected || Instant::now() >= deadline {
+                return peers;
+            }
+            thread::sleep(Duration::from_millis(5));
+        }
+    }
+
     pub fn push_realtime_sync(&self) {
         broadcast_realtime_sync(&self.broadcaster);
     }
