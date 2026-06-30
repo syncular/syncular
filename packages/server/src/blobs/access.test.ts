@@ -17,8 +17,17 @@ interface TasksTable {
   server_version: number;
 }
 
+interface PackageAssetsTable {
+  id: string;
+  partition_id: string;
+  project_id: string;
+  asset: string | null;
+  server_version: number;
+}
+
 interface TestDb extends SyncCoreDb {
   tasks: TasksTable;
+  package_assets: PackageAssetsTable;
 }
 
 interface ClientDb {
@@ -26,6 +35,13 @@ interface ClientDb {
     id: string;
     user_id: string;
     image: BlobRef | null;
+    server_version: number;
+  };
+  package_assets: {
+    id: string;
+    partition_id: string;
+    project_id: string;
+    asset: BlobRef | null;
     server_version: number;
   };
 }
@@ -201,6 +217,92 @@ describe('createScopedBlobAccessChecker', () => {
       table: 'tasks',
       column: 'image',
       rowId: 'task-3',
+    });
+  });
+
+  it('requires a scoped metadata row in the requested partition for shared bytes', async () => {
+    const blob: BlobRef = {
+      hash: `sha256:${'e'.repeat(64)}`,
+      size: 6,
+      mimeType: 'application/octet-stream',
+    };
+    await db.schema
+      .createTable('package_assets')
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('partition_id', 'text', (col) => col.notNull())
+      .addColumn('project_id', 'text', (col) => col.notNull())
+      .addColumn('asset', 'text')
+      .addColumn('server_version', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .execute();
+
+    const packageAssetsHandler = createServerHandler<
+      TestDb,
+      ClientDb,
+      'package_assets'
+    >({
+      table: 'package_assets',
+      scopes: ['project:{project_id}'],
+      resolveScopes: async () => ({ project_id: ['project-1'] }),
+    });
+    const decideBlobAccess = createScopedBlobAccessDecisionChecker({
+      db,
+      handlers: [packageAssetsHandler],
+      references: [
+        {
+          table: 'package_assets',
+          blobColumns: ['asset'],
+          partitionColumn: 'partition_id',
+        },
+      ],
+    });
+
+    await db
+      .insertInto('package_assets')
+      .values({
+        id: 'base-asset-global',
+        partition_id: 'global',
+        project_id: 'project-1',
+        asset: JSON.stringify(blob),
+        server_version: 1,
+      })
+      .execute();
+
+    await expect(
+      decideBlobAccess({
+        actorId: 'user-1',
+        partitionId: 'campaign-a',
+        hash: blob.hash,
+      })
+    ).resolves.toMatchObject({
+      allowed: false,
+      reason: 'missing_reference',
+    });
+
+    await db
+      .insertInto('package_assets')
+      .values({
+        id: 'base-asset-campaign-a',
+        partition_id: 'campaign-a',
+        project_id: 'project-1',
+        asset: JSON.stringify(blob),
+        server_version: 1,
+      })
+      .execute();
+
+    await expect(
+      decideBlobAccess({
+        actorId: 'user-1',
+        partitionId: 'campaign-a',
+        hash: blob.hash,
+      })
+    ).resolves.toMatchObject({
+      allowed: true,
+      reason: 'allowed',
+      table: 'package_assets',
+      column: 'asset',
+      rowId: 'base-asset-campaign-a',
     });
   });
 });

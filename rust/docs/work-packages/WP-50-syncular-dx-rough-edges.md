@@ -658,6 +658,13 @@ online propagation, or reconnect behavior can change.
   the app-facing place to route stable recovery actions such as refreshing auth,
   checking permissions, regenerating/upgrading schema, or recreating a failed
   runtime.
+- 2026-06-30 fourteenth implementation slice resolved the default global/base
+  blob sharing pattern: shared object bytes are fine, but campaign/project
+  access is granted by scoped metadata rows in the requested partition/scope.
+  `createScopedBlobAccessDecisionChecker(...)` now supports
+  `partitionColumn` for reference tables that store rows from multiple route
+  partitions, and focused tests prove a global/base hash does not authorize a
+  campaign download until the campaign has its own scoped reference row.
 
 ## Implementation Log
 
@@ -804,6 +811,17 @@ online propagation, or reconnect behavior can change.
 - 2026-06-30: Updated public error-handling docs and the starter README so apps
   treat browser health as the stable place to route recovery UI instead of
   interpreting low-level status objects or diagnostic text.
+- 2026-06-30: Added `partitionColumn` to
+  `ScopedBlobReferenceTable` / `createScopedBlobAccessDecisionChecker(...)` so
+  blob reference lookup can be constrained to the requested Syncular route
+  partition when one reference table stores multiple partitions.
+- 2026-06-30: Added focused blob access coverage proving a global/base row in
+  another partition does not grant campaign/project blob access, while a scoped
+  metadata row in the requested partition does.
+- 2026-06-30: Updated blob feature, server, and recipe docs to make scoped
+  metadata rows over shared bytes the default pattern for package/base assets,
+  with shared partitions called out as an explicit advanced authorization
+  policy.
 
 ## Latest Gates
 
@@ -854,6 +872,9 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bunx biome check packages/client/src/browser-health.ts packages/client/src/browser-health.test.ts apps/docs/content/docs/features/error-handling.mdx packages/create-syncular-app/template/README.md`
 - `bun --cwd packages/client tsgo`
 - `bun --cwd apps/docs types:check`
+- `bun test packages/server/src/blobs/access.test.ts packages/server/src/hono/__tests__/blob-routes.test.ts`
+- `bunx biome check packages/server/src/blobs/access.ts packages/server/src/blobs/access.test.ts apps/docs/content/docs/features/blobs.mdx apps/docs/content/docs/server/blobs.mdx apps/docs/content/docs/features/recipes/blobs-and-media.mdx`
+- `bun --cwd packages/server tsgo`
 - `git diff --check`
 
 ## Sequencing
@@ -883,7 +904,10 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 6. Blob partition/scope guidance and typed blob failure details: first slice is
    done with a decision-returning scoped access checker, route-level structured
    details, shared error taxonomy coverage, and public docs for global/base
-   assets crossing campaign/project scopes.
+   assets crossing campaign/project scopes. Follow-up slice resolved the
+   default global/base sharing pattern as scoped metadata rows over shared
+   bytes, and added `partitionColumn` so reference lookup can be constrained to
+   the requested route partition when a table stores multiple partitions.
 7. Deterministic E2E/testkit recipes and stable log markers: first slice is
    done with membership-aware project/campaign actor helpers, stable diagnostic
    marker assertions, a project-scoped fixture that can deny non-member writes
@@ -905,6 +929,11 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
   runtime/lifecycle recovery fact that every browser app can consume. Generated
   clients may add product-specific UI helpers later, but they should wrap the
   same health contract rather than inventing a second action taxonomy.
+- Global/base blob data uses scoped metadata rows over shared object bytes by
+  default. A package/base asset may reuse the same content-addressed body, but
+  each campaign/project partition that can fetch it needs a scoped reference
+  row. Global partitions and shared partitions remain explicit advanced auth
+  policies, not implicit fallback paths for hashes that exist elsewhere.
 
 ## Open Questions
 
@@ -922,19 +951,16 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - Should generated clients wrap `replaceAuthContext(...)` with app-specific
   campaign/project join helpers, or should the root database method remain the
   only public contract until a starter flow proves the narrower API?
-- What is the blessed global/base-data sharing pattern for package releases
-  pinned into campaign scopes?
 - Which schema readiness checks belong in the `syncular` CLI versus server
   package APIs?
 - Should deploy readiness live as `syncular doctor`, `syncular schema check`,
   or a layered pair where `doctor` calls narrower checks?
 - Which diagnostic fields are always safe to emit, which are redacted by
   default, and which require an explicit debug opt-in?
-- Should global/base data become a first-class scope/partition kind, or should
-  the first release document one narrower copy/share pattern?
 
 ## Next Action
 
 Pick the next implementation slice: audit the remaining product-contract
-decisions from the open questions, especially the blessed global/base-data
-sharing pattern for package releases pinned into campaign/project scopes.
+decisions from the open questions, especially diagnostic redaction/default-safe
+fields and API audience labels for UI, operator/deploy, debug/console, testkit,
+and advanced escape-hatch surfaces.

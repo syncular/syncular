@@ -103,15 +103,16 @@ contains the content hash, size, and MIME type; it does not carry an authority
 grant by itself. The route can mint a download URL only when the current actor
 and partition can see a synced row that references that hash.
 
-For scoped apps, prefer a scoped reference row over a global hash lookup:
+For scoped apps, the default sharing pattern is scoped metadata over shared
+bytes:
 
-- Put global/base catalog rows in a global partition only when every consumer
-  fetches them through that same global partition.
-- If a campaign/project needs a package, file, or base asset, create a scoped
-  package/file row in that campaign/project that references the blob hash.
-- If multiple scopes intentionally share the same bodies, share the object
-  storage bytes but keep separate scoped metadata rows or an explicit shared
-  partition policy.
+- Store the object body once, addressed by content hash.
+- Create a package/file/base-asset row in each campaign/project partition that
+  should be allowed to fetch that body.
+- Put global/base catalog rows in a global partition only when clients fetch
+  them through that same global partition.
+- Treat shared partitions as an advanced policy with its own auth model, not as
+  an implicit fallback for missing scoped rows.
 - Do not rely on "the hash exists somewhere" as access. A blob body can exist
   while `GET /blobs/:hash/url` correctly returns `blob.forbidden` because no
   row in the current scope grants access to it.
@@ -136,6 +137,24 @@ const blobRoutes = createBlobRoutes({
   blobManager,
   authenticate,
   canAccessBlob,
+});
+```
+
+If the reference table stores rows from multiple Syncular route partitions,
+include the partition column so a global/base row cannot accidentally authorize
+a campaign/project download:
+
+```ts
+const canAccessBlob = createScopedBlobAccessDecisionChecker({
+  db,
+  handlers: [packageAssetsHandler],
+  references: [
+    {
+      table: 'package_assets',
+      blobColumns: ['asset'],
+      partitionColumn: 'partition_id',
+    },
+  ],
 });
 ```
 

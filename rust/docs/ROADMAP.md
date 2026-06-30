@@ -119,8 +119,12 @@ read-only review:
     passed locally. A
     Hono/WebSocket/WASM managed-database test also proves the same scope-change
     flow against real remote auth/realtime behavior, including denied-scope
-    diagnostics. Next slice: remaining product-contract decisions, especially
-    the blessed global/base-data sharing pattern.
+    diagnostics. Global/base blob sharing now has a default product pattern:
+    scoped metadata rows in the requested campaign/project partition grant
+    access to shared content-addressed bytes, and blob reference lookup can use
+    `partitionColumn` to avoid accidental cross-partition grants. Next slice:
+    remaining product-contract decisions, especially diagnostic redaction and
+    API audience labels.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

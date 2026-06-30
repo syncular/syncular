@@ -79,11 +79,14 @@ authority boundary failed:
   the direct download token was valid, but the underlying bytes were missing
   from storage.
 
-For global/base data, decide the authority model explicitly. Either fetch
-global assets through a global partition, create scoped metadata rows that
-reference shared object-storage bytes, or define a deliberate shared partition
-policy. Do not make campaign/project clients fetch arbitrary global hashes
-through their campaign/project partition without a scoped reference row.
+For global/base data, use scoped metadata rows over shared bytes by default.
+Store the body once by content hash, then create a package/file/base-asset row
+in each campaign/project partition that should fetch it. If the reference table
+stores rows from multiple route partitions, configure
+`partitionColumn: "partition_id"` so a global row cannot authorize a
+campaign/project request. Fetch through a global partition only when the client
+is intentionally subscribed to that global partition; use shared partitions
+only as an explicit auth policy, not as an implicit hash fallback.
 
 ## Client interaction
 
