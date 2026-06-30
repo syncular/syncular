@@ -22,6 +22,7 @@ jobs:
       demo: ${{ steps.filter.outputs.demo }}
       load: ${{ steps.filter.outputs.load }}
       rust: ${{ steps.filter.outputs.rust }}
+      starter: ${{ steps.filter.outputs.starter }}
       sync_matrix: ${{ steps.filter.outputs.sync_matrix }}
     steps:
       - uses: actions/checkout@v4
@@ -67,6 +68,15 @@ jobs:
               - 'packages/core/**'
               - 'packages/server/**'
               - 'packages/testkit/**'
+            starter:
+              - '.github/workflows/checks.yml'
+              - '.github/actions/setup-environment/action.yml'
+              - 'package.json'
+              - 'bun.lock'
+              - 'packages/create-syncular-app/**'
+              - 'packages/client/**'
+              - 'packages/core/**'
+              - 'packages/server/**'
             sync_matrix:
               - 'packages/client/**'
               - 'packages/core/**'
@@ -122,6 +132,27 @@ jobs:
         with:
           files: ./coverage/lcov.info
           fail_ci_if_error: false
+
+  starter-browser-preview:
+    needs: changes
+    if: github.event_name != 'pull_request' || needs.changes.outputs.starter == 'true'
+    runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-environment
+
+      - name: Setup Chrome
+        id: setup-chrome
+        uses: browser-actions/setup-chrome@v2
+        with:
+          install-dependencies: true
+
+      - name: Run create-syncular-app browser preview smoke
+        env:
+          CHROME_BIN: ${{ steps.setup-chrome.outputs.chrome-path }}
+          SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE: required
+        run: bun --cwd packages/create-syncular-app smoke --require-browser-preview
 
   rust-native:
     needs: changes

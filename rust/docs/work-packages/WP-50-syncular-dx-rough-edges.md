@@ -1343,6 +1343,11 @@ online propagation, or reconnect behavior can change.
   the generated app, serves Vite preview on the allocated port, verifies built
   assets, and optionally runs a Chrome/Chromium CDP browser check against the
   built page.
+- 2026-07-01: Added a `starter-browser-preview` Checks workflow job that sets
+  up Chrome, exports `CHROME_BIN`, and runs
+  `bun --cwd packages/create-syncular-app smoke --require-browser-preview` so
+  the built-preview browser smoke is enforced on starter-relevant PRs and all
+  pushes.
 - 2026-07-01: Added a second-pass feedback addendum that keeps the worthy
   Skaldsong DX points as product requirements while explicitly rejecting
   tempting shortcuts such as manual-sync freshness fixes, lite database
@@ -1488,6 +1493,24 @@ Most recent command local-apply rerun:
 - `bunx biome check packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
+- `git diff --check`
+
+Most recent starter browser-preview rerun:
+
+- `bunx biome check packages/create-syncular-app/scripts/smoke.ts`
+- `bun --cwd packages/create-syncular-app tsgo`
+- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/checks.yml"); puts "workflow yaml ok"'`
+- `bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks.
+  - Skipped the real-browser CDP check because no Chrome/Chromium binary was
+    available locally.
+- `bun --cwd packages/create-syncular-app smoke --require-browser-preview`
+  - Failed locally only at the required browser step because no
+    Chrome/Chromium binary was available. The new Checks job supplies Chrome
+    with `browser-actions/setup-chrome@v2` and exports `CHROME_BIN` from
+    `steps.setup-chrome.outputs.chrome-path`.
+- `bun run docs:stale-check`
 - `git diff --check`
 
 Most recent generated-helper rerun:
@@ -1668,8 +1691,10 @@ Most recent mutation-status rerun:
 13. Browser deployment preflight built-preview coverage: first scaffold slice
     is done for production build and preview asset serving, and the smoke now
     has an opt-in Chrome/Chromium CDP path for executing the built page in a
-    real browser. A browser-capable CI runner still needs to enforce that
-    optional path.
+    real browser. The Checks workflow now enforces that path in a dedicated
+    Chrome-provisioned starter job for starter-relevant PRs and all pushes;
+    remaining work is to observe the hosted runner and decide whether release
+    rehearsal should also require it.
 
 ## Resolved Decisions
 
@@ -1730,10 +1755,11 @@ Most recent mutation-status rerun:
   grant status, and quota budgets. The starter now runs the helper before
   opening Syncular. The scaffold smoke checks the transformed preflight module,
   now builds and serves Vite preview, verifies built assets, and can execute
-  the built page through Chrome/Chromium CDP when a browser is available.
-  Remaining work is to provision a browser-capable CI/release runner and make
-  `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` there so this path is enforced
-  automatically.
+  the built page through Chrome/Chromium CDP. Checks now has a dedicated
+  `starter-browser-preview` job that installs Chrome and requires this path on
+  starter-relevant PRs and all pushes. Remaining work is to observe the new CI
+  job on hosted runners and mirror the same required browser smoke in release
+  rehearsal if release policy wants it there too.
 - Adapter import side-effect isolation: the first root import graph smoke now
   proves root client/server imports do not statically reach optional Bun,
   Cloudflare, S3, Sentry, Neon, Tauri, React Native, or CRDT/Yjs subpaths.
@@ -1800,9 +1826,9 @@ Most recent mutation-status rerun:
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. Strong candidates
-are browser-capable CI enforcement for the built-preview smoke, multi-tab
-lifecycle coverage, command-level mutation correlation, or real-browser
-support-bundle failure artifacts, because those remain broad DX holes after
+are observing the new hosted starter browser-preview job, multi-tab lifecycle
+coverage, real-browser support-bundle failure artifacts, or the missing
+low-level command timeline links, because those remain broad DX holes after
 the first local recovery browser proof, upgrade runbook, built-preview asset
-smoke, runtime timeline helper, composed support-bundle helper, and mutation
-status helper.
+smoke, runtime timeline helper, composed support-bundle helper, mutation
+status helper, and CI browser-smoke enforcement.

@@ -239,7 +239,7 @@ async function maybeRunBrowserPreviewSmoke(args: {
 }
 
 function resolveChromeExecutable(): string | null {
-  const explicit = process.env.CHROME_BIN;
+  const explicit = process.env.CHROME_BIN ?? process.env.CHROME_PATH;
   if (explicit && existsSync(explicit)) return explicit;
   const candidates = [
     '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
