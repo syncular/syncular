@@ -1,5 +1,12 @@
 # syncular
 
+## 0.1.2
+
+### Patch Changes
+
+- Fix the published CLI entrypoint when invoked through npm bin symlinks.
+  - @syncular/typegen@0.1.2
+
 ## 0.1.1
 
 ### Patch Changes

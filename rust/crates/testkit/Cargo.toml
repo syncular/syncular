@@ -1,6 +1,6 @@
 [package]
 name = "syncular-testkit"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Rust-first test fixtures, in-memory app server, and assertions for Syncular apps."
 license = "Apache-2.0"
@@ -16,7 +16,7 @@ base64 = "0.22"
 p256 = { version = "0.13", features = ["ecdsa"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
-syncular-runtime = { version = "0.1.1", path = "../runtime", default-features = false, features = [
+syncular-runtime = { version = "0.1.2", path = "../runtime", default-features = false, features = [
     "native",
     "demo-todo-native-fixture",
     "crdt-yjs",

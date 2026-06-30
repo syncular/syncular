@@ -1,7 +1,18 @@
 import { describe, expect, it } from 'bun:test';
 import {
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
+import {
   buildCodegenInstallArgs,
   buildGenerateSteps,
+  isMainModuleEntrypoint,
   parseSyncularCliArgs,
 } from './cli';
 
@@ -69,6 +80,26 @@ describe('syncular CLI', () => {
       '/workspace/.cache/codegen',
       '--force',
     ]);
+  });
+
+  it('detects npm bin symlinks as the CLI entrypoint', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-cli-'));
+    try {
+      const distDir = join(dir, 'dist');
+      const binDir = join(dir, 'node_modules', '.bin');
+      const target = join(distDir, 'cli.js');
+      const entrypoint = join(binDir, 'syncular');
+      mkdirSync(distDir, { recursive: true });
+      mkdirSync(binDir, { recursive: true });
+      writeFileSync(target, '#!/usr/bin/env node\n');
+      symlinkSync(target, entrypoint);
+
+      expect(
+        isMainModuleEntrypoint(entrypoint, pathToFileURL(target).href)
+      ).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('runs both generators when a Syncular app definition is present', () => {
