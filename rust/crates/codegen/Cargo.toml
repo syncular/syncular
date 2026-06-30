@@ -1,6 +1,6 @@
 [package]
 name = "syncular-codegen"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Schema introspection and Rust code generator for Syncular app clients."
 license = "Apache-2.0"
