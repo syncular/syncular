@@ -55,6 +55,10 @@ cargo publish --manifest-path rust/crates/syncular/Cargo.toml --dry-run
   dev-dependency to the exact release version because runtime excludes those
   tests from the published crate and an exact same-version dev-dependency
   recreates the runtime/testkit publish cycle.
+- Made the Cargo publish helper idempotent for partial release reruns by
+  checking crates.io before publishing, treating Cargo's "already exists"
+  response as a skip, and waiting for newly published crates to become visible
+  before publishing dependents.
 
 ## Evidence
 
@@ -91,3 +95,10 @@ cargo publish --manifest-path rust/crates/syncular/Cargo.toml --dry-run
   `cargo check --manifest-path rust/Cargo.toml -p syncular-runtime`,
   `cargo check --manifest-path rust/Cargo.toml -p syncular-testkit`, and
   `cargo check --manifest-path rust/Cargo.toml -p syncular-client`.
+- Cargo publish idempotency fix gates passed:
+  `bunx biome check scripts/publish-cargo-crates.ts`,
+  `bun run release:cargo:package-check`, and `git diff --check`.
+- `bun scripts/publish-cargo-crates.ts --dry-run --allow-dirty` verified
+  through `syncular-runtime` packaging, then stopped at `syncular-testkit`
+  because `syncular-runtime@0.1.1` is intentionally not visible on crates.io
+  until the repaired release rerun publishes it.
