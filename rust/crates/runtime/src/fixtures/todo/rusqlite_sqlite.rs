@@ -234,7 +234,7 @@ impl SyncStateStore for RusqliteStore {
     fn outbox_summaries(&mut self) -> Result<Vec<OutboxSummary>> {
         let mut statement = self.conn.prepare(
             r#"
-           select client_commit_id, status, schema_version,
+           select client_commit_id, status, schema_version, acked_commit_seq,
                   lease_id, lease_expires_at_ms, lease_status_at_enqueue,
                    lease_scope_summary_json, lease_token
             from sync_outbox_commits
@@ -1108,12 +1108,13 @@ fn outbox_summary_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<OutboxSu
         client_commit_id: row.get(0)?,
         status: row.get(1)?,
         schema_version: row.get(2)?,
+        acked_commit_seq: row.get(3)?,
         auth_lease: auth_lease_provenance_from_columns(
-            row.get(3)?,
             row.get(4)?,
             row.get(5)?,
             row.get(6)?,
             row.get(7)?,
+            row.get(8)?,
         ),
     })
 }

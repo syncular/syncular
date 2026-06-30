@@ -282,6 +282,15 @@ function commandReceiptEvent(
       ...(command.commandId ? { commandId: command.commandId } : {}),
       state: trackedCommit.state,
       evidence: trackedCommit.evidence,
+      ...(trackedCommit.outbox
+        ? {
+            outboxStatus: trackedCommit.outbox.status,
+            outboxSchemaVersion: trackedCommit.outbox.schemaVersion,
+            ...(trackedCommit.outbox.ackedCommitSeq != null
+              ? { commitSeq: trackedCommit.outbox.ackedCommitSeq }
+              : {}),
+          }
+        : {}),
     },
   };
 }
@@ -375,7 +384,10 @@ function missingCommandEvidence(args: {
   ) {
     missing.push('sync-attempt');
   }
-  if (!eventsHaveDetail(args.runtimeEvents, 'commitSeq')) {
+  if (
+    args.trackedCommit.outbox?.ackedCommitSeq == null &&
+    !eventsHaveDetail(args.runtimeEvents, 'commitSeq')
+  ) {
     missing.push('server-commit-sequence');
   }
   if (

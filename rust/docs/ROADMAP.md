@@ -201,9 +201,12 @@ read-only review:
     timeline artifacts now expose `getSyncularCommandTimeline(...)` and
     `SyncularDatabase.commandTimeline(...)`, composing tracked receipt state,
     redacted runtime timeline events, optional local-visibility evidence, and
-    explicit missing-evidence markers for outbox sequence, server commit
-    sequence, realtime cursor, pull reason, local apply, and local visibility
-    when the runtime cannot yet prove those links. The
+    explicit missing-evidence markers for outbox sequence, realtime cursor,
+    pull reason, local apply, and local visibility when the runtime cannot yet
+    prove those links. Redacted support-bundle outbox commit summaries now
+    include `ackedCommitSeq` for acked commits so mutation status and command
+    timelines can prove the server commit sequence without exposing operation
+    payloads. The
     Hono-backed browser/WASM local-health test now exercises that plan/action
     API against the real Worker runtime for corrupted subscription state,
     orphaned verified roots, confirmation failure, and successful

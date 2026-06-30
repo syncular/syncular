@@ -335,6 +335,20 @@ fn local_support_bundle_is_redacted_and_importable() -> Result<()> {
     .bind::<BigInt, _>(now_ms())
     .bind::<Integer, _>(current_schema_version())
     .execute(&mut conn)?;
+    sql_query(
+        r#"
+        insert into sync_outbox_commits (
+            id, client_commit_id, status, operations_json, created_at, updated_at,
+            attempt_count, acked_commit_seq, schema_version, next_attempt_at
+        ) values (
+            'support-outbox-acked', 'support-client-acked', 'acked',
+            '[{"payload":"acked-secret-outbox-payload"}]', ?1, ?1, 0, 42, ?2, 0
+        )
+        "#,
+    )
+    .bind::<BigInt, _>(now_ms())
+    .bind::<Integer, _>(current_schema_version())
+    .execute(&mut conn)?;
     drop(conn);
 
     let mut client = demo_client(test_config(&path), store, TestTransport::new());
@@ -355,6 +369,8 @@ fn local_support_bundle_is_redacted_and_importable() -> Result<()> {
     assert!(bundle_json.contains("\"formatVersion\":2"));
     assert!(bundle_json.contains("\"outboxCommits\""));
     assert!(bundle_json.contains("\"clientCommitId\":\"support-client-commit\""));
+    assert!(bundle_json.contains("\"clientCommitId\":\"support-client-acked\""));
+    assert!(bundle_json.contains("\"ackedCommitSeq\":42"));
     assert!(bundle_json.contains("\"status\":\"pending\""));
     assert!(!bundle_json.contains("secret-user-id"));
     assert!(!bundle_json.contains("secret-project-a"));
@@ -362,6 +378,7 @@ fn local_support_bundle_is_redacted_and_importable() -> Result<()> {
     assert!(!bundle_json.contains("secret-param-value"));
     assert!(!bundle_json.contains("support secret title"));
     assert!(!bundle_json.contains("secret-outbox-payload"));
+    assert!(!bundle_json.contains("acked-secret-outbox-payload"));
     assert!(!bundle_json.contains("secret-partition-id"));
     assert!(!bundle_json.contains("secret-row-cursor"));
     assert!(!bundle_json.contains(&root_value));

@@ -91,6 +91,7 @@ export interface SyncularTrackedMutationCommit {
   outbox?: {
     status: string;
     schemaVersion: number;
+    ackedCommitSeq?: number;
   };
   conflict?: SyncularMutationConflictItem;
   recommendedActions: SyncularMutationStatusAction[];
@@ -372,6 +373,9 @@ function summarizeTrackedCommits(args: {
             outbox: {
               status: outboxCommit.status,
               schemaVersion: outboxCommit.schemaVersion,
+              ...(outboxCommit.ackedCommitSeq != null
+                ? { ackedCommitSeq: outboxCommit.ackedCommitSeq }
+                : {}),
             },
           }
         : {}),

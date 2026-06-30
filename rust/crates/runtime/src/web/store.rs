@@ -687,6 +687,7 @@ impl AsyncWebStore for WebMemoryStore {
                     client_commit_id: commit.client_commit_id.clone(),
                     status: commit.status.clone(),
                     schema_version: commit.schema_version,
+                    acked_commit_seq: commit.acked_commit_seq,
                     auth_lease: commit.auth_lease.clone(),
                 })
                 .collect())

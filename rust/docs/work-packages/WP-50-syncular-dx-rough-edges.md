@@ -949,7 +949,8 @@ online propagation, or reconnect behavior can change.
   resolution.
 - The tracked mutation-status slice extends redacted Rust local support
   bundles with outbox commit summaries (`clientCommitId`, status, schema
-  version) and lets apps pass generated mutation receipts to
+  version, and `ackedCommitSeq` for acked commits) and lets apps pass generated
+  mutation receipts to
   `mutationStatus({ trackCommits: [...] })`. The public result now classifies
   each tracked receipt as queued, syncing, failed, acked, conflicted,
   resolved-conflict, or unknown using local outbox and conflict evidence
@@ -959,9 +960,10 @@ online propagation, or reconnect behavior can change.
   `SyncularDatabase.commandTimeline(...)`, composing tracked receipt state,
   redacted runtime timeline events, and optional local-visibility evidence into
   a deterministic support/test artifact. It deliberately reports missing
-  evidence for outbox sequence, sync attempt, server commit sequence, realtime
-  cursor, pull reason, local apply, or local visibility instead of pretending
-  those links exist when current diagnostics cannot prove them.
+  evidence for outbox sequence, sync attempt, realtime cursor, pull reason,
+  local apply, or local visibility instead of pretending those links exist when
+  current diagnostics cannot prove them. Acked redacted outbox summaries now
+  satisfy the server commit sequence link through `ackedCommitSeq`.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1383,6 +1385,10 @@ online propagation, or reconnect behavior can change.
   `SyncularDatabase.commandTimeline(...)` as a deterministic receipt/command
   artifact over mutation status, runtime timeline events, optional
   local-visibility evidence, and explicit missing-evidence markers.
+- 2026-07-01: Extended redacted local support bundle outbox commit summaries
+  with `ackedCommitSeq` for acked commits, and threaded that through mutation
+  status plus command timeline receipt events so command artifacts can prove
+  server commit sequence without operation payloads or auth material.
 
 ## Latest Gates
 
@@ -1457,6 +1463,17 @@ Most recent command-timeline rerun:
 - `bun --cwd packages/client tsgo`
 - `bunx biome check packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/src/console-diagnostics.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts`
 - `bun run docs:stale-check`
+- `git diff --check`
+
+Most recent command ack-sequence rerun:
+
+- `cargo fmt --all --check` from `rust/`
+- `cargo test -p syncular-runtime --manifest-path rust/Cargo.toml local_support_bundle_is_redacted_and_importable`
+- `bun test packages/client/src/command-timeline.test.ts packages/client/src/mutation-status.test.ts packages/client/src/support-bundle.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/types.ts packages/client/src/mutation-status.ts packages/client/src/mutation-status.test.ts packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bun run docs:stale-check`
+- `bun --cwd apps/docs types:check`
 - `git diff --check`
 
 Most recent generated-helper rerun:
@@ -1747,12 +1764,14 @@ Most recent mutation-status rerun:
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
   conflict detail rows, last mutation-related errors, and recommended actions.
   Receipt-level correlation is also done for generated mutation receipts using
-  redacted local support bundle outbox commit summaries plus conflict records.
+  redacted local support bundle outbox commit summaries plus conflict records;
+  acked summaries now include `ackedCommitSeq` so command timelines can prove
+  server commit sequence from redacted local evidence.
   First command-timeline artifacts are done for receipt state, redacted runtime
   events, optional local-visibility evidence, and explicit missing-evidence
   markers. Remaining work is to emit the missing low-level links directly from
-  the runtime: outbox sequence, push request id, server commit sequence,
-  realtime event cursor, pull reason, local apply, and local visibility point.
+  the runtime: outbox sequence, push request id, realtime event cursor, pull
+  reason, local apply, and local visibility point.
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.

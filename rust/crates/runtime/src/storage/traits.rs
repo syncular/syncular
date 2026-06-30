@@ -128,6 +128,7 @@ pub struct OutboxSummary {
     pub client_commit_id: String,
     pub status: String,
     pub schema_version: i32,
+    pub acked_commit_seq: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_lease: Option<AuthLeaseProvenance>,
 }

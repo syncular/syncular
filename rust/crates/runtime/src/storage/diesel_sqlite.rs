@@ -501,6 +501,8 @@ struct OutboxSummaryRow {
     status: String,
     #[diesel(sql_type = Integer)]
     schema_version: i32,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    acked_commit_seq: Option<i64>,
     #[diesel(sql_type = Nullable<Text>)]
     lease_id: Option<String>,
     #[diesel(sql_type = Nullable<BigInt>)]
@@ -519,6 +521,7 @@ impl From<OutboxSummaryRow> for OutboxSummary {
             client_commit_id: row.client_commit_id,
             status: row.status,
             schema_version: row.schema_version,
+            acked_commit_seq: row.acked_commit_seq,
             auth_lease: auth_lease_provenance_from_columns(
                 row.lease_id,
                 row.lease_expires_at_ms,
@@ -1993,7 +1996,7 @@ impl SyncStateStore for DieselSqliteStore {
     fn outbox_summaries(&mut self) -> Result<Vec<OutboxSummary>> {
         let rows = sql_query(
             r#"
-            select client_commit_id, status, schema_version,
+            select client_commit_id, status, schema_version, acked_commit_seq,
                    lease_id, lease_expires_at_ms, lease_status_at_enqueue,
                    lease_scope_summary_json, lease_token
             from sync_outbox_commits

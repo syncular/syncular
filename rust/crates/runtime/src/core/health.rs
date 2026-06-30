@@ -167,6 +167,8 @@ pub struct LocalSupportOutboxCommit {
     pub client_commit_id: String,
     pub status: String,
     pub schema_version: i32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acked_commit_seq: Option<i64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -477,6 +479,7 @@ fn redacted_outbox_commits(outbox: &[OutboxSummary]) -> Vec<LocalSupportOutboxCo
             client_commit_id: item.client_commit_id.clone(),
             status: item.status.clone(),
             schema_version: item.schema_version,
+            acked_commit_seq: item.acked_commit_seq,
         })
         .collect()
 }

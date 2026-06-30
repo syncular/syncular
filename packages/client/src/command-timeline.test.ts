@@ -20,6 +20,7 @@ describe('command timeline', () => {
             clientCommitId: 'commit-a',
             schemaVersion: 3,
             status: 'acked',
+            ackedCommitSeq: 42,
           },
         ],
       }),
@@ -101,9 +102,49 @@ describe('command timeline', () => {
       ['synthetic', 'local_visibility.visible'],
     ]);
     expect(timeline.trackedCommit.outbox).toEqual({
+      ackedCommitSeq: 42,
       schemaVersion: 3,
       status: 'acked',
     });
+    expect(timeline.events[0]?.details).toMatchObject({
+      clientCommitId: 'commit-a',
+      commitSeq: 42,
+      outboxStatus: 'acked',
+    });
+  });
+
+  it('uses redacted outbox ack evidence as the server commit sequence link', async () => {
+    const client = commandTimelineClient({
+      localSupportBundle: localSupportBundle({
+        outboxCommits: [
+          {
+            clientCommitId: 'commit-acked',
+            schemaVersion: 3,
+            status: 'acked',
+            ackedCommitSeq: 88,
+          },
+        ],
+      }),
+    });
+
+    const timeline = await getSyncularCommandTimeline(client, {
+      command: 'commit-acked',
+      now: () => 500,
+      includeRuntimeContext: false,
+    });
+
+    expect(timeline.trackedCommit.outbox).toEqual({
+      ackedCommitSeq: 88,
+      schemaVersion: 3,
+      status: 'acked',
+    });
+    expect(timeline.events[0]?.details).toMatchObject({
+      commitSeq: 88,
+      outboxStatus: 'acked',
+    });
+    expect(timeline.summary.missingEvidence).not.toContain(
+      'server-commit-sequence'
+    );
   });
 
   it('uses runtime context and names missing evidence when exact links are unavailable', async () => {

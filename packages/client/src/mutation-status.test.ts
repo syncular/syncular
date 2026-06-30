@@ -203,6 +203,7 @@ describe('mutation status', () => {
             clientCommitId: 'commit-acked',
             schemaVersion: 3,
             status: 'acked',
+            ackedCommitSeq: 42,
           },
         ],
       }),
@@ -258,7 +259,7 @@ describe('mutation status', () => {
         state: 'acked',
         evidence: ['localSupportBundle.outboxCommit'],
         action: undefined,
-        outbox: { schemaVersion: 3, status: 'acked' },
+        outbox: { schemaVersion: 3, status: 'acked', ackedCommitSeq: 42 },
       },
       {
         id: 'commit-missing',

@@ -987,6 +987,7 @@ export interface SyncularLocalSupportOutboxCommit {
   clientCommitId: string;
   status: string;
   schemaVersion: number;
+  ackedCommitSeq?: number;
 }
 
 export interface SyncularLocalSupportConflictSummary {
