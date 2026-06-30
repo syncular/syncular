@@ -35,7 +35,8 @@ database. Run it in the deployed page or a real browser smoke so storage APIs
 reflect the target browser. It checks Worker/WebAssembly support, HTTPS or
 localhost secure context, OPFS/IndexedDB persistence, quota,
 persistent-storage status, and served WASM asset status/content types without
-starting the Worker.
+starting the Worker. The starter's `openAppClient()` runs this preflight before
+opening Syncular.
 
 > **Why Bun?** The dev script and sync server run on Bun (`Bun.serve`,
 > `bun:sqlite` via `@syncular/server/bun-sqlite`) because Bun runs

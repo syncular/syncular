@@ -238,6 +238,18 @@ async function main(): Promise<void> {
     }
     log('vite module transform check passed');
 
+    const clientModuleResponse = await fetchUntilReady(
+      `http://127.0.0.1:${vitePort}/src/client/syncular.ts`,
+      60_000
+    );
+    const clientModuleBody = await clientModuleResponse.text();
+    if (!clientModuleBody.includes('getSyncularBrowserDeploymentPreflight')) {
+      throw new Error(
+        'Vite did not serve the transformed preflight client module'
+      );
+    }
+    log('vite preflight module transform check passed');
+
     log('smoke test passed');
   } finally {
     if (devProcess && devProcess.exitCode === null) {

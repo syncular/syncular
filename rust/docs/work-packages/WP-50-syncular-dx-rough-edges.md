@@ -714,6 +714,10 @@ online propagation, or reconnect behavior can change.
   OPFS/IndexedDB durable storage availability, persistent-storage status,
   quota budgets, and served WASM runtime asset status/content types before a
   database is opened.
+- The starter now calls browser deployment preflight before opening
+  `createSyncularAppDatabase(...)`, using the generated required runtime
+  feature list and its configured IndexedDB storage expectation. The scaffold
+  smoke checks Vite can transform the starter preflight client module.
 - A first adapter-boundary slice added `bun run imports:check`, a static root
   import graph smoke that proves `@syncular/client` and `@syncular/server`
   roots do not reach optional subpath files or optional peer packages.
@@ -907,6 +911,10 @@ online propagation, or reconnect behavior can change.
 - 2026-06-30: Added focused browser-deployment-preflight tests for ready
   deploys, explicit OPFS blockers, default OPFS fallback warnings, bad or
   missing runtime assets, and browser capability blockers.
+- 2026-06-30: Wired the `create-syncular-app` starter's `openAppClient()` to
+  run `getSyncularBrowserDeploymentPreflight(...)` before opening the managed
+  database, and extended the scaffold smoke to check Vite transforms the
+  preflight client module.
 - 2026-06-30: Generated TypeScript app databases now expose
   `schemaReadiness()` with the generated schema version injected and
   table-scoped local-visibility helpers such as `awaitTaskVisibility(...)` with
@@ -1126,8 +1134,10 @@ Most recent browser-deployment-preflight rerun:
 
 - `bun test packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
 - `bun --cwd packages/client tsgo`
+- `bun --cwd packages/create-syncular-app tsgo`
 - `bun run imports:check`
-- `bunx biome check packages/client/src/browser-deployment-preflight.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/index.ts packages/client/src/public-api.test.ts`
+- `bunx biome check packages/client/src/browser-deployment-preflight.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/client/syncular.ts packages/create-syncular-app/scripts/smoke.ts`
+- `bun --cwd packages/create-syncular-app smoke`
 - `bun --cwd apps/docs types:check`
 - `bun run docs:stale-check`
 - `git diff --check`
@@ -1246,8 +1256,10 @@ Most recent browser-deployment-preflight rerun:
 - Browser deployment preflight: first helper slice is done for Worker/WASM
   assets, MIME/content types, cross-origin isolation option, OPFS/IndexedDB
   requirements, durable storage availability, fallback behavior, persistence
-  grant status, and quota budgets. Remaining work is to add a starter or
-  release-smoke command that runs it against an actual built preview deploy.
+  grant status, and quota budgets. The starter now runs the helper before
+  opening Syncular, and scaffold smoke checks the transformed preflight module.
+  Remaining work is a real browser built-preview smoke that executes the helper
+  against the deployed page.
 - Adapter import side-effect isolation: the first root import graph smoke now
   proves root client/server imports do not statically reach optional Bun,
   Cloudflare, S3, Sentry, Neon, Tauri, React Native, or CRDT/Yjs subpaths.

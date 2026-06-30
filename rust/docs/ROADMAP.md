@@ -143,9 +143,11 @@ read-only review:
     deploy previews can check Worker/WebAssembly support, secure-context and
     optional cross-origin-isolation flags, OPFS/IndexedDB durability,
     persistent-storage status, quota budgets, and served WASM asset
-    status/content types before opening a database. Next slice: wire the
-    preflight into a built-preview smoke or continue with the broader
-    release-time adapter install matrix.
+    status/content types before opening a database; the starter now runs this
+    preflight before `createSyncularAppDatabase(...)`, and its scaffold smoke
+    checks the transformed preflight client module. Next slice: wire the
+    preflight into a real browser built-preview smoke or continue with the
+    broader release-time adapter install matrix.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

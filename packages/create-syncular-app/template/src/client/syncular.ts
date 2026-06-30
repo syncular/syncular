@@ -1,8 +1,10 @@
+import { getSyncularBrowserDeploymentPreflight } from '@syncular/client';
 import type { Selectable } from 'kysely';
 import {
   createSyncularAppDatabase,
   type SyncularAppDatabase,
   type SyncularAppDb,
+  syncularGeneratedRequiredRuntimeFeatures,
   syncularGeneratedSchemaVersion,
 } from '../generated/syncular.generated';
 
@@ -39,6 +41,20 @@ const syncBaseUrl =
  * resolving, so the returned client is ready for the React hooks.
  */
 export async function openAppClient(): Promise<AppSyncClient> {
+  const preflight = await getSyncularBrowserDeploymentPreflight({
+    requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
+    storage: 'indexedDb',
+    minimumQuotaBytes: 50 * 1024 * 1024,
+  });
+  if (preflight.status === 'not-ready') {
+    throw new Error(
+      `Syncular browser preflight failed: ${preflight.issues
+        .filter((issue) => issue.severity === 'error')
+        .map((issue) => issue.code)
+        .join(', ')}`
+    );
+  }
+
   const database = await createSyncularAppDatabase({
     config: {
       baseUrl: syncBaseUrl,
