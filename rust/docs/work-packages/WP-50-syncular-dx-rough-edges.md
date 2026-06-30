@@ -554,6 +554,89 @@ Acceptance guardrails:
 - Blob, auth, schema, and realtime failures should say who can recover them:
   runtime retry, app auth/scope action, user action, or operator/deploy action.
 
+### Source Feedback Coverage Audit
+
+Use this as the trace from the pasted Skaldsong notes to retained or planned
+WP-50 work. The point is to keep each integration pain attached to a public
+contract, not to preserve the notes as a second backlog.
+
+- Browser persistence guidance is carried as a product requirement, not just a
+  docs task. Retained work already exposes browser health and durable/fallback
+  storage state; remaining work is the browser deployment preflight for
+  Worker/WASM asset serving, MIME types, OPFS/secure-context requirements,
+  persistence availability, quota/eviction, and deploy-time failure messages.
+- Browser health is partially shipped through `getSyncularBrowserHealth(...)`
+  with storage, bootstrap, subscriptions, realtime, last error,
+  `requiresAction`, and recommended actions. Still missing are stronger
+  realtime proof details such as last remote event cursor, last pull trigger,
+  and last local apply.
+- Typed runtime/setup failures are accepted as an API-shape requirement.
+  Shared taxonomy and health actions now cover the main recovery categories;
+  remaining concrete codes should focus on missing runtime assets, wrong asset
+  content type, Worker startup failure, OPFS/SAH-pool unavailability,
+  unexpected storage fallback, and bootstrap timeout.
+- Bootstrap/sync semantics are split into two tracks: docs must explain
+  bootstrap, explicit pull, autosync, realtime wakeup, and local read-model
+  freshness; APIs should continue replacing manual `sync()` workarounds with
+  local visibility helpers. The shipped `awaitLocalVisibility(...)` and
+  generated table helpers cover the first app-facing primitive.
+- Per-table/per-scope readiness remains a follow-up on top of the shipped
+  schema readiness and health helpers. The desired outcome is view-level
+  gating that can name whether auth, schema, rate limits, missing rows, blob
+  access, or runtime capability blocked a subscription.
+- Auth/scope replacement is partially shipped through
+  `replaceSyncularAuthContext(...)`, generated database methods, scoped fresh
+  app smokes, and Hono/WebSocket/WASM coverage. Remaining work is richer
+  denied-subscription detail payloads with safe actor, requested scope,
+  token/campaign scope, table, and subscription identifiers.
+- Permission-denied testing is partially shipped through project/campaign actor
+  helpers, membership fixtures, denied-scope coverage, and stable diagnostic
+  marker assertions. Keep extending this through structured error details
+  instead of matching server message strings.
+- Realtime proof is partially tested but not yet polished as a UI-facing
+  signal. Keep the product contract that realtime is a wake path and HTTP
+  catchup is authoritative, but expose enough state to prove a browser joined a
+  campaign/project, received a wakeup, triggered catchup, and applied local
+  rows.
+- Rate-limit diagnosis is accepted as diagnostic-taxonomy work. Logs and
+  app-facing details should include actor, operation type, retry-after/current
+  window, and scope/subscription context so tests can distinguish app churn
+  from a wrong actor model.
+- Blob partition and package-delivery pain is mostly resolved at the model
+  level: shared bytes do not grant access, and campaign/project access is
+  granted by scoped metadata rows or an explicit shared-partition policy.
+  Continue adding examples for package/base assets that cross scope
+  boundaries.
+- Missing blob access is partially typed through Hono route details and shared
+  error taxonomy. Keep the distinction between missing reference row, forbidden
+  partition/scope, signed URL or direct-transfer token failure, missing upload
+  record, missing blob row, and missing storage object.
+- Schema/deploy readiness is partially shipped through app/runtime readiness,
+  `syncular schema check --json`, generated app wrappers, and
+  `getSyncularServerSchemaReadiness(...)`. Remaining work is an operator
+  runbook that ties schema setup, generated output freshness, package/protocol
+  upgrades, rollback, and release ordering together.
+- Deterministic E2E is partially served by fresh app smokes and testkit
+  helpers. Still needed is a copyable recipe with local Postgres, explicit test
+  auth, real server routes, real browser client, realtime enabled, durable
+  browser persistence, safe failure artifacts, and no mocked persistence.
+- Stable log marker conventions are partially shipped through testkit
+  diagnostic marker helpers. Server logs, client health, generated diagnostics,
+  console events, and testkit assertions still need a shared event-code shape
+  for rate limits, revoked subscriptions, bootstrap timeout, schema errors,
+  blob errors, realtime reconnect, realtime event delivery, and local apply.
+- API audience labels and privacy boundaries are partially shipped through the
+  diagnostic detail policy and observability docs. Continue labeling surfaces
+  as UI-facing, operator/deploy, debug/console, testkit/E2E, or advanced, and
+  keep bearer tokens, signed URLs, and full payloads out of default diagnostics.
+- Local recovery controls are a distinct remaining product surface. Health can
+  say who must act, but apps still need guarded operations for sign-out,
+  corrupt or incompatible local databases, unrecoverable bootstrap, stuck
+  outbox, revoked scope state, and restart/resume flows.
+- The pasted feedback does not justify new compatibility branches or old JS
+  client behavior. All retained work should stay Rust-first, generated-client
+  first, and fail-closed around scoped access.
+
 ## Required Gates
 
 For planning/doc-only edits:
@@ -622,6 +705,9 @@ online propagation, or reconnect behavior can change.
   auth-context helpers generic until product semantics exist, and keep
   `schema check` narrow until a broader `doctor` has multiple checks to
   orchestrate.
+- A source feedback coverage audit now maps every worthy pasted integration
+  point to shipped slices or explicit remaining WP-50 risks, so future sessions
+  can continue from contracts and tests rather than re-triaging the raw notes.
 - A first adapter-boundary slice added `bun run imports:check`, a static root
   import graph smoke that proves `@syncular/client` and `@syncular/server`
   roots do not reach optional subpath files or optional peer packages.
@@ -801,6 +887,11 @@ online propagation, or reconnect behavior can change.
   WASM cost visibility, dependency side-effect isolation, data modeling,
   upgrades, production ops, performance budgets, failure artifacts, auth
   provider integration, and console-to-app continuity.
+- 2026-06-30: Added a source feedback coverage audit that maps the pasted
+  Skaldsong notes to retained slices and remaining WP-50 risks, including
+  browser persistence, health, setup errors, bootstrap/sync semantics, auth,
+  realtime, rate limits, blobs, schema/deploy readiness, E2E, log markers,
+  audience labels, privacy, and local recovery controls.
 - 2026-06-30: Generated TypeScript app databases now expose
   `schemaReadiness()` with the generated schema version injected and
   table-scoped local-visibility helpers such as `awaitTaskVisibility(...)` with
