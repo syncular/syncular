@@ -360,7 +360,7 @@ function localSupportBundle(): SyncularLocalSupportBundle {
       unresolved: 0,
     },
     crdt: {},
-    formatVersion: 1,
+    formatVersion: 2,
     generatedAt: 100,
     health,
     outbox: {
@@ -368,6 +368,7 @@ function localSupportBundle(): SyncularLocalSupportBundle {
       byStatus: {},
       total: 0,
     },
+    outboxCommits: [],
     redacted: true,
     source: 'fake',
     subscriptionStates: [],

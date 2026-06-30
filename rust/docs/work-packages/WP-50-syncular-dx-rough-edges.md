@@ -928,6 +928,14 @@ online propagation, or reconnect behavior can change.
   conflict detail rows, last mutation-related error, and recommended actions
   for pending UI, sync retry, auth refresh, diagnostics, or conflict
   resolution.
+- The tracked mutation-status slice extends redacted Rust local support
+  bundles with outbox commit summaries (`clientCommitId`, status, schema
+  version) and lets apps pass generated mutation receipts to
+  `mutationStatus({ trackCommits: [...] })`. The public result now classifies
+  each tracked receipt as queued, syncing, failed, acked, conflicted,
+  resolved-conflict, or unknown using local outbox and conflict evidence
+  without exposing operations JSON, row payloads, auth lease tokens, or signed
+  URLs.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1331,6 +1339,10 @@ online propagation, or reconnect behavior can change.
   error-handling docs so app chrome and tests use `mutationStatus()` before
   manually stitching together outbox stats, conflict stats, and diagnostic
   events.
+- 2026-07-01: Added redacted local support bundle outbox commit summaries and
+  receipt tracking to `mutationStatus({ trackCommits })`, so generated
+  mutation receipts can be correlated with queued/sending/failed/acked outbox
+  state and conflict records without exposing internal operations payloads.
 
 ## Latest Gates
 
@@ -1387,6 +1399,16 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bun test packages/client/src/console-diagnostics.test.ts packages/client/src/public-api.test.ts`
 - `bunx biome check packages/client/src/console-diagnostics.ts packages/client/src/console-diagnostics.test.ts packages/client/src/public-api.test.ts apps/docs/content/docs/operate/observability.mdx`
 - `bun --cwd packages/client tsgo`
+- `git diff --check`
+
+Most recent mutation-status tracked-commit rerun:
+
+- `bun test packages/client/src/mutation-status.test.ts packages/client/src/support-bundle.test.ts packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/mutation-status.ts packages/client/src/mutation-status.test.ts packages/client/src/database.ts packages/client/src/types.ts packages/client/src/local-recovery.test.ts packages/client/src/support-bundle.test.ts packages/client/README.md rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `cargo fmt --all --check` from `rust/`
+- `cargo test -p syncular-runtime local_support_bundle_is_redacted_and_importable --manifest-path rust/Cargo.toml`
+- `bun run docs:stale-check`
 - `git diff --check`
 
 Most recent generated-helper rerun:
@@ -1661,8 +1683,11 @@ Most recent mutation-status rerun:
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
   conflict detail rows, last mutation-related errors, and recommended actions.
-  Remaining work is command-level correlation from generated mutation receipts
-  through outbox push, conflict records, retry state, and local visibility.
+  Receipt-level correlation is also done for generated mutation receipts using
+  redacted local support bundle outbox commit summaries plus conflict records.
+  Remaining work is an end-to-end command timeline that connects command id,
+  outbox seq, push request id, server commit seq, realtime event cursor, pull
+  reason, local apply, and local visibility.
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.

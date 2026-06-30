@@ -8,6 +8,7 @@ import type {
   SyncularConflictSummary,
   SyncularDiagnosticEvent,
   SyncularDiagnosticSnapshot,
+  SyncularLocalSupportBundle,
 } from './types';
 
 describe('mutation status', () => {
@@ -169,6 +170,169 @@ describe('mutation status', () => {
       'inspect-diagnostics',
     ]);
   });
+
+  it('correlates tracked mutation receipts with redacted outbox commits', async () => {
+    const client = mutationStatusClient({
+      snapshot: diagnosticSnapshot({
+        outboxStats: {
+          acked: 1,
+          failed: 1,
+          pending: 1,
+          sending: 1,
+          total: 4,
+        },
+      }),
+      localSupportBundle: localSupportBundle({
+        outboxCommits: [
+          {
+            clientCommitId: 'commit-pending',
+            schemaVersion: 3,
+            status: 'pending',
+          },
+          {
+            clientCommitId: 'commit-sending',
+            schemaVersion: 3,
+            status: 'sending',
+          },
+          {
+            clientCommitId: 'commit-failed',
+            schemaVersion: 3,
+            status: 'failed',
+          },
+          {
+            clientCommitId: 'commit-acked',
+            schemaVersion: 3,
+            status: 'acked',
+          },
+        ],
+      }),
+    });
+
+    const status = await getSyncularMutationStatus(client, {
+      trackCommits: [
+        { clientCommitId: 'commit-pending', commandId: 'cmd-create-task' },
+        'commit-sending',
+        'commit-failed',
+        { commitId: 'commit-acked' },
+        'commit-missing',
+      ],
+    });
+
+    expect(
+      status.trackedCommits.map((commit) => ({
+        id: commit.clientCommitId,
+        commandId: commit.commandId,
+        state: commit.state,
+        evidence: commit.evidence,
+        action: commit.recommendedActions[0]?.action,
+        outbox: commit.outbox,
+      }))
+    ).toEqual([
+      {
+        id: 'commit-pending',
+        commandId: 'cmd-create-task',
+        state: 'queued',
+        evidence: ['localSupportBundle.outboxCommit'],
+        action: 'show-pending',
+        outbox: { schemaVersion: 3, status: 'pending' },
+      },
+      {
+        id: 'commit-sending',
+        commandId: undefined,
+        state: 'syncing',
+        evidence: ['localSupportBundle.outboxCommit'],
+        action: 'wait-for-sync',
+        outbox: { schemaVersion: 3, status: 'sending' },
+      },
+      {
+        id: 'commit-failed',
+        commandId: undefined,
+        state: 'failed',
+        evidence: ['localSupportBundle.outboxCommit'],
+        action: 'retry-sync',
+        outbox: { schemaVersion: 3, status: 'failed' },
+      },
+      {
+        id: 'commit-acked',
+        commandId: undefined,
+        state: 'acked',
+        evidence: ['localSupportBundle.outboxCommit'],
+        action: undefined,
+        outbox: { schemaVersion: 3, status: 'acked' },
+      },
+      {
+        id: 'commit-missing',
+        commandId: undefined,
+        state: 'unknown',
+        evidence: ['outbox.aggregate'],
+        action: 'inspect-diagnostics',
+        outbox: undefined,
+      },
+    ]);
+  });
+
+  it('prioritizes tracked unresolved conflicts over outbox state', async () => {
+    const client = mutationStatusClient({
+      conflicts: [
+        conflictSummary({
+          clientCommitId: 'commit-conflicted',
+          code: 'sync.conflict_version',
+        }),
+      ],
+      localSupportBundle: localSupportBundle({
+        outboxCommits: [
+          {
+            clientCommitId: 'commit-conflicted',
+            schemaVersion: 3,
+            status: 'failed',
+          },
+        ],
+      }),
+      snapshot: diagnosticSnapshot({
+        conflictStats: { resolved: 0, total: 1, unresolved: 1 },
+        outboxStats: { acked: 0, failed: 1, pending: 0, sending: 0, total: 1 },
+      }),
+    });
+
+    const status = await getSyncularMutationStatus(client, {
+      trackCommits: ['commit-conflicted'],
+    });
+
+    expect(status.trackedCommits).toEqual([
+      expect.objectContaining({
+        clientCommitId: 'commit-conflicted',
+        state: 'conflicted',
+        evidence: ['conflict.item', 'localSupportBundle.outboxCommit'],
+        recommendedActions: [
+          expect.objectContaining({ action: 'resolve-conflicts' }),
+        ],
+      }),
+    ]);
+  });
+
+  it('keeps tracked commits inspectable when local support export fails', async () => {
+    const client = mutationStatusClient({
+      exportLocalSupportBundleError: new Error('opfs unavailable'),
+      snapshot: diagnosticSnapshot({
+        outboxStats: { acked: 0, failed: 0, pending: 1, sending: 0, total: 1 },
+      }),
+    });
+
+    const status = await getSyncularMutationStatus(client, {
+      trackCommits: ['commit-a'],
+    });
+
+    expect(status).toMatchObject({
+      trackedCommitsUnavailable: { message: 'opfs unavailable' },
+      trackedCommits: [
+        {
+          clientCommitId: 'commit-a',
+          state: 'unknown',
+          evidence: ['localSupportBundle.unavailable'],
+        },
+      ],
+    });
+  });
 });
 
 function mutationStatusClient(args: {
@@ -176,6 +340,8 @@ function mutationStatusClient(args: {
   status?: SyncularClientStatus;
   conflicts?: SyncularConflictSummary[];
   conflictError?: Error;
+  localSupportBundle?: SyncularLocalSupportBundle;
+  exportLocalSupportBundleError?: Error;
 }): SyncularMutationStatusClient {
   return {
     async diagnosticSnapshot() {
@@ -187,6 +353,12 @@ function mutationStatusClient(args: {
     async listConflicts() {
       if (args.conflictError) throw args.conflictError;
       return args.conflicts ?? [];
+    },
+    async exportLocalSupportBundle() {
+      if (args.exportLocalSupportBundleError) {
+        throw args.exportLocalSupportBundleError;
+      }
+      return args.localSupportBundle ?? localSupportBundle();
     },
   };
 }
@@ -281,6 +453,54 @@ function conflictSummary(
     resolvedAt: null,
     resultStatus: 'conflict',
     serverVersion: 10,
+    ...overrides,
+  };
+}
+
+function localSupportBundle(
+  overrides: Partial<SyncularLocalSupportBundle> = {}
+): SyncularLocalSupportBundle {
+  return {
+    appSchemaState: {
+      currentSchemaVersion: 3,
+      schemaId: 'app',
+      schemaVersion: 3,
+      updatedAt: 1_000,
+    },
+    conflicts: {
+      byCode: {},
+      byResultStatus: {},
+      resolved: 0,
+      total: 0,
+      unresolved: 0,
+    },
+    formatVersion: 2,
+    generatedAt: 1_000,
+    health: {
+      checkedBlobReferences: 0,
+      checkedConflicts: 0,
+      checkedCrdtDocuments: 0,
+      checkedCrdtUpdateLogEntries: 0,
+      checkedOutboxCommits: 0,
+      checkedSubscriptionStates: 0,
+      checkedSubscriptions: 0,
+      checkedSyncedRows: 0,
+      checkedVerifiedRoots: 0,
+      findings: [],
+      generatedAt: 1_000,
+      ok: true,
+    },
+    outbox: {
+      bySchemaVersion: {},
+      byStatus: {},
+      total: 0,
+    },
+    outboxCommits: [],
+    redacted: true,
+    source: 'test',
+    subscriptionStates: [],
+    subscriptions: [],
+    verifiedRoots: [],
     ...overrides,
   };
 }

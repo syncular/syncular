@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
-pub const LOCAL_SUPPORT_BUNDLE_FORMAT_VERSION: u32 = 1;
+pub const LOCAL_SUPPORT_BUNDLE_FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -105,6 +105,7 @@ pub struct LocalSupportBundle {
     pub subscription_states: Vec<LocalSupportSubscriptionState>,
     pub verified_roots: Vec<LocalSupportVerifiedRoot>,
     pub outbox: LocalSupportOutboxSummary,
+    pub outbox_commits: Vec<LocalSupportOutboxCommit>,
     pub conflicts: LocalSupportConflictSummary,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blob: Option<BlobHealthSummary>,
@@ -158,6 +159,14 @@ pub struct LocalSupportOutboxSummary {
     pub total: usize,
     pub by_status: BTreeMap<String, usize>,
     pub by_schema_version: BTreeMap<i32, usize>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LocalSupportOutboxCommit {
+    pub client_commit_id: String,
+    pub status: String,
+    pub schema_version: i32,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -358,6 +367,7 @@ pub fn local_support_bundle_from_records(
             .collect::<Vec<_>>(),
         verified_roots: roots.iter().map(redacted_verified_root).collect::<Vec<_>>(),
         outbox: redacted_outbox_summary(outbox),
+        outbox_commits: redacted_outbox_commits(outbox),
         conflicts: redacted_conflict_summary(conflicts),
         blob,
         crdt,
@@ -458,6 +468,17 @@ fn redacted_outbox_summary(outbox: &[OutboxSummary]) -> LocalSupportOutboxSummar
         by_status,
         by_schema_version,
     }
+}
+
+fn redacted_outbox_commits(outbox: &[OutboxSummary]) -> Vec<LocalSupportOutboxCommit> {
+    outbox
+        .iter()
+        .map(|item| LocalSupportOutboxCommit {
+            client_commit_id: item.client_commit_id.clone(),
+            status: item.status.clone(),
+            schema_version: item.schema_version,
+        })
+        .collect()
 }
 
 fn redacted_conflict_summary(conflicts: &[ConflictSummary]) -> LocalSupportConflictSummary {

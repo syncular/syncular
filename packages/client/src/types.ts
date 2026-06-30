@@ -983,6 +983,12 @@ export interface SyncularLocalSupportOutboxSummary {
   bySchemaVersion: Record<string, number>;
 }
 
+export interface SyncularLocalSupportOutboxCommit {
+  clientCommitId: string;
+  status: string;
+  schemaVersion: number;
+}
+
 export interface SyncularLocalSupportConflictSummary {
   total: number;
   unresolved: number;
@@ -1002,6 +1008,7 @@ export interface SyncularLocalSupportBundle {
   subscriptionStates: SyncularLocalSupportSubscriptionState[];
   verifiedRoots: SyncularLocalSupportVerifiedRoot[];
   outbox: SyncularLocalSupportOutboxSummary;
+  outboxCommits: SyncularLocalSupportOutboxCommit[];
   conflicts: SyncularLocalSupportConflictSummary;
   blob?: Record<string, number>;
   crdt?: Record<string, number>;

@@ -320,6 +320,22 @@ fn local_support_bundle_is_redacted_and_importable() -> Result<()> {
             root: root_value.clone(),
         })
     })?;
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    sql_query(
+        r#"
+        insert into sync_outbox_commits (
+            id, client_commit_id, status, operations_json, created_at, updated_at,
+            attempt_count, schema_version, next_attempt_at
+        ) values (
+            'support-outbox-secret', 'support-client-commit', 'pending',
+            '[{"payload":"secret-outbox-payload"}]', ?1, ?1, 0, ?2, 0
+        )
+        "#,
+    )
+    .bind::<BigInt, _>(now_ms())
+    .bind::<Integer, _>(current_schema_version())
+    .execute(&mut conn)?;
+    drop(conn);
 
     let mut client = demo_client(test_config(&path), store, TestTransport::new());
     client.set_subscriptions(vec![SubscriptionSpec {
@@ -336,11 +352,16 @@ fn local_support_bundle_is_redacted_and_importable() -> Result<()> {
     assert!(bundle_json.contains("\"scopeValueCount\":3"));
     assert!(bundle_json.contains("\"paramsKeys\":[\"preview\"]"));
     assert!(bundle_json.contains("\"rootIsCanonicalHex\":true"));
+    assert!(bundle_json.contains("\"formatVersion\":2"));
+    assert!(bundle_json.contains("\"outboxCommits\""));
+    assert!(bundle_json.contains("\"clientCommitId\":\"support-client-commit\""));
+    assert!(bundle_json.contains("\"status\":\"pending\""));
     assert!(!bundle_json.contains("secret-user-id"));
     assert!(!bundle_json.contains("secret-project-a"));
     assert!(!bundle_json.contains("secret-project-b"));
     assert!(!bundle_json.contains("secret-param-value"));
     assert!(!bundle_json.contains("support secret title"));
+    assert!(!bundle_json.contains("secret-outbox-payload"));
     assert!(!bundle_json.contains("secret-partition-id"));
     assert!(!bundle_json.contains("secret-row-cursor"));
     assert!(!bundle_json.contains(&root_value));

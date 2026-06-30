@@ -184,7 +184,10 @@ read-only review:
     `SyncularDatabase.mutationStatus(...)`, summarizing outbox queue state,
     failed pushes, conflict records, last mutation errors, and UI-safe
     recommended actions without app code stitching together raw snapshots and
-    conflict lists. The
+    conflict lists. Mutation status can now also track generated mutation
+    receipts by `clientCommitId`, using redacted local support bundle outbox
+    commit summaries plus conflict records to classify queued, syncing,
+    failed, acked, conflicted, resolved-conflict, and unknown states. The
     Hono-backed browser/WASM local-health test now exercises that plan/action
     API against the real Worker runtime for corrupted subscription state,
     orphaned verified roots, confirmation failure, and successful

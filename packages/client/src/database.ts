@@ -364,6 +364,7 @@ export async function createSyncularDatabase<DB>(
           diagnosticSnapshot: () => client.diagnosticSnapshot(),
           getStatus: () => getSyncularClientStatus(client),
           listConflicts: () => database.conflicts.list(),
+          exportLocalSupportBundle: () => client.exportLocalSupportBundle(),
         },
         mutationStatusOptions
       ),

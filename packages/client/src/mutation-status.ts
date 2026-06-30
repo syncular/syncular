@@ -4,6 +4,8 @@ import type {
   SyncularConflictSummary,
   SyncularDiagnosticEvent,
   SyncularDiagnosticSnapshot,
+  SyncularLocalSupportBundle,
+  SyncularLocalSupportOutboxCommit,
   SyncularOutboxStats,
 } from './types';
 
@@ -29,12 +31,16 @@ export interface SyncularMutationStatusClient {
   diagnosticSnapshot(): Promise<SyncularDiagnosticSnapshot>;
   getStatus?(): SyncularClientStatus;
   listConflicts?(): Promise<SyncularConflictSummary[]>;
+  exportLocalSupportBundle?(): Promise<SyncularLocalSupportBundle>;
 }
 
 export interface SyncularMutationStatusOptions {
   now?: () => number;
   includeConflictItems?: boolean;
   maxConflictItems?: number;
+  trackCommits?: readonly SyncularMutationTrackedCommitReference[];
+  localSupportBundle?: SyncularLocalSupportBundle;
+  includeTrackedOutboxDetails?: boolean;
 }
 
 export interface SyncularMutationStatusAction {
@@ -54,6 +60,40 @@ export interface SyncularMutationConflictItem {
   resolvedAt: number | null;
   resolution: string | null;
   recommendedActions: Array<'retry-local' | 'keep-server' | 'dismiss'>;
+}
+
+export type SyncularMutationTrackedCommitReference =
+  | string
+  | SyncularMutationTrackedCommitInput;
+
+export interface SyncularMutationTrackedCommitInput {
+  clientCommitId?: string;
+  commitId?: string;
+  commandId?: string;
+  label?: string;
+}
+
+export type SyncularTrackedMutationState =
+  | 'queued'
+  | 'syncing'
+  | 'failed'
+  | 'acked'
+  | 'conflicted'
+  | 'resolved-conflict'
+  | 'unknown';
+
+export interface SyncularTrackedMutationCommit {
+  clientCommitId: string;
+  commandId?: string;
+  label?: string;
+  state: SyncularTrackedMutationState;
+  evidence: string[];
+  outbox?: {
+    status: string;
+    schemaVersion: number;
+  };
+  conflict?: SyncularMutationConflictItem;
+  recommendedActions: SyncularMutationStatusAction[];
 }
 
 export interface SyncularMutationStatusSummary {
@@ -83,6 +123,10 @@ export interface SyncularMutationStatus {
   conflictItemsUnavailable?: {
     message: string;
   };
+  trackedCommits: SyncularTrackedMutationCommit[];
+  trackedCommitsUnavailable?: {
+    message: string;
+  };
   summary: SyncularMutationStatusSummary;
   recommendedActions: SyncularMutationStatusAction[];
 }
@@ -96,6 +140,14 @@ export async function getSyncularMutationStatus(
   const outbox = normalizeOutbox(snapshot.outboxStats ?? status?.outbox);
   const listedConflicts = await listConflictItems(client, options);
   const conflictItems = listedConflicts.items.map(summarizeConflictItem);
+  const trackedCommitInputs = normalizeTrackedCommitInputs(
+    options.trackCommits
+  );
+  const trackedOutboxDetails = await collectTrackedOutboxDetails(
+    client,
+    options,
+    trackedCommitInputs.length > 0
+  );
   const conflicts = normalizeConflicts({
     stats: snapshot.conflictStats ?? status?.conflicts,
     items: conflictItems,
@@ -134,6 +186,16 @@ export async function getSyncularMutationStatus(
     ...(listedConflicts.error
       ? { conflictItemsUnavailable: { message: listedConflicts.error } }
       : {}),
+    trackedCommits: summarizeTrackedCommits({
+      trackedCommitInputs,
+      conflictItems,
+      outbox,
+      outboxCommits: trackedOutboxDetails.bundle?.outboxCommits ?? [],
+      outboxDetailsUnavailable: trackedOutboxDetails.error != null,
+    }),
+    ...(trackedOutboxDetails.error
+      ? { trackedCommitsUnavailable: { message: trackedOutboxDetails.error } }
+      : {}),
     summary,
     recommendedActions: recommendedActionsForState({
       state,
@@ -143,6 +205,32 @@ export async function getSyncularMutationStatus(
       conflictItemsUnavailable: listedConflicts.error != null,
     }),
   };
+}
+
+async function collectTrackedOutboxDetails(
+  client: SyncularMutationStatusClient,
+  options: SyncularMutationStatusOptions,
+  enabled: boolean
+): Promise<{
+  bundle?: SyncularLocalSupportBundle;
+  error?: string;
+}> {
+  if (!enabled || options.includeTrackedOutboxDetails === false) {
+    return {};
+  }
+  if (options.localSupportBundle) {
+    return { bundle: options.localSupportBundle };
+  }
+  if (!client.exportLocalSupportBundle) {
+    return {};
+  }
+  try {
+    return { bundle: await client.exportLocalSupportBundle() };
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+    };
+  }
 }
 
 function normalizeOutbox(
@@ -219,6 +307,172 @@ function summarizeConflictItem(
         ? ['retry-local', 'keep-server', 'dismiss']
         : [],
   };
+}
+
+function normalizeTrackedCommitInputs(
+  inputs: readonly SyncularMutationTrackedCommitReference[] | undefined
+): SyncularMutationTrackedCommitInput[] {
+  if (!inputs?.length) return [];
+  const byCommit = new Map<string, SyncularMutationTrackedCommitInput>();
+  for (const input of inputs) {
+    const clientCommitId =
+      typeof input === 'string'
+        ? input
+        : (input.clientCommitId ?? input.commitId);
+    if (!clientCommitId) continue;
+    const normalized: SyncularMutationTrackedCommitInput = {
+      clientCommitId,
+      ...(typeof input !== 'string' && input.commandId
+        ? { commandId: input.commandId }
+        : {}),
+      ...(typeof input !== 'string' && input.label
+        ? { label: input.label }
+        : {}),
+    };
+    byCommit.set(clientCommitId, normalized);
+  }
+  return [...byCommit.values()];
+}
+
+function summarizeTrackedCommits(args: {
+  trackedCommitInputs: readonly SyncularMutationTrackedCommitInput[];
+  conflictItems: readonly SyncularMutationConflictItem[];
+  outbox: SyncularOutboxStats;
+  outboxCommits: readonly SyncularLocalSupportOutboxCommit[];
+  outboxDetailsUnavailable: boolean;
+}): SyncularTrackedMutationCommit[] {
+  if (args.trackedCommitInputs.length === 0) return [];
+  const conflictsByCommit = new Map<string, SyncularMutationConflictItem>();
+  for (const conflict of args.conflictItems) {
+    conflictsByCommit.set(conflict.clientCommitId, conflict);
+  }
+  const outboxByCommit = new Map<string, SyncularLocalSupportOutboxCommit>();
+  for (const commit of args.outboxCommits) {
+    outboxByCommit.set(commit.clientCommitId, commit);
+  }
+  return args.trackedCommitInputs.map((input) => {
+    const clientCommitId = input.clientCommitId ?? input.commitId ?? '';
+    const conflict = conflictsByCommit.get(clientCommitId);
+    const outboxCommit = outboxByCommit.get(clientCommitId);
+    const state = trackedCommitState(conflict, outboxCommit);
+    const evidence = trackedCommitEvidence({
+      conflict,
+      outboxCommit,
+      outbox: args.outbox,
+      outboxDetailsUnavailable: args.outboxDetailsUnavailable,
+    });
+    return {
+      clientCommitId,
+      ...(input.commandId ? { commandId: input.commandId } : {}),
+      ...(input.label ? { label: input.label } : {}),
+      state,
+      evidence,
+      ...(outboxCommit
+        ? {
+            outbox: {
+              status: outboxCommit.status,
+              schemaVersion: outboxCommit.schemaVersion,
+            },
+          }
+        : {}),
+      ...(conflict ? { conflict } : {}),
+      recommendedActions: recommendedActionsForTrackedCommit(state),
+    };
+  });
+}
+
+function trackedCommitState(
+  conflict: SyncularMutationConflictItem | undefined,
+  outboxCommit: SyncularLocalSupportOutboxCommit | undefined
+): SyncularTrackedMutationState {
+  if (conflict && conflict.resolvedAt == null) return 'conflicted';
+  if (outboxCommit) {
+    switch (outboxCommit.status) {
+      case 'pending':
+        return 'queued';
+      case 'sending':
+        return 'syncing';
+      case 'failed':
+        return 'failed';
+      case 'acked':
+        return 'acked';
+      default:
+        return 'unknown';
+    }
+  }
+  if (conflict) return 'resolved-conflict';
+  return 'unknown';
+}
+
+function trackedCommitEvidence(args: {
+  conflict: SyncularMutationConflictItem | undefined;
+  outboxCommit: SyncularLocalSupportOutboxCommit | undefined;
+  outbox: SyncularOutboxStats;
+  outboxDetailsUnavailable: boolean;
+}): string[] {
+  const evidence: string[] = [];
+  if (args.conflict) evidence.push('conflict.item');
+  if (args.outboxCommit) evidence.push('localSupportBundle.outboxCommit');
+  if (args.outboxDetailsUnavailable) {
+    evidence.push('localSupportBundle.unavailable');
+  }
+  if (evidence.length === 0 && args.outbox.total > 0) {
+    evidence.push('outbox.aggregate');
+  }
+  if (evidence.length === 0) evidence.push('none');
+  return uniqueSorted(evidence);
+}
+
+function recommendedActionsForTrackedCommit(
+  state: SyncularTrackedMutationState
+): SyncularMutationStatusAction[] {
+  switch (state) {
+    case 'queued':
+      return [
+        {
+          action: 'show-pending',
+          reasonCodes: ['tracked_commit.queued'],
+          message:
+            'Show this mutation as durable locally and waiting for sync.',
+        },
+      ];
+    case 'syncing':
+      return [
+        {
+          action: 'wait-for-sync',
+          reasonCodes: ['tracked_commit.syncing'],
+          message: 'This mutation is currently being pushed.',
+        },
+      ];
+    case 'failed':
+      return [
+        {
+          action: 'retry-sync',
+          reasonCodes: ['tracked_commit.failed'],
+          message: 'This mutation has a failed push attempt and needs retry.',
+        },
+      ];
+    case 'conflicted':
+      return [
+        {
+          action: 'resolve-conflicts',
+          reasonCodes: ['tracked_commit.conflicted'],
+          message: 'This mutation produced an unresolved conflict.',
+        },
+      ];
+    case 'unknown':
+      return [
+        {
+          action: 'inspect-diagnostics',
+          reasonCodes: ['tracked_commit.unknown'],
+          message:
+            'This mutation receipt was not found in redacted outbox or conflict records.',
+        },
+      ];
+    case 'acked':
+    case 'resolved-conflict':
+      return [];
+  }
 }
 
 function summarizeMutationState(args: {

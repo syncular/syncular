@@ -235,7 +235,7 @@ class FakeRecoveryClient implements SyncularLocalRecoveryClient {
   async exportLocalSupportBundle(): Promise<SyncularLocalSupportBundle> {
     this.calls.push(['exportLocalSupportBundle']);
     return {
-      formatVersion: 1,
+      formatVersion: 2,
       generatedAt: 1,
       redacted: true,
       source: 'fake',
@@ -250,6 +250,7 @@ class FakeRecoveryClient implements SyncularLocalRecoveryClient {
       subscriptionStates: [],
       verifiedRoots: [],
       outbox: { total: 0, byStatus: {}, bySchemaVersion: {} },
+      outboxCommits: [],
       conflicts: {
         total: 0,
         unresolved: 0,
