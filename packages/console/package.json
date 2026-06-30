@@ -1,6 +1,6 @@
 {
   "name": "@syncular/console",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Embeddable Syncular console UI",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
