@@ -936,6 +936,13 @@ online propagation, or reconnect behavior can change.
   resolved-conflict, or unknown using local outbox and conflict evidence
   without exposing operations JSON, row payloads, auth lease tokens, or signed
   URLs.
+- The first command-timeline slice adds `getSyncularCommandTimeline(...)` and
+  `SyncularDatabase.commandTimeline(...)`, composing tracked receipt state,
+  redacted runtime timeline events, and optional local-visibility evidence into
+  a deterministic support/test artifact. It deliberately reports missing
+  evidence for outbox sequence, sync attempt, server commit sequence, realtime
+  cursor, pull reason, local apply, or local visibility instead of pretending
+  those links exist when current diagnostics cannot prove them.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1343,6 +1350,11 @@ online propagation, or reconnect behavior can change.
   receipt tracking to `mutationStatus({ trackCommits })`, so generated
   mutation receipts can be correlated with queued/sending/failed/acked outbox
   state and conflict records without exposing internal operations payloads.
+- 2026-07-01: Added `packages/client/src/command-timeline.ts`, exported
+  `getSyncularCommandTimeline(...)` from `@syncular/client`, and added
+  `SyncularDatabase.commandTimeline(...)` as a deterministic receipt/command
+  artifact over mutation status, runtime timeline events, optional
+  local-visibility evidence, and explicit missing-evidence markers.
 
 ## Latest Gates
 
@@ -1408,6 +1420,14 @@ Most recent mutation-status tracked-commit rerun:
 - `bunx biome check packages/client/src/mutation-status.ts packages/client/src/mutation-status.test.ts packages/client/src/database.ts packages/client/src/types.ts packages/client/src/local-recovery.test.ts packages/client/src/support-bundle.test.ts packages/client/README.md rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `cargo fmt --all --check` from `rust/`
 - `cargo test -p syncular-runtime local_support_bundle_is_redacted_and_importable --manifest-path rust/Cargo.toml`
+- `bun run docs:stale-check`
+- `git diff --check`
+
+Most recent command-timeline rerun:
+
+- `bun test packages/client/src/command-timeline.test.ts packages/client/src/runtime-timeline.test.ts packages/client/src/mutation-status.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/src/console-diagnostics.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts`
 - `bun run docs:stale-check`
 - `git diff --check`
 
@@ -1685,9 +1705,11 @@ Most recent mutation-status rerun:
   conflict detail rows, last mutation-related errors, and recommended actions.
   Receipt-level correlation is also done for generated mutation receipts using
   redacted local support bundle outbox commit summaries plus conflict records.
-  Remaining work is an end-to-end command timeline that connects command id,
-  outbox seq, push request id, server commit seq, realtime event cursor, pull
-  reason, local apply, and local visibility.
+  First command-timeline artifacts are done for receipt state, redacted runtime
+  events, optional local-visibility evidence, and explicit missing-evidence
+  markers. Remaining work is to emit the missing low-level links directly from
+  the runtime: outbox sequence, push request id, server commit sequence,
+  realtime event cursor, pull reason, local apply, and local visibility point.
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.

@@ -6,6 +6,7 @@ import {
   createSyncularDatabase,
   getSyncularBrowserDeploymentPreflight,
   getSyncularBrowserHealth,
+  getSyncularCommandTimeline,
   getSyncularLocalRecoveryPlan,
   getSyncularMutationStatus,
   getSyncularPackagedRuntimeArtifacts,
@@ -89,6 +90,10 @@ describe('@syncular/client public API', () => {
 
   it('exports the runtime timeline helper', () => {
     expect(typeof getSyncularRuntimeTimeline).toBe('function');
+  });
+
+  it('exports the command timeline helper', () => {
+    expect(typeof getSyncularCommandTimeline).toBe('function');
   });
 
   it('exports the support bundle helper', () => {

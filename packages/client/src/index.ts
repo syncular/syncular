@@ -6,6 +6,7 @@ export * from './browser-health';
 export * from './client';
 export * from './client-config';
 export * from './command-history';
+export * from './command-timeline';
 export * from './console-diagnostics';
 export * from './database';
 export * from './errors';

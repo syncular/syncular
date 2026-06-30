@@ -200,6 +200,12 @@ const tracked = await syncular.mutationStatus({
 });
 showMutationState(tracked.trackedCommits[0]?.state);
 
+const timeline = await syncular.commandTimeline({
+  command: mutation.commit,
+  localVisibility: { state: 'visible' },
+});
+console.debug(timeline.summary.missingEvidence);
+
 await syncular.resumeFromBackground();
 await syncular.close();
 ```

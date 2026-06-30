@@ -35,6 +35,11 @@ import {
   type SyncularConflictsClientLike,
   type SyncularPresenceClientLike,
 } from './client';
+import {
+  getSyncularCommandTimeline,
+  type SyncularCommandTimeline,
+  type SyncularCommandTimelineOptions,
+} from './command-timeline';
 import { createSyncularConsoleDiagnosticsPublisher } from './console-diagnostics';
 import { isSyncularOfflineError } from './errors';
 import {
@@ -150,6 +155,9 @@ export interface SyncularDatabase<DB> extends SyncularLiveQueries {
   runtimeTimeline(
     options?: SyncularRuntimeTimelineOptions
   ): Promise<SyncularRuntimeTimeline>;
+  commandTimeline(
+    options: SyncularCommandTimelineOptions
+  ): Promise<SyncularCommandTimeline>;
   mutationStatus(
     options?: SyncularMutationStatusOptions
   ): Promise<SyncularMutationStatus>;
@@ -357,6 +365,16 @@ export async function createSyncularDatabase<DB>(
           getStatus: () => getSyncularClientStatus(client),
         },
         timelineOptions
+      ),
+    commandTimeline: (commandTimelineOptions) =>
+      getSyncularCommandTimeline(
+        {
+          diagnosticSnapshot: () => client.diagnosticSnapshot(),
+          getStatus: () => getSyncularClientStatus(client),
+          listConflicts: () => database.conflicts.list(),
+          exportLocalSupportBundle: () => client.exportLocalSupportBundle(),
+        },
+        commandTimelineOptions
       ),
     mutationStatus: (mutationStatusOptions) =>
       getSyncularMutationStatus(

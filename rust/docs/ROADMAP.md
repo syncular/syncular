@@ -187,7 +187,13 @@ read-only review:
     conflict lists. Mutation status can now also track generated mutation
     receipts by `clientCommitId`, using redacted local support bundle outbox
     commit summaries plus conflict records to classify queued, syncing,
-    failed, acked, conflicted, resolved-conflict, and unknown states. The
+    failed, acked, conflicted, resolved-conflict, and unknown states. Command
+    timeline artifacts now expose `getSyncularCommandTimeline(...)` and
+    `SyncularDatabase.commandTimeline(...)`, composing tracked receipt state,
+    redacted runtime timeline events, optional local-visibility evidence, and
+    explicit missing-evidence markers for outbox sequence, server commit
+    sequence, realtime cursor, pull reason, local apply, and local visibility
+    when the runtime cannot yet prove those links. The
     Hono-backed browser/WASM local-health test now exercises that plan/action
     API against the real Worker runtime for corrupted subscription state,
     orphaned verified roots, confirmation failure, and successful
