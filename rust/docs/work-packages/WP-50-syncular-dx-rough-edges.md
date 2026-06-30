@@ -615,6 +615,13 @@ online propagation, or reconnect behavior can change.
   bundle/WASM cost visibility, dependency side-effect isolation, data modeling,
   upgrades, production ops, performance budgets, failure artifacts, auth
   provider integration, and console-to-app continuity.
+- A follow-up decision pass closed the remaining starter/auth/doctor/adapter
+  questions: keep one React+Bun/Hono golden starter until other templates earn
+  their own smokes, keep starter debug state minimal, split adapter coverage
+  between PR-focused tests and release-rehearsal matrix checks, keep generated
+  auth-context helpers generic until product semantics exist, and keep
+  `schema check` narrow until a broader `doctor` has multiple checks to
+  orchestrate.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -920,6 +927,10 @@ online propagation, or reconnect behavior can change.
   `schemaReadiness()` and per-table local visibility helpers, regenerated the
   starter/todo TypeScript outputs, and updated the JavaScript docs, package
   README, starter README, and smoke script to use the app-shaped helper path.
+- 2026-06-30: Resolved the remaining product-contract open questions into
+  starter/template, debug-state, adapter-matrix, generated auth-context, and
+  `doctor`/schema-check decisions, then replaced the open-question list with
+  concrete remaining implementation risks.
 
 ## Latest Gates
 
@@ -1076,27 +1087,56 @@ Most recent generated-helper rerun:
   `getSyncularServerSchemaReadiness(...)` owns live database/server readiness.
   A future `doctor` command can orchestrate these narrower checks if the
   product needs a broader umbrella.
+- The first canonical starter stays React + Bun/Hono by default for this WP.
+  That is not a claim that Syncular is React- or Bun-only; it is the one
+  executable golden path with the strongest current smoke coverage. Additional
+  framework-neutral, Node, or Cloudflare templates should be added only when
+  they get their own scaffold smoke and do not weaken the default path.
+- The starter should show only minimal app-facing debug state: browser health,
+  schema readiness, sync/status badge, query errors, and queued outbox count.
+  It should not become a console demo. Deeper diagnostics belong in
+  observability docs, testkit assertions, and the console/workbench.
+- Adapter coverage is layered. PR gates should run the starter smoke, docs
+  stale-pattern checks, package typechecks, and focused adapter tests for files
+  touched in the PR. Release rehearsal should own the broader import/install
+  matrix for Bun, Node, Cloudflare, database adapters, blob stores, Sentry,
+  React Native, Tauri, CRDT/Yjs, and post-publish package installation.
+- Generated app clients should not invent campaign/project join helpers around
+  `replaceAuthContext(...)` until the app contract has enough product semantics
+  to define membership and token refresh safely. The root managed database
+  method remains the public contract; app-specific join/create flows belong in
+  app code, recipes, or testkit fixtures for now.
+- `syncular schema check` remains the narrow deploy/CI readiness command.
+  Do not add a broad `syncular doctor` until there are several independently
+  useful checks to orchestrate, such as schema readiness, browser deployment
+  preflight, adapter import isolation, package version alignment, and runtime
+  asset serving.
 
-## Open Questions
+## Remaining Implementation Risks
 
-- Should the first canonical starter target React by default, or a framework
-  neutral browser app with React as an adjacent template?
-- Should `create-syncular-app` include a local Hono/Bun server by default, or
-  offer Bun, Node, and Cloudflare choices from the start?
-- How much sync/debug state should the starter display before it becomes a demo
-  instead of a minimal app?
-- Which adapter matrix is worth smoke-testing in CI on every PR versus only in
-  release rehearsal?
-- Should generated clients wrap `replaceAuthContext(...)` with app-specific
-  campaign/project join helpers, or should the root database method remain the
-  only public contract until a starter flow proves the narrower API?
-- Should deploy readiness live as `syncular doctor`, `syncular schema check`,
-  or a layered pair where `doctor` calls narrower checks?
+- Browser deployment preflight: prove Worker/WASM assets, MIME types,
+  cross-origin isolation or OPFS requirements, durable storage availability,
+  fallback behavior, and quota/eviction messaging before a starter works in dev
+  but fails after deploy.
+- Adapter import side-effect isolation: prove root client/server imports do not
+  load optional Bun, Cloudflare, S3, Sentry, Neon, Tauri, React Native, or
+  CRDT/Yjs dependencies until their subpaths are imported.
+- Multi-tab and lifecycle behavior: document and test two tabs, tab
+  suspension/resume, storage locks, shutdown, and app restarts for persistent
+  browser databases.
+- Local recovery controls: expose safe app-facing recovery operations for
+  corrupt or incompatible local databases, unrecoverable bootstrap, stuck
+  outbox, revoked scope state, and sign-out.
+- Upgrade and production ops runbooks: turn schema/package/protocol upgrade
+  order, backup/restore, blob-store consistency, rate limits, credential
+  rotation, and rollback into copyable operator docs.
+- Performance and failure artifacts: keep package/WASM size, bootstrap
+  latency, local visibility delay, sync apply, realtime reconnect, blob fetch
+  latency, and redacted E2E failure artifacts measurable.
 
 ## Next Action
 
-Pick the next implementation slice: audit the remaining product-contract
-decisions from the open questions, especially whether generated clients should
-wrap auth-context helpers with app-specific APIs, whether starter templates
-should remain React+Bun-first or split into framework/server choices, and which
-adapter smoke matrix belongs in PR gates versus release rehearsal.
+Pick the next implementation slice from the remaining risks. The strongest
+next candidates are browser deployment preflight or adapter import
+side-effect isolation, because both protect first-run users before they hit
+production or optional dependency surprises.

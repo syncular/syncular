@@ -129,9 +129,14 @@ read-only review:
     surfaces. Generated app databases now wrap schema readiness and table
     local-visibility waits as app-shaped helpers, so starter and smoke code can
     call `schemaReadiness()` and `awaitTaskVisibility(...)` without manual
-    schema-version or table-list plumbing. Next slice: remaining
-    product-contract decisions around starter template shape, server/runtime
-    choices, and adapter smoke matrix scope.
+    schema-version or table-list plumbing. The remaining product-contract
+    questions are resolved: keep one React+Bun/Hono starter until other
+    templates earn their own smokes, keep starter debug state minimal, split
+    adapter coverage between PR-focused tests and release-rehearsal matrix
+    checks, keep generated auth-context helpers generic until app-contract
+    semantics exist, and keep `schema check` narrow until a broader `doctor`
+    has several checks to orchestrate. Next slice: browser deployment preflight
+    or adapter import side-effect isolation.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested
