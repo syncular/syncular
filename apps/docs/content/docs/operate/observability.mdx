@@ -88,6 +88,30 @@ const snapshot = await database.client.diagnosticSnapshot();
 // snapshot.recentSyncTimings, snapshot.outboxStats, snapshot.conflictStats, ...
 ```
 
+For app tests and support reports, prefer a runtime timeline over dumping the
+raw snapshot. `runtimeTimeline()` orders the current runtime/lifecycle state
+and recent diagnostic events, classifies each event by phase, summarizes
+bootstrap/outbox/conflict/blob state, and applies the public diagnostic
+detail-key policy:
+
+```ts
+const timeline = await database.runtimeTimeline();
+
+for (const event of timeline.events) {
+  console.log(event.at, event.phase, event.code, event.message);
+}
+
+// timeline.summary.syncAttemptIds, affectedTables, subscriptionIds, lastError
+// timeline.status: "ok" | "warning" | "action-required"
+```
+
+Use this when an E2E failure or user report needs the ordered story:
+configured runtime, storage/schema/bootstrap, sync/realtime wakeup, local
+apply, outbox/conflict/blob state, and the last actionable error. For deeper
+local database repair or sign-out/reset flows, start from
+`localRecoveryPlan()` and export a local support bundle only when support needs
+the redacted local health tables.
+
 ## Diagnostic Privacy And Audience
 
 Diagnostics are safe-by-default operational signals, not a raw payload export.
@@ -113,8 +137,8 @@ Pick the narrowest surface for the job:
 | --- | --- |
 | UI-facing app code | `getSyncularBrowserHealth(...)`, managed lifecycle status, generated readiness helpers, and stable `recommendedAction` values |
 | Operator/deploy | `syncular schema check --json`, `getSyncularServerSchemaReadiness(...)`, server telemetry, and Console request events |
-| Debug/console | `diagnosticSnapshot()` and Console diagnostics snapshots after redaction/compaction |
-| Testkit/E2E | `requireDiagnosticMarker(...)` and stable error/detail codes instead of message matching |
+| Debug/console | `diagnosticSnapshot()`, `runtimeTimeline()`, and Console diagnostics snapshots after redaction/compaction |
+| Testkit/E2E | `runtimeTimeline()`, `requireDiagnosticMarker(...)`, and stable error/detail codes instead of message matching |
 | Advanced escape hatch | Raw diagnostics sinks for short-lived local debugging; redact before shipping to external services |
 
 ## Metrics worth watching

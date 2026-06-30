@@ -8,6 +8,7 @@ import {
   getSyncularBrowserHealth,
   getSyncularLocalRecoveryPlan,
   getSyncularPackagedRuntimeArtifacts,
+  getSyncularRuntimeTimeline,
   getSyncularSchemaReadiness,
   replaceSyncularAuthContext,
   resolveSyncularClientConfig,
@@ -78,6 +79,10 @@ describe('@syncular/client public API', () => {
   it('exports local recovery helpers', () => {
     expect(typeof getSyncularLocalRecoveryPlan).toBe('function');
     expect(typeof runSyncularLocalRecoveryAction).toBe('function');
+  });
+
+  it('exports the runtime timeline helper', () => {
+    expect(typeof getSyncularRuntimeTimeline).toBe('function');
   });
 
   it('exports the diagnostic detail policy helper', () => {

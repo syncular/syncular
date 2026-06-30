@@ -167,7 +167,13 @@ read-only review:
     `exportLocalSupportBundle()`, classifying local health repairs, lifecycle
     action-required state, failed outbox/blob retries, storage maintenance,
     guarded reset requests, and redacted support-bundle export into typed
-    actions with confirmation required for destructive operations. The
+    actions with confirmation required for destructive operations.
+    Runtime timeline artifacts now expose
+    `getSyncularRuntimeTimeline(...)` and
+    `SyncularDatabase.runtimeTimeline(...)`, projecting diagnostic snapshots
+    and lifecycle status into ordered, redacted phase events for runtime,
+    lifecycle, bootstrap, sync, auth, realtime, storage, local-apply, outbox,
+    conflict, and blob support/test reports. The
     Hono-backed browser/WASM local-health test now exercises that plan/action
     API against the real Worker runtime for corrupted subscription state,
     orphaned verified roots, confirmation failure, and successful

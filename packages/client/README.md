@@ -482,6 +482,19 @@ UI code can poll `syncular.client.connectionState()` for a cheap snapshot of the
 Worker state: closed flag, pending request count, realtime connection state,
 storage fallback, and the latest diagnostic/error.
 
+For E2E failures and support reports, use `runtimeTimeline()` to turn the
+current snapshot plus recent diagnostics into an ordered, redacted sequence of
+runtime, lifecycle, bootstrap, sync, auth, realtime, local-apply, outbox,
+conflict, and blob events:
+
+```ts
+const timeline = await syncular.runtimeTimeline();
+
+for (const event of timeline.events) {
+  console.debug(event.at, event.phase, event.code, event.message);
+}
+```
+
 ## Realtime
 
 Realtime is optional and runs inside the same dedicated Worker as Rust-owned

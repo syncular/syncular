@@ -910,6 +910,11 @@ online propagation, or reconnect behavior can change.
   preview asset path; the real-browser portion skipped because this machine
   has no Chrome/Chromium binary, and can be enforced on a browser-capable
   runner with `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required`.
+- The first runtime timeline slice adds `getSyncularRuntimeTimeline(...)` and
+  `SyncularDatabase.runtimeTimeline(...)`, projecting diagnostic snapshots and
+  managed lifecycle status into ordered, redacted phase events for runtime,
+  lifecycle, bootstrap, sync, auth, realtime, storage, local-apply, outbox,
+  conflict, and blob support/test reports.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1284,6 +1289,16 @@ online propagation, or reconnect behavior can change.
   variants, package splits for dependency optics, implicit global blob access,
   request-startup migrations, raw synced SQL writes, old client compatibility,
   and console-only debugging.
+- 2026-07-01: Added `packages/client/src/runtime-timeline.ts`, exported
+  `getSyncularRuntimeTimeline(...)` from `@syncular/client`, and added
+  `SyncularDatabase.runtimeTimeline(...)` as a managed database method. The
+  helper builds ordered events from diagnostic snapshots and lifecycle status,
+  classifies phases, summarizes state events, redacts or omits diagnostic
+  details with the public Console detail policy, and reports stable summary
+  fields for sync attempts, affected tables, subscriptions, last error, and
+  action-required state.
+- 2026-07-01: Updated public observability docs so E2E/support workflows use
+  `runtimeTimeline()` before falling back to raw `diagnosticSnapshot()` dumps.
 
 ## Latest Gates
 
@@ -1415,6 +1430,15 @@ Most recent feedback-addendum rerun:
 - `git diff --check`
 - Manual Markdown sanity read of the inserted addendum and surrounding
   evidence/log sections.
+
+Most recent runtime-timeline rerun:
+
+- `bun test packages/client/src/runtime-timeline.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/runtime-timeline.ts packages/client/src/runtime-timeline.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx`
+- `bun --cwd apps/docs types:check`
+- `bun run docs:stale-check`
+- `git diff --check`
 
 ## Sequencing
 
@@ -1575,9 +1599,13 @@ Most recent feedback-addendum rerun:
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
   Cloudflare, Chrome, Safari, Firefox, private mode, WebViews, and PWAs.
-- Runtime timeline and support bundles: expose enough ordered state to explain
-  configured/storage/schema/bootstrap/realtime/local-apply transitions, and add
-  a redacted support-bundle helper for app tests and production incidents.
+- Runtime timeline and support bundles: first timeline slice is done for
+  ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
+  auth, realtime, storage, local-apply, outbox, conflict, and blob state.
+  Remaining work is to enrich support exports with deployment preflight,
+  schema readiness, runtime timeline, realtime cursors, request ids, package
+  versions, and diagnostic redaction decisions in one production incident
+  bundle.
 - Outbox and conflict UX: make queued/retrying/rejected/conflicted mutations,
   command correlation, retry state, and local visibility expectations stable
   enough for generated app UI and tests.
@@ -1596,6 +1624,6 @@ Most recent feedback-addendum rerun:
 
 Pick the next implementation slice from the remaining risks. Strong candidates
 are browser-capable CI enforcement for the built-preview smoke, multi-tab
-lifecycle coverage, or runtime timeline/support-bundle artifacts, because those
-remain broad DX holes after the first local recovery browser proof, upgrade
-runbook, and built-preview asset smoke.
+lifecycle coverage, support-bundle enrichment, or outbox/conflict UX, because
+those remain broad DX holes after the first local recovery browser proof,
+upgrade runbook, built-preview asset smoke, and runtime timeline helper.

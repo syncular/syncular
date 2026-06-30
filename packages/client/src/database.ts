@@ -59,6 +59,11 @@ import {
 } from './mutations';
 import { browserSyncularNetworkStatusSource } from './network';
 import {
+  getSyncularRuntimeTimeline,
+  type SyncularRuntimeTimeline,
+  type SyncularRuntimeTimelineOptions,
+} from './runtime-timeline';
+import {
   getSyncularSchemaReadiness,
   type SyncularSchemaReadinessOptions,
   type SyncularSchemaReadinessResult,
@@ -132,6 +137,9 @@ export interface SyncularDatabase<DB> extends SyncularLiveQueries {
   schemaReadiness(
     options?: SyncularSchemaReadinessOptions
   ): Promise<SyncularSchemaReadinessResult>;
+  runtimeTimeline(
+    options?: SyncularRuntimeTimelineOptions
+  ): Promise<SyncularRuntimeTimeline>;
   localRecoveryPlan(
     options?: SyncularLocalRecoveryPlanOptions
   ): Promise<SyncularLocalRecoveryPlan>;
@@ -326,6 +334,14 @@ export async function createSyncularDatabase<DB>(
       ),
     schemaReadiness: (readinessOptions) =>
       getSyncularSchemaReadiness(client, readinessOptions),
+    runtimeTimeline: (timelineOptions) =>
+      getSyncularRuntimeTimeline(
+        {
+          diagnosticSnapshot: () => client.diagnosticSnapshot(),
+          getStatus: () => getSyncularClientStatus(client),
+        },
+        timelineOptions
+      ),
     localRecoveryPlan: (recoveryOptions) =>
       getSyncularLocalRecoveryPlan(client, recoveryOptions),
     runLocalRecoveryAction: (action, recoveryOptions) =>
