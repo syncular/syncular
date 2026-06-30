@@ -434,6 +434,64 @@ acceptance input for the implementation slices below.
   one blessed modeling pattern before apps build their own ad hoc partition
   bridges.
 
+### Feedback Triage
+
+Treat the pasted integration notes as more than documentation requests. Most
+items point at missing public contracts, not missing prose.
+
+Priority 0:
+
+- Browser truth surface: app code must be able to ask whether storage is
+  durable, schema is compatible, bootstrap is ready, realtime is connected, and
+  the last failure is recoverable without reading console logs.
+- Scope/auth flow: replacing auth, changing campaign/project scope, restarting
+  affected subscriptions, and proving local visibility must be one blessed
+  runtime path with typed denied/revoked-scope failures.
+- Deploy safety: schema bootstrap, migrations, generated output freshness, and
+  server/client schema compatibility must be checkable before traffic through
+  machine-readable commands/APIs.
+
+Priority 1:
+
+- Blob/package partition model: choose and document the intended global/base
+  data sharing pattern before app teams invent their own package-blob bridges.
+- Deterministic app E2E: provide a copyable real-server, real-browser,
+  durable-storage, scoped-auth, realtime-enabled recipe that proves the same
+  lifecycle users rely on in production.
+- Diagnostic code taxonomy: server logs, app health, generated helpers,
+  testkit assertions, and console events should share stable event/error codes.
+
+Priority 2:
+
+- Package/import ergonomics: keep optional adapters behind subpaths, and make
+  the "which import do I need?" path obvious enough that dependency size does
+  not become a product surprise.
+- Contributor setup: pinned Bun, known WASM-worker fragility, and task-specific
+  gates should be discoverable before maintainers run the wrong long gate.
+
+Product decisions to force:
+
+- Is global/base data copied into scoped rows, referenced through scoped blob
+  refs, exposed through shared partitions, or modeled as a first-class scope?
+- Does `requiresAction` belong in the root lifecycle/health API, generated app
+  helpers, or both?
+- Which diagnostic fields are always safe, which are redacted by default, and
+  which require explicit debug opt-in?
+- Which APIs are UI-facing, operator/deploy-facing, debug/console-only,
+  testkit-only, or advanced escape hatches?
+
+Acceptance guardrails:
+
+- A completed item should usually ship with a typed helper/error shape and a
+  focused test or smoke, not only a docs paragraph.
+- App tests should assert stable codes and detail fields, not human messages.
+- Freshness fixes should not teach app code to call manual `sync()` as the
+  normal answer to stale reads.
+- Browser persistence examples should fail loudly if they are accidentally
+  using memory storage.
+- Blob, auth, schema, and realtime failures should say who can recover them:
+  runtime retry, app auth/scope action, user action, or operator/deploy action.
+
 ## Required Gates
 
 For planning/doc-only edits:
@@ -486,6 +544,10 @@ online propagation, or reconnect behavior can change.
   generated/runtime compatibility, two-browser scoped scenarios, shared
   event/error codes, diagnostics redaction, optional dependency boundaries, and
   a first-class global/base-data decision.
+- A follow-up triage pass ranked the feedback into browser truth/scope-auth/
+  deploy-safety P0s, blob/E2E/diagnostic-taxonomy P1s, and import/contributor
+  polish P2s, with guardrails that completed items should ship as typed
+  contracts with tests rather than vague docs-only guidance.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -596,6 +658,9 @@ online propagation, or reconnect behavior can change.
   machine-readable readiness, generated/runtime compatibility, shared
   diagnostic codes, redaction, optional dependency boundaries, and
   global/base-data modeling.
+- 2026-06-30: Added feedback triage priorities, forced product decisions, and
+  acceptance guardrails so future slices handle the pasted feedback as public
+  contracts with tests instead of docs-only cleanup.
 - 2026-06-30: Added `packages/client/src/schema-readiness.ts` and exported it
   from `@syncular/client`.
 - 2026-06-30: Added `SyncularDatabase.schemaReadiness(...)` as the managed
