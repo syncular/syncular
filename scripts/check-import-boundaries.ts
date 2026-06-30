@@ -2,6 +2,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 type BoundaryTarget = {
   label: string;
@@ -13,6 +14,12 @@ type BoundaryTarget = {
 type ImportEdge = {
   from: string;
   specifier: string;
+};
+
+type RuntimeImportTarget = {
+  label: string;
+  entrypoint: string;
+  expectedExports: string[];
 };
 
 const repoRoot = resolve(join(import.meta.dirname, '..'));
@@ -102,6 +109,19 @@ const targets: BoundaryTarget[] = [
   },
 ];
 
+const runtimeImportTargets: RuntimeImportTarget[] = [
+  {
+    label: '@syncular/client root',
+    entrypoint: 'packages/client/src/index.ts',
+    expectedExports: ['createSyncularDatabase', 'getSyncularCommandTimeline'],
+  },
+  {
+    label: '@syncular/server root',
+    entrypoint: 'packages/server/src/index.ts',
+    expectedExports: ['ensureSyncSchema'],
+  },
+];
+
 const staticImportPattern =
   /\b(?:import|export)\s+(?:type\s+)?(?:[^'"]*?\s+from\s+)?['"]([^'"]+)['"]/g;
 const dynamicImportPattern = /\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g;
@@ -116,6 +136,9 @@ async function main(): Promise<void> {
       `[imports:check] ${target.label}: checked ${result.filesChecked} files`
     );
   }
+  for (const target of runtimeImportTargets) {
+    failures.push(...(await checkRuntimeImport(target)));
+  }
 
   if (failures.length > 0) {
     console.error(
@@ -124,6 +147,30 @@ async function main(): Promise<void> {
         .join('\n')}`
     );
     process.exitCode = 1;
+  }
+}
+
+async function checkRuntimeImport(
+  target: RuntimeImportTarget
+): Promise<string[]> {
+  try {
+    const moduleUrl = pathToFileURL(resolve(repoRoot, target.entrypoint)).href;
+    const imported = await import(moduleUrl);
+    const missingExports = target.expectedExports.filter(
+      (name) => !(name in imported)
+    );
+    console.log(
+      `[imports:check] ${target.label}: runtime import checked ${target.expectedExports.length} exports`
+    );
+    return missingExports.map(
+      (name) => `${target.label} runtime import is missing export ${name}`
+    );
+  } catch (error) {
+    return [
+      `${target.label} runtime import failed: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    ];
   }
 }
 

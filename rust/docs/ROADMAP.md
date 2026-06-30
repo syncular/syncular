@@ -137,7 +137,9 @@ read-only review:
     semantics exist, and keep `schema check` narrow until a broader `doctor`
     has several checks to orchestrate. Adapter import side-effect isolation now
     has a root import graph smoke through `bun run imports:check`, proving the
-    root client/server packages do not reach optional subpath files or peers.
+    root client/server packages do not reach optional subpath files or peers;
+    the same check now dynamically imports the root client/server source
+    entrypoints to catch top-level browser/native side effects before release.
     Browser deployment preflight now exposes
     `getSyncularBrowserDeploymentPreflight(...)` from `@syncular/client` so
     deploy previews can check Worker/WebAssembly support, secure-context and

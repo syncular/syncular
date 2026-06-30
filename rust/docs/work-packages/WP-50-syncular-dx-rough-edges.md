@@ -879,6 +879,10 @@ online propagation, or reconnect behavior can change.
 - A first adapter-boundary slice added `bun run imports:check`, a static root
   import graph smoke that proves `@syncular/client` and `@syncular/server`
   roots do not reach optional subpath files or optional peer packages.
+- `bun run imports:check` now also dynamically imports the root client/server
+  source entrypoints and checks known exports, catching top-level browser,
+  native-driver, or optional-peer side effects that static graph walking could
+  miss.
 - The post-publish JavaScript install smoke now runs a release-time optional
   subpath import matrix by default. It installs `@syncular/client`,
   `@syncular/server`, and the Bun-friendly optional peers in a fresh npm
@@ -1450,6 +1454,9 @@ Most recent generated-helper rerun:
 Most recent adapter-boundary rerun:
 
 - `bun run imports:check`
+- `bunx biome check scripts/check-import-boundaries.ts`
+- `bun run docs:stale-check`
+- `git diff --check`
 
 Most recent browser-deployment-preflight rerun:
 
@@ -1672,6 +1679,9 @@ Most recent mutation-status rerun:
 - Adapter import side-effect isolation: the first root import graph smoke now
   proves root client/server imports do not statically reach optional Bun,
   Cloudflare, S3, Sentry, Neon, Tauri, React Native, or CRDT/Yjs subpaths.
+  The same local check now dynamically imports the root client/server source
+  entrypoints to catch top-level side effects that would break SSR-like build
+  graphs before a subpath is actually used.
   The post-publish JavaScript install smoke now owns the first release-time
   optional subpath install/import matrix for Bun-friendly client/server
   subpaths. Remaining work is a separate native-driver/platform matrix for
@@ -1691,6 +1701,8 @@ Most recent mutation-status rerun:
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
   Cloudflare, Chrome, Safari, Firefox, private mode, WebViews, and PWAs.
+  Root source imports are now guarded by static graph and dynamic import
+  checks; remaining matrix work is real framework/browser execution.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
