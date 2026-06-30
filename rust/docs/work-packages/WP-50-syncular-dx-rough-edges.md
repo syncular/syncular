@@ -721,6 +721,13 @@ online propagation, or reconnect behavior can change.
 - A first adapter-boundary slice added `bun run imports:check`, a static root
   import graph smoke that proves `@syncular/client` and `@syncular/server`
   roots do not reach optional subpath files or optional peer packages.
+- The post-publish JavaScript install smoke now runs a release-time optional
+  subpath import matrix by default. It installs `@syncular/client`,
+  `@syncular/server`, and the Bun-friendly optional peers in a fresh npm
+  project, then imports the folded client/server subpaths for React, Sentry,
+  Tauri, React Native, CRDT/Yjs, Hono, Cloudflare, Bun SQLite, D1, LibSQL, Neon,
+  PGlite, Postgres, SQLite, filesystem, S3, service-worker, relay, and snapshot
+  artifact helpers.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1052,6 +1059,14 @@ online propagation, or reconnect behavior can change.
   `imports:check` script to statically walk the `@syncular/client` and
   `@syncular/server` root import graphs and fail if they reach optional
   adapter subpaths or optional peer packages.
+- 2026-06-30: Extended `scripts/post-publish-install-smokes.ts` with a
+  JavaScript optional subpath import matrix controlled by
+  `SYNCULAR_POST_PUBLISH_OPTIONAL_IMPORT_MATRIX`. The matrix creates a fresh
+  npm project, installs the published client/server packages plus
+  Bun-friendly optional peers, and imports the folded client/server subpaths
+  for React, Sentry, Tauri, React Native, CRDT/Yjs, Hono, Cloudflare, Bun
+  SQLite, D1, LibSQL, Neon, PGlite, Postgres, SQLite, filesystem, S3,
+  service-worker, relay, and snapshot artifact helpers.
 
 ## Latest Gates
 
@@ -1140,6 +1155,14 @@ Most recent browser-deployment-preflight rerun:
 - `bun --cwd packages/create-syncular-app smoke`
 - `bun --cwd apps/docs types:check`
 - `bun run docs:stale-check`
+- `git diff --check`
+
+Most recent optional-import-matrix rerun:
+
+- `bunx biome check scripts/post-publish-install-smokes.ts`
+- `bun scripts/post-publish-install-smokes.ts --help`
+- Disposable local `node_modules/@syncular/*` symlink import check covering 27
+  optional subpath exports from `@syncular/client` and `@syncular/server`
 - `git diff --check`
 
 ## Sequencing
@@ -1263,8 +1286,11 @@ Most recent browser-deployment-preflight rerun:
 - Adapter import side-effect isolation: the first root import graph smoke now
   proves root client/server imports do not statically reach optional Bun,
   Cloudflare, S3, Sentry, Neon, Tauri, React Native, or CRDT/Yjs subpaths.
-  Remaining work is a release-time install/import matrix for the optional
-  subpaths themselves.
+  The post-publish JavaScript install smoke now owns the first release-time
+  optional subpath install/import matrix for Bun-friendly client/server
+  subpaths. Remaining work is a separate native-driver/platform matrix for
+  `better-sqlite3` and `sqlite3`, if release policy decides those native
+  drivers should be installed on every release runner.
 - Multi-tab and lifecycle behavior: document and test two tabs, tab
   suspension/resume, storage locks, shutdown, and app restarts for persistent
   browser databases.

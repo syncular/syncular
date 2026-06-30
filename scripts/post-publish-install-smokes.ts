@@ -32,6 +32,11 @@ environment:
                               Force-enable or disable the JS WASM runtime smoke.
                               By default it is skipped on Linux because Bun's
                               worker WASM loader is not stable there yet.
+
+  SYNCULAR_POST_PUBLISH_OPTIONAL_IMPORT_MATRIX=1|0
+                              Force-enable or disable the optional subpath
+                              install/import matrix. Enabled by default for
+                              the JavaScript smoke.
 `;
 }
 
@@ -223,6 +228,22 @@ function jsRuntimeSmokeDecision(): { run: boolean; reason?: string } {
       run: false,
       reason:
         'skipped on Linux because Bun worker WASM loading is currently flaky in CI',
+    };
+  }
+
+  return { run: true };
+}
+
+function optionalImportMatrixDecision(): { run: boolean; reason?: string } {
+  const configured = readBooleanEnv(
+    'SYNCULAR_POST_PUBLISH_OPTIONAL_IMPORT_MATRIX'
+  );
+  if (configured !== null) {
+    return {
+      run: configured,
+      reason: configured
+        ? undefined
+        : 'disabled by SYNCULAR_POST_PUBLISH_OPTIONAL_IMPORT_MATRIX=0',
     };
   }
 
@@ -542,6 +563,196 @@ console.log('published JS runtime smoke passed');
   await run(bunBin, ['smoke.mjs'], { cwd: jsDir });
 }
 
+async function runJsOptionalImportMatrix(options: Options): Promise<void> {
+  const matrixDir = join(options.workDir, 'js-optional-import-matrix');
+  await mkdir(matrixDir, { recursive: true });
+  await writeFile(
+    join(matrixDir, 'package.json'),
+    `${JSON.stringify(
+      {
+        private: true,
+        type: 'module',
+        scripts: {
+          smoke: 'bun ./optional-imports.mjs',
+        },
+      },
+      null,
+      2
+    )}\n`,
+    'utf8'
+  );
+  await writeFile(
+    join(matrixDir, 'optional-imports.mjs'),
+    `import { getSyncularWasmUrl } from '@syncular/client';
+import { createBrowserSentryTelemetry } from '@syncular/client/sentry';
+import { createSyncularReact } from '@syncular/client/react';
+import { createSyncularNativeBridge } from '@syncular/client/react-native';
+import { createSyncularTauriBridge } from '@syncular/client/tauri';
+import {
+  createYjsDocumentFieldAdapter,
+  createYjsProseMirrorBridge,
+} from '@syncular/client/crdt-yjs';
+import { ensureSyncSchema } from '@syncular/server';
+import { createBunSqliteDialect } from '@syncular/server/bun-sqlite';
+import { createD1Dialect } from '@syncular/server/d1';
+import { createLibsqlDialect } from '@syncular/server/libsql';
+import { createNeonDialect } from '@syncular/server/neon';
+import { createPgliteDialect } from '@syncular/server/pglite';
+import {
+  createNeonServerDialect,
+  createPostgresServerDialect,
+} from '@syncular/server/postgres';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
+import { createFilesystemBlobStorageAdapter } from '@syncular/server/filesystem';
+import { createS3BlobStorageAdapter } from '@syncular/server/s3';
+import { createYjsServerModule } from '@syncular/server/crdt-yjs';
+import { createSyncServer } from '@syncular/server/hono';
+import { createSyncWorker } from '@syncular/server/cloudflare';
+import { createCloudflareSentryTelemetry } from '@syncular/server/cloudflare/sentry';
+import {
+  createServiceWorkerServer,
+  createSyncWakeMessageResolver,
+} from '@syncular/server/service-worker';
+import { createRelayServer, RelayRealtime } from '@syncular/server/relay';
+import { encodeBunSqliteSnapshotArtifact } from '@syncular/server/snapshot-artifacts/sqlite-bun';
+
+function expectFunction(label, value) {
+  if (typeof value !== 'function') {
+    throw new Error(label + ' did not export a function');
+  }
+}
+
+const checks = [
+  ['@syncular/client', getSyncularWasmUrl],
+  ['@syncular/client/sentry', createBrowserSentryTelemetry],
+  ['@syncular/client/react', createSyncularReact],
+  ['@syncular/client/react-native', createSyncularNativeBridge],
+  ['@syncular/client/tauri', createSyncularTauriBridge],
+  ['@syncular/client/crdt-yjs document adapter', createYjsDocumentFieldAdapter],
+  ['@syncular/client/crdt-yjs editor bridge', createYjsProseMirrorBridge],
+  ['@syncular/server', ensureSyncSchema],
+  ['@syncular/server/bun-sqlite', createBunSqliteDialect],
+  ['@syncular/server/d1', createD1Dialect],
+  ['@syncular/server/libsql', createLibsqlDialect],
+  ['@syncular/server/neon', createNeonDialect],
+  ['@syncular/server/pglite', createPgliteDialect],
+  ['@syncular/server/postgres', createPostgresServerDialect],
+  ['@syncular/server/postgres neon dialect', createNeonServerDialect],
+  ['@syncular/server/sqlite', createSqliteServerDialect],
+  ['@syncular/server/filesystem', createFilesystemBlobStorageAdapter],
+  ['@syncular/server/s3', createS3BlobStorageAdapter],
+  ['@syncular/server/crdt-yjs', createYjsServerModule],
+  ['@syncular/server/hono', createSyncServer],
+  ['@syncular/server/cloudflare', createSyncWorker],
+  ['@syncular/server/cloudflare/sentry', createCloudflareSentryTelemetry],
+  ['@syncular/server/service-worker', createServiceWorkerServer],
+  ['@syncular/server/service-worker wake resolver', createSyncWakeMessageResolver],
+  ['@syncular/server/relay', createRelayServer],
+  ['@syncular/server/relay realtime', RelayRealtime],
+  ['@syncular/server/snapshot-artifacts/sqlite-bun', encodeBunSqliteSnapshotArtifact],
+];
+
+for (const [label, value] of checks) {
+  expectFunction(label, value);
+}
+
+const wasmUrl = getSyncularWasmUrl();
+if (!(wasmUrl instanceof URL) || !wasmUrl.href.includes('syncular_bg.wasm')) {
+  throw new Error('@syncular/client did not resolve a packaged WASM URL');
+}
+
+const react = createSyncularReact();
+if (typeof react.SyncProvider !== 'function' || typeof react.useSyncStatus !== 'function') {
+  throw new Error('@syncular/client/react returned an unexpected hook surface');
+}
+
+const nativeBridge = createSyncularNativeBridge({
+  executeSql: () => ({ rows: [] }),
+  applyMutationsCommit: () => 'commit-native',
+});
+if (typeof nativeBridge.executeSql !== 'function') {
+  throw new Error('@syncular/client/react-native did not create a bridge');
+}
+
+const tauriBridge = createSyncularTauriBridge({
+  invoke: async () => {
+    throw new Error('tauri smoke invoke should not be called');
+  },
+});
+if (typeof tauriBridge.executeSql !== 'function') {
+  throw new Error('@syncular/client/tauri did not create a bridge');
+}
+
+const fsAdapter = createFilesystemBlobStorageAdapter({
+  basePath: '/tmp/syncular-post-publish-matrix',
+  baseUrl: '/sync',
+  tokenSigner: {
+    async sign() {
+      return 'token';
+    },
+  },
+});
+if (fsAdapter.name !== 'filesystem') {
+  throw new Error('@syncular/server/filesystem returned an unexpected adapter');
+}
+
+const s3Adapter = createS3BlobStorageAdapter({
+  client: { async send() { return {}; } },
+  bucket: 'syncular-matrix',
+  commands: {
+    PutObjectCommand: class PutObjectCommand { constructor(input) { this.input = input; } },
+    GetObjectCommand: class GetObjectCommand { constructor(input) { this.input = input; } },
+    HeadObjectCommand: class HeadObjectCommand { constructor(input) { this.input = input; } },
+    DeleteObjectCommand: class DeleteObjectCommand { constructor(input) { this.input = input; } },
+  },
+  getSignedUrl: async () => 'https://example.invalid/signed',
+});
+if (s3Adapter.name !== 's3') {
+  throw new Error('@syncular/server/s3 returned an unexpected adapter');
+}
+
+console.log('published optional subpath import matrix passed');
+`,
+    'utf8'
+  );
+
+  await run(
+    'npm',
+    [
+      'install',
+      '--registry',
+      options.npmRegistry,
+      atVersion('@syncular/client', options.version),
+      atVersion('@syncular/core', options.version),
+      atVersion('@syncular/server', options.version),
+      '@cloudflare/workers-types',
+      '@electric-sql/pglite',
+      '@hono/standard-validator',
+      '@neondatabase/serverless',
+      '@scalar/hono-api-reference',
+      '@sentry/cloudflare',
+      '@sentry/react',
+      '@standard-community/standard-json',
+      '@standard-community/standard-openapi',
+      'hono',
+      'hono-openapi',
+      'kysely',
+      'kysely-bun-sqlite',
+      'kysely-d1',
+      'kysely-neon',
+      'kysely-pglite-dialect',
+      'libsql',
+      'openapi-types',
+      'react',
+      'react-dom',
+      'yjs',
+      'zod',
+    ],
+    { cwd: matrixDir }
+  );
+  await run(bunBin, ['optional-imports.mjs'], { cwd: matrixDir });
+}
+
 async function runRustSmoke(options: Options): Promise<void> {
   const rustDir = join(options.workDir, 'rust-app');
   const cargoHome = join(options.workDir, 'cargo-home');
@@ -644,6 +855,14 @@ async function main(): Promise<void> {
   try {
     if (!options.skipJs) {
       await runJsSmoke(options);
+      const optionalMatrix = optionalImportMatrixDecision();
+      if (optionalMatrix.run) {
+        await runJsOptionalImportMatrix(options);
+      } else {
+        console.warn(
+          `[post-publish-install-smokes] Skipping optional import matrix: ${optionalMatrix.reason}.`
+        );
+      }
     }
     if (!options.skipRust) {
       await runRustSmoke(options);

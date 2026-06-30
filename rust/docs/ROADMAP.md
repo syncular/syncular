@@ -146,8 +146,14 @@ read-only review:
     status/content types before opening a database; the starter now runs this
     preflight before `createSyncularAppDatabase(...)`, and its scaffold smoke
     checks the transformed preflight client module. Next slice: wire the
-    preflight into a real browser built-preview smoke or continue with the
-    broader release-time adapter install matrix.
+    preflight into a real browser built-preview smoke or continue with multi-tab
+    lifecycle/recovery controls. The post-publish JavaScript install smoke now
+    also creates a fresh optional import matrix project that installs
+    `@syncular/client`, `@syncular/server`, and the Bun-friendly optional peers,
+    then imports the folded client/server subpaths for React, Sentry, Tauri,
+    React Native, CRDT/Yjs, Hono, Cloudflare, Bun SQLite, D1, LibSQL, Neon,
+    PGlite, Postgres, SQLite, filesystem, S3, service-worker, relay, and
+    snapshot artifact helpers.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested
