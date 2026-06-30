@@ -49,6 +49,12 @@ decision tree, or hidden behind defaults until the user needs it.
 - Add testkit recipes for real app behavior instead of broad mocking.
 - Add stable log/event marker conventions for automated E2E and production log
   scans.
+- Add machine-readable readiness output for CI, deploy scripts, and app tests
+  so failures can be asserted without scraping human text.
+- Clarify which runtime failures recover automatically and which require app or
+  operator action.
+- Keep diagnostics useful without leaking bearer tokens, signed URLs, secrets,
+  or full user payloads.
 - Reduce contributor setup traps around Bun, WASM workers, Rust/WASM gates, and
   release smokes.
 
@@ -390,6 +396,44 @@ acceptance input for the implementation slices below.
   escape hatch in docs. This should prevent app code from growing accidental
   refresh/sync/reset behavior.
 
+### Additional Worth Carrying Forward
+
+- Treat `requiresAction` as a first-class app-facing state. Auth expiry,
+  revoked scope, schema drift, unsupported browser storage, unrecoverable blob
+  access, and runtime open failures should say whether the runtime will retry,
+  whether the app should refresh auth or change scope, or whether an operator
+  must run a deploy/schema step.
+- Make schema readiness machine-readable. The deploy/CI surface should support
+  JSON output with issue codes, affected files/tables/adapters, expected
+  versions, observed versions, and recommended action.
+- Keep generated-client/runtime compatibility checks in one obvious contract:
+  generated app schema version, runtime package/protocol version, local stored
+  schema version, server required/latest schema version, and generated output
+  freshness should be explainable from one command or helper.
+- The starter and testkit should include a copyable "two browsers, one scoped
+  project/campaign, one auth change, one denied scope" scenario. This is the
+  fastest way to prove realtime, scoped auth, local visibility, diagnostics,
+  and durable browser persistence together.
+- App-facing health, server logs, generated diagnostics, testkit assertions,
+  and console events should share stable event/error codes. The console can add
+  detail, but it should not be the only place where the meaning of a failure is
+  understandable.
+- Keep package/import ergonomics in the DX plan. Optional server adapters,
+  Sentry, S3, Cloudflare, CRDT/Yjs, Tauri, and React Native must stay behind
+  subpaths so the root client/server imports do not pull unrelated runtime
+  dependencies into normal browser apps.
+- Document the privacy boundary for diagnostics. Safe fields such as table,
+  scope key shape, actor id, subscription id, request id, schema version,
+  adapter name, and storage backend are useful; raw tokens, signed URLs, and
+  full row payloads need redaction or opt-in debug handling.
+- Prefer examples that prove durable behavior. Docs and smokes should avoid
+  examples that accidentally pass with memory storage, mocked persistence,
+  mocked auth, or manual `sync()` calls masking lifecycle gaps.
+- Keep global/base-data sharing as a product decision, not just blob plumbing.
+  Package-release rows, shared blobs, and campaign/project-scoped access need
+  one blessed modeling pattern before apps build their own ad hoc partition
+  bridges.
+
 ## Required Gates
 
 For planning/doc-only edits:
@@ -437,6 +481,11 @@ online propagation, or reconnect behavior can change.
   browser persistence, bootstrap/sync semantics, auth/scope changes, realtime
   proof signals, blob partition/scope behavior, production schema readiness,
   deterministic E2E recipes, stable log markers, and UI-facing lifecycle APIs.
+- A 2026-06-30 doc-only pass folded the integration feedback into concrete
+  implementation guardrails: `requiresAction` semantics, JSON readiness output,
+  generated/runtime compatibility, two-browser scoped scenarios, shared
+  event/error codes, diagnostics redaction, optional dependency boundaries, and
+  a first-class global/base-data decision.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -516,6 +565,11 @@ online propagation, or reconnect behavior can change.
   project-scope Hono realtime harness path and a managed-database scope-change
   test covering realtime delivery, local visibility, and denied-scope
   diagnostics.
+- 2026-06-30: Folded Skaldsong integration feedback into this work package as
+  concrete DX acceptance input and added implementation guardrails for
+  machine-readable readiness, generated/runtime compatibility, shared
+  diagnostic codes, redaction, optional dependency boundaries, and
+  global/base-data modeling.
 
 ## Latest Gates
 
@@ -587,10 +641,19 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
   pinned into campaign scopes?
 - Which schema readiness checks belong in the `syncular` CLI versus server
   package APIs?
+- Should deploy readiness live as `syncular doctor`, `syncular schema check`,
+  or a layered pair where `doctor` calls narrower checks?
+- Should `requiresAction` live directly in the browser health helper, in a
+  broader lifecycle API, or in generated app helpers that map runtime states to
+  product-specific UI actions?
+- Which diagnostic fields are always safe to emit, which are redacted by
+  default, and which require an explicit debug opt-in?
+- Should global/base data become a first-class scope/partition kind, or should
+  the first release document one narrower copy/share pattern?
 
 ## Next Action
 
 Pick the next implementation slice: add a schema-readiness command/API and
-drift diagnostics that distinguish missing schema, stale server schema,
-stale generated client output, incompatible generated output, and local
-database open/runtime failures.
+drift diagnostics with machine-readable output that distinguishes missing
+schema, stale server schema, stale generated client output, incompatible
+generated output, and local database open/runtime failures.
