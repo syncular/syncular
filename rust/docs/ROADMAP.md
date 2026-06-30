@@ -179,7 +179,12 @@ read-only review:
     runtime timeline, schema readiness, optional deployment preflight, section
     failures, local support data, package/runtime versions, sync/trace ids,
     subscription cursors, and diagnostic redaction decisions into one redacted
-    incident artifact. The
+    incident artifact. Mutation queue UX now has
+    `getSyncularMutationStatus(...)` and
+    `SyncularDatabase.mutationStatus(...)`, summarizing outbox queue state,
+    failed pushes, conflict records, last mutation errors, and UI-safe
+    recommended actions without app code stitching together raw snapshots and
+    conflict lists. The
     Hono-backed browser/WASM local-health test now exercises that plan/action
     API against the real Worker runtime for corrupted subscription state,
     orphaned verified roots, confirmation failure, and successful

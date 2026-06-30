@@ -124,6 +124,21 @@ if (!status.isConnected) {
 }
 ```
 
+When UI needs one mutation-specific contract instead of stitching together
+outbox counts, conflict stats, and diagnostics, use `mutationStatus()`:
+
+```ts
+const mutations = await syncular.mutationStatus();
+
+for (const action of mutations.recommendedActions) {
+  routeMutationRecovery(action.action, action.reasonCodes);
+}
+```
+
+Use `mutationStatus()` for app chrome and support/test assertions; use
+`syncular.conflicts.list()` when the user is already inside a conflict
+resolution flow.
+
 For browser apps, use `getSyncularBrowserHealth(...)` when UI needs the
 app-facing summary and stable recovery actions in one place:
 

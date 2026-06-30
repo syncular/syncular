@@ -11,6 +11,7 @@ export * from './database';
 export * from './errors';
 export * from './local-recovery';
 export * from './local-visibility';
+export * from './mutation-status';
 export * from './mutations';
 export * from './network';
 export * from './runtime-contract';

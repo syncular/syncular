@@ -52,6 +52,11 @@ import {
   waitForSyncularLocalVisibility,
 } from './local-visibility';
 import {
+  getSyncularMutationStatus,
+  type SyncularMutationStatus,
+  type SyncularMutationStatusOptions,
+} from './mutation-status';
+import {
   createMutationsApi,
   type MutationsApi,
   type MutationsCommitFn,
@@ -145,6 +150,9 @@ export interface SyncularDatabase<DB> extends SyncularLiveQueries {
   runtimeTimeline(
     options?: SyncularRuntimeTimelineOptions
   ): Promise<SyncularRuntimeTimeline>;
+  mutationStatus(
+    options?: SyncularMutationStatusOptions
+  ): Promise<SyncularMutationStatus>;
   localRecoveryPlan(
     options?: SyncularLocalRecoveryPlanOptions
   ): Promise<SyncularLocalRecoveryPlan>;
@@ -349,6 +357,15 @@ export async function createSyncularDatabase<DB>(
           getStatus: () => getSyncularClientStatus(client),
         },
         timelineOptions
+      ),
+    mutationStatus: (mutationStatusOptions) =>
+      getSyncularMutationStatus(
+        {
+          diagnosticSnapshot: () => client.diagnosticSnapshot(),
+          getStatus: () => getSyncularClientStatus(client),
+          listConflicts: () => database.conflicts.list(),
+        },
+        mutationStatusOptions
       ),
     localRecoveryPlan: (recoveryOptions) =>
       getSyncularLocalRecoveryPlan(client, recoveryOptions),

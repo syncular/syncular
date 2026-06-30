@@ -68,4 +68,22 @@ const syncular = await createSyncularAppDatabase({
 ```
 
 UI apps should treat mutation completion as local durability. Remote acceptance
-is reported through sync/outbox/conflict events.
+is reported through sync/outbox/conflict events. For app chrome or tests that
+need one stable projection, call `mutationStatus()`:
+
+```ts
+const mutations = await syncular.mutationStatus();
+
+if (mutations.state === 'queued' || mutations.state === 'syncing') {
+  showPendingBadge(mutations.summary.queued + mutations.summary.sending);
+}
+
+if (mutations.state === 'conflicted') {
+  openConflictCenter(mutations.conflictItems);
+}
+```
+
+The state is one of `idle`, `queued`, `syncing`, `failed`, `conflicted`, or
+`action-required`, and `recommendedActions` gives UI-safe next steps such as
+showing pending work, waiting for an active sync, retrying sync, refreshing
+auth, or resolving conflicts.

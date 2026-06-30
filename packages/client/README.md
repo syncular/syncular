@@ -189,6 +189,9 @@ const unsubscribe = syncular.on('rowsChanged', (event) => {
 const status = syncular.getStatus();
 if (status.hasPendingMutations) showSavingIndicator();
 
+const mutations = await syncular.mutationStatus();
+if (mutations.state === 'conflicted') openConflictCenter();
+
 await syncular.resumeFromBackground();
 await syncular.close();
 ```

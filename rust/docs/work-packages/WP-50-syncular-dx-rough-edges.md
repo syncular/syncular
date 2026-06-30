@@ -922,6 +922,12 @@ online propagation, or reconnect behavior can change.
   failures, local support data, package/runtime versions, sync/trace ids,
   subscription cursors, and diagnostic redaction decisions into one redacted
   incident artifact.
+- The first mutation-status slice adds `getSyncularMutationStatus(...)` and
+  `SyncularDatabase.mutationStatus(...)`, giving apps one stable projection of
+  outbox queued/sending/failed/acked counts, unresolved/resolved conflicts,
+  conflict detail rows, last mutation-related error, and recommended actions
+  for pending UI, sync retry, auth refresh, diagnostics, or conflict
+  resolution.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1316,6 +1322,15 @@ online propagation, or reconnect behavior can change.
 - 2026-07-01: Updated package README and public observability docs to
   distinguish `exportSupportBundle()` from low-level
   `exportLocalSupportBundle()` and to call out runtime asset URL redaction.
+- 2026-07-01: Added `packages/client/src/mutation-status.ts`, exported
+  `getSyncularMutationStatus(...)` from `@syncular/client`, and added
+  `SyncularDatabase.mutationStatus(...)` as an app-facing status surface over
+  outbox queued/sending/failed/acked counts, conflict stats and conflict
+  records, mutation-related diagnostics, and UI-safe recommended actions.
+- 2026-07-01: Updated package README, JavaScript mutation docs, and
+  error-handling docs so app chrome and tests use `mutationStatus()` before
+  manually stitching together outbox stats, conflict stats, and diagnostic
+  events.
 
 ## Latest Gates
 
@@ -1462,6 +1477,15 @@ Most recent support-bundle rerun:
 - `bun test packages/client/src/support-bundle.test.ts packages/client/src/runtime-timeline.test.ts packages/client/src/public-api.test.ts`
 - `bun --cwd packages/client tsgo`
 - `bunx biome check packages/client/src/support-bundle.ts packages/client/src/support-bundle.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx`
+- `bun --cwd apps/docs types:check`
+- `bun run docs:stale-check`
+- `git diff --check`
+
+Most recent mutation-status rerun:
+
+- `bun test packages/client/src/mutation-status.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/mutation-status.ts packages/client/src/mutation-status.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/client/README.md apps/docs/content/docs/clients/javascript/mutations.mdx apps/docs/content/docs/features/error-handling.mdx`
 - `bun --cwd apps/docs types:check`
 - `bun run docs:stale-check`
 - `git diff --check`
@@ -1634,9 +1658,11 @@ Most recent support-bundle rerun:
   subscription cursors, and diagnostic redaction policy. Remaining work is to
   prove the composed bundle in a real browser failure artifact and decide
   whether server Console/Fleet should ingest the same artifact shape.
-- Outbox and conflict UX: make queued/retrying/rejected/conflicted mutations,
-  command correlation, retry state, and local visibility expectations stable
-  enough for generated app UI and tests.
+- Outbox and conflict UX: first app-facing status slice is done for
+  queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
+  conflict detail rows, last mutation-related errors, and recommended actions.
+  Remaining work is command-level correlation from generated mutation receipts
+  through outbox push, conflict records, retry state, and local visibility.
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.
@@ -1652,7 +1678,8 @@ Most recent support-bundle rerun:
 
 Pick the next implementation slice from the remaining risks. Strong candidates
 are browser-capable CI enforcement for the built-preview smoke, multi-tab
-lifecycle coverage, outbox/conflict UX, or real-browser support-bundle failure
-artifacts, because those remain broad DX holes after the first local recovery
-browser proof, upgrade runbook, built-preview asset smoke, runtime timeline
-helper, and composed support-bundle helper.
+lifecycle coverage, command-level mutation correlation, or real-browser
+support-bundle failure artifacts, because those remain broad DX holes after
+the first local recovery browser proof, upgrade runbook, built-preview asset
+smoke, runtime timeline helper, composed support-bundle helper, and mutation
+status helper.

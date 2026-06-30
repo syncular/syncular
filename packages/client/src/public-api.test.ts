@@ -7,6 +7,7 @@ import {
   getSyncularBrowserDeploymentPreflight,
   getSyncularBrowserHealth,
   getSyncularLocalRecoveryPlan,
+  getSyncularMutationStatus,
   getSyncularPackagedRuntimeArtifacts,
   getSyncularRuntimeTimeline,
   getSyncularSchemaReadiness,
@@ -80,6 +81,10 @@ describe('@syncular/client public API', () => {
   it('exports local recovery helpers', () => {
     expect(typeof getSyncularLocalRecoveryPlan).toBe('function');
     expect(typeof runSyncularLocalRecoveryAction).toBe('function');
+  });
+
+  it('exports the mutation status helper', () => {
+    expect(typeof getSyncularMutationStatus).toBe('function');
   });
 
   it('exports the runtime timeline helper', () => {
