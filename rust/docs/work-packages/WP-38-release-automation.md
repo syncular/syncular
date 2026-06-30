@@ -75,6 +75,21 @@ the npm packages without publishing public crates from every `main` merge.
   not run through npm `.bin` symlinks because main-module detection compared
   the symlink path against the real bundled file path. Fixed the entrypoint
   detection and moved the release train to `0.1.2`.
+- The `0.1.2` post-publish smoke proved npm package install, npm `.bin` CLI
+  execution, crates.io codegen install, app generation, and `--check`, then hit
+  the known Linux/Bun WASM worker loader failure while executing the generated
+  browser runtime. The release smoke now skips only that JS WASM runtime probe
+  on Linux by default, keeps the package/import/codegen install proof as the
+  release gate, runs the published package API smoke under Bun instead of Node
+  because the current client package imports Bun worker/runtime modules, and
+  can force the runtime probe with
+  `SYNCULAR_POST_PUBLISH_JS_RUNTIME_SMOKE=1`.
+- The same recovery pass found that the published `@syncular/testkit` root
+  import pulled server/Hono/OpenAPI fixtures into a fresh app through
+  re-exports. The `0.1.3` train keeps root testkit imports lightweight and moves
+  the heavier harnesses to `@syncular/testkit/client-bridge` and
+  `@syncular/testkit/server`, with the server/client packages as optional peer
+  dependencies instead of always-installed runtime dependencies.
 
 ## Gates
 
@@ -94,6 +109,19 @@ the npm packages without publishing public crates from every `main` merge.
 - `bun --cwd packages/syncular build:cli` plus a temporary symlink invocation
   verified `syncular generate --help` runs through npm-style bin symlinks.
 - `bun scripts/post-publish-install-smokes.ts --help`
+- `SYNCULAR_POST_PUBLISH_JS_RUNTIME_SMOKE=0 bun
+  scripts/post-publish-install-smokes.ts --version 0.1.2 --skip-rust
+  --work-dir .context/debug-post-publish-smoke-012 --keep` confirmed the
+  runtime-smoke skip path, then exposed the published `0.1.2` testkit root
+  import issue that the `0.1.3` train fixes.
+- `bun --cwd packages/testkit build`
+- `bun --cwd packages/testkit tsgo`
+- `bun test packages/testkit/src/audit.test.ts packages/testkit/src/faults.test.ts
+  packages/testkit/src/hono-node-server.test.ts
+  packages/testkit/src/sync-builders.test.ts`
+- `bun pm pack --destination ../../.context/npm-pack-testkit` from
+  `packages/testkit`; inspected the tarball manifest and confirmed root
+  `@syncular/testkit` depends only on `@syncular/core`.
 - `npm pack --dry-run --json` in `packages/syncular` verified `dist/cli.js`
   is included and stale deleted-alias/test files are excluded.
 - `bun install --frozen-lockfile`

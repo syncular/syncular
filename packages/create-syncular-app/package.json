@@ -1,6 +1,6 @@
 {
   "name": "create-syncular-app",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Scaffold a local-first Syncular app (`bunx create-syncular-app my-app`)",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",
