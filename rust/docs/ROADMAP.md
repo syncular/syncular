@@ -167,7 +167,11 @@ read-only review:
     `exportLocalSupportBundle()`, classifying local health repairs, lifecycle
     action-required state, failed outbox/blob retries, storage maintenance,
     guarded reset requests, and redacted support-bundle export into typed
-    actions with confirmation required for destructive operations.
+    actions with confirmation required for destructive operations. The
+    Hono-backed browser/WASM local-health test now exercises that plan/action
+    API against the real Worker runtime for corrupted subscription state,
+    orphaned verified roots, confirmation failure, and successful
+    rebootstrap/orphaned-state repairs.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

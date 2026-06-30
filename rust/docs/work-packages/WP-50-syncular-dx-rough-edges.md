@@ -806,6 +806,10 @@ online propagation, or reconnect behavior can change.
   lifecycle action-required state, failed outbox/blob upload state, storage
   maintenance, reset requests, and redacted support-bundle export into typed
   actions, with confirmation required before destructive repairs or resets.
+- The browser/Hono/WASM local-health test now exercises that plan/action API
+  against the real Worker runtime for corrupted subscription state and
+  orphaned verified roots, including the confirmation guardrail and successful
+  `force-rebootstrap` / `clear-orphaned-state` repairs.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1165,6 +1169,9 @@ online propagation, or reconnect behavior can change.
 - 2026-06-30: Updated the package README and public error-handling docs so app
   code reaches for `localRecoveryPlan()` before destructive local repair or
   reset operations.
+- 2026-06-30: Extended the Hono-backed browser/WASM local-health test so it
+  repairs corrupted subscription state and orphaned verified roots through the
+  new local recovery plan/action API instead of direct low-level repair calls.
 
 ## Latest Gates
 
@@ -1266,8 +1273,10 @@ Most recent optional-import-matrix rerun:
 Most recent local-recovery rerun:
 
 - `bun test packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts`
+- `bun test packages/client/src/__tests__/sync-hono.wasm.test.ts -t "reports and safely repairs browser local health findings"`
 - `bun --cwd packages/client tsgo`
 - `bunx biome check packages/client/src/local-recovery.ts packages/client/src/local-recovery.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts apps/docs/content/docs/features/error-handling.mdx packages/client/README.md`
+- `bunx biome check packages/client/src/__tests__/sync-hono.wasm.test.ts packages/client/src/local-recovery.ts packages/client/src/local-recovery.test.ts`
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -1334,7 +1343,8 @@ Most recent local-recovery rerun:
     failed outbox, failed blob upload, compaction, cache clear, repair, and
     reset primitives. Destructive actions require confirmation text and reset
     actions are opt-in so normal UI recovery does not accidentally clear local
-    data.
+    data. A focused browser/Hono/WASM test now proves the plan/action API over
+    the real Worker runtime for local health repairs.
 
 ## Resolved Decisions
 
@@ -1409,9 +1419,11 @@ Most recent local-recovery rerun:
   browser databases.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
-  and guarded sync-state reset. Remaining work is to prove these flows against
-  real browser/WASM databases, add product-specific sign-out/wipe guidance, and
-  connect unrecoverable bootstrap/revoked-scope UI to the same action model.
+  and guarded sync-state reset, with a focused Hono/WASM proof for corrupted
+  subscription state and orphaned verified roots. Remaining work is to add
+  product-specific sign-out/wipe guidance, cover unrecoverable bootstrap and
+  revoked-scope UI through the same action model, and decide whether multi-tab
+  recovery needs additional lock/coordination actions.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
@@ -1433,7 +1445,6 @@ Most recent local-recovery rerun:
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. Strong candidates
-are a real browser built-preview preflight smoke, a browser/WASM local recovery
-flow test, or multi-tab lifecycle coverage, because those move the plan/action
-contracts from unit-level confidence into browser behavior users will actually
-hit.
+are a real browser built-preview preflight smoke, multi-tab lifecycle coverage,
+or an operator upgrade/rollback runbook, because those remain broad DX holes
+after the first local recovery browser proof.

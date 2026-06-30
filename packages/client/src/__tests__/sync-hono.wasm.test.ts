@@ -15,6 +15,10 @@ import {
   taskSubscription,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
 import { createSyncularDialect } from '../database';
+import {
+  getSyncularLocalRecoveryPlan,
+  runSyncularLocalRecoveryAction,
+} from '../local-recovery';
 import type {
   SyncularAppSchema,
   SyncularDiagnosticEvent,
@@ -826,23 +830,51 @@ describe('Syncular worker sync protocol against Hono routes', () => {
       ])
     );
 
-    await expect(
-      client.repairLocalHealth({
-        action: 'forceRebootstrap',
-        subscriptionIds: [subscription.id],
-      })
-    ).resolves.toMatchObject({
-      action: 'forceRebootstrap',
-      deletedSubscriptionStates: 1,
-      deletedVerifiedRoots: 1,
-      forcedRebootstrapSubscriptions: 1,
+    const plan = await getSyncularLocalRecoveryPlan(client);
+    const forceRebootstrap = plan.actions.find(
+      (action) => action.kind === 'force-rebootstrap'
+    );
+    const clearOrphanedState = plan.actions.find(
+      (action) => action.kind === 'clear-orphaned-state'
+    );
+    expect(plan.status).toBe('action-required');
+    expect(forceRebootstrap).toMatchObject({
+      subscriptionIds: [subscription.id],
+      requiresConfirmation: true,
+    });
+    expect(clearOrphanedState).toMatchObject({
+      subscriptionIds: ['orphaned-health-subscription'],
+      requiresConfirmation: true,
     });
     await expect(
-      client.repairLocalHealth({ action: 'clearOrphanedState' })
+      runSyncularLocalRecoveryAction(client, forceRebootstrap!)
+    ).rejects.toMatchObject({
+      code: 'syncular.local_recovery_confirmation_required',
+    });
+    await expect(
+      runSyncularLocalRecoveryAction(client, forceRebootstrap!, {
+        confirmationText: forceRebootstrap!.confirmationText,
+      })
     ).resolves.toMatchObject({
-      action: 'clearOrphanedState',
-      deletedSubscriptionStates: 1,
-      deletedVerifiedRoots: 1,
+      action: 'force-rebootstrap',
+      report: {
+        action: 'forceRebootstrap',
+        deletedSubscriptionStates: 1,
+        deletedVerifiedRoots: 1,
+        forcedRebootstrapSubscriptions: 1,
+      },
+    });
+    await expect(
+      runSyncularLocalRecoveryAction(client, clearOrphanedState!, {
+        confirmationText: clearOrphanedState!.confirmationText,
+      })
+    ).resolves.toMatchObject({
+      action: 'clear-orphaned-state',
+      report: {
+        action: 'clearOrphanedState',
+        deletedSubscriptionStates: 1,
+        deletedVerifiedRoots: 1,
+      },
     });
 
     health = await client.localHealthCheck();
