@@ -192,17 +192,28 @@ if (status.hasPendingMutations) showSavingIndicator();
 const mutations = await syncular.mutationStatus();
 if (mutations.state === 'conflicted') openConflictCenter();
 
+const taskId = crypto.randomUUID();
 const mutation = await syncular.mutations.$commit((tx) =>
-  tx.tasks.insert({ id: crypto.randomUUID(), title: 'Ship it' })
+  tx.tasks.insert({ id: taskId, title: 'Ship it' })
 );
 const tracked = await syncular.mutationStatus({
   trackCommits: [mutation.commit],
 });
 showMutationState(tracked.trackedCommits[0]?.state);
 
+let localVisibility;
+await syncular.awaitLocalVisibility(
+  (db) => db.selectFrom('tasks').selectAll().where('id', '=', taskId),
+  {
+    tables: ['tasks'],
+    onEvidence: (evidence) => {
+      localVisibility = evidence;
+    },
+  }
+);
 const timeline = await syncular.commandTimeline({
   command: mutation.commit,
-  localVisibility: { state: 'visible' },
+  localVisibility,
 });
 console.debug(timeline.summary.missingEvidence);
 console.debug(timeline.trackedCommit.outbox?.outboxId);

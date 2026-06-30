@@ -3,6 +3,7 @@ import type { Kysely } from 'kysely';
 import type { SyncularClientError } from './errors';
 import {
   type SyncularLocalVisibilityClient,
+  type SyncularLocalVisibilityEvidence,
   waitForSyncularLocalVisibility,
 } from './local-visibility';
 import type {
@@ -28,17 +29,31 @@ describe('waitForSyncularLocalVisibility', () => {
 
   it('waits until a matching rowsChanged event makes the query visible', async () => {
     const client = new FakeLocalVisibilityClient<TestDb>();
+    const evidence: SyncularLocalVisibilityEvidence[] = [];
     let visibleRows: Array<{ id: string; title: string }> = [];
 
     const result = waitForSyncularLocalVisibility(client, () => visibleRows, {
       tables: ['tasks'],
       timeoutMs: false,
+      onEvidence: (event) => evidence.push(event),
     });
 
     visibleRows = [{ id: 'task-1', title: 'Synced' }];
     client.emitRowsChanged(['tasks']);
 
     await expect(result).resolves.toEqual([{ id: 'task-1', title: 'Synced' }]);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({
+      state: 'visible',
+      message: 'Syncular local visibility was observed.',
+      details: {
+        trigger: 'rowsChanged',
+        tables: ['tasks'],
+        changedTables: ['tasks'],
+        source: 'remotePull',
+      },
+    });
+    expect(typeof evidence[0]?.at).toBe('number');
     expect(client.listenerCount('rowsChanged')).toBe(0);
   });
 
@@ -80,16 +95,56 @@ describe('waitForSyncularLocalVisibility', () => {
 
   it('rejects with a typed timeout when visibility does not arrive', async () => {
     const client = new FakeLocalVisibilityClient<TestDb>();
+    const evidence: SyncularLocalVisibilityEvidence[] = [];
 
     await expect(
       waitForSyncularLocalVisibility(client, () => [], {
         tables: ['tasks'],
         timeoutMs: 1,
+        onEvidence: (event) => evidence.push(event),
       })
     ).rejects.toMatchObject({
       code: 'sync.local_visibility_timeout',
       details: { timeoutMs: 1, tables: ['tasks'] },
     } satisfies Partial<SyncularClientError>);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({
+      state: 'timed-out',
+      details: {
+        trigger: 'timeout',
+        tables: ['tasks'],
+        timeoutMs: 1,
+      },
+    });
+  });
+
+  it('reports failed local query evidence', async () => {
+    const client = new FakeLocalVisibilityClient<TestDb>();
+    const evidence: SyncularLocalVisibilityEvidence[] = [];
+    const error = new Error('broken local query');
+
+    await expect(
+      waitForSyncularLocalVisibility(
+        client,
+        () => {
+          throw error;
+        },
+        {
+          timeoutMs: false,
+          onEvidence: (event) => evidence.push(event),
+        }
+      )
+    ).rejects.toBe(error);
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toMatchObject({
+      state: 'failed',
+      message: 'Syncular local visibility query failed.',
+      details: {
+        trigger: 'queryError',
+        attemptedTrigger: 'initial',
+        errorName: 'Error',
+      },
+    });
   });
 
   it('unsubscribes when aborted', async () => {

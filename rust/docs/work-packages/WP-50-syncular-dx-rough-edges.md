@@ -1012,6 +1012,12 @@ online propagation, or reconnect behavior can change.
   satisfy the server commit sequence link through `ackedCommitSeq`; any tracked
   redacted outbox summary also adds synthetic local-apply evidence because it
   proves the command was durably accepted locally.
+- `waitForSyncularLocalVisibility(...)` now emits redacted terminal evidence
+  through `onEvidence`, including visible, timed-out, failed, trigger, table,
+  changed-table, source, and local-query error context. Apps can pass the
+  latest evidence value directly to `commandTimeline({ localVisibility })` so
+  command artifacts record the concrete local read-model visibility point
+  instead of a hand-written placeholder.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1463,6 +1469,11 @@ online propagation, or reconnect behavior can change.
   evidence. New realtime diagnostics now put `cursor` on the event, and the
   runtime timeline also recovers legacy/detail-only cursor values from safe
   diagnostic details.
+- 2026-07-01: Added local visibility terminal evidence through
+  `waitForSyncularLocalVisibility(..., { onEvidence })` and documented passing
+  that evidence into `commandTimeline({ localVisibility })`, so command
+  timelines can include the observed local read-model visibility point with
+  trigger/table/source context.
 
 ## Latest Gates
 
@@ -1584,6 +1595,15 @@ Most recent realtime cursor evidence rerun:
 - `bun --cwd packages/client tsgo`
 - `bunx biome check packages/client/src/runtime-timeline.ts packages/client/src/runtime-timeline.test.ts packages/client/src/command-timeline.test.ts packages/client/src/worker-realtime.ts packages/client/src/worker-realtime.test.ts rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
+- `git diff --check`
+
+Most recent local-visibility evidence rerun:
+
+- `bun test packages/client/src/local-visibility.test.ts packages/client/src/command-timeline.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/local-visibility.ts packages/client/src/local-visibility.test.ts packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bun run docs:stale-check`
+- `bun --cwd apps/docs types:check`
 - `git diff --check`
 
 Most recent starter browser-preview rerun:
@@ -1906,9 +1926,9 @@ Most recent mutation-status rerun:
   durable outbox row, and acked summaries include `ackedCommitSeq` so command
   timelines can prove server commit sequence from redacted local evidence.
   First command-timeline artifacts are done for receipt state, redacted runtime
-  events, optional local-visibility evidence, and explicit missing-evidence
-  markers. Remaining work is to emit the missing low-level links directly from
-  the runtime: push request id and local visibility point.
+  events, local-visibility evidence captured from `awaitLocalVisibility(...)`,
+  and explicit missing-evidence markers. Remaining work is to emit the missing
+  push request id link directly from the runtime.
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.

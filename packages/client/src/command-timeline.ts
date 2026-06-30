@@ -1,4 +1,5 @@
 import type { SyncularClientStatus } from './client';
+import type { SyncularLocalVisibilityEvidence } from './local-visibility';
 import {
   getSyncularMutationStatus,
   type SyncularMutationStatus,
@@ -54,12 +55,8 @@ export interface SyncularCommandTimelineClient
   getStatus?(): SyncularClientStatus;
 }
 
-export interface SyncularCommandTimelineVisibilityEvidence {
-  state: Exclude<SyncularCommandTimelineVisibilityState, 'not-requested'>;
-  at?: number;
-  message?: string;
-  details?: Record<string, unknown>;
-}
+export type SyncularCommandTimelineVisibilityEvidence =
+  SyncularLocalVisibilityEvidence;
 
 export interface SyncularCommandTimelineOptions {
   command: SyncularMutationTrackedCommitReference;

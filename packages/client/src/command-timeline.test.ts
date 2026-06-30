@@ -4,6 +4,7 @@ import {
   getSyncularCommandTimeline,
   type SyncularCommandTimelineClient,
 } from './command-timeline';
+import type { SyncularLocalVisibilityEvidence } from './local-visibility';
 import type {
   SyncularConflictSummary,
   SyncularDiagnosticEvent,
@@ -165,6 +166,52 @@ describe('command timeline', () => {
       'server-commit-sequence'
     );
     expect(timeline.summary.missingEvidence).not.toContain('local-apply');
+  });
+
+  it('accepts local visibility evidence emitted by the wait helper', async () => {
+    const visibility: SyncularLocalVisibilityEvidence = {
+      state: 'visible',
+      at: 250,
+      message: 'Syncular local visibility was observed.',
+      details: {
+        trigger: 'rowsChanged',
+        tables: ['tasks'],
+        changedTables: ['tasks'],
+        source: 'remotePull',
+      },
+    };
+    const client = commandTimelineClient({
+      localSupportBundle: localSupportBundle({
+        outboxCommits: [
+          {
+            outboxId: 'outbox-visible',
+            clientCommitId: 'commit-visible',
+            schemaVersion: 3,
+            status: 'pending',
+          },
+        ],
+      }),
+    });
+
+    const timeline = await getSyncularCommandTimeline(client, {
+      command: 'commit-visible',
+      localVisibility: visibility,
+      includeRuntimeContext: false,
+      now: () => 500,
+    });
+
+    expect(timeline.events.at(-1)).toMatchObject({
+      at: 250,
+      phase: 'visibility',
+      relation: 'synthetic',
+      level: 'info',
+      code: 'local_visibility.visible',
+      details: {
+        trigger: 'rowsChanged',
+        tables: ['tasks'],
+      },
+    });
+    expect(timeline.summary.missingEvidence).not.toContain('local-visibility');
   });
 
   it('uses runtime context and names missing evidence when exact links are unavailable', async () => {

@@ -219,7 +219,10 @@ read-only review:
     timelines promote detail-only realtime cursors from older diagnostic
     snapshots into cursor evidence. Tracked outbox records also produce
     synthetic local-apply evidence because they prove the command was durably
-    accepted locally. The
+    accepted locally. Local visibility waits now emit redacted terminal
+    evidence through `onEvidence`, so apps can pass the observed visibility
+    point directly into command timelines instead of hand-writing a placeholder.
+    The
     Hono-backed browser/WASM local-health test now exercises that plan/action
     API against the real Worker runtime for corrupted subscription state,
     orphaned verified roots, confirmation failure, and successful

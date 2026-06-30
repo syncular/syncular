@@ -110,9 +110,12 @@ configured runtime, storage/schema/bootstrap, sync/realtime wakeup, local
 apply, outbox/conflict/blob state, and the last actionable error. For a single
 mutation receipt, `commandTimeline()` composes tracked outbox state, runtime
 events, optional local-visibility evidence, and redacted local outbox row plus
-acked server commit sequence evidence from local support data. A tracked
-outbox record also appears as synthetic local-apply evidence because the
-command was durably accepted locally. For deeper local database repair or
+acked server commit sequence evidence from local support data. Capture the
+latest `awaitLocalVisibility(..., { onEvidence })` value and pass it as
+`localVisibility` so the timeline records the concrete local query visibility
+point instead of a hand-written placeholder. A tracked outbox record also
+appears as synthetic local-apply evidence because the command was durably
+accepted locally. For deeper local database repair or
 sign-out/reset flows, start from
 `localRecoveryPlan()`. Use `includeSignOutAction: true` for confirmed sign-out
 cleanup that waits for an empty outbox before clearing synced rows and cached
