@@ -708,6 +708,12 @@ online propagation, or reconnect behavior can change.
 - A source feedback coverage audit now maps every worthy pasted integration
   point to shipped slices or explicit remaining WP-50 risks, so future sessions
   can continue from contracts and tests rather than re-triaging the raw notes.
+- The first browser deployment preflight slice adds
+  `getSyncularBrowserDeploymentPreflight(...)` to `@syncular/client`, checking
+  Worker/WebAssembly support, secure-context/cross-origin-isolation flags,
+  OPFS/IndexedDB durable storage availability, persistent-storage status,
+  quota budgets, and served WASM runtime asset status/content types before a
+  database is opened.
 - A first adapter-boundary slice added `bun run imports:check`, a static root
   import graph smoke that proves `@syncular/client` and `@syncular/server`
   roots do not reach optional subpath files or optional peer packages.
@@ -892,6 +898,15 @@ online propagation, or reconnect behavior can change.
   browser persistence, health, setup errors, bootstrap/sync semantics, auth,
   realtime, rate limits, blobs, schema/deploy readiness, E2E, log markers,
   audience labels, privacy, and local recovery controls.
+- 2026-06-30: Added `packages/client/src/browser-deployment-preflight.ts` and
+  exported `getSyncularBrowserDeploymentPreflight(...)` from `@syncular/client`
+  as a non-mutating browser deploy check for runtime assets, MIME/content
+  types, Worker/WebAssembly support, secure context, optional
+  cross-origin-isolation, OPFS/IndexedDB persistence, storage persistence, and
+  quota.
+- 2026-06-30: Added focused browser-deployment-preflight tests for ready
+  deploys, explicit OPFS blockers, default OPFS fallback warnings, bad or
+  missing runtime assets, and browser capability blockers.
 - 2026-06-30: Generated TypeScript app databases now expose
   `schemaReadiness()` with the generated schema version injected and
   table-scoped local-visibility helpers such as `awaitTaskVisibility(...)` with
@@ -1107,6 +1122,16 @@ Most recent adapter-boundary rerun:
 
 - `bun run imports:check`
 
+Most recent browser-deployment-preflight rerun:
+
+- `bun test packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bun run imports:check`
+- `bunx biome check packages/client/src/browser-deployment-preflight.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/index.ts packages/client/src/public-api.test.ts`
+- `bun --cwd apps/docs types:check`
+- `bun run docs:stale-check`
+- `git diff --check`
+
 ## Sequencing
 
 1. Golden path starter and smoke: first retained slice is done for the
@@ -1116,6 +1141,8 @@ Most recent adapter-boundary rerun:
    now exposes durability/bootstrap/realtime/subscription status plus
    `requiresAction` and taxonomy-backed recommended actions. Future slices
    should add missing setup/runtime error codes as concrete failures appear.
+   A browser deployment preflight helper now covers setup checks that should
+   run before opening the database or starting the Worker.
 3. Local visibility primitive: first retained slice is done with a
    query/predicate helper and managed database method. Generated TypeScript app
    databases now also expose table-scoped wrappers such as
@@ -1216,10 +1243,11 @@ Most recent adapter-boundary rerun:
 
 ## Remaining Implementation Risks
 
-- Browser deployment preflight: prove Worker/WASM assets, MIME types,
-  cross-origin isolation or OPFS requirements, durable storage availability,
-  fallback behavior, and quota/eviction messaging before a starter works in dev
-  but fails after deploy.
+- Browser deployment preflight: first helper slice is done for Worker/WASM
+  assets, MIME/content types, cross-origin isolation option, OPFS/IndexedDB
+  requirements, durable storage availability, fallback behavior, persistence
+  grant status, and quota budgets. Remaining work is to add a starter or
+  release-smoke command that runs it against an actual built preview deploy.
 - Adapter import side-effect isolation: the first root import graph smoke now
   proves root client/server imports do not statically reach optional Bun,
   Cloudflare, S3, Sentry, Neon, Tauri, React Native, or CRDT/Yjs subpaths.

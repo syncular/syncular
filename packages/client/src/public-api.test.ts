@@ -4,6 +4,7 @@ import {
   classifySyncularDiagnosticDetailKey,
   createSyncularCommandHistory,
   createSyncularDatabase,
+  getSyncularBrowserDeploymentPreflight,
   getSyncularBrowserHealth,
   getSyncularPackagedRuntimeArtifacts,
   getSyncularSchemaReadiness,
@@ -54,6 +55,10 @@ describe('@syncular/client public API', () => {
 
   it('exports the browser health helper', () => {
     expect(typeof getSyncularBrowserHealth).toBe('function');
+  });
+
+  it('exports the browser deployment preflight helper', () => {
+    expect(typeof getSyncularBrowserDeploymentPreflight).toBe('function');
   });
 
   it('exports the local visibility helper', () => {

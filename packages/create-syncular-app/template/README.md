@@ -29,6 +29,14 @@ durable storage, active subscriptions, realtime state, generated schema
 compatibility, the latest structured Syncular error, and any stable
 recommended action such as refreshing auth or checking permissions.
 
+For preview or production deploys, run
+`getSyncularBrowserDeploymentPreflight(...)` from the browser before opening the
+database. Run it in the deployed page or a real browser smoke so storage APIs
+reflect the target browser. It checks Worker/WebAssembly support, HTTPS or
+localhost secure context, OPFS/IndexedDB persistence, quota,
+persistent-storage status, and served WASM asset status/content types without
+starting the Worker.
+
 > **Why Bun?** The dev script and sync server run on Bun (`Bun.serve`,
 > `bun:sqlite` via `@syncular/server/bun-sqlite`) because Bun runs
 > TypeScript directly and ships SQLite with zero native build steps — one

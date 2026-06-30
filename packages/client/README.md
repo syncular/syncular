@@ -585,6 +585,30 @@ columns, CRDT/Yjs, or field encryption add `blobs`, `crdt-yjs`, and/or `e2ee`.
 `createSyncularAppDatabase()` passes those requirements into the Worker open
 path automatically.
 
+Run a browser deployment preflight before opening the database when checking a
+production build, preview deploy, or packaged asset server. Run it inside the
+deployed page or a real browser smoke so storage APIs reflect the target
+browser. It does not start a Worker or mutate local SQLite; it checks
+Worker/WebAssembly support, secure context, OPFS/IndexedDB persistence, quota,
+persistent-storage status, and the served WASM runtime asset status/content
+types:
+
+```ts
+import { getSyncularBrowserDeploymentPreflight } from '@syncular/client';
+import { syncularGeneratedRequiredRuntimeFeatures } from './generated/syncular.generated';
+
+const preflight = await getSyncularBrowserDeploymentPreflight({
+  requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
+  minimumQuotaBytes: 50 * 1024 * 1024,
+});
+
+if (preflight.status === 'not-ready') {
+  throw new Error(
+    preflight.issues.map((issue) => issue.code).join(', ')
+  );
+}
+```
+
 ## Storage
 
 Omitting `config.storage` defaults to `opfsSahPool`. If that default OPFS open

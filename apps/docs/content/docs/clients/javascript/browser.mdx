@@ -67,6 +67,35 @@ Generated clients select packaged browser runtime artifacts from app schema
 metadata, so normal browser apps do not import worker or WASM artifact helpers
 manually.
 
+## Deployment preflight
+
+Before opening a production or preview build, check that the deployed page can
+serve and run Syncular's browser runtime. Run this from the page itself or a
+real browser smoke so storage APIs reflect the target browser. The preflight
+does not start the Worker or open SQLite; it verifies Worker/WebAssembly
+support, HTTPS/localhost secure context for durable storage, OPFS/IndexedDB
+availability, persistent storage status, quota, and WASM asset status/content
+types.
+
+```ts
+import { getSyncularBrowserDeploymentPreflight } from '@syncular/client';
+import { syncularGeneratedRequiredRuntimeFeatures } from './generated/syncular.generated';
+
+const preflight = await getSyncularBrowserDeploymentPreflight({
+  requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
+  minimumQuotaBytes: 50 * 1024 * 1024,
+});
+
+if (preflight.status === 'not-ready') {
+  console.error(preflight.issues);
+}
+```
+
+Common issue codes include `browser.runtime_asset_bad_status`,
+`browser.runtime_asset_bad_content_type`, `browser.opfs_unavailable`,
+`browser.indexeddb_unavailable`, `browser.insecure_context`, and
+`browser.storage_persistence_not_granted`.
+
 ## React apps
 
 React hooks live in [React](/clients/javascript/react). They can wrap this browser

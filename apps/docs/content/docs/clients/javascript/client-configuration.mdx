@@ -56,6 +56,11 @@ resolving, and `close()` stops sync and shuts the worker down.
   embedded webviews.
 - `memory` — no persistence; tests and ephemeral sessions.
 
+Use `getSyncularBrowserDeploymentPreflight(...)` inside the deployed page or a
+real browser smoke when you need to prove the current page has durable storage,
+OPFS/IndexedDB support, persistent-storage status, enough quota, and reachable
+WASM runtime assets before opening a database.
+
 ## Pull tuning (`config.pull`)
 
 Defaults come from the Rust runtime (`rust/crates/runtime/src/core/limits.rs`):
