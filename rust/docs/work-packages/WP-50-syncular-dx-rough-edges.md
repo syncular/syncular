@@ -543,6 +543,14 @@ online propagation, or reconnect behavior can change.
 - The fresh JavaScript app smoke now runs `syncular schema check --json` after
   `syncular generate --check`, so newly generated apps prove the operator
   readiness loop as part of the golden path.
+- 2026-06-30 eighth implementation slice added
+  `getSyncularServerSchemaReadiness(...)` to `@syncular/server`, giving deploy
+  and server startup code a non-mutating readiness helper over live database
+  introspection, expected Syncular core tables, expected app tables, and server
+  required/latest schema versions.
+- Public deployment docs now steer production schema setup toward release or
+  operator steps before traffic, with `syncular schema check --json` and
+  `getSyncularServerSchemaReadiness(...)` as readiness checks.
 
 ## Implementation Log
 
@@ -612,6 +620,14 @@ online propagation, or reconnect behavior can change.
 - 2026-06-30: Updated the starter README to include
   `database.schemaReadiness(...)` and `syncular schema check --json` in the
   app-facing generate/check loop.
+- 2026-06-30: Added `packages/server/src/schema-readiness.ts` and exported
+  `getSyncularServerSchemaReadiness(...)` from `@syncular/server`.
+- 2026-06-30: Added focused server readiness tests covering missing Syncular
+  core tables, missing app tables, ready live database state after
+  `ensureSyncSchema(...)`, stale server schema versions, and newer server
+  requirements.
+- 2026-06-30: Updated deployment/server docs so production schema setup is a
+  deploy/operator step before traffic rather than normal request startup.
 
 ## Latest Gates
 
@@ -645,6 +661,9 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bun --cwd packages/syncular tsgo`
 - `bun packages/syncular/src/cli.ts schema check --manifest-dir packages/create-syncular-app/template --json --pretty`
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-schema-check`
+- `bunx biome check packages/server/src/schema-readiness.ts packages/server/src/schema-readiness.test.ts packages/server/src/index.ts`
+- `bun test packages/server/src/schema-readiness.test.ts`
+- `bun --cwd packages/server tsgo`
 - `git diff --check`
 
 ## Sequencing
@@ -666,9 +685,9 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    a structured helper, managed database method, starter line, and fresh app
    smoke coverage. The first deploy/operator slice is also done with
    `syncular schema check --json` over config, migrations, and generated
-   client/server output. Next schema slice should connect this to live
-   server/database readiness: installed Syncular tables, migration state, and
-   server required/latest schema versions.
+   client/server output. The first live server/database slice is done with
+   `getSyncularServerSchemaReadiness(...)` over introspected installed tables
+   and server required/latest schema versions.
 6. Add blob partition/scope guidance and typed blob failure details once the
    canonical app flow has a real blob/package case.
 7. Add deterministic E2E/testkit recipes and stable log markers around the
@@ -710,8 +729,6 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 
 ## Next Action
 
-Pick the next implementation slice: extend schema readiness beyond file
-inspection into live server/database readiness, with JSON output for installed
-Syncular tables, migration state, server required/latest schema versions, and
-operator-safe diagnostics that can be used before deploying Workers or Hono
-servers.
+Pick the next implementation slice: add blob partition/scope guidance and
+typed blob failure details around the canonical app flow, especially for
+global/base package data pinned into campaign/project scopes.

@@ -28,6 +28,7 @@ export * from './pull';
 export * from './push';
 export * from './realtime';
 export * from './schema';
+export * from './schema-readiness';
 export * from './snapshot-artifacts';
 export * from './snapshot-chunks';
 export type { SnapshotChunkStorage } from './snapshot-chunks/types';

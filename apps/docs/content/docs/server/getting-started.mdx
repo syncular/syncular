@@ -84,7 +84,8 @@ await ensureSyncSchema(db, dialect);
 
 This creates the commit log and bookkeeping tables (`sync_commits`,
 `sync_changes`, `sync_client_cursors`, `sync_snapshot_chunks`, …). It is
-idempotent — run it on every boot.
+idempotent. For this local tutorial it is fine to call before starting the
+server; in production, run it from a deploy/operator step before traffic.
 
 ### Create your app table
 

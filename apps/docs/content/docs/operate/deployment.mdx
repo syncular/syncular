@@ -162,8 +162,9 @@ volumes:
   pgdata:
 ```
 
-Run `ensureSyncSchema(db, dialect)` plus your app migrations at startup (or as
-a release step) so a fresh database is usable on first boot.
+Run `ensureSyncSchema(db, dialect)` plus your app migrations as a release or
+operator step before serving traffic. Keep normal request startup focused on
+opening already-prepared infrastructure, especially on edge runtimes.
 
 ## Cloudflare Workers
 
@@ -368,7 +369,9 @@ for their next HTTP pull instead of waking immediately.
 - **Database**
   - [ ] PostgreSQL (or single-node SQLite with WAL mode)
   - [ ] Connection pooling (PgBouncer / Hyperdrive) sized for your instance count
-  - [ ] `ensureSyncSchema` + app migrations run on deploy
+  - [ ] `ensureSyncSchema` + app migrations run on deploy, before traffic
+  - [ ] `syncular schema check --json` or `getSyncularServerSchemaReadiness(...)`
+        runs in CI/deploy readiness
   - [ ] Backups configured and restore tested
 - **Authentication**
   - [ ] `authenticate` validates real tokens/sessions; secrets from env, not source
