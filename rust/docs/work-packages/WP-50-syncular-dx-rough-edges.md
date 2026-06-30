@@ -467,6 +467,10 @@ online propagation, or reconnect behavior can change.
   a configured `getHeaders` provider cannot overwrite caller-provided
   replacement headers, and uses `resumeFromBackground()` when headers remain
   provider-owned so dynamic auth refresh and realtime restart stay together.
+- 2026-06-30 fourth implementation slice extended the fresh generated
+  JavaScript app smoke from user-only scope to user+campaign scope and proved a
+  generated app can replace auth context/subscriptions, reset bootstrap, then
+  use local visibility for a campaign-scoped row without a manual `sync()` call.
 
 ## Implementation Log
 
@@ -498,6 +502,10 @@ online propagation, or reconnect behavior can change.
 - 2026-06-30: Added focused auth-context tests covering explicit replacement
   headers, provider-owned headers through resume recovery, affected
   subscription bootstrap reset, sync skipping, and optional local visibility.
+- 2026-06-30: Updated `scripts/fresh-app-smokes.ts` so the generated
+  JavaScript app includes a campaign/project scope, switches from
+  `campaign-a` to `campaign-b` through `database.replaceAuthContext(...)`, and
+  waits for the new campaign row with `database.awaitLocalVisibility(...)`.
 
 ## Latest Gates
 
@@ -519,6 +527,7 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bun test packages/syncular/src/cli.test.ts`
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-local-visibility`
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-auth-context`
+- `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-campaign-scope`
 - `git diff --check`
 
 ## Sequencing
@@ -532,9 +541,10 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    query/predicate helper and managed database method. Future generated helpers
    can wrap it for command-specific or subscription-specific waits.
 4. Auth context/scope-change contract: first retained slice is done with a
-   replacement helper and managed database method. Next prove campaign
-   join/change flows through realtime and local visibility in an executable app
-   or testkit recipe.
+   replacement helper and managed database method, and the fresh generated app
+   smoke now proves a campaign-scope switch plus local visibility. Next prove
+   the same flow against real remote auth/realtime behavior in a Hono/testkit
+   recipe.
 5. Add schema readiness and drift diagnostics before encouraging production
    deployment patterns.
 6. Add blob partition/scope guidance and typed blob failure details once the
@@ -569,7 +579,8 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 
 ## Next Action
 
-Pick the next implementation slice: prove a campaign/scope-change flow in an
-executable starter or testkit recipe, using `replaceAuthContext(...)`,
-realtime recovery, and `awaitLocalVisibility(...)` instead of manual `sync()`
-calls.
+Pick the next implementation slice: prove campaign/scope-change behavior
+against a real remote server/realtime path, including revoked or denied
+subscription diagnostics, while keeping the starter on
+`replaceAuthContext(...)` and `awaitLocalVisibility(...)` instead of manual
+`sync()` calls.

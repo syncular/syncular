@@ -224,6 +224,7 @@ async function writeTaskMigration(appDir: string): Promise<void> {
   title text not null,
   completed integer not null default 0,
   user_id text not null,
+  campaign_id text not null,
   server_version bigint not null default 0
 );
 `,
@@ -283,6 +284,10 @@ export const app = defineSyncularClient({
           source: 'actorId',
           required: true,
         }),
+        scope('campaign_id', {
+          source: 'projectId',
+          required: true,
+        }),
       ],
     }),
   },
@@ -314,12 +319,13 @@ const database = await createSyncularAppDatabase({
   config: {
     mode: 'local-sync-compatible',
     actorId: 'user-js',
+    projectId: 'campaign-a',
     clientId: 'fresh-js-client',
     storage: 'memory',
     clearOnInit: true,
   },
   runtimeArtifacts: [getSyncularRuntimeArtifact('core')],
-  subscriptions: [taskSubscription({ actorId: 'user-js' })],
+  subscriptions: [taskSubscription({ actorId: 'user-js', projectId: 'campaign-a' })],
 });
 
 try {
@@ -337,11 +343,12 @@ try {
     id: 'task-fresh-js',
     title: 'Fresh JS app',
     user_id: 'user-js',
+    campaign_id: 'campaign-a',
   });
 
   const rows = await database.db
     .selectFrom('tasks')
-    .select(['id', 'title', 'completed', 'user_id', 'server_version'])
+    .select(['id', 'title', 'completed', 'user_id', 'campaign_id', 'server_version'])
     .orderBy('id')
     .execute();
 
@@ -351,9 +358,54 @@ try {
     rows[0]?.title !== 'Fresh JS app' ||
     rows[0]?.completed !== 0 ||
     rows[0]?.user_id !== 'user-js' ||
+    rows[0]?.campaign_id !== 'campaign-a' ||
     rows[0]?.server_version !== 0
   ) {
     throw new Error(\`fresh JS app query returned \${JSON.stringify(rows)}\`);
+  }
+
+  const replacement = await database.replaceAuthContext({
+    headers: { authorization: 'Bearer fresh-js-campaign-b' },
+    subscriptions: [
+      taskSubscription({ actorId: 'user-js', projectId: 'campaign-b' }),
+    ],
+    sync: false,
+  });
+  if (
+    replacement.authHeadersReplaced !== true ||
+    replacement.subscriptionsReplaced !== true ||
+    replacement.bootstrapReset === null ||
+    replacement.syncMode !== 'skipped'
+  ) {
+    throw new Error(
+      \`fresh JS app auth context replacement returned \${JSON.stringify(replacement)}\`
+    );
+  }
+
+  await database.mutations.tasks.insert({
+    id: 'task-fresh-js-campaign-b',
+    title: 'Fresh JS campaign switch',
+    user_id: 'user-js',
+    campaign_id: 'campaign-b',
+  });
+
+  const campaignRows = await database.awaitLocalVisibility(
+    (db) =>
+      db
+        .selectFrom('tasks')
+        .select(['id', 'campaign_id'])
+        .where('campaign_id', '=', 'campaign-b')
+        .execute(),
+    { tables: ['tasks'], timeoutMs: 1_000 }
+  );
+  if (
+    campaignRows.length !== 1 ||
+    campaignRows[0]?.id !== 'task-fresh-js-campaign-b' ||
+    campaignRows[0]?.campaign_id !== 'campaign-b'
+  ) {
+    throw new Error(
+      \`fresh JS campaign visibility returned \${JSON.stringify(campaignRows)}\`
+    );
   }
 } finally {
   await database.close();
