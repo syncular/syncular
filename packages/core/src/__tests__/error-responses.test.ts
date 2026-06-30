@@ -180,6 +180,11 @@ describe('Syncular error responses', () => {
       retryable: false,
       recommendedAction: 'inspectServer',
     });
+    expect(createSyncularErrorResponse('blob.signing_failed')).toMatchObject({
+      category: 'blob',
+      retryable: true,
+      recommendedAction: 'inspectStorage',
+    });
   });
 
   it('keeps the Rust taxonomy fixture in sync with core definitions', () => {

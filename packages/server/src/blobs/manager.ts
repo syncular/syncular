@@ -444,12 +444,16 @@ export function createBlobManager<DB extends SyncBlobUploadsDb>(
         throw new BlobNotFoundError('Blob not found');
       }
 
-      // Generate presigned download URL
-      const url = await adapter.signDownload({
-        hash,
-        partitionId: storagePartitionOptions.partitionId,
-        expiresIn: defaultExpiresIn,
-      });
+      let url: string;
+      try {
+        url = await adapter.signDownload({
+          hash,
+          partitionId: storagePartitionOptions.partitionId,
+          expiresIn: defaultExpiresIn,
+        });
+      } catch (cause) {
+        throw new BlobSigningError('Could not create signed blob URL', cause);
+      }
 
       const expiresAt = new Date(
         Date.now() + defaultExpiresIn * 1000
@@ -897,5 +901,15 @@ export class BlobNotFoundError extends Error {
   constructor(message: string) {
     super(message);
     this.name = 'BlobNotFoundError';
+  }
+}
+
+export class BlobSigningError extends Error {
+  constructor(
+    message: string,
+    public readonly cause?: unknown
+  ) {
+    super(message);
+    this.name = 'BlobSigningError';
   }
 }

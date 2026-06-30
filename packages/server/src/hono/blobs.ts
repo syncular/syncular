@@ -22,7 +22,9 @@ import {
 import type {
   BlobManager,
   BlobNotFoundError,
+  BlobSigningError,
   BlobValidationError,
+  ScopedBlobAccessDecision,
 } from '@syncular/server';
 import {
   type BlobTokenSigner,
@@ -42,6 +44,22 @@ interface BlobAuthResult {
   actorId: string;
   partitionId?: string;
 }
+
+type BlobRouteAccessReason =
+  | ScopedBlobAccessDecision['reason']
+  | 'access_denied';
+
+export interface BlobRouteAccessDecision {
+  actorId?: string;
+  partitionId?: string;
+  hash?: string;
+  allowed: boolean;
+  reason?: BlobRouteAccessReason;
+  table?: string;
+  column?: string;
+}
+
+export type BlobAccessCheckResult = boolean | BlobRouteAccessDecision;
 
 export interface CreateBlobRoutesOptions<DB extends SyncBlobsDb = SyncBlobsDb> {
   /** Blob manager instance */
@@ -66,7 +84,7 @@ export interface CreateBlobRoutesOptions<DB extends SyncBlobsDb = SyncBlobsDb> {
     actorId: string;
     hash: string;
     partitionId: string;
-  }) => Promise<boolean>;
+  }) => Promise<BlobAccessCheckResult>;
   /**
    * Maximum upload size in bytes.
    * Default: 100MB (104857600)
@@ -321,13 +339,26 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
       }
 
       const partitionId = auth.partitionId ?? 'default';
-      const canAccess = await canAccessBlob({
-        actorId: auth.actorId,
-        hash,
-        partitionId,
-      });
-      if (!canAccess) {
-        return syncError(c, 403, 'blob.forbidden');
+      const accessDecision = normalizeBlobAccessDecision(
+        await canAccessBlob({
+          actorId: auth.actorId,
+          hash,
+          partitionId,
+        }),
+        {
+          actorId: auth.actorId,
+          hash,
+          partitionId,
+        }
+      );
+      if (!accessDecision.allowed) {
+        return syncError(
+          c,
+          403,
+          'blob.forbidden',
+          undefined,
+          blobAccessDeniedDetails(accessDecision)
+        );
       }
 
       try {
@@ -339,7 +370,23 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
         return c.json(result, 200);
       } catch (err) {
         if (isBlobNotFoundError(err)) {
-          return syncError(c, 404, 'blob.not_found');
+          return syncError(c, 404, 'blob.not_found', undefined, {
+            failureKind: 'blob_record_missing',
+            partitionId,
+          });
+        }
+        if (isBlobSigningError(err)) {
+          return syncError(
+            c,
+            500,
+            'blob.signing_failed',
+            'Could not create a blob download URL.',
+            {
+              failureKind: 'signed_url_failed',
+              storageAdapter: blobManager.adapter.name,
+              partitionId,
+            }
+          );
         }
         throw err;
       }
@@ -385,14 +432,26 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
         // Verify token
         const payload = await tokenSigner.verify(token);
         if (!payload || payload.action !== 'upload' || payload.hash !== hash) {
-          return syncError(c, 401, 'blob.invalid_token');
+          return syncError(c, 401, 'blob.invalid_token', undefined, {
+            failureKind: 'invalid_token',
+            tokenAction: 'upload',
+          });
         }
 
         const uploadRecord = await blobManager.getUploadRecord(hash, {
           partitionId: payload.partitionId,
         });
         if (!uploadRecord) {
-          return syncError(c, 404, 'blob.not_found', 'Upload record not found');
+          return syncError(
+            c,
+            404,
+            'blob.not_found',
+            'Upload record not found',
+            {
+              failureKind: 'upload_record_missing',
+              partitionId: payload.partitionId,
+            }
+          );
         }
         if (uploadRecord.status !== 'pending') {
           return syncError(
@@ -588,7 +647,10 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
           payload.action !== 'download' ||
           payload.hash !== hash
         ) {
-          return syncError(c, 401, 'blob.invalid_token');
+          return syncError(c, 401, 'blob.invalid_token', undefined, {
+            failureKind: 'invalid_token',
+            tokenAction: 'download',
+          });
         }
 
         // Read via the blob adapter (R2, database, etc.)
@@ -597,7 +659,11 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
             partitionId: payload.partitionId,
           });
           if (!data) {
-            return syncError(c, 404, 'blob.not_found');
+            return syncError(c, 404, 'blob.not_found', undefined, {
+              failureKind: 'storage_object_missing',
+              storageAdapter: blobManager.adapter.name,
+              partitionId: payload.partitionId,
+            });
           }
           const meta = blobManager.adapter.getMetadata
             ? await blobManager.adapter.getMetadata(hash, {
@@ -619,7 +685,11 @@ export function createBlobRoutes<DB extends SyncBlobsDb>(
           partitionId: payload.partitionId,
         });
         if (!blob) {
-          return syncError(c, 404, 'blob.not_found');
+          return syncError(c, 404, 'blob.not_found', undefined, {
+            failureKind: 'storage_object_missing',
+            storageAdapter: blobManager.adapter.name,
+            partitionId: payload.partitionId,
+          });
         }
 
         return new Response(blob.body as BodyInit, {
@@ -655,6 +725,67 @@ function isBlobNotFoundError(err: unknown): err is BlobNotFoundError {
     err !== null &&
     (err as { name?: string }).name === 'BlobNotFoundError'
   );
+}
+
+function isBlobSigningError(err: unknown): err is BlobSigningError {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { name?: string }).name === 'BlobSigningError'
+  );
+}
+
+function normalizeBlobAccessDecision(
+  result: BlobAccessCheckResult,
+  request: {
+    actorId: string;
+    hash: string;
+    partitionId: string;
+  }
+): BlobRouteAccessDecision {
+  if (typeof result === 'boolean') {
+    return {
+      ...request,
+      allowed: result,
+      reason: result ? 'allowed' : 'access_denied',
+    };
+  }
+
+  return {
+    ...request,
+    ...result,
+    reason: result.reason ?? (result.allowed ? 'allowed' : 'access_denied'),
+  };
+}
+
+function blobAccessDeniedDetails(
+  decision: BlobRouteAccessDecision
+): Record<string, unknown> {
+  const reason = decision.reason ?? 'access_denied';
+  const details: Record<string, unknown> = {
+    failureKind: 'blob_access_denied',
+    accessReason: reason,
+    accessStage: blobAccessStage(reason),
+    partitionId: decision.partitionId,
+  };
+  if (decision.table) details.referenceTable = decision.table;
+  if (decision.column) details.referenceColumn = decision.column;
+  return details;
+}
+
+function blobAccessStage(reason: BlobRouteAccessReason): string {
+  switch (reason) {
+    case 'missing_reference':
+      return 'reference';
+    case 'scope_denied':
+      return 'scope';
+    case 'handler_missing':
+    case 'resolve_scopes_failed':
+      return 'configuration';
+    case 'allowed':
+    case 'access_denied':
+      return 'unknown';
+  }
 }
 
 class BlobUploadBodyError extends Error {

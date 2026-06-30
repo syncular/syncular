@@ -53,13 +53,31 @@ export function createScopedBlobAccessChecker<
 >(
   options: CreateScopedBlobAccessCheckerOptions<DB, Auth>
 ): (request: ScopedBlobAccessRequest<Auth>) => Promise<boolean> {
+  const decide = createScopedBlobAccessDecisionChecker(options);
+  return async (request) => {
+    const decision = await decide(request);
+    return decision.allowed;
+  };
+}
+
+export function createScopedBlobAccessDecisionChecker<
+  DB extends SyncCoreDb,
+  Auth extends SyncServerAuth = SyncServerAuth,
+>(
+  options: CreateScopedBlobAccessCheckerOptions<DB, Auth>
+): (
+  request: ScopedBlobAccessRequest<Auth>
+) => Promise<ScopedBlobAccessDecision> {
   const handlersByTable = new Map(
     options.handlers.map((handler) => [handler.table, handler])
   );
   const candidateLimit = options.candidateLimit ?? 100;
 
-  const emit = (decision: ScopedBlobAccessDecision): void => {
+  const finish = (
+    decision: ScopedBlobAccessDecision
+  ): ScopedBlobAccessDecision => {
     options.onDecision?.(decision);
+    return decision;
   };
 
   return async (request) => {
@@ -137,7 +155,7 @@ export function createScopedBlobAccessChecker<
           continue;
         }
 
-        emit({
+        return finish({
           ...request,
           allowed: true,
           reason: 'allowed',
@@ -148,11 +166,10 @@ export function createScopedBlobAccessChecker<
             reference.primaryKeyColumn ?? handler.primaryKeyColumn
           ),
         });
-        return true;
       }
     }
 
-    emit(
+    return finish(
       deniedDecision ??
         configurationDecision ?? {
           ...request,
@@ -160,7 +177,6 @@ export function createScopedBlobAccessChecker<
           reason: 'missing_reference',
         }
     );
-    return false;
   };
 }
 

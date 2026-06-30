@@ -80,6 +80,15 @@ the database adapter (`storeBlobInDatabase` / `readBlobFromDatabase`) is the
 zero-infrastructure option for small deployments. See
 [File / Blob Sync](/features/blobs) for the full route and adapter surface.
 
+For scoped projects, use scoped metadata rows as the access grant for blob
+bodies. A shared package, stock asset, or base catalog file can reuse the same
+object-storage bytes, but each campaign/project that should fetch it needs a
+row in that campaign/project scope that references the hash. If the route
+returns `blob.forbidden` with `details.accessReason: "missing_reference"`, the
+body may exist but the current partition/scope has no row that grants access.
+If it returns `accessReason: "scope_denied"`, a row references the hash but the
+actor cannot read that row.
+
 ## Client: store, reference, upload in the background
 
 ```ts

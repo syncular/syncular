@@ -6,6 +6,7 @@ import { createServerHandler } from '../handlers';
 import type { SyncCoreDb } from '../schema';
 import {
   createScopedBlobAccessChecker,
+  createScopedBlobAccessDecisionChecker,
   type ScopedBlobAccessDecision,
 } from './access';
 
@@ -164,5 +165,42 @@ describe('createScopedBlobAccessChecker', () => {
         reason: 'missing_reference',
       }),
     ]);
+  });
+
+  it('returns the scoped access decision for routes that expose typed details', async () => {
+    const blob: BlobRef = {
+      hash: `sha256:${'d'.repeat(64)}`,
+      size: 5,
+      mimeType: 'image/png',
+    };
+    await db
+      .insertInto('tasks')
+      .values({
+        id: 'task-3',
+        user_id: 'user-2',
+        image: JSON.stringify(blob),
+        server_version: 1,
+      })
+      .execute();
+
+    const decideBlobAccess = createScopedBlobAccessDecisionChecker({
+      db,
+      handlers: [tasksHandler],
+      references: [{ table: 'tasks', blobColumns: ['image'] }],
+    });
+
+    await expect(
+      decideBlobAccess({
+        actorId: 'user-1',
+        partitionId: 'default',
+        hash: blob.hash,
+      })
+    ).resolves.toMatchObject({
+      allowed: false,
+      reason: 'scope_denied',
+      table: 'tasks',
+      column: 'image',
+      rowId: 'task-3',
+    });
   });
 });

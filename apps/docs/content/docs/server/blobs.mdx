@@ -25,7 +25,10 @@ Blob routes are mounted next to the sync routes. They should call the same
 authentication function as push and pull.
 
 ```typescript
-import { createBlobManager } from '@syncular/server';
+import {
+  createBlobManager,
+  createScopedBlobAccessDecisionChecker,
+} from '@syncular/server';
 import { createBlobRoutes } from '@syncular/server/hono';
 
 const blobManager = createBlobManager({
@@ -33,14 +36,18 @@ const blobManager = createBlobManager({
   adapter: blobStorageAdapter,
 });
 
+const canAccessBlob = createScopedBlobAccessDecisionChecker({
+  db,
+  handlers: [photosHandler],
+  references: [{ table: 'photos', blobColumns: ['original', 'thumbnail'] }],
+});
+
 const blobRoutes = createBlobRoutes({
   db,
   blobManager,
   authenticate: async (c) => authenticate(c.req.raw),
   maxUploadSize: 25 * 1024 * 1024,
-  canAccessBlob: async ({ actorId, hash, partitionId }) => {
-    return canActorAccessBlob({ actorId, hash, partitionId });
-  },
+  canAccessBlob,
 });
 
 app.route('/api/sync', syncRoutes);
@@ -49,6 +56,34 @@ app.route('/api/sync', blobRoutes);
 
 Use platform storage in production. For Cloudflare, wire blob bodies to R2 and
 keep Syncular's metadata in the server database.
+
+## Access diagnostics
+
+`canAccessBlob` may return a boolean, but returning a scoped access decision is
+better for app tests and operator logs. `createScopedBlobAccessDecisionChecker`
+keeps the route fail-closed and lets `GET /blobs/:hash/url` explain which
+authority boundary failed:
+
+- `blob.forbidden` with `details.accessReason: "missing_reference"` means the
+  hash exists or was requested, but no configured scoped row currently grants
+  access in this partition.
+- `blob.forbidden` with `details.accessReason: "scope_denied"` means a row
+  references the hash, but the actor's resolved scopes do not include that
+  row. The details include `referenceTable` and `referenceColumn`, not tokens
+  or signed URLs.
+- `blob.not_found` with `details.failureKind: "blob_record_missing"` means the
+  completed upload metadata is not present in the requested partition.
+- `blob.signing_failed` with `details.failureKind: "signed_url_failed"` means
+  the storage adapter could not create a download URL.
+- `blob.not_found` with `details.failureKind: "storage_object_missing"` means
+  the direct download token was valid, but the underlying bytes were missing
+  from storage.
+
+For global/base data, decide the authority model explicitly. Either fetch
+global assets through a global partition, create scoped metadata rows that
+reference shared object-storage bytes, or define a deliberate shared partition
+policy. Do not make campaign/project clients fetch arbitrary global hashes
+through their campaign/project partition without a scoped reference row.
 
 ## Client interaction
 

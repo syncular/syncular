@@ -169,6 +169,12 @@
       "recommendedAction": "retryLater",
       "message": "The client is offline."
     },
+    "sync.local_visibility_timeout": {
+      "category": "not-found",
+      "retryable": true,
+      "recommendedAction": "retryLater",
+      "message": "Timed out waiting for local Syncular visibility."
+    },
     "sync.websocket_not_configured": {
       "category": "server",
       "retryable": false,
@@ -360,6 +366,12 @@
       "retryable": true,
       "recommendedAction": "refreshAuth",
       "message": "The blob token is invalid or expired."
+    },
+    "blob.signing_failed": {
+      "category": "blob",
+      "retryable": true,
+      "recommendedAction": "inspectStorage",
+      "message": "The server could not create a signed blob URL."
     },
     "blob.upload_failed": {
       "category": "blob",

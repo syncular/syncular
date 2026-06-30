@@ -188,9 +188,10 @@ Returned by the blob upload/download routes (`/blobs/*`). See
 | `blob.invalid_request` | blob | no | fixRequest | Malformed blob request (bad hash, missing fields) → fix the request |
 | `blob.storage_not_configured` | blob | no | inspectServer | No blob storage backend configured on the server → wire blob storage |
 | `blob.too_large` | blob | no | fixRequest | Blob exceeds the configured size limit → shrink or raise the limit |
-| `blob.not_found` | blob | no | fixRequest | No blob with that hash → upload it first |
-| `blob.forbidden` | forbidden | no | checkPermissions | The actor cannot access this blob → check the owning scope |
+| `blob.not_found` | blob | no | fixRequest | Blob metadata or storage bytes are missing in this partition → check `details.failureKind` |
+| `blob.forbidden` | forbidden | no | checkPermissions | The actor cannot access this blob → check `details.accessReason` (`missing_reference`, `scope_denied`, or `access_denied`) |
 | `blob.invalid_token` | auth-required | yes | refreshAuth | The signed blob token is invalid or expired → request a fresh URL |
+| `blob.signing_failed` | blob | yes | inspectStorage | The server could not mint a signed upload/download URL → check storage adapter credentials/configuration |
 | `blob.upload_failed` | blob | yes | retryLater | Upload to the storage backend failed → retry |
 | `blob.hash_mismatch` | integrity-rejected | no | fixRequest | Uploaded bytes don't match the declared content hash → re-hash and re-upload |
 | `blob.size_mismatch` | blob | no | fixRequest | Uploaded byte length doesn't match the declared size → fix the upload |

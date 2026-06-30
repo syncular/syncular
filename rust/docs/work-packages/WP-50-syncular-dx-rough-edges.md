@@ -613,6 +613,16 @@ online propagation, or reconnect behavior can change.
 - Public deployment docs now steer production schema setup toward release or
   operator steps before traffic, with `syncular schema check --json` and
   `getSyncularServerSchemaReadiness(...)` as readiness checks.
+- 2026-06-30 ninth implementation slice added
+  `createScopedBlobAccessDecisionChecker(...)`, allowed Hono blob routes to
+  consume boolean or structured access decisions, and exposed typed blob route
+  details for missing scoped references, scope-denied references, missing blob
+  records, missing upload records, signed URL failures, invalid direct-transfer
+  tokens, and missing storage objects.
+- Public blob docs now state that a `BlobRef` is not an authority grant, that
+  campaign/project clients need scoped metadata rows or an explicit shared
+  partition policy for global/base assets, and that app tests should assert
+  stable `details.failureKind` / `details.accessReason` values.
 
 ## Implementation Log
 
@@ -693,6 +703,23 @@ online propagation, or reconnect behavior can change.
   requirements.
 - 2026-06-30: Updated deployment/server docs so production schema setup is a
   deploy/operator step before traffic rather than normal request startup.
+- 2026-06-30: Added
+  `createScopedBlobAccessDecisionChecker(...)` to return the same scoped blob
+  access decision that `createScopedBlobAccessChecker(...)` used internally.
+- 2026-06-30: Updated Hono blob routes so `canAccessBlob` can return either a
+  boolean or a structured decision, and `blob.forbidden` responses expose safe
+  access details: `accessReason`, `accessStage`, `partitionId`,
+  `referenceTable`, and `referenceColumn`.
+- 2026-06-30: Added `blob.signing_failed` to the shared error taxonomy,
+  regenerated the Rust taxonomy fixture, and updated the Rust runtime
+  classifier for both `blob.signing_failed` and the previously-added
+  `sync.local_visibility_timeout`.
+- 2026-06-30: Added typed blob route details for missing upload/blob records,
+  invalid direct-transfer tokens, signed URL creation failures, and underlying
+  storage-object misses.
+- 2026-06-30: Updated public blob docs and error reference with
+  partition/scope guidance, global/base-data sharing guidance, and stable blob
+  failure detail fields.
 
 ## Latest Gates
 
@@ -729,6 +756,12 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bunx biome check packages/server/src/schema-readiness.ts packages/server/src/schema-readiness.test.ts packages/server/src/index.ts`
 - `bun test packages/server/src/schema-readiness.test.ts`
 - `bun --cwd packages/server tsgo`
+- `bun test packages/server/src/blobs/access.test.ts packages/server/src/hono/__tests__/blob-routes.test.ts packages/core/src/__tests__/error-responses.test.ts`
+- `bunx biome check packages/server/src/blobs/access.ts packages/server/src/blobs/access.test.ts packages/server/src/blobs/manager.ts packages/server/src/hono/blobs.ts packages/server/src/hono/errors.ts packages/server/src/hono/index.ts packages/server/src/hono/__tests__/blob-routes.test.ts packages/core/src/error-responses.ts packages/core/src/__tests__/error-responses.test.ts`
+- `bun --cwd packages/core tsgo`
+- `bun run --cwd apps/docs types:check`
+- `cargo fmt --all --check` from `rust/`
+- `cargo test -p syncular-runtime error_taxonomy --manifest-path rust/Cargo.toml`
 - `git diff --check`
 
 ## Sequencing
@@ -753,8 +786,10 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    client/server output. The first live server/database slice is done with
    `getSyncularServerSchemaReadiness(...)` over introspected installed tables
    and server required/latest schema versions.
-6. Add blob partition/scope guidance and typed blob failure details once the
-   canonical app flow has a real blob/package case.
+6. Blob partition/scope guidance and typed blob failure details: first slice is
+   done with a decision-returning scoped access checker, route-level structured
+   details, shared error taxonomy coverage, and public docs for global/base
+   assets crossing campaign/project scopes.
 7. Add deterministic E2E/testkit recipes and stable log markers around the
    concrete flows above.
 8. Collapse client init and import docs where the starter proves remaining
@@ -794,6 +829,7 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 
 ## Next Action
 
-Pick the next implementation slice: add blob partition/scope guidance and
-typed blob failure details around the canonical app flow, especially for
-global/base package data pinned into campaign/project scopes.
+Pick the next implementation slice: add deterministic E2E/testkit recipes and
+stable log markers around the proven flows above, especially the two-browser
+scoped project/campaign path with auth replacement, realtime delivery, local
+visibility, schema readiness, and blob access failures.

@@ -6,7 +6,7 @@ import {
   createBlobManager,
   createDatabaseBlobStorageAdapter,
   createHmacTokenSigner,
-  createScopedBlobAccessChecker,
+  createScopedBlobAccessDecisionChecker,
   createServerHandler,
   ensureBlobStorageSchemaSqlite,
   type SyncBlobDb,
@@ -377,6 +377,10 @@ describe('createBlobRoutes', () => {
       category: 'auth-required',
       retryable: true,
       recommendedAction: 'refreshAuth',
+      details: {
+        failureKind: 'invalid_token',
+        tokenAction: 'upload',
+      },
     });
   });
 
@@ -573,6 +577,12 @@ describe('createBlobRoutes', () => {
       category: 'forbidden',
       retryable: false,
       recommendedAction: 'checkPermissions',
+      details: {
+        failureKind: 'blob_access_denied',
+        accessReason: 'access_denied',
+        accessStage: 'unknown',
+        partitionId: 'default',
+      },
     });
   });
 
@@ -665,6 +675,12 @@ describe('createBlobRoutes', () => {
     expect(await forbiddenUrlResponse.json()).toMatchObject({
       error: 'blob.forbidden',
       code: 'blob.forbidden',
+      details: {
+        failureKind: 'blob_access_denied',
+        accessReason: 'access_denied',
+        accessStage: 'unknown',
+        partitionId: 'default',
+      },
     });
     expect(signDownloadCalls).toBe(0);
 
@@ -676,6 +692,67 @@ describe('createBlobRoutes', () => {
     );
     expect(authorizedUrlResponse.status).toBe(200);
     expect(signDownloadCalls).toBe(1);
+  });
+
+  it('returns a typed signed-url failure when storage cannot mint a download URL', async () => {
+    const baseAdapter = createDefaultAdapter(db, tokenSigner);
+    const adapter: BlobStorageAdapter = {
+      ...baseAdapter,
+      signDownload: async () => {
+        throw new Error('signer unavailable');
+      },
+    };
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter,
+      canAccessBlob: async () => true,
+    });
+
+    const content = new TextEncoder().encode('signed-url-failure');
+    const hash = await createHash(content);
+    const init = await initiateUpload({
+      app,
+      hash,
+      size: content.length,
+      mimeType: 'text/plain',
+      partitionId: 'default',
+    });
+    const uploadResponse = await app.request(init.uploadUrl!, {
+      method: init.uploadMethod ?? 'PUT',
+      headers: { 'content-type': 'text/plain' },
+      body: content,
+    });
+    expect(uploadResponse.status).toBe(200);
+    const completeResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/complete`,
+      {
+        method: 'POST',
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+    expect(completeResponse.status).toBe(200);
+
+    const urlResponse = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/url`,
+      {
+        headers: { [ACTOR_HEADER]: ACTOR_ID },
+      }
+    );
+
+    expect(urlResponse.status).toBe(500);
+    expect(await urlResponse.json()).toMatchObject({
+      error: 'blob.signing_failed',
+      code: 'blob.signing_failed',
+      category: 'blob',
+      retryable: true,
+      recommendedAction: 'inspectStorage',
+      details: {
+        failureKind: 'signed_url_failed',
+        storageAdapter: 'database',
+        partitionId: 'default',
+      },
+    });
   });
 
   it('can authorize download URLs through scoped row blob references', async () => {
@@ -699,7 +776,7 @@ describe('createBlobRoutes', () => {
       scopes: ['user:{user_id}'],
       resolveScopes: async (ctx) => ({ user_id: [ctx.actorId] }),
     });
-    const canAccessBlob = createScopedBlobAccessChecker({
+    const canAccessBlob = createScopedBlobAccessDecisionChecker({
       db: scopedDb,
       handlers: [tasksHandler],
       references: [{ table: 'tasks', blobColumns: ['image'] }],
@@ -766,6 +843,14 @@ describe('createBlobRoutes', () => {
     expect(await forbiddenUrlResponse.json()).toMatchObject({
       error: 'blob.forbidden',
       code: 'blob.forbidden',
+      details: {
+        failureKind: 'blob_access_denied',
+        accessReason: 'scope_denied',
+        accessStage: 'scope',
+        partitionId: 'default',
+        referenceTable: 'tasks',
+        referenceColumn: 'image',
+      },
     });
   });
 
@@ -793,7 +878,7 @@ describe('createBlobRoutes', () => {
       scopes: ['user:{owner_id}'],
       resolveScopes: async (ctx) => ({ owner_id: [ctx.actorId] }),
     });
-    const canAccessBlob = createScopedBlobAccessChecker({
+    const canAccessBlob = createScopedBlobAccessDecisionChecker({
       db: scopedDb,
       handlers: [fileVersionsHandler],
       references: [{ table: 'file_versions', blobColumns: ['blob_ref'] }],
@@ -843,6 +928,12 @@ describe('createBlobRoutes', () => {
     expect(await unreferencedUrlResponse.json()).toMatchObject({
       error: 'blob.forbidden',
       code: 'blob.forbidden',
+      details: {
+        failureKind: 'blob_access_denied',
+        accessReason: 'missing_reference',
+        accessStage: 'reference',
+        partitionId: 'default',
+      },
     });
 
     await scopedDb
@@ -876,6 +967,14 @@ describe('createBlobRoutes', () => {
     expect(await forbiddenUrlResponse.json()).toMatchObject({
       error: 'blob.forbidden',
       code: 'blob.forbidden',
+      details: {
+        failureKind: 'blob_access_denied',
+        accessReason: 'scope_denied',
+        accessStage: 'scope',
+        partitionId: 'default',
+        referenceTable: 'file_versions',
+        referenceColumn: 'blob_ref',
+      },
     });
   });
 
@@ -1069,6 +1168,36 @@ describe('createBlobRoutes', () => {
     );
   });
 
+  it('returns typed storage-object-missing details for direct downloads', async () => {
+    const app = buildApp({
+      db,
+      tokenSigner,
+      adapter: createDefaultAdapter(db, tokenSigner),
+    });
+    const hash = `sha256:${'e'.repeat(64)}`;
+    const token = await signBlobToken({
+      signer: tokenSigner,
+      hash,
+      action: 'download',
+      partitionId: 'default',
+    });
+
+    const response = await app.request(
+      `http://localhost/sync/blobs/${encodeURIComponent(hash)}/download?token=${encodeURIComponent(token)}`
+    );
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({
+      error: 'blob.not_found',
+      code: 'blob.not_found',
+      details: {
+        failureKind: 'storage_object_missing',
+        storageAdapter: 'database',
+        partitionId: 'default',
+      },
+    });
+  });
+
   it('isolates blob lookup by partition', async () => {
     const app = buildApp({
       db,
@@ -1136,6 +1265,10 @@ describe('createBlobRoutes', () => {
     expect(await otherPartitionUrl.json()).toMatchObject({
       error: 'blob.not_found',
       code: 'blob.not_found',
+      details: {
+        failureKind: 'blob_record_missing',
+        partitionId: 'tenant-b',
+      },
     });
   });
 });

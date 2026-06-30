@@ -93,12 +93,19 @@ read-only review:
     now includes user+campaign scope, proves a campaign-scope switch through
     `replaceAuthContext(...)` plus `awaitLocalVisibility(...)`, asserts schema
     readiness from generated app metadata, and runs the schema-check command.
-    Focused client/CLI/server tests, package typechecks, fresh JS smoke,
-    scaffold smoke, docs stale check, and diff check passed locally. A
+    Blob routes now accept structured scoped access decisions from
+    `createScopedBlobAccessDecisionChecker(...)` and expose stable details for
+    missing scoped references, scope-denied references, missing blob/upload
+    records, signed URL failures, invalid direct-transfer tokens, and missing
+    storage objects; public blob docs now state that global/base asset hashes
+    need scoped metadata rows or an explicit shared partition policy before
+    campaign/project clients can fetch them. Focused client/CLI/server/blob
+    tests, package typechecks, fresh JS smoke, scaffold smoke, docs stale
+    check, Rust taxonomy check, and diff check passed locally. A
     Hono/WebSocket/WASM managed-database test also proves the same scope-change
     flow against real remote auth/realtime behavior, including denied-scope
-    diagnostics. Next slice: blob partition/scope guidance and typed blob
-    failures.
+    diagnostics. Next slice: deterministic E2E/testkit recipes and stable log
+    markers around the proven flows.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

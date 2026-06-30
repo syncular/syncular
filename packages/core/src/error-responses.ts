@@ -372,6 +372,12 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     recommendedAction: 'refreshAuth',
     message: 'The blob token is invalid or expired.',
   },
+  'blob.signing_failed': {
+    category: 'blob',
+    retryable: true,
+    recommendedAction: 'inspectStorage',
+    message: 'The server could not create a signed blob URL.',
+  },
   'blob.upload_failed': {
     category: 'blob',
     retryable: true,

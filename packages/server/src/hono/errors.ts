@@ -10,19 +10,25 @@ export function syncError(
   c: Context,
   status: JsonErrorStatus,
   code: SyncularErrorCode,
-  message?: string
+  message?: string,
+  details?: Record<string, unknown>
 ): Response {
-  return c.json(createSyncularErrorResponse(code, { message }), status);
+  return c.json(
+    createSyncularErrorResponse(code, { message, details }),
+    status
+  );
 }
 
 export function syncErrorResponse(
   status: JsonErrorStatus,
   code: SyncularErrorCode,
-  message?: string
+  message?: string,
+  details?: Record<string, unknown>
 ): Response {
-  return Response.json(createSyncularErrorResponse(code, { message }), {
-    status,
-  });
+  return Response.json(
+    createSyncularErrorResponse(code, { message, details }),
+    { status }
+  );
 }
 
 export function syncLimitExceeded(

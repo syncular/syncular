@@ -96,6 +96,60 @@ app.route('/api/sync', blobRoutes);
 `canAccessBlob` is the authorization boundary for bodies — row visibility
 (metadata) and the right to fetch the blob URL are separate decisions.
 
+### Partitions, scopes, and shared data
+
+Blob storage is partitioned the same way as the server routes. A `BlobRef`
+contains the content hash, size, and MIME type; it does not carry an authority
+grant by itself. The route can mint a download URL only when the current actor
+and partition can see a synced row that references that hash.
+
+For scoped apps, prefer a scoped reference row over a global hash lookup:
+
+- Put global/base catalog rows in a global partition only when every consumer
+  fetches them through that same global partition.
+- If a campaign/project needs a package, file, or base asset, create a scoped
+  package/file row in that campaign/project that references the blob hash.
+- If multiple scopes intentionally share the same bodies, share the object
+  storage bytes but keep separate scoped metadata rows or an explicit shared
+  partition policy.
+- Do not rely on "the hash exists somewhere" as access. A blob body can exist
+  while `GET /blobs/:hash/url` correctly returns `blob.forbidden` because no
+  row in the current scope grants access to it.
+
+`createScopedBlobAccessDecisionChecker` from `@syncular/server` returns the
+same scoped access decision that the route exposes in error details:
+
+```ts
+import {
+  createBlobManager,
+  createScopedBlobAccessDecisionChecker,
+} from '@syncular/server';
+import { createBlobRoutes } from '@syncular/server/hono';
+
+const canAccessBlob = createScopedBlobAccessDecisionChecker({
+  db,
+  handlers: [photosHandler],
+  references: [{ table: 'photos', blobColumns: ['original', 'thumbnail'] }],
+});
+
+const blobRoutes = createBlobRoutes({
+  blobManager,
+  authenticate,
+  canAccessBlob,
+});
+```
+
+Blob route failures include stable `details` fields for tests and diagnostics:
+
+| Failure | Code | Details to assert |
+| --- | --- | --- |
+| No scoped row references the hash | `blob.forbidden` | `failureKind: "blob_access_denied"`, `accessReason: "missing_reference"`, `accessStage: "reference"` |
+| A row references the hash but the actor's resolved scope cannot read it | `blob.forbidden` | `accessReason: "scope_denied"`, `accessStage: "scope"`, `referenceTable`, `referenceColumn` |
+| The upload/blob metadata row is missing in this partition | `blob.not_found` | `failureKind: "blob_record_missing"` or `"upload_record_missing"` |
+| Storage cannot mint a signed URL | `blob.signing_failed` | `failureKind: "signed_url_failed"`, `storageAdapter` |
+| A direct download token points at missing bytes | `blob.not_found` | `failureKind: "storage_object_missing"`, `storageAdapter` |
+| The direct upload/download token is invalid or expired | `blob.invalid_token` | `failureKind: "invalid_token"`, `tokenAction` |
+
 ## Storage adapters
 
 The blob manager (`createBlobManager`) tracks upload state and delegates the

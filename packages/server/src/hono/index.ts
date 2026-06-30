@@ -9,7 +9,12 @@
 export * from './api-key-auth';
 
 // Blob routes
-export { type CreateBlobRoutesOptions, createBlobRoutes } from './blobs';
+export {
+  type BlobAccessCheckResult,
+  type BlobRouteAccessDecision,
+  type CreateBlobRoutesOptions,
+  createBlobRoutes,
+} from './blobs';
 
 // Console API and live gateway. Console UI mounting lives in ./console/ui and
 // intentionally is not re-exported here because it requires @syncular/console.
