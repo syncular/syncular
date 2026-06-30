@@ -164,7 +164,7 @@ read-only review:
     with npm tag `staging`; `v*` tags/manual stable dispatch publish exact
     stable versions with npm tag `latest`. Cargo crates are stamped and
     published in explicit dependency order, `main` stays checks-only for
-    publishing, Rust native checks now dry-run Cargo package publishing, and
+    publishing, Rust native checks validate Cargo package contents, and
     npm publishing now has a real all-package dry-run with workspace-local
     publish helpers. Scheduled nightly/weekly Actions plus their scheduled-run
     history were removed so release automation starts from a clean explicit

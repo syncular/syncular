@@ -43,7 +43,9 @@ the npm packages without publishing public crates from every `main` merge.
 - Updated `.github/workflows/release.yml` so automatic publishing runs from the
   `release` branch, stable publishing runs from `v*` tags/manual stable
   dispatch, and both npm/Cargo use the same resolved version.
-- Added Cargo publish dry-runs to the Rust native checks.
+- Added Cargo package-content checks to the Rust native checks without using
+  registry-dependent publish dry-runs before a release version's internal
+  dependency chain exists on crates.io.
 - Added npm publish dry-run support to the shared `syncular-publish` helper and
   a root `release:npm:dry-run` script.
 - Passed `SYNCULAR_NPM_TAG` and `SYNCULAR_PUBLISH_DRY_RUN` through Turbo so
