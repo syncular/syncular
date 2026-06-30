@@ -73,3 +73,4 @@ the status source; this file is the stable package index.
 47. [`WP-47 Post-Publish JS Runtime Smoke`](WP-47-post-publish-js-runtime-smoke.md)
 48. [`WP-48 CI And Apex Publish Recovery`](WP-48-ci-apex-publish-recovery.md)
 49. [`WP-49 Client API Hardening`](WP-49-client-api-hardening.md)
+50. [`WP-50 Syncular DX Rough Edges`](WP-50-syncular-dx-rough-edges.md)

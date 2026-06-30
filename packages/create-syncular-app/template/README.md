@@ -22,6 +22,10 @@ Open the app in two browser windows and watch edits replicate. Stop the dev
 server while the page stays open: edits queue locally and sync when the
 server is back.
 
+The header line in the task panel comes from `getSyncularBrowserHealth(...)`.
+It is the app-facing runtime check for durable storage, active subscriptions,
+realtime state, and the latest structured Syncular error.
+
 > **Why Bun?** The dev script and sync server run on Bun (`Bun.serve`,
 > `bun:sqlite` via `@syncular/server/bun-sqlite`) because Bun runs
 > TypeScript directly and ships SQLite with zero native build steps — one
@@ -39,7 +43,7 @@ generated/             Codegen handoff (syncular.codegen.json, Rust/Swift/Kotlin
 src/generated/         Generated TypeScript client + server modules (committed)
 src/server/            Hono sync server (auth, handlers, server-side tables)
 src/client/syncular.ts Client wiring: local DB, sync lifecycle, managed client
-src/app.tsx            React UI built on @syncular/client/react hooks
+src/app.tsx            React UI built on @syncular/client/react hooks + health
 scripts/dev.ts         Runs sync server + Vite together
 ```
 

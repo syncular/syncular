@@ -70,7 +70,7 @@ h2 {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  margin-bottom: 18px;
+  margin-bottom: 10px;
 }
 
 .status-badge {
@@ -112,6 +112,24 @@ h2 {
 
 .status-badge.error .status-dot {
   background: #c54646;
+}
+
+.health-line {
+  margin: 0 0 16px;
+  color: #61706b;
+  font-size: 0.78rem;
+  font-weight: 700;
+  overflow-wrap: anywhere;
+}
+
+.health-line.degraded,
+.health-line.action-required {
+  color: #9b5b12;
+}
+
+.health-line.offline,
+.health-line.closed {
+  color: #5f6f79;
 }
 
 .add-row {

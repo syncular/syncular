@@ -3,6 +3,7 @@ import * as clientApi from './index';
 import {
   createSyncularCommandHistory,
   createSyncularDatabase,
+  getSyncularBrowserHealth,
   getSyncularPackagedRuntimeArtifacts,
   resolveSyncularClientConfig,
   SYNCULAR_DEFAULT_STORAGE,
@@ -44,6 +45,10 @@ describe('@syncular/client public API', () => {
 
   it('exports the managed database constructor', () => {
     expect(typeof createSyncularDatabase).toBe('function');
+  });
+
+  it('exports the browser health helper', () => {
+    expect(typeof getSyncularBrowserHealth).toBe('function');
   });
 
   it('does not expose the removed standalone managed-client constructor', () => {

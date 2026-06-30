@@ -240,15 +240,15 @@ async function runJsSmoke(
   await linkNodeModule(appDir, '@syncular/client', 'packages/client');
   await linkNodeModule(appDir, '@syncular/core', 'packages/core');
   await linkNodeModule(appDir, '@syncular/typegen', 'packages/typegen');
-  await linkNodeModule(appDir, 'fflate', 'node_modules/fflate');
-  await linkNodeModule(appDir, 'kysely', 'node_modules/kysely');
+  await linkNodeModule(appDir, 'fflate', 'packages/core/node_modules/fflate');
+  await linkNodeModule(appDir, 'kysely', 'packages/client/node_modules/kysely');
   await linkNodeModule(
     appDir,
     'kysely-generic-sqlite',
-    'node_modules/kysely-generic-sqlite'
+    'packages/client/node_modules/kysely-generic-sqlite'
   );
-  await linkNodeModule(appDir, 'react', 'node_modules/react');
-  await linkNodeModule(appDir, 'zod', 'node_modules/zod');
+  await linkNodeModule(appDir, 'react', 'packages/client/node_modules/react');
+  await linkNodeModule(appDir, 'zod', 'packages/core/node_modules/zod');
   await writeTaskMigration(appDir);
   await writeFile(
     join(appDir, 'package.json'),
@@ -292,7 +292,10 @@ export const app = defineSyncularClient({
   );
   await writeFile(
     join(appDir, 'runtime-smoke.ts'),
-    `import { getSyncularRuntimeArtifact } from '@syncular/client';
+    `import {
+  getSyncularBrowserHealth,
+  getSyncularRuntimeArtifact,
+} from '@syncular/client';
 import { createSyncularReact } from '@syncular/client/react';
 import {
   createSyncularAppDatabase,
@@ -320,6 +323,16 @@ const database = await createSyncularAppDatabase({
 });
 
 try {
+  const health = await getSyncularBrowserHealth(database);
+  if (
+    health.persistence.status !== 'memory' ||
+    health.persistence.durable !== false ||
+    health.subscriptions.total !== 1 ||
+    health.realtime.state !== 'disconnected'
+  ) {
+    throw new Error(\`fresh JS app health returned \${JSON.stringify(health)}\`);
+  }
+
   await database.mutations.tasks.insert({
     id: 'task-fresh-js',
     title: 'Fresh JS app',

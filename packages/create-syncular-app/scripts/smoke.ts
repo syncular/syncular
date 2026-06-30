@@ -15,15 +15,13 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 
 const packageDir = resolve(join(import.meta.dirname, '..'));
 const repoRoot = resolve(join(packageDir, '../..'));
 const keep = process.argv.includes('--keep');
-
-const SYNC_PORT = 4180;
-const VITE_PORT = 5180;
 
 function log(message: string): void {
   console.log(`[csa-smoke] ${message}`);
@@ -138,9 +136,27 @@ async function fetchUntilReady(
   throw new Error(`Timed out waiting for ${url}: ${String(lastError)}`);
 }
 
+async function getFreePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolveListen, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolveListen());
+  });
+  const address = server.address();
+  const port =
+    typeof address === 'object' && address !== null ? address.port : 0;
+  await new Promise<void>((resolveClose, reject) => {
+    server.close((error) => (error ? reject(error) : resolveClose()));
+  });
+  if (port <= 0) throw new Error('Could not allocate a free smoke-test port');
+  return port;
+}
+
 async function main(): Promise<void> {
   const workDir = join(tmpdir(), `csa-smoke-${Date.now()}`);
   const appDir = join(workDir, 'my-app');
+  const syncPort = await getFreePort();
+  const vitePort = await getFreePort();
   await mkdir(workDir, { recursive: true });
 
   let devProcess: ReturnType<typeof spawn> | null = null;
@@ -186,13 +202,13 @@ async function main(): Promise<void> {
       stdio: 'inherit',
       env: {
         ...process.env,
-        SYNC_PORT: String(SYNC_PORT),
-        PORT: String(VITE_PORT),
+        SYNC_PORT: String(syncPort),
+        PORT: String(vitePort),
       },
     });
 
     const health = await fetchUntilReady(
-      `http://127.0.0.1:${SYNC_PORT}/health`,
+      `http://127.0.0.1:${syncPort}/health`,
       60_000
     );
     const healthBody = (await health.json()) as { ok?: boolean };
@@ -203,10 +219,7 @@ async function main(): Promise<void> {
     }
     log('sync server health check passed');
 
-    const page = await fetchUntilReady(
-      `http://127.0.0.1:${VITE_PORT}/`,
-      60_000
-    );
+    const page = await fetchUntilReady(`http://127.0.0.1:${vitePort}/`, 60_000);
     const pageBody = await page.text();
     if (!pageBody.includes('<div id="root">')) {
       throw new Error('Vite page did not include the app root element');
@@ -216,7 +229,7 @@ async function main(): Promise<void> {
     // Exercise Vite's import analysis over the app entry (resolves react,
     // the generated client and the @syncular packages).
     const moduleResponse = await fetchUntilReady(
-      `http://127.0.0.1:${VITE_PORT}/src/main.tsx`,
+      `http://127.0.0.1:${vitePort}/src/main.tsx`,
       60_000
     );
     const moduleBody = await moduleResponse.text();

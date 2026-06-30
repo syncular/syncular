@@ -1,4 +1,8 @@
-import type { SyncularClientStatus } from '@syncular/client';
+import {
+  getSyncularBrowserHealth,
+  type SyncularBrowserHealth,
+  type SyncularClientStatus,
+} from '@syncular/client';
 import { createSyncularReact } from '@syncular/client/react';
 import type { FormEvent } from 'react';
 import { useEffect, useRef, useState } from 'react';
@@ -58,7 +62,7 @@ export function App() {
       <section className="client-pane" aria-label="Tasks">
         {client ? (
           <SyncProvider client={client}>
-            <TaskPane />
+            <TaskPane client={client} />
           </SyncProvider>
         ) : (
           <p className="empty-state">Opening local database…</p>
@@ -68,7 +72,7 @@ export function App() {
   );
 }
 
-function TaskPane() {
+function TaskPane({ client }: { client: AppSyncClient }) {
   // Live query: re-renders whenever synced rows change, locally or remotely.
   const { data: tasks, error: queryError } = useSyncQuery(
     ({ selectFrom }) =>
@@ -81,7 +85,29 @@ function TaskPane() {
   const mutations = useMutations();
   const outbox = useOutboxStats();
   const status = useSyncStatus();
+  const [health, setHealth] = useState<SyncularBrowserHealth | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    let disposed = false;
+    const refresh = () => {
+      void getSyncularBrowserHealth(client)
+        .then((nextHealth) => {
+          if (!disposed) setHealth(nextHealth);
+        })
+        .catch(() => {
+          if (!disposed) setHealth(null);
+        });
+    };
+    refresh();
+    const unsubscribeLifecycle = client.on('lifecycleChanged', refresh);
+    const unsubscribeBootstrap = client.on('bootstrapChanged', refresh);
+    return () => {
+      disposed = true;
+      unsubscribeLifecycle();
+      unsubscribeBootstrap();
+    };
+  }, [client]);
 
   const rows = tasks ?? [];
   const doneCount = rows.filter((task) => task.completed).length;
@@ -109,6 +135,8 @@ function TaskPane() {
         <h2>Tasks</h2>
         <StatusBadge state={paneStatus(status)} />
       </div>
+
+      {health ? <HealthLine health={health} /> : null}
 
       <form className="add-row" onSubmit={addTask}>
         <input ref={inputRef} aria-label="New task" placeholder="New task" />
@@ -190,6 +218,26 @@ function TaskItem({
         ×
       </button>
     </div>
+  );
+}
+
+function HealthLine({ health }: { health: SyncularBrowserHealth }) {
+  const storage = health.persistence.effectiveStorage ?? 'unknown';
+  const storageLabel =
+    health.persistence.durable === true
+      ? `${storage} durable`
+      : health.persistence.durable === false
+        ? `${storage} memory`
+        : 'storage pending';
+  const subscriptions =
+    health.subscriptions.total === 0
+      ? 'no subscriptions'
+      : `${health.subscriptions.ready}/${health.subscriptions.total} subscriptions`;
+
+  return (
+    <p className={`health-line ${health.status}`}>
+      {storageLabel} · {subscriptions} · realtime {health.realtime.state}
+    </p>
   );
 }
 
