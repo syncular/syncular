@@ -8,6 +8,7 @@ type StalePattern = {
 };
 
 const repoRoot = resolve(join(import.meta.dirname, '..'));
+const rootReferenceFiles = ['README.md'];
 const publicDocRoots = ['apps/docs/content/docs'];
 const packageRoots = ['packages', 'plugins', 'rust/crates'];
 const rustReferenceFiles = [
@@ -84,6 +85,11 @@ const stalePatterns: StalePattern[] = [
       /(?:\bfrom\s+|\bimport\s+|\brequire\(\s*)['"]syncular(?:\/[^'"]*)?['"]/,
     message:
       'The `syncular` package is CLI-only (`npx syncular generate`); import from the scoped `@syncular/*` packages instead.',
+  },
+  {
+    pattern: /\bUmbrella package with re-exports\b|\bone-package imports\b/,
+    message:
+      'The `syncular` package is CLI-only; do not describe it as an import umbrella.',
   },
   {
     pattern: /\/start\/(?:adoption-paths|fresh-apps|basic-setup|good-fit)\b/,
@@ -170,6 +176,11 @@ async function walkPackageDocs(path: string): Promise<string[]> {
 const files = (
   await Promise.all(
     [
+      ...rootReferenceFiles.map((file) =>
+        stat(join(repoRoot, file))
+          .then(() => [join(repoRoot, file)])
+          .catch(() => [])
+      ),
       ...publicDocRoots.map((root) => walk(join(repoRoot, root))),
       ...packageRoots.map((root) => walkPackageDocs(join(repoRoot, root))),
       ...rustReferenceFiles.map((file) =>

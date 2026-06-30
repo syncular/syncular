@@ -41,11 +41,25 @@ Syncular is for apps that want local SQL on every client without giving up serve
 
 ## Quick start
 
-The fastest way to evaluate Syncular is to install dependencies and run the Rust client checks:
+The fastest way to evaluate Syncular as an app is the scaffolded starter:
+
+```bash
+bunx create-syncular-app my-app
+cd my-app
+bun install
+bun dev
+```
+
+Working on this repository instead? Use the pinned Bun version from
+`packageManager` (`bun@1.3.9`). CI downloads that exact release; local Volta or
+system Bun installs may be newer and can change browser/WASM worker behavior.
+If this worktree has the cached binary, prefix it explicitly:
 
 ```bash
 git clone https://github.com/syncular/syncular.git
 cd syncular
+export PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" # macOS arm64 cache, when present
+bun --version  # expect 1.3.9
 bun install
 bun run client:test
 bun run client:tsgo
@@ -118,6 +132,13 @@ bun run client:test
 bun run rust:conformance:fast
 ```
 
+The generic Linux `bun test` path intentionally excludes
+`packages/client/src/__tests__/*.wasm.test.ts`; Bun worker/WASM delivery is
+fragile on Linux under newer Bun releases. For browser/WASM or runtime-worker
+changes, use the dedicated browser gates in
+[`rust/docs/QUALITY_GATES.md`](rust/docs/QUALITY_GATES.md) with pinned Bun
+1.3.9.
+
 See the [Testing docs](https://syncular.dev/docs/testing) for the full testkit API, fault injection patterns, and runtime examples.
 
 ## Supported platforms
@@ -143,11 +164,13 @@ client implementations are no longer a product path.
 
 ## Core packages
 
-Most packages are published under the `@syncular` scope on npm. The umbrella package is published as `syncular`.
+Most packages are published under the `@syncular` scope on npm. The `syncular`
+package is CLI-only (`npx syncular generate`); app code imports from the scoped
+packages and their subpaths.
 
 | Package | Description |
 |---|---|
-| `syncular` | Umbrella package with re-exports for one-package imports |
+| `syncular` | CLI package for `npx syncular generate`, `schema check`, and `codegen install` |
 | `@syncular/server` | Server sync engine (push, pull, pruning, snapshots, blobs) |
 | `@syncular/server/hono` | Hono adapter with HTTP routes, OpenAPI, WebSocket, and console routes |
 | `@syncular/server/cloudflare` | Cloudflare adapter for Workers and Durable Objects |
@@ -161,7 +184,8 @@ Most packages are published under the `@syncular` scope on npm. The umbrella pac
 | `@syncular/migrations` | Versioned migrations with checksum tracking |
 | `@syncular/typegen` | Generate database types from migrations |
 
-Need more? Optional packages cover server blob storage adapters, server CRDT handling, relay, observability, and tooling. See the [Installation guide](https://syncular.dev/docs/start/installation) for the full matrix.
+Need more? Optional subpaths cover server blob storage adapters, server CRDT
+handling, relay, observability, and tooling. See the [Installation guide](https://syncular.dev/docs/start/installation) for the full matrix.
 
 ## Run locally
 

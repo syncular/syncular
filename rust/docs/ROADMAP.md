@@ -107,12 +107,17 @@ read-only review:
     `create-syncular-app`, include a JavaScript import decision table, describe
     optional client/server integrations as subpaths with optional peers, and
     guard the starter-proven `src/generated/syncular.generated.ts` filename
-    through stale-pattern checks. Focused client/CLI/server/blob/testkit tests,
-    package typechecks, fresh JS smoke, scaffold smoke, docs stale check, Rust
-    taxonomy check, and diff check passed locally. A
+    through stale-pattern checks. Contributor docs now lead app evaluation with
+    `create-syncular-app`, document the pinned Bun `1.3.9` local gate path,
+    call out the Linux Worker/WASM exclusion in generic `bun test`, and remove
+    stale Bun `1.3.13`/`1.3.14` guidance. Focused
+    client/CLI/server/blob/testkit tests, package typechecks, fresh JS smoke,
+    scaffold smoke, docs stale check, Rust taxonomy check, and diff check
+    passed locally. A
     Hono/WebSocket/WASM managed-database test also proves the same scope-change
     flow against real remote auth/realtime behavior, including denied-scope
-    diagnostics. Next slice: contributor bootstrap/gate cleanup.
+    diagnostics. Next slice: remaining product-contract decisions, especially
+    global/base-data sharing and `requiresAction` lifecycle semantics.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

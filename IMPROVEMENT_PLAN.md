@@ -216,8 +216,9 @@ Further decisions from the same review (2026-06-11):
   Benjamin decides the release moment (then `npm deprecate` the 7 old names).
 - Bench repo patches stay local for now; old `syncular` JS stack retirement
   deferred.
-- Bun: latest (1.3.14) should be supported — fix the failing WASM-vs-Hono
-  tests rather than pinning down to 1.3.9 (see item 3).
+- Bun: keep the repo pinned to 1.3.9 until a candidate release passes the full
+  browser Worker/WASM suite on Linux. The 1.3.13 bump was tried and reverted;
+  1.3.14 is also affected (see item 3).
 - CI should get warm turbo caches (actions cache / remote cache for `.turbo`).
 
 ## P3 — performance
@@ -319,10 +320,12 @@ uncommitted in the bench clone).
   scoped-artifact bootstrap 10–20% faster than published at 100k+). Item 12
   measured & rejected (evidence in BENCHMARK_LOG). CI turbo cache verified
   already wired (was dead under --force; now live). Bun WASM-test failures
-  root-caused to an upstream 1.3.14 worker-delivery regression; pins bumped
-  to 1.3.13; issue draft in .context/. Item 10 done (umbrella → CLI-only,
-  breaking). Item 11 done (k6 SSP1 reader; found+fixed silent chunk-download
-  failures). All 13 plan items are now done, decided, or honestly rejected.
+  root-caused to an upstream worker-delivery regression affecting 1.3.13 and
+  1.3.14; the failed 1.3.13 bump was reverted and the pin stays at 1.3.9 until
+  the full Linux Worker/WASM suite is green. Issue draft in .context/. Item 10
+  done (umbrella → CLI-only, breaking). Item 11 done (k6 SSP1 reader;
+  found+fixed silent chunk-download failures). All 13 plan items are now done,
+  decided, or honestly rejected.
 - 2026-06-11 (cont. 2): Item 5 DONE — both mega factories split
   (routes.ts 5,260→70; console/routes.ts 5,557→146; mechanically verified
   verbatim moves; openapi.json zero-diff; 178 tests green; knip clean after

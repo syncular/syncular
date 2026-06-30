@@ -3,6 +3,28 @@
 Run the smallest gate that proves the change. Performance-sensitive changes
 also require a before/after comparison in [`BENCHMARK_LOG.md`](BENCHMARK_LOG.md).
 
+## Local Runtime
+
+Use the repo-pinned Bun `1.3.9` for local gates. CI downloads that exact release
+through `.github/actions/setup-environment/action.yml`; newer local installs
+have previously changed Worker/WASM behavior.
+
+```bash
+bun --version
+# expect 1.3.9
+```
+
+If your shell resolves a newer Bun and this worktree has the cached macOS arm64
+binary, prefix it for gates:
+
+```bash
+export PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH"
+```
+
+For another platform, download the Bun `1.3.9` release for that platform and
+put its `bun` binary first on `PATH`. Do not bump `packageManager` or CI Bun
+until the full browser Worker/WASM suite is green on Linux.
+
 ## Gate Selection
 
 - Protocol, sync-pack, snapshot, websocket message, or verification changes:
@@ -19,6 +41,15 @@ also require a before/after comparison in [`BENCHMARK_LOG.md`](BENCHMARK_LOG.md)
   the changed output. Use `bun run rust:codegen:check` for the todo fixture so
   the typed app contract, generated `generated/syncular.codegen.json` handoff,
   and Rust codegen output are checked together.
+- Docs or planning-only changes:
+  run the docs stale check, docs typecheck when public docs changed, and
+  whitespace check.
+
+```bash
+bun run docs:stale-check
+bun --cwd apps/docs types:check
+git diff --check
+```
 
 ## Protocol / Wire Format
 
@@ -72,6 +103,13 @@ bash rust/scripts/run-conformance-gates.sh --native-app-shell
 ```
 
 ## Browser / WASM
+
+The generic Linux `bun test` job intentionally excludes
+`packages/client/src/__tests__/*.wasm.test.ts`; those browser Worker/WASM
+fixtures are covered by the dedicated browser package gates. Bun `1.3.13` and
+`1.3.14` both showed Worker delivery failures in the full Linux suite, so keep
+the repo on Bun `1.3.9` unless a candidate version passes that full suite on
+Linux.
 
 ```bash
 CC_wasm32_unknown_unknown=/opt/homebrew/opt/llvm/bin/clang \

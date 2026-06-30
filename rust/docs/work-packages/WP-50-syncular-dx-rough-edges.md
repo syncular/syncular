@@ -640,6 +640,15 @@ online propagation, or reconnect behavior can change.
   `src/generated/syncular.generated.ts` output.
 - The docs stale-pattern check now blocks the old `syncular.browser` generated
   filename in app-facing docs and package README/reference files.
+- 2026-06-30 twelfth implementation slice cleaned up contributor bootstrap and
+  gate guidance: the root README now leads app evaluation with
+  `create-syncular-app`, tells maintainers to use Bun `1.3.9`, explains the
+  generic Linux `bun test` WASM-worker exclusion, and no longer describes
+  `syncular` as an import umbrella.
+- `rust/docs/QUALITY_GATES.md` now starts with local Bun pin guidance, explicit
+  docs-only gates, and a Browser/WASM warning that Bun `1.3.13` and `1.3.14`
+  both failed the full Linux Worker/WASM suite. The older contradictory Bun
+  notes in `IMPROVEMENT_PLAN.md` were corrected.
 
 ## Implementation Log
 
@@ -765,6 +774,18 @@ online propagation, or reconnect behavior can change.
   subpaths are used.
 - 2026-06-30: Extended `docs:stale-check` to reject the old
   `syncular.browser` generated filename in scanned docs and package references.
+- 2026-06-30: Updated the root README with the app-first scaffold path,
+  contributor Bun `1.3.9` bootstrap, Linux WASM-worker test caveat, and the
+  current CLI-only `syncular` package story.
+- 2026-06-30: Added local runtime and docs-only gate guidance to
+  `rust/docs/QUALITY_GATES.md`, including the pinned-Bun requirement and the
+  dedicated Browser/WASM gate caveat.
+- 2026-06-30: Corrected stale `IMPROVEMENT_PLAN.md` notes that still said the
+  repo should support Bun `1.3.14` or stay bumped to `1.3.13`; the plan now
+  consistently says the pin remains `1.3.9` until the full Linux Worker/WASM
+  suite is green.
+- 2026-06-30: Extended `docs:stale-check` to scan the root README and reject
+  old `syncular` import-umbrella wording.
 
 ## Latest Gates
 
@@ -849,7 +870,10 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    starter-first Fresh JavaScript guidance, optional subpath peer guidance, and
    a stale-pattern guard for the old generated filename.
 9. Finish with contributor bootstrap/gate cleanup so maintainers can keep the
-   path green.
+   path green: first docs/guard slice is done with root README setup guidance,
+   pinned-Bun gate guidance, Linux WASM-worker caveats, corrected Bun narrative
+   in the improvement plan, and stale-check coverage for root README package
+   surface drift.
 
 ## Open Questions
 
@@ -883,6 +907,7 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 
 ## Next Action
 
-Pick the next implementation slice: contributor bootstrap/gate cleanup so
-maintainers can discover the pinned Bun path, known WASM-worker CI fragility,
-and task-specific gates before running the wrong long gate.
+Pick the next implementation slice: audit remaining product-contract decisions
+from the open questions, especially the blessed global/base-data sharing
+pattern and where `requiresAction` should live in the app-facing lifecycle
+surface.
