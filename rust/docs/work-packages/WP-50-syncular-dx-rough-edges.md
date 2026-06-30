@@ -783,6 +783,47 @@ Do not retain these as solutions:
   console-only insight should map back to a stable app-facing code, support
   bundle field, or testkit assertion.
 
+### Feedback-Driven Acceptance Matrix
+
+Use this matrix when selecting future slices. A feedback item is only "done"
+when the right public surface, docs, and gate exist for the audience that will
+hit the problem.
+
+- Browser persistence: must ship as code plus deploy/browser smokes, not docs
+  alone. The app should fail loudly or report explicit test/dev fallback when
+  OPFS/IndexedDB/WASM/Worker prerequisites are missing or assets are served
+  incorrectly.
+- Bootstrap and local freshness: must ship as generated/app-facing helpers and
+  stable state, not recipes that call `sync()` after every command. Per-view
+  readiness should eventually name subscription, scope/table, blocker, and
+  recovery owner.
+- Auth and permissions: must ship as one blessed scope-change path, typed
+  denied/revoked errors, and testkit helpers. String-matching server messages
+  is not an acceptable app or test contract.
+- Realtime: must prove the whole chain, not only socket connectivity. The
+  acceptable artifact links scope joined, event cursor, pull/recovery reason,
+  sync attempt/request id, local apply, and local visibility.
+- Blobs and base data: must preserve the authority model. Shared bytes are
+  allowed, but scoped metadata rows or explicit shared partitions grant access;
+  global hashes or package rows must never become implicit cross-scope grants.
+- Schema and deploy: must stay operator/deploy-owned. Request-startup
+  migrations, hidden bootstrap schema creation, or human-only deployment
+  checks are not acceptable production defaults.
+- E2E and failure artifacts: happy-path smokes are insufficient. The canonical
+  recipe should exercise real auth, real browser persistence, realtime,
+  offline replay, denied scope, blob access, and redacted failure artifacts.
+- API audience hygiene: every exposed helper should say whether it is
+  UI-facing, generated-app-facing, operator/deploy, testkit/E2E,
+  debug/support, or advanced. If the audience is unclear, app code will grow
+  accidental escape hatches.
+- Dependency and package shape: keep optional peers behind subpaths and prove
+  side-effect isolation with import matrices. Do not split or publish packages
+  merely to make dependency graphs look smaller.
+- Operations depth: schema readiness and upgrade order are the first layer.
+  A mature product still needs backup/restore drills, blob-store consistency
+  checks, rate-limit tuning, credential rotation, rollback guidance, and local
+  database recovery procedures.
+
 ## Required Gates
 
 For planning/doc-only edits:
@@ -860,6 +901,11 @@ online propagation, or reconnect behavior can change.
   auth/scope vocabulary, scoped blob authority, schema-readiness layering,
   canonical negative-path E2E, support-bundle contents, outbox/conflict UX,
   production-ops depth, browser/bundler matrix, and explicit things not to do.
+- A follow-up feedback acceptance matrix now says which pasted-feedback items
+  need code, gates, docs, and public contracts before they can be considered
+  done, with explicit acceptance bars for browser persistence, local
+  freshness, auth, realtime, blobs, deploy, E2E artifacts, API audience labels,
+  optional dependency boundaries, and production operations.
 - A later rough-edge expansion captured additional non-happy-path product
   prompts around browser support matrices, SSR/bundler boundaries, runtime
   state-machine semantics, version/asset alignment, negative-path recipes,
@@ -1354,6 +1400,9 @@ online propagation, or reconnect behavior can change.
   variants, package splits for dependency optics, implicit global blob access,
   request-startup migrations, raw synced SQL writes, old client compatibility,
   and console-only debugging.
+- 2026-07-01: Added a feedback-driven acceptance matrix for future WP-50
+  slices, making the pasted feedback actionable by audience and completion
+  standard instead of leaving it as broad DX sentiment.
 - 2026-07-01: Added `packages/client/src/runtime-timeline.ts`, exported
   `getSyncularRuntimeTimeline(...)` from `@syncular/client`, and added
   `SyncularDatabase.runtimeTimeline(...)` as a managed database method. The
@@ -1634,6 +1683,12 @@ Most recent feedback-addendum rerun:
 - `git diff --check`
 - Manual Markdown sanity read of the inserted addendum and surrounding
   evidence/log sections.
+
+Most recent feedback-acceptance-matrix rerun:
+
+- `git diff --check`
+- Manual Markdown sanity read of the inserted matrix, current evidence, roadmap
+  summary, and implementation log entries.
 
 Most recent runtime-timeline rerun:
 

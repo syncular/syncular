@@ -161,7 +161,12 @@ read-only review:
     negative-path recipes, outbox/conflict UX, local database maintenance,
     redacted support bundles, telemetry/SLO mapping, security authority
     modeling, upgrade/rollback states, API audience hygiene, and deterministic
-    sync/realtime timeline artifacts. Local recovery controls now expose a
+    sync/realtime timeline artifacts. It also includes a feedback-driven
+    acceptance matrix so future slices treat browser persistence, local
+    freshness, auth, realtime, blobs, deploy readiness, E2E artifacts, API
+    audience hygiene, optional dependencies, and production operations as
+    public contracts with gates rather than broad sentiment. Local recovery
+    controls now expose a
     first app-facing plan/action API through
     `getSyncularLocalRecoveryPlan(...)`,
     `runSyncularLocalRecoveryAction(...)`, and managed database methods
