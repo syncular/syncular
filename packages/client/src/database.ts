@@ -69,6 +69,11 @@ import {
   type SyncularSchemaReadinessResult,
 } from './schema-readiness';
 import { assertSyncularReadonlySql } from './sql-safety';
+import {
+  getSyncularSupportBundle,
+  type SyncularSupportBundle,
+  type SyncularSupportBundleOptions,
+} from './support-bundle';
 import type {
   CreateSyncularDatabaseOptions,
   SyncularAuthLeaseRecord,
@@ -147,6 +152,9 @@ export interface SyncularDatabase<DB> extends SyncularLiveQueries {
     action: SyncularLocalRecoveryAction,
     options?: SyncularRunLocalRecoveryActionOptions
   ): Promise<SyncularLocalRecoveryActionResult>;
+  exportSupportBundle(
+    options?: SyncularSupportBundleOptions
+  ): Promise<SyncularSupportBundle>;
   exportLocalSupportBundle(): Promise<SyncularLocalSupportBundle>;
   on<T extends SyncularClientEventType>(
     event: T,
@@ -346,6 +354,17 @@ export async function createSyncularDatabase<DB>(
       getSyncularLocalRecoveryPlan(client, recoveryOptions),
     runLocalRecoveryAction: (action, recoveryOptions) =>
       runSyncularLocalRecoveryAction(client, action, recoveryOptions),
+    exportSupportBundle: (supportOptions) =>
+      getSyncularSupportBundle(
+        {
+          diagnosticSnapshot: () => client.diagnosticSnapshot(),
+          getStatus: () => getSyncularClientStatus(client),
+          runtimeInfo: () => client.runtimeInfo(),
+          generatedSchemaState: () => client.generatedSchemaState(),
+          exportLocalSupportBundle: () => client.exportLocalSupportBundle(),
+        },
+        supportOptions
+      ),
     exportLocalSupportBundle: () => client.exportLocalSupportBundle(),
     on: (event, listener) => client.addEventListener(event, listener),
     getStatus: () => getSyncularClientStatus(client),

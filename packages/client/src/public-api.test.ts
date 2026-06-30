@@ -10,6 +10,7 @@ import {
   getSyncularPackagedRuntimeArtifacts,
   getSyncularRuntimeTimeline,
   getSyncularSchemaReadiness,
+  getSyncularSupportBundle,
   replaceSyncularAuthContext,
   resolveSyncularClientConfig,
   runSyncularLocalRecoveryAction,
@@ -83,6 +84,10 @@ describe('@syncular/client public API', () => {
 
   it('exports the runtime timeline helper', () => {
     expect(typeof getSyncularRuntimeTimeline).toBe('function');
+  });
+
+  it('exports the support bundle helper', () => {
+    expect(typeof getSyncularSupportBundle).toBe('function');
   });
 
   it('exports the diagnostic detail policy helper', () => {

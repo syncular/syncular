@@ -915,6 +915,13 @@ online propagation, or reconnect behavior can change.
   managed lifecycle status into ordered, redacted phase events for runtime,
   lifecycle, bootstrap, sync, auth, realtime, storage, local-apply, outbox,
   conflict, and blob support/test reports.
+- The first composed support-bundle slice adds
+  `getSyncularSupportBundle(...)` and
+  `SyncularDatabase.exportSupportBundle(...)`, combining browser health,
+  runtime timeline, schema readiness, optional deployment preflight, section
+  failures, local support data, package/runtime versions, sync/trace ids,
+  subscription cursors, and diagnostic redaction decisions into one redacted
+  incident artifact.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1299,6 +1306,16 @@ online propagation, or reconnect behavior can change.
   action-required state.
 - 2026-07-01: Updated public observability docs so E2E/support workflows use
   `runtimeTimeline()` before falling back to raw `diagnosticSnapshot()` dumps.
+- 2026-07-01: Added `packages/client/src/support-bundle.ts`, exported
+  `getSyncularSupportBundle(...)` from `@syncular/client`, and added
+  `SyncularDatabase.exportSupportBundle(...)` as the composed incident bundle
+  surface over browser health, runtime timeline, schema readiness, optional
+  deployment preflight, local support bundle, section errors, runtime/package
+  versions, sync/trace ids, subscription cursors, and diagnostic redaction
+  decisions.
+- 2026-07-01: Updated package README and public observability docs to
+  distinguish `exportSupportBundle()` from low-level
+  `exportLocalSupportBundle()` and to call out runtime asset URL redaction.
 
 ## Latest Gates
 
@@ -1436,6 +1453,15 @@ Most recent runtime-timeline rerun:
 - `bun test packages/client/src/runtime-timeline.test.ts packages/client/src/public-api.test.ts`
 - `bun --cwd packages/client tsgo`
 - `bunx biome check packages/client/src/runtime-timeline.ts packages/client/src/runtime-timeline.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx`
+- `bun --cwd apps/docs types:check`
+- `bun run docs:stale-check`
+- `git diff --check`
+
+Most recent support-bundle rerun:
+
+- `bun test packages/client/src/support-bundle.test.ts packages/client/src/runtime-timeline.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/support-bundle.ts packages/client/src/support-bundle.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx`
 - `bun --cwd apps/docs types:check`
 - `bun run docs:stale-check`
 - `git diff --check`
@@ -1602,10 +1628,12 @@ Most recent runtime-timeline rerun:
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
-  Remaining work is to enrich support exports with deployment preflight,
-  schema readiness, runtime timeline, realtime cursors, request ids, package
-  versions, and diagnostic redaction decisions in one production incident
-  bundle.
+  First composed support-bundle slice is also done for browser health, runtime
+  timeline, schema readiness, optional deployment preflight, local support
+  data, section errors, package/runtime versions, sync/trace ids,
+  subscription cursors, and diagnostic redaction policy. Remaining work is to
+  prove the composed bundle in a real browser failure artifact and decide
+  whether server Console/Fleet should ingest the same artifact shape.
 - Outbox and conflict UX: make queued/retrying/rejected/conflicted mutations,
   command correlation, retry state, and local visibility expectations stable
   enough for generated app UI and tests.
@@ -1624,6 +1652,7 @@ Most recent runtime-timeline rerun:
 
 Pick the next implementation slice from the remaining risks. Strong candidates
 are browser-capable CI enforcement for the built-preview smoke, multi-tab
-lifecycle coverage, support-bundle enrichment, or outbox/conflict UX, because
-those remain broad DX holes after the first local recovery browser proof,
-upgrade runbook, built-preview asset smoke, and runtime timeline helper.
+lifecycle coverage, outbox/conflict UX, or real-browser support-bundle failure
+artifacts, because those remain broad DX holes after the first local recovery
+browser proof, upgrade runbook, built-preview asset smoke, runtime timeline
+helper, and composed support-bundle helper.

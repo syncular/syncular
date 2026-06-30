@@ -112,6 +112,23 @@ local database repair or sign-out/reset flows, start from
 `localRecoveryPlan()` and export a local support bundle only when support needs
 the redacted local health tables.
 
+When you need one support artifact for a production incident, use the composed
+support bundle:
+
+```ts
+const bundle = await database.exportSupportBundle({
+  deploymentPreflight: { checkRuntimeAssets: true },
+});
+```
+
+The bundle is redacted by default. It combines browser health, runtime
+timeline, schema readiness, optional browser deployment preflight, section
+errors, package/runtime versions, sync attempt and trace IDs, subscription
+cursors, diagnostic redaction policy decisions, and the redacted local support
+bundle. Runtime asset URLs are represented as redacted fields in this artifact;
+keep raw `diagnosticSnapshot()` and raw browser health payloads local unless
+you have your own redaction step.
+
 ## Diagnostic Privacy And Audience
 
 Diagnostics are safe-by-default operational signals, not a raw payload export.
@@ -137,8 +154,8 @@ Pick the narrowest surface for the job:
 | --- | --- |
 | UI-facing app code | `getSyncularBrowserHealth(...)`, managed lifecycle status, generated readiness helpers, and stable `recommendedAction` values |
 | Operator/deploy | `syncular schema check --json`, `getSyncularServerSchemaReadiness(...)`, server telemetry, and Console request events |
-| Debug/console | `diagnosticSnapshot()`, `runtimeTimeline()`, and Console diagnostics snapshots after redaction/compaction |
-| Testkit/E2E | `runtimeTimeline()`, `requireDiagnosticMarker(...)`, and stable error/detail codes instead of message matching |
+| Debug/console | `diagnosticSnapshot()`, `runtimeTimeline()`, `exportSupportBundle()`, and Console diagnostics snapshots after redaction/compaction |
+| Testkit/E2E | `runtimeTimeline()`, `exportSupportBundle()`, `requireDiagnosticMarker(...)`, and stable error/detail codes instead of message matching |
 | Advanced escape hatch | Raw diagnostics sinks for short-lived local debugging; redact before shipping to external services |
 
 ## Metrics worth watching

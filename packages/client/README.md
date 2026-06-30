@@ -495,6 +495,18 @@ for (const event of timeline.events) {
 }
 ```
 
+When support needs one redacted incident artifact, export the composed support
+bundle. It includes browser health, runtime timeline, schema readiness, the
+local support bundle, section failures, package versions, sync/trace IDs, and
+the diagnostic redaction policy. Pass a deployment preflight result or options
+when you also want browser/runtime asset checks in the artifact:
+
+```ts
+const bundle = await syncular.exportSupportBundle({
+  deploymentPreflight: { checkRuntimeAssets: true },
+});
+```
+
 ## Realtime
 
 Realtime is optional and runs inside the same dedicated Worker as Rust-owned

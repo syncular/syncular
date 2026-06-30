@@ -173,7 +173,13 @@ read-only review:
     `SyncularDatabase.runtimeTimeline(...)`, projecting diagnostic snapshots
     and lifecycle status into ordered, redacted phase events for runtime,
     lifecycle, bootstrap, sync, auth, realtime, storage, local-apply, outbox,
-    conflict, and blob support/test reports. The
+    conflict, and blob support/test reports. Composed support bundles now add
+    `getSyncularSupportBundle(...)` and
+    `SyncularDatabase.exportSupportBundle(...)`, combining browser health,
+    runtime timeline, schema readiness, optional deployment preflight, section
+    failures, local support data, package/runtime versions, sync/trace ids,
+    subscription cursors, and diagnostic redaction decisions into one redacted
+    incident artifact. The
     Hono-backed browser/WASM local-health test now exercises that plan/action
     API against the real Worker runtime for corrupted subscription state,
     orphaned verified roots, confirmation failure, and successful
