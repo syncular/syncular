@@ -141,6 +141,8 @@ jobs:
         with:
           workspaces: rust -> target
 
+      - uses: ./.github/actions/setup-environment
+
       - name: Run Rust native checks
         run: |
           cargo fmt --manifest-path rust/Cargo.toml --all -- --check
@@ -148,12 +150,7 @@ jobs:
           cargo check --manifest-path rust/Cargo.toml -p syncular-runtime --no-default-features
           cargo check --manifest-path rust/Cargo.toml -p syncular-client --no-default-features --features native,crdt-yjs
           cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check
-          cargo publish --manifest-path rust/crates/syncular/Cargo.toml --dry-run
-          cargo publish --manifest-path rust/crates/protocol/Cargo.toml --dry-run
-          cargo publish --manifest-path rust/crates/codegen/Cargo.toml --dry-run
-          cargo publish --manifest-path rust/crates/runtime/Cargo.toml --dry-run
-          cargo publish --manifest-path rust/crates/testkit/Cargo.toml --dry-run
-          cargo publish --manifest-path rust/crates/client/Cargo.toml --dry-run
+          bun run release:cargo:package-check
 
   rust-browser-wasm:
     needs: changes
