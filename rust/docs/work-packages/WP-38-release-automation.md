@@ -90,6 +90,11 @@ the npm packages without publishing public crates from every `main` merge.
   the heavier harnesses to `@syncular/testkit/client-bridge` and
   `@syncular/testkit/server`, with the server/client packages as optional peer
   dependencies instead of always-installed runtime dependencies.
+- The first `0.1.3` tag run published npm packages and crates successfully, but
+  the final package API smoke had built its combined request with a push object
+  shape instead of a `commits` array. The smoke now exercises
+  `createSyncPushRequest`, `createSyncPullRequest`, and
+  `createSyncCombinedRequest` with the correct shape.
 
 ## Gates
 
@@ -114,6 +119,9 @@ the npm packages without publishing public crates from every `main` merge.
   --work-dir .context/debug-post-publish-smoke-012 --keep` confirmed the
   runtime-smoke skip path, then exposed the published `0.1.2` testkit root
   import issue that the `0.1.3` train fixes.
+- `SYNCULAR_POST_PUBLISH_JS_RUNTIME_SMOKE=0 bun
+  scripts/post-publish-install-smokes.ts --version 0.1.3 --skip-rust
+  --work-dir .context/debug-post-publish-smoke-013 --keep`
 - `bun --cwd packages/testkit build`
 - `bun --cwd packages/testkit tsgo`
 - `bun test packages/testkit/src/audit.test.ts packages/testkit/src/faults.test.ts

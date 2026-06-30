@@ -306,6 +306,8 @@ import { createSyncularReact } from '@syncular/client/react';
 import { generateTypes } from '@syncular/typegen';
 import {
   createSyncCombinedRequest,
+  createSyncPullRequest,
+  createSyncPushRequest,
   createSyncSubscription,
   createSyncUpsertOperation
 } from '@syncular/testkit';
@@ -354,28 +356,39 @@ if (!(wasmUrl instanceof URL)) {
   throw new Error('@syncular/client did not expose packaged runtime URLs');
 }
 
+const clientId = 'fresh-js-smoke';
+const push = createSyncPushRequest({
+  clientId,
+  clientCommitId: 'commit-fresh-js-smoke',
+  schemaVersion: 1,
+  operations: [
+    createSyncUpsertOperation({
+      table: 'tasks',
+      rowId: 'task-fresh-js-smoke',
+      payload: { title: 'Fresh JS smoke', completed: 0, user_id: 'user-js' }
+    })
+  ]
+});
+const pull = createSyncPullRequest({
+  clientId,
+  limitCommits: 10,
+  subscriptions: [
+    createSyncSubscription({
+      id: 'sub-tasks',
+      table: 'tasks',
+      scopes: { user_id: 'user-js' }
+    })
+  ]
+});
 const request = createSyncCombinedRequest({
-  clientId: 'fresh-js-smoke',
+  clientId,
   push: {
-    clientCommitId: 'commit-fresh-js-smoke',
-    schemaVersion: 1,
-    operations: [
-      createSyncUpsertOperation({
-        table: 'tasks',
-        rowId: 'task-fresh-js-smoke',
-        payload: { title: 'Fresh JS smoke', completed: 0, user_id: 'user-js' }
-      })
-    ]
+    commits: push.commits
   },
   pull: {
-    limitCommits: 10,
-    subscriptions: [
-      createSyncSubscription({
-        id: 'sub-tasks',
-        table: 'tasks',
-        scopes: { user_id: 'user-js' }
-      })
-    ]
+    schemaVersion: 1,
+    limitCommits: pull.limitCommits,
+    subscriptions: pull.subscriptions
   }
 });
 
