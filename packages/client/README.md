@@ -647,6 +647,37 @@ Tombstone cleanup is intentionally not enabled by age alone; deleting
 soft-deleted app rows before the server/version contract says they are safe can
 break later sync repair.
 
+For user-facing or support-facing recovery, ask the managed database for a
+local recovery plan before running storage operations directly. The plan wraps
+local health, lifecycle state, failed outbox/blob upload state, and redacted
+support-bundle export into typed actions. Destructive actions require the
+action's confirmation text before they run:
+
+```ts
+const plan = await syncular.localRecoveryPlan({
+  includeMaintenanceActions: true,
+});
+
+if (plan.requiresAction) {
+  showRecoveryChoices(plan.actions);
+}
+
+const action = plan.actions.find(
+  (candidate) => candidate.kind === 'clear-orphaned-state'
+);
+
+if (action) {
+  await syncular.runLocalRecoveryAction(action, {
+    confirmationText: action.confirmationText,
+  });
+}
+```
+
+Use `localRecoveryPlan({ includeResetAction: true })` only for explicit
+product flows such as sign-out or operator-directed rebootstrap. Reset actions
+still go through the Rust runtime guardrails, including refusing unsafe states
+such as clearing synced rows while the local outbox is not empty.
+
 ## CRDT Document Fields
 
 Generated app clients expose schema-derived CRDT field helpers, and the

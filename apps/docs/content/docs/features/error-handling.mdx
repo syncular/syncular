@@ -149,6 +149,36 @@ if (health.requiresAction) {
 `checkPermissions`, schema mismatches map to regenerate or upgrade actions, and
 worker failures map to `recreateClient`.
 
+For local database recovery, prefer the managed recovery plan before calling
+low-level storage helpers. It turns local health findings, failed outbox/blob
+upload state, lifecycle errors, and redacted support-bundle export into typed
+actions with confirmation required for destructive repairs:
+
+```ts
+const plan = await syncular.localRecoveryPlan();
+
+for (const action of plan.actions) {
+  if (action.kind === "export-support-bundle") {
+    await syncular.runLocalRecoveryAction(action);
+  }
+}
+
+const repair = plan.actions.find(
+  (action) => action.kind === "clear-orphaned-state",
+);
+
+if (repair) {
+  await syncular.runLocalRecoveryAction(repair, {
+    confirmationText: repair.confirmationText,
+  });
+}
+```
+
+Use `localRecoveryPlan({ includeResetAction: true })` only for explicit
+sign-out, support, or operator-directed rebootstrap flows. Reset and repair
+actions still run through the Rust runtime guardrails; for example, clearing
+synced rows refuses to proceed while the local outbox is not empty.
+
 Manual reconnect is just a lifecycle start/sync request:
 
 ```ts

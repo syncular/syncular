@@ -153,7 +153,21 @@ read-only review:
     then imports the folded client/server subpaths for React, Sentry, Tauri,
     React Native, CRDT/Yjs, Hono, Cloudflare, Bun SQLite, D1, LibSQL, Neon,
     PGlite, Postgres, SQLite, filesystem, S3, service-worker, relay, and
-    snapshot artifact helpers.
+    snapshot artifact helpers. The rough-edge register now also carries the
+    next-layer product prompts for browser support and SSR/bundler matrices,
+    lifecycle state-machine semantics, version/asset compatibility,
+    negative-path recipes, outbox/conflict UX, local database maintenance,
+    redacted support bundles, telemetry/SLO mapping, security authority
+    modeling, upgrade/rollback states, API audience hygiene, and deterministic
+    sync/realtime timeline artifacts. Local recovery controls now expose a
+    first app-facing plan/action API through
+    `getSyncularLocalRecoveryPlan(...)`,
+    `runSyncularLocalRecoveryAction(...)`, and managed database methods
+    `localRecoveryPlan(...)`, `runLocalRecoveryAction(...)`, and
+    `exportLocalSupportBundle()`, classifying local health repairs, lifecycle
+    action-required state, failed outbox/blob retries, storage maintenance,
+    guarded reset requests, and redacted support-bundle export into typed
+    actions with confirmation required for destructive operations.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

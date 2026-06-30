@@ -38,6 +38,15 @@ import {
 import { createSyncularConsoleDiagnosticsPublisher } from './console-diagnostics';
 import { isSyncularOfflineError } from './errors';
 import {
+  getSyncularLocalRecoveryPlan,
+  runSyncularLocalRecoveryAction,
+  type SyncularLocalRecoveryAction,
+  type SyncularLocalRecoveryActionResult,
+  type SyncularLocalRecoveryPlan,
+  type SyncularLocalRecoveryPlanOptions,
+  type SyncularRunLocalRecoveryActionOptions,
+} from './local-recovery';
+import {
   type SyncularLocalVisibilityOptions,
   type SyncularLocalVisibilityQuery,
   waitForSyncularLocalVisibility,
@@ -69,6 +78,7 @@ import type {
   SyncularLiveQueryEvent,
   SyncularLiveQueryOptions,
   SyncularLiveQuerySubscription,
+  SyncularLocalSupportBundle,
   SyncularNetworkStatusSource,
   SyncularRuntimeClient,
   SyncularSqlClient,
@@ -122,6 +132,14 @@ export interface SyncularDatabase<DB> extends SyncularLiveQueries {
   schemaReadiness(
     options?: SyncularSchemaReadinessOptions
   ): Promise<SyncularSchemaReadinessResult>;
+  localRecoveryPlan(
+    options?: SyncularLocalRecoveryPlanOptions
+  ): Promise<SyncularLocalRecoveryPlan>;
+  runLocalRecoveryAction(
+    action: SyncularLocalRecoveryAction,
+    options?: SyncularRunLocalRecoveryActionOptions
+  ): Promise<SyncularLocalRecoveryActionResult>;
+  exportLocalSupportBundle(): Promise<SyncularLocalSupportBundle>;
   on<T extends SyncularClientEventType>(
     event: T,
     listener: SyncularClientEventSink<T>
@@ -308,6 +326,11 @@ export async function createSyncularDatabase<DB>(
       ),
     schemaReadiness: (readinessOptions) =>
       getSyncularSchemaReadiness(client, readinessOptions),
+    localRecoveryPlan: (recoveryOptions) =>
+      getSyncularLocalRecoveryPlan(client, recoveryOptions),
+    runLocalRecoveryAction: (action, recoveryOptions) =>
+      runSyncularLocalRecoveryAction(client, action, recoveryOptions),
+    exportLocalSupportBundle: () => client.exportLocalSupportBundle(),
     on: (event, listener) => client.addEventListener(event, listener),
     getStatus: () => getSyncularClientStatus(client),
     setSubscriptions: (subscriptions) => client.setSubscriptions(subscriptions),

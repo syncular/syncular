@@ -6,10 +6,12 @@ import {
   createSyncularDatabase,
   getSyncularBrowserDeploymentPreflight,
   getSyncularBrowserHealth,
+  getSyncularLocalRecoveryPlan,
   getSyncularPackagedRuntimeArtifacts,
   getSyncularSchemaReadiness,
   replaceSyncularAuthContext,
   resolveSyncularClientConfig,
+  runSyncularLocalRecoveryAction,
   SYNCULAR_DEFAULT_STORAGE,
   SYNCULAR_DIAGNOSTIC_DETAIL_POLICY,
   SYNCULAR_PACKAGE_NAME,
@@ -71,6 +73,11 @@ describe('@syncular/client public API', () => {
 
   it('exports the schema readiness helper', () => {
     expect(typeof getSyncularSchemaReadiness).toBe('function');
+  });
+
+  it('exports local recovery helpers', () => {
+    expect(typeof getSyncularLocalRecoveryPlan).toBe('function');
+    expect(typeof runSyncularLocalRecoveryAction).toBe('function');
   });
 
   it('exports the diagnostic detail policy helper', () => {

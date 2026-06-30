@@ -9,6 +9,7 @@ export * from './command-history';
 export * from './console-diagnostics';
 export * from './database';
 export * from './errors';
+export * from './local-recovery';
 export * from './local-visibility';
 export * from './mutations';
 export * from './network';

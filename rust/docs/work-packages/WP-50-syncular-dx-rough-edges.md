@@ -554,6 +554,71 @@ Acceptance guardrails:
 - Blob, auth, schema, and realtime failures should say who can recover them:
   runtime retry, app auth/scope action, user action, or operator/deploy action.
 
+### Additional Implementation Prompts Worth Capturing
+
+These are the extra rough edges worth keeping in WP-50 even where they were
+not stated directly in the pasted feedback. They are the places where a
+polished first-run experience can still fall apart once an app reaches real
+browsers, SSR/bundlers, offline queues, and production operations.
+
+- Browser support matrix: publish and test the real persistence story for
+  Chrome, Safari, Firefox, private/incognito modes, iOS/WebView, and PWA
+  contexts. The answer should name which environments support durable
+  SQLite/WASM storage, which need feature flags or fallbacks, and which should
+  fail loudly instead of pretending to be offline-first.
+- SSR and bundler boundaries: root imports should remain safe in SSR, Next,
+  Vite, Bun, Node, and Cloudflare build graphs. Browser-only globals, Workers,
+  WASM asset fetches, native drivers, and optional peers should be reached only
+  from the relevant runtime/subpath and only when the app opens that surface.
+- Runtime state machine: document and expose the observable lifecycle as a
+  small state model, not just status snippets. A user should be able to trace
+  configured -> storage open -> schema ready -> bootstrapping -> locally
+  visible -> realtime connected -> recovering/requires-action -> destroyed,
+  including legal transitions and what app code may do in each state.
+- Version and asset alignment: the TypeScript package, generated client,
+  local schema metadata, server schema/protocol, and served WASM runtime asset
+  must be checkable as one compatibility story. Stale CDN assets or a mismatched
+  generated client should produce a named issue, not a generic Worker/runtime
+  failure.
+- Negative-path starter/testkit recipes: keep the starter UI small, but the
+  tested golden path should include copyable negative flows: revoked scope,
+  expired auth, missing schema, blob denied/missing object, offline queued write,
+  realtime reconnect, and local recovery. Happy-path-only smokes will miss the
+  rough edges users actually hit.
+- Outbox, backpressure, and conflict UX: apps need a stable way to show queued,
+  retrying, rejected, conflicted, superseded, and needs-user-action mutations.
+  Generated mutations should make command correlation, retry state, and local
+  visibility expectations understandable without exposing raw internal tables.
+- Local database maintenance: quota pressure, compaction/vacuum, blob-cache
+  eviction, OPFS/IndexedDB corruption, sign-out wipe, and incompatible local
+  schema recovery should have guarded app-facing operations with typed
+  consequences. Recovery should never be a mystery mix of clearing site data
+  and hoping bootstrap starts over.
+- Support bundle helper: a failing app test or production support report should
+  be able to collect a redacted bundle containing browser health, deployment
+  preflight, schema readiness, recent diagnostic markers, outbox summary,
+  realtime cursors, request ids, package versions, and safe storage metadata.
+- Telemetry and SLO mapping: `requiresAction`, diagnostic codes, rate-limit
+  events, bootstrap duration, local-visibility delay, outbox age, realtime
+  reconnects, and blob failures should map cleanly to metrics/logs/Sentry
+  without exposing tokens, signed URLs, or row payloads.
+- Security and authority explainer: the docs need one precise model for actor,
+  token claims, campaign/project membership, row scope, partition id, blob
+  reference row, and storage object. Users should understand why a hash or
+  global package row does not grant scoped access by itself.
+- Upgrade and rollback state diagram: operator docs should cover old browser
+  client + new server, new generated client + old server, local database
+  schema too old/new, failed migration, bad generated output, rollback after a
+  bad release, and when local reset/rebootstrap is safe.
+- API naming and audience hygiene: root helpers, generated wrappers,
+  operator/CLI checks, testkit utilities, debug snapshots, and advanced raw
+  worker methods should stay consistently named and clearly labeled. If docs
+  show an escape hatch, they should say why it is not the default app path.
+- Deterministic timeline artifacts: realtime and sync tests should be able to
+  print the same ordered facts a human wants: command id, outbox seq, push
+  request id, commit seq, realtime event cursor, pull reason, apply result, and
+  local query visibility point.
+
 ### Source Feedback Coverage Audit
 
 Use this as the trace from the pasted Skaldsong notes to retained or planned
@@ -708,6 +773,12 @@ online propagation, or reconnect behavior can change.
 - A source feedback coverage audit now maps every worthy pasted integration
   point to shipped slices or explicit remaining WP-50 risks, so future sessions
   can continue from contracts and tests rather than re-triaging the raw notes.
+- A later rough-edge expansion captured additional non-happy-path product
+  prompts around browser support matrices, SSR/bundler boundaries, runtime
+  state-machine semantics, version/asset alignment, negative-path recipes,
+  outbox/conflict UX, local database maintenance, redacted support bundles,
+  telemetry/SLO mapping, security authority modeling, upgrade/rollback states,
+  API audience hygiene, and deterministic timeline artifacts.
 - The first browser deployment preflight slice adds
   `getSyncularBrowserDeploymentPreflight(...)` to `@syncular/client`, checking
   Worker/WebAssembly support, secure-context/cross-origin-isolation flags,
@@ -728,6 +799,13 @@ online propagation, or reconnect behavior can change.
   Tauri, React Native, CRDT/Yjs, Hono, Cloudflare, Bun SQLite, D1, LibSQL, Neon,
   PGlite, Postgres, SQLite, filesystem, S3, service-worker, relay, and snapshot
   artifact helpers.
+- A first local recovery slice adds `getSyncularLocalRecoveryPlan(...)`,
+  `runSyncularLocalRecoveryAction(...)`, and managed database methods
+  `localRecoveryPlan()`, `runLocalRecoveryAction(...)`, and
+  `exportLocalSupportBundle()`. The plan classifies local health findings,
+  lifecycle action-required state, failed outbox/blob upload state, storage
+  maintenance, reset requests, and redacted support-bundle export into typed
+  actions, with confirmation required before destructive repairs or resets.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1067,6 +1145,26 @@ online propagation, or reconnect behavior can change.
   for React, Sentry, Tauri, React Native, CRDT/Yjs, Hono, Cloudflare, Bun
   SQLite, D1, LibSQL, Neon, PGlite, Postgres, SQLite, filesystem, S3,
   service-worker, relay, and snapshot artifact helpers.
+- 2026-06-30: Expanded the rough-edge register with additional implementation
+  prompts for browser support and SSR/bundler matrices, lifecycle state-machine
+  semantics, version/asset compatibility, negative-path recipes,
+  outbox/conflict UX, local database maintenance, redacted support bundles,
+  telemetry/SLO mapping, security authority modeling, upgrade/rollback states,
+  API audience hygiene, and deterministic sync/realtime timeline artifacts.
+- 2026-06-30: Added `packages/client/src/local-recovery.ts` and exported
+  `getSyncularLocalRecoveryPlan(...)`,
+  `runSyncularLocalRecoveryAction(...)`, and
+  `SyncularLocalRecoveryError` from `@syncular/client`.
+- 2026-06-30: Added managed database recovery methods:
+  `localRecoveryPlan(...)`, `runLocalRecoveryAction(...)`, and
+  `exportLocalSupportBundle()`.
+- 2026-06-30: Added focused local-recovery tests covering healthy plans,
+  grouped local health repair actions, confirmation guardrails, failed
+  outbox/blob retry actions, explicit reset/maintenance opt-ins, and
+  redacted support-bundle export.
+- 2026-06-30: Updated the package README and public error-handling docs so app
+  code reaches for `localRecoveryPlan()` before destructive local repair or
+  reset operations.
 
 ## Latest Gates
 
@@ -1165,6 +1263,15 @@ Most recent optional-import-matrix rerun:
   optional subpath exports from `@syncular/client` and `@syncular/server`
 - `git diff --check`
 
+Most recent local-recovery rerun:
+
+- `bun test packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/local-recovery.ts packages/client/src/local-recovery.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts apps/docs/content/docs/features/error-handling.mdx packages/client/README.md`
+- `bun run docs:stale-check`
+- `bun --cwd apps/docs types:check`
+- `git diff --check`
+
 ## Sequencing
 
 1. Golden path starter and smoke: first retained slice is done for the
@@ -1222,6 +1329,12 @@ Most recent optional-import-matrix rerun:
     public API coverage, and observability docs that separate UI-facing,
     operator/deploy, debug/console, testkit/E2E, and advanced raw diagnostic
     surfaces.
+11. Local recovery controls: first app-facing slice is done with a recovery
+    plan/action API over existing local health, support-bundle, lifecycle,
+    failed outbox, failed blob upload, compaction, cache clear, repair, and
+    reset primitives. Destructive actions require confirmation text and reset
+    actions are opt-in so normal UI recovery does not accidentally clear local
+    data.
 
 ## Resolved Decisions
 
@@ -1294,19 +1407,33 @@ Most recent optional-import-matrix rerun:
 - Multi-tab and lifecycle behavior: document and test two tabs, tab
   suspension/resume, storage locks, shutdown, and app restarts for persistent
   browser databases.
-- Local recovery controls: expose safe app-facing recovery operations for
-  corrupt or incompatible local databases, unrecoverable bootstrap, stuck
-  outbox, revoked scope state, and sign-out.
+- Local recovery controls: first plan/action slice is done for support bundles,
+  local health repairs, failed outbox/blob retries, compaction, cache clear,
+  and guarded sync-state reset. Remaining work is to prove these flows against
+  real browser/WASM databases, add product-specific sign-out/wipe guidance, and
+  connect unrecoverable bootstrap/revoked-scope UI to the same action model.
+- Browser and bundler matrix: prove durable persistence, loud unsupported
+  failures, SSR-safe root imports, and optional-subpath isolation across the
+  environments users actually build with: Vite, Next/SSR, Bun, Node,
+  Cloudflare, Chrome, Safari, Firefox, private mode, WebViews, and PWAs.
+- Runtime timeline and support bundles: expose enough ordered state to explain
+  configured/storage/schema/bootstrap/realtime/local-apply transitions, and add
+  a redacted support-bundle helper for app tests and production incidents.
+- Outbox and conflict UX: make queued/retrying/rejected/conflicted mutations,
+  command correlation, retry state, and local visibility expectations stable
+  enough for generated app UI and tests.
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
-  rotation, and rollback into copyable operator docs.
+  rotation, local database recovery, and rollback into copyable operator docs.
 - Performance and failure artifacts: keep package/WASM size, bootstrap
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch
-  latency, and redacted E2E failure artifacts measurable.
+  latency, storage/quota pressure, and redacted E2E failure artifacts
+  measurable.
 
 ## Next Action
 
-Pick the next implementation slice from the remaining risks. The strongest
-next candidates are browser deployment preflight or adapter import
-side-effect isolation, because both protect first-run users before they hit
-production or optional dependency surprises.
+Pick the next implementation slice from the remaining risks. Strong candidates
+are a real browser built-preview preflight smoke, a browser/WASM local recovery
+flow test, or multi-tab lifecycle coverage, because those move the plan/action
+contracts from unit-level confidence into browser behavior users will actually
+hit.
