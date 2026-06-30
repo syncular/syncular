@@ -6,6 +6,7 @@ import {
   existsSync,
   mkdirSync,
   readFileSync,
+  realpathSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join, resolve, sep } from 'node:path';
@@ -644,12 +645,23 @@ export async function runSyncularCli(
   }
 }
 
+export function isMainModuleEntrypoint(
+  entrypoint: string | undefined,
+  moduleUrl = import.meta.url
+): boolean {
+  if (entrypoint === undefined) {
+    return false;
+  }
+
+  try {
+    return realpathSync(entrypoint) === realpathSync(fileURLToPath(moduleUrl));
+  } catch {
+    return pathToFileURL(entrypoint).href === moduleUrl;
+  }
+}
+
 function isMainModule(): boolean {
-  const entrypoint = process.argv[1];
-  return (
-    entrypoint !== undefined &&
-    import.meta.url === pathToFileURL(entrypoint).href
-  );
+  return isMainModuleEntrypoint(process.argv[1]);
 }
 
 if (isMainModule()) {

@@ -2130,11 +2130,11 @@ dependencies = [
 
 [[package]]
 name = "syncular"
-version = "0.1.1"
+version = "0.1.2"
 
 [[package]]
 name = "syncular-client"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "clap",
@@ -2147,7 +2147,7 @@ dependencies = [
 
 [[package]]
 name = "syncular-codegen"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "diesel",
@@ -2157,7 +2157,7 @@ dependencies = [
 
 [[package]]
 name = "syncular-protocol"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "hex",
  "serde",
@@ -2167,7 +2167,7 @@ dependencies = [
 
 [[package]]
 name = "syncular-runtime"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "anyhow",
  "argon2",
@@ -2205,7 +2205,7 @@ dependencies = [
 
 [[package]]
 name = "syncular-testkit"
-version = "0.1.1"
+version = "0.1.2"
 dependencies = [
  "base64",
  "p256",

@@ -1,5 +1,12 @@
 # @syncular/console
 
+## 0.1.2
+
+### Patch Changes
+
+- @syncular/client@0.1.2
+- @syncular/core@0.1.2
+
 ## 0.1.1
 
 ### Patch Changes

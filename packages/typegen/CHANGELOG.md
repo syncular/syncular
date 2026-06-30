@@ -1,5 +1,11 @@
 # @syncular/typegen
 
+## 0.1.2
+
+### Patch Changes
+
+- @syncular/migrations@0.1.2
+
 ## 0.1.1
 
 ### Patch Changes
