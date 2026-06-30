@@ -96,6 +96,9 @@ function stampManifest(
     if (dependencyName === crateName) {
       continue;
     }
+    if (shouldKeepDependencyRange(crateName, dependencyName)) {
+      continue;
+    }
 
     const dependencyPattern = new RegExp(
       `(^\\s*${escapeRegExp(dependencyName)}\\s*=\\s*\\{[^\\n]*version\\s*=\\s*")[^"]+(")`,
@@ -105,6 +108,15 @@ function stampManifest(
   }
 
   return stamped;
+}
+
+function shouldKeepDependencyRange(
+  crateName: string,
+  dependencyName: string
+): boolean {
+  return (
+    crateName === 'syncular-runtime' && dependencyName === 'syncular-testkit'
+  );
 }
 
 function escapeRegExp(value: string): string {

@@ -50,6 +50,11 @@ cargo publish --manifest-path rust/crates/syncular/Cargo.toml --dry-run
   crates.io.
 - Moved the shared sync conformance JSON into `syncular-testkit` so the
   published testkit tarball verifies without reaching outside the crate.
+- Kept `syncular-runtime`'s local integration-test dependency on
+  `syncular-testkit` as a path dependency, but no longer stamps that
+  dev-dependency to the exact release version because runtime excludes those
+  tests from the published crate and an exact same-version dev-dependency
+  recreates the runtime/testkit publish cycle.
 
 ## Evidence
 
