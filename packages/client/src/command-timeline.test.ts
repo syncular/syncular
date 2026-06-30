@@ -189,6 +189,15 @@ describe('command timeline', () => {
             syncAttemptId: 'attempt-context',
             traceId: 'trace-context',
           }),
+          diagnosticEvent({
+            at: 120,
+            code: 'realtime.pull_required',
+            details: {
+              cursor: 55,
+              reason: 'payload-too-large',
+            },
+            source: 'realtime',
+          }),
         ],
       }),
     });
@@ -204,13 +213,12 @@ describe('command timeline', () => {
       summary: {
         requiresAction: true,
         matchedEventCount: 0,
-        contextEventCount: 3,
+        contextEventCount: 4,
         syncAttemptIds: ['attempt-context'],
         missingEvidence: [
           'outbox-status',
           'outbox-sequence',
           'server-commit-sequence',
-          'realtime-event-cursor',
           'local-apply',
           'local-visibility',
         ],

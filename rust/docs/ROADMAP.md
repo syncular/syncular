@@ -209,9 +209,12 @@ read-only review:
     outbox link plus server commit sequence without exposing operation
     payloads. Command timelines also treat real `syncPull`/`syncOnce`
     diagnostic `requestType` as pull/sync reason evidence, and direct
-    Rust-client diagnostics now include that same request type. Tracked outbox
-    records also produce synthetic local-apply evidence because they prove the
-    command was durably accepted locally. The
+    Rust-client diagnostics now include that same request type. Realtime
+    diagnostics now expose event cursors at the top level, and runtime
+    timelines promote detail-only realtime cursors from older diagnostic
+    snapshots into cursor evidence. Tracked outbox records also produce
+    synthetic local-apply evidence because they prove the command was durably
+    accepted locally. The
     Hono-backed browser/WASM local-health test now exercises that plan/action
     API against the real Worker runtime for corrupted subscription state,
     orphaned verified roots, confirmation failure, and successful

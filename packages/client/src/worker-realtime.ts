@@ -274,7 +274,11 @@ export class SyncularWorkerRealtimeController {
         level: 'debug',
         code: 'realtime.sync_wakeup',
         message: 'Syncular realtime sync wakeup received',
+        ...(syncMessage.cursor !== undefined
+          ? { cursor: syncMessage.cursor }
+          : {}),
         details: {
+          cursor: syncMessage.cursor ?? null,
           reason: syncMessage.reason ?? null,
           requiresPull: syncMessage.requiresPull === true,
           droppedCount: syncMessage.droppedCount ?? 0,
@@ -488,6 +492,7 @@ export class SyncularWorkerRealtimeController {
         code: 'realtime.pull_required',
         message: 'Syncular realtime event requires HTTP pull recovery',
         ...syncularDiagnosticAttemptFields(syncAttempt),
+        ...(message.cursor !== undefined ? { cursor: message.cursor } : {}),
         details: {
           cursor: message.cursor ?? null,
           reason: message.reason ?? null,
@@ -542,6 +547,7 @@ export class SyncularWorkerRealtimeController {
       code: 'realtime.pull_required',
       message: 'Syncular realtime event requires HTTP pull recovery',
       ...syncularDiagnosticAttemptFields(syncAttempt),
+      ...(message?.cursor !== undefined ? { cursor: message.cursor } : {}),
       details: {
         cursor: message?.cursor ?? null,
         reason: message?.syncPackBytes ? 'binary-apply-failed' : null,

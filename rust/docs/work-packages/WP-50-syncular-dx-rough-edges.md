@@ -1410,6 +1410,10 @@ online propagation, or reconnect behavior can change.
   same request type to direct Rust-client sync completion/failure diagnostics.
   This removes another misleading missing-evidence marker without inventing a
   cause the runtime did not report.
+- 2026-07-01: Promoted realtime event cursors into runtime/command timeline
+  evidence. New realtime diagnostics now put `cursor` on the event, and the
+  runtime timeline also recovers legacy/detail-only cursor values from safe
+  diagnostic details.
 
 ## Latest Gates
 
@@ -1522,6 +1526,14 @@ Most recent command pull-reason rerun:
 - `bun test packages/client/src/command-timeline.test.ts packages/client/src/public-api.test.ts`
 - `bun --cwd packages/client tsgo`
 - `bunx biome check packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/src/rust-client.ts rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bun run docs:stale-check`
+- `git diff --check`
+
+Most recent realtime cursor evidence rerun:
+
+- `bun test packages/client/src/runtime-timeline.test.ts packages/client/src/command-timeline.test.ts packages/client/src/worker-realtime.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/runtime-timeline.ts packages/client/src/runtime-timeline.test.ts packages/client/src/command-timeline.test.ts packages/client/src/worker-realtime.ts packages/client/src/worker-realtime.test.ts rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
 - `git diff --check`
 
@@ -1841,8 +1853,7 @@ Most recent mutation-status rerun:
   First command-timeline artifacts are done for receipt state, redacted runtime
   events, optional local-visibility evidence, and explicit missing-evidence
   markers. Remaining work is to emit the missing low-level links directly from
-  the runtime: push request id, realtime event cursor, and local visibility
-  point.
+  the runtime: push request id and local visibility point.
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.

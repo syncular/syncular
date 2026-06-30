@@ -349,7 +349,9 @@ describe('Syncular worker realtime', () => {
     expect(diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'realtime.sync_wakeup',
+        cursor: 55,
         details: expect.objectContaining({
+          cursor: 55,
           reason: 'payload-too-large',
           requiresPull: true,
         }),
@@ -401,7 +403,9 @@ describe('Syncular worker realtime', () => {
     expect(diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'realtime.sync_wakeup',
+        cursor: 99,
         details: expect.objectContaining({
+          cursor: 99,
           reason: 'resync-required',
           requiresPull: true,
           droppedCount: 2,
@@ -411,6 +415,7 @@ describe('Syncular worker realtime', () => {
     expect(diagnostics).toContainEqual(
       expect.objectContaining({
         code: 'realtime.pull_required',
+        cursor: 99,
         syncAttemptId: client.syncPullOptions[0]!.syncAttempt!.syncAttemptId,
       })
     );

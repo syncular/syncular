@@ -172,6 +172,37 @@ describe('runtime timeline', () => {
     expect(timeline.summary.subscriptionIds).toEqual(['sub-a']);
     expect(timeline.status).toBe('warning');
   });
+
+  it('promotes realtime detail cursors into timeline cursor evidence', async () => {
+    const client = timelineClient({
+      snapshot: diagnosticSnapshot({
+        recentDiagnostics: [
+          diagnosticEvent({
+            code: 'realtime.pull_required',
+            source: 'realtime',
+            details: {
+              cursor: 42,
+              reason: 'payload-too-large',
+            },
+          }),
+        ],
+      }),
+    });
+
+    const timeline = await getSyncularRuntimeTimeline(client, {
+      includeStateEvents: false,
+    });
+
+    expect(timeline.events[0]).toMatchObject({
+      code: 'realtime.pull_required',
+      phase: 'realtime',
+      cursor: 42,
+      details: {
+        cursor: 42,
+        reason: 'payload-too-large',
+      },
+    });
+  });
 });
 
 function timelineClient(args: {

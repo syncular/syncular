@@ -259,12 +259,27 @@ function timelineEventFromDiagnostic(
   if (event.subscriptionId) timelineEvent.subscriptionId = event.subscriptionId;
   if (event.table) timelineEvent.table = event.table;
   if (event.rowId) timelineEvent.rowId = event.rowId;
-  if (event.cursor !== undefined) timelineEvent.cursor = event.cursor;
+  const cursor = event.cursor ?? diagnosticDetailCursor(event.details);
+  if (cursor !== undefined) timelineEvent.cursor = cursor;
   if (includeDetails && event.details) {
     const details = compactDiagnosticDetails(event.details);
     if (details) timelineEvent.details = details;
   }
   return timelineEvent;
+}
+
+function diagnosticDetailCursor(
+  details: Record<string, unknown> | undefined
+): number | string | null | undefined {
+  const cursor = details?.cursor;
+  if (
+    cursor === null ||
+    typeof cursor === 'number' ||
+    typeof cursor === 'string'
+  ) {
+    return cursor;
+  }
+  return undefined;
 }
 
 function classifyTimelinePhase(
