@@ -471,6 +471,11 @@ online propagation, or reconnect behavior can change.
   JavaScript app smoke from user-only scope to user+campaign scope and proved a
   generated app can replace auth context/subscriptions, reset bootstrap, then
   use local visibility for a campaign-scoped row without a manual `sync()` call.
+- 2026-06-30 fifth implementation slice added a real Hono/WebSocket/WASM
+  managed-database proof: project scope changes use
+  `replaceAuthContext(...)`, realtime delivers the new project row, local
+  visibility observes it, and a denied project scope surfaces
+  `sync.scope_revoked` diagnostics.
 
 ## Implementation Log
 
@@ -506,6 +511,11 @@ online propagation, or reconnect behavior can change.
   JavaScript app includes a campaign/project scope, switches from
   `campaign-a` to `campaign-b` through `database.replaceAuthContext(...)`, and
   waits for the new campaign row with `database.awaitLocalVisibility(...)`.
+- 2026-06-30: Updated
+  `packages/client/src/__tests__/realtime-hono.wasm.test.ts` with an opt-in
+  project-scope Hono realtime harness path and a managed-database scope-change
+  test covering realtime delivery, local visibility, and denied-scope
+  diagnostics.
 
 ## Latest Gates
 
@@ -525,6 +535,7 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bun test packages/client/src/auth-context.test.ts packages/client/src/public-api.test.ts`
 - `bunx biome check packages/client/src/auth-context.ts packages/client/src/auth-context.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts`
 - `bun test packages/syncular/src/cli.test.ts`
+- `bun test packages/client/src/__tests__/realtime-hono.wasm.test.ts -t "replaces managed auth context"`
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-local-visibility`
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-auth-context`
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-campaign-scope`
@@ -542,9 +553,9 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    can wrap it for command-specific or subscription-specific waits.
 4. Auth context/scope-change contract: first retained slice is done with a
    replacement helper and managed database method, and the fresh generated app
-   smoke now proves a campaign-scope switch plus local visibility. Next prove
-   the same flow against real remote auth/realtime behavior in a Hono/testkit
-   recipe.
+   smoke plus the Hono/WebSocket/WASM managed-database test now prove
+   campaign/project scope switches, realtime delivery, local visibility, and
+   denied-scope diagnostics.
 5. Add schema readiness and drift diagnostics before encouraging production
    deployment patterns.
 6. Add blob partition/scope guidance and typed blob failure details once the
@@ -579,8 +590,7 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 
 ## Next Action
 
-Pick the next implementation slice: prove campaign/scope-change behavior
-against a real remote server/realtime path, including revoked or denied
-subscription diagnostics, while keeping the starter on
-`replaceAuthContext(...)` and `awaitLocalVisibility(...)` instead of manual
-`sync()` calls.
+Pick the next implementation slice: add a schema-readiness command/API and
+drift diagnostics that distinguish missing schema, stale server schema,
+stale generated client output, incompatible generated output, and local
+database open/runtime failures.

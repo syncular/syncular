@@ -6,6 +6,7 @@ import { type Kysely, sql } from 'kysely';
 import {
   createSyncularAppDatabase,
   newTaskOperation,
+  type SyncularAppDatabase,
   syncularGeneratedCodecs,
   taskSubscription,
 } from '../../../../rust/examples/todo-app/generated/typescript/syncular.generated';
@@ -353,6 +354,128 @@ describe('Syncular worker realtime against Hono websocket routes', () => {
     expect(websocketAuthTokens).toEqual(scenario.expectedAuthTokens);
   });
 
+  it('replaces managed auth context for project scopes and surfaces denied realtime recovery', async () => {
+    const { baseUrl, connectionCount } = await openRealtimeServer({
+      projectScopesByActorId: {
+        [ACTOR_ID]: ['project-a', 'project-b'],
+      },
+    });
+    const diagnostics: SyncularDiagnosticEvent[] = [];
+    const database = await openDatabase({
+      baseUrl,
+      clientId: 'managed-project-scope-client',
+      projectId: 'project-a',
+      diagnostics: (event) => diagnostics.push(event),
+    });
+    await database.setSubscriptions([
+      taskSubscription({ actorId: ACTOR_ID, projectId: 'project-a' }),
+    ]);
+    await database.sync();
+
+    const snapshot = await database.client.subscribeQuery<{
+      id: string;
+      project_id: string | null;
+    }>(
+      'select id, project_id from tasks order by id',
+      [],
+      ['tasks'],
+      [{ table: 'tasks' }]
+    );
+    expect(snapshot.rows).toEqual([]);
+
+    await database.client.startRealtime({
+      wsUrl: `${baseUrl.replace(/^http:/, 'ws:')}/realtime`,
+      params: { token: REALTIME_TOKEN },
+      heartbeatTimeoutMs: 0,
+      initialReconnectDelayMs: 50,
+    });
+    await waitFor(() => connectionCount() === 1);
+
+    const replacement = await database.replaceAuthContext({
+      headers: { authorization: AUTHORIZATION },
+      subscriptions: [
+        taskSubscription({ actorId: ACTOR_ID, projectId: 'project-b' }),
+      ],
+    });
+    expect(replacement).toMatchObject({
+      authHeadersReplaced: true,
+      subscriptionsReplaced: true,
+      syncMode: 'explicitHeadersSync',
+      bootstrapReset: { subscriptionIds: null },
+    });
+    expect(replacement.syncResult?.subscriptions[0]).toMatchObject({
+      id: 'sub-tasks',
+      status: 'active',
+      scopes: { user_id: ACTOR_ID, project_id: 'project-b' },
+    });
+    await waitFor(() => connectionCount() === 1);
+
+    const liveEvent = waitForLiveEvent(database.client, snapshot.id);
+    const writer = await openClient({
+      baseUrl,
+      clientId: 'managed-project-scope-writer',
+    });
+    await writer.applyMutation(
+      newTaskOperation({
+        id: 'managed-project-b-task',
+        title: 'Managed project B task',
+        user_id: ACTOR_ID,
+        project_id: 'project-b',
+      }),
+      {
+        id: 'managed-project-b-task',
+        title: 'Managed project B task',
+        completed: 0,
+        user_id: ACTOR_ID,
+        project_id: 'project-b',
+        server_version: 0,
+        image: null,
+        title_yjs_state: null,
+      }
+    );
+    await expect(writer.syncPush()).resolves.toMatchObject({
+      pushedCommits: 1,
+    });
+
+    await expect(liveEvent).resolves.toMatchObject({
+      queryId: snapshot.id,
+      rows: [{ id: 'managed-project-b-task', project_id: 'project-b' }],
+    });
+    await expect(
+      database.awaitLocalVisibility(
+        (db) =>
+          db
+            .selectFrom('tasks')
+            .select(['id', 'project_id'])
+            .where('project_id', '=', 'project-b')
+            .execute(),
+        { tables: ['tasks'], timeoutMs: 5_000 }
+      )
+    ).resolves.toEqual([
+      { id: 'managed-project-b-task', project_id: 'project-b' },
+    ]);
+
+    const denied = await database.replaceAuthContext({
+      headers: { authorization: AUTHORIZATION },
+      subscriptions: [
+        taskSubscription({ actorId: ACTOR_ID, projectId: 'project-denied' }),
+      ],
+    });
+    expect(denied.syncResult?.subscriptions[0]).toMatchObject({
+      id: 'sub-tasks',
+      status: 'revoked',
+      scopes: {},
+    });
+    await waitForDiagnostic(
+      database.client,
+      diagnostics,
+      (item) =>
+        item.code === 'sync.scope_revoked' &&
+        Array.isArray(item.details?.revokedSubscriptionIds) &&
+        item.details.revokedSubscriptionIds.includes('sub-tasks')
+    );
+  });
+
   it('round-trips presence through Hono websocket routes', async () => {
     const { baseUrl, connectionCount } = await openRealtimeServer();
     const scopeKey = `user:${ACTOR_ID}`;
@@ -447,6 +570,7 @@ describe('Syncular worker realtime against Hono websocket routes', () => {
     options: {
       realtimeTokens?: readonly string[];
       recordRequestEvents?: boolean;
+      projectScopesByActorId?: Record<string, readonly string[]>;
     } = {}
   ): Promise<RealtimeServerHarness> {
     const dialect = createSqliteServerDialect();
@@ -480,6 +604,9 @@ describe('Syncular worker realtime against Hono websocket routes', () => {
     const websocketAuthTokens: string[] = [];
     const websocketSyncPackEncodings: string[] = [];
     let httpPullCount = 0;
+    const taskScopePatterns = options.projectScopesByActorId
+      ? ['user:{user_id}', 'project:{project_id}']
+      : ['user:{user_id}'];
 
     const routes = createSyncRoutes<HonoSyncServerDb, HonoAuthContext>({
       db,
@@ -492,17 +619,24 @@ describe('Syncular worker realtime against Hono websocket routes', () => {
           HonoAuthContext
         >({
           table: 'tasks',
-          scopes: ['user:{user_id}'],
+          scopes: taskScopePatterns,
           codecs: syncularGeneratedCodecs,
-          resolveScopes: async (ctx) => ({
-            user_id:
-              ctx.actorId === MULTI_SCOPE_ACTOR_ID
-                ? [
-                    syncConformance.actors.ownerA.actorId,
-                    syncConformance.actors.ownerB.actorId,
-                  ]
-                : [ctx.actorId],
-          }),
+          resolveScopes: async (ctx) => {
+            const scopes: Record<string, string | string[]> = {
+              user_id:
+                ctx.actorId === MULTI_SCOPE_ACTOR_ID
+                  ? [
+                      syncConformance.actors.ownerA.actorId,
+                      syncConformance.actors.ownerB.actorId,
+                    ]
+                  : [ctx.actorId],
+            };
+            const projectScopes = options.projectScopesByActorId?.[ctx.actorId];
+            if (projectScopes) {
+              scopes.project_id = [...projectScopes];
+            }
+            return scopes;
+          },
         }),
       ],
       authenticate: async (c) => {
@@ -580,12 +714,14 @@ describe('Syncular worker realtime against Hono websocket routes', () => {
     };
   }
 
-  async function openClient(options: {
+  async function openDatabase(options: {
     baseUrl: string;
     clientId: string;
     actorId?: string;
     authorization?: string;
-  }): Promise<SyncularRuntimeClient> {
+    projectId?: string;
+    diagnostics?: (event: SyncularDiagnosticEvent) => void;
+  }): Promise<SyncularAppDatabase> {
     const database = await createSyncularAppDatabase({
       // Realtime scenarios start/stop realtime explicitly.
       lifecycle: { autoStart: false },
@@ -593,17 +729,35 @@ describe('Syncular worker realtime against Hono websocket routes', () => {
       getHeaders: () => ({
         authorization: options.authorization ?? AUTHORIZATION,
       }),
+      diagnostics: options.diagnostics,
       config: {
         baseUrl: options.baseUrl,
         clientId: options.clientId,
         actorId: options.actorId ?? ACTOR_ID,
+        projectId: options.projectId,
         fileName: `${options.clientId}.sqlite`,
         storage: 'memory',
         clearOnInit: true,
       },
     });
     clients.push(database);
-    return database.client;
+    return database;
+  }
+
+  async function openClient(options: {
+    baseUrl: string;
+    clientId: string;
+    actorId?: string;
+    authorization?: string;
+  }): Promise<SyncularRuntimeClient> {
+    return (
+      await openDatabase({
+        baseUrl: options.baseUrl,
+        clientId: options.clientId,
+        actorId: options.actorId,
+        authorization: options.authorization,
+      })
+    ).client;
   }
 });
 

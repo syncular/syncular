@@ -87,9 +87,10 @@ read-only review:
     user+campaign scope and proves a campaign-scope switch through
     `replaceAuthContext(...)` plus `awaitLocalVisibility(...)`. Focused client
     tests, package typechecks, fresh JS smoke, scaffold smoke, docs stale
-    check, and diff check passed locally. Next slice: prove the same
-    campaign/scope-change flow against real remote auth/realtime behavior in a
-    Hono/testkit recipe.
+    check, and diff check passed locally. A Hono/WebSocket/WASM
+    managed-database test also proves the same scope-change flow against real
+    remote auth/realtime behavior, including denied-scope diagnostics. Next
+    slice: schema readiness and drift diagnostics.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested
