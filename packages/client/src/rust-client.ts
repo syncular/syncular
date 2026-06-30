@@ -1062,7 +1062,7 @@ export class SyncularRustClient {
         code: `sync.${requestType}.completed`,
         message: `Syncular ${requestType} completed`,
         ...syncularDiagnosticAttemptFields(syncAttempt),
-        details: { durationMs: Date.now() - startedAt },
+        details: { requestType, durationMs: Date.now() - startedAt },
       });
       if (isSyncularSyncResult(result)) {
         this.#emitScopeRevokedDiagnostic(requestType, result, syncAttempt);
@@ -1080,6 +1080,7 @@ export class SyncularRustClient {
         message: `Syncular ${requestType} failed`,
         ...syncularDiagnosticAttemptFields(syncAttempt),
         details: {
+          requestType,
           durationMs: Date.now() - startedAt,
           error:
             classifiedError instanceof Error

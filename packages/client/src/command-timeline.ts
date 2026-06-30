@@ -437,10 +437,7 @@ function missingCommandEvidence(args: {
   ) {
     missing.push('realtime-event-cursor');
   }
-  if (
-    !eventsHaveDetail(args.runtimeEvents, 'reason') &&
-    !eventsHaveDetail(args.runtimeEvents, 'pullReason')
-  ) {
+  if (!eventsHavePullReason(args.runtimeEvents)) {
     missing.push('pull-reason');
   }
   if (
@@ -460,6 +457,22 @@ function eventsHaveDetail(
   key: string
 ): boolean {
   return events.some((event) => event.details?.[key] != null);
+}
+
+function eventsHavePullReason(
+  events: readonly SyncularCommandTimelineEvent[]
+): boolean {
+  return events.some((event) => {
+    if (event.details?.reason != null || event.details?.pullReason != null) {
+      return true;
+    }
+    return (
+      event.phase === 'sync' &&
+      typeof event.details?.requestType === 'string' &&
+      (event.details.requestType === 'syncPull' ||
+        event.details.requestType === 'syncOnce')
+    );
+  });
 }
 
 function trackedCommitRequiresAction(

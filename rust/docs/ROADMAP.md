@@ -207,8 +207,11 @@ read-only review:
     `outboxId` for the local outbox row and `ackedCommitSeq` for acked commits,
     so mutation status and command timelines can prove the local durable
     outbox link plus server commit sequence without exposing operation
-    payloads. Tracked outbox records also produce synthetic local-apply
-    evidence because they prove the command was durably accepted locally. The
+    payloads. Command timelines also treat real `syncPull`/`syncOnce`
+    diagnostic `requestType` as pull/sync reason evidence, and direct
+    Rust-client diagnostics now include that same request type. Tracked outbox
+    records also produce synthetic local-apply evidence because they prove the
+    command was durably accepted locally. The
     Hono-backed browser/WASM local-health test now exercises that plan/action
     API against the real Worker runtime for corrupted subscription state,
     orphaned verified roots, confirmation failure, and successful

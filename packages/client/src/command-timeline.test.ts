@@ -211,7 +211,6 @@ describe('command timeline', () => {
           'outbox-sequence',
           'server-commit-sequence',
           'realtime-event-cursor',
-          'pull-reason',
           'local-apply',
           'local-visibility',
         ],

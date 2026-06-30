@@ -1405,6 +1405,11 @@ online propagation, or reconnect behavior can change.
   durable outbox row link without exposing operations JSON or row payloads.
   The client diagnostic detail policy now treats `outboxId` as a safe support
   identifier alongside `clientCommitId`.
+- 2026-07-01: Taught command timelines to treat real `syncPull`/`syncOnce`
+  diagnostic `requestType` fields as pull/sync reason evidence, and added the
+  same request type to direct Rust-client sync completion/failure diagnostics.
+  This removes another misleading missing-evidence marker without inventing a
+  cause the runtime did not report.
 
 ## Latest Gates
 
@@ -1510,6 +1515,14 @@ Most recent command outbox-id rerun:
 - `bunx biome check packages/client/src/types.ts packages/client/src/mutation-status.ts packages/client/src/mutation-status.test.ts packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/src/console-diagnostics.ts packages/client/src/console-diagnostics.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
+- `git diff --check`
+
+Most recent command pull-reason rerun:
+
+- `bun test packages/client/src/command-timeline.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/src/rust-client.ts rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bun run docs:stale-check`
 - `git diff --check`
 
 Most recent starter browser-preview rerun:
@@ -1828,8 +1841,8 @@ Most recent mutation-status rerun:
   First command-timeline artifacts are done for receipt state, redacted runtime
   events, optional local-visibility evidence, and explicit missing-evidence
   markers. Remaining work is to emit the missing low-level links directly from
-  the runtime: push request id, realtime event cursor, pull reason, and local
-  visibility point.
+  the runtime: push request id, realtime event cursor, and local visibility
+  point.
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.
