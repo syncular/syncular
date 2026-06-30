@@ -107,6 +107,129 @@ describe('Syncular browser client lifecycle', () => {
 
     expect(client.calls).toEqual(['syncOnce', 'startRealtime']);
   });
+
+  it('coalesces concurrent sync callers onto one awaited follow-up', async () => {
+    const client = new FakeLifecycleClient();
+    client.deferSync = true;
+    const lifecycle = new SyncularClientLifecycle(client, {
+      initialSync: false,
+      realtime: false,
+    });
+
+    await lifecycle.start();
+
+    const first = lifecycle.sync();
+    const second = lifecycle.sync();
+    const third = lifecycle.sync();
+    let secondResolved = false;
+    second.then(() => {
+      secondResolved = true;
+    });
+
+    expect(client.syncCount).toBe(1);
+    client.resolveNextSync('first');
+
+    await expect(first).resolves.toMatchObject({
+      changedTables: ['first'],
+    });
+    await waitFor(() => client.syncCount === 2);
+    expect(secondResolved).toBe(false);
+
+    client.resolveNextSync('second');
+
+    await expect(second).resolves.toMatchObject({
+      changedTables: ['second'],
+    });
+    await expect(third).resolves.toMatchObject({
+      changedTables: ['second'],
+    });
+    expect(client.syncCount).toBe(2);
+  });
+
+  it('schedules another follow-up for callers that arrive during the queued sync', async () => {
+    const client = new FakeLifecycleClient();
+    client.deferSync = true;
+    const lifecycle = new SyncularClientLifecycle(client, {
+      initialSync: false,
+      realtime: false,
+    });
+
+    await lifecycle.start();
+
+    const first = lifecycle.sync();
+    const second = lifecycle.sync();
+    client.resolveNextSync('first');
+
+    await expect(first).resolves.toMatchObject({
+      changedTables: ['first'],
+    });
+    await waitFor(() => client.syncCount === 2);
+
+    const third = lifecycle.sync();
+    expect(client.syncCount).toBe(2);
+
+    client.resolveNextSync('second');
+
+    await expect(second).resolves.toMatchObject({
+      changedTables: ['second'],
+    });
+    await waitFor(() => client.syncCount === 3);
+    client.resolveNextSync('third');
+
+    await expect(third).resolves.toMatchObject({
+      changedTables: ['third'],
+    });
+    expect(client.syncCount).toBe(3);
+  });
+
+  it('runs a queued sync even when the in-flight sync fails', async () => {
+    const client = new FakeLifecycleClient();
+    client.deferSync = true;
+    const lifecycle = new SyncularClientLifecycle(client, {
+      initialSync: false,
+      realtime: false,
+    });
+
+    await lifecycle.start();
+
+    const first = lifecycle.sync();
+    const second = lifecycle.sync();
+    const firstError = new Error('first sync failed');
+    client.rejectNextSync(firstError);
+
+    await expect(first).rejects.toThrow('first sync failed');
+    await waitFor(() => client.syncCount === 2);
+
+    client.resolveNextSync('second');
+
+    await expect(second).resolves.toMatchObject({
+      changedTables: ['second'],
+    });
+  });
+
+  it('rejects queued sync callers when the queued follow-up fails', async () => {
+    const client = new FakeLifecycleClient();
+    client.deferSync = true;
+    const lifecycle = new SyncularClientLifecycle(client, {
+      initialSync: false,
+      realtime: false,
+    });
+
+    await lifecycle.start();
+
+    const first = lifecycle.sync();
+    const second = lifecycle.sync();
+    client.resolveNextSync('first');
+
+    await expect(first).resolves.toMatchObject({
+      changedTables: ['first'],
+    });
+    await waitFor(() => client.syncCount === 2);
+
+    client.rejectNextSync(new Error('queued sync failed'));
+
+    await expect(second).rejects.toThrow('queued sync failed');
+  });
 });
 
 function taskSubscription(actorId: string): SyncularSubscriptionSpec {
@@ -123,6 +246,11 @@ class FakeLifecycleClient {
   realtimeOptions: boolean | Record<string, unknown> | undefined;
   syncCount = 0;
   syncError: unknown = undefined;
+  deferSync = false;
+  readonly deferredSyncs: Array<{
+    resolve(result: SyncularSyncResult): void;
+    reject(error: unknown): void;
+  }> = [];
   realtime: SyncularRealtimeConnectionState = 'disconnected';
   readonly #diagnosticListeners = new Set<SyncularDiagnosticSink>();
 
@@ -172,28 +300,24 @@ class FakeLifecycleClient {
     this.calls.push('syncOnce');
     this.syncCount += 1;
     if (this.syncError) throw this.syncError;
-    return {
-      changedTables: [],
-      changedRows: [],
-      changedRowsTruncated: false,
-      subscriptions: [],
-      bootstrap: {
-        channelPhase: 'idle',
-        progressPercent: 100,
-        isBootstrapping: false,
-        criticalReady: true,
-        interactiveReady: true,
-        complete: true,
-        activePhase: null,
-        expectedSubscriptionIds: [],
-        readySubscriptionIds: [],
-        pendingSubscriptionIds: [],
-        subscriptions: [],
-        phases: [],
-      },
-      pushedCommits: 0,
-      timings: zeroSyncTimings(),
-    };
+    if (this.deferSync) {
+      return new Promise((resolve, reject) => {
+        this.deferredSyncs.push({ resolve, reject });
+      });
+    }
+    return syncResult();
+  }
+
+  resolveNextSync(label: string): void {
+    const deferred = this.deferredSyncs.shift();
+    if (!deferred) throw new Error('no deferred sync to resolve');
+    deferred.resolve(syncResult(label));
+  }
+
+  rejectNextSync(error: unknown): void {
+    const deferred = this.deferredSyncs.shift();
+    if (!deferred) throw new Error('no deferred sync to reject');
+    deferred.reject(error);
   }
 
   emitRealtimeState(state: SyncularRealtimeConnectionState): void {
@@ -220,6 +344,32 @@ class FakeLifecycleClient {
     };
     for (const listener of this.#diagnosticListeners) listener(event);
   }
+}
+
+function syncResult(label?: string): SyncularSyncResult {
+  return {
+    changedTables: [],
+    changedRows: [],
+    changedRowsTruncated: false,
+    subscriptions: [],
+    bootstrap: {
+      channelPhase: 'idle',
+      progressPercent: 100,
+      isBootstrapping: false,
+      criticalReady: true,
+      interactiveReady: true,
+      complete: true,
+      activePhase: null,
+      expectedSubscriptionIds: [],
+      readySubscriptionIds: [],
+      pendingSubscriptionIds: [],
+      subscriptions: [],
+      phases: [],
+    },
+    pushedCommits: 0,
+    timings: zeroSyncTimings(),
+    ...(label ? { changedTables: [label] } : {}),
+  };
 }
 
 class FakeNetworkStatus implements SyncularNetworkStatusSource {
