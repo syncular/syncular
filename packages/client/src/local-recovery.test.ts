@@ -188,6 +188,57 @@ describe('local recovery plan', () => {
     ]);
   });
 
+  it('adds a confirmed rebootstrap action for unrecoverable bootstrap errors', async () => {
+    const client = new FakeRecoveryClient({
+      snapshot: {
+        ...diagnosticSnapshot(),
+        connection: {
+          ...diagnosticSnapshot().connection,
+          lastError: {
+            code: 'sync.integrity_rejected',
+            message: 'snapshot hash mismatch',
+          },
+        },
+        subscriptions: [
+          diagnosticSubscription({
+            id: 'sub-broken',
+            phase: 'error',
+            ready: false,
+            progressPercent: 40,
+          }),
+        ],
+      },
+    });
+
+    const plan = await getSyncularLocalRecoveryPlan(client);
+    const action = plan.actions.find(
+      (candidate) => candidate.id === 'bootstrap.force-rebootstrap-errored'
+    );
+    expect(plan.status).toBe('action-required');
+    expect(action).toMatchObject({
+      kind: 'force-rebootstrap',
+      severity: 'danger',
+      source: 'bootstrap',
+      destructive: true,
+      requiresConfirmation: true,
+      subscriptionIds: ['sub-broken'],
+      reasonCodes: ['sync.integrity_rejected'],
+    });
+
+    await expect(
+      runSyncularLocalRecoveryAction(client, action!, {
+        confirmationText: action!.confirmationText,
+      })
+    ).resolves.toMatchObject({
+      action: 'force-rebootstrap',
+      report: { action: 'forceRebootstrap' },
+    });
+    expect(client.calls).toContainEqual([
+      'repairLocalHealth',
+      { action: 'forceRebootstrap', subscriptionIds: ['sub-broken'] },
+    ]);
+  });
+
   it('only exposes reset and cache-clear operations when explicitly requested', async () => {
     const client = new FakeRecoveryClient();
     const defaultPlan = await getSyncularLocalRecoveryPlan(client);

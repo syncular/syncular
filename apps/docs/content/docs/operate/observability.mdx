@@ -113,8 +113,10 @@ local database repair or sign-out/reset flows, start from
 cleanup that waits for an empty outbox before clearing synced rows and cached
 blob bytes. Revoked subscription scopes surface as confirmed rebootstrap
 actions for the affected subscription IDs after the app has checked or
-refreshed permissions. Export a local support bundle only when support needs
-the redacted local health tables.
+refreshed permissions. Errored bootstrap subscriptions with `sync.not_found` or
+`sync.integrity_rejected` surface as targeted, confirmed rebootstrap actions.
+Export a local support bundle only when support needs the redacted local health
+tables.
 
 When you need one support artifact for a production incident, use the composed
 support bundle:

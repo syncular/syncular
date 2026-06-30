@@ -908,6 +908,10 @@ online propagation, or reconnect behavior can change.
   subscription IDs from diagnostic subscriptions, bootstrap status, and
   `sync.scope_revoked` diagnostic details, then offers a confirmed
   `force-rebootstrap` action after app permissions are checked or refreshed.
+- Unrecoverable bootstrap/resource failures now use the same recovery action
+  model: `sync.not_found` and `sync.integrity_rejected` on snapshots with
+  errored subscriptions produce a targeted, confirmed `force-rebootstrap`
+  action for those subscription IDs.
 - The browser/Hono/WASM local-health test now exercises that plan/action API
   against the real Worker runtime for corrupted subscription state and
   orphaned verified roots, including the confirmation guardrail and successful
@@ -1323,6 +1327,9 @@ online propagation, or reconnect behavior can change.
 - 2026-07-01: Added a revoked-scope local recovery action that turns
   `sync.scope_revoked` subscription evidence into a confirmed
   `force-rebootstrap` action for the affected subscription IDs.
+- 2026-07-01: Added an unrecoverable-bootstrap local recovery action that turns
+  `sync.not_found` / `sync.integrity_rejected` plus errored subscription
+  evidence into a targeted, confirmed `force-rebootstrap` action.
 - 2026-06-30: Extended the Hono-backed browser/WASM local-health test so it
   repairs corrupted subscription state and orphaned verified roots through the
   new local recovery plan/action API instead of direct low-level repair calls.
@@ -1717,9 +1724,10 @@ Most recent mutation-status rerun:
   explicit opt-in action that refuses to appear while unresolved outbox work
   exists, then resets sync/bootstrap state, clears synced app rows, and clears
   cached blob bytes under confirmation. Revoked subscription scopes now map to
-  confirmed affected-subscription rebootstrap actions. Remaining work is to
-  cover unrecoverable bootstrap UI through the same action model and decide
-  whether multi-tab recovery needs additional lock/coordination actions.
+  confirmed affected-subscription rebootstrap actions. Unrecoverable bootstrap
+  resource/integrity failures now map to targeted confirmed rebootstrap actions
+  when the snapshot identifies errored subscription IDs. Remaining work is to
+  decide whether multi-tab recovery needs additional lock/coordination actions.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,

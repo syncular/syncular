@@ -175,6 +175,9 @@ read-only review:
     and clears cached blob bytes under confirmation. Revoked subscription
     scopes now surface as confirmed `force-rebootstrap` actions for affected
     subscription IDs after app permissions are checked or refreshed.
+    Errored bootstrap subscriptions with `sync.not_found` or
+    `sync.integrity_rejected` also map to targeted, confirmed rebootstrap
+    actions.
     Runtime timeline artifacts now expose
     `getSyncularRuntimeTimeline(...)` and
     `SyncularDatabase.runtimeTimeline(...)`, projecting diagnostic snapshots

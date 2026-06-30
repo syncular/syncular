@@ -726,6 +726,9 @@ rebootstrap flows; reset actions still go through the Rust runtime guardrails.
 When a subscription scope is revoked, the plan includes a confirmed
 `force-rebootstrap` action for the affected subscription IDs after the app has
 checked or refreshed permissions.
+Errored bootstrap subscriptions with `sync.not_found` or
+`sync.integrity_rejected` also surface as targeted, confirmed
+`force-rebootstrap` actions.
 
 ## CRDT Document Fields
 

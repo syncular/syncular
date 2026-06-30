@@ -36,6 +36,7 @@ export type SyncularLocalRecoveryActionSeverity = 'info' | 'warning' | 'danger';
 export type SyncularLocalRecoveryActionSource =
   | 'support'
   | 'lifecycle'
+  | 'bootstrap'
   | 'scope'
   | 'outbox'
   | 'blob'
@@ -195,6 +196,7 @@ export async function getSyncularLocalRecoveryPlan(
   const status = client.getStatus?.();
   const actions = [
     supportBundleAction(),
+    ...actionsForErroredBootstrap(status, snapshot),
     ...actionsForRevokedScopes(snapshot),
     ...actionsForLifecycle(status, snapshot),
     ...actionsForOutbox(status, snapshot),
@@ -316,6 +318,33 @@ function supportBundleAction(): SyncularLocalRecoveryAction {
     destructive: false,
     requiresConfirmation: false,
   };
+}
+
+function actionsForErroredBootstrap(
+  status: SyncularClientStatus | undefined,
+  snapshot: SyncularDiagnosticSnapshot
+): SyncularLocalRecoveryAction[] {
+  const reasonCodes = forceRebootstrapReasonCodes(status, snapshot);
+  if (reasonCodes.length === 0) return [];
+  const subscriptionIds = erroredBootstrapSubscriptionIds(snapshot);
+  if (subscriptionIds.length === 0) return [];
+
+  return [
+    {
+      id: 'bootstrap.force-rebootstrap-errored',
+      kind: 'force-rebootstrap',
+      severity: 'danger',
+      source: 'bootstrap',
+      title: 'Rebootstrap errored subscriptions',
+      description:
+        'Bootstrap reached an unrecoverable sync-resource error. Check server availability and schema state, then clear stored bootstrap state for the affected subscriptions so they can pull again.',
+      reasonCodes,
+      destructive: true,
+      requiresConfirmation: true,
+      confirmationText: 'rebootstrap errored subscriptions',
+      subscriptionIds,
+    },
+  ];
 }
 
 function actionsForRevokedScopes(
@@ -548,6 +577,35 @@ function revokedSubscriptionIds(
     }
   }
   return uniqueStrings(ids);
+}
+
+function erroredBootstrapSubscriptionIds(
+  snapshot: SyncularDiagnosticSnapshot
+): string[] {
+  return uniqueStrings([
+    ...snapshot.subscriptions
+      .filter((subscription) => subscription.phase === 'error')
+      .map((subscription) => subscription.id),
+    ...(snapshot.bootstrap?.subscriptions ?? [])
+      .filter((subscription) => subscription.phase === 'error')
+      .map((subscription) => subscription.id),
+  ]);
+}
+
+function forceRebootstrapReasonCodes(
+  status: SyncularClientStatus | undefined,
+  snapshot: SyncularDiagnosticSnapshot
+): string[] {
+  const codes = [
+    status?.lifecycle.lastError?.code,
+    snapshot.connection.lastError?.code,
+    ...snapshot.recentDiagnostics.map((event) => event.code),
+  ];
+  return uniqueStrings(codes.filter(isForceRebootstrapErrorCode));
+}
+
+function isForceRebootstrapErrorCode(code: unknown): code is string {
+  return code === 'sync.integrity_rejected' || code === 'sync.not_found';
 }
 
 function groupHealthFindingsByRepairAction(

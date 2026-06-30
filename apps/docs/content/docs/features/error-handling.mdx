@@ -198,6 +198,8 @@ the Rust runtime guardrails; for example, clearing synced rows refuses to
 proceed while the local outbox is not empty. If a subscription scope is
 revoked, the plan surfaces a confirmed `force-rebootstrap` action for the
 affected subscription IDs after the app has checked or refreshed permissions.
+Errored bootstrap subscriptions with `sync.not_found` or
+`sync.integrity_rejected` surface as targeted, confirmed rebootstrap actions.
 
 Manual reconnect is just a lifecycle start/sync request:
 
