@@ -205,6 +205,7 @@ const timeline = await syncular.commandTimeline({
   localVisibility: { state: 'visible' },
 });
 console.debug(timeline.summary.missingEvidence);
+console.debug(timeline.trackedCommit.outbox?.outboxId);
 console.debug(timeline.trackedCommit.outbox?.ackedCommitSeq);
 
 await syncular.resumeFromBackground();

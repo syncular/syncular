@@ -17,6 +17,7 @@ describe('command timeline', () => {
       localSupportBundle: localSupportBundle({
         outboxCommits: [
           {
+            outboxId: 'outbox-a',
             clientCommitId: 'commit-a',
             schemaVersion: 3,
             status: 'acked',
@@ -103,12 +104,14 @@ describe('command timeline', () => {
       ['synthetic', 'local_visibility.visible'],
     ]);
     expect(timeline.trackedCommit.outbox).toEqual({
+      outboxId: 'outbox-a',
       ackedCommitSeq: 42,
       schemaVersion: 3,
       status: 'acked',
     });
     expect(timeline.events[0]?.details).toMatchObject({
       clientCommitId: 'commit-a',
+      outboxId: 'outbox-a',
       commitSeq: 42,
       outboxStatus: 'acked',
     });
@@ -118,6 +121,7 @@ describe('command timeline', () => {
       code: 'local_apply.outbox_persisted',
       details: {
         clientCommitId: 'commit-a',
+        outboxId: 'outbox-a',
         commitSeq: 42,
         outboxStatus: 'acked',
       },
@@ -129,6 +133,7 @@ describe('command timeline', () => {
       localSupportBundle: localSupportBundle({
         outboxCommits: [
           {
+            outboxId: 'outbox-acked',
             clientCommitId: 'commit-acked',
             schemaVersion: 3,
             status: 'acked',
@@ -145,14 +150,17 @@ describe('command timeline', () => {
     });
 
     expect(timeline.trackedCommit.outbox).toEqual({
+      outboxId: 'outbox-acked',
       ackedCommitSeq: 88,
       schemaVersion: 3,
       status: 'acked',
     });
     expect(timeline.events[0]?.details).toMatchObject({
+      outboxId: 'outbox-acked',
       commitSeq: 88,
       outboxStatus: 'acked',
     });
+    expect(timeline.summary.missingEvidence).not.toContain('outbox-sequence');
     expect(timeline.summary.missingEvidence).not.toContain(
       'server-commit-sequence'
     );

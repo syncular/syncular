@@ -185,21 +185,25 @@ describe('mutation status', () => {
       localSupportBundle: localSupportBundle({
         outboxCommits: [
           {
+            outboxId: 'outbox-pending',
             clientCommitId: 'commit-pending',
             schemaVersion: 3,
             status: 'pending',
           },
           {
+            outboxId: 'outbox-sending',
             clientCommitId: 'commit-sending',
             schemaVersion: 3,
             status: 'sending',
           },
           {
+            outboxId: 'outbox-failed',
             clientCommitId: 'commit-failed',
             schemaVersion: 3,
             status: 'failed',
           },
           {
+            outboxId: 'outbox-acked',
             clientCommitId: 'commit-acked',
             schemaVersion: 3,
             status: 'acked',
@@ -235,7 +239,11 @@ describe('mutation status', () => {
         state: 'queued',
         evidence: ['localSupportBundle.outboxCommit'],
         action: 'show-pending',
-        outbox: { schemaVersion: 3, status: 'pending' },
+        outbox: {
+          outboxId: 'outbox-pending',
+          schemaVersion: 3,
+          status: 'pending',
+        },
       },
       {
         id: 'commit-sending',
@@ -243,7 +251,11 @@ describe('mutation status', () => {
         state: 'syncing',
         evidence: ['localSupportBundle.outboxCommit'],
         action: 'wait-for-sync',
-        outbox: { schemaVersion: 3, status: 'sending' },
+        outbox: {
+          outboxId: 'outbox-sending',
+          schemaVersion: 3,
+          status: 'sending',
+        },
       },
       {
         id: 'commit-failed',
@@ -251,7 +263,11 @@ describe('mutation status', () => {
         state: 'failed',
         evidence: ['localSupportBundle.outboxCommit'],
         action: 'retry-sync',
-        outbox: { schemaVersion: 3, status: 'failed' },
+        outbox: {
+          outboxId: 'outbox-failed',
+          schemaVersion: 3,
+          status: 'failed',
+        },
       },
       {
         id: 'commit-acked',
@@ -259,7 +275,12 @@ describe('mutation status', () => {
         state: 'acked',
         evidence: ['localSupportBundle.outboxCommit'],
         action: undefined,
-        outbox: { schemaVersion: 3, status: 'acked', ackedCommitSeq: 42 },
+        outbox: {
+          outboxId: 'outbox-acked',
+          schemaVersion: 3,
+          status: 'acked',
+          ackedCommitSeq: 42,
+        },
       },
       {
         id: 'commit-missing',
@@ -283,6 +304,7 @@ describe('mutation status', () => {
       localSupportBundle: localSupportBundle({
         outboxCommits: [
           {
+            outboxId: 'outbox-conflicted',
             clientCommitId: 'commit-conflicted',
             schemaVersion: 3,
             status: 'failed',

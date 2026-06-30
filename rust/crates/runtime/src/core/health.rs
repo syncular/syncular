@@ -164,6 +164,7 @@ pub struct LocalSupportOutboxSummary {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LocalSupportOutboxCommit {
+    pub outbox_id: String,
     pub client_commit_id: String,
     pub status: String,
     pub schema_version: i32,
@@ -476,6 +477,7 @@ fn redacted_outbox_commits(outbox: &[OutboxSummary]) -> Vec<LocalSupportOutboxCo
     outbox
         .iter()
         .map(|item| LocalSupportOutboxCommit {
+            outbox_id: item.outbox_id.clone(),
             client_commit_id: item.client_commit_id.clone(),
             status: item.status.clone(),
             schema_version: item.schema_version,

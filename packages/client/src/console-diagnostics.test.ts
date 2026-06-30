@@ -39,7 +39,9 @@ describe('Syncular console diagnostics', () => {
 
   it('classifies diagnostic detail keys for safe forwarding', () => {
     expect(SYNCULAR_DIAGNOSTIC_DETAIL_POLICY.safeKeys).toContain('table');
+    expect(SYNCULAR_DIAGNOSTIC_DETAIL_POLICY.safeKeys).toContain('outboxId');
     expect(classifySyncularDiagnosticDetailKey('table')).toBe('safe');
+    expect(classifySyncularDiagnosticDetailKey('outboxId')).toBe('safe');
     expect(classifySyncularDiagnosticDetailKey('bootstrap')).toBe('summarized');
     expect(classifySyncularDiagnosticDetailKey('changedRows')).toBe('omitted');
     expect(classifySyncularDiagnosticDetailKey('authorization')).toBe(

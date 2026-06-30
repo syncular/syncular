@@ -289,6 +289,9 @@ function commandReceiptEvent(
         ? {
             outboxStatus: trackedCommit.outbox.status,
             outboxSchemaVersion: trackedCommit.outbox.schemaVersion,
+            ...(trackedCommit.outbox.outboxId
+              ? { outboxId: trackedCommit.outbox.outboxId }
+              : {}),
             ...(trackedCommit.outbox.ackedCommitSeq != null
               ? { commitSeq: trackedCommit.outbox.ackedCommitSeq }
               : {}),
@@ -337,6 +340,7 @@ function localApplyEvidenceEvent(
     details: {
       clientCommitId: command.clientCommitId,
       ...(command.commandId ? { commandId: command.commandId } : {}),
+      ...(outbox?.outboxId ? { outboxId: outbox.outboxId } : {}),
       outboxStatus: outbox?.status,
       outboxSchemaVersion: outbox?.schemaVersion,
       ...(outbox?.ackedCommitSeq != null
@@ -408,7 +412,11 @@ function missingCommandEvidence(args: {
 }): SyncularCommandTimelineMissingEvidence[] {
   const missing: SyncularCommandTimelineMissingEvidence[] = [];
   if (!args.trackedCommit.outbox) missing.push('outbox-status');
-  if (!eventsHaveDetail(args.runtimeEvents, 'outboxSeq')) {
+  if (
+    !args.trackedCommit.outbox?.outboxId &&
+    !eventsHaveDetail(args.runtimeEvents, 'outboxSeq') &&
+    !eventsHaveDetail(args.runtimeEvents, 'outboxId')
+  ) {
     missing.push('outbox-sequence');
   }
   if (

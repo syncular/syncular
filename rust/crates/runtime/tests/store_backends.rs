@@ -327,7 +327,7 @@ fn local_support_bundle_is_redacted_and_importable() -> Result<()> {
             id, client_commit_id, status, operations_json, created_at, updated_at,
             attempt_count, schema_version, next_attempt_at
         ) values (
-            'support-outbox-secret', 'support-client-commit', 'pending',
+            'support-outbox-pending', 'support-client-commit', 'pending',
             '[{"payload":"secret-outbox-payload"}]', ?1, ?1, 0, ?2, 0
         )
         "#,
@@ -368,6 +368,8 @@ fn local_support_bundle_is_redacted_and_importable() -> Result<()> {
     assert!(bundle_json.contains("\"rootIsCanonicalHex\":true"));
     assert!(bundle_json.contains("\"formatVersion\":2"));
     assert!(bundle_json.contains("\"outboxCommits\""));
+    assert!(bundle_json.contains("\"outboxId\":\"support-outbox-pending\""));
+    assert!(bundle_json.contains("\"outboxId\":\"support-outbox-acked\""));
     assert!(bundle_json.contains("\"clientCommitId\":\"support-client-commit\""));
     assert!(bundle_json.contains("\"clientCommitId\":\"support-client-acked\""));
     assert!(bundle_json.contains("\"ackedCommitSeq\":42"));

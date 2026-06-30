@@ -984,6 +984,7 @@ export interface SyncularLocalSupportOutboxSummary {
 }
 
 export interface SyncularLocalSupportOutboxCommit {
+  outboxId: string;
   clientCommitId: string;
   status: string;
   schemaVersion: number;

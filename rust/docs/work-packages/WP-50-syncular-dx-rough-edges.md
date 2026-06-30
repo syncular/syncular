@@ -1399,6 +1399,12 @@ online propagation, or reconnect behavior can change.
 - 2026-07-01: Added synthetic command-timeline local-apply evidence whenever a
   tracked command has redacted local outbox evidence, avoiding a misleading
   missing local-apply marker for durable local writes.
+- 2026-07-01: Extended redacted local support bundle outbox commit summaries
+  with `outboxId`, and threaded that through mutation status plus command
+  timeline receipt/local-apply events so command artifacts can prove the local
+  durable outbox row link without exposing operations JSON or row payloads.
+  The client diagnostic detail policy now treats `outboxId` as a safe support
+  identifier alongside `clientCommitId`.
 
 ## Latest Gates
 
@@ -1491,6 +1497,17 @@ Most recent command local-apply rerun:
 - `bun test packages/client/src/command-timeline.test.ts packages/client/src/mutation-status.test.ts packages/client/src/public-api.test.ts`
 - `bun --cwd packages/client tsgo`
 - `bunx biome check packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bun run docs:stale-check`
+- `bun --cwd apps/docs types:check`
+- `git diff --check`
+
+Most recent command outbox-id rerun:
+
+- `cargo fmt --all --check` from `rust/`
+- `cargo test -p syncular-runtime --manifest-path rust/Cargo.toml local_support_bundle_is_redacted_and_importable`
+- `bun test packages/client/src/command-timeline.test.ts packages/client/src/mutation-status.test.ts packages/client/src/support-bundle.test.ts packages/client/src/console-diagnostics.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/types.ts packages/client/src/mutation-status.ts packages/client/src/mutation-status.test.ts packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/src/console-diagnostics.ts packages/client/src/console-diagnostics.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -1805,13 +1822,14 @@ Most recent mutation-status rerun:
   conflict detail rows, last mutation-related errors, and recommended actions.
   Receipt-level correlation is also done for generated mutation receipts using
   redacted local support bundle outbox commit summaries plus conflict records;
-  acked summaries now include `ackedCommitSeq` so command timelines can prove
-  server commit sequence from redacted local evidence.
+  summaries now include `outboxId` so command timelines can prove the local
+  durable outbox row, and acked summaries include `ackedCommitSeq` so command
+  timelines can prove server commit sequence from redacted local evidence.
   First command-timeline artifacts are done for receipt state, redacted runtime
   events, optional local-visibility evidence, and explicit missing-evidence
   markers. Remaining work is to emit the missing low-level links directly from
-  the runtime: outbox sequence, push request id, realtime event cursor, pull
-  reason, and local visibility point.
+  the runtime: push request id, realtime event cursor, pull reason, and local
+  visibility point.
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.

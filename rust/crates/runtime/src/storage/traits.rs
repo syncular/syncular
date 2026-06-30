@@ -125,6 +125,7 @@ pub struct AppSchemaState {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OutboxSummary {
+    pub outbox_id: String,
     pub client_commit_id: String,
     pub status: String,
     pub schema_version: i32,

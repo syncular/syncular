@@ -684,6 +684,7 @@ impl AsyncWebStore for WebMemoryStore {
                 .outbox
                 .iter()
                 .map(|commit| OutboxSummary {
+                    outbox_id: commit.id.clone(),
                     client_commit_id: commit.client_commit_id.clone(),
                     status: commit.status.clone(),
                     schema_version: commit.schema_version,

@@ -38,6 +38,7 @@ const SYNCULAR_DIAGNOSTIC_SAFE_DETAIL_KEYS = [
   'message',
   'notifyMs',
   'operation',
+  'outboxId',
   'outboxSeq',
   'pending',
   'pullApplyMs',

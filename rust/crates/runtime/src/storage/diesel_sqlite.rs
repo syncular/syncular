@@ -496,6 +496,8 @@ struct AppSchemaStateRow {
 #[derive(QueryableByName)]
 struct OutboxSummaryRow {
     #[diesel(sql_type = Text)]
+    outbox_id: String,
+    #[diesel(sql_type = Text)]
     client_commit_id: String,
     #[diesel(sql_type = Text)]
     status: String,
@@ -518,6 +520,7 @@ struct OutboxSummaryRow {
 impl From<OutboxSummaryRow> for OutboxSummary {
     fn from(row: OutboxSummaryRow) -> Self {
         Self {
+            outbox_id: row.outbox_id,
             client_commit_id: row.client_commit_id,
             status: row.status,
             schema_version: row.schema_version,
@@ -1996,7 +1999,7 @@ impl SyncStateStore for DieselSqliteStore {
     fn outbox_summaries(&mut self) -> Result<Vec<OutboxSummary>> {
         let rows = sql_query(
             r#"
-            select client_commit_id, status, schema_version, acked_commit_seq,
+            select id as outbox_id, client_commit_id, status, schema_version, acked_commit_seq,
                    lease_id, lease_expires_at_ms, lease_status_at_enqueue,
                    lease_scope_summary_json, lease_token
             from sync_outbox_commits

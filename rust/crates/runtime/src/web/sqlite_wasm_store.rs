@@ -5833,12 +5833,13 @@ impl AsyncWebStore for SyncularRustOwnedSqlite {
     ) -> Pin<Box<dyn Future<Output = Result<Vec<OutboxSummary>>> + 'a>> {
         Box::pin(async move {
             self.query_rows(
-                "SELECT client_commit_id, status, schema_version, acked_commit_seq, \
+                "SELECT id, client_commit_id, status, schema_version, acked_commit_seq, \
                         lease_id, lease_expires_at_ms, lease_status_at_enqueue, \
                         lease_scope_summary_json, lease_token \
                  FROM sync_outbox_commits ORDER BY created_at ASC",
                 |row| {
                     Ok(OutboxSummary {
+                        outbox_id: row.string("id")?,
                         client_commit_id: row.string("client_commit_id")?,
                         status: row.string("status")?,
                         schema_version: row.i32("schema_version")?,

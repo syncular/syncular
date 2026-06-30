@@ -89,6 +89,7 @@ export interface SyncularTrackedMutationCommit {
   state: SyncularTrackedMutationState;
   evidence: string[];
   outbox?: {
+    outboxId?: string;
     status: string;
     schemaVersion: number;
     ackedCommitSeq?: number;
@@ -371,6 +372,7 @@ function summarizeTrackedCommits(args: {
       ...(outboxCommit
         ? {
             outbox: {
+              outboxId: outboxCommit.outboxId,
               status: outboxCommit.status,
               schemaVersion: outboxCommit.schemaVersion,
               ...(outboxCommit.ackedCommitSeq != null
