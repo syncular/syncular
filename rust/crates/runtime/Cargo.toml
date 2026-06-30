@@ -1,6 +1,6 @@
 [package]
 name = "syncular-runtime"
-version = "0.1.1"
+version = "0.1.2"
 edition = "2021"
 description = "Shared Rust runtime for Syncular SQLite-backed native and browser clients."
 license = "Apache-2.0"
@@ -57,7 +57,7 @@ web-owned-sqlite-core = [
 
 [dependencies]
 anyhow = "1.0"
-syncular-protocol = { version = "0.1.1", path = "../protocol" }
+syncular-protocol = { version = "0.1.2", path = "../protocol" }
 argon2 = { version = "0.5", optional = true }
 base64 = { version = "0.22", optional = true }
 bip39 = { version = "2.1", default-features = false, features = ["std"], optional = true }

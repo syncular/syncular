@@ -71,6 +71,10 @@ the npm packages without publishing public crates from every `main` merge.
   fixture sources, `target`, `.context`, or `node_modules` content. The Cargo
   release script and GitHub release workflow now run this check before
   publishing.
+- The `0.1.1` post-publish smoke caught that the published `syncular` CLI did
+  not run through npm `.bin` symlinks because main-module detection compared
+  the symlink path against the real bundled file path. Fixed the entrypoint
+  detection and moved the release train to `0.1.2`.
 
 ## Gates
 
@@ -87,6 +91,8 @@ the npm packages without publishing public crates from every `main` merge.
 - `bun run release:cargo:package-check`
 - `bun test packages/syncular/src/cli.test.ts`
 - `bun --cwd packages/syncular build`
+- `bun --cwd packages/syncular build:cli` plus a temporary symlink invocation
+  verified `syncular generate --help` runs through npm-style bin symlinks.
 - `bun scripts/post-publish-install-smokes.ts --help`
 - `npm pack --dry-run --json` in `packages/syncular` verified `dist/cli.js`
   is included and stale deleted-alias/test files are excluded.

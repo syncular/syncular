@@ -18,7 +18,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
  * (scripts/stamp-versions.ts) rewrites this package's `version` field, and
  * the scaffolded app always prefers `^<that version>`.
  */
-const FALLBACK_SYNCULAR_VERSION_RANGE = '^0.1.1';
+const FALLBACK_SYNCULAR_VERSION_RANGE = '^0.1.2';
 
 export interface CreateCommandOptions {
   targetDir?: string;
