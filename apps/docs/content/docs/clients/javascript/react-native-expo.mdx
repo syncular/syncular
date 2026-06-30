@@ -25,7 +25,7 @@ npm install @syncular/client kysely react
 
 ```ts
 import { createSyncularNativeClient } from '@syncular/client/react-native';
-import type { AppDb } from './generated/syncular.browser';
+import type { AppDb } from './generated/syncular.generated';
 
 const syncular = await createSyncularNativeClient<AppDb>({
   module: SyncularNativeModule,

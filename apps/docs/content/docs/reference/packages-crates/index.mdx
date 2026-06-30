@@ -9,6 +9,13 @@ Use this page as a package index. Guided setup lives under
 [Installation](/start/installation), [JavaScript](/clients/javascript),
 and [Rust](/clients/rust).
 
+For a normal browser app, install `@syncular/client` plus whatever UI package
+your app already uses, then import the generated app module from
+`src/generated/syncular.generated.ts`. Add subpath peers only when you import
+that subpath: React for `@syncular/client/react`, Yjs for
+`@syncular/client/crdt-yjs`, Sentry for `@syncular/client/sentry`, S3 for
+`@syncular/server/s3`, and so on.
+
 ## Scaffolding and CLI
 
 | Package | Use |

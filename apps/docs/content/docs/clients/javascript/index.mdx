@@ -10,6 +10,27 @@ JavaScript client shape keeps app reads in typed Kysely, routes writes through
 generated Syncular mutations, and delegates SQLite/sync internals to the
 Rust-owned runtime where the target supports it.
 
+## Which import do I need?
+
+Start from the generated app module when you have one. It already knows your
+schema, subscriptions, runtime feature requirements, and generated mutations.
+
+| Need | Import |
+|---|---|
+| Open the generated browser/offline database | Generated app module, e.g. `./generated/syncular.generated` |
+| Advanced ungenerated browser database setup | `@syncular/client` |
+| Browser health, schema readiness, local visibility, auth-context replacement | `@syncular/client` |
+| React provider, live query hooks, mutation hooks, status hooks | `@syncular/client/react` |
+| React Native / Expo bridge | `@syncular/client/react-native` |
+| Tauri bridge | `@syncular/client/tauri` |
+| Optional Yjs editor/document adapter | `@syncular/client/crdt-yjs` |
+| Browser Sentry telemetry bridge | `@syncular/client/sentry` |
+| CLI commands such as `generate` | `npx syncular ...` |
+
+Optional integrations stay behind subpaths. Importing `@syncular/client` for a
+normal browser app does not mean the app has to install React Native, Tauri,
+Yjs, or Sentry dependencies; install those peers only for the subpath you use.
+
 ## Getting Started
 
 <Cards>

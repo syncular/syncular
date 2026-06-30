@@ -15,7 +15,7 @@ Generated browser code creates the typed Kysely database and validates runtime
 features against the app schema:
 
 ```ts
-import { createSyncularAppDatabase } from './generated/syncular.browser';
+import { createSyncularAppDatabase } from './generated/syncular.generated';
 
 const syncular = await createSyncularAppDatabase({
   config: {
@@ -62,6 +62,10 @@ Realtime is treated as a wakeup path: websocket reconnects trigger HTTP
 catchup sync, and interval polling stays opt-in through `pollIntervalMs`. Pass
 `lifecycle: { autoStart: false }` to open the database without starting sync,
 then call `syncular.start()` yourself.
+
+Generated clients select packaged browser runtime artifacts from app schema
+metadata, so normal browser apps do not import worker or WASM artifact helpers
+manually.
 
 ## React apps
 
@@ -132,7 +136,7 @@ The runtime emits generic `changedRows`; generated helpers turn those into
 typed app-table deltas:
 
 ```ts
-import { syncularChangedRows } from './generated/syncular.browser';
+import { syncularChangedRows } from './generated/syncular.generated';
 
 const unsubscribe = syncular.on('rowsChanged', (event) => {
   for (const task of syncularChangedRows.tasks(event)) {

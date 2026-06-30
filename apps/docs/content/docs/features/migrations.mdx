@@ -59,7 +59,7 @@ source; generated files are the app-specific client output.
 import { defineSyncularClient, scope, syncedTable } from '@syncular/typegen';
 
 export const app = defineSyncularClient({
-  typescriptOutputPath: 'src/generated/syncular.browser.ts',
+  typescriptOutputPath: 'src/generated/syncular.generated.ts',
   clientSchemaSupport: {
     minSupported: 1,
   },
@@ -95,7 +95,7 @@ The generated browser client installs the Syncular system schema, app tables,
 generated indexes/read models, codecs, and subscriptions.
 
 ```ts
-import { createSyncularAppDatabase } from './generated/syncular.browser';
+import { createSyncularAppDatabase } from './generated/syncular.generated';
 
 const syncular = await createSyncularAppDatabase({
   config: {

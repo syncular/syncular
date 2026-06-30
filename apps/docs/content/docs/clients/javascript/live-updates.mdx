@@ -15,7 +15,7 @@ Generated helpers turn generic `changedRows` events into table-specific
 decisions:
 
 ```ts
-import { syncularChangedRows } from './generated/syncular.browser';
+import { syncularChangedRows } from './generated/syncular.generated';
 
 const unsubscribe = syncular.on('rowsChanged', (event) => {
   for (const task of syncularChangedRows.tasks(event)) {

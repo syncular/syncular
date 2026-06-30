@@ -21,6 +21,11 @@ const stalePatterns: StalePattern[] = [
     message: 'Use the unified `syncular generate` command in app-facing docs.',
   },
   {
+    pattern: /generated\/syncular\.browser|syncular\.browser\.ts\b/,
+    message:
+      'Use the starter-proven generated module path `src/generated/syncular.generated.ts`.',
+  },
+  {
     pattern: /@syncular\/client-react(?![-\w])/,
     message: 'Use the `@syncular/client/react` subpath.',
   },

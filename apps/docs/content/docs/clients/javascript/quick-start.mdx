@@ -10,6 +10,11 @@ Reads stay query-builder based through Kysely. Writes go through generated
 Syncular mutations so local rows, outbox commits, conflicts, blobs, CRDT fields,
 and encryption stay coherent.
 
+For a complete runnable browser app, start with
+[`create-syncular-app`](/start/quick-start). This page shows the same client
+loop by hand: define the app contract, generate, open the generated database,
+query with Kysely, and mutate through generated helpers.
+
 ## 1. Define the client contract
 
 Create `syncular.app.ts` in your app:
@@ -18,7 +23,7 @@ Create `syncular.app.ts` in your app:
 import { defineSyncularClient, scope, syncedTable } from '@syncular/typegen';
 
 export const app = defineSyncularClient({
-  typescriptOutputPath: 'src/generated/syncular.browser.ts',
+  typescriptOutputPath: 'src/generated/syncular.generated.ts',
   tables: {
     tasks: syncedTable({
       table: 'tasks',
@@ -49,7 +54,7 @@ npx syncular generate --manifest-dir . --check
 ## 3. Open the browser client
 
 ```ts
-import { createSyncularAppDatabase } from './src/generated/syncular.browser';
+import { createSyncularAppDatabase } from './src/generated/syncular.generated';
 
 const syncular = await createSyncularAppDatabase({
   config: {
@@ -63,6 +68,10 @@ const syncular = await createSyncularAppDatabase({
   }),
 });
 ```
+
+Generated open helpers select packaged browser runtime artifacts from the app
+schema metadata. Normal apps should not import worker or WASM artifact helpers
+directly.
 
 ## 4. Query with Kysely
 

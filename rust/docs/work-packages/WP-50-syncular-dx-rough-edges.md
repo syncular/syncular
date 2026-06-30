@@ -632,6 +632,14 @@ online propagation, or reconnect behavior can change.
 - The testkit `postSyncCombinedRequest(...)` helper now accepts the current
   binary sync-pack response format as well as JSON, so docs examples using the
   real combined route are executable again.
+- 2026-06-30 eleventh implementation slice collapsed the first public
+  import/setup docs around the starter-proven path: the JavaScript landing page
+  now has a "which import do I need?" table, Fresh JavaScript apps point at
+  `create-syncular-app` first, server/package reference pages call out optional
+  subpath peers, and high-traffic examples use the canonical
+  `src/generated/syncular.generated.ts` output.
+- The docs stale-pattern check now blocks the old `syncular.browser` generated
+  filename in app-facing docs and package README/reference files.
 
 ## Implementation Log
 
@@ -744,6 +752,19 @@ online propagation, or reconnect behavior can change.
   responses in addition to JSON responses.
 - 2026-06-30: Updated testkit docs and the production testing checklist with
   explicit membership, denied-scope, and diagnostic-marker expectations.
+- 2026-06-30: Added a JavaScript client import decision table covering the
+  generated app module, `@syncular/client`, React, React Native, Tauri, Yjs,
+  Sentry, and CLI commands.
+- 2026-06-30: Updated Fresh JavaScript app docs to lead with
+  `create-syncular-app`, then show manual installs for existing apps.
+- 2026-06-30: Canonicalized public generated TypeScript examples on
+  `src/generated/syncular.generated.ts` across JavaScript docs, client/runtime
+  READMEs, and the Rust local-project integration reference.
+- 2026-06-30: Expanded server/package reference docs so optional server/client
+  integrations are described as subpaths with peers installed only when those
+  subpaths are used.
+- 2026-06-30: Extended `docs:stale-check` to reject the old
+  `syncular.browser` generated filename in scanned docs and package references.
 
 ## Latest Gates
 
@@ -789,6 +810,7 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bun test packages/testkit/src/scoped-actors.test.ts packages/testkit/src/diagnostic-markers.test.ts packages/testkit/src/sync-builders.test.ts`
 - `bunx biome check packages/testkit/src/scoped-actors.ts packages/testkit/src/scoped-actors.test.ts packages/testkit/src/diagnostic-markers.ts packages/testkit/src/diagnostic-markers.test.ts packages/testkit/src/project-scoped-tasks.ts packages/testkit/src/sync-http.ts packages/testkit/src/sync-parse.ts packages/testkit/src/index.ts`
 - `bun --cwd packages/testkit tsgo`
+- `bunx biome check scripts/check-docs-stale-patterns.ts`
 - `git diff --check`
 
 ## Sequencing
@@ -823,7 +845,9 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    and subscriptions, and a fixed binary sync-pack-aware combined request
    helper.
 8. Collapse client init and import docs where the starter proves remaining
-   friction.
+   friction: first docs slice is done with a JavaScript import decision table,
+   starter-first Fresh JavaScript guidance, optional subpath peer guidance, and
+   a stale-pattern guard for the old generated filename.
 9. Finish with contributor bootstrap/gate cleanup so maintainers can keep the
    path green.
 
@@ -859,7 +883,6 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 
 ## Next Action
 
-Pick the next implementation slice: collapse remaining client initialization
-and import-surface docs around the starter-proven path, keeping optional
-runtime adapters behind subpaths while making the "which import/setup do I
-need?" path explicit.
+Pick the next implementation slice: contributor bootstrap/gate cleanup so
+maintainers can discover the pinned Bun path, known WASM-worker CI fragility,
+and task-specific gates before running the wrong long gate.

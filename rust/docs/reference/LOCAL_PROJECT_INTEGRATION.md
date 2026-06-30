@@ -1039,7 +1039,7 @@ precise row/field changes without hard-coded string checks.
 Browser/TypeScript:
 
 ```ts
-import { syncularChangedRows } from './generated/syncular.browser';
+import { syncularChangedRows } from './generated/syncular.generated';
 
 syncular.client.addRowsChangedListener((event) => {
   for (const task of syncularChangedRows.tasks(event)) {

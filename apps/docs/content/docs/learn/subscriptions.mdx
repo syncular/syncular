@@ -117,7 +117,7 @@ subscriptions from `actorId`, `projectId`, and any generated subscription
 parameters.
 
 ```ts
-import { createSyncularAppDatabase } from './generated/syncular.browser';
+import { createSyncularAppDatabase } from './generated/syncular.generated';
 
 const syncular = await createSyncularAppDatabase({
   config: {
@@ -136,7 +136,7 @@ When UI state changes the data a client should hold, call `setSubscriptions`.
 Keep IDs stable for subscriptions that should continue incrementally.
 
 ```ts
-import { taskSubscription } from './generated/syncular.browser';
+import { taskSubscription } from './generated/syncular.generated';
 
 await syncular.client.setSubscriptions([
   taskSubscription({ actorId: userId }),

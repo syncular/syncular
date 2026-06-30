@@ -14,7 +14,7 @@ Configure Rust codegen to emit your browser helper into your app package:
 
 ```json
 {
-  "typescriptOutputPath": "src/generated/syncular.browser.ts",
+  "typescriptOutputPath": "src/generated/syncular.generated.ts",
   "typescriptRuntimeImportPath": "@syncular/client",
   "tables": {
     "profiles": {
@@ -29,7 +29,7 @@ App code imports the generated helper, not a table-specific API from this
 package:
 
 ```ts
-import { createSyncularAppDatabase } from './generated/syncular.browser';
+import { createSyncularAppDatabase } from './generated/syncular.generated';
 
 const syncular = await createSyncularAppDatabase({
   config: {
@@ -277,7 +277,7 @@ Generated apps also get typed row-delta helpers for realtime/UI routing. The
 runtime event stays generic, while app code can branch on real table columns:
 
 ```ts
-import { syncularChangedRows } from './generated/syncular.browser';
+import { syncularChangedRows } from './generated/syncular.generated';
 
 const unsubscribe = syncular.on('rowsChanged', (event) => {
   for (const task of syncularChangedRows.tasks(event)) {

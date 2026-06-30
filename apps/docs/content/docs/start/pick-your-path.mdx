@@ -28,8 +28,10 @@ rewrite. Three paths cover how teams actually start:
 Best when you are building a new product where offline is a requirement
 (email client, CRM, internal tool, field app).
 
-Start with [Hello World](/start/hello-world) — it walks the entire loop once
-(schema, app contract, server, client). The outline:
+Start with [Quick Start](/start/quick-start) to scaffold a running browser app
+with the generated client, Hono server, SQLite, offline replay, and realtime
+wakeups already wired. Use [Hello World](/start/hello-world) when you want to
+build the same loop manually and see each file. The outline:
 
 1. Pick the host surface: JavaScript/TypeScript app APIs over the Rust
    runtime, or direct Rust app code.
@@ -41,9 +43,23 @@ Start with [Hello World](/start/hello-world) — it walks the entire loop once
 5. Add scopes + subscriptions for partial sync and auth.
 6. Add realtime wakeups once the core push/pull path is proven.
 
-{/* TODO: point this path at the create-syncular-app one-liner once it lands. */}
-
 ### Fresh JavaScript app
+
+The fastest path is the scaffolder:
+
+```bash
+bunx create-syncular-app my-app
+cd my-app
+bun install
+bun dev
+```
+
+That app is the canonical browser path: generated
+`src/generated/syncular.generated.ts`, `@syncular/client` for the local
+database, `@syncular/client/react` for hooks, and `@syncular/server/hono` plus
+`@syncular/server/bun-sqlite` for the local sync server.
+
+For an existing app or a manual setup, install the same packages directly:
 
 ```bash
 npm install @syncular/client kysely react react-dom
@@ -58,9 +74,9 @@ binary when Cargo is available, or prepare it explicitly:
 npx syncular codegen install
 ```
 
-Then define `migrations/0001_initial/up.sql` and `syncular.app.ts` exactly as
-in [Hello World](/start/hello-world), and generate (the `--check` form is the
-CI guard):
+Then define `migrations/0001_initial/up.sql` and `syncular.app.ts` like the
+starter or [Hello World](/start/hello-world), and generate (the `--check` form
+is the CI guard):
 
 ```bash
 npx syncular generate --manifest-dir .
@@ -129,6 +145,7 @@ testkit client.
 
 Continue with:
 
+- [Quick Start](/start/quick-start)
 - [Hello World](/start/hello-world)
 - [Server Getting Started](/server/getting-started)
 - [JavaScript](/clients/javascript) or [Rust](/clients/rust)

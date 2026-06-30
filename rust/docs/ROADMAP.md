@@ -103,13 +103,16 @@ read-only review:
     membership-aware project/campaign actor helpers, stable diagnostic marker
     assertions, explicit project membership support in the bundled tasks
     fixture, and binary sync-pack-aware combined response parsing for real
-    route tests. Focused client/CLI/server/blob/testkit tests, package
-    typechecks, fresh JS smoke, scaffold smoke, docs stale check, Rust taxonomy
-    check, and diff check passed locally. A
+    route tests. Public docs now lead Fresh JavaScript apps through
+    `create-syncular-app`, include a JavaScript import decision table, describe
+    optional client/server integrations as subpaths with optional peers, and
+    guard the starter-proven `src/generated/syncular.generated.ts` filename
+    through stale-pattern checks. Focused client/CLI/server/blob/testkit tests,
+    package typechecks, fresh JS smoke, scaffold smoke, docs stale check, Rust
+    taxonomy check, and diff check passed locally. A
     Hono/WebSocket/WASM managed-database test also proves the same scope-change
     flow against real remote auth/realtime behavior, including denied-scope
-    diagnostics. Next slice: collapse remaining client initialization and
-    import-surface docs around the starter-proven path.
+    diagnostics. Next slice: contributor bootstrap/gate cleanup.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

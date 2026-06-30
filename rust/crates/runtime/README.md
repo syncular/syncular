@@ -619,7 +619,7 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir 
 
 ```json
 {
-  "typescriptOutputPath": "generated/syncular.browser.ts",
+  "typescriptOutputPath": "generated/syncular.generated.ts",
   "typescriptRuntimeImportPath": "@syncular/client",
   "tables": {
     "tasks": {
@@ -655,7 +655,7 @@ cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir 
 8. It writes generated subscriptions and mutation helpers into the consuming
    app's generated Rust client module.
 9. It writes generated browser TypeScript helpers to `typescriptOutputPath`
-   or `generated/syncular.browser.ts` by default. That file contains the app DB
+   or `generated/syncular.generated.ts` by default. That file contains the app DB
    type, a typed `createSyncularAppDatabase()` helper, row/input/patch types,
    Kysely payload helpers, SyncOperation builders, and subscription helpers.
    The generated database helper imports the Rust SQLite runtime from

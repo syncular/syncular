@@ -16,7 +16,16 @@ Use [Server Getting Started](/server/getting-started) for first-time implementat
 | `@syncular/server` | Core sync engine, schema helpers, handler factory, pruning/compaction primitives, blob manager |
 | `@syncular/server/hono` | Hono route factories, realtime wiring, console routes, OpenAPI handler |
 | `@syncular/server/sqlite`, `@syncular/server/postgres` | Dialect-specific schema and SQL behavior |
-| `@syncular/server/<driver>` | Optional Kysely runtime driver helpers such as `/bun-sqlite`, `/neon`, and `/pglite` |
+| `@syncular/server/bun-sqlite`, `/better-sqlite3`, `/sqlite3`, `/libsql`, `/d1` | Optional SQLite-family Kysely runtime driver helpers |
+| `@syncular/server/neon`, `/pglite` | Optional Postgres-family Kysely runtime driver helpers |
+| `@syncular/server/filesystem`, `/s3` | Optional external snapshot/blob storage adapters |
+| `@syncular/server/cloudflare`, `/cloudflare/*` | Workers, Durable Objects, R2, scope-cache, and Cloudflare Sentry helpers |
+| `@syncular/server/crdt-yjs` | Optional server-side Yjs CRDT merge helpers |
+| `@syncular/server/service-worker`, `/relay` | Browser service-worker server and edge relay surfaces |
+
+Runtime-specific dependencies are optional peers. Importing
+`@syncular/server` does not load Bun, Hono, Cloudflare, S3, Yjs, or database
+driver code; install and import the subpath for the runtime you actually use.
 
 ## Server lifecycle
 
