@@ -1,6 +1,6 @@
 {
   "name": "@syncular/server",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Server-side Syncular engine with opt-in Hono, database, storage, Cloudflare, relay, and CRDT subpaths",
   "license": "Apache-2.0",
   "author": "Benjamin Kniffler",

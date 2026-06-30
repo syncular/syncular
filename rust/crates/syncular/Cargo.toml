@@ -1,6 +1,6 @@
 [package]
 name = "syncular"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Reserved canonical crate name for the Rust-first Syncular client SDK."
 license = "Apache-2.0"

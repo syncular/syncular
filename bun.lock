@@ -118,7 +118,7 @@
     },
     "packages/client": {
       "name": "@syncular/client",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "dependencies": {
         "@syncular/core": "workspace:*",
         "kysely": "^0.28.0",
@@ -149,7 +149,7 @@
     },
     "packages/console": {
       "name": "@syncular/console",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "dependencies": {
         "@base-ui/react": "^1.3.0",
         "@sentry/react": "^10.47.0",
@@ -182,7 +182,7 @@
     },
     "packages/core": {
       "name": "@syncular/core",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "dependencies": {
         "fflate": "^0.8.2",
       },
@@ -204,7 +204,7 @@
     },
     "packages/create-syncular-app": {
       "name": "create-syncular-app",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "bin": {
         "create-syncular-app": "./dist/cli.js",
       },
@@ -214,7 +214,7 @@
     },
     "packages/migrations": {
       "name": "@syncular/migrations",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "devDependencies": {
         "@syncular/config": "workspace:*",
         "kysely": "*",
@@ -225,7 +225,7 @@
     },
     "packages/server": {
       "name": "@syncular/server",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "dependencies": {
         "@syncular/core": "workspace:*",
       },
@@ -308,7 +308,7 @@
     },
     "packages/syncular": {
       "name": "syncular",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "bin": {
         "syncular": "./dist/cli.js",
       },
@@ -321,21 +321,36 @@
     },
     "packages/testkit": {
       "name": "@syncular/testkit",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "dependencies": {
-        "@syncular/client": "workspace:*",
         "@syncular/core": "workspace:*",
-        "@syncular/server": "workspace:*",
-        "hono": "^4.12.15",
       },
       "devDependencies": {
+        "@electric-sql/pglite": "^0.3.15",
+        "@syncular/client": "workspace:*",
         "@syncular/config": "workspace:*",
+        "@syncular/server": "workspace:*",
+        "hono": "^4.12.15",
         "kysely": "*",
       },
+      "peerDependencies": {
+        "@electric-sql/pglite": "^0.3.15",
+        "@syncular/client": "workspace:*",
+        "@syncular/server": "workspace:*",
+        "hono": "^4.12.15",
+        "kysely": "^0.28.0",
+      },
+      "optionalPeers": [
+        "@electric-sql/pglite",
+        "@syncular/client",
+        "@syncular/server",
+        "hono",
+        "kysely",
+      ],
     },
     "packages/typegen": {
       "name": "@syncular/typegen",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "bin": {
         "syncular-typegen": "./src/cli.ts",
       },
