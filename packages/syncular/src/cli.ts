@@ -5,8 +5,10 @@ import {
   constants,
   existsSync,
   mkdirSync,
+  readdirSync,
   readFileSync,
   realpathSync,
+  statSync,
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { delimiter, dirname, join, resolve, sep } from 'node:path';
@@ -30,10 +32,21 @@ export interface CodegenInstallCommandOptions {
   force: boolean;
 }
 
+export interface SchemaCheckCommandOptions {
+  manifestDir: string;
+  config?: string;
+  migrationsDir?: string;
+  generatedClient?: string;
+  generatedServer?: string;
+  json: boolean;
+  pretty: boolean;
+}
+
 export type SyncularCliCommand =
-  | { kind: 'help'; topic?: 'generate' | 'codegen-install' }
+  | { kind: 'help'; topic?: 'generate' | 'codegen-install' | 'schema-check' }
   | { kind: 'generate'; options: GenerateCommandOptions }
-  | { kind: 'codegen-install'; options: CodegenInstallCommandOptions };
+  | { kind: 'codegen-install'; options: CodegenInstallCommandOptions }
+  | { kind: 'schema-check'; options: SchemaCheckCommandOptions };
 
 export interface GenerateStep {
   label: string;
@@ -47,17 +60,75 @@ export interface GenerateStepContext {
   fileExists?: (path: string) => boolean;
 }
 
+export type SchemaCheckStatus = 'ready' | 'not-ready';
+
+export type SchemaCheckIssueSeverity = 'warning' | 'error';
+
+export type SchemaCheckIssueCode =
+  | 'schema.config_missing'
+  | 'schema.config_invalid'
+  | 'schema.config_no_tables'
+  | 'schema.migrations_missing'
+  | 'schema.migrations_empty'
+  | 'schema.generated_client_missing'
+  | 'schema.generated_client_version_missing'
+  | 'schema.generated_server_missing'
+  | 'schema.generated_server_version_missing'
+  | 'schema.generated_server_mismatch'
+  | 'schema.generated_output_stale'
+  | 'schema.generated_output_ahead';
+
+export interface SchemaCheckIssue {
+  code: SchemaCheckIssueCode;
+  severity: SchemaCheckIssueSeverity;
+  message: string;
+  path?: string;
+  recommendedAction:
+    | 'runSyncularGenerate'
+    | 'fixCodegenConfig'
+    | 'addMigrations'
+    | 'inspectGeneratedOutput';
+  details?: Record<string, unknown>;
+}
+
+export interface SchemaCheckResult {
+  generatedAt: string;
+  status: SchemaCheckStatus;
+  ready: boolean;
+  manifestDir: string;
+  configPath: string;
+  migrationsDir: string;
+  generatedClientPath: string | null;
+  generatedServerPath: string | null;
+  tableCount: number;
+  tables: string[];
+  schemaVersion: {
+    migrations: number | null;
+    generatedClient: number | null;
+    generatedServer: number | null;
+  };
+  issues: SchemaCheckIssue[];
+}
+
+interface SyncularCodegenConfig {
+  tables?: unknown;
+  typescriptOutputPath?: unknown;
+  typescriptServerOutputPath?: unknown;
+}
+
 function usage(): string {
   return `usage: syncular <command>
 
 commands:
   generate [--check] [--manifest-dir <path>] [--migrations-dir <path>] [--rust-output-dir <path>] [--app <path>]
+  schema check [--manifest-dir <path>] [--config <path>] [--migrations-dir <path>] [--generated-client <path>] [--generated-server <path>] [--json] [--pretty]
   codegen install [--version <version>] [--root <path>] [--force]
 
 examples:
   syncular generate
   syncular generate --check
   syncular generate --manifest-dir ./syncular-app --app ./syncular.app.ts
+  syncular schema check --json
   syncular codegen install
 `;
 }
@@ -86,6 +157,16 @@ Installs the Rust syncular-codegen binary with Cargo into Syncular's tool cache.
 By default the installed crate version matches the installed syncular npm
 package version. Use --root to install into a custom Cargo root, or set
 SYNCULAR_CODEGEN_BIN to point syncular generate at a custom binary.
+`;
+}
+
+function schemaCheckUsage(): string {
+  return `usage: syncular schema check [--manifest-dir <path>] [--config <path>] [--migrations-dir <path>] [--generated-client <path>] [--generated-server <path>] [--json] [--pretty]
+
+Checks that the generated Syncular config, migrations, and generated TypeScript
+client/server outputs agree before deploy or CI continues.
+
+Use --json for machine-readable output. A not-ready result exits with status 1.
 `;
 }
 
@@ -145,6 +226,25 @@ export function parseSyncularCliArgs(
     return {
       kind: 'codegen-install',
       options: parseCodegenInstallArgs(codegenArgs),
+    };
+  }
+
+  if (command === 'schema') {
+    const [subcommand, ...schemaArgs] = rest;
+    if (!subcommand || subcommand === '--help' || subcommand === '-h') {
+      return { kind: 'help', topic: 'schema-check' };
+    }
+    if (subcommand !== 'check') {
+      throw new Error(
+        `Unknown syncular schema command: ${subcommand}\n\n${usage()}`
+      );
+    }
+    if (schemaArgs.includes('--help') || schemaArgs.includes('-h')) {
+      return { kind: 'help', topic: 'schema-check' };
+    }
+    return {
+      kind: 'schema-check',
+      options: parseSchemaCheckArgs(schemaArgs),
     };
   }
 
@@ -208,6 +308,81 @@ export function parseSyncularCliArgs(
   }
 
   return { kind: 'generate', options };
+}
+
+function parseSchemaCheckArgs(
+  args: readonly string[]
+): SchemaCheckCommandOptions {
+  const options: SchemaCheckCommandOptions = {
+    manifestDir: '.',
+    json: false,
+    pretty: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+
+    if (arg === '--json') {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === '--pretty') {
+      options.pretty = true;
+      continue;
+    }
+
+    const manifestDir = readOptionValue(args, index, arg, '--manifest-dir');
+    if (manifestDir) {
+      options.manifestDir = manifestDir.value;
+      index = manifestDir.nextIndex;
+      continue;
+    }
+
+    const config = readOptionValue(args, index, arg, '--config');
+    if (config) {
+      options.config = config.value;
+      index = config.nextIndex;
+      continue;
+    }
+
+    const migrationsDir = readOptionValue(args, index, arg, '--migrations-dir');
+    if (migrationsDir) {
+      options.migrationsDir = migrationsDir.value;
+      index = migrationsDir.nextIndex;
+      continue;
+    }
+
+    const generatedClient = readOptionValue(
+      args,
+      index,
+      arg,
+      '--generated-client'
+    );
+    if (generatedClient) {
+      options.generatedClient = generatedClient.value;
+      index = generatedClient.nextIndex;
+      continue;
+    }
+
+    const generatedServer = readOptionValue(
+      args,
+      index,
+      arg,
+      '--generated-server'
+    );
+    if (generatedServer) {
+      options.generatedServer = generatedServer.value;
+      index = generatedServer.nextIndex;
+      continue;
+    }
+
+    throw new Error(
+      `Unknown syncular schema check option: ${arg}\n\n${schemaCheckUsage()}`
+    );
+  }
+
+  return options;
 }
 
 function parseCodegenInstallArgs(
@@ -326,6 +501,278 @@ export function buildGenerateSteps(
   });
 
   return steps;
+}
+
+export function runSchemaCheckCommand(
+  options: SchemaCheckCommandOptions,
+  context: { cwd?: string; now?: () => Date } = {}
+): SchemaCheckResult {
+  const cwd = context.cwd ?? process.cwd();
+  const manifestDir = resolveFrom(cwd, options.manifestDir);
+  const configPath = options.config
+    ? resolveFrom(cwd, options.config)
+    : resolveFrom(manifestDir, DEFAULT_CODEGEN_CONFIG_FILE);
+  const migrationsDir = options.migrationsDir
+    ? resolveFrom(cwd, options.migrationsDir)
+    : resolveFrom(manifestDir, 'migrations');
+
+  const issues: SchemaCheckIssue[] = [];
+  const config = readCodegenConfig(configPath, issues);
+  const tables = tableNames(config);
+  if (config && tables.length === 0) {
+    issues.push({
+      code: 'schema.config_no_tables',
+      severity: 'error',
+      message: 'Syncular codegen config does not define any app tables.',
+      path: configPath,
+      recommendedAction: 'fixCodegenConfig',
+    });
+  }
+
+  const generatedClientPath = resolveGeneratedOutputPath({
+    cwd,
+    manifestDir,
+    explicitPath: options.generatedClient,
+    configuredPath: config?.typescriptOutputPath,
+  });
+  const generatedServerPath = resolveGeneratedOutputPath({
+    cwd,
+    manifestDir,
+    explicitPath: options.generatedServer,
+    configuredPath: config?.typescriptServerOutputPath,
+  });
+
+  const migrationVersion = readMigrationVersion(migrationsDir, issues);
+  const generatedClientVersion = readGeneratedSchemaVersion({
+    kind: 'client',
+    path: generatedClientPath,
+    issues,
+  });
+  const generatedServerVersion = readGeneratedSchemaVersion({
+    kind: 'server',
+    path: generatedServerPath,
+    issues,
+  });
+
+  if (
+    generatedClientVersion !== null &&
+    generatedServerVersion !== null &&
+    generatedClientVersion !== generatedServerVersion
+  ) {
+    issues.push({
+      code: 'schema.generated_server_mismatch',
+      severity: 'error',
+      message:
+        'Generated Syncular client and server outputs disagree on app schema version.',
+      path: generatedServerPath ?? undefined,
+      recommendedAction: 'runSyncularGenerate',
+      details: {
+        generatedClientVersion,
+        generatedServerVersion,
+      },
+    });
+  }
+
+  if (migrationVersion !== null && generatedClientVersion !== null) {
+    if (generatedClientVersion < migrationVersion) {
+      issues.push({
+        code: 'schema.generated_output_stale',
+        severity: 'error',
+        message:
+          'Generated Syncular client output is older than the migration set.',
+        path: generatedClientPath ?? undefined,
+        recommendedAction: 'runSyncularGenerate',
+        details: {
+          migrationVersion,
+          generatedClientVersion,
+        },
+      });
+    } else if (generatedClientVersion > migrationVersion) {
+      issues.push({
+        code: 'schema.generated_output_ahead',
+        severity: 'error',
+        message:
+          'Generated Syncular client output is newer than the migration set.',
+        path: generatedClientPath ?? undefined,
+        recommendedAction: 'inspectGeneratedOutput',
+        details: {
+          migrationVersion,
+          generatedClientVersion,
+        },
+      });
+    }
+  }
+
+  const ready = !issues.some((issue) => issue.severity === 'error');
+  return {
+    generatedAt: (context.now?.() ?? new Date()).toISOString(),
+    status: ready ? 'ready' : 'not-ready',
+    ready,
+    manifestDir,
+    configPath,
+    migrationsDir,
+    generatedClientPath,
+    generatedServerPath,
+    tableCount: tables.length,
+    tables,
+    schemaVersion: {
+      migrations: migrationVersion,
+      generatedClient: generatedClientVersion,
+      generatedServer: generatedServerVersion,
+    },
+    issues,
+  };
+}
+
+function readCodegenConfig(
+  path: string,
+  issues: SchemaCheckIssue[]
+): SyncularCodegenConfig | null {
+  if (!existsSync(path)) {
+    issues.push({
+      code: 'schema.config_missing',
+      severity: 'error',
+      message:
+        'Syncular codegen config is missing. Run `syncular generate` before checking schema readiness.',
+      path,
+      recommendedAction: 'runSyncularGenerate',
+    });
+    return null;
+  }
+
+  try {
+    return JSON.parse(readFileSync(path, 'utf8')) as SyncularCodegenConfig;
+  } catch (error) {
+    issues.push({
+      code: 'schema.config_invalid',
+      severity: 'error',
+      message: 'Syncular codegen config is not valid JSON.',
+      path,
+      recommendedAction: 'fixCodegenConfig',
+      details: {
+        message: error instanceof Error ? error.message : String(error),
+      },
+    });
+    return null;
+  }
+}
+
+function tableNames(config: SyncularCodegenConfig | null): string[] {
+  if (!config || !isPlainRecord(config.tables)) return [];
+  return Object.keys(config.tables).sort();
+}
+
+function resolveGeneratedOutputPath(args: {
+  cwd: string;
+  manifestDir: string;
+  explicitPath: string | undefined;
+  configuredPath: unknown;
+}): string | null {
+  if (args.explicitPath) return resolveFrom(args.cwd, args.explicitPath);
+  if (typeof args.configuredPath === 'string' && args.configuredPath) {
+    return resolveFrom(args.manifestDir, args.configuredPath);
+  }
+  return null;
+}
+
+function readMigrationVersion(
+  migrationsDir: string,
+  issues: SchemaCheckIssue[]
+): number | null {
+  if (!existsSync(migrationsDir)) {
+    issues.push({
+      code: 'schema.migrations_missing',
+      severity: 'error',
+      message: 'Syncular migrations directory is missing.',
+      path: migrationsDir,
+      recommendedAction: 'addMigrations',
+    });
+    return null;
+  }
+
+  const migrationCount = readdirSync(migrationsDir, {
+    withFileTypes: true,
+  }).filter((entry) => {
+    if (!entry.isDirectory()) return false;
+    return existsSync(join(migrationsDir, entry.name, 'up.sql'));
+  }).length;
+
+  if (migrationCount === 0) {
+    issues.push({
+      code: 'schema.migrations_empty',
+      severity: 'error',
+      message: 'Syncular migrations directory does not contain any migrations.',
+      path: migrationsDir,
+      recommendedAction: 'addMigrations',
+    });
+    return null;
+  }
+
+  return migrationCount;
+}
+
+function readGeneratedSchemaVersion(args: {
+  kind: 'client' | 'server';
+  path: string | null;
+  issues: SchemaCheckIssue[];
+}): number | null {
+  if (args.path === null) return null;
+  const missingCode =
+    args.kind === 'client'
+      ? 'schema.generated_client_missing'
+      : 'schema.generated_server_missing';
+  const versionMissingCode =
+    args.kind === 'client'
+      ? 'schema.generated_client_version_missing'
+      : 'schema.generated_server_version_missing';
+
+  if (!existsSync(args.path) || !statSync(args.path).isFile()) {
+    args.issues.push({
+      code: missingCode,
+      severity: 'error',
+      message: `Generated Syncular ${args.kind} output is missing.`,
+      path: args.path,
+      recommendedAction: 'runSyncularGenerate',
+    });
+    return null;
+  }
+
+  const source = readFileSync(args.path, 'utf8');
+  const match =
+    /export\s+const\s+syncularGeneratedSchemaVersion\s*=\s*(\d+)\s+as\s+const/.exec(
+      source
+    );
+  if (!match) {
+    args.issues.push({
+      code: versionMissingCode,
+      severity: 'error',
+      message: `Generated Syncular ${args.kind} output does not export syncularGeneratedSchemaVersion.`,
+      path: args.path,
+      recommendedAction: 'runSyncularGenerate',
+    });
+    return null;
+  }
+
+  return Number(match[1]);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}
+
+function formatSchemaCheckText(result: SchemaCheckResult): string {
+  if (result.ready) {
+    const version = result.schemaVersion.generatedClient ?? 'unknown';
+    return `[syncular] schema ready (version ${version}, ${result.tableCount} table${result.tableCount === 1 ? '' : 's'})`;
+  }
+
+  return [
+    `[syncular] schema not ready (${result.issues.length} issue${result.issues.length === 1 ? '' : 's'})`,
+    ...result.issues.map((issue) => {
+      const location = issue.path ? ` at ${issue.path}` : '';
+      return `- ${issue.code}${location}: ${issue.message}`;
+    }),
+  ].join('\n');
 }
 
 function readPackageVersion(): string | undefined {
@@ -626,6 +1073,8 @@ export async function runSyncularCli(
         console.log(generateUsage());
       } else if (parsed.topic === 'codegen-install') {
         console.log(codegenInstallUsage());
+      } else if (parsed.topic === 'schema-check') {
+        console.log(schemaCheckUsage());
       } else {
         console.log(usage());
       }
@@ -634,6 +1083,14 @@ export async function runSyncularCli(
 
     if (parsed.kind === 'generate') {
       await runGenerateCommand(parsed.options);
+    } else if (parsed.kind === 'schema-check') {
+      const result = runSchemaCheckCommand(parsed.options);
+      console.log(
+        parsed.options.json
+          ? JSON.stringify(result, null, parsed.options.pretty ? 2 : 0)
+          : formatSchemaCheckText(result)
+      );
+      return result.ready ? 0 : 1;
     } else {
       await runCodegenInstallCommand(parsed.options);
     }

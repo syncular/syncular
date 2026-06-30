@@ -14,6 +14,7 @@ import {
   buildGenerateSteps,
   isMainModuleEntrypoint,
   parseSyncularCliArgs,
+  runSchemaCheckCommand,
 } from './cli';
 
 describe('syncular CLI', () => {
@@ -59,6 +60,34 @@ describe('syncular CLI', () => {
         version: '0.1.2',
         root: '/workspace/.cache/codegen',
         force: true,
+      },
+    });
+  });
+
+  it('parses the schema check command', () => {
+    expect(
+      parseSyncularCliArgs([
+        'schema',
+        'check',
+        '--manifest-dir',
+        './app',
+        '--migrations-dir=./db/migrations',
+        '--generated-client',
+        './src/generated/client.ts',
+        '--generated-server',
+        './src/generated/server.ts',
+        '--json',
+        '--pretty',
+      ])
+    ).toEqual({
+      kind: 'schema-check',
+      options: {
+        manifestDir: './app',
+        migrationsDir: './db/migrations',
+        generatedClient: './src/generated/client.ts',
+        generatedServer: './src/generated/server.ts',
+        json: true,
+        pretty: true,
       },
     });
   });
@@ -214,4 +243,110 @@ describe('syncular CLI', () => {
       'Syncular app definition not found: /workspace/missing.ts. Create syncular.app.ts'
     );
   });
+
+  it('checks generated schema readiness from config, migrations, and generated outputs', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-schema-check-'));
+    try {
+      writeSchemaCheckFixture(dir, { migrationCount: 2, generatedVersion: 2 });
+
+      const result = runSchemaCheckCommand(
+        { manifestDir: dir, json: true, pretty: false },
+        { now: () => new Date('2026-06-30T00:00:00.000Z') }
+      );
+
+      expect(result).toEqual({
+        generatedAt: '2026-06-30T00:00:00.000Z',
+        status: 'ready',
+        ready: true,
+        manifestDir: dir,
+        configPath: join(dir, 'generated/syncular.codegen.json'),
+        migrationsDir: join(dir, 'migrations'),
+        generatedClientPath: join(dir, 'src/generated/syncular.generated.ts'),
+        generatedServerPath: join(
+          dir,
+          'src/generated/syncular.server.generated.ts'
+        ),
+        tableCount: 1,
+        tables: ['tasks'],
+        schemaVersion: {
+          migrations: 2,
+          generatedClient: 2,
+          generatedServer: 2,
+        },
+        issues: [],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports stale generated output with a stable issue code', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-schema-check-'));
+    try {
+      writeSchemaCheckFixture(dir, { migrationCount: 2, generatedVersion: 1 });
+
+      const result = runSchemaCheckCommand({
+        manifestDir: dir,
+        json: true,
+        pretty: false,
+      });
+
+      expect(result.ready).toBe(false);
+      expect(result.status).toBe('not-ready');
+      expect(result.issues).toEqual([
+        expect.objectContaining({
+          code: 'schema.generated_output_stale',
+          severity: 'error',
+          recommendedAction: 'runSyncularGenerate',
+          details: {
+            migrationVersion: 2,
+            generatedClientVersion: 1,
+          },
+        }),
+      ]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
+
+function writeSchemaCheckFixture(
+  dir: string,
+  options: { migrationCount: number; generatedVersion: number }
+): void {
+  mkdirSync(join(dir, 'generated'), { recursive: true });
+  mkdirSync(join(dir, 'src/generated'), { recursive: true });
+  writeFileSync(
+    join(dir, 'generated/syncular.codegen.json'),
+    JSON.stringify({
+      tables: {
+        tasks: {
+          serverVersionColumn: 'server_version',
+          subscriptionId: 'sub-tasks',
+        },
+      },
+      typescriptOutputPath: 'src/generated/syncular.generated.ts',
+      typescriptServerOutputPath: 'src/generated/syncular.server.generated.ts',
+    })
+  );
+
+  for (let index = 1; index <= options.migrationCount; index += 1) {
+    const migrationDir = join(
+      dir,
+      'migrations',
+      `${String(index).padStart(4, '0')}_migration`
+    );
+    mkdirSync(migrationDir, { recursive: true });
+    writeFileSync(join(migrationDir, 'up.sql'), 'select 1;');
+  }
+
+  const generatedSource = `export const syncularGeneratedSchemaVersion = ${options.generatedVersion} as const;\n`;
+  writeFileSync(
+    join(dir, 'src/generated/syncular.generated.ts'),
+    generatedSource
+  );
+  writeFileSync(
+    join(dir, 'src/generated/syncular.server.generated.ts'),
+    generatedSource
+  );
+}

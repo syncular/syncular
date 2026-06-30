@@ -85,15 +85,17 @@ read-only review:
     bootstrap state, recovering sync/realtime, and optionally awaiting local
     visibility, and add `getSyncularSchemaReadiness(...)` plus
     `SyncularDatabase.schemaReadiness(...)` for structured generated/runtime/
-    local/server schema drift diagnostics. The fresh generated JavaScript app
-    smoke now includes user+campaign scope, proves a campaign-scope switch
-    through `replaceAuthContext(...)` plus `awaitLocalVisibility(...)`, and
-    asserts schema readiness from generated app metadata. Focused client tests,
-    package typechecks, fresh JS smoke, scaffold smoke, docs stale check, and
-    diff check passed locally. A Hono/WebSocket/WASM managed-database test also
-    proves the same scope-change flow against real remote auth/realtime
-    behavior, including denied-scope diagnostics. Next slice: deploy/operator
-    schema readiness with CLI/server JSON output.
+    local/server schema drift diagnostics, and add `syncular schema check
+    --json` for deploy/CI file-level readiness over config, migrations, and
+    generated client/server output. The fresh generated JavaScript app smoke
+    now includes user+campaign scope, proves a campaign-scope switch through
+    `replaceAuthContext(...)` plus `awaitLocalVisibility(...)`, asserts schema
+    readiness from generated app metadata, and runs the schema-check command.
+    Focused client/CLI tests, package typechecks, fresh JS smoke, scaffold
+    smoke, docs stale check, and diff check passed locally. A
+    Hono/WebSocket/WASM managed-database test also proves the same scope-change
+    flow against real remote auth/realtime behavior, including denied-scope
+    diagnostics. Next slice: live server/database schema readiness.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

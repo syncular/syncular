@@ -431,6 +431,18 @@ try {
 
   await runSyncularGenerate(appDir, [], env);
   await runSyncularGenerate(appDir, ['--check'], env);
+  await run(
+    bunBin,
+    [
+      join(repoRoot, 'packages/syncular/src/cli.ts'),
+      'schema',
+      'check',
+      '--manifest-dir',
+      appDir,
+      '--json',
+    ],
+    { cwd: repoRoot, env }
+  );
 
   const config = await readFile(
     join(appDir, 'generated/syncular.codegen.json'),

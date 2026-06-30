@@ -22,9 +22,10 @@ Open the app in two browser windows and watch edits replicate. Stop the dev
 server while the page stays open: edits queue locally and sync when the
 server is back.
 
-The header line in the task panel comes from `getSyncularBrowserHealth(...)`.
-It is the app-facing runtime check for durable storage, active subscriptions,
-realtime state, and the latest structured Syncular error.
+The status lines in the task panel come from `getSyncularBrowserHealth(...)`
+and `database.schemaReadiness(...)`. They are the app-facing checks for
+durable storage, active subscriptions, realtime state, generated schema
+compatibility, and the latest structured Syncular error.
 
 > **Why Bun?** The dev script and sync server run on Bun (`Bun.serve`,
 > `bun:sqlite` via `@syncular/server/bun-sqlite`) because Bun runs
@@ -62,6 +63,7 @@ extra toolchain. Regenerate it after changing `migrations/` or
 ```sh
 bun run codegen         # npx syncular generate
 bun run codegen:check   # CI: verify committed output is current
+npx syncular schema check --json
 ```
 
 `syncular generate` needs two tools:

@@ -535,6 +535,14 @@ online propagation, or reconnect behavior can change.
 - The `create-syncular-app` template now renders schema readiness from the
   generated app schema version, and the fresh JavaScript app smoke asserts the
   same readiness result from a clean generated app.
+- 2026-06-30 seventh implementation slice added
+  `syncular schema check`, a deploy/CI-facing readiness command that inspects
+  the generated codegen config, migration folders, generated TypeScript client
+  output, and generated TypeScript server output, then returns machine-readable
+  status, schema versions, table names, file paths, and stable issue codes.
+- The fresh JavaScript app smoke now runs `syncular schema check --json` after
+  `syncular generate --check`, so newly generated apps prove the operator
+  readiness loop as part of the golden path.
 
 ## Implementation Log
 
@@ -593,6 +601,17 @@ online propagation, or reconnect behavior can change.
 - 2026-06-30: Wired the starter React app to show schema readiness from the
   generated app schema version, and updated the fresh JavaScript app smoke to
   assert the generated app readiness result.
+- 2026-06-30: Added `syncular schema check` with `--json`/`--pretty`,
+  `--manifest-dir`, `--config`, `--migrations-dir`, `--generated-client`, and
+  `--generated-server` options.
+- 2026-06-30: Added focused CLI tests covering schema-check parsing, ready
+  output, and stale generated output with stable issue code
+  `schema.generated_output_stale`.
+- 2026-06-30: Updated the fresh JavaScript app smoke to run
+  `syncular schema check --json` on the generated project.
+- 2026-06-30: Updated the starter README to include
+  `database.schemaReadiness(...)` and `syncular schema check --json` in the
+  app-facing generate/check loop.
 
 ## Latest Gates
 
@@ -621,6 +640,11 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bun --cwd packages/create-syncular-app tsgo`
 - `bun test packages/create-syncular-app/src/cli.test.ts`
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-schema-readiness`
+- `bunx biome check packages/syncular/src/cli.ts packages/syncular/src/cli.test.ts scripts/fresh-app-smokes.ts`
+- `bun test packages/syncular/src/cli.test.ts`
+- `bun --cwd packages/syncular tsgo`
+- `bun packages/syncular/src/cli.ts schema check --manifest-dir packages/create-syncular-app/template --json --pretty`
+- `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-schema-check`
 - `git diff --check`
 
 ## Sequencing
@@ -640,8 +664,11 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    denied-scope diagnostics.
 5. Schema readiness and drift diagnostics: first app-facing slice is done with
    a structured helper, managed database method, starter line, and fresh app
-   smoke coverage. Next schema slice should add the deploy/operator surface
-   around server/database readiness and JSON command output.
+   smoke coverage. The first deploy/operator slice is also done with
+   `syncular schema check --json` over config, migrations, and generated
+   client/server output. Next schema slice should connect this to live
+   server/database readiness: installed Syncular tables, migration state, and
+   server required/latest schema versions.
 6. Add blob partition/scope guidance and typed blob failure details once the
    canonical app flow has a real blob/package case.
 7. Add deterministic E2E/testkit recipes and stable log markers around the
@@ -683,8 +710,8 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 
 ## Next Action
 
-Pick the next implementation slice: add the deploy/operator schema-readiness
-surface, likely a `syncular schema check` or `syncular doctor` command backed
-by server/database APIs, with JSON output for expected Syncular tables,
-migration state, server required/latest schema versions, generated client
-compatibility, and local/runtime open failures.
+Pick the next implementation slice: extend schema readiness beyond file
+inspection into live server/database readiness, with JSON output for installed
+Syncular tables, migration state, server required/latest schema versions, and
+operator-safe diagnostics that can be used before deploying Workers or Hono
+servers.
