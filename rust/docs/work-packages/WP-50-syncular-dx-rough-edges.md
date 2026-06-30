@@ -623,6 +623,15 @@ online propagation, or reconnect behavior can change.
   campaign/project clients need scoped metadata rows or an explicit shared
   partition policy for global/base assets, and that app tests should assert
   stable `details.failureKind` / `details.accessReason` values.
+- 2026-06-30 tenth implementation slice added testkit support for
+  membership-aware project/campaign actors and stable diagnostic marker
+  assertions. The bundled project-scoped tasks handler can now take explicit
+  `projectsByActor` membership so tests can prove allowed writes,
+  `sync.forbidden` writes, and revoked foreign subscriptions without
+  app-specific auth scaffolding.
+- The testkit `postSyncCombinedRequest(...)` helper now accepts the current
+  binary sync-pack response format as well as JSON, so docs examples using the
+  real combined route are executable again.
 
 ## Implementation Log
 
@@ -720,6 +729,21 @@ online propagation, or reconnect behavior can change.
 - 2026-06-30: Updated public blob docs and error reference with
   partition/scope guidance, global/base-data sharing guidance, and stable blob
   failure detail fields.
+- 2026-06-30: Added `createProjectScopedTestActor(...)`,
+  `createProjectScopedActorHeaders(...)`, and `createProjectMembership(...)`
+  to `@syncular/testkit`.
+- 2026-06-30: Extended `createProjectScopedTasksHandler(...)` with
+  `projectIds` and `projectsByActor` so tests can model campaign/project
+  membership and denied scopes deterministically.
+- 2026-06-30: Added `SYNCULAR_DX_MARKER_CODES`,
+  `findDiagnosticMarker(...)`, `hasDiagnosticMarker(...)`, and
+  `requireDiagnosticMarker(...)` to `@syncular/testkit` for stable diagnostic
+  and log-marker assertions.
+- 2026-06-30: Updated `postSyncCombinedRequest(...)` /
+  `readSyncCombinedResponse(...)` to decode binary sync-pack combined
+  responses in addition to JSON responses.
+- 2026-06-30: Updated testkit docs and the production testing checklist with
+  explicit membership, denied-scope, and diagnostic-marker expectations.
 
 ## Latest Gates
 
@@ -759,9 +783,12 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bun test packages/server/src/blobs/access.test.ts packages/server/src/hono/__tests__/blob-routes.test.ts packages/core/src/__tests__/error-responses.test.ts`
 - `bunx biome check packages/server/src/blobs/access.ts packages/server/src/blobs/access.test.ts packages/server/src/blobs/manager.ts packages/server/src/hono/blobs.ts packages/server/src/hono/errors.ts packages/server/src/hono/index.ts packages/server/src/hono/__tests__/blob-routes.test.ts packages/core/src/error-responses.ts packages/core/src/__tests__/error-responses.test.ts`
 - `bun --cwd packages/core tsgo`
-- `bun run --cwd apps/docs types:check`
+- `bun --cwd apps/docs types:check`
 - `cargo fmt --all --check` from `rust/`
 - `cargo test -p syncular-runtime error_taxonomy --manifest-path rust/Cargo.toml`
+- `bun test packages/testkit/src/scoped-actors.test.ts packages/testkit/src/diagnostic-markers.test.ts packages/testkit/src/sync-builders.test.ts`
+- `bunx biome check packages/testkit/src/scoped-actors.ts packages/testkit/src/scoped-actors.test.ts packages/testkit/src/diagnostic-markers.ts packages/testkit/src/diagnostic-markers.test.ts packages/testkit/src/project-scoped-tasks.ts packages/testkit/src/sync-http.ts packages/testkit/src/sync-parse.ts packages/testkit/src/index.ts`
+- `bun --cwd packages/testkit tsgo`
 - `git diff --check`
 
 ## Sequencing
@@ -790,8 +817,11 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    done with a decision-returning scoped access checker, route-level structured
    details, shared error taxonomy coverage, and public docs for global/base
    assets crossing campaign/project scopes.
-7. Add deterministic E2E/testkit recipes and stable log markers around the
-   concrete flows above.
+7. Deterministic E2E/testkit recipes and stable log markers: first slice is
+   done with membership-aware project/campaign actor helpers, stable diagnostic
+   marker assertions, a project-scoped fixture that can deny non-member writes
+   and subscriptions, and a fixed binary sync-pack-aware combined request
+   helper.
 8. Collapse client init and import docs where the starter proves remaining
    friction.
 9. Finish with contributor bootstrap/gate cleanup so maintainers can keep the
@@ -829,7 +859,7 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 
 ## Next Action
 
-Pick the next implementation slice: add deterministic E2E/testkit recipes and
-stable log markers around the proven flows above, especially the two-browser
-scoped project/campaign path with auth replacement, realtime delivery, local
-visibility, schema readiness, and blob access failures.
+Pick the next implementation slice: collapse remaining client initialization
+and import-surface docs around the starter-proven path, keeping optional
+runtime adapters behind subpaths while making the "which import/setup do I
+need?" path explicit.

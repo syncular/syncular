@@ -136,6 +136,13 @@ case, and any handler-specific rejection (`status: 'error'` with your error
 code). See [Table Handlers](/server/table-handlers) for the result shapes your
 `applyOperation` should return.
 
+For campaign/project-style apps, use
+`createProjectScopedTestActor(...)`, `createProjectMembership(...)`, and
+`createProjectScopedTasksHandler({ projectsByActor })` from the testkit so one
+actor has an allowed project and another project is explicitly denied. The same
+fixture then proves allowed writes, `sync.forbidden` writes, and revoked
+foreign subscriptions without inventing app-specific auth boilerplate.
+
 ## Layer 2 — two-client convergence
 
 **What it proves:** a write on one device shows up on another, through the real
@@ -318,6 +325,9 @@ The smallest suite worth shipping behind:
       handler-specific rejections.
 - [ ] **L1** an authorization test proving actor B cannot read or write actor
       A's scopes.
+- [ ] **L1** for project/campaign apps: explicit membership with one allowed
+      scope and one denied scope that returns `sync.forbidden` or
+      `status: "revoked"`.
 - [ ] **L2** two-client convergence for every table your product depends on.
 - [ ] **L3** offline queue + replay for every mutation users can make offline,
       asserting the outbox drains.
@@ -326,6 +336,10 @@ The smallest suite worth shipping behind:
       socket, assert HTTP pull still converges (helpers in
       `openRealtimeWs`/`waitForWsJsonMessage` from the testkit).
 - [ ] Blob, CRDT, and encryption round-trips for each capability you enabled.
+- [ ] Diagnostic marker assertions for lifecycle-sensitive failures:
+      `sync.scope_revoked`, `realtime.hello`, `realtime.sync_wakeup`,
+      `realtime.pull_required`, `blob.forbidden`, `blob.signing_failed`, and
+      `sync.local_visibility_timeout`.
 - [ ] A schema-version test for the oldest deployed app version you still
       support (old `schemaVersion` pull against the current server).
 

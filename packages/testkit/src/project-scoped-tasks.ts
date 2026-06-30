@@ -38,6 +38,10 @@ export const PROJECT_SCOPED_TASKS_DDL = `
 
 export interface ProjectScopedTasksHandlerOptions {
   projectScopeCount?: number;
+  projectIds?: readonly string[];
+  projectsByActor?:
+    | Record<string, readonly string[]>
+    | ((actorId: string) => readonly string[] | Promise<readonly string[]>);
 }
 
 function parseProjectScopedTaskPayload(payload: SyncOperation['payload']): {
@@ -68,18 +72,31 @@ export function createProjectScopedTasksHandler<
   DB extends SyncCoreDb & { tasks: ProjectScopedTasksRow },
 >(options: ProjectScopedTasksHandlerOptions = {}): ServerTableHandler<DB> {
   const projectScopeCount = Math.max(1, options.projectScopeCount ?? 100);
+  const defaultProjectIds =
+    options.projectIds ??
+    Array.from({ length: projectScopeCount }, (_, index) => `p${index}`);
+
+  const resolveProjectIds = async (actorId: string): Promise<string[]> => {
+    if (typeof options.projectsByActor === 'function') {
+      return Array.from(await options.projectsByActor(actorId));
+    }
+
+    if (options.projectsByActor) {
+      return Array.from(options.projectsByActor[actorId] ?? []);
+    }
+
+    return Array.from(defaultProjectIds);
+  };
 
   return {
     table: 'tasks',
     scopePatterns: ['user:{user_id}:project:{project_id}'],
 
     async resolveScopes(ctx) {
+      const projectIds = await resolveProjectIds(ctx.actorId);
       return {
         user_id: ctx.actorId,
-        project_id: Array.from(
-          { length: projectScopeCount },
-          (_, index) => `p${index}`
-        ),
+        project_id: projectIds,
       };
     },
 
@@ -239,6 +256,20 @@ export function createProjectScopedTasksHandler<
             status: 'error',
             error: 'Missing project id',
             code: 'sync.invalid_request',
+            retriable: false,
+          },
+          emittedChanges: [],
+        };
+      }
+
+      const allowedProjectIds = await resolveProjectIds(ctx.actorId);
+      if (!allowedProjectIds.includes(projectId)) {
+        return {
+          result: {
+            opIndex,
+            status: 'error',
+            error: `Actor ${ctx.actorId} is not allowed to write project ${projectId}`,
+            code: 'sync.forbidden',
             retriable: false,
           },
           emittedChanges: [],

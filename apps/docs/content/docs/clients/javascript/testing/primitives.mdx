@@ -117,6 +117,66 @@ conflicts), plus shorthand builders `createProjectScopedTasksSubscription` and
 `createProjectScopedTaskUpsertOperation`. See the
 [Quick Start](/clients/javascript/testing/quick-start) for them in action.
 
+Pass explicit project membership when you need deterministic denied-scope
+tests:
+
+```ts
+import {
+  createProjectMembership,
+  createProjectScopedActorHeaders,
+  createProjectScopedTestActor,
+} from '@syncular/testkit';
+import { createProjectScopedTasksHandler } from '@syncular/testkit/server';
+
+const actor = createProjectScopedTestActor({
+  actorId: 'user-a',
+  projectId: 'campaign-a',
+});
+const deniedProject = createProjectScopedTestActor({
+  actorId: 'user-b',
+  projectId: 'campaign-b',
+});
+
+const handler = createProjectScopedTasksHandler({
+  projectsByActor: createProjectMembership([actor, deniedProject]),
+});
+
+const headers = createProjectScopedActorHeaders(actor);
+```
+
+With explicit membership, writes outside the actor's projects return
+`sync.forbidden`, and subscriptions outside membership are revoked. Use this
+for campaign/project join, denied membership, and auth-context replacement
+tests.
+
+## Diagnostic markers
+
+Use stable marker helpers for app diagnostics, server logs, and E2E scans
+instead of matching human messages:
+
+- `SYNCULAR_DX_MARKER_CODES` — named constants for common markers such as
+  `sync.scope_revoked`, `realtime.hello`, `realtime.sync_wakeup`,
+  `realtime.pull_required`, `blob.forbidden`, `blob.signing_failed`, and
+  `sync.local_visibility_timeout`
+- `findDiagnosticMarker(events, code, predicate?)`
+- `hasDiagnosticMarker(events, code, predicate?)`
+- `requireDiagnosticMarker(events, code, predicate?)`
+
+```ts
+import {
+  requireDiagnosticMarker,
+  SYNCULAR_DX_MARKER_CODES,
+} from '@syncular/testkit';
+
+const denied = requireDiagnosticMarker(
+  diagnostics,
+  SYNCULAR_DX_MARKER_CODES.blobAccessDenied,
+  (event) => event.details?.accessReason === 'missing_reference'
+);
+
+expect(denied.code).toBe('blob.forbidden');
+```
+
 ## Deterministic IDs and clock
 
 Use deterministic helpers instead of ad-hoc counters and `Date.now()` coupling:

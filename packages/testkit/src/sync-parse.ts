@@ -1,4 +1,6 @@
 import {
+  decodeBinarySyncPack,
+  isBinarySyncPackContentType,
   type SyncCombinedResponse,
   SyncCombinedResponseSchema,
   type SyncPullResponse,
@@ -70,6 +72,10 @@ export function parseSyncPullResponse(value: unknown): SyncPullResponse {
 export async function readSyncCombinedResponse(
   response: Response
 ): Promise<SyncCombinedResponse> {
+  if (isBinarySyncPackContentType(response.headers.get('content-type'))) {
+    return decodeBinarySyncPack(new Uint8Array(await response.arrayBuffer()));
+  }
+
   return parseSyncCombinedResponse(await response.json());
 }
 

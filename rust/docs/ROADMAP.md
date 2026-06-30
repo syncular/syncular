@@ -99,13 +99,17 @@ read-only review:
     records, signed URL failures, invalid direct-transfer tokens, and missing
     storage objects; public blob docs now state that global/base asset hashes
     need scoped metadata rows or an explicit shared partition policy before
-    campaign/project clients can fetch them. Focused client/CLI/server/blob
-    tests, package typechecks, fresh JS smoke, scaffold smoke, docs stale
-    check, Rust taxonomy check, and diff check passed locally. A
+    campaign/project clients can fetch them. Testkit now includes
+    membership-aware project/campaign actor helpers, stable diagnostic marker
+    assertions, explicit project membership support in the bundled tasks
+    fixture, and binary sync-pack-aware combined response parsing for real
+    route tests. Focused client/CLI/server/blob/testkit tests, package
+    typechecks, fresh JS smoke, scaffold smoke, docs stale check, Rust taxonomy
+    check, and diff check passed locally. A
     Hono/WebSocket/WASM managed-database test also proves the same scope-change
     flow against real remote auth/realtime behavior, including denied-scope
-    diagnostics. Next slice: deterministic E2E/testkit recipes and stable log
-    markers around the proven flows.
+    diagnostics. Next slice: collapse remaining client initialization and
+    import-surface docs around the starter-proven path.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

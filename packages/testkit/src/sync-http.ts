@@ -7,9 +7,9 @@ import type {
   SyncPushResponse,
 } from '@syncular/core';
 import {
-  parseSyncCombinedResponse,
   parseSyncPullResponse,
   parseSyncPushResponse,
+  readSyncCombinedResponse,
 } from './sync-parse';
 
 export interface JsonActorHeadersOptions {
@@ -71,10 +71,19 @@ export interface PostSyncCombinedRequestOptions {
 export async function postSyncCombinedRequest(
   options: PostSyncCombinedRequestOptions
 ): Promise<PostJsonWithActorResult<SyncCombinedResponse>> {
-  const result = await postJsonWithActor<SyncCombinedRequest, unknown>(options);
+  const response = await options.fetch(options.url, {
+    method: 'POST',
+    headers: createJsonActorHeaders({
+      actorId: options.actorId,
+      actorHeader: options.actorHeader,
+      extraHeaders: options.extraHeaders,
+    }),
+    body: JSON.stringify(options.body),
+  });
+
   return {
-    response: result.response,
-    json: parseSyncCombinedResponse(result.json),
+    response,
+    json: await readSyncCombinedResponse(response),
   };
 }
 
