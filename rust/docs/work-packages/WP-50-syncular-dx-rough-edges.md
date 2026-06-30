@@ -810,6 +810,12 @@ online propagation, or reconnect behavior can change.
   against the real Worker runtime for corrupted subscription state and
   orphaned verified roots, including the confirmation guardrail and successful
   `force-rebootstrap` / `clear-orphaned-state` repairs.
+- The upgrade guide now has an operator runbook for exact version sets,
+  generated output checks, deploy-time schema setup, live server schema
+  readiness, server/client rollout order, browser deployment preflight,
+  recovery monitoring, support-window tightening, and rollback cases for
+  code-only, forward-compatible schema, destructive schema, database restore,
+  bad browser/runtime assets, and local client recovery.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1172,6 +1178,8 @@ online propagation, or reconnect behavior can change.
 - 2026-06-30: Extended the Hono-backed browser/WASM local-health test so it
   repairs corrupted subscription state and orphaned verified roots through the
   new local recovery plan/action API instead of direct low-level repair calls.
+- 2026-06-30: Expanded the public upgrade guide with operator upgrade and
+  rollback runbooks, and linked the deployment checklist to that upgrade order.
 
 ## Latest Gates
 
@@ -1281,6 +1289,12 @@ Most recent local-recovery rerun:
 - `bun --cwd apps/docs types:check`
 - `git diff --check`
 
+Most recent upgrade-runbook rerun:
+
+- `bun --cwd apps/docs types:check`
+- `bun run docs:stale-check`
+- `git diff --check`
+
 ## Sequencing
 
 1. Golden path starter and smoke: first retained slice is done for the
@@ -1345,6 +1359,10 @@ Most recent local-recovery rerun:
     actions are opt-in so normal UI recovery does not accidentally clear local
     data. A focused browser/Hono/WASM test now proves the plan/action API over
     the real Worker runtime for local health repairs.
+12. Upgrade and rollback runbooks: first operator docs slice is done. The
+    public upgrade guide now gives a step-by-step production upgrade order,
+    rollback cases by data/schema risk, and local client recovery guidance; the
+    deployment checklist links to that runbook.
 
 ## Resolved Decisions
 
@@ -1437,6 +1455,9 @@ Most recent local-recovery rerun:
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.
+  The first upgrade/rollback slice is done; remaining production-ops depth is
+  blob-store consistency checks, rate-limit tuning, credential rotation
+  cadence, and richer backup/restore drills.
 - Performance and failure artifacts: keep package/WASM size, bootstrap
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch
   latency, storage/quota pressure, and redacted E2E failure artifacts
@@ -1446,5 +1467,5 @@ Most recent local-recovery rerun:
 
 Pick the next implementation slice from the remaining risks. Strong candidates
 are a real browser built-preview preflight smoke, multi-tab lifecycle coverage,
-or an operator upgrade/rollback runbook, because those remain broad DX holes
-after the first local recovery browser proof.
+or runtime timeline/support-bundle artifacts, because those remain broad DX
+holes after the first local recovery browser proof and upgrade runbook.

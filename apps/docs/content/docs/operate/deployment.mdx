@@ -372,6 +372,8 @@ for their next HTTP pull instead of waking immediately.
   - [ ] `ensureSyncSchema` + app migrations run on deploy, before traffic
   - [ ] `syncular schema check --json` or `getSyncularServerSchemaReadiness(...)`
         runs in CI/deploy readiness
+  - [ ] Upgrade and rollback order reviewed in the
+        [Upgrade Guide](/reference/upgrade-guide)
   - [ ] Backups configured and restore tested
 - **Authentication**
   - [ ] `authenticate` validates real tokens/sessions; secrets from env, not source

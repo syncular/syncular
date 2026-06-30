@@ -171,7 +171,12 @@ read-only review:
     Hono-backed browser/WASM local-health test now exercises that plan/action
     API against the real Worker runtime for corrupted subscription state,
     orphaned verified roots, confirmation failure, and successful
-    rebootstrap/orphaned-state repairs.
+    rebootstrap/orphaned-state repairs. The public upgrade guide now includes
+    a copyable operator upgrade and rollback runbook covering exact version
+    sets, generated/schema checks, deploy-time schema setup, live readiness,
+    server/client rollout order, browser preflight, recovery monitoring,
+    support-window tightening, code/schema/database/browser-asset rollback,
+    and local client recovery.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

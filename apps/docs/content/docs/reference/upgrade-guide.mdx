@@ -89,6 +89,73 @@ server, ship updated clients, then raise `minSupported` /
 `requiredSchemaVersion` once old clients have aged out. See
 [Schema Migrations](/features/migrations) for the full workflow.
 
+## Operator upgrade runbook
+
+Use this sequence for every production Syncular upgrade, even when the app
+schema does not change:
+
+1. **Prepare one version set.** Pick the exact `@syncular/*` npm versions,
+   `syncular` CLI version, and Rust crate versions for the release. Do not mix
+   client, server, testkit, or generated output from different Syncular
+   releases.
+2. **Regenerate and check files.** Run `npx syncular generate --check` in CI
+   and `npx syncular generate` when outputs are stale. Then run
+   `npx syncular schema check --json` and fail the deploy when the JSON
+   status is `not-ready`.
+3. **Run schema setup before traffic.** Execute `ensureSyncSchema(db, dialect)`
+   plus your app migration runner as a release/operator step. Do not run
+   schema bootstrap from normal request startup, especially on Workers.
+4. **Verify the live database.** Run `getSyncularServerSchemaReadiness(...)`
+   against the same database the new server will use. Check expected Syncular
+   core tables, app tables, and required/latest schema versions.
+5. **Deploy the server first with overlap.** Keep `clientSchemaSupport`
+   broad enough for old browser clients already in the field. Realtime is only
+   a wake path; HTTP pull remains the recovery path while clients reconnect.
+6. **Deploy browser/native clients.** Serve matching generated output and WASM
+   runtime assets together. In browser deploy previews, run
+   `getSyncularBrowserDeploymentPreflight(...)` from the deployed page before
+   opening the database.
+7. **Watch recovery signals.** Track `sync.client_schema_unsupported`,
+   `runtime.codegen_mismatch`, schema-readiness JSON, browser health
+   `requiresAction`, outbox age, bootstrap duration, and realtime reconnects.
+   Local client repair should start from `localRecoveryPlan()` so destructive
+   reset actions remain explicit.
+8. **Tighten support only after adoption.** Raise `minSupported` /
+   `requiredSchemaVersion` after old clients have aged out or product policy
+   explicitly drops them.
+
+## Rollback runbook
+
+Rollback depends on whether data/schema changed, not only on whether code
+changed:
+
+1. **Code-only rollback:** redeploy the previous server and client bundle as a
+   matched set. Re-run `syncular schema check --json` to verify generated
+   output still matches the app migrations on disk.
+2. **Server rollback after a forward-compatible migration:** keep the migrated
+   database, redeploy the previous server only if its generated handlers still
+   support the current app schema. Verify with
+   `getSyncularServerSchemaReadiness(...)` before routing traffic.
+3. **Schema rollback:** run down migrations only when they are lossless for
+   data already written by the new server/client. If new rows or columns were
+   already used, prefer a forward fix over a destructive rollback.
+4. **Database restore:** restore only when you accept that some clients may
+   have cursors ahead of the restored commit log. Syncular clients should
+   rebootstrap rather than diverge, but expect higher bootstrap load and keep
+   extra commit/snapshot retention while the fleet recovers.
+5. **Bad browser/runtime asset rollback:** roll back the package files,
+   generated client, and WASM runtime assets together. Stale CDN assets or
+   mixed generated/runtime versions should be treated as a deploy failure, not
+   as a client-side cache issue to paper over.
+6. **Client local recovery:** if a browser is left with incompatible local
+   state, show the app's recovery UI from `localRecoveryPlan()`. Use support
+   bundle export first; run reset or clear-synced-row actions only after an
+   explicit user/operator confirmation.
+
+Never restore a database snapshot and silently keep serving a server build
+whose generated schema contract assumes newer tables or columns. That is the
+fastest path to confusing bootstrap and local visibility failures.
+
 ## Where breaking changes are recorded
 
 - `rust/docs/COMPATIBILITY_REGISTER.md` — every removal and retained
@@ -101,4 +168,5 @@ server, ship updated clients, then raise `minSupported` /
 
 - [Packages And Crates](/reference/packages-crates) — the current package map
 - [Generated Client](/clients/javascript/generated-client) — regeneration workflow
+- [Deployment](/operate/deployment) — production schema setup, backups, and checks
 - [Error Codes](/reference/errors) — `sync.schema_mismatch`, `sync.client_schema_unsupported`, `runtime.codegen_mismatch`
