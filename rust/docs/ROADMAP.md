@@ -176,7 +176,12 @@ read-only review:
     sets, generated/schema checks, deploy-time schema setup, live readiness,
     server/client rollout order, browser preflight, recovery monitoring,
     support-window tightening, code/schema/database/browser-asset rollback,
-    and local client recovery.
+    and local client recovery. The `create-syncular-app` scaffold smoke now
+    also builds the generated app, serves Vite preview, verifies built preview
+    assets, and has an opt-in Chrome/Chromium CDP path for opening the built
+    page and waiting for Syncular health/schema lines; local evidence passed
+    the build/preview asset path and skipped the browser execution because no
+    Chrome/Chromium binary was installed.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

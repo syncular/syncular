@@ -816,6 +816,13 @@ online propagation, or reconnect behavior can change.
   recovery monitoring, support-window tightening, and rollback cases for
   code-only, forward-compatible schema, destructive schema, database restore,
   bad browser/runtime assets, and local client recovery.
+- The `create-syncular-app` scaffold smoke now builds the generated app, serves
+  Vite preview, verifies built preview assets, and includes an opt-in
+  Chrome/Chromium DevTools Protocol check that opens the built page and waits
+  for Syncular browser health/schema lines. Local evidence proved the build and
+  preview asset path; the real-browser portion skipped because this machine
+  has no Chrome/Chromium binary, and can be enforced on a browser-capable
+  runner with `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required`.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1180,6 +1187,10 @@ online propagation, or reconnect behavior can change.
   new local recovery plan/action API instead of direct low-level repair calls.
 - 2026-06-30: Expanded the public upgrade guide with operator upgrade and
   rollback runbooks, and linked the deployment checklist to that upgrade order.
+- 2026-07-01: Extended the `create-syncular-app` scaffold smoke so it builds
+  the generated app, serves Vite preview on the allocated port, verifies built
+  assets, and optionally runs a Chrome/Chromium CDP browser check against the
+  built page.
 
 ## Latest Gates
 
@@ -1295,6 +1306,17 @@ Most recent upgrade-runbook rerun:
 - `bun run docs:stale-check`
 - `git diff --check`
 
+Most recent starter built-preview rerun:
+
+- `bunx biome check packages/create-syncular-app/scripts/smoke.ts packages/create-syncular-app/template/scripts/dev.ts`
+- `bun --cwd packages/create-syncular-app tsgo`
+- `bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks.
+  - Skipped the real-browser CDP check because no Chrome/Chromium binary was
+    available locally; set `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` on a
+    browser-capable runner to make that part mandatory.
+
 ## Sequencing
 
 1. Golden path starter and smoke: first retained slice is done for the
@@ -1363,6 +1385,11 @@ Most recent upgrade-runbook rerun:
     public upgrade guide now gives a step-by-step production upgrade order,
     rollback cases by data/schema risk, and local client recovery guidance; the
     deployment checklist links to that runbook.
+13. Browser deployment preflight built-preview coverage: first scaffold slice
+    is done for production build and preview asset serving, and the smoke now
+    has an opt-in Chrome/Chromium CDP path for executing the built page in a
+    real browser. A browser-capable CI runner still needs to enforce that
+    optional path.
 
 ## Resolved Decisions
 
@@ -1421,9 +1448,12 @@ Most recent upgrade-runbook rerun:
   assets, MIME/content types, cross-origin isolation option, OPFS/IndexedDB
   requirements, durable storage availability, fallback behavior, persistence
   grant status, and quota budgets. The starter now runs the helper before
-  opening Syncular, and scaffold smoke checks the transformed preflight module.
-  Remaining work is a real browser built-preview smoke that executes the helper
-  against the deployed page.
+  opening Syncular. The scaffold smoke checks the transformed preflight module,
+  now builds and serves Vite preview, verifies built assets, and can execute
+  the built page through Chrome/Chromium CDP when a browser is available.
+  Remaining work is to provision a browser-capable CI/release runner and make
+  `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` there so this path is enforced
+  automatically.
 - Adapter import side-effect isolation: the first root import graph smoke now
   proves root client/server imports do not statically reach optional Bun,
   Cloudflare, S3, Sentry, Neon, Tauri, React Native, or CRDT/Yjs subpaths.
@@ -1466,6 +1496,7 @@ Most recent upgrade-runbook rerun:
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. Strong candidates
-are a real browser built-preview preflight smoke, multi-tab lifecycle coverage,
-or runtime timeline/support-bundle artifacts, because those remain broad DX
-holes after the first local recovery browser proof and upgrade runbook.
+are browser-capable CI enforcement for the built-preview smoke, multi-tab
+lifecycle coverage, or runtime timeline/support-bundle artifacts, because those
+remain broad DX holes after the first local recovery browser proof, upgrade
+runbook, and built-preview asset smoke.

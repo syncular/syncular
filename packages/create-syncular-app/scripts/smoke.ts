@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+import { Buffer } from 'node:buffer';
 /**
  * End-to-end smoke test for create-syncular-app.
  *
@@ -8,9 +9,14 @@
  *    workspace packages (the published-registry equivalent of `bun install`),
  *    mirroring scripts/fresh-app-smokes.ts.
  * 3. Boots `bun scripts/dev.ts`, curls the sync server health endpoint and
- *    the Vite page, then shuts everything down.
+ *    the Vite page, then builds the app and repeats the same checks against
+ *    `bun scripts/dev.ts --preview`.
+ * 4. When Chrome/Chromium is available, opens the built preview in a real
+ *    browser and waits for the starter's Syncular health/schema lines. Set
+ *    SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required to fail when no browser is
+ *    available.
  *
- * Usage: bun scripts/smoke.ts [--keep]
+ * Usage: bun scripts/smoke.ts [--keep] [--require-browser-preview]
  */
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
@@ -22,6 +28,9 @@ import { dirname, join, resolve } from 'node:path';
 const packageDir = resolve(join(import.meta.dirname, '..'));
 const repoRoot = resolve(join(packageDir, '../..'));
 const keep = process.argv.includes('--keep');
+const requireBrowserPreviewSmoke =
+  process.env.SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE === 'required' ||
+  process.argv.includes('--require-browser-preview');
 
 function log(message: string): void {
   console.log(`[csa-smoke] ${message}`);
@@ -30,13 +39,14 @@ function log(message: string): void {
 async function run(
   command: string,
   args: string[],
-  options: { cwd: string }
+  options: { cwd: string; env?: Record<string, string | undefined> }
 ): Promise<void> {
   log(`$ ${[command, ...args].join(' ')}`);
   await new Promise<void>((resolvePromise, reject) => {
     const child = spawn(command, args, {
       cwd: options.cwd,
       stdio: 'inherit',
+      env: options.env ?? process.env,
     });
     child.on('error', reject);
     child.on('exit', (code) => {
@@ -96,6 +106,19 @@ async function linkDependencies(appDir: string): Promise<void> {
   log(`linked ${names.length} dependencies to local packages`);
 }
 
+async function runLinkedViteBuild(
+  appDir: string,
+  env: Record<string, string | undefined>
+): Promise<void> {
+  const viteBin = join(appDir, 'node_modules/vite/bin/vite.js');
+  if (!existsSync(viteBin)) {
+    throw new Error(
+      'Vite binary was not available through the smoke symlinked dependencies'
+    );
+  }
+  await run(process.execPath, [viteBin, 'build'], { cwd: appDir, env });
+}
+
 /**
  * The symlinked node_modules resolve to files outside the app directory, so
  * widen Vite's dev-server file allowlist to the repository. Real users do not
@@ -152,6 +175,306 @@ async function getFreePort(): Promise<number> {
   return port;
 }
 
+async function stopProcess(
+  child: ReturnType<typeof spawn> | null
+): Promise<void> {
+  if (!child || child.exitCode !== null) return;
+  child.kill('SIGTERM');
+  await new Promise<void>((resolveExit) => {
+    child.on('exit', () => resolveExit());
+    setTimeout(resolveExit, 5_000);
+  });
+  // Give Vite's native (Rolldown) threads a moment to wind down before
+  // their working directory disappears.
+  await new Promise((resolveSleep) => setTimeout(resolveSleep, 1_000));
+}
+
+async function verifyBuiltPreviewAssets(
+  origin: string,
+  pageBody: string
+): Promise<void> {
+  if (!pageBody.includes('<div id="root">')) {
+    throw new Error('Built preview page did not include the app root element');
+  }
+  const assetPaths = [...pageBody.matchAll(/\b(?:src|href)="([^"]+)"/g)]
+    .map((match) => match[1])
+    .filter(
+      (value): value is string =>
+        typeof value === 'string' &&
+        (value.startsWith('/assets/') || value.startsWith('./assets/'))
+    );
+  if (assetPaths.length === 0) {
+    throw new Error('Built preview page did not reference any Vite assets');
+  }
+
+  for (const assetPath of assetPaths) {
+    const assetUrl = new URL(assetPath, origin);
+    const response = await fetch(assetUrl);
+    if (!response.ok) {
+      throw new Error(
+        `Built preview asset ${assetUrl.href} returned ${response.status}`
+      );
+    }
+  }
+}
+
+async function maybeRunBrowserPreviewSmoke(args: {
+  origin: string;
+  workDir: string;
+}): Promise<void> {
+  const chrome = resolveChromeExecutable();
+  if (!chrome) {
+    const message =
+      'Chrome/Chromium was not found; skipped real-browser built-preview smoke.';
+    if (requireBrowserPreviewSmoke) throw new Error(message);
+    log(message);
+    return;
+  }
+
+  await runBrowserPreviewSmoke({
+    chrome,
+    origin: args.origin,
+    userDataDir: join(args.workDir, 'chrome-profile'),
+  });
+}
+
+function resolveChromeExecutable(): string | null {
+  const explicit = process.env.CHROME_BIN;
+  if (explicit && existsSync(explicit)) return explicit;
+  const candidates = [
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+    '/usr/bin/google-chrome-stable',
+    '/usr/bin/google-chrome',
+    '/usr/bin/chromium',
+    '/usr/bin/chromium-browser',
+  ];
+  return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+async function runBrowserPreviewSmoke(args: {
+  chrome: string;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  await mkdir(args.userDataDir, { recursive: true });
+  const debugPort = await getFreePort();
+  const targetUrl = `${args.origin}/`;
+  const chrome = spawn(
+    args.chrome,
+    [
+      '--headless=new',
+      '--no-first-run',
+      '--no-default-browser-check',
+      '--disable-background-networking',
+      '--disable-gpu',
+      '--disable-dev-shm-usage',
+      '--remote-allow-origins=*',
+      `--remote-debugging-port=${debugPort}`,
+      `--user-data-dir=${args.userDataDir}`,
+      'about:blank',
+    ],
+    { stdio: 'ignore' }
+  );
+
+  try {
+    await fetchUntilReady(`http://127.0.0.1:${debugPort}/json/version`, 15_000);
+    const target = await createChromeTarget(debugPort, targetUrl);
+    const session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    try {
+      await session.send('Runtime.enable');
+      await session.send('Page.enable');
+      await session.send('Log.enable');
+      await waitForStarterBrowserReady(session);
+    } finally {
+      session.close();
+    }
+    log('real-browser built-preview preflight smoke passed');
+  } finally {
+    await stopProcess(chrome);
+  }
+}
+
+async function createChromeTarget(
+  debugPort: number,
+  url: string
+): Promise<{ webSocketDebuggerUrl: string }> {
+  const endpoint = `http://127.0.0.1:${debugPort}/json/new?${encodeURIComponent(
+    url
+  )}`;
+  let response = await fetch(endpoint, { method: 'PUT' });
+  if (!response.ok) response = await fetch(endpoint);
+  if (!response.ok) {
+    throw new Error(
+      `Chrome target creation failed with ${response.status} ${response.statusText}`
+    );
+  }
+  const target = (await response.json()) as { webSocketDebuggerUrl?: string };
+  if (!target.webSocketDebuggerUrl) {
+    throw new Error('Chrome target did not return a WebSocket debugger URL');
+  }
+  return { webSocketDebuggerUrl: target.webSocketDebuggerUrl };
+}
+
+async function waitForStarterBrowserReady(session: CdpSession): Promise<void> {
+  const deadline = Date.now() + 60_000;
+  let lastText = '';
+  while (Date.now() < deadline) {
+    const evaluation = await session.evaluate<{
+      ready: boolean;
+      text: string;
+      errors: string[];
+    }>(`(() => {
+      const text = document.body?.innerText ?? '';
+      const errors = [];
+      if (text.includes('Syncular browser preflight failed')) {
+        errors.push('preflight failed');
+      }
+      if (text.includes('Opening local database') && text.includes('Error')) {
+        errors.push('database open failed');
+      }
+      return {
+        ready:
+          text.includes('indexedDb durable') &&
+          text.includes('schema v') &&
+          !text.includes('Opening local database') &&
+          !text.includes('Syncular browser preflight failed'),
+        text,
+        errors,
+      };
+    })()`);
+    lastText = evaluation.text;
+    if (evaluation.errors.length > 0) {
+      throw new Error(
+        `Built preview browser smoke failed: ${evaluation.errors.join(', ')}`
+      );
+    }
+    if (evaluation.ready) return;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+  throw new Error(
+    `Timed out waiting for built preview browser readiness. Last page text: ${lastText}`
+  );
+}
+
+type CdpResponse = {
+  id?: number;
+  method?: string;
+  params?: unknown;
+  result?: unknown;
+  error?: { message?: string };
+};
+
+class CdpSession {
+  #nextId = 1;
+  #pending = new Map<
+    number,
+    { resolve(value: unknown): void; reject(reason: unknown): void }
+  >();
+  #errors: string[] = [];
+
+  private constructor(private readonly socket: WebSocket) {
+    socket.addEventListener('message', (event) => this.#handleMessage(event));
+  }
+
+  static connect(url: string): Promise<CdpSession> {
+    return new Promise((resolveConnect, reject) => {
+      const socket = new WebSocket(url);
+      socket.addEventListener('open', () =>
+        resolveConnect(new CdpSession(socket))
+      );
+      socket.addEventListener('error', () =>
+        reject(new Error('Chrome DevTools WebSocket failed to connect'))
+      );
+    });
+  }
+
+  send(method: string, params?: Record<string, unknown>): Promise<unknown> {
+    const id = this.#nextId++;
+    const payload =
+      params === undefined ? { id, method } : { id, method, params };
+    return new Promise((resolveSend, reject) => {
+      this.#pending.set(id, { resolve: resolveSend, reject });
+      this.socket.send(JSON.stringify(payload));
+    });
+  }
+
+  async evaluate<T>(expression: string): Promise<T> {
+    if (this.#errors.length > 0) {
+      throw new Error(`Browser runtime error: ${this.#errors.join('\n')}`);
+    }
+    const response = (await this.send('Runtime.evaluate', {
+      expression,
+      returnByValue: true,
+      awaitPromise: true,
+    })) as {
+      result?: { value?: T };
+      exceptionDetails?: {
+        text?: string;
+        exception?: { description?: string };
+      };
+    };
+    if (response.exceptionDetails) {
+      throw new Error(
+        response.exceptionDetails.exception?.description ??
+          response.exceptionDetails.text ??
+          'Browser evaluation failed'
+      );
+    }
+    return response.result?.value as T;
+  }
+
+  close(): void {
+    this.socket.close();
+  }
+
+  #handleMessage(event: MessageEvent): void {
+    const data =
+      typeof event.data === 'string'
+        ? event.data
+        : Buffer.from(event.data as ArrayBuffer).toString('utf8');
+    const message = JSON.parse(data) as CdpResponse;
+    if (message.id !== undefined) {
+      const pending = this.#pending.get(message.id);
+      if (!pending) return;
+      this.#pending.delete(message.id);
+      if (message.error) {
+        pending.reject(
+          new Error(message.error.message ?? 'CDP request failed')
+        );
+      } else {
+        pending.resolve(message.result);
+      }
+      return;
+    }
+
+    if (message.method === 'Runtime.exceptionThrown') {
+      const params = message.params as
+        | {
+            exceptionDetails?: {
+              text?: string;
+              exception?: { description?: string };
+            };
+          }
+        | undefined;
+      this.#errors.push(
+        params?.exceptionDetails?.exception?.description ??
+          params?.exceptionDetails?.text ??
+          'Browser runtime exception'
+      );
+    }
+    if (message.method === 'Log.entryAdded') {
+      const params = message.params as
+        | { entry?: { level?: string; text?: string } }
+        | undefined;
+      if (params?.entry?.level === 'error') {
+        this.#errors.push(params.entry.text ?? 'Browser log error');
+      }
+    }
+  }
+}
+
 async function main(): Promise<void> {
   const workDir = join(tmpdir(), `csa-smoke-${Date.now()}`);
   const appDir = join(workDir, 'my-app');
@@ -162,6 +485,12 @@ async function main(): Promise<void> {
   let devProcess: ReturnType<typeof spawn> | null = null;
   try {
     log(`work dir: ${workDir}`);
+    const appEnv = {
+      ...process.env,
+      SYNC_PORT: String(syncPort),
+      PORT: String(vitePort),
+      VITE_SYNCULAR_SYNC_URL: `http://127.0.0.1:${syncPort}/sync`,
+    };
 
     // 1. Build and run the actual CLI artifact.
     await run('bun', ['run', 'build:cli'], { cwd: packageDir });
@@ -200,11 +529,7 @@ async function main(): Promise<void> {
     devProcess = spawn('bun', ['scripts/dev.ts'], {
       cwd: appDir,
       stdio: 'inherit',
-      env: {
-        ...process.env,
-        SYNC_PORT: String(syncPort),
-        PORT: String(vitePort),
-      },
+      env: appEnv,
     });
 
     const health = await fetchUntilReady(
@@ -250,18 +575,33 @@ async function main(): Promise<void> {
     }
     log('vite preflight module transform check passed');
 
+    await stopProcess(devProcess);
+    devProcess = null;
+
+    // 4. Build and serve the production preview, then verify the built page
+    // and assets are reachable. If a browser is available, execute the built
+    // app and wait for the preflight-gated local database to open.
+    await runLinkedViteBuild(appDir, appEnv);
+    devProcess = spawn('bun', ['scripts/dev.ts', '--preview'], {
+      cwd: appDir,
+      stdio: 'inherit',
+      env: appEnv,
+    });
+
+    const previewOrigin = `http://127.0.0.1:${vitePort}`;
+    const previewPage = await fetchUntilReady(`${previewOrigin}/`, 60_000);
+    const previewBody = await previewPage.text();
+    await verifyBuiltPreviewAssets(previewOrigin, previewBody);
+    log('built preview asset check passed');
+
+    await maybeRunBrowserPreviewSmoke({
+      origin: previewOrigin,
+      workDir,
+    });
+
     log('smoke test passed');
   } finally {
-    if (devProcess && devProcess.exitCode === null) {
-      devProcess.kill('SIGTERM');
-      await new Promise<void>((resolveExit) => {
-        devProcess?.on('exit', () => resolveExit());
-        setTimeout(resolveExit, 5_000);
-      });
-      // Give Vite's native (Rolldown) threads a moment to wind down before
-      // their working directory disappears.
-      await new Promise((resolveSleep) => setTimeout(resolveSleep, 1_000));
-    }
+    await stopProcess(devProcess);
     if (keep) {
       log(`keeping ${workDir}`);
     } else {

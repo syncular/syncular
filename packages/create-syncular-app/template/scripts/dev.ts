@@ -22,7 +22,8 @@ if (previewMode) {
   const previewServer = await preview({
     preview: {
       host: '127.0.0.1',
-      port: 4173,
+      port: Number(process.env.PORT ?? 4173),
+      strictPort: false,
     },
   });
   previewServer.printUrls();

@@ -47,6 +47,13 @@ until the full browser Worker/WASM suite is green on Linux.
   the changed output. Use `bun run rust:codegen:check` for the todo fixture so
   the typed app contract, generated `generated/syncular.codegen.json` handoff,
   and Rust codegen output are checked together.
+- Starter/browser-deploy changes:
+  run `bun --cwd packages/create-syncular-app smoke`. The scaffold smoke boots
+  the dev server, builds the app, serves Vite preview, verifies built assets,
+  and runs the real-browser preview check when Chrome/Chromium is available.
+  On a browser-capable CI runner, set
+  `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` so missing Chrome fails instead
+  of skipping the browser execution.
 - Docs or planning-only changes:
   run the docs stale check, docs typecheck when public docs changed, and
   whitespace check.
