@@ -649,6 +649,15 @@ online propagation, or reconnect behavior can change.
   docs-only gates, and a Browser/WASM warning that Bun `1.3.13` and `1.3.14`
   both failed the full Linux Worker/WASM suite. The older contradictory Bun
   notes in `IMPROVEMENT_PLAN.md` were corrected.
+- 2026-06-30 thirteenth implementation slice made browser health recovery
+  semantics first-class: `getSyncularBrowserHealth(...)` now exposes
+  `requiresAction` plus shared-taxonomy `recommendedActions`, so UI code can
+  distinguish runtime retry from app auth/scope action without parsing recent
+  diagnostic messages.
+- Public error-handling docs and the starter README now show browser health as
+  the app-facing place to route stable recovery actions such as refreshing auth,
+  checking permissions, regenerating/upgrading schema, or recreating a failed
+  runtime.
 
 ## Implementation Log
 
@@ -786,6 +795,15 @@ online propagation, or reconnect behavior can change.
   suite is green.
 - 2026-06-30: Extended `docs:stale-check` to scan the root README and reject
   old `syncular` import-umbrella wording.
+- 2026-06-30: Added `requiresAction` and `recommendedActions` to
+  `getSyncularBrowserHealth(...)`, derived from lifecycle state, revoked
+  subscriptions, last/recent structured errors, and the shared
+  `SYNCULAR_ERROR_DEFINITIONS` taxonomy.
+- 2026-06-30: Added focused browser-health coverage for the stable no-action
+  case, revoked-scope permission recovery, and auth-required refresh recovery.
+- 2026-06-30: Updated public error-handling docs and the starter README so apps
+  treat browser health as the stable place to route recovery UI instead of
+  interpreting low-level status objects or diagnostic text.
 
 ## Latest Gates
 
@@ -832,6 +850,10 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bunx biome check packages/testkit/src/scoped-actors.ts packages/testkit/src/scoped-actors.test.ts packages/testkit/src/diagnostic-markers.ts packages/testkit/src/diagnostic-markers.test.ts packages/testkit/src/project-scoped-tasks.ts packages/testkit/src/sync-http.ts packages/testkit/src/sync-parse.ts packages/testkit/src/index.ts`
 - `bun --cwd packages/testkit tsgo`
 - `bunx biome check scripts/check-docs-stale-patterns.ts`
+- `bun test packages/client/src/browser-health.test.ts packages/client/src/public-api.test.ts`
+- `bunx biome check packages/client/src/browser-health.ts packages/client/src/browser-health.test.ts apps/docs/content/docs/features/error-handling.mdx packages/create-syncular-app/template/README.md`
+- `bun --cwd packages/client tsgo`
+- `bun --cwd apps/docs types:check`
 - `git diff --check`
 
 ## Sequencing
@@ -839,7 +861,9 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 1. Golden path starter and smoke: first retained slice is done for the
    browser/runtime health surface. Continue growing the starter only when it
    proves a concrete app-facing rough edge.
-2. Browser/runtime health contract: first retained slice is done. Future slices
+2. Browser/runtime health contract: first retained slices are done. The helper
+   now exposes durability/bootstrap/realtime/subscription status plus
+   `requiresAction` and taxonomy-backed recommended actions. Future slices
    should add missing setup/runtime error codes as concrete failures appear.
 3. Local visibility primitive: first retained slice is done with a
    query/predicate helper and managed database method. Future generated helpers
@@ -875,6 +899,13 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    in the improvement plan, and stale-check coverage for root README package
    surface drift.
 
+## Resolved Decisions
+
+- `requiresAction` starts in the root browser health helper, because it is a
+  runtime/lifecycle recovery fact that every browser app can consume. Generated
+  clients may add product-specific UI helpers later, but they should wrap the
+  same health contract rather than inventing a second action taxonomy.
+
 ## Open Questions
 
 - Should the first canonical starter target React by default, or a framework
@@ -897,9 +928,6 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
   package APIs?
 - Should deploy readiness live as `syncular doctor`, `syncular schema check`,
   or a layered pair where `doctor` calls narrower checks?
-- Should `requiresAction` live directly in the browser health helper, in a
-  broader lifecycle API, or in generated app helpers that map runtime states to
-  product-specific UI actions?
 - Which diagnostic fields are always safe to emit, which are redacted by
   default, and which require an explicit debug opt-in?
 - Should global/base data become a first-class scope/partition kind, or should
@@ -907,7 +935,6 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 
 ## Next Action
 
-Pick the next implementation slice: audit remaining product-contract decisions
-from the open questions, especially the blessed global/base-data sharing
-pattern and where `requiresAction` should live in the app-facing lifecycle
-surface.
+Pick the next implementation slice: audit the remaining product-contract
+decisions from the open questions, especially the blessed global/base-data
+sharing pattern for package releases pinned into campaign/project scopes.

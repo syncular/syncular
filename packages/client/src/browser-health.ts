@@ -1,3 +1,8 @@
+import {
+  SYNCULAR_ERROR_DEFINITIONS,
+  type SyncularErrorCode,
+  type SyncularErrorRecommendedAction,
+} from '@syncular/core';
 import type { SyncularClientStatus } from './client';
 import type {
   SyncularDiagnosticEvent,
@@ -87,9 +92,18 @@ export interface SyncularBrowserHealthError {
   details?: Record<string, unknown>;
 }
 
+export interface SyncularBrowserHealthRecommendedAction {
+  recommendedAction: SyncularErrorRecommendedAction;
+  code: SyncularErrorCode;
+  message: string;
+  source?: string;
+}
+
 export interface SyncularBrowserHealth {
   generatedAt: number;
   status: SyncularBrowserHealthStatus;
+  requiresAction: boolean;
+  recommendedActions: SyncularBrowserHealthRecommendedAction[];
   runtime: SyncularBrowserHealthRuntime;
   persistence: SyncularBrowserHealthPersistence;
   bootstrap: SyncularBrowserHealthBootstrap | null;
@@ -128,19 +142,34 @@ export async function getSyncularBrowserHealth(
     errorRecordToHealthError(snapshot.connection.lastError) ??
     last(recentErrors) ??
     null;
+  const lifecyclePhase = status?.lifecycle.phase;
+  const explicitRequiresAction =
+    status?.requiresAction ?? status?.lifecycle.requiresAction ?? false;
+  const requiresAction =
+    explicitRequiresAction ||
+    lifecyclePhase === 'authRequired' ||
+    subscriptions.revoked > 0;
+  const recommendedActions = summarizeRecommendedActions({
+    lifecyclePhase,
+    requiresAction,
+    subscriptions,
+    lastError,
+    recentErrors,
+  });
 
   return {
     generatedAt: snapshot.generatedAt,
     status: summarizeHealthStatus({
       closed: status?.connection.closed ?? snapshot.connection.closed,
-      lifecyclePhase: status?.lifecycle.phase,
-      requiresAction:
-        status?.requiresAction ?? status?.lifecycle.requiresAction,
+      lifecyclePhase,
+      requiresAction,
       persistence,
       bootstrap,
       subscriptions,
       lastError,
     }),
+    requiresAction,
+    recommendedActions,
     runtime: {
       packageName: snapshot.runtime.packageName,
       packageVersion: snapshot.runtime.packageVersion,
@@ -221,7 +250,7 @@ function summarizeSubscriptions(
 function summarizeHealthStatus(args: {
   closed: boolean;
   lifecyclePhase: string | undefined;
-  requiresAction: boolean | undefined;
+  requiresAction: boolean;
   persistence: SyncularBrowserHealthPersistence;
   bootstrap: SyncularBrowserHealthBootstrap | null;
   subscriptions: SyncularBrowserHealthSubscriptions;
@@ -245,6 +274,49 @@ function summarizeHealthStatus(args: {
     return 'starting';
   }
   return 'ok';
+}
+
+function summarizeRecommendedActions(args: {
+  lifecyclePhase: string | undefined;
+  requiresAction: boolean;
+  subscriptions: SyncularBrowserHealthSubscriptions;
+  lastError: SyncularBrowserHealthError | null;
+  recentErrors: SyncularBrowserHealthError[];
+}): SyncularBrowserHealthRecommendedAction[] {
+  const actions = new Map<string, SyncularBrowserHealthRecommendedAction>();
+
+  const add = (
+    code: string | undefined,
+    source: string | undefined,
+    message: string | undefined
+  ) => {
+    if (!isSyncularErrorCode(code)) {
+      return;
+    }
+    const definition = SYNCULAR_ERROR_DEFINITIONS[code];
+    const key = `${code}:${source ?? ''}`;
+    actions.set(key, {
+      code,
+      recommendedAction: definition.recommendedAction,
+      message: message ?? definition.message,
+      ...(source ? { source } : {}),
+    });
+  };
+
+  if (args.lifecyclePhase === 'authRequired') {
+    add('sync.auth_required', 'lifecycle', undefined);
+  }
+  if (args.subscriptions.revoked > 0) {
+    add('sync.scope_revoked', 'subscriptions', undefined);
+  }
+  if (args.requiresAction) {
+    add(args.lastError?.code, args.lastError?.source, args.lastError?.message);
+    for (const error of args.recentErrors) {
+      add(error.code, error.source, error.message);
+    }
+  }
+
+  return Array.from(actions.values());
 }
 
 function errorRecordToHealthError(
@@ -272,4 +344,10 @@ function diagnosticToHealthError(
 
 function last<T>(items: readonly T[]): T | undefined {
   return items.length === 0 ? undefined : items[items.length - 1];
+}
+
+function isSyncularErrorCode(
+  code: string | undefined
+): code is SyncularErrorCode {
+  return typeof code === 'string' && code in SYNCULAR_ERROR_DEFINITIONS;
 }

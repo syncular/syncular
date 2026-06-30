@@ -124,6 +124,31 @@ if (!status.isConnected) {
 }
 ```
 
+For browser apps, use `getSyncularBrowserHealth(...)` when UI needs the
+app-facing summary and stable recovery actions in one place:
+
+```ts
+import { getSyncularBrowserHealth } from '@syncular/client';
+
+const health = await getSyncularBrowserHealth(syncular);
+
+if (health.requiresAction) {
+  for (const action of health.recommendedActions) {
+    routeRecoveryUi({
+      code: action.code,
+      recommendedAction: action.recommendedAction,
+      source: action.source,
+      message: action.message,
+    });
+  }
+}
+```
+
+`recommendedActions` is derived from the shared error taxonomy. For example,
+`sync.auth_required` maps to `refreshAuth`, revoked subscriptions map to
+`checkPermissions`, schema mismatches map to regenerate or upgrade actions, and
+worker failures map to `recreateClient`.
+
 Manual reconnect is just a lifecycle start/sync request:
 
 ```ts

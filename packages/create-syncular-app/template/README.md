@@ -25,7 +25,8 @@ server is back.
 The status lines in the task panel come from `getSyncularBrowserHealth(...)`
 and `database.schemaReadiness(...)`. They are the app-facing checks for
 durable storage, active subscriptions, realtime state, generated schema
-compatibility, and the latest structured Syncular error.
+compatibility, the latest structured Syncular error, and any stable
+recommended action such as refreshing auth or checking permissions.
 
 > **Why Bun?** The dev script and sync server run on Bun (`Bun.serve`,
 > `bun:sqlite` via `@syncular/server/bun-sqlite`) because Bun runs

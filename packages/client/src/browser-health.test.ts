@@ -18,6 +18,8 @@ describe('Syncular browser health', () => {
 
     await expect(getSyncularBrowserHealth(client)).resolves.toMatchObject({
       status: 'ok',
+      requiresAction: false,
+      recommendedActions: [],
       persistence: {
         status: 'durable',
         durable: true,
@@ -94,6 +96,19 @@ describe('Syncular browser health', () => {
 
     await expect(getSyncularBrowserHealth(client)).resolves.toMatchObject({
       status: 'action-required',
+      requiresAction: true,
+      recommendedActions: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'sync.scope_revoked',
+          recommendedAction: 'checkPermissions',
+          source: 'subscriptions',
+        }),
+        expect.objectContaining({
+          code: 'sync.scope_revoked',
+          recommendedAction: 'checkPermissions',
+          source: 'sync',
+        }),
+      ]),
       subscriptions: {
         total: 1,
         ready: 0,
@@ -111,6 +126,32 @@ describe('Syncular browser health', () => {
           details: { actorId: 'user-1', scope: { user_id: 'user-2' } },
         },
       ],
+    });
+  });
+
+  it('maps auth-required lifecycle state to a stable refresh action', async () => {
+    const client = fakeHealthClient({
+      snapshot: makeSnapshot(),
+      status: makeStatus({
+        phase: 'authRequired',
+        requiresAction: true,
+        lastError: {
+          code: 'sync.auth_required',
+          message: 'Authentication is required.',
+        },
+      }),
+    });
+
+    await expect(getSyncularBrowserHealth(client)).resolves.toMatchObject({
+      status: 'action-required',
+      requiresAction: true,
+      recommendedActions: expect.arrayContaining([
+        expect.objectContaining({
+          code: 'sync.auth_required',
+          recommendedAction: 'refreshAuth',
+          source: 'lifecycle',
+        }),
+      ]),
     });
   });
 });

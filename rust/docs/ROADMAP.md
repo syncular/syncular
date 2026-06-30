@@ -110,14 +110,17 @@ read-only review:
     through stale-pattern checks. Contributor docs now lead app evaluation with
     `create-syncular-app`, document the pinned Bun `1.3.9` local gate path,
     call out the Linux Worker/WASM exclusion in generic `bun test`, and remove
-    stale Bun `1.3.13`/`1.3.14` guidance. Focused
+    stale Bun `1.3.13`/`1.3.14` guidance. Browser health now exposes
+    `requiresAction` and shared-taxonomy `recommendedActions` for app-facing
+    recovery UI over auth-required, revoked-scope, schema, worker, and other
+    known errors. Focused
     client/CLI/server/blob/testkit tests, package typechecks, fresh JS smoke,
     scaffold smoke, docs stale check, Rust taxonomy check, and diff check
     passed locally. A
     Hono/WebSocket/WASM managed-database test also proves the same scope-change
     flow against real remote auth/realtime behavior, including denied-scope
     diagnostics. Next slice: remaining product-contract decisions, especially
-    global/base-data sharing and `requiresAction` lifecycle semantics.
+    the blessed global/base-data sharing pattern.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested
