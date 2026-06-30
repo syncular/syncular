@@ -172,7 +172,9 @@ read-only review:
     actions with confirmation required for destructive operations. Sign-out
     cleanup is now an explicit opt-in recovery action that is only offered when
     the local outbox is empty, resets sync/bootstrap state, clears synced rows,
-    and clears cached blob bytes under confirmation.
+    and clears cached blob bytes under confirmation. Revoked subscription
+    scopes now surface as confirmed `force-rebootstrap` actions for affected
+    subscription IDs after app permissions are checked or refreshed.
     Runtime timeline artifacts now expose
     `getSyncularRuntimeTimeline(...)` and
     `SyncularDatabase.runtimeTimeline(...)`, projecting diagnostic snapshots

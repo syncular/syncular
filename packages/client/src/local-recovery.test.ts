@@ -130,6 +130,64 @@ describe('local recovery plan', () => {
     });
   });
 
+  it('adds a confirmed rebootstrap action for revoked subscriptions', async () => {
+    const client = new FakeRecoveryClient({
+      snapshot: {
+        ...diagnosticSnapshot(),
+        subscriptions: [
+          diagnosticSubscription({
+            id: 'sub-revoked',
+            status: 'revoked',
+          }),
+        ],
+        recentDiagnostics: [
+          {
+            at: 1,
+            level: 'warn',
+            source: 'sync',
+            code: 'sync.scope_revoked',
+            message: 'scope revoked',
+            details: {
+              revokedSubscriptionIds: ['sub-revoked'],
+            },
+          },
+        ],
+      },
+    });
+
+    const plan = await getSyncularLocalRecoveryPlan(client);
+    const action = plan.actions.find(
+      (candidate) => candidate.id === 'scope.rebootstrap-revoked'
+    );
+    expect(plan.status).toBe('action-required');
+    expect(action).toMatchObject({
+      kind: 'force-rebootstrap',
+      severity: 'danger',
+      source: 'scope',
+      destructive: true,
+      requiresConfirmation: true,
+      subscriptionIds: ['sub-revoked'],
+      reasonCodes: ['sync.scope_revoked'],
+    });
+
+    await expect(
+      runSyncularLocalRecoveryAction(client, action!)
+    ).rejects.toBeInstanceOf(SyncularLocalRecoveryError);
+
+    await expect(
+      runSyncularLocalRecoveryAction(client, action!, {
+        confirmationText: action!.confirmationText,
+      })
+    ).resolves.toMatchObject({
+      action: 'force-rebootstrap',
+      report: { action: 'forceRebootstrap' },
+    });
+    expect(client.calls).toContainEqual([
+      'repairLocalHealth',
+      { action: 'forceRebootstrap', subscriptionIds: ['sub-revoked'] },
+    ]);
+  });
+
   it('only exposes reset and cache-clear operations when explicitly requested', async () => {
     const client = new FakeRecoveryClient();
     const defaultPlan = await getSyncularLocalRecoveryPlan(client);
@@ -438,6 +496,27 @@ function diagnosticSnapshot(): SyncularDiagnosticSnapshot {
     subscriptions: [],
     recentDiagnostics: [],
     recentSyncTimings: [],
+  };
+}
+
+function diagnosticSubscription(
+  overrides: Partial<SyncularDiagnosticSnapshot['subscriptions'][number]> = {}
+): SyncularDiagnosticSnapshot['subscriptions'][number] {
+  return {
+    id: 'sub-tasks',
+    table: 'tasks',
+    scopeKeys: ['user_id'],
+    scopeValueCount: 1,
+    paramsKeys: [],
+    paramsValueCount: 0,
+    status: 'active',
+    ready: true,
+    phase: 'ready',
+    progressPercent: 100,
+    cursor: 1,
+    bootstrapPhase: 0,
+    bootstrapState: null,
+    ...overrides,
   };
 }
 

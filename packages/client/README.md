@@ -723,6 +723,9 @@ cached blob bytes. If unsynced outbox work exists, the plan offers recovery
 first instead of a destructive wipe. Use
 `localRecoveryPlan({ includeResetAction: true })` for operator-directed
 rebootstrap flows; reset actions still go through the Rust runtime guardrails.
+When a subscription scope is revoked, the plan includes a confirmed
+`force-rebootstrap` action for the affected subscription IDs after the app has
+checked or refreshed permissions.
 
 ## CRDT Document Fields
 

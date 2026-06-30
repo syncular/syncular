@@ -903,6 +903,11 @@ online propagation, or reconnect behavior can change.
   subscription/bootstrap state, clears synced app rows, and clears cached blob
   bytes. If unsynced work remains, the plan offers sync recovery first instead
   of a destructive wipe.
+- Revoked subscription scopes now produce a specific local recovery action
+  instead of only a generic lifecycle retry. The plan collects affected
+  subscription IDs from diagnostic subscriptions, bootstrap status, and
+  `sync.scope_revoked` diagnostic details, then offers a confirmed
+  `force-rebootstrap` action after app permissions are checked or refreshed.
 - The browser/Hono/WASM local-health test now exercises that plan/action API
   against the real Worker runtime for corrupted subscription state and
   orphaned verified roots, including the confirmation guardrail and successful
@@ -1315,6 +1320,9 @@ online propagation, or reconnect behavior can change.
 - 2026-07-01: Added the opt-in `prepare-sign-out` local recovery action,
   blocking sign-out cleanup while unresolved outbox work exists and documenting
   the confirmed flow in package/public observability docs.
+- 2026-07-01: Added a revoked-scope local recovery action that turns
+  `sync.scope_revoked` subscription evidence into a confirmed
+  `force-rebootstrap` action for the affected subscription IDs.
 - 2026-06-30: Extended the Hono-backed browser/WASM local-health test so it
   repairs corrupted subscription state and orphaned verified roots through the
   new local recovery plan/action API instead of direct low-level repair calls.
@@ -1708,10 +1716,10 @@ Most recent mutation-status rerun:
   subscription state and orphaned verified roots. Sign-out cleanup is now an
   explicit opt-in action that refuses to appear while unresolved outbox work
   exists, then resets sync/bootstrap state, clears synced app rows, and clears
-  cached blob bytes under confirmation. Remaining work is to cover
-  unrecoverable bootstrap and revoked-scope UI through the same action model,
-  and decide whether multi-tab recovery needs additional lock/coordination
-  actions.
+  cached blob bytes under confirmation. Revoked subscription scopes now map to
+  confirmed affected-subscription rebootstrap actions. Remaining work is to
+  cover unrecoverable bootstrap UI through the same action model and decide
+  whether multi-tab recovery needs additional lock/coordination actions.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,

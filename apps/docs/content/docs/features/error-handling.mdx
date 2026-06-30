@@ -195,7 +195,9 @@ unsynced work remains, the plan asks the app to drain or retry sync first. Use
 `localRecoveryPlan({ includeResetAction: true })` for support or
 operator-directed rebootstrap flows. Reset and repair actions still run through
 the Rust runtime guardrails; for example, clearing synced rows refuses to
-proceed while the local outbox is not empty.
+proceed while the local outbox is not empty. If a subscription scope is
+revoked, the plan surfaces a confirmed `force-rebootstrap` action for the
+affected subscription IDs after the app has checked or refreshed permissions.
 
 Manual reconnect is just a lifecycle start/sync request:
 

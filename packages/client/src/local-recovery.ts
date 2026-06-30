@@ -36,6 +36,7 @@ export type SyncularLocalRecoveryActionSeverity = 'info' | 'warning' | 'danger';
 export type SyncularLocalRecoveryActionSource =
   | 'support'
   | 'lifecycle'
+  | 'scope'
   | 'outbox'
   | 'blob'
   | 'health'
@@ -194,6 +195,7 @@ export async function getSyncularLocalRecoveryPlan(
   const status = client.getStatus?.();
   const actions = [
     supportBundleAction(),
+    ...actionsForRevokedScopes(snapshot),
     ...actionsForLifecycle(status, snapshot),
     ...actionsForOutbox(status, snapshot),
     ...actionsForBlobUploads(status, snapshot),
@@ -314,6 +316,30 @@ function supportBundleAction(): SyncularLocalRecoveryAction {
     destructive: false,
     requiresConfirmation: false,
   };
+}
+
+function actionsForRevokedScopes(
+  snapshot: SyncularDiagnosticSnapshot
+): SyncularLocalRecoveryAction[] {
+  const subscriptionIds = revokedSubscriptionIds(snapshot);
+  if (subscriptionIds.length === 0) return [];
+
+  return [
+    {
+      id: 'scope.rebootstrap-revoked',
+      kind: 'force-rebootstrap',
+      severity: 'danger',
+      source: 'scope',
+      title: 'Rebootstrap revoked subscriptions',
+      description:
+        'Subscription access was revoked. Check app permissions, then clear stored bootstrap state for the affected subscriptions so the next sync pulls the current server-authorized view.',
+      reasonCodes: ['sync.scope_revoked'],
+      destructive: true,
+      requiresConfirmation: true,
+      confirmationText: 'rebootstrap revoked subscriptions',
+      subscriptionIds,
+    },
+  ];
 }
 
 function actionsForLifecycle(
@@ -497,6 +523,31 @@ function unresolvedOutboxCount(
   const outbox = snapshot.outboxStats ?? status?.outbox;
   if (!outbox) return 0;
   return outbox.pending + outbox.sending + outbox.failed;
+}
+
+function revokedSubscriptionIds(
+  snapshot: SyncularDiagnosticSnapshot
+): string[] {
+  const ids: string[] = [];
+  for (const subscription of snapshot.subscriptions) {
+    if (subscription.status === 'revoked') ids.push(subscription.id);
+  }
+  for (const subscription of snapshot.bootstrap?.subscriptions ?? []) {
+    if (subscription.status === 'revoked') ids.push(subscription.id);
+  }
+  for (const event of snapshot.recentDiagnostics) {
+    if (event.code !== 'sync.scope_revoked') continue;
+    if (event.subscriptionId) ids.push(event.subscriptionId);
+    const eventIds = event.details?.revokedSubscriptionIds;
+    if (Array.isArray(eventIds)) {
+      ids.push(
+        ...eventIds.filter(
+          (subscriptionId) => typeof subscriptionId === 'string'
+        )
+      );
+    }
+  }
+  return uniqueStrings(ids);
 }
 
 function groupHealthFindingsByRepairAction(
