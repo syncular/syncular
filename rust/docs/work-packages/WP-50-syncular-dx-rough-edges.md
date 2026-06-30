@@ -457,6 +457,16 @@ online propagation, or reconnect behavior can change.
 - Local visibility timeouts now use the typed
   `sync.local_visibility_timeout` error code with timeout and table details, so
   app tests do not need to parse stale-read timeout text.
+- 2026-06-30 third implementation slice added
+  `replaceSyncularAuthContext(...)` plus
+  `SyncularDatabase.replaceAuthContext(...)`, giving apps one public operation
+  for replacing explicit auth headers or provider-owned auth context, swapping
+  subscriptions, resetting affected bootstrap state, running the appropriate
+  recovery sync/realtime path, and optionally awaiting local visibility.
+- The auth-context helper deliberately uses `sync()` after explicit headers so
+  a configured `getHeaders` provider cannot overwrite caller-provided
+  replacement headers, and uses `resumeFromBackground()` when headers remain
+  provider-owned so dynamic auth refresh and realtime restart stay together.
 
 ## Implementation Log
 
@@ -481,6 +491,13 @@ online propagation, or reconnect behavior can change.
   matching table events, unrelated table filtering, executable Kysely query
   objects, typed timeout errors, and abort cleanup.
 - 2026-06-30: Added the `sync.local_visibility_timeout` core error definition.
+- 2026-06-30: Added `packages/client/src/auth-context.ts` and exported it from
+  `@syncular/client`.
+- 2026-06-30: Added `SyncularDatabase.replaceAuthContext(...)` as the managed
+  database method over the standalone helper.
+- 2026-06-30: Added focused auth-context tests covering explicit replacement
+  headers, provider-owned headers through resume recovery, affected
+  subscription bootstrap reset, sync skipping, and optional local visibility.
 
 ## Latest Gates
 
@@ -497,8 +514,11 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bun --cwd packages/create-syncular-app smoke`
 - `bun run docs:stale-check`
 - `bunx biome check packages/client/src/local-visibility.ts packages/client/src/local-visibility.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/core/src/error-responses.ts`
+- `bun test packages/client/src/auth-context.test.ts packages/client/src/public-api.test.ts`
+- `bunx biome check packages/client/src/auth-context.ts packages/client/src/auth-context.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts`
 - `bun test packages/syncular/src/cli.test.ts`
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-local-visibility`
+- `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-auth-context`
 - `git diff --check`
 
 ## Sequencing
@@ -511,8 +531,10 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 3. Local visibility primitive: first retained slice is done with a
    query/predicate helper and managed database method. Future generated helpers
    can wrap it for command-specific or subscription-specific waits.
-4. Add the auth context/scope-change contract, then prove campaign join/change
-   flows through realtime and local visibility.
+4. Auth context/scope-change contract: first retained slice is done with a
+   replacement helper and managed database method. Next prove campaign
+   join/change flows through realtime and local visibility in an executable app
+   or testkit recipe.
 5. Add schema readiness and drift diagnostics before encouraging production
    deployment patterns.
 6. Add blob partition/scope guidance and typed blob failure details once the
@@ -537,8 +559,9 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - Should generated clients wrap local visibility per mutation/read model, or
   keep the root query/predicate helper as the only public primitive until a
   starter flow proves a narrower API?
-- Should auth context replacement live on the generated app client, the core
-  database client, or both?
+- Should generated clients wrap `replaceAuthContext(...)` with app-specific
+  campaign/project join helpers, or should the root database method remain the
+  only public contract until a starter flow proves the narrower API?
 - What is the blessed global/base-data sharing pattern for package releases
   pinned into campaign scopes?
 - Which schema readiness checks belong in the `syncular` CLI versus server
@@ -546,7 +569,7 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 
 ## Next Action
 
-Pick the next implementation slice: add a local visibility primitive and docs
-that distinguish bootstrap, explicit pull, autosync, realtime wakeup, local
-read-model freshness, and manual `sync()` so app code can wait for local
-visibility without using `sync()` as a stale-read escape hatch.
+Pick the next implementation slice: prove a campaign/scope-change flow in an
+executable starter or testkit recipe, using `replaceAuthContext(...)`,
+realtime recovery, and `awaitLocalVisibility(...)` instead of manual `sync()`
+calls.

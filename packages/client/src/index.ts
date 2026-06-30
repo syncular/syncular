@@ -1,3 +1,4 @@
+export * from './auth-context';
 export * from './blob-limits';
 export * from './bridge-client';
 export * from './browser-health';

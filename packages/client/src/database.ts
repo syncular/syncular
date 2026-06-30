@@ -19,6 +19,11 @@ import {
 } from 'kysely';
 import { BaseSqliteDialect, BaseSqliteDriver } from 'kysely-generic-sqlite';
 import {
+  replaceSyncularAuthContext,
+  type SyncularAuthContextReplacementOptions,
+  type SyncularAuthContextReplacementResult,
+} from './auth-context';
+import {
   assertSyncularBlobPayloadLimit,
   type SyncularBlobLimitInput,
   syncularBlobInputSize,
@@ -102,6 +107,9 @@ export interface SyncularDatabase<DB> extends SyncularLiveQueries {
   start(): Promise<void>;
   stop(): Promise<void>;
   sync(): Promise<SyncularSyncResult>;
+  replaceAuthContext<TResult = never>(
+    options: SyncularAuthContextReplacementOptions<DB, TResult>
+  ): Promise<SyncularAuthContextReplacementResult<TResult>>;
   awaitLocalVisibility<TResult>(
     query: SyncularLocalVisibilityQuery<DB, TResult>,
     options?: SyncularLocalVisibilityOptions<TResult>
@@ -279,6 +287,8 @@ export async function createSyncularDatabase<DB>(
     start: () => lifecycle.start(),
     stop: () => lifecycle.stop(),
     sync: () => lifecycle.sync(),
+    replaceAuthContext: (authOptions) =>
+      replaceSyncularAuthContext(database, authOptions),
     awaitLocalVisibility: (query, visibilityOptions) =>
       waitForSyncularLocalVisibility(
         {

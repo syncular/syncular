@@ -78,11 +78,15 @@ read-only review:
     generated JS app smoke, make the scaffold smoke allocate free ports, and
     add `waitForSyncularLocalVisibility(...)` plus
     `SyncularDatabase.awaitLocalVisibility(...)` for query/predicate-based
-    local read-model visibility without manual `sync()` calls. Focused client
-    tests, package typechecks, fresh JS smoke, scaffold smoke, docs stale
-    check, and diff check passed locally. Next slice: auth context/scope-change
-    contract, then campaign join/change flows through realtime and local
-    visibility.
+    local read-model visibility without manual `sync()` calls, and add
+    `replaceSyncularAuthContext(...)` plus
+    `SyncularDatabase.replaceAuthContext(...)` for replacing auth headers or
+    provider-owned auth context, swapping subscriptions, resetting affected
+    bootstrap state, recovering sync/realtime, and optionally awaiting local
+    visibility. Focused client tests, package typechecks, fresh JS smoke,
+    scaffold smoke, docs stale check, and diff check passed locally. Next
+    slice: prove campaign/scope-change flows through realtime and local
+    visibility in an executable starter or testkit recipe.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

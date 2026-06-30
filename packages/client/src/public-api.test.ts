@@ -5,6 +5,7 @@ import {
   createSyncularDatabase,
   getSyncularBrowserHealth,
   getSyncularPackagedRuntimeArtifacts,
+  replaceSyncularAuthContext,
   resolveSyncularClientConfig,
   SYNCULAR_DEFAULT_STORAGE,
   SYNCULAR_PACKAGE_NAME,
@@ -54,6 +55,10 @@ describe('@syncular/client public API', () => {
 
   it('exports the local visibility helper', () => {
     expect(typeof waitForSyncularLocalVisibility).toBe('function');
+  });
+
+  it('exports the auth context replacement helper', () => {
+    expect(typeof replaceSyncularAuthContext).toBe('function');
   });
 
   it('does not expose the removed standalone managed-client constructor', () => {
