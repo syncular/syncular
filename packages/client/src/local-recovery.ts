@@ -28,7 +28,8 @@ export type SyncularLocalRecoveryActionKind =
   | 'force-rebootstrap'
   | 'clear-orphaned-state'
   | 'clear-orphaned-synced-rows'
-  | 'reset-local-sync-state';
+  | 'reset-local-sync-state'
+  | 'prepare-sign-out';
 
 export type SyncularLocalRecoveryActionSeverity = 'info' | 'warning' | 'danger';
 
@@ -54,6 +55,7 @@ export interface SyncularLocalRecoveryAction {
   subscriptionIds?: string[];
   tables?: string[];
   clearSyncedRows?: boolean;
+  clearBlobCache?: boolean;
   compactStorageOptions?: SyncularStorageCompactionOptions;
   blobUploadOptions?: SyncularBlobUploadQueueProcessOptions;
 }
@@ -84,6 +86,18 @@ export interface SyncularLocalRecoveryPlanOptions {
   includeResetAction?: boolean;
   resetSubscriptionIds?: readonly string[];
   resetClearSyncedRows?: boolean;
+  /**
+   * Adds a guarded sign-out cleanup action. The action is only offered when
+   * the local outbox is empty; otherwise the plan offers sync recovery first
+   * so apps do not silently discard unsynced local work.
+   */
+  includeSignOutAction?: boolean;
+  signOutSubscriptionIds?: readonly string[];
+  /**
+   * Defaults to `true`; sign-out cleanup clears cached blob bytes after local
+   * sync state and synced rows are reset.
+   */
+  signOutClearBlobCache?: boolean;
   compactStorageOptions?: SyncularStorageCompactionOptions;
 }
 
@@ -122,6 +136,11 @@ export type SyncularLocalRecoveryActionResult =
   | {
       action: 'reset-local-sync-state';
       report: SyncularLocalSyncResetReport;
+    }
+  | {
+      action: 'prepare-sign-out';
+      report: SyncularLocalSyncResetReport;
+      clearedBlobCache: boolean;
     };
 
 export interface SyncularLocalRecoveryClient {
@@ -179,7 +198,7 @@ export async function getSyncularLocalRecoveryPlan(
     ...actionsForOutbox(status, snapshot),
     ...actionsForBlobUploads(status, snapshot),
     ...actionsForHealth(health),
-    ...actionsForRequestedOptions(options),
+    ...actionsForRequestedOptions(options, status, snapshot),
   ];
   const uniqueActions = dedupeActions(actions);
   const recoveryStatus = summarizeRecoveryStatus({
@@ -256,6 +275,20 @@ export async function runSyncularLocalRecoveryAction(
           clearSyncedRows: action.clearSyncedRows,
         }),
       };
+    case 'prepare-sign-out': {
+      const report = await client.resetLocalSyncState({
+        subscriptionIds: action.subscriptionIds,
+        clearSyncedRows: true,
+      });
+      if (action.clearBlobCache !== false) {
+        await client.clearBlobCache();
+      }
+      return {
+        action: action.kind,
+        report,
+        clearedBlobCache: action.clearBlobCache !== false,
+      };
+    }
   }
 }
 
@@ -370,7 +403,9 @@ function actionsForHealth(
 }
 
 function actionsForRequestedOptions(
-  options: SyncularLocalRecoveryPlanOptions
+  options: SyncularLocalRecoveryPlanOptions,
+  status: SyncularClientStatus | undefined,
+  snapshot: SyncularDiagnosticSnapshot
 ): SyncularLocalRecoveryAction[] {
   const actions: SyncularLocalRecoveryAction[] = [];
   if (options.includeMaintenanceActions) {
@@ -418,7 +453,50 @@ function actionsForRequestedOptions(
       clearSyncedRows: options.resetClearSyncedRows === true,
     });
   }
+  if (options.includeSignOutAction) {
+    const unresolvedOutbox = unresolvedOutboxCount(status, snapshot);
+    if (unresolvedOutbox > 0) {
+      actions.push({
+        id: 'sign-out.drain-outbox-first',
+        kind: 'resume-from-background',
+        severity: 'warning',
+        source: 'outbox',
+        title: 'Sync local work before sign-out cleanup',
+        description:
+          'Local sign-out cleanup is blocked while unsynced outbox work exists. Drain, retry, or resolve the queue before clearing synced local rows.',
+        reasonCodes: ['sign_out.outbox_not_empty'],
+        destructive: false,
+        requiresConfirmation: false,
+      });
+    } else {
+      actions.push({
+        id: 'storage.prepare-sign-out',
+        kind: 'prepare-sign-out',
+        severity: 'danger',
+        source: 'storage',
+        title: 'Prepare local data for sign-out',
+        description:
+          'Reset subscription/bootstrap state, clear synced app rows, and clear cached blob bytes so the next user reboots from server authority.',
+        reasonCodes: ['sign_out.clear_local_data_requested'],
+        destructive: true,
+        requiresConfirmation: true,
+        confirmationText: 'prepare local sign-out',
+        subscriptionIds: [...(options.signOutSubscriptionIds ?? [])],
+        clearSyncedRows: true,
+        clearBlobCache: options.signOutClearBlobCache !== false,
+      });
+    }
+  }
   return actions;
+}
+
+function unresolvedOutboxCount(
+  status: SyncularClientStatus | undefined,
+  snapshot: SyncularDiagnosticSnapshot
+): number {
+  const outbox = snapshot.outboxStats ?? status?.outbox;
+  if (!outbox) return 0;
+  return outbox.pending + outbox.sending + outbox.failed;
 }
 
 function groupHealthFindingsByRepairAction(

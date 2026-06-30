@@ -169,7 +169,10 @@ read-only review:
     `exportLocalSupportBundle()`, classifying local health repairs, lifecycle
     action-required state, failed outbox/blob retries, storage maintenance,
     guarded reset requests, and redacted support-bundle export into typed
-    actions with confirmation required for destructive operations.
+    actions with confirmation required for destructive operations. Sign-out
+    cleanup is now an explicit opt-in recovery action that is only offered when
+    the local outbox is empty, resets sync/bootstrap state, clears synced rows,
+    and clears cached blob bytes under confirmation.
     Runtime timeline artifacts now expose
     `getSyncularRuntimeTimeline(...)` and
     `SyncularDatabase.runtimeTimeline(...)`, projecting diagnostic snapshots

@@ -109,8 +109,10 @@ Use this when an E2E failure or user report needs the ordered story:
 configured runtime, storage/schema/bootstrap, sync/realtime wakeup, local
 apply, outbox/conflict/blob state, and the last actionable error. For deeper
 local database repair or sign-out/reset flows, start from
-`localRecoveryPlan()` and export a local support bundle only when support needs
-the redacted local health tables.
+`localRecoveryPlan()`. Use `includeSignOutAction: true` for confirmed sign-out
+cleanup that waits for an empty outbox before clearing synced rows and cached
+blob bytes. Export a local support bundle only when support needs the redacted
+local health tables.
 
 When you need one support artifact for a production incident, use the composed
 support bundle:

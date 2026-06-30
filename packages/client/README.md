@@ -716,10 +716,13 @@ if (action) {
 }
 ```
 
-Use `localRecoveryPlan({ includeResetAction: true })` only for explicit
-product flows such as sign-out or operator-directed rebootstrap. Reset actions
-still go through the Rust runtime guardrails, including refusing unsafe states
-such as clearing synced rows while the local outbox is not empty.
+Use `localRecoveryPlan({ includeSignOutAction: true })` for sign-out cleanup.
+It offers a confirmed `prepare-sign-out` action only when the local outbox is
+empty, then resets subscription/bootstrap state, clears synced rows, and clears
+cached blob bytes. If unsynced outbox work exists, the plan offers recovery
+first instead of a destructive wipe. Use
+`localRecoveryPlan({ includeResetAction: true })` for operator-directed
+rebootstrap flows; reset actions still go through the Rust runtime guardrails.
 
 ## CRDT Document Fields
 

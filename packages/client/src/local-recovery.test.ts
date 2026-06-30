@@ -171,6 +171,82 @@ describe('local recovery plan', () => {
     ]);
   });
 
+  it('adds a confirmed sign-out cleanup action only when the local outbox is empty', async () => {
+    const client = new FakeRecoveryClient();
+    const defaultPlan = await getSyncularLocalRecoveryPlan(client);
+    expect(
+      defaultPlan.actions.some((action) => action.kind === 'prepare-sign-out')
+    ).toBe(false);
+
+    const plan = await getSyncularLocalRecoveryPlan(client, {
+      includeSignOutAction: true,
+      signOutSubscriptionIds: ['sub-a'],
+    });
+    const action = requiredAction(plan.actions, 'prepare-sign-out');
+    expect(action).toMatchObject({
+      id: 'storage.prepare-sign-out',
+      severity: 'danger',
+      destructive: true,
+      requiresConfirmation: true,
+      clearSyncedRows: true,
+      clearBlobCache: true,
+      subscriptionIds: ['sub-a'],
+      reasonCodes: ['sign_out.clear_local_data_requested'],
+    });
+
+    await expect(
+      runSyncularLocalRecoveryAction(client, action)
+    ).rejects.toBeInstanceOf(SyncularLocalRecoveryError);
+
+    await expect(
+      runSyncularLocalRecoveryAction(client, action, {
+        confirmationText: action.confirmationText,
+      })
+    ).resolves.toMatchObject({
+      action: 'prepare-sign-out',
+      clearedBlobCache: true,
+      report: { resetSubscriptions: 1, clearedSyncedRows: 2 },
+    });
+    expect(client.calls).toContainEqual([
+      'resetLocalSyncState',
+      { subscriptionIds: ['sub-a'], clearSyncedRows: true },
+    ]);
+    expect(client.calls).toContainEqual(['clearBlobCache']);
+  });
+
+  it('blocks sign-out cleanup while unsynced outbox work exists', async () => {
+    const client = new FakeRecoveryClient({
+      snapshot: {
+        ...diagnosticSnapshot(),
+        outboxStats: {
+          pending: 1,
+          sending: 0,
+          failed: 0,
+          acked: 0,
+          total: 1,
+        },
+      },
+    });
+
+    const plan = await getSyncularLocalRecoveryPlan(client, {
+      includeSignOutAction: true,
+    });
+
+    expect(
+      plan.actions.some((action) => action.kind === 'prepare-sign-out')
+    ).toBe(false);
+    expect(plan.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'sign-out.drain-outbox-first',
+          kind: 'resume-from-background',
+          reasonCodes: ['sign_out.outbox_not_empty'],
+          destructive: false,
+        }),
+      ])
+    );
+  });
+
   it('runs the support bundle action without confirmation', async () => {
     const client = new FakeRecoveryClient();
     const plan = await getSyncularLocalRecoveryPlan(client);
