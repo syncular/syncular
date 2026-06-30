@@ -702,6 +702,87 @@ contract, not to preserve the notes as a second backlog.
   client behavior. All retained work should stay Rust-first, generated-client
   first, and fail-closed around scoped access.
 
+### 2026-07-01 Feedback Addendum
+
+The feedback is worth keeping, but the implementation should avoid turning it
+into a pile of unrelated helper APIs. The product answer should be a small set
+of stable contracts that connect browser health, schema readiness, lifecycle,
+auth/scope, realtime, local visibility, blobs, and support artifacts.
+
+Retain these as implementation requirements:
+
+- Fail-loud browser persistence policy: durable browser mode should refuse
+  accidental memory storage unless the app explicitly opts into development or
+  test-only fallback behavior. The health/preflight surface should say whether
+  storage is durable, why it fell back, and which browser/deploy requirement is
+  missing.
+- One runtime truth surface, several audiences: UI health, deploy readiness,
+  testkit assertions, support bundles, and console diagnostics should be
+  different projections of the same event/error taxonomy, not parallel
+  vocabularies.
+- Ordered lifecycle semantics: document and expose the legal transitions from
+  configured -> storage open -> schema ready -> bootstrapping -> locally
+  visible -> realtime live -> recovering -> requires-action -> destroyed.
+  Each state should say which app operations are valid and which operations are
+  advanced escape hatches.
+- Realtime proof chain: a "browser is live for campaign/project X" signal must
+  include the ordered evidence a test or support report needs: subscription
+  id/scope joined, socket state, remote event cursor, pull/recovery reason,
+  sync attempt or request id, local apply result, and local visibility point.
+- Auth and scope vocabulary: actor id, token subject, token/campaign/project
+  scope, membership row, subscription id, table, partition id, and denied scope
+  need one shared explanation. Default diagnostics may include safe ids and
+  scope shapes, but raw token claims, bearer values, and signed URLs stay
+  redacted.
+- Scope-change contract over recipes: joining or creating a campaign/project
+  can remain app-specific, but once the app has new auth/subscriptions the
+  Syncular path should be blessed: replace auth context, reset affected
+  bootstrap state, recover realtime/sync, await local visibility, and surface
+  typed denied/revoked outcomes.
+- Blob authority model: content hashes and global package rows are not access
+  grants. The default pattern remains scoped metadata rows over shared bytes;
+  shared partitions are an explicit advanced authorization policy.
+- Schema readiness layers: keep file-level generated/migration checks,
+  live-database readiness, browser runtime asset compatibility, and eventual
+  `doctor` orchestration separate until each narrower check is useful by
+  itself.
+- Canonical negative-path E2E recipe: the copyable app test should eventually
+  cover two actors, two browser clients, one campaign/project membership
+  change, one denied scope, one offline queued mutation, one realtime wakeup,
+  one local visibility wait, one blob access check, and one redacted failure
+  artifact.
+- Support bundle contract: support exports should combine browser health,
+  deployment preflight, schema readiness, lifecycle/timeline events, recent
+  diagnostic markers, outbox/conflict/blob summaries, realtime cursors, request
+  ids, package/runtime versions, storage metadata, and redaction-policy
+  decisions.
+- App-facing outbox and conflict state: generated app UI should be able to show
+  queued, retrying, rejected, conflicted, superseded, and needs-user-action
+  mutations with stable command correlation and recommended actions.
+- Production operations depth: after the first upgrade/rollback runbook, the
+  next ops docs should add backup/restore drills, blob-store consistency
+  checks, rate-limit tuning guidance, credential rotation, log retention, and
+  support-window expectations.
+- Browser/bundler matrix: the product should name what is proven for Vite,
+  Next/SSR, Bun, Node, Cloudflare, Chrome, Safari, Firefox, private mode,
+  WebViews, and PWAs, including which cases are unsupported and should fail
+  loudly.
+
+Do not retain these as solutions:
+
+- Do not make manual `sync()` the documented stale-read fix. Keep freshness
+  modeled through bootstrap/readiness, realtime recovery, and local visibility.
+- Do not add "lite" browser database builds just to make size charts look
+  better. Reduce real core cost where possible and publish honest size/init
+  budgets.
+- Do not publish or split packages merely to hide optional dependencies. Use
+  subpaths, peer dependencies, side-effect checks, and release import matrices.
+- Do not use global blob hashes, request-startup migrations, raw synced SQL
+  writes, or old JavaScript-client compatibility as convenient DX shortcuts.
+- Do not let the Console become the only reliable debugging interface. Every
+  console-only insight should map back to a stable app-facing code, support
+  bundle field, or testkit assertion.
+
 ## Required Gates
 
 For planning/doc-only edits:
@@ -773,6 +854,12 @@ online propagation, or reconnect behavior can change.
 - A source feedback coverage audit now maps every worthy pasted integration
   point to shipped slices or explicit remaining WP-50 risks, so future sessions
   can continue from contracts and tests rather than re-triaging the raw notes.
+- A 2026-07-01 feedback addendum turns the second-pass review into product
+  requirements and anti-solutions: fail-loud persistence, one shared runtime
+  truth surface, ordered lifecycle semantics, realtime proof chains,
+  auth/scope vocabulary, scoped blob authority, schema-readiness layering,
+  canonical negative-path E2E, support-bundle contents, outbox/conflict UX,
+  production-ops depth, browser/bundler matrix, and explicit things not to do.
 - A later rough-edge expansion captured additional non-happy-path product
   prompts around browser support matrices, SSR/bundler boundaries, runtime
   state-machine semantics, version/asset alignment, negative-path recipes,
@@ -1191,6 +1278,12 @@ online propagation, or reconnect behavior can change.
   the generated app, serves Vite preview on the allocated port, verifies built
   assets, and optionally runs a Chrome/Chromium CDP browser check against the
   built page.
+- 2026-07-01: Added a second-pass feedback addendum that keeps the worthy
+  Skaldsong DX points as product requirements while explicitly rejecting
+  tempting shortcuts such as manual-sync freshness fixes, lite database
+  variants, package splits for dependency optics, implicit global blob access,
+  request-startup migrations, raw synced SQL writes, old client compatibility,
+  and console-only debugging.
 
 ## Latest Gates
 
@@ -1316,6 +1409,12 @@ Most recent starter built-preview rerun:
   - Skipped the real-browser CDP check because no Chrome/Chromium binary was
     available locally; set `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` on a
     browser-capable runner to make that part mandatory.
+
+Most recent feedback-addendum rerun:
+
+- `git diff --check`
+- Manual Markdown sanity read of the inserted addendum and surrounding
+  evidence/log sections.
 
 ## Sequencing
 
