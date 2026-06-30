@@ -47,7 +47,7 @@ fn native_ffi_exposes_runtime_manifest_without_handle() {
     let manifest: Value = serde_json::from_str(&take_string(manifest_json)).unwrap();
     assert_eq!(manifest["ffi_abi_version"], 2);
     assert_eq!(manifest["crate_name"], "syncular-runtime");
-    assert_eq!(manifest["crate_version"], "0.1.0");
+    assert_eq!(manifest["crate_version"], env!("CARGO_PKG_VERSION"));
     assert_eq!(manifest["schema_version"], runtime_schema_version());
     assert_eq!(manifest["storage_backend"], "diesel-sqlite");
     assert_eq!(manifest["transport_backends"][0], "http");
