@@ -46,6 +46,7 @@ const SYNCULAR_DIAGNOSTIC_SAFE_DETAIL_KEYS = [
   'pullTransformMs',
   'pushedCommits',
   'reason',
+  'requestId',
   'requestType',
   'responseBytes',
   'rowId',
@@ -428,6 +429,7 @@ function compactDiagnosticEvent(
     code: event.code,
     message: truncateString(event.message, MAX_MESSAGE_LENGTH),
   };
+  if (event.requestId) compacted.requestId = event.requestId;
   if (event.syncAttemptId) compacted.syncAttemptId = event.syncAttemptId;
   if (event.traceId) compacted.traceId = event.traceId;
   if (event.spanId) compacted.spanId = event.spanId;

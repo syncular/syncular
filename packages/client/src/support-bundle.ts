@@ -104,6 +104,7 @@ export interface SyncularSupportBundleSummary {
   status: SyncularSupportBundleStatus;
   requiresAction: boolean;
   issueCodes: string[];
+  requestIds: string[];
   syncAttemptIds: string[];
   traceIds: string[];
   spanIds: string[];
@@ -370,6 +371,7 @@ function summarizeSupportBundle(args: {
     status: requiresAction ? 'action-required' : warning ? 'warning' : 'ok',
     requiresAction,
     issueCodes,
+    requestIds: args.runtimeTimeline?.summary.requestIds ?? [],
     syncAttemptIds: args.runtimeTimeline?.summary.syncAttemptIds ?? [],
     traceIds: uniqueSorted(
       args.runtimeTimeline?.events.flatMap((event) =>

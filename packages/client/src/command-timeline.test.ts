@@ -48,6 +48,7 @@ describe('command timeline', () => {
               reason: 'manual',
             },
             source: 'sync',
+            requestId: 'req-a',
             syncAttemptId: 'attempt-a',
             traceId: 'trace-a',
             spanId: 'span-a',
@@ -88,6 +89,7 @@ describe('command timeline', () => {
         requiresAction: false,
         matchedEventCount: 3,
         contextEventCount: 0,
+        requestIds: ['req-a'],
         syncAttemptIds: ['attempt-a'],
         traceIds: ['trace-a'],
         spanIds: ['span-a'],
@@ -265,6 +267,7 @@ describe('command timeline', () => {
         missingEvidence: [
           'outbox-status',
           'outbox-sequence',
+          'push-request-id',
           'server-commit-sequence',
           'local-apply',
           'local-visibility',

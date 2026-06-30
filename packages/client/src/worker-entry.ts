@@ -307,6 +307,7 @@ function postDiagnostic(
       source: event.source,
       code: event.code,
       message: event.message,
+      ...(event.requestId ? { requestId: event.requestId } : {}),
       ...(event.syncAttemptId ? { syncAttemptId: event.syncAttemptId } : {}),
       ...(event.traceId ? { traceId: event.traceId } : {}),
       ...(event.spanId ? { spanId: event.spanId } : {}),
@@ -361,7 +362,10 @@ function postRequestSuccessDiagnostic(
 
 function requestSyncAttemptDiagnosticFields(
   request: SyncularWorkerRequest
-): Pick<SyncularDiagnosticEvent, 'syncAttemptId' | 'traceId' | 'spanId'> {
+): Pick<
+  SyncularDiagnosticEvent,
+  'requestId' | 'syncAttemptId' | 'traceId' | 'spanId'
+> {
   if (
     request.type !== 'syncPull' &&
     request.type !== 'syncPush' &&

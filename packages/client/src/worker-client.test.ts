@@ -1647,6 +1647,7 @@ describe('Syncular worker client', () => {
     const syncAttempt = syncRequest.syncAttempt;
     expect(syncRequest.type).toBe('syncOnce');
     expect(syncAttempt?.syncAttemptId).toMatch(/^[0-9a-f]{32}$/);
+    expect(syncAttempt?.requestId).toBe(`req-${syncAttempt?.syncAttemptId}`);
     expect(syncAttempt?.spanId).toMatch(/^[0-9a-f]{16}$/);
     expect(syncAttempt?.syncAttemptId).toBe(syncAttempt?.traceId);
     expect(syncAttempt?.traceparent).toBe(

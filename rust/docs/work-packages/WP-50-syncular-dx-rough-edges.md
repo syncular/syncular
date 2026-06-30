@@ -1018,6 +1018,11 @@ online propagation, or reconnect behavior can change.
   latest evidence value directly to `commandTimeline({ localVisibility })` so
   command artifacts record the concrete local read-model visibility point
   instead of a hand-written placeholder.
+- Sync attempts now carry a client-generated request id through
+  `x-request-id`, diagnostics, runtime timelines, command timelines, and
+  support bundles. Hono request-event storage uses the same id when the header
+  is present, so command and support artifacts can link browser-side sync
+  evidence to server request rows without relying only on trace ids.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1474,6 +1479,11 @@ online propagation, or reconnect behavior can change.
   that evidence into `commandTimeline({ localVisibility })`, so command
   timelines can include the observed local read-model visibility point with
   trigger/table/source context.
+- 2026-07-01: Added client-generated sync request ids to
+  `SyncularSyncAttempt`, sent them as `x-request-id`, allowed the header in
+  default Hono CORS, and projected request ids into diagnostics, runtime
+  timelines, command timelines, and support bundles so browser artifacts match
+  server `sync_request_events.request_id`.
 
 ## Latest Gates
 
@@ -1602,6 +1612,17 @@ Most recent local-visibility evidence rerun:
 - `bun test packages/client/src/local-visibility.test.ts packages/client/src/command-timeline.test.ts packages/client/src/public-api.test.ts`
 - `bun --cwd packages/client tsgo`
 - `bunx biome check packages/client/src/local-visibility.ts packages/client/src/local-visibility.test.ts packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bun run docs:stale-check`
+- `bun --cwd apps/docs types:check`
+- `git diff --check`
+
+Most recent sync request-id evidence rerun:
+
+- `bun test packages/client/src/__tests__/sync-hono.wasm.test.ts -t "correlates successful pull diagnostics"`
+- `bun test packages/client/src/runtime-timeline.test.ts packages/client/src/command-timeline.test.ts packages/client/src/support-bundle.test.ts packages/client/src/console-diagnostics.test.ts packages/client/src/worker-client.test.ts packages/client/src/public-api.test.ts packages/server/src/hono/__tests__/create-server.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bun --cwd packages/server tsgo`
+- `bunx biome check packages/client/src/types.ts packages/client/src/diagnostics.ts packages/client/src/rust-client.ts packages/client/src/worker-entry.ts packages/client/src/worker-client.ts packages/client/src/worker-client.test.ts packages/client/src/runtime-timeline.ts packages/client/src/runtime-timeline.test.ts packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/src/support-bundle.ts packages/client/src/support-bundle.test.ts packages/client/src/console-diagnostics.ts packages/client/src/console-diagnostics.test.ts packages/client/src/__tests__/sync-hono.wasm.test.ts packages/server/src/hono/routes/shared.ts packages/server/src/hono/__tests__/create-server.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -1913,7 +1934,7 @@ Most recent mutation-status rerun:
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
   First composed support-bundle slice is also done for browser health, runtime
   timeline, schema readiness, optional deployment preflight, local support
-  data, section errors, package/runtime versions, sync/trace ids,
+  data, section errors, package/runtime versions, request/sync/trace ids,
   subscription cursors, and diagnostic redaction policy. Remaining work is to
   prove the composed bundle in a real browser failure artifact and decide
   whether server Console/Fleet should ingest the same artifact shape.
@@ -1927,8 +1948,8 @@ Most recent mutation-status rerun:
   timelines can prove server commit sequence from redacted local evidence.
   First command-timeline artifacts are done for receipt state, redacted runtime
   events, local-visibility evidence captured from `awaitLocalVisibility(...)`,
-  and explicit missing-evidence markers. Remaining work is to emit the missing
-  push request id link directly from the runtime.
+  client-generated request id evidence that matches Hono server request event
+  rows, and explicit missing-evidence markers.
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.

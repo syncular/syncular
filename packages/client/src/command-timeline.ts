@@ -34,6 +34,7 @@ export type SyncularCommandTimelineEventRelation =
 export type SyncularCommandTimelineMissingEvidence =
   | 'outbox-status'
   | 'outbox-sequence'
+  | 'push-request-id'
   | 'sync-attempt'
   | 'server-commit-sequence'
   | 'realtime-event-cursor'
@@ -78,6 +79,7 @@ export interface SyncularCommandTimelineEvent {
   level: SyncularRuntimeTimelineEvent['level'];
   code: string;
   message: string;
+  requestId?: string;
   syncAttemptId?: string;
   traceId?: string;
   spanId?: string;
@@ -92,6 +94,7 @@ export interface SyncularCommandTimelineSummary {
   requiresAction: boolean;
   matchedEventCount: number;
   contextEventCount: number;
+  requestIds: string[];
   syncAttemptIds: string[];
   traceIds: string[];
   spanIds: string[];
@@ -358,6 +361,7 @@ function commandEventFromRuntime(
     level: event.level,
     code: event.code,
     message: event.message,
+    ...(event.requestId ? { requestId: event.requestId } : {}),
     ...(event.syncAttemptId ? { syncAttemptId: event.syncAttemptId } : {}),
     ...(event.traceId ? { traceId: event.traceId } : {}),
     ...(event.spanId ? { spanId: event.spanId } : {}),
@@ -383,6 +387,11 @@ function summarizeCommandTimeline(args: {
     contextEventCount: args.runtimeEvents.filter(
       (event) => event.relation === 'context'
     ).length,
+    requestIds: uniqueSorted(
+      args.runtimeEvents
+        .map((event) => event.requestId)
+        .filter((value): value is string => Boolean(value))
+    ),
     syncAttemptIds: uniqueSorted(
       args.runtimeEvents
         .map((event) => event.syncAttemptId)
@@ -420,6 +429,9 @@ function missingCommandEvidence(args: {
     !args.runtimeEvents.some((event) => event.syncAttemptId || event.traceId)
   ) {
     missing.push('sync-attempt');
+  }
+  if (!args.runtimeEvents.some((event) => event.requestId)) {
+    missing.push('push-request-id');
   }
   if (
     args.trackedCommit.outbox?.ackedCommitSeq == null &&

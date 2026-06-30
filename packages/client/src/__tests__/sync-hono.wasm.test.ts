@@ -359,6 +359,7 @@ describe('Syncular worker sync protocol against Hono routes', () => {
       (event) => event.code === 'sync.syncOnce.completed'
     );
     expect(completed?.syncAttemptId).toMatch(/^[0-9a-f]{32}$/);
+    expect(completed?.requestId).toBe(`req-${completed?.syncAttemptId}`);
     expect(completed?.traceId).toBe(completed?.syncAttemptId);
     expect(completed?.spanId).toMatch(/^[0-9a-f]{16}$/);
 
@@ -368,6 +369,7 @@ describe('Syncular worker sync protocol against Hono routes', () => {
       'pull'
     );
     expect(requestEvent).toMatchObject({
+      request_id: completed!.requestId,
       trace_id: completed!.traceId,
       span_id: completed!.spanId,
       event_type: 'pull',
@@ -3354,9 +3356,11 @@ async function waitForSyncRequestEventByTrace(
   client_id: string;
   actor_id: string;
   outcome: string;
+  request_id: string;
 }> {
   for (let attempt = 0; attempt < 40; attempt += 1) {
     const result = await sql<{
+      request_id: string;
       trace_id: string | null;
       span_id: string | null;
       event_type: string;
@@ -3364,7 +3368,7 @@ async function waitForSyncRequestEventByTrace(
       actor_id: string;
       outcome: string;
     }>`
-      SELECT trace_id, span_id, event_type, client_id, actor_id, outcome
+      SELECT request_id, trace_id, span_id, event_type, client_id, actor_id, outcome
       FROM sync_request_events
       WHERE trace_id = ${traceId}
         AND event_type = ${eventType}

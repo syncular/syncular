@@ -109,13 +109,13 @@ Use this when an E2E failure or user report needs the ordered story:
 configured runtime, storage/schema/bootstrap, sync/realtime wakeup, local
 apply, outbox/conflict/blob state, and the last actionable error. For a single
 mutation receipt, `commandTimeline()` composes tracked outbox state, runtime
-events, optional local-visibility evidence, and redacted local outbox row plus
-acked server commit sequence evidence from local support data. Capture the
-latest `awaitLocalVisibility(..., { onEvidence })` value and pass it as
-`localVisibility` so the timeline records the concrete local query visibility
-point instead of a hand-written placeholder. A tracked outbox record also
-appears as synthetic local-apply evidence because the command was durably
-accepted locally. For deeper local database repair or
+events, sync request ids, optional local-visibility evidence, and redacted
+local outbox row plus acked server commit sequence evidence from local support
+data. Capture the latest `awaitLocalVisibility(..., { onEvidence })` value and
+pass it as `localVisibility` so the timeline records the concrete local query
+visibility point instead of a hand-written placeholder. A tracked outbox
+record also appears as synthetic local-apply evidence because the command was
+durably accepted locally. For deeper local database repair or
 sign-out/reset flows, start from
 `localRecoveryPlan()`. Use `includeSignOutAction: true` for confirmed sign-out
 cleanup that waits for an empty outbox before clearing synced rows and cached
@@ -137,11 +137,11 @@ const bundle = await database.exportSupportBundle({
 
 The bundle is redacted by default. It combines browser health, runtime
 timeline, schema readiness, optional browser deployment preflight, section
-errors, package/runtime versions, sync attempt and trace IDs, subscription
-cursors, diagnostic redaction policy decisions, and the redacted local support
-bundle. Runtime asset URLs are represented as redacted fields in this artifact;
-keep raw `diagnosticSnapshot()` and raw browser health payloads local unless
-you have your own redaction step.
+errors, package/runtime versions, request IDs, sync attempt and trace IDs,
+subscription cursors, diagnostic redaction policy decisions, and the redacted
+local support bundle. Runtime asset URLs are represented as redacted fields in
+this artifact; keep raw `diagnosticSnapshot()` and raw browser health payloads
+local unless you have your own redaction step.
 
 ## Diagnostic Privacy And Audience
 

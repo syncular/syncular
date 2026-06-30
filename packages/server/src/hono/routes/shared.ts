@@ -557,6 +557,7 @@ const DEFAULT_SYNC_CORS_ALLOW_HEADERS = [
   'x-syncular-sync-attempt-id',
   'x-syncular-transport-path',
   SYNC_CLIENT_ID_HEADER,
+  'x-request-id',
   'sentry-trace',
   'baggage',
   'traceparent',

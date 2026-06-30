@@ -59,6 +59,7 @@ export function createSyncularSyncAttempt(): SyncularSyncAttempt {
   const spanId = randomHex(8);
   return {
     syncAttemptId: traceId,
+    requestId: `req-${traceId}`,
     traceId,
     spanId,
     traceparent: `00-${traceId}-${spanId}-01`,
@@ -72,14 +73,19 @@ export function syncularSyncAttemptHeaders(
     traceparent: attempt.traceparent,
     'sentry-trace': `${attempt.traceId}-${attempt.spanId}-1`,
     'x-syncular-sync-attempt-id': attempt.syncAttemptId,
+    'x-request-id': attempt.requestId ?? attempt.syncAttemptId,
   };
 }
 
 export function syncularDiagnosticAttemptFields(
   attempt: SyncularSyncAttempt | undefined
-): Pick<SyncularDiagnosticEvent, 'syncAttemptId' | 'traceId' | 'spanId'> {
+): Pick<
+  SyncularDiagnosticEvent,
+  'requestId' | 'syncAttemptId' | 'traceId' | 'spanId'
+> {
   return attempt
     ? {
+        requestId: attempt.requestId ?? attempt.syncAttemptId,
         syncAttemptId: attempt.syncAttemptId,
         traceId: attempt.traceId,
         spanId: attempt.spanId,

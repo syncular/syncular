@@ -25,6 +25,7 @@ describe('support bundle', () => {
             level: 'error',
             message: 'scope revoked',
             source: 'sync',
+            requestId: 'req-1',
             subscriptionId: 'sub-a',
             syncAttemptId: 'attempt-1',
             table: 'tasks',
@@ -67,6 +68,7 @@ describe('support bundle', () => {
       summary: {
         status: 'action-required',
         requiresAction: true,
+        requestIds: ['req-1'],
         syncAttemptIds: ['attempt-1'],
         traceIds: ['trace-1'],
         spanIds: ['span-1'],

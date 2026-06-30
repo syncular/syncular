@@ -53,6 +53,7 @@ export interface SyncularRuntimeTimelineEvent {
   source: string;
   code: string;
   message: string;
+  requestId?: string;
   syncAttemptId?: string;
   traceId?: string;
   spanId?: string;
@@ -67,6 +68,7 @@ export interface SyncularRuntimeTimelineSummary {
   eventCount: number;
   errorCount: number;
   warningCount: number;
+  requestIds: string[];
   syncAttemptIds: string[];
   affectedTables: string[];
   subscriptionIds: string[];
@@ -253,6 +255,7 @@ function timelineEventFromDiagnostic(
     code: event.code,
     message: truncateString(event.message, MAX_MESSAGE_LENGTH),
   };
+  if (event.requestId) timelineEvent.requestId = event.requestId;
   if (event.syncAttemptId) timelineEvent.syncAttemptId = event.syncAttemptId;
   if (event.traceId) timelineEvent.traceId = event.traceId;
   if (event.spanId) timelineEvent.spanId = event.spanId;
@@ -418,6 +421,11 @@ function summarizeTimeline(
   const errorEvents = events.filter((event) => event.level === 'error');
   const warningEvents = events.filter((event) => event.level === 'warn');
   const lastErrorEvent = errorEvents.at(-1);
+  const requestIds = uniqueSorted(
+    events
+      .map((event) => event.requestId)
+      .filter((value): value is string => Boolean(value))
+  );
   const syncAttemptIds = uniqueSorted(
     events
       .map((event) => event.syncAttemptId)
@@ -438,6 +446,7 @@ function summarizeTimeline(
     eventCount: events.length,
     errorCount: errorEvents.length,
     warningCount: warningEvents.length,
+    requestIds,
     syncAttemptIds,
     affectedTables,
     subscriptionIds,

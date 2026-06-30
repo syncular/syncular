@@ -2069,6 +2069,7 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
       source: event.source,
       code: event.code,
       message: event.message,
+      ...(event.requestId ? { requestId: event.requestId } : {}),
       ...(event.syncAttemptId ? { syncAttemptId: event.syncAttemptId } : {}),
       ...(event.traceId ? { traceId: event.traceId } : {}),
       ...(event.spanId ? { spanId: event.spanId } : {}),

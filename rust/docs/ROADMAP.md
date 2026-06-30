@@ -222,10 +222,12 @@ read-only review:
     accepted locally. Local visibility waits now emit redacted terminal
     evidence through `onEvidence`, so apps can pass the observed visibility
     point directly into command timelines instead of hand-writing a placeholder.
-    The
-    Hono-backed browser/WASM local-health test now exercises that plan/action
-    API against the real Worker runtime for corrupted subscription state,
-    orphaned verified roots, confirmation failure, and successful
+    Sync attempts now also carry a client-generated `requestId` through
+    `x-request-id`, diagnostics, runtime timelines, command timelines, and
+    support bundles, matching the server request event id used by Hono console
+    storage. The Hono-backed browser/WASM local-health test now exercises that
+    plan/action API against the real Worker runtime for corrupted subscription
+    state, orphaned verified roots, confirmation failure, and successful
     rebootstrap/orphaned-state repairs. The public upgrade guide now includes
     a copyable operator upgrade and rollback runbook covering exact version
     sets, generated/schema checks, deploy-time schema setup, live readiness,

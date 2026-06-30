@@ -917,6 +917,9 @@ describe('createSyncServer console configuration', () => {
     ).toContain('x-syncular-sync-attempt-id');
     expect(
       allowedPreflight.headers.get('Access-Control-Allow-Headers')
+    ).toContain('x-request-id');
+    expect(
+      allowedPreflight.headers.get('Access-Control-Allow-Headers')
     ).toContain('x-custom-header');
     expect(
       allowedPreflight.headers.get('Access-Control-Expose-Headers')

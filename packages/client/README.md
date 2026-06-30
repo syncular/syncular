@@ -216,6 +216,7 @@ const timeline = await syncular.commandTimeline({
   localVisibility,
 });
 console.debug(timeline.summary.missingEvidence);
+console.debug(timeline.summary.requestIds);
 console.debug(timeline.trackedCommit.outbox?.outboxId);
 console.debug(timeline.trackedCommit.outbox?.ackedCommitSeq);
 
@@ -528,9 +529,9 @@ for (const event of timeline.events) {
 When support needs one redacted incident artifact, export the composed support
 bundle. It includes browser health, runtime timeline, schema readiness, the
 local support bundle, redacted outbox commit ids/statuses, section failures,
-package versions, sync/trace IDs, and the diagnostic redaction policy. Pass a
-deployment preflight result or options when you also want browser/runtime asset
-checks in the artifact:
+package versions, request IDs, sync/trace IDs, and the diagnostic redaction
+policy. Pass a deployment preflight result or options when you also want
+browser/runtime asset checks in the artifact:
 
 ```ts
 const bundle = await syncular.exportSupportBundle({

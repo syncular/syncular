@@ -179,6 +179,7 @@ export interface SyncularDiagnosticEvent {
   source: SyncularDiagnosticSource;
   code: string;
   message: string;
+  requestId?: string;
   syncAttemptId?: string;
   traceId?: string;
   spanId?: string;
@@ -194,6 +195,7 @@ export type SyncularDiagnosticSink = (event: SyncularDiagnosticEvent) => void;
 
 export interface SyncularSyncAttempt {
   syncAttemptId: string;
+  requestId?: string;
   traceId: string;
   spanId: string;
   traceparent: string;

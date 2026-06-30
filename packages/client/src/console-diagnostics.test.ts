@@ -40,6 +40,7 @@ describe('Syncular console diagnostics', () => {
   it('classifies diagnostic detail keys for safe forwarding', () => {
     expect(SYNCULAR_DIAGNOSTIC_DETAIL_POLICY.safeKeys).toContain('table');
     expect(SYNCULAR_DIAGNOSTIC_DETAIL_POLICY.safeKeys).toContain('outboxId');
+    expect(SYNCULAR_DIAGNOSTIC_DETAIL_POLICY.safeKeys).toContain('requestId');
     expect(classifySyncularDiagnosticDetailKey('table')).toBe('safe');
     expect(classifySyncularDiagnosticDetailKey('outboxId')).toBe('safe');
     expect(classifySyncularDiagnosticDetailKey('bootstrap')).toBe('summarized');
@@ -288,6 +289,7 @@ function makeDiagnostic(index: number): SyncularDiagnosticEvent {
     level: 'info',
     message: 'Syncular worker request syncOnce completed',
     source: 'sync',
+    requestId: `req-${index}`,
     spanId: `span-${index}`,
     syncAttemptId: `attempt-${index}`,
     traceId: `trace-${index}`,
