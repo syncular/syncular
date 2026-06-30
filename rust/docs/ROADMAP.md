@@ -135,8 +135,11 @@ read-only review:
     adapter coverage between PR-focused tests and release-rehearsal matrix
     checks, keep generated auth-context helpers generic until app-contract
     semantics exist, and keep `schema check` narrow until a broader `doctor`
-    has several checks to orchestrate. Next slice: browser deployment preflight
-    or adapter import side-effect isolation.
+    has several checks to orchestrate. Adapter import side-effect isolation now
+    has a root import graph smoke through `bun run imports:check`, proving the
+    root client/server packages do not reach optional subpath files or peers.
+    Next slice: browser deployment preflight or the broader release-time
+    adapter install matrix.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

@@ -76,6 +76,7 @@
     "release:rehearsal": "bun scripts/release-rehearsal.ts",
     "fresh-app-smokes": "bun scripts/fresh-app-smokes.ts",
     "docs:stale-check": "bun scripts/check-docs-stale-patterns.ts",
+    "imports:check": "bun scripts/check-import-boundaries.ts",
     "stamp:cargo": "bun scripts/stamp-cargo-versions.ts",
     "stamp:npm": "bun scripts/stamp-versions.ts",
     "tsgo": "turbo tsgo --cache-dir=.turbo --concurrency=100%",

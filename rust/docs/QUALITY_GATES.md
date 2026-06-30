@@ -36,6 +36,9 @@ until the full browser Worker/WASM suite is green on Linux.
 - Server pull, push, snapshot, scope, fanout, or integrity changes:
   run TypeScript package checks plus targeted server perf when performance is
   relevant.
+- Package export maps, root imports, optional adapter boundaries, or dependency
+  surface changes: run `bun run imports:check` so root client/server imports do
+  not start loading optional subpath modules or peers.
 - Generator or generated-client changes:
   run generator checks and at least one generated example/smoke that exercises
   the changed output. Use `bun run rust:codegen:check` for the todo fixture so
@@ -125,6 +128,7 @@ bun run --cwd packages/client build:wasm
 ## TypeScript Packages
 
 ```bash
+bun run imports:check
 bun run --cwd packages/core tsgo
 bun run --cwd packages/server tsgo
 bun run --cwd packages/client tsgo

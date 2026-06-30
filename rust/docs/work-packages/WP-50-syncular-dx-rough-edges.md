@@ -622,6 +622,9 @@ online propagation, or reconnect behavior can change.
   auth-context helpers generic until product semantics exist, and keep
   `schema check` narrow until a broader `doctor` has multiple checks to
   orchestrate.
+- A first adapter-boundary slice added `bun run imports:check`, a static root
+  import graph smoke that proves `@syncular/client` and `@syncular/server`
+  roots do not reach optional subpath files or optional peer packages.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -931,6 +934,10 @@ online propagation, or reconnect behavior can change.
   starter/template, debug-state, adapter-matrix, generated auth-context, and
   `doctor`/schema-check decisions, then replaced the open-question list with
   concrete remaining implementation risks.
+- 2026-06-30: Added `scripts/check-import-boundaries.ts` plus the root
+  `imports:check` script to statically walk the `@syncular/client` and
+  `@syncular/server` root import graphs and fail if they reach optional
+  adapter subpaths or optional peer packages.
 
 ## Latest Gates
 
@@ -1004,6 +1011,10 @@ Most recent generated-helper rerun:
 - `bun --cwd packages/create-syncular-app smoke`
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-generated-helpers-rerun`
 - `git diff --check`
+
+Most recent adapter-boundary rerun:
+
+- `bun run imports:check`
 
 ## Sequencing
 
@@ -1118,9 +1129,11 @@ Most recent generated-helper rerun:
   cross-origin isolation or OPFS requirements, durable storage availability,
   fallback behavior, and quota/eviction messaging before a starter works in dev
   but fails after deploy.
-- Adapter import side-effect isolation: prove root client/server imports do not
-  load optional Bun, Cloudflare, S3, Sentry, Neon, Tauri, React Native, or
-  CRDT/Yjs dependencies until their subpaths are imported.
+- Adapter import side-effect isolation: the first root import graph smoke now
+  proves root client/server imports do not statically reach optional Bun,
+  Cloudflare, S3, Sentry, Neon, Tauri, React Native, or CRDT/Yjs subpaths.
+  Remaining work is a release-time install/import matrix for the optional
+  subpaths themselves.
 - Multi-tab and lifecycle behavior: document and test two tabs, tab
   suspension/resume, storage locks, shutdown, and app restarts for persistent
   browser databases.
