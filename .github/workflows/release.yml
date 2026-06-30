@@ -137,6 +137,14 @@ jobs:
         env:
           SYNCULAR_NPM_TAG: ${{ steps.release_meta.outputs.npm_tag }}
         run: |
+          set -euo pipefail
+          npm install -g npm@latest
+          node --version
+          npm --version
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ] || [ -z "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}" ]; then
+            echo "GitHub OIDC request environment is missing; npm Trusted Publishing cannot authenticate." >&2
+            exit 1
+          fi
           npm config set registry https://registry.npmjs.org/
           # npm Trusted Publishing exchanges the workflow OIDC identity for a
           # short-lived publish token. No long-lived npm token is configured.
