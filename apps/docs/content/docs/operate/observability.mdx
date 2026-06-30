@@ -110,8 +110,9 @@ configured runtime, storage/schema/bootstrap, sync/realtime wakeup, local
 apply, outbox/conflict/blob state, and the last actionable error. For a single
 mutation receipt, `commandTimeline()` composes tracked outbox state, runtime
 events, optional local-visibility evidence, and redacted acked server commit
-sequence evidence from local support data. For deeper local database repair or
-sign-out/reset flows, start from
+sequence evidence from local support data. A tracked outbox record also appears
+as synthetic local-apply evidence because the command was durably accepted
+locally. For deeper local database repair or sign-out/reset flows, start from
 `localRecoveryPlan()`. Use `includeSignOutAction: true` for confirmed sign-out
 cleanup that waits for an empty outbox before clearing synced rows and cached
 blob bytes. Revoked subscription scopes surface as confirmed rebootstrap

@@ -141,6 +141,9 @@ export async function getSyncularCommandTimeline(
   const runtimeEvents = commandRuntimeEvents(runtimeTimeline, command, options);
   const events = [
     commandReceiptEvent(generatedAt, command, trackedCommit),
+    ...(trackedCommit.outbox
+      ? [localApplyEvidenceEvent(generatedAt, command, trackedCommit)]
+      : []),
     ...runtimeEvents,
     ...(options.localVisibility
       ? [localVisibilityEvent(generatedAt, options.localVisibility)]
@@ -314,6 +317,35 @@ function localVisibilityEvent(
   };
 }
 
+function localApplyEvidenceEvent(
+  generatedAt: number,
+  command: {
+    clientCommitId: string;
+    commandId?: string;
+  },
+  trackedCommit: SyncularTrackedMutationCommit
+): SyncularCommandTimelineEvent {
+  const outbox = trackedCommit.outbox;
+  return {
+    at: generatedAt,
+    phase: 'local-apply',
+    relation: 'synthetic',
+    level: 'info',
+    code: 'local_apply.outbox_persisted',
+    message:
+      'Syncular mutation receipt has redacted local outbox evidence, proving the command was durably accepted locally.',
+    details: {
+      clientCommitId: command.clientCommitId,
+      ...(command.commandId ? { commandId: command.commandId } : {}),
+      outboxStatus: outbox?.status,
+      outboxSchemaVersion: outbox?.schemaVersion,
+      ...(outbox?.ackedCommitSeq != null
+        ? { commitSeq: outbox.ackedCommitSeq }
+        : {}),
+    },
+  };
+}
+
 function commandEventFromRuntime(
   event: SyncularRuntimeTimelineEvent,
   relation: Exclude<SyncularCommandTimelineEventRelation, 'synthetic'>
@@ -403,7 +435,10 @@ function missingCommandEvidence(args: {
   ) {
     missing.push('pull-reason');
   }
-  if (!args.runtimeEvents.some((event) => event.phase === 'local-apply')) {
+  if (
+    !args.trackedCommit.outbox &&
+    !args.runtimeEvents.some((event) => event.phase === 'local-apply')
+  ) {
     missing.push('local-apply');
   }
   if (!args.localVisibility || args.localVisibility.state !== 'visible') {

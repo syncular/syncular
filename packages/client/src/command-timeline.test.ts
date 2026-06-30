@@ -89,13 +89,14 @@ describe('command timeline', () => {
         syncAttemptIds: ['attempt-a'],
         traceIds: ['trace-a'],
         spanIds: ['span-a'],
-        missingEvidence: ['local-apply'],
+        missingEvidence: [],
       },
     });
     expect(
       timeline.events.map((event) => [event.relation, event.code])
     ).toEqual([
       ['synthetic', 'command.receipt'],
+      ['synthetic', 'local_apply.outbox_persisted'],
       ['matched', 'outbox.enqueued'],
       ['matched', 'sync.syncPush.completed'],
       ['matched', 'realtime.event_received'],
@@ -110,6 +111,16 @@ describe('command timeline', () => {
       clientCommitId: 'commit-a',
       commitSeq: 42,
       outboxStatus: 'acked',
+    });
+    expect(timeline.events[1]).toMatchObject({
+      phase: 'local-apply',
+      relation: 'synthetic',
+      code: 'local_apply.outbox_persisted',
+      details: {
+        clientCommitId: 'commit-a',
+        commitSeq: 42,
+        outboxStatus: 'acked',
+      },
     });
   });
 
@@ -145,6 +156,7 @@ describe('command timeline', () => {
     expect(timeline.summary.missingEvidence).not.toContain(
       'server-commit-sequence'
     );
+    expect(timeline.summary.missingEvidence).not.toContain('local-apply');
   });
 
   it('uses runtime context and names missing evidence when exact links are unavailable', async () => {

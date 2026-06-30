@@ -963,7 +963,9 @@ online propagation, or reconnect behavior can change.
   evidence for outbox sequence, sync attempt, realtime cursor, pull reason,
   local apply, or local visibility instead of pretending those links exist when
   current diagnostics cannot prove them. Acked redacted outbox summaries now
-  satisfy the server commit sequence link through `ackedCommitSeq`.
+  satisfy the server commit sequence link through `ackedCommitSeq`; any tracked
+  redacted outbox summary also adds synthetic local-apply evidence because it
+  proves the command was durably accepted locally.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -1389,6 +1391,9 @@ online propagation, or reconnect behavior can change.
   with `ackedCommitSeq` for acked commits, and threaded that through mutation
   status plus command timeline receipt events so command artifacts can prove
   server commit sequence without operation payloads or auth material.
+- 2026-07-01: Added synthetic command-timeline local-apply evidence whenever a
+  tracked command has redacted local outbox evidence, avoiding a misleading
+  missing local-apply marker for durable local writes.
 
 ## Latest Gates
 
@@ -1472,6 +1477,15 @@ Most recent command ack-sequence rerun:
 - `bun test packages/client/src/command-timeline.test.ts packages/client/src/mutation-status.test.ts packages/client/src/support-bundle.test.ts packages/client/src/public-api.test.ts`
 - `bun --cwd packages/client tsgo`
 - `bunx biome check packages/client/src/types.ts packages/client/src/mutation-status.ts packages/client/src/mutation-status.test.ts packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bun run docs:stale-check`
+- `bun --cwd apps/docs types:check`
+- `git diff --check`
+
+Most recent command local-apply rerun:
+
+- `bun test packages/client/src/command-timeline.test.ts packages/client/src/mutation-status.test.ts packages/client/src/public-api.test.ts`
+- `bun --cwd packages/client tsgo`
+- `bunx biome check packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -1771,7 +1785,7 @@ Most recent mutation-status rerun:
   events, optional local-visibility evidence, and explicit missing-evidence
   markers. Remaining work is to emit the missing low-level links directly from
   the runtime: outbox sequence, push request id, realtime event cursor, pull
-  reason, local apply, and local visibility point.
+  reason, and local visibility point.
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.
