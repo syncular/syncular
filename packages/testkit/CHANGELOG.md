@@ -1,5 +1,14 @@
 # @syncular/testkit
 
+## 0.1.3
+
+### Patch Changes
+
+- Keep the root testkit import lightweight by moving server and client bridge harnesses behind explicit subpath exports.
+  - @syncular/client@0.1.3
+  - @syncular/core@0.1.3
+  - @syncular/server@0.1.3
+
 ## 0.1.2
 
 ### Patch Changes

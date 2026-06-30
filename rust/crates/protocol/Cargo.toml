@@ -1,6 +1,6 @@
 [package]
 name = "syncular-protocol"
-version = "0.1.2"
+version = "0.1.3"
 edition = "2021"
 description = "Wire protocol and integrity types for Rust-first Syncular clients."
 license = "Apache-2.0"
