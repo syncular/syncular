@@ -1,5 +1,17 @@
 # @syncular/client
 
+## 0.1.1
+
+### Patch Changes
+
+- Repair the npm release line after the broken `0.1.0` publish. The previous npm
+  artifacts were published outside the normal `syncular-publish` pack path, kept
+  `workspace:*` dependencies in their manifests, and omitted
+  `@syncular/migrations@0.1.0`. This release is intended to be published through
+  the GitHub release workflow so workspace dependencies are normalized before npm
+  publish.
+  - @syncular/core@0.1.1
+
 ## 0.1.0
 
 ### Minor Changes
