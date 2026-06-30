@@ -23,6 +23,10 @@ import {
   type MutationsCommitFn,
   type MutationsTx,
 } from './mutations';
+import type {
+  SyncularSchemaReadinessOptions,
+  SyncularSchemaReadinessResult,
+} from './schema-readiness';
 import { assertSyncularReadonlySql } from './sql-safety';
 import type {
   SyncularAuthLeaseRecord,
@@ -115,6 +119,9 @@ export interface SyncularBridge {
     actorId?: string | null,
     nowMs?: number
   ): Promise<SyncularAuthLeaseRecord[]>;
+  schemaReadiness?(
+    options?: SyncularSchemaReadinessOptions
+  ): Promise<SyncularSchemaReadinessResult>;
   diagnosticSnapshot?(): Promise<SyncularDiagnosticSnapshot>;
   on?<T extends SyncularClientEventType>(
     event: T,
@@ -189,6 +196,9 @@ export async function createSyncularBridgeClient<DB>(
         actorId,
         nowMs
       ),
+    schemaReadiness: async (readinessOptions) =>
+      (await options.bridge.schemaReadiness?.(readinessOptions)) ??
+      bridgeSchemaReadinessUnavailable(readinessOptions),
     diagnosticSnapshot: () =>
       requireBridgeMethod(
         options.bridge.diagnosticSnapshot,
@@ -218,6 +228,29 @@ export async function createSyncularBridgeClient<DB>(
   };
 
   return client;
+}
+
+function bridgeSchemaReadinessUnavailable(
+  options: SyncularSchemaReadinessOptions | undefined
+): SyncularSchemaReadinessResult {
+  return {
+    generatedAt: options?.now?.() ?? Date.now(),
+    status: 'unknown',
+    ready: false,
+    requiresAction: true,
+    generatedSchemaVersion: options?.generatedSchemaVersion ?? null,
+    runtime: null,
+    localSchema: null,
+    serverSchema: options?.server ?? null,
+    issues: [
+      {
+        code: 'runtime.schema_state_unavailable',
+        severity: 'error',
+        message: 'Syncular bridge does not expose schema readiness.',
+        recommendedAction: 'inspectRuntime',
+      },
+    ],
+  };
 }
 
 function createSyncularBridgeMutations<DB>(

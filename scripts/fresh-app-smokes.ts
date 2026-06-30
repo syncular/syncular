@@ -304,6 +304,7 @@ export const app = defineSyncularClient({
 import { createSyncularReact } from '@syncular/client/react';
 import {
   createSyncularAppDatabase,
+  syncularGeneratedSchemaVersion,
   taskSubscription,
 } from './src/generated/syncular.generated';
 
@@ -337,6 +338,20 @@ try {
     health.realtime.state !== 'disconnected'
   ) {
     throw new Error(\`fresh JS app health returned \${JSON.stringify(health)}\`);
+  }
+
+  const schemaReadiness = await database.schemaReadiness({
+    generatedSchemaVersion: syncularGeneratedSchemaVersion,
+  });
+  if (
+    schemaReadiness.status !== 'ready' ||
+    schemaReadiness.ready !== true ||
+    schemaReadiness.generatedSchemaVersion !== syncularGeneratedSchemaVersion ||
+    schemaReadiness.localSchema?.schemaVersion !== syncularGeneratedSchemaVersion
+  ) {
+    throw new Error(
+      \`fresh JS app schema readiness returned \${JSON.stringify(schemaReadiness)}\`
+    );
   }
 
   await database.mutations.tasks.insert({

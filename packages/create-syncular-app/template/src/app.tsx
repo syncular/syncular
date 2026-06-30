@@ -2,6 +2,7 @@ import {
   getSyncularBrowserHealth,
   type SyncularBrowserHealth,
   type SyncularClientStatus,
+  type SyncularSchemaReadinessResult,
 } from '@syncular/client';
 import { createSyncularReact } from '@syncular/client/react';
 import type { FormEvent } from 'react';
@@ -11,6 +12,7 @@ import {
   type AppSyncClient,
   appActorId,
   openAppClient,
+  syncularGeneratedSchemaVersion,
   type Task,
 } from './client/syncular';
 
@@ -86,6 +88,8 @@ function TaskPane({ client }: { client: AppSyncClient }) {
   const outbox = useOutboxStats();
   const status = useSyncStatus();
   const [health, setHealth] = useState<SyncularBrowserHealth | null>(null);
+  const [schemaReadiness, setSchemaReadiness] =
+    useState<SyncularSchemaReadinessResult | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -97,6 +101,16 @@ function TaskPane({ client }: { client: AppSyncClient }) {
         })
         .catch(() => {
           if (!disposed) setHealth(null);
+        });
+      void client
+        .schemaReadiness({
+          generatedSchemaVersion: syncularGeneratedSchemaVersion,
+        })
+        .then((nextReadiness) => {
+          if (!disposed) setSchemaReadiness(nextReadiness);
+        })
+        .catch(() => {
+          if (!disposed) setSchemaReadiness(null);
         });
     };
     refresh();
@@ -137,6 +151,9 @@ function TaskPane({ client }: { client: AppSyncClient }) {
       </div>
 
       {health ? <HealthLine health={health} /> : null}
+      {schemaReadiness ? (
+        <SchemaLine schemaReadiness={schemaReadiness} />
+      ) : null}
 
       <form className="add-row" onSubmit={addTask}>
         <input ref={inputRef} aria-label="New task" placeholder="New task" />
@@ -219,6 +236,19 @@ function TaskItem({
       </button>
     </div>
   );
+}
+
+function SchemaLine({
+  schemaReadiness,
+}: {
+  schemaReadiness: SyncularSchemaReadinessResult;
+}) {
+  const label =
+    schemaReadiness.status === 'ready'
+      ? `schema v${schemaReadiness.generatedSchemaVersion ?? 'unknown'} ready`
+      : `schema ${schemaReadiness.status}`;
+
+  return <p className={`health-line ${schemaReadiness.status}`}>{label}</p>;
 }
 
 function HealthLine({ health }: { health: SyncularBrowserHealth }) {

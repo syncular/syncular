@@ -525,6 +525,16 @@ online propagation, or reconnect behavior can change.
   `replaceAuthContext(...)`, realtime delivers the new project row, local
   visibility observes it, and a denied project scope surfaces
   `sync.scope_revoked` diagnostics.
+- 2026-06-30 sixth implementation slice added
+  `getSyncularSchemaReadiness(...)` plus
+  `SyncularDatabase.schemaReadiness(...)`, giving apps a structured readiness
+  result for generated/runtime/local/server schema drift: missing local schema,
+  stale local schema, generated client too old, runtime app schema stale, stale
+  server schema, newer server requirements, advisory newer server schemas, and
+  runtime/schema-state open failures.
+- The `create-syncular-app` template now renders schema readiness from the
+  generated app schema version, and the fresh JavaScript app smoke asserts the
+  same readiness result from a clean generated app.
 
 ## Implementation Log
 
@@ -570,6 +580,19 @@ online propagation, or reconnect behavior can change.
   machine-readable readiness, generated/runtime compatibility, shared
   diagnostic codes, redaction, optional dependency boundaries, and
   global/base-data modeling.
+- 2026-06-30: Added `packages/client/src/schema-readiness.ts` and exported it
+  from `@syncular/client`.
+- 2026-06-30: Added `SyncularDatabase.schemaReadiness(...)` as the managed
+  database method over the standalone readiness helper.
+- 2026-06-30: Added focused schema-readiness tests covering ready state,
+  missing local schema, stale local schema, generated-client drift, stale
+  server schema, newer server requirements, advisory newer server schemas, and
+  runtime/schema-state open failures.
+- 2026-06-30: Updated the bridge client with a structured `unknown` schema
+  readiness result when a host bridge does not expose schema readiness.
+- 2026-06-30: Wired the starter React app to show schema readiness from the
+  generated app schema version, and updated the fresh JavaScript app smoke to
+  assert the generated app readiness result.
 
 ## Latest Gates
 
@@ -593,6 +616,11 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-local-visibility`
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-auth-context`
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-campaign-scope`
+- `bun test packages/client/src/schema-readiness.test.ts packages/client/src/public-api.test.ts packages/client/src/bridge-client.test.ts`
+- `bunx biome check packages/client/src/schema-readiness.ts packages/client/src/schema-readiness.test.ts packages/client/src/database.ts packages/client/src/client.ts packages/client/src/bridge-client.ts packages/client/src/bridge-client.test.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/template/src/client/syncular.ts scripts/fresh-app-smokes.ts`
+- `bun --cwd packages/create-syncular-app tsgo`
+- `bun test packages/create-syncular-app/src/cli.test.ts`
+- `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-schema-readiness`
 - `git diff --check`
 
 ## Sequencing
@@ -610,8 +638,10 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    smoke plus the Hono/WebSocket/WASM managed-database test now prove
    campaign/project scope switches, realtime delivery, local visibility, and
    denied-scope diagnostics.
-5. Add schema readiness and drift diagnostics before encouraging production
-   deployment patterns.
+5. Schema readiness and drift diagnostics: first app-facing slice is done with
+   a structured helper, managed database method, starter line, and fresh app
+   smoke coverage. Next schema slice should add the deploy/operator surface
+   around server/database readiness and JSON command output.
 6. Add blob partition/scope guidance and typed blob failure details once the
    canonical app flow has a real blob/package case.
 7. Add deterministic E2E/testkit recipes and stable log markers around the
@@ -653,7 +683,8 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 
 ## Next Action
 
-Pick the next implementation slice: add a schema-readiness command/API and
-drift diagnostics with machine-readable output that distinguishes missing
-schema, stale server schema, stale generated client output, incompatible
-generated output, and local database open/runtime failures.
+Pick the next implementation slice: add the deploy/operator schema-readiness
+surface, likely a `syncular schema check` or `syncular doctor` command backed
+by server/database APIs, with JSON output for expected Syncular tables,
+migration state, server required/latest schema versions, generated client
+compatibility, and local/runtime open failures.

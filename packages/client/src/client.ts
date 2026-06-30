@@ -92,6 +92,7 @@ export interface SyncularClientLike<DB> {
   resumeFromBackground(
     options?: SyncularSyncRequestOptions
   ): Promise<SyncularSyncResult>;
+  schemaReadiness: SyncularDatabase<DB>['schemaReadiness'];
   issueAuthLease(
     request: SyncAuthLeaseIssueRequest
   ): Promise<SyncularAuthLeaseRecord>;

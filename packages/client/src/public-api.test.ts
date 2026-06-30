@@ -5,6 +5,7 @@ import {
   createSyncularDatabase,
   getSyncularBrowserHealth,
   getSyncularPackagedRuntimeArtifacts,
+  getSyncularSchemaReadiness,
   replaceSyncularAuthContext,
   resolveSyncularClientConfig,
   SYNCULAR_DEFAULT_STORAGE,
@@ -59,6 +60,10 @@ describe('@syncular/client public API', () => {
 
   it('exports the auth context replacement helper', () => {
     expect(typeof replaceSyncularAuthContext).toBe('function');
+  });
+
+  it('exports the schema readiness helper', () => {
+    expect(typeof getSyncularSchemaReadiness).toBe('function');
   });
 
   it('does not expose the removed standalone managed-client constructor', () => {

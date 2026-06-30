@@ -83,14 +83,17 @@ read-only review:
     `SyncularDatabase.replaceAuthContext(...)` for replacing auth headers or
     provider-owned auth context, swapping subscriptions, resetting affected
     bootstrap state, recovering sync/realtime, and optionally awaiting local
-    visibility. The fresh generated JavaScript app smoke now includes
-    user+campaign scope and proves a campaign-scope switch through
-    `replaceAuthContext(...)` plus `awaitLocalVisibility(...)`. Focused client
-    tests, package typechecks, fresh JS smoke, scaffold smoke, docs stale
-    check, and diff check passed locally. A Hono/WebSocket/WASM
-    managed-database test also proves the same scope-change flow against real
-    remote auth/realtime behavior, including denied-scope diagnostics. Next
-    slice: schema readiness and drift diagnostics.
+    visibility, and add `getSyncularSchemaReadiness(...)` plus
+    `SyncularDatabase.schemaReadiness(...)` for structured generated/runtime/
+    local/server schema drift diagnostics. The fresh generated JavaScript app
+    smoke now includes user+campaign scope, proves a campaign-scope switch
+    through `replaceAuthContext(...)` plus `awaitLocalVisibility(...)`, and
+    asserts schema readiness from generated app metadata. Focused client tests,
+    package typechecks, fresh JS smoke, scaffold smoke, docs stale check, and
+    diff check passed locally. A Hono/WebSocket/WASM managed-database test also
+    proves the same scope-change flow against real remote auth/realtime
+    behavior, including denied-scope diagnostics. Next slice: deploy/operator
+    schema readiness with CLI/server JSON output.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

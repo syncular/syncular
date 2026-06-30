@@ -3,6 +3,7 @@ import type { Selectable } from 'kysely';
 import {
   createSyncularAppDatabase,
   type SyncularAppDb,
+  syncularGeneratedSchemaVersion,
 } from '../generated/syncular.generated';
 
 /**
@@ -14,6 +15,8 @@ import {
 export type AppDb = SyncularAppDb;
 
 export type Task = Selectable<AppDb['tasks']>;
+
+export { syncularGeneratedSchemaVersion };
 
 /** The managed client surface that `@syncular/client/react` consumes. */
 export type AppSyncClient = SyncularClientLike<AppDb> & SyncularLiveQueries;

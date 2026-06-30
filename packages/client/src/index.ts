@@ -12,6 +12,7 @@ export * from './local-visibility';
 export * from './mutations';
 export * from './network';
 export * from './runtime-contract';
+export * from './schema-readiness';
 export * from './types';
 export type { SyncularWasmArtifactVariant } from './wasm-runtime';
 export {

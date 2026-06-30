@@ -49,6 +49,11 @@ import {
   type MutationsTx,
 } from './mutations';
 import { browserSyncularNetworkStatusSource } from './network';
+import {
+  getSyncularSchemaReadiness,
+  type SyncularSchemaReadinessOptions,
+  type SyncularSchemaReadinessResult,
+} from './schema-readiness';
 import { assertSyncularReadonlySql } from './sql-safety';
 import type {
   CreateSyncularDatabaseOptions,
@@ -114,6 +119,9 @@ export interface SyncularDatabase<DB> extends SyncularLiveQueries {
     query: SyncularLocalVisibilityQuery<DB, TResult>,
     options?: SyncularLocalVisibilityOptions<TResult>
   ): Promise<TResult>;
+  schemaReadiness(
+    options?: SyncularSchemaReadinessOptions
+  ): Promise<SyncularSchemaReadinessResult>;
   on<T extends SyncularClientEventType>(
     event: T,
     listener: SyncularClientEventSink<T>
@@ -298,6 +306,8 @@ export async function createSyncularDatabase<DB>(
         query,
         visibilityOptions
       ),
+    schemaReadiness: (readinessOptions) =>
+      getSyncularSchemaReadiness(client, readinessOptions),
     on: (event, listener) => client.addEventListener(event, listener),
     getStatus: () => getSyncularClientStatus(client),
     setSubscriptions: (subscriptions) => client.setSubscriptions(subscriptions),

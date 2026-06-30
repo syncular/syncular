@@ -93,6 +93,23 @@ describe('Syncular bridge client', () => {
         runtime: { packageName: '@syncular/testkit' },
         outboxStats: { pending: 1 },
       });
+      await expect(
+        client.schemaReadiness({
+          generatedSchemaVersion: 1,
+          now: () => 1,
+        })
+      ).resolves.toMatchObject({
+        generatedAt: 1,
+        status: 'unknown',
+        ready: false,
+        generatedSchemaVersion: 1,
+        issues: [
+          {
+            code: 'runtime.schema_state_unavailable',
+            recommendedAction: 'inspectRuntime',
+          },
+        ],
+      });
 
       await client.resumeFromBackground();
       expect(client.getStatus().isConnected).toBe(true);
