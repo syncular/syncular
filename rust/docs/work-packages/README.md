@@ -71,3 +71,5 @@ the status source; this file is the stable package index.
 45. [`WP-45 WASM Test Teardown Stabilization`](WP-45-wasm-test-teardown-stabilization.md)
 46. [`WP-46 Fresh JS Runtime Smoke`](WP-46-fresh-js-runtime-smoke.md)
 47. [`WP-47 Post-Publish JS Runtime Smoke`](WP-47-post-publish-js-runtime-smoke.md)
+48. [`WP-48 CI And Apex Publish Recovery`](WP-48-ci-apex-publish-recovery.md)
+49. [`WP-49 Client API Hardening`](WP-49-client-api-hardening.md)

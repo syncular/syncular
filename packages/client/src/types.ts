@@ -270,10 +270,45 @@ export interface SyncularDatabaseLifecycleOptions {
   syncOnRealtimeConnect?: boolean;
 }
 
+export type SyncularWorkerRequestTimeoutMs = number | false;
+
+export interface SyncularWorkerRequestTimeouts {
+  /**
+   * Timeout for ordinary short worker requests. Defaults to 30 seconds.
+   * Use `false` to disable the ordinary request timeout.
+   */
+  defaultMs?: SyncularWorkerRequestTimeoutMs;
+  /**
+   * Timeout for sync/bootstrap requests. Defaults to `false` because initial
+   * browser bootstrap and large pull/apply cycles can be legitimately long.
+   */
+  syncMs?: SyncularWorkerRequestTimeoutMs;
+  /**
+   * Timeout for blob transfer/queue requests. Defaults to `false`; transport
+   * and auth layers should own network abort policy.
+   */
+  blobMs?: SyncularWorkerRequestTimeoutMs;
+  /**
+   * Timeout for local maintenance requests such as compaction, repair, reset,
+   * and support bundle import/export. Defaults to `false`.
+   */
+  storageMaintenanceMs?: SyncularWorkerRequestTimeoutMs;
+  /** Per-request override keyed by worker request type. */
+  byType?: Record<string, SyncularWorkerRequestTimeoutMs | undefined>;
+}
+
 export interface CreateSyncularDatabaseOptions {
   config: SyncularClientConfig;
   worker?: Worker | (() => Worker);
-  requestTimeoutMs?: number;
+  /**
+   * Worker request timeout policy. A number preserves the legacy behavior and
+   * applies to every request type. An object uses request-class defaults so
+   * long-running sync/bootstrap/maintenance operations are not capped by the
+   * ordinary request timeout.
+   */
+  requestTimeoutMs?:
+    | SyncularWorkerRequestTimeoutMs
+    | SyncularWorkerRequestTimeouts;
   /**
    * WASM runtime artifact to load. Defaults to the packaged 'full' artifact;
    * pass a variant name ('core', 'full-perf') or an explicit artifact.
@@ -1108,6 +1143,12 @@ export interface SyncularLiveQueries {
 
 export interface SyncularLiveQueryOptions<Row extends Record<string, unknown>> {
   tables?: readonly string[];
+  /**
+   * Optional row/field dependency hints for queries whose dependencies cannot
+   * be inferred safely from the query-builder AST, such as aliased or raw SQL.
+   * Hints must reference one of the observed tables.
+   */
+  dependencyHints?: readonly SyncularLiveQueryDependencyHint[];
   onChange(rows: Row[], event: SyncularLiveQueryChange<Row>): void;
 }
 

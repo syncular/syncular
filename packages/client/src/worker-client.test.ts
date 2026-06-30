@@ -491,6 +491,84 @@ describe('Syncular worker client', () => {
     ]);
   });
 
+  it('does not apply ordinary request timeout defaults to long sync requests', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularWorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: { defaultMs: 1 },
+    });
+
+    await openWorkerClient(client, worker);
+
+    const sync = client.syncOnce();
+    await waitForMessages(worker, 1);
+    expect(worker.messages[0]).toMatchObject({ type: 'syncOnce' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(worker.messages.map((message) => message.type)).toEqual([
+      'syncOnce',
+    ]);
+
+    worker.respond({
+      id: worker.messages[0]!.id,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: {
+        changedTables: [],
+        changedRows: [],
+        changedRowsTruncated: false,
+        subscriptions: [],
+        bootstrap: zeroBootstrapStatus(),
+        pushedCommits: 0,
+        timings: zeroSyncTimings(),
+      },
+    });
+    await waitForMessages(worker, 2);
+    worker.respond({
+      id: worker.messages[1]!.id,
+      protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+      ok: true,
+      value: [],
+    });
+
+    await expect(sync).resolves.toMatchObject({ pushedCommits: 0 });
+  });
+
+  it('keeps numeric request timeout as a legacy all-request override', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularWorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: 1,
+    });
+
+    await openWorkerClient(client, worker);
+
+    await expect(client.syncOnce()).rejects.toMatchObject({
+      code: 'worker.request_timeout',
+    });
+    expect(worker.messages.map((message) => message.type)).toEqual([
+      'syncOnce',
+      'cancel',
+    ]);
+  });
+
+  it('honors per-request timeout overrides', async () => {
+    const worker = new FakeWorker();
+    const client = new SyncularWorkerClient(worker.asWorker(), {
+      ownsWorker: false,
+      requestTimeoutMs: { defaultMs: false, byType: { syncOnce: 1 } },
+    });
+
+    await openWorkerClient(client, worker);
+
+    await expect(client.syncOnce()).rejects.toMatchObject({
+      code: 'worker.request_timeout',
+    });
+    expect(worker.messages.map((message) => message.type)).toEqual([
+      'syncOnce',
+      'cancel',
+    ]);
+  });
+
   it('returns worker runtime information', async () => {
     const worker = new FakeWorker();
     const client = new SyncularWorkerClient(worker.asWorker(), {
@@ -2706,6 +2784,26 @@ class FakeNetworkStatus implements SyncularNetworkStatusSource {
     const type = online ? 'online' : 'offline';
     for (const listener of this.#listeners.get(type) ?? []) listener();
   }
+}
+
+async function openWorkerClient(
+  client: SyncularWorkerClient,
+  worker: FakeWorker
+): Promise<void> {
+  const open = client.open({
+    baseUrl: '/sync',
+    actorId: 'actor',
+    clientId: 'client',
+  });
+  if (!worker.messages[0]) await waitForMessages(worker, 1);
+  worker.respond({
+    id: worker.messages[0]!.id,
+    protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
+    ok: true,
+    value: true,
+  });
+  await open;
+  worker.messages.length = 0;
 }
 
 async function waitForMessages(
