@@ -121,6 +121,11 @@ type LifecycleClient = Pick<
   | 'syncOnce'
 >;
 
+type QueuedSyncWaiter = {
+  resolve(result: SyncularSyncResult): void;
+  reject(error: unknown): void;
+};
+
 export function getSyncularClientStatus(
   client: Pick<SyncularRuntimeClient, 'connectionState' | 'lifecycleState'>
 ): SyncularClientStatus {
@@ -148,7 +153,7 @@ export class SyncularClientLifecycle {
   #unsubscribeDiagnostics: (() => void) | undefined;
   #unsubscribeNetwork: (() => void) | undefined;
   #syncInFlight: Promise<SyncularSyncResult> | undefined;
-  #syncAgain = false;
+  #queuedSyncWaiters: QueuedSyncWaiter[] = [];
   #hasConnectedRealtime = false;
   #realtimeStarted = false;
   readonly #network: SyncularNetworkStatusSource | undefined;
@@ -198,7 +203,9 @@ export class SyncularClientLifecycle {
     this.#unsubscribeDiagnostics = undefined;
     this.#unsubscribeNetwork?.();
     this.#unsubscribeNetwork = undefined;
-    this.#syncAgain = false;
+    this.#rejectQueuedSyncWaiters(
+      new Error('Syncular lifecycle stopped before queued sync could run')
+    );
     if (this.options.realtime !== false) {
       await this.client.stopRealtime();
     }
@@ -207,17 +214,54 @@ export class SyncularClientLifecycle {
 
   async sync(): Promise<SyncularSyncResult> {
     if (this.#syncInFlight) {
-      this.#syncAgain = true;
-      return this.#syncInFlight;
+      return new Promise((resolve, reject) => {
+        this.#queuedSyncWaiters.push({ resolve, reject });
+      });
     }
-    this.#syncInFlight = this.client.syncOnce().finally(() => {
-      this.#syncInFlight = undefined;
-      if (this.#syncAgain && this.#started) {
-        this.#syncAgain = false;
-        void this.sync().catch(() => undefined);
-      }
-    });
+    this.#syncInFlight = this.#startSyncCycle();
     return this.#syncInFlight;
+  }
+
+  #startSyncCycle(): Promise<SyncularSyncResult> {
+    let sync: Promise<SyncularSyncResult>;
+    try {
+      sync = Promise.resolve(this.client.syncOnce());
+    } catch (error) {
+      sync = Promise.reject(error);
+    }
+    const finish = () => {
+      if (this.#syncInFlight === sync) {
+        this.#syncInFlight = undefined;
+      }
+      const waiters = this.#queuedSyncWaiters.splice(0);
+      if (waiters.length === 0) return;
+      if (!this.#started) {
+        const error = new Error(
+          'Syncular lifecycle stopped before queued sync could run'
+        );
+        for (const waiter of waiters) waiter.reject(error);
+        return;
+      }
+      const queued = this.#startSyncCycle();
+      this.#syncInFlight = queued;
+      queued.then(
+        (result) => {
+          for (const waiter of waiters) waiter.resolve(result);
+        },
+        (error) => {
+          for (const waiter of waiters) waiter.reject(error);
+        }
+      );
+    };
+    void sync.then(finish, finish).catch((error) => {
+      this.#rejectQueuedSyncWaiters(error);
+    });
+    return sync;
+  }
+
+  #rejectQueuedSyncWaiters(error: unknown): void {
+    const waiters = this.#queuedSyncWaiters.splice(0);
+    for (const waiter of waiters) waiter.reject(error);
   }
 
   #handleDiagnostic(event: SyncularDiagnosticEvent): void {

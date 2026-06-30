@@ -433,6 +433,90 @@ describe('Syncular live query dependencies', () => {
     expect(probe.hints).toEqual([[]]);
   });
 
+  it('keeps aliased table queries conservative unless hints are explicit', async () => {
+    const probe = createLiveClientProbe();
+    const dialect = createSyncularDialect(probe.client, {
+      appTables: ['tasks'],
+      tableConfig: { tasks: { primaryKeyColumn: 'id' } },
+    });
+    const db = new Kysely<LiveQueryDb>({ dialect });
+
+    try {
+      await dialect.live(
+        db
+          .selectFrom('tasks as t')
+          .select(['t.id', 't.title'])
+          .where('t.id', '=', 'task-42'),
+        { onChange() {} }
+      );
+      await dialect.live(
+        db
+          .selectFrom('tasks as t')
+          .select(['t.id', 't.title'])
+          .where('t.id', '=', 'task-43'),
+        {
+          dependencyHints: [{ table: 'tasks', rowIds: ['task-43'] }],
+          onChange() {},
+        }
+      );
+    } finally {
+      await db.destroy();
+    }
+
+    expect(probe.subscriptions).toEqual([['tasks'], ['tasks']]);
+    expect(probe.hints).toEqual([
+      [],
+      [{ table: 'tasks', rowIds: ['task-43'] }],
+    ]);
+  });
+
+  it('accepts explicit dependencies for raw compiled queries', async () => {
+    const probe = createLiveClientProbe();
+    const dialect = createSyncularDialect(probe.client, {
+      appTables: ['tasks'],
+      tableConfig: { tasks: { primaryKeyColumn: 'id' } },
+    });
+
+    await dialect.live(
+      {
+        compile() {
+          return {
+            sql: 'select "id", "title" from "tasks" where "id" = ?',
+            parameters: ['task-raw'],
+            query: { kind: 'RawNode' },
+          };
+        },
+      },
+      {
+        tables: ['tasks'],
+        dependencyHints: [{ table: 'tasks', rowIds: ['task-raw'] }],
+        onChange() {},
+      }
+    );
+
+    expect(probe.subscriptions).toEqual([['tasks']]);
+    expect(probe.hints).toEqual([[{ table: 'tasks', rowIds: ['task-raw'] }]]);
+  });
+
+  it('rejects explicit dependency hints outside observed tables', async () => {
+    const probe = createLiveClientProbe();
+    const dialect = createSyncularDialect(probe.client, {
+      appTables: ['tasks', 'comments'],
+    });
+    const db = new Kysely<LiveQueryDb>({ dialect });
+
+    try {
+      await expect(
+        dialect.live(db.selectFrom('tasks').selectAll(), {
+          dependencyHints: [{ table: 'comments', rowIds: ['comment-1'] }],
+          onChange() {},
+        })
+      ).rejects.toThrow('comments is not one of the observed tables');
+    } finally {
+      await db.destroy();
+    }
+  });
+
   it('rejects explicit live query tables outside the generated app schema', async () => {
     const probe = createLiveClientProbe();
     const dialect = createSyncularDialect(probe.client, {

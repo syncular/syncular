@@ -20,6 +20,7 @@ import {
 import {
   isGeneratedSyncularOperationalStateWorkerRequestType,
   type SyncularGeneratedWorkerRequestInput,
+  type SyncularGeneratedWorkerRequestType,
 } from './generated-bridge';
 import { browserSyncularNetworkStatusSource } from './network';
 import { assertSyncularReadonlySql } from './sql-safety';
@@ -94,6 +95,8 @@ import type {
   SyncularSyncResult,
   SyncularSyncTimings,
   SyncularTransportStats,
+  SyncularWorkerRequestTimeoutMs,
+  SyncularWorkerRequestTimeouts,
 } from './types';
 import {
   getSyncularRuntimeArtifact,
@@ -132,6 +135,70 @@ type BlobOutboxRow = {
 type SyncularWorkerRequestInput = SyncularGeneratedWorkerRequestInput;
 
 const DEFAULT_SYNCULAR_WORKER_REQUEST_TIMEOUT_MS = 30_000;
+const NO_SYNCULAR_WORKER_REQUEST_TIMEOUT = 0;
+
+const SYNCULAR_SYNC_WORKER_REQUEST_TYPES = new Set<string>([
+  'forceSubscriptionsBootstrap',
+  'syncPull',
+  'syncPush',
+  'syncOnce',
+]);
+
+const SYNCULAR_BLOB_WORKER_REQUEST_TYPES = new Set<string>([
+  'storeBlob',
+  'retrieveBlob',
+  'processBlobUploadQueue',
+]);
+
+const SYNCULAR_STORAGE_MAINTENANCE_WORKER_REQUEST_TYPES = new Set<string>([
+  'open',
+  'compactStorage',
+  'exportLocalSupportBundle',
+  'importLocalSupportBundle',
+  'repairLocalHealth',
+  'resetLocalSyncState',
+]);
+
+function syncularWorkerRequestTimeoutMs(
+  config:
+    | SyncularWorkerRequestTimeoutMs
+    | SyncularWorkerRequestTimeouts
+    | undefined,
+  type: SyncularGeneratedWorkerRequestType
+): number {
+  if (typeof config === 'number' || config === false) {
+    return normalizeSyncularWorkerTimeoutMs(config);
+  }
+
+  const byType = config?.byType?.[type];
+  if (byType !== undefined) return normalizeSyncularWorkerTimeoutMs(byType);
+
+  if (SYNCULAR_SYNC_WORKER_REQUEST_TYPES.has(type)) {
+    return normalizeSyncularWorkerTimeoutMs(config?.syncMs ?? false);
+  }
+  if (SYNCULAR_BLOB_WORKER_REQUEST_TYPES.has(type)) {
+    return normalizeSyncularWorkerTimeoutMs(config?.blobMs ?? false);
+  }
+  if (SYNCULAR_STORAGE_MAINTENANCE_WORKER_REQUEST_TYPES.has(type)) {
+    return normalizeSyncularWorkerTimeoutMs(
+      config?.storageMaintenanceMs ?? false
+    );
+  }
+
+  return normalizeSyncularWorkerTimeoutMs(
+    config?.defaultMs ?? DEFAULT_SYNCULAR_WORKER_REQUEST_TIMEOUT_MS
+  );
+}
+
+function normalizeSyncularWorkerTimeoutMs(
+  value: SyncularWorkerRequestTimeoutMs
+): number {
+  if (value === false) return NO_SYNCULAR_WORKER_REQUEST_TIMEOUT;
+  if (!Number.isFinite(value) || value <= 0) {
+    return NO_SYNCULAR_WORKER_REQUEST_TIMEOUT;
+  }
+  return Math.trunc(value);
+}
 
 export async function createSyncularWorkerClient(
   options: CreateSyncularDatabaseOptions
@@ -223,7 +290,10 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
   #nextId = 1;
   #pending = new Map<number, PendingRequest>();
   #closed = false;
-  #requestTimeoutMs: number;
+  #requestTimeouts:
+    | SyncularWorkerRequestTimeoutMs
+    | SyncularWorkerRequestTimeouts
+    | undefined;
   #getHeaders: CreateSyncularDatabaseOptions['getHeaders'] | undefined;
   #authHeaders: SyncularAuthHeaders = {};
   #authLifecycle: CreateSyncularDatabaseOptions['authLifecycle'] | undefined;
@@ -275,7 +345,7 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
     private readonly worker: Worker,
     options: {
       ownsWorker: boolean;
-      requestTimeoutMs?: number;
+      requestTimeoutMs?: CreateSyncularDatabaseOptions['requestTimeoutMs'];
       getHeaders?: CreateSyncularDatabaseOptions['getHeaders'];
       authLifecycle?: CreateSyncularDatabaseOptions['authLifecycle'];
       diagnostics?: SyncularDiagnosticSink;
@@ -284,8 +354,7 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
       blobLimits?: CreateSyncularDatabaseOptions['blobLimits'];
     }
   ) {
-    this.#requestTimeoutMs =
-      options.requestTimeoutMs ?? DEFAULT_SYNCULAR_WORKER_REQUEST_TIMEOUT_MS;
+    this.#requestTimeouts = options.requestTimeoutMs;
     this.#getHeaders = options.getHeaders;
     this.#authLifecycle = options.authLifecycle;
     this.#blobLimits = options.blobLimits;
@@ -1465,8 +1534,9 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
       protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
     } as SyncularWorkerRequest;
     return new Promise<T>((resolve, reject) => {
+      const requestTimeoutMs = this.#timeoutMsForRequest(request.type);
       const timeout =
-        this.#requestTimeoutMs > 0
+        requestTimeoutMs > 0
           ? setTimeout(() => {
               this.#pending.delete(id);
               this.#sendCancel(id);
@@ -1478,13 +1548,13 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
                 details: {
                   requestId: id,
                   requestType: request.type,
-                  timeoutMs: this.#requestTimeoutMs,
+                  timeoutMs: requestTimeoutMs,
                 },
               });
               const error = new SyncularWorkerError(
                 createSyncularWorkerErrorPayload(
                   'worker.request_timeout',
-                  `Syncular worker request ${request.type} timed out after ${this.#requestTimeoutMs}ms`,
+                  `Syncular worker request ${request.type} timed out after ${requestTimeoutMs}ms`,
                   { details: { requestId: id, requestType: request.type } }
                 )
               );
@@ -1494,7 +1564,7 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
               };
               this.#emitLifecycleChanged();
               reject(error);
-            }, this.#requestTimeoutMs)
+            }, requestTimeoutMs)
           : undefined;
       this.#pending.set(id, {
         type: request.type,
@@ -1505,6 +1575,10 @@ export class SyncularWorkerClient implements SyncularRuntimeClient {
       this.#emitLifecycleChanged();
       this.worker.postMessage(message);
     });
+  }
+
+  #timeoutMsForRequest(type: SyncularGeneratedWorkerRequestType): number {
+    return syncularWorkerRequestTimeoutMs(this.#requestTimeouts, type);
   }
 
   #handleWorkerMessage(message: SyncularWorkerOutboundMessage): void {

@@ -889,11 +889,21 @@ class SyncularDriver extends BaseSqliteDriver {
         'Could not infer live query table dependencies. Pass { tables: [...] } explicitly.'
       );
     }
+    const dependencyHints = normalizeLiveQueryDependencyHints(
+      options.dependencyHints ??
+        inferDependencyHintsFromCompiledQuery(
+          compiled,
+          tables,
+          this.#tableConfig
+        ),
+      tables,
+      this.#appTables
+    );
     const snapshot = await this.client.subscribeQuery<Row>(
       compiled.sql,
       compiled.parameters,
       tables,
-      inferDependencyHintsFromCompiledQuery(compiled, tables, this.#tableConfig)
+      dependencyHints
     );
     const listener = (
       event: SyncularLiveQueryEvent<Record<string, unknown>>
@@ -1176,6 +1186,38 @@ function inferDependencyHintsFromCompiledQuery(
   return rowIds.length > 0 ? [{ table, rowIds }] : [];
 }
 
+function normalizeLiveQueryDependencyHints(
+  hints: readonly SyncularLiveQueryDependencyHint[],
+  tables: readonly string[],
+  appTables?: ReadonlySet<string>
+): SyncularLiveQueryDependencyHint[] {
+  const observedTables = new Set(tables);
+  const normalized: SyncularLiveQueryDependencyHint[] = [];
+  for (const hint of hints) {
+    if (hint.table.length === 0) {
+      throw new Error('Live query dependency hint tables must not be empty.');
+    }
+    if (!observedTables.has(hint.table)) {
+      throw new Error(
+        `Live query dependency hint table ${hint.table} is not one of the observed tables.`
+      );
+    }
+    if (appTables != null && !appTables.has(hint.table)) {
+      throw new Error(
+        `Live query dependency hint table ${hint.table} is not part of the generated app schema.`
+      );
+    }
+    const rowIds = uniqueDefinedStrings(hint.rowIds);
+    const fields = uniqueDefinedStrings(hint.fields);
+    normalized.push({
+      table: hint.table,
+      ...(rowIds.length > 0 ? { rowIds } : {}),
+      ...(fields.length > 0 ? { fields } : {}),
+    });
+  }
+  return normalized;
+}
+
 function primaryKeyEqualityValues(
   query: unknown,
   table: string,
@@ -1278,6 +1320,18 @@ function referenceMatchesColumn(
 
 function uniqueStrings(values: readonly string[]): string[] {
   return [...new Set(values)];
+}
+
+function uniqueDefinedStrings(values: readonly string[] | undefined): string[] {
+  if (values == null) return [];
+  const unique: string[] = [];
+  for (const value of values) {
+    if (value.length === 0) {
+      throw new Error('Live query dependency hint values must not be empty.');
+    }
+    if (!unique.includes(value)) unique.push(value);
+  }
+  return unique;
 }
 
 interface OperationNodeLike {

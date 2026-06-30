@@ -70,6 +70,16 @@ read-only review:
 
 ## Now
 
+- `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
+  - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
+    hardening package: queued `sync()` callers wait for their requested
+    follow-up cycle, worker timeouts are request-class aware instead of one
+    short cap for bootstrap/sync/blob/maintenance work, live queries can pass
+    explicit dependency hints for aliases/raw SQL with observed-table
+    validation, and the generated apply/read-model extension contract for
+    non-isomorphic schemas is recorded for the generator follow-up. Touched
+    file formatting, package typecheck, and focused client tests passed locally
+    with repo-pinned Bun 1.3.9.
 - `[x]` [`WP-48 CI And Apex Publish Recovery`](work-packages/WP-48-ci-apex-publish-recovery.md)
   - Accepted. Shared CI setup now installs Rust, `wasm-pack`, and `wasm-opt`
     before package builds; native FFI fixture expectations match the generated
