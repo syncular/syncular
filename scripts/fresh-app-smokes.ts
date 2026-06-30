@@ -340,9 +340,7 @@ try {
     throw new Error(\`fresh JS app health returned \${JSON.stringify(health)}\`);
   }
 
-  const schemaReadiness = await database.schemaReadiness({
-    generatedSchemaVersion: syncularGeneratedSchemaVersion,
-  });
+  const schemaReadiness = await database.schemaReadiness();
   if (
     schemaReadiness.status !== 'ready' ||
     schemaReadiness.ready !== true ||
@@ -404,14 +402,14 @@ try {
     campaign_id: 'campaign-b',
   });
 
-  const campaignRows = await database.awaitLocalVisibility(
+  const campaignRows = await database.awaitTaskVisibility(
     (db) =>
       db
         .selectFrom('tasks')
         .select(['id', 'campaign_id'])
         .where('campaign_id', '=', 'campaign-b')
         .execute(),
-    { tables: ['tasks'], timeoutMs: 1_000 }
+    { timeoutMs: 1_000 }
   );
   if (
     campaignRows.length !== 1 ||

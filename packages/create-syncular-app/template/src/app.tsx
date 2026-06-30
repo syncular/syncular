@@ -12,7 +12,6 @@ import {
   type AppSyncClient,
   appActorId,
   openAppClient,
-  syncularGeneratedSchemaVersion,
   type Task,
 } from './client/syncular';
 
@@ -103,9 +102,7 @@ function TaskPane({ client }: { client: AppSyncClient }) {
           if (!disposed) setHealth(null);
         });
       void client
-        .schemaReadiness({
-          generatedSchemaVersion: syncularGeneratedSchemaVersion,
-        })
+        .schemaReadiness()
         .then((nextReadiness) => {
           if (!disposed) setSchemaReadiness(nextReadiness);
         })

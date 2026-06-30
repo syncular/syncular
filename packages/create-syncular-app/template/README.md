@@ -23,7 +23,8 @@ server while the page stays open: edits queue locally and sync when the
 server is back.
 
 The status lines in the task panel come from `getSyncularBrowserHealth(...)`
-and `database.schemaReadiness(...)`. They are the app-facing checks for
+and the generated `database.schemaReadiness()` helper. They are the
+app-facing checks for
 durable storage, active subscriptions, realtime state, generated schema
 compatibility, the latest structured Syncular error, and any stable
 recommended action such as refreshing auth or checking permissions.
@@ -54,6 +55,12 @@ SQLite database and queues an outbox entry → the sync engine pushes it to
 `/sync` → the server handler authorizes it against your scopes and assigns a
 `server_version` → other subscribed clients receive it over the WebSocket and
 `useSyncQuery` re-renders.
+
+When app code needs to wait for a committed command or realtime wakeup to
+appear in the local read model, use the generated table helper such as
+`database.awaitTaskVisibility(...)`. It wraps the lower-level local visibility
+primitive with this app's `tasks` table metadata, so you do not need to pass a
+manual table list or call `sync()` as a stale-read workaround.
 
 ## Regenerating the client (`bun run codegen`)
 

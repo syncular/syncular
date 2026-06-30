@@ -79,6 +79,14 @@ For a TypeScript app the interesting outputs are:
     installs the local schema, sets default subscriptions, wraps
     mutations with command history (undo/redo), and starts the sync
     lifecycle (initial sync plus realtime) before resolving;
+  - `database.schemaReadiness()` — an app-shaped readiness helper that fills
+    in the generated schema version, so UI code and tests can check
+    generated/runtime/local/server schema compatibility without passing
+    version constants around;
+  - table-scoped local-visibility helpers such as
+    `database.awaitTaskVisibility(...)` — generated wrappers over the raw
+    local-visibility primitive that inject the table list for the matching
+    app table;
   - mutation namespaces (`mutations.tasks.insert/update/...`) and
     subscription helpers (`taskSubscription({ actorId })`);
   - changed-row helpers for row/field deltas;
@@ -132,3 +140,43 @@ support window (`syncularGeneratedClientSchemaSupport` with
 See [Troubleshooting](/clients/javascript/troubleshooting#schema-version-mismatch)
 for the recovery paths, and [Migrations](/features/migrations) for how to
 evolve the schema safely.
+
+Generated app databases also expose `schemaReadiness()` with the generated
+version already supplied:
+
+```ts
+const readiness = await database.schemaReadiness();
+
+if (!readiness.ready) {
+  showSchemaIssue(readiness.issues[0]);
+}
+```
+
+Use the lower-level `@syncular/client` readiness helper only when you are
+building an ungenerated or tooling-facing client.
+
+## Local visibility after commands
+
+Reads stay plain Kysely, but app code often needs to wait until a committed
+server command, realtime wakeup, or bootstrap update is visible in the local
+read model. Generated databases expose one helper per app table:
+
+```ts
+const rows = await database.awaitTaskVisibility(
+  (db) =>
+    db
+      .selectFrom('tasks')
+      .select(['id', 'title'])
+      .where('project_id', '=', 'project-1')
+      .execute(),
+  {
+    timeoutMs: 1_000,
+    predicate: (rows) => rows.length > 0,
+  }
+);
+```
+
+The generated helper injects `tables: ['tasks']` for you. Use the raw
+`awaitLocalVisibility(...)` helper only for advanced multi-table waits or
+ungenerated clients, and avoid using manual `sync()` calls as the normal answer
+to stale reads.

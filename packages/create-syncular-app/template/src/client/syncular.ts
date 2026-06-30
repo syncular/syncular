@@ -1,7 +1,7 @@
-import type { SyncularClientLike, SyncularLiveQueries } from '@syncular/client';
 import type { Selectable } from 'kysely';
 import {
   createSyncularAppDatabase,
+  type SyncularAppDatabase,
   type SyncularAppDb,
   syncularGeneratedSchemaVersion,
 } from '../generated/syncular.generated';
@@ -19,7 +19,7 @@ export type Task = Selectable<AppDb['tasks']>;
 export { syncularGeneratedSchemaVersion };
 
 /** The managed client surface that `@syncular/client/react` consumes. */
-export type AppSyncClient = SyncularClientLike<AppDb> & SyncularLiveQueries;
+export type AppSyncClient = SyncularAppDatabase;
 
 /**
  * Demo auth: the starter server accepts this static token and maps it to a
@@ -58,7 +58,5 @@ export async function openAppClient(): Promise<AppSyncClient> {
     },
   });
 
-  // The cast bridges the generated mutations interface, which does not
-  // declare the structural `$table` helper the hooks type against.
-  return database as unknown as AppSyncClient;
+  return database;
 }

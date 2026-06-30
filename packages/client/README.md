@@ -77,6 +77,21 @@ await syncular.leasedMutations.tasks.update('task-1', {
   title: 'Queued while offline',
 });
 
+const readiness = await syncular.schemaReadiness();
+if (!readiness.ready) {
+  throw new Error(readiness.issues[0]?.message ?? 'Syncular schema is not ready');
+}
+
+await syncular.awaitTaskVisibility(
+  (db) =>
+    db
+      .selectFrom('tasks')
+      .select(['id'])
+      .where('project_id', '=', 'project-1')
+      .execute(),
+  { timeoutMs: 1_000 }
+);
+
 // Local mutations sync automatically by default. To opt out, pass:
 // sync: { autoSyncAfterMutation: false }
 
@@ -98,7 +113,10 @@ await syncular.close();
 
 Generated helpers intentionally do not emit table constants, column constants,
 or canned queries. Reads stay plain Kysely. Sync-aware writes go through
-`syncular.mutations` or generated operation helpers.
+`syncular.mutations` or generated operation helpers. Schema readiness and
+local-visibility waits are app-shaped: `schemaReadiness()` supplies the
+generated schema version, and table helpers such as `awaitTaskVisibility(...)`
+inject the matching table list.
 
 Use `bootstrapPhases` when the app should become usable before every
 subscription has finished its first snapshot. Keys can be generated table names

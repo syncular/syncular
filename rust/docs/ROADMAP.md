@@ -126,8 +126,12 @@ read-only review:
     privacy and audience labels now expose the browser Console
     detail-key policy from `@syncular/client` and document UI-facing,
     operator/deploy, debug/console, testkit/E2E, and advanced diagnostic
-    surfaces. Next slice: remaining product-contract decisions, especially
-    generated helper ergonomics and starter template shape.
+    surfaces. Generated app databases now wrap schema readiness and table
+    local-visibility waits as app-shaped helpers, so starter and smoke code can
+    call `schemaReadiness()` and `awaitTaskVisibility(...)` without manual
+    schema-version or table-list plumbing. Next slice: remaining
+    product-contract decisions around starter template shape, server/runtime
+    choices, and adapter smoke matrix scope.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

@@ -434,6 +434,68 @@ acceptance input for the implementation slices below.
   one blessed modeling pattern before apps build their own ad hoc partition
   bridges.
 
+### Additional DX Risks Worth Tracking
+
+These are not all direct asks from the pasted feedback, but they are the
+places where the same integration pain is likely to reappear if the product
+surface stays too implicit.
+
+- First-run mental model: users need one clear explanation of what lives in
+  the local SQLite database, what is authoritative on the server, what
+  subscriptions do, what generated mutations guarantee, and when local reads
+  are expected to become fresh. Without that, every other helper becomes
+  another thing to memorize.
+- Browser deployment preflight: the golden path should eventually include a
+  check for Worker/WASM asset serving, MIME types, cross-origin isolation or
+  OPFS requirements, durable storage availability, service-worker/PWA
+  interactions, and quota/eviction risks. A starter that works in dev but
+  silently falls back or breaks after deploy is a product failure.
+- Multi-tab and lifecycle behavior: persistent offline databases need explicit
+  guidance and tests for two tabs, tab suspension/resume, background refresh,
+  storage locks, shutdown, and app restarts. These are common browser states,
+  not exotic edge cases.
+- Local recovery controls: app-facing APIs should make it clear how to recover
+  from a corrupt or incompatible local database, an unrecoverable bootstrap, a
+  stuck outbox, revoked scope state, or a user-initiated sign-out. Clear
+  storage/rebootstrap/reset operations need typed consequences and guardrails.
+- Bundle and WASM cost visibility: do not create fake "lite" databases, but do
+  publish the real raw/gzip/init-time budgets for `@syncular/client`, explain
+  what dominates the browser payload, and keep a regression gate or analyzer
+  artifact so maintainers know when offline-first cost moves.
+- Dependency and side-effect isolation: root client/server imports must stay
+  boring under common bundlers. Optional adapters such as Bun SQLite, Neon, S3,
+  Sentry, Cloudflare, Tauri, React Native, and CRDT/Yjs should be smoke-tested
+  for "not imported until their subpath is imported" behavior.
+- Data modeling guidance: apps need concrete recipes for scoped tables,
+  membership tables, local-only tables, read models, generated mutations,
+  indexes, blob reference rows, and CRDT fields. Otherwise users will copy
+  whatever happened to work in the starter, even when their data shape differs.
+- Upgrade story: generated schema version, runtime package version, server
+  schema version, protocol compatibility, and migration ordering need a single
+  upgrade checklist. Users should know how to move a deployed app from one
+  Syncular release to the next without guessing which generated files or
+  server steps must change first.
+- Production ops runbook: schema readiness is only one deploy check. Real apps
+  also need backup/restore expectations, blob-store consistency checks, rate
+  limit tuning, credential rotation, log/event retention, and rollback guidance
+  for bad migrations or bad generated clients.
+- Performance budgets beyond package size: bootstrap latency, sync-pack apply
+  time, local query visibility delay, outbox drain time, realtime reconnect,
+  and blob fetch latency should have measurable app-facing budgets. Rough
+  performance cannot hide behind "it is eventually consistent".
+- Test failure artifacts: deterministic E2E recipes should leave useful
+  failure output: health snapshots, schema readiness JSON, recent diagnostic
+  markers, server request ids, realtime event cursors, and safe redacted logs.
+  A failing app test should point at the broken lifecycle phase.
+- Auth provider integration shape: the blessed auth-context replacement path
+  should be easy to connect to common token-refresh providers without leaking
+  provider-specific code into Syncular core or forcing apps to race old claims
+  against new subscriptions.
+- Console-to-app continuity: the console can remain the deep workbench, but
+  every issue visible in the console should map back to a stable app-facing
+  code, recommended action, or testkit assertion. Otherwise the console becomes
+  the only reliable way to understand production failures.
+
 ### Feedback Triage
 
 Treat the pasted integration notes as more than documentation requests. Most
@@ -548,6 +610,11 @@ online propagation, or reconnect behavior can change.
   deploy-safety P0s, blob/E2E/diagnostic-taxonomy P1s, and import/contributor
   polish P2s, with guardrails that completed items should ship as typed
   contracts with tests rather than vague docs-only guidance.
+- A later planning pass added a DX risk register for first-run mental model,
+  browser deployment preflight, multi-tab lifecycle, local recovery controls,
+  bundle/WASM cost visibility, dependency side-effect isolation, data modeling,
+  upgrades, production ops, performance budgets, failure artifacts, auth
+  provider integration, and console-to-app continuity.
 - 2026-06-30 first implementation slice added
   `getSyncularBrowserHealth(...)` to `@syncular/client`, summarizing existing
   diagnostic/status data into an app-facing health contract: overall state,
@@ -719,6 +786,18 @@ online propagation, or reconnect behavior can change.
 - 2026-06-30: Added feedback triage priorities, forced product decisions, and
   acceptance guardrails so future slices handle the pasted feedback as public
   contracts with tests instead of docs-only cleanup.
+- 2026-06-30: Added a broader DX risk register covering browser deploy
+  preflights, multi-tab/lifecycle behavior, local recovery controls, bundle and
+  WASM cost visibility, dependency side-effect isolation, data modeling,
+  upgrades, production ops, performance budgets, failure artifacts, auth
+  provider integration, and console-to-app continuity.
+- 2026-06-30: Generated TypeScript app databases now expose
+  `schemaReadiness()` with the generated schema version injected and
+  table-scoped local-visibility helpers such as `awaitTaskVisibility(...)` with
+  table metadata injected.
+- 2026-06-30: Updated the starter app and fresh JavaScript smoke to use the
+  generated readiness/visibility helpers instead of passing
+  `syncularGeneratedSchemaVersion` or raw `tables` options from app code.
 - 2026-06-30: Added `packages/client/src/schema-readiness.ts` and exported it
   from `@syncular/client`.
 - 2026-06-30: Added `SyncularDatabase.schemaReadiness(...)` as the managed
@@ -837,6 +916,10 @@ online propagation, or reconnect behavior can change.
 - 2026-06-30: Updated public observability docs with diagnostic privacy rules
   and API audience labels for UI-facing health, operator/deploy readiness,
   debug/console snapshots, testkit markers, and advanced raw diagnostic sinks.
+- 2026-06-30: Added generated TypeScript app database wrappers for
+  `schemaReadiness()` and per-table local visibility helpers, regenerated the
+  starter/todo TypeScript outputs, and updated the JavaScript docs, package
+  README, starter README, and smoke script to use the app-shaped helper path.
 
 ## Latest Gates
 
@@ -895,6 +978,22 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bun --cwd packages/client tsgo`
 - `git diff --check`
 
+Most recent generated-helper rerun:
+
+- `cargo fmt --all --check` from `rust/`
+- `cargo test -p syncular-codegen --manifest-path rust/Cargo.toml typescript_module_supports_multiple_app_tables`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir packages/create-syncular-app/template --check`
+- `cargo run --manifest-path rust/Cargo.toml -p syncular-codegen -- --manifest-dir rust/examples/todo-app --check`
+- `bun --cwd packages/client tsgo`
+- `bun --cwd packages/create-syncular-app tsgo`
+- `bun --cwd apps/docs types:check`
+- `bunx biome check apps/docs/content/docs/clients/javascript/generated-client.mdx apps/docs/content/docs/clients/javascript/index.mdx packages/client/README.md packages/create-syncular-app/template/README.md packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/template/src/client/syncular.ts scripts/fresh-app-smokes.ts`
+- `bun run docs:stale-check`
+- `bun test packages/syncular/src/cli.test.ts`
+- `bun --cwd packages/create-syncular-app smoke`
+- `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-generated-helpers-rerun`
+- `git diff --check`
+
 ## Sequencing
 
 1. Golden path starter and smoke: first retained slice is done for the
@@ -905,8 +1004,11 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    `requiresAction` and taxonomy-backed recommended actions. Future slices
    should add missing setup/runtime error codes as concrete failures appear.
 3. Local visibility primitive: first retained slice is done with a
-   query/predicate helper and managed database method. Future generated helpers
-   can wrap it for command-specific or subscription-specific waits.
+   query/predicate helper and managed database method. Generated TypeScript app
+   databases now also expose table-scoped wrappers such as
+   `awaitTaskVisibility(...)`, so common app waits do not pass raw table lists.
+   Future generated helpers can still add command-specific or
+   subscription-specific waits when a starter flow proves a narrower API.
 4. Auth context/scope-change contract: first retained slice is done with a
    replacement helper and managed database method, and the fresh generated app
    smoke plus the Hono/WebSocket/WASM managed-database test now prove
@@ -918,7 +1020,9 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    `syncular schema check --json` over config, migrations, and generated
    client/server output. The first live server/database slice is done with
    `getSyncularServerSchemaReadiness(...)` over introspected installed tables
-   and server required/latest schema versions.
+   and server required/latest schema versions. Generated TypeScript app
+   databases now wrap `schemaReadiness()` with the baked generated schema
+   version so app code does not pass version constants for the normal check.
 6. Blob partition/scope guidance and typed blob failure details: first slice is
    done with a decision-returning scoped access checker, route-level structured
    details, shared error taxonomy coverage, and public docs for global/base
@@ -961,6 +1065,17 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
   expose a public policy that classifies details as safe, summarized, redacted,
   or omitted; raw diagnostic sinks remain an advanced/local-debug surface that
   must be redacted before forwarding to external services.
+- Generated TypeScript app databases should wrap root primitives when the app
+  schema can remove boilerplate without inventing product semantics. The
+  generator now injects `syncularGeneratedSchemaVersion` for
+  `schemaReadiness()` and app table lists for helpers such as
+  `awaitTaskVisibility(...)`; the root helpers remain available for advanced
+  ungenerated or multi-table waits.
+- Schema readiness is layered: `syncular schema check --json` owns file-level
+  CI/deploy checks for app contract, migrations, and generated output, while
+  `getSyncularServerSchemaReadiness(...)` owns live database/server readiness.
+  A future `doctor` command can orchestrate these narrower checks if the
+  product needs a broader umbrella.
 
 ## Open Questions
 
@@ -972,14 +1087,9 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
   instead of a minimal app?
 - Which adapter matrix is worth smoke-testing in CI on every PR versus only in
   release rehearsal?
-- Should generated clients wrap local visibility per mutation/read model, or
-  keep the root query/predicate helper as the only public primitive until a
-  starter flow proves a narrower API?
 - Should generated clients wrap `replaceAuthContext(...)` with app-specific
   campaign/project join helpers, or should the root database method remain the
   only public contract until a starter flow proves the narrower API?
-- Which schema readiness checks belong in the `syncular` CLI versus server
-  package APIs?
 - Should deploy readiness live as `syncular doctor`, `syncular schema check`,
   or a layered pair where `doctor` calls narrower checks?
 
@@ -987,6 +1097,6 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 
 Pick the next implementation slice: audit the remaining product-contract
 decisions from the open questions, especially whether generated clients should
-wrap local visibility/auth-context helpers with app-specific APIs, and whether
-starter templates should remain React+Bun-first or split into framework/server
-choices.
+wrap auth-context helpers with app-specific APIs, whether starter templates
+should remain React+Bun-first or split into framework/server choices, and which
+adapter smoke matrix belongs in PR gates versus release rehearsal.

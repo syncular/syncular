@@ -18,8 +18,9 @@ schema, subscriptions, runtime feature requirements, and generated mutations.
 | Need | Import |
 |---|---|
 | Open the generated browser/offline database | Generated app module, e.g. `./generated/syncular.generated` |
+| Generated schema readiness and table-scoped local visibility | Generated app module, e.g. `database.schemaReadiness()` / `database.awaitTaskVisibility(...)` |
 | Advanced ungenerated browser database setup | `@syncular/client` |
-| Browser health, schema readiness, local visibility, auth-context replacement | `@syncular/client` |
+| Browser health, raw schema/local-visibility helpers, auth-context replacement | `@syncular/client` |
 | React provider, live query hooks, mutation hooks, status hooks | `@syncular/client/react` |
 | React Native / Expo bridge | `@syncular/client/react-native` |
 | Tauri bridge | `@syncular/client/tauri` |

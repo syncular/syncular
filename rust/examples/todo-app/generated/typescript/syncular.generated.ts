@@ -2,7 +2,7 @@
 // Source: migrations/*.sql and generated Syncular codegen handoff
 
 import { SYNCULAR_PACKAGE_NAME, SYNCULAR_PACKAGE_VERSION, SYNCULAR_WORKER_PROTOCOL_VERSION, createSyncularCommandHistory, createSyncularDatabase, withSyncularSchemaWrites } from '../../../../../packages/client/src';
-import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularYjsPayloadEnvelope } from '../../../../../packages/client/src';
+import type { CreateSyncularDatabaseOptions, SyncularAppSchema, SyncularChangedCrdtField, SyncularChangedRow, SyncularCommandHistory, SyncularDatabase, SyncularEmbeddedMigration, SyncularFieldEncryptionConfig, SyncularFieldEncryptionRule, SyncularLocalVisibilityOptions, SyncularLocalVisibilityQuery, SyncularRowsChangedEvent, SyncularRuntimeInfo, SyncularSchemaReadinessOptions, SyncularSchemaReadinessResult, SyncularYjsPayloadEnvelope } from '../../../../../packages/client/src';
 
 import { sql, type Generated, type Kysely } from 'kysely';
 import { codecs, type BlobRef, type ColumnCodecSource } from '@syncular/core';
@@ -902,10 +902,14 @@ export interface SyncularAppMutations {
   tasks: SyncularGeneratedTableMutations<NewTask, TaskPatch>;
 }
 
-export type SyncularAppDatabase = Omit<SyncularDatabase<SyncularAppDb>, 'mutations' | 'leasedMutations'> & {
+export type SyncularAppDatabase = Omit<SyncularDatabase<SyncularAppDb>, 'mutations' | 'leasedMutations' | 'schemaReadiness'> & {
   mutations: SyncularAppMutations;
   leasedMutations: SyncularAppMutations;
   commandHistory: SyncularCommandHistory;
+  schemaReadiness(options?: Omit<SyncularSchemaReadinessOptions, 'generatedSchemaVersion'>): Promise<SyncularSchemaReadinessResult>;
+  awaitCommentVisibility<TResult>(query: SyncularLocalVisibilityQuery<SyncularAppDb, TResult>, options?: Omit<SyncularLocalVisibilityOptions<TResult>, 'tables'>): Promise<TResult>;
+  awaitProjectVisibility<TResult>(query: SyncularLocalVisibilityQuery<SyncularAppDb, TResult>, options?: Omit<SyncularLocalVisibilityOptions<TResult>, 'tables'>): Promise<TResult>;
+  awaitTaskVisibility<TResult>(query: SyncularLocalVisibilityQuery<SyncularAppDb, TResult>, options?: Omit<SyncularLocalVisibilityOptions<TResult>, 'tables'>): Promise<TResult>;
 };
 export type SyncularAppSubscriptionsOption =
   | false
@@ -1007,6 +1011,11 @@ export async function createSyncularAppDatabase(
     appDatabase.commandHistory = commandHistory.history;
     appDatabase.mutations = commandHistory.wrapMutations(database.mutations, 'mutations') as SyncularAppMutations;
     appDatabase.leasedMutations = commandHistory.wrapMutations(database.leasedMutations, 'leasedMutations') as SyncularAppMutations;
+    const rootSchemaReadiness = database.schemaReadiness.bind(database);
+    appDatabase.schemaReadiness = (readinessOptions) => rootSchemaReadiness({ ...readinessOptions, generatedSchemaVersion: syncularGeneratedSchemaVersion });
+    appDatabase.awaitCommentVisibility = (query, visibilityOptions) => database.awaitLocalVisibility(query, { ...visibilityOptions, tables: ['comments'] });
+    appDatabase.awaitProjectVisibility = (query, visibilityOptions) => database.awaitLocalVisibility(query, { ...visibilityOptions, tables: ['projects'] });
+    appDatabase.awaitTaskVisibility = (query, visibilityOptions) => database.awaitLocalVisibility(query, { ...visibilityOptions, tables: ['tasks'] });
     if (options.lifecycle?.autoStart ?? (options.config.mode ?? 'remote') === 'remote') {
       await database.start();
     }
