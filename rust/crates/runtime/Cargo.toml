@@ -105,4 +105,7 @@ getrandom = { version = "0.2", features = ["js"] }
 uuid = { version = "1.11", features = ["v4", "js"] }
 
 [dev-dependencies]
-syncular-testkit = { version = "0.1.1", path = "../testkit" }
+# The published runtime crate excludes integration tests, so keep this dev-only
+# path dependency on the already-bootstrapped 0.1 line instead of stamping it to
+# each exact release version and recreating a runtime <-> testkit publish cycle.
+syncular-testkit = { version = "0.1", path = "../testkit" }
