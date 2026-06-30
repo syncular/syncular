@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'bun:test';
 import * as clientApi from './index';
 import {
+  classifySyncularDiagnosticDetailKey,
   createSyncularCommandHistory,
   createSyncularDatabase,
   getSyncularBrowserHealth,
@@ -9,6 +10,7 @@ import {
   replaceSyncularAuthContext,
   resolveSyncularClientConfig,
   SYNCULAR_DEFAULT_STORAGE,
+  SYNCULAR_DIAGNOSTIC_DETAIL_POLICY,
   SYNCULAR_PACKAGE_NAME,
   SYNCULAR_PACKAGE_VERSION,
   SYNCULAR_WASM_ARTIFACT_CATALOG_FILE,
@@ -64,6 +66,13 @@ describe('@syncular/client public API', () => {
 
   it('exports the schema readiness helper', () => {
     expect(typeof getSyncularSchemaReadiness).toBe('function');
+  });
+
+  it('exports the diagnostic detail policy helper', () => {
+    expect(SYNCULAR_DIAGNOSTIC_DETAIL_POLICY.safeKeys).toContain('table');
+    expect(classifySyncularDiagnosticDetailKey('authorization')).toBe(
+      'redacted'
+    );
   });
 
   it('does not expose the removed standalone managed-client constructor', () => {

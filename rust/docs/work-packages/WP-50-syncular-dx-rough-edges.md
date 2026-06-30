@@ -665,6 +665,12 @@ online propagation, or reconnect behavior can change.
   `partitionColumn` for reference tables that store rows from multiple route
   partitions, and focused tests prove a global/base hash does not authorize a
   campaign download until the campaign has its own scoped reference row.
+- 2026-06-30 fifteenth implementation slice made diagnostic privacy and API
+  audience labels explicit: the browser Console diagnostics publisher now
+  exports a stable detail-key policy and classifier, public observability docs
+  explain safe/summarized/redacted/omitted detail handling, and the docs label
+  UI-facing, operator/deploy, debug/console, testkit/E2E, and advanced
+  diagnostic surfaces.
 
 ## Implementation Log
 
@@ -822,6 +828,15 @@ online propagation, or reconnect behavior can change.
   metadata rows over shared bytes the default pattern for package/base assets,
   with shared partitions called out as an explicit advanced authorization
   policy.
+- 2026-06-30: Exported `SYNCULAR_DIAGNOSTIC_DETAIL_POLICY` and
+  `classifySyncularDiagnosticDetailKey(...)` from `@syncular/client`, reusing
+  the Console diagnostics redaction/compaction policy instead of leaving it as
+  private implementation detail.
+- 2026-06-30: Added focused Console diagnostics and public API tests covering
+  safe, summarized, redacted, and omitted diagnostic detail key decisions.
+- 2026-06-30: Updated public observability docs with diagnostic privacy rules
+  and API audience labels for UI-facing health, operator/deploy readiness,
+  debug/console snapshots, testkit markers, and advanced raw diagnostic sinks.
 
 ## Latest Gates
 
@@ -875,6 +890,9 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
 - `bun test packages/server/src/blobs/access.test.ts packages/server/src/hono/__tests__/blob-routes.test.ts`
 - `bunx biome check packages/server/src/blobs/access.ts packages/server/src/blobs/access.test.ts apps/docs/content/docs/features/blobs.mdx apps/docs/content/docs/server/blobs.mdx apps/docs/content/docs/features/recipes/blobs-and-media.mdx`
 - `bun --cwd packages/server tsgo`
+- `bun test packages/client/src/console-diagnostics.test.ts packages/client/src/public-api.test.ts`
+- `bunx biome check packages/client/src/console-diagnostics.ts packages/client/src/console-diagnostics.test.ts packages/client/src/public-api.test.ts apps/docs/content/docs/operate/observability.mdx`
+- `bun --cwd packages/client tsgo`
 - `git diff --check`
 
 ## Sequencing
@@ -922,6 +940,11 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
    pinned-Bun gate guidance, Linux WASM-worker caveats, corrected Bun narrative
    in the improvement plan, and stale-check coverage for root README package
    surface drift.
+10. Diagnostic privacy and API audience labels: first slice is done with an
+    exported client-side detail policy/classifier, Console diagnostics tests,
+    public API coverage, and observability docs that separate UI-facing,
+    operator/deploy, debug/console, testkit/E2E, and advanced raw diagnostic
+    surfaces.
 
 ## Resolved Decisions
 
@@ -934,6 +957,10 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
   each campaign/project partition that can fetch it needs a scoped reference
   row. Global partitions and shared partitions remain explicit advanced auth
   policies, not implicit fallback paths for hashes that exist elsewhere.
+- Diagnostic detail keys are safe-by-default. Browser Console diagnostics
+  expose a public policy that classifies details as safe, summarized, redacted,
+  or omitted; raw diagnostic sinks remain an advanced/local-debug surface that
+  must be redacted before forwarding to external services.
 
 ## Open Questions
 
@@ -955,12 +982,11 @@ Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
   package APIs?
 - Should deploy readiness live as `syncular doctor`, `syncular schema check`,
   or a layered pair where `doctor` calls narrower checks?
-- Which diagnostic fields are always safe to emit, which are redacted by
-  default, and which require an explicit debug opt-in?
 
 ## Next Action
 
 Pick the next implementation slice: audit the remaining product-contract
-decisions from the open questions, especially diagnostic redaction/default-safe
-fields and API audience labels for UI, operator/deploy, debug/console, testkit,
-and advanced escape-hatch surfaces.
+decisions from the open questions, especially whether generated clients should
+wrap local visibility/auth-context helpers with app-specific APIs, and whether
+starter templates should remain React+Bun-first or split into framework/server
+choices.

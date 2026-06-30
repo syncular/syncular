@@ -122,9 +122,12 @@ read-only review:
     diagnostics. Global/base blob sharing now has a default product pattern:
     scoped metadata rows in the requested campaign/project partition grant
     access to shared content-addressed bytes, and blob reference lookup can use
-    `partitionColumn` to avoid accidental cross-partition grants. Next slice:
-    remaining product-contract decisions, especially diagnostic redaction and
-    API audience labels.
+    `partitionColumn` to avoid accidental cross-partition grants. Diagnostic
+    privacy and audience labels now expose the browser Console
+    detail-key policy from `@syncular/client` and document UI-facing,
+    operator/deploy, debug/console, testkit/E2E, and advanced diagnostic
+    surfaces. Next slice: remaining product-contract decisions, especially
+    generated helper ergonomics and starter template shape.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

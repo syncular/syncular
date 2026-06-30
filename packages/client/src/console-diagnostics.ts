@@ -17,6 +17,78 @@ const DEFAULT_DEBOUNCE_MS = 100;
 const MAX_MESSAGE_LENGTH = 240;
 const MAX_STRING_DETAIL_LENGTH = 160;
 const MAX_ARRAY_DETAIL_ITEMS = 8;
+const SYNCULAR_DIAGNOSTIC_SAFE_DETAIL_KEYS = [
+  'acked',
+  'bytes',
+  'changedRowCount',
+  'changedRowsTruncated',
+  'changedTableCount',
+  'changedTables',
+  'commitApplyMs',
+  'conflicts',
+  'cursor',
+  'durationMs',
+  'failed',
+  'headerCount',
+  'integrityVerifyMs',
+  'message',
+  'notifyMs',
+  'operation',
+  'pending',
+  'pullApplyMs',
+  'pullTransformMs',
+  'pushedCommits',
+  'reason',
+  'requestType',
+  'responseBytes',
+  'rowId',
+  'source',
+  'status',
+  'statusText',
+  'subscriptionStateMs',
+  'syncPackDecodeMs',
+  'table',
+  'total',
+  'totalMs',
+  'uploading',
+] as const;
+const SYNCULAR_DIAGNOSTIC_OMITTED_DETAIL_KEYS = [
+  'changedRows',
+  'subscriptions',
+  'phases',
+  'expectedSubscriptionIds',
+  'readySubscriptionIds',
+  'pendingSubscriptionIds',
+] as const;
+const SYNCULAR_DIAGNOSTIC_SENSITIVE_DETAIL_KEYS = [
+  'accesstoken',
+  'apikey',
+  'authorization',
+  'authtoken',
+  'mnemonic',
+  'password',
+  'plaintext',
+  'privatekey',
+  'refreshtoken',
+  'secret',
+  'seedphrase',
+  'signedurl',
+  'token',
+  'url',
+] as const;
+
+export type SyncularDiagnosticDetailPolicyDecision =
+  | 'safe'
+  | 'summarized'
+  | 'redacted'
+  | 'omitted';
+
+export const SYNCULAR_DIAGNOSTIC_DETAIL_POLICY = {
+  safeKeys: SYNCULAR_DIAGNOSTIC_SAFE_DETAIL_KEYS,
+  summarizedKeys: ['bootstrap'] as const,
+  omittedKeys: SYNCULAR_DIAGNOSTIC_OMITTED_DETAIL_KEYS,
+  sensitiveKeys: SYNCULAR_DIAGNOSTIC_SENSITIVE_DETAIL_KEYS,
+} as const;
 
 type ConsoleDiagnosticsClient = Pick<
   SyncularRuntimeClient,
@@ -105,65 +177,15 @@ const COMPACT_PROFILES: CompactProfile[] = [
   },
 ];
 
-const SIMPLE_DETAIL_KEYS = new Set([
-  'acked',
-  'bytes',
-  'changedRowCount',
-  'changedRows',
-  'changedRowsTruncated',
-  'changedTableCount',
-  'changedTables',
-  'commitApplyMs',
-  'conflicts',
-  'cursor',
-  'durationMs',
-  'failed',
-  'headerCount',
-  'integrityVerifyMs',
-  'message',
-  'notifyMs',
-  'operation',
-  'pending',
-  'pullApplyMs',
-  'pullTransformMs',
-  'pushedCommits',
-  'reason',
-  'requestType',
-  'responseBytes',
-  'rowId',
-  'source',
-  'status',
-  'statusText',
-  'subscriptionStateMs',
-  'syncPackDecodeMs',
-  'table',
-  'total',
-  'totalMs',
-  'uploading',
-]);
-
-const OMITTED_DETAIL_KEYS = new Set([
-  'changedRows',
-  'subscriptions',
-  'phases',
-  'expectedSubscriptionIds',
-  'readySubscriptionIds',
-  'pendingSubscriptionIds',
-]);
-
-const SENSITIVE_DETAIL_KEYS = new Set([
-  'accesstoken',
-  'apikey',
-  'authorization',
-  'authtoken',
-  'mnemonic',
-  'password',
-  'plaintext',
-  'privatekey',
-  'refreshtoken',
-  'secret',
-  'seedphrase',
-]);
+const SIMPLE_DETAIL_KEYS = new Set<string>(
+  SYNCULAR_DIAGNOSTIC_SAFE_DETAIL_KEYS
+);
+const OMITTED_DETAIL_KEYS = new Set<string>(
+  SYNCULAR_DIAGNOSTIC_OMITTED_DETAIL_KEYS
+);
+const SENSITIVE_DETAIL_KEYS = new Set<string>(
+  SYNCULAR_DIAGNOSTIC_SENSITIVE_DETAIL_KEYS
+);
 
 export function createSyncularConsoleDiagnosticsPublisher(
   client: ConsoleDiagnosticsClient,
@@ -419,22 +441,29 @@ function compactDiagnosticDetails(
 ): Record<string, unknown> | undefined {
   const compacted: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(details)) {
-    const normalizedKey = normalizeDiagnosticKey(key);
-    if (
-      SENSITIVE_DETAIL_KEYS.has(normalizedKey) ||
-      OMITTED_DETAIL_KEYS.has(key)
-    ) {
+    const decision = classifySyncularDiagnosticDetailKey(key);
+    if (decision === 'redacted' || decision === 'omitted') {
       continue;
     }
-    if (key === 'bootstrap') {
+    if (decision === 'summarized') {
       compacted.bootstrap = compactBootstrap(value);
       continue;
     }
-    if (!SIMPLE_DETAIL_KEYS.has(key)) continue;
     const compactedValue = compactDetailValue(value);
     if (compactedValue !== undefined) compacted[key] = compactedValue;
   }
   return Object.keys(compacted).length > 0 ? compacted : undefined;
+}
+
+export function classifySyncularDiagnosticDetailKey(
+  key: string
+): SyncularDiagnosticDetailPolicyDecision {
+  const normalizedKey = normalizeDiagnosticKey(key);
+  if (SENSITIVE_DETAIL_KEYS.has(normalizedKey)) return 'redacted';
+  if (key === 'bootstrap') return 'summarized';
+  if (OMITTED_DETAIL_KEYS.has(key)) return 'omitted';
+  if (SIMPLE_DETAIL_KEYS.has(key)) return 'safe';
+  return 'omitted';
 }
 
 function compactDetailValue(value: unknown): unknown {

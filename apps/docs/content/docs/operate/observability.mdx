@@ -88,6 +88,35 @@ const snapshot = await database.client.diagnosticSnapshot();
 // snapshot.recentSyncTimings, snapshot.outboxStats, snapshot.conflictStats, ...
 ```
 
+## Diagnostic Privacy And Audience
+
+Diagnostics are safe-by-default operational signals, not a raw payload export.
+Forward stable identifiers and summaries; keep secrets, signed URLs, tokens,
+full row payloads, encrypted plaintext, and arbitrary app data out of normal
+logs.
+
+For browser Console diagnostics, `@syncular/client` exports
+`SYNCULAR_DIAGNOSTIC_DETAIL_POLICY` and
+`classifySyncularDiagnosticDetailKey(...)` so app code and tests can use the
+same detail-key contract as the built-in publisher:
+
+| Detail decision | Meaning |
+| --- | --- |
+| `safe` | Forwarded with value compaction, such as `table`, `rowId`, `status`, `durationMs`, counters, and timings |
+| `summarized` | Reduced to counts or readiness fields, such as bootstrap phase summaries |
+| `redacted` | Dropped because the key names secrets, tokens, signed URLs, plaintext, private keys, or credentials |
+| `omitted` | Dropped by default because it may contain payloads, row arrays, subscription internals, or app-specific data |
+
+Pick the narrowest surface for the job:
+
+| Audience | Use |
+| --- | --- |
+| UI-facing app code | `getSyncularBrowserHealth(...)`, managed lifecycle status, generated readiness helpers, and stable `recommendedAction` values |
+| Operator/deploy | `syncular schema check --json`, `getSyncularServerSchemaReadiness(...)`, server telemetry, and Console request events |
+| Debug/console | `diagnosticSnapshot()` and Console diagnostics snapshots after redaction/compaction |
+| Testkit/E2E | `requireDiagnosticMarker(...)` and stable error/detail codes instead of message matching |
+| Advanced escape hatch | Raw diagnostics sinks for short-lived local debugging; redact before shipping to external services |
+
 ## Metrics worth watching
 
 These are the metrics Syncular emits today (verified against the server

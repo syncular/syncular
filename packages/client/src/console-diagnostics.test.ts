@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'bun:test';
 import {
   buildSyncularConsoleDiagnosticsPayload,
+  classifySyncularDiagnosticDetailKey,
   createSyncularConsoleDiagnosticsPublisher,
+  SYNCULAR_DIAGNOSTIC_DETAIL_POLICY,
 } from './console-diagnostics';
 import type {
   SyncularDiagnosticEvent,
@@ -33,6 +35,19 @@ describe('Syncular console diagnostics', () => {
       expect(event.details?.changedRows).toBeUndefined();
       expect(event.details?.bootstrap).not.toHaveProperty('subscriptions');
     }
+  });
+
+  it('classifies diagnostic detail keys for safe forwarding', () => {
+    expect(SYNCULAR_DIAGNOSTIC_DETAIL_POLICY.safeKeys).toContain('table');
+    expect(classifySyncularDiagnosticDetailKey('table')).toBe('safe');
+    expect(classifySyncularDiagnosticDetailKey('bootstrap')).toBe('summarized');
+    expect(classifySyncularDiagnosticDetailKey('changedRows')).toBe('omitted');
+    expect(classifySyncularDiagnosticDetailKey('authorization')).toBe(
+      'redacted'
+    );
+    expect(classifySyncularDiagnosticDetailKey('signedUrl')).toBe('redacted');
+    expect(classifySyncularDiagnosticDetailKey('token')).toBe('redacted');
+    expect(classifySyncularDiagnosticDetailKey('payload')).toBe('omitted');
   });
 
   it('publishes managed diagnostics without subscribing to lifecycle changes', async () => {
