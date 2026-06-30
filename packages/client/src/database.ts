@@ -33,6 +33,11 @@ import {
 import { createSyncularConsoleDiagnosticsPublisher } from './console-diagnostics';
 import { isSyncularOfflineError } from './errors';
 import {
+  type SyncularLocalVisibilityOptions,
+  type SyncularLocalVisibilityQuery,
+  waitForSyncularLocalVisibility,
+} from './local-visibility';
+import {
   createMutationsApi,
   type MutationsApi,
   type MutationsCommitFn,
@@ -97,6 +102,10 @@ export interface SyncularDatabase<DB> extends SyncularLiveQueries {
   start(): Promise<void>;
   stop(): Promise<void>;
   sync(): Promise<SyncularSyncResult>;
+  awaitLocalVisibility<TResult>(
+    query: SyncularLocalVisibilityQuery<DB, TResult>,
+    options?: SyncularLocalVisibilityOptions<TResult>
+  ): Promise<TResult>;
   on<T extends SyncularClientEventType>(
     event: T,
     listener: SyncularClientEventSink<T>
@@ -270,6 +279,15 @@ export async function createSyncularDatabase<DB>(
     start: () => lifecycle.start(),
     stop: () => lifecycle.stop(),
     sync: () => lifecycle.sync(),
+    awaitLocalVisibility: (query, visibilityOptions) =>
+      waitForSyncularLocalVisibility(
+        {
+          db,
+          on: (event, listener) => client.addEventListener(event, listener),
+        },
+        query,
+        visibilityOptions
+      ),
     on: (event, listener) => client.addEventListener(event, listener),
     getStatus: () => getSyncularClientStatus(client),
     setSubscriptions: (subscriptions) => client.setSubscriptions(subscriptions),

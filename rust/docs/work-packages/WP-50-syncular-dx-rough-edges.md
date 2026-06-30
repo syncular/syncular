@@ -448,6 +448,15 @@ online propagation, or reconnect behavior can change.
 - The `create-syncular-app` smoke now allocates free sync/Vite ports instead of
   assuming fixed ports, so the scaffold smoke cannot accidentally pass against
   or fail because of another local server.
+- 2026-06-30 second implementation slice added
+  `waitForSyncularLocalVisibility(...)` plus
+  `SyncularDatabase.awaitLocalVisibility(...)`, giving apps a public
+  query/predicate-based wait primitive for local read-model visibility after
+  authoritative commands, realtime wakeups, bootstrap updates, or matching
+  row-change events.
+- Local visibility timeouts now use the typed
+  `sync.local_visibility_timeout` error code with timeout and table details, so
+  app tests do not need to parse stale-read timeout text.
 
 ## Implementation Log
 
@@ -464,17 +473,32 @@ online propagation, or reconnect behavior can change.
   dependency symlinks to use package-local installed dependency paths.
 - 2026-06-30: Updated `packages/create-syncular-app/scripts/smoke.ts` to
   allocate free ports for the sync server and Vite before booting the scaffold.
+- 2026-06-30: Added `packages/client/src/local-visibility.ts` and exported it
+  from `@syncular/client`.
+- 2026-06-30: Added `SyncularDatabase.awaitLocalVisibility(...)` as the managed
+  database method over the standalone helper.
+- 2026-06-30: Added focused local-visibility tests for immediate resolution,
+  matching table events, unrelated table filtering, executable Kysely query
+  objects, typed timeout errors, and abort cleanup.
+- 2026-06-30: Added the `sync.local_visibility_timeout` core error definition.
 
 ## Latest Gates
 
-- `bun test packages/client/src/browser-health.test.ts packages/client/src/public-api.test.ts`
+Latest rerun used repo-pinned Bun `1.3.9` by prefixing `PATH` with a local
+`.context/bun-1.3.9` binary.
+
+- `bun test packages/client/src/browser-health.test.ts packages/client/src/local-visibility.test.ts packages/client/src/public-api.test.ts`
 - `bun --cwd packages/client tsgo`
+- `bun --cwd packages/core tsgo`
 - `bunx biome check packages/create-syncular-app/scripts/smoke.ts scripts/fresh-app-smokes.ts packages/client/src/browser-health.ts packages/client/src/browser-health.test.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/template/src/styles.css packages/create-syncular-app/template/README.md`
 - `bun --cwd packages/create-syncular-app tsgo`
 - `bun test packages/create-syncular-app/src/cli.test.ts`
 - `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke`
 - `bun --cwd packages/create-syncular-app smoke`
 - `bun run docs:stale-check`
+- `bunx biome check packages/client/src/local-visibility.ts packages/client/src/local-visibility.test.ts packages/client/src/database.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/core/src/error-responses.ts`
+- `bun test packages/syncular/src/cli.test.ts`
+- `bun scripts/fresh-app-smokes.ts --skip-rust --work-dir .context/wp50-fresh-app-smoke-local-visibility`
 - `git diff --check`
 
 ## Sequencing
@@ -484,8 +508,9 @@ online propagation, or reconnect behavior can change.
    proves a concrete app-facing rough edge.
 2. Browser/runtime health contract: first retained slice is done. Future slices
    should add missing setup/runtime error codes as concrete failures appear.
-3. Add the local visibility primitive and clarify bootstrap/sync semantics so
-   app code stops using manual `sync()` as a stale-read fix.
+3. Local visibility primitive: first retained slice is done with a
+   query/predicate helper and managed database method. Future generated helpers
+   can wrap it for command-specific or subscription-specific waits.
 4. Add the auth context/scope-change contract, then prove campaign join/change
    flows through realtime and local visibility.
 5. Add schema readiness and drift diagnostics before encouraging production
@@ -509,9 +534,9 @@ online propagation, or reconnect behavior can change.
   instead of a minimal app?
 - Which adapter matrix is worth smoke-testing in CI on every PR versus only in
   release rehearsal?
-- What should the first local visibility primitive target: table/scope
-  readiness, query result predicate, command id, or a generated helper per
-  mutation?
+- Should generated clients wrap local visibility per mutation/read model, or
+  keep the root query/predicate helper as the only public primitive until a
+  starter flow proves a narrower API?
 - Should auth context replacement live on the generated app client, the core
   database client, or both?
 - What is the blessed global/base-data sharing pattern for package releases

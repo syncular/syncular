@@ -174,6 +174,12 @@ export const SYNCULAR_ERROR_DEFINITIONS = {
     recommendedAction: 'retryLater',
     message: 'The client is offline.',
   },
+  'sync.local_visibility_timeout': {
+    category: 'not-found',
+    retryable: true,
+    recommendedAction: 'retryLater',
+    message: 'Timed out waiting for local Syncular visibility.',
+  },
   'sync.websocket_not_configured': {
     category: 'server',
     retryable: false,

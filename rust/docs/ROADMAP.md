@@ -71,15 +71,18 @@ read-only review:
 ## Now
 
 - `[~]` [`WP-50 Syncular DX Rough Edges`](work-packages/WP-50-syncular-dx-rough-edges.md)
-  - In progress. First retained slice adds an app-facing
+  - In progress. Retained slices add an app-facing
     `getSyncularBrowserHealth(...)` helper over existing diagnostics/status
-    data, wires the `create-syncular-app` starter to show storage durability,
-    subscription readiness, and realtime state, asserts the helper in the fresh
-    generated JS app smoke, and makes the scaffold smoke allocate free ports.
-    Focused client tests, package typechecks, fresh JS smoke, scaffold smoke,
-    docs stale check, and diff check passed locally. Next slice: local
-    visibility and clearer bootstrap/sync semantics so apps stop treating
-    manual `sync()` as a stale-read fix.
+    data, wire the `create-syncular-app` starter to show storage durability,
+    subscription readiness, and realtime state, assert the helper in the fresh
+    generated JS app smoke, make the scaffold smoke allocate free ports, and
+    add `waitForSyncularLocalVisibility(...)` plus
+    `SyncularDatabase.awaitLocalVisibility(...)` for query/predicate-based
+    local read-model visibility without manual `sync()` calls. Focused client
+    tests, package typechecks, fresh JS smoke, scaffold smoke, docs stale
+    check, and diff check passed locally. Next slice: auth context/scope-change
+    contract, then campaign join/change flows through realtime and local
+    visibility.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

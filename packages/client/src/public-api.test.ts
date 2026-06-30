@@ -14,6 +14,7 @@ import {
   SYNCULAR_WASM_BINARY_FILE,
   SYNCULAR_WASM_GLUE_FILE,
   SyncularCommandHistoryError,
+  waitForSyncularLocalVisibility,
 } from './index';
 
 describe('@syncular/client public API', () => {
@@ -49,6 +50,10 @@ describe('@syncular/client public API', () => {
 
   it('exports the browser health helper', () => {
     expect(typeof getSyncularBrowserHealth).toBe('function');
+  });
+
+  it('exports the local visibility helper', () => {
+    expect(typeof waitForSyncularLocalVisibility).toBe('function');
   });
 
   it('does not expose the removed standalone managed-client constructor', () => {
