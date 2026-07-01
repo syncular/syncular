@@ -6,6 +6,7 @@ import type {
   SyncularSyncRequestOptions,
   SyncularSyncResult,
 } from './types';
+import { createSyncularWorkerOperationQueue } from './worker-operation-queue';
 import type { SyncularWorkerEvent } from './worker-protocol';
 import { SYNCULAR_WORKER_PROTOCOL_VERSION } from './worker-protocol';
 import {
@@ -536,6 +537,51 @@ describe('Syncular worker realtime', () => {
         }),
       })
     );
+  });
+
+  it('runs realtime recovery through the shared worker operation queue', async () => {
+    const client = new FakeRealtimeClient();
+    const sockets: FakeRealtimeSocket[] = [];
+    const queue = createSyncularWorkerOperationQueue();
+    let releaseExistingOperation: (() => void) | undefined;
+    const existingOperation = queue.run(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseExistingOperation = resolve;
+        })
+    );
+    const controller = new SyncularWorkerRealtimeController({
+      getClient: () => client,
+      getConfig: () => ({
+        baseUrl: '/sync',
+        actorId: 'actor',
+        clientId: 'client-1',
+      }),
+      getLocationOrigin: () => 'https://app.example',
+      createWebSocket: (url) => {
+        const socket = new FakeRealtimeSocket(url);
+        sockets.push(socket);
+        return socket;
+      },
+      postEvent: () => {},
+      runClientOperation: (operation) => queue.run(operation),
+    });
+
+    controller.start({ heartbeatTimeoutMs: 0 });
+    sockets[0]!.open();
+    sockets[0]!.message({
+      event: 'sync',
+      data: { cursor: 42, requiresPull: true },
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(client.syncPulls).toBe(0);
+
+    releaseExistingOperation?.();
+    await existingOperation;
+    await waitFor(() => client.syncPulls === 1);
+
+    client.resolvePull();
   });
 
   it('applies binary websocket sync packs without an HTTP pull', async () => {

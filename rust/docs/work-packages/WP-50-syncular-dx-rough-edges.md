@@ -3839,19 +3839,28 @@ Most recent mutation-status rerun:
   `data-syncular-lifecycle-pause-count` serialize as non-numeric. The starter
   now preserves the pause fields on resume completion and keeps heavyweight
   diagnostics off `lifecycleChanged` so support-bundle collection does not loop
-  on diagnostics that themselves emit lifecycle updates. Local focused `tsgo`,
-  lint, diff, and `create-syncular-app` smoke gates pass with Bun 1.3.9; Chrome
-  is not installed locally, so the next hosted artifact remains the authority
-  for the required real-browser path. Remaining depth is observing that hosted
-  `starter-browser-preview` job and deciding whether future hosted artifact
-  uploads need richer Console/Fleet orchestration.
+  on diagnostics that themselves emit lifecycle updates. Hosted run
+  `28524989381` then reached ready UI and `diagnostics-ready`, but failed the
+  `online` lifecycle resume proof with `lifecycle-resume-errors`; the failure
+  artifact showed `resumeFromBackground()` throwing
+  `recursive use of an object detected which would lead to unsafe aliasing in
+  rust` while auth/realtime/sync and diagnostic worker requests could overlap
+  the same Rust/WASM client. The browser worker entrypoint now serializes
+  non-cancel app requests through a shared operation queue, and realtime
+  websocket recovery uses the same queue before running `syncPull()`,
+  binary-sync-pack apply, or live-query drain calls. Local client typecheck,
+  full client tests (`289` tests), focused worker queue/realtime/lifecycle
+  tests, focused Biome, diff check, `create-syncular-app` smoke, repo
+  typecheck, repo lint, and root tests (`1208` tests) pass with Bun 1.3.9;
+  Chrome is not installed locally, so the next hosted artifact remains the
+  authority for the required real-browser path.
 
 ## Next Action
 
-Pick the next implementation slice from the remaining risks. Strong candidates
-are observing the hosted starter browser-preview job after post-mount
-diagnostic sequencing, deeper browser suspension/shutdown lifecycle coverage,
-canonical real-browser support-bundle failure artifacts,
+Pick the next implementation slice from the remaining risks. Immediate next
+step is observing the hosted starter browser-preview job after the worker-side
+Rust operation queue. Strong follow-ups are deeper browser suspension/shutdown
+lifecycle coverage, canonical real-browser support-bundle failure artifacts,
 browser/bundler matrix execution, or automating production-ops checks, because
 those remain broad DX holes after the first local recovery browser proof,
 upgrade runbook, production-ops runbook, built-preview asset smoke, runtime

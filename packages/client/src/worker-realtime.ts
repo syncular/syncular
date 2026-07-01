@@ -79,6 +79,7 @@ export interface SyncularWorkerRealtimeControllerOptions {
   postDiagnostic?: (
     event: Omit<SyncularDiagnosticEvent, 'at'> & { at?: number }
   ) => void;
+  runClientOperation?: <T>(operation: () => T | Promise<T>) => Promise<T>;
   setTimeout?: typeof setTimeout;
   clearTimeout?: typeof clearTimeout;
   random?: () => number;
@@ -414,9 +415,11 @@ export class SyncularWorkerRealtimeController {
           changedRowsTruncated: result.changedRowsTruncated,
         });
       }
-      const events = this.controllerOptions
-        .getClient()
-        .drainLiveQueryEvents<Record<string, unknown>>();
+      const events = await this.#runClientOperation(() =>
+        this.controllerOptions
+          .getClient()
+          .drainLiveQueryEvents<Record<string, unknown>>()
+      );
       if (events.length > 0) {
         this.controllerOptions.postEvent({
           protocolVersion: SYNCULAR_WORKER_PROTOCOL_VERSION,
@@ -500,22 +503,21 @@ export class SyncularWorkerRealtimeController {
           payloadBytes: message.payloadBytes ?? null,
         },
       });
-      return client.syncPull({ syncAttempt });
+      return this.#runClientOperation(() => client.syncPull({ syncAttempt }));
     }
-    if (
-      message?.syncPackBytes &&
-      typeof client.applyRealtimeSyncPack === 'function'
-    ) {
+    const applyRealtimeSyncPack = client.applyRealtimeSyncPack?.bind(client);
+    if (message?.syncPackBytes && applyRealtimeSyncPack) {
+      const syncPackBytes = message.syncPackBytes;
       try {
-        const result = await client.applyRealtimeSyncPack(
-          message.syncPackBytes
+        const result = await this.#runClientOperation(() =>
+          applyRealtimeSyncPack(syncPackBytes)
         );
         this.#diagnostic({
           level: 'debug',
           code: 'realtime.binary_applied',
           message: 'Syncular realtime binary sync-pack applied',
           details: {
-            bytes: message.syncPackBytes.byteLength,
+            bytes: syncPackBytes.byteLength,
             totalMs: result.timings.totalMs,
             syncPackDecodeMs: result.timings.syncPackDecodeMs,
             pullTransformMs: result.timings.pullTransformMs,
@@ -536,7 +538,7 @@ export class SyncularWorkerRealtimeController {
           message:
             'Syncular realtime binary sync-pack apply failed; using HTTP pull recovery',
           details: {
-            bytes: message.syncPackBytes.byteLength,
+            bytes: syncPackBytes.byteLength,
           },
         });
       }
@@ -555,7 +557,12 @@ export class SyncularWorkerRealtimeController {
         payloadBytes: message?.payloadBytes ?? null,
       },
     });
-    return client.syncPull({ syncAttempt });
+    return this.#runClientOperation(() => client.syncPull({ syncAttempt }));
+  }
+
+  #runClientOperation<T>(operation: () => T | Promise<T>): Promise<T> {
+    const run = this.controllerOptions.runClientOperation;
+    return run ? run(operation) : Promise.resolve().then(operation);
   }
 
   #clearReconnectTimer(): void {

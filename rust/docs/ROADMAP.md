@@ -321,11 +321,20 @@ read-only review:
     the old DevTools timeout, then exposed a lifecycle marker bug where
     `onResumeComplete` dropped pause fields and made failure-artifact validation
     see a non-numeric pause count; the starter now preserves pause fields and
-    avoids running heavyweight diagnostics on every lifecycle change. Local
-    `create-syncular-app` type/lint/smoke gates pass with Bun 1.3.9; next
-    slice is observing the hosted `starter-browser-preview` Chrome job for this
-    lifecycle marker fix or continuing browser/framework runtime execution
-    beyond Vite. The
+    avoids running heavyweight diagnostics on every lifecycle change. Hosted
+    run `28524989381` then reached ready UI and diagnostics-ready, but failed
+    the `online` lifecycle resume proof with the Rust/WASM aliasing error
+    `recursive use of an object detected which would lead to unsafe aliasing in
+    rust` while auth/realtime/sync and diagnostics requests overlapped the same
+    worker-owned client. Browser worker requests and realtime-triggered recovery
+    pulls now share a small operation queue before touching the Rust client;
+    `cancel` still bypasses the queue so request timeouts can abort active work.
+    Local client typecheck, full client tests (`289` tests), focused worker
+    queue/realtime/lifecycle tests, focused Biome, diff check,
+    `create-syncular-app` smoke, repo typecheck, repo lint, and root tests
+    (`1208` tests) pass with Bun 1.3.9; Chrome is not installed locally, so the
+    hosted `starter-browser-preview` job remains the authority for the required
+    real-browser path. The
     post-publish
     JavaScript install smoke now
     also creates a fresh optional import matrix project that installs

@@ -25,6 +25,7 @@ import {
   getSyncularWasmUrl,
   type SyncularWasmGlue,
 } from './wasm-runtime';
+import { createSyncularWorkerOperationQueue } from './worker-operation-queue';
 import type {
   SyncularWorkerErrorPayload,
   SyncularWorkerOutboundMessage,
@@ -43,6 +44,7 @@ let openedRuntime: SyncularWorkerRuntimeArtifact | undefined;
 let removeRowsChangedListener: (() => void) | undefined;
 const canceledRequests = new Set<number>();
 const abortControllers = new Map<number, AbortController>();
+const clientOperations = createSyncularWorkerOperationQueue();
 const realtime = new SyncularWorkerRealtimeController({
   getClient: requireClient,
   getConfig: () => openedConfig,
@@ -53,10 +55,16 @@ const realtime = new SyncularWorkerRealtimeController({
   createWebSocket: (url) => new WebSocket(url),
   postEvent: (event) => self.postMessage(event),
   postDiagnostic,
+  runClientOperation: (operation) => clientOperations.run(operation),
 });
 
 self.onmessage = (event: MessageEvent<SyncularWorkerRequest>) => {
-  void handleRequest(event.data);
+  const request = event.data;
+  if (request.type === 'cancel') {
+    void handleRequest(request);
+    return;
+  }
+  void clientOperations.run(() => handleRequest(request));
 };
 
 async function handleRequest(request: SyncularWorkerRequest): Promise<void> {
