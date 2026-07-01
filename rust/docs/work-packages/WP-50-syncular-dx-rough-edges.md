@@ -2191,6 +2191,13 @@ online propagation, or reconnect behavior can change.
   evidence, dispatches `resume`, and waits for a completed
   `resumeFromBackground()` marker before the existing `beforeunload` shutdown
   proof.
+- 2026-07-01: Extended the starter Chrome/CDP lifecycle proof beyond
+  DOM-dispatched page lifecycle events by forcing Chrome's page lifecycle state
+  through `Page.setWebLifecycleState` with `frozen` and then `active`. The
+  smoke waits for the same app-facing `freeze` pause marker and browser
+  `resume` foreground catch-up marker after Chrome reactivates the page. This
+  narrows the browser-automation gap while leaving true target-browser
+  backgrounding/discard, storage shutdown, and quota/eviction work open.
 - 2026-07-01: Added the first starter two-tab runtime proof for Chrome-capable
   runners. The starter can derive a per-tab client id/database file from
   `?syncularClientId=...`; the CDP smoke opens a second tab with a distinct
@@ -2842,7 +2849,30 @@ Most recent Cloudflare runtime Console UI summary rerun:
     row. The production build emitted the existing Vite large-chunk warning
     only.
 
-Most recent browser lifecycle resume helper rerun:
+Most recent Chrome CDP lifecycle-state proof local rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `git diff --check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts rust/docs/ROADMAP.md rust/docs/QUALITY_GATES.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
+  - Passed starter TypeScript checks.
+  - Passed whitespace checks for the current diff.
+  - Biome checked the starter smoke script. The repo Biome config ignores the
+    Markdown planning docs, so `git diff --check` and manual Markdown reads
+    remain the doc sanity checks for this slice.
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, built runtime asset checks,
+    browser failure artifact shape self-check, and safe smoke metrics.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available. On browser-capable runners, the CDP path now
+    dispatches DOM `freeze`/`resume`, then forces Chrome's page lifecycle state
+    through `Page.setWebLifecycleState({ state: "frozen" })` and
+    `Page.setWebLifecycleState({ state: "active" })`, waits for the same
+    app-facing `freeze` pause marker and browser `resume` foreground catch-up
+    marker, and then continues through the existing `beforeunload`, Web Lock,
+    two-tab, reload, restart, and support-bundle artifact proofs.
+
+Previous browser lifecycle resume helper rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-lifecycle.test.ts packages/client/src/public-api.test.ts`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
@@ -3732,15 +3762,16 @@ Most recent mutation-status rerun:
   non-destructive support-bundle recovery action times out, release the lock,
   and prove that the same action completes under the acquired lock. The helper
   and starter Chrome/CDP proof now also cover Page Lifecycle `freeze` and
-  browser `resume` events as explicit suspension/resume intent markers.
-  Remaining work is richer browser lifecycle execution: actual backgrounded
-  tab suspension/resume from browser automation or target browsers, storage
-  shutdown, quota/eviction, database lock contention beyond the local recovery
-  action coordinator, and deeper recovery coordination for persistent browser
-  databases beyond dispatched page lifecycle events and lock-serialized
-  foreground resume/recovery actions. Local execution of the new contention
-  branches still needs a Chrome-capable runner; this machine has no
-  Chrome/Chromium binary.
+  browser `resume` events through both DOM-dispatched events and Chrome's
+  `Page.setWebLifecycleState("frozen" | "active")` automation hook.
+  Remaining work is richer browser lifecycle execution: actual backgrounded or
+  discarded tab suspension/restoration outside CDP lifecycle-state forcing,
+  storage shutdown, quota/eviction, database lock contention beyond the local
+  recovery action coordinator, and deeper recovery coordination for persistent
+  browser databases beyond dispatched page lifecycle events, CDP lifecycle
+  forcing, and lock-serialized foreground resume/recovery actions. Local
+  execution of the new browser branches still needs a Chrome-capable runner;
+  this machine has no Chrome/Chromium binary.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
   and guarded sync-state reset, with a focused Hono/WASM proof for corrupted
@@ -3761,11 +3792,13 @@ Most recent mutation-status rerun:
   browser-observed recovery lock proof by timing out and then completing the
   non-destructive support-bundle recovery action under the real browser Web
   Locks API. The root lifecycle helper and starter Chrome/CDP proof now also
-  cover Page Lifecycle `freeze` and browser `resume` events. Remaining work is
-  richer browser-process proof: actual target-browser background suspension
-  and restoration, shutdown/restart states, storage shutdown, quota/eviction,
-  database lock contention beyond the recovery action coordinator, and deeper
-  persistent database recovery coordination.
+  cover Page Lifecycle `freeze` and browser `resume` events through
+  DOM-dispatched events and Chrome's `Page.setWebLifecycleState` frozen/active
+  path. Remaining work is richer browser-process proof: actual target-browser
+  background/discard suspension and restoration, shutdown/restart states,
+  storage shutdown, quota/eviction, database lock contention beyond the
+  recovery action coordinator, and deeper persistent database recovery
+  coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,

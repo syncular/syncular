@@ -14,8 +14,8 @@ import { Buffer } from 'node:buffer';
  * 4. When Chrome/Chromium is available, opens the built preview in a real
  *    browser and waits for the starter's Syncular health/schema/support lines.
  *    The browser path also proves pagehide/freeze/beforeunload pause
- *    evidence, restored-page, online, and page-lifecycle resume signals, two-tab
- *    lock-coordinated lifecycle resume, browser-observed lifecycle Web Lock
+ *    evidence, restored-page, online, DOM and CDP page-lifecycle resume
+ *    signals, two-tab lock-coordinated lifecycle resume, browser-observed lifecycle Web Lock
  *    contention timeout/recovery, browser-observed local recovery Web Lock
  *    contention timeout/recovery, two-tab propagation, same-client
  *    page reload/reopen persistence, and
@@ -1360,12 +1360,33 @@ async function proveStarterBrowserLifecycleResume(
     timeoutReason: 'lifecycle-resume-event-timeout',
   });
 
+  const cdpFreezeCount = freezeCount + 1;
+  await setStarterChromeWebLifecycleState(session, 'frozen');
+  await setStarterChromeWebLifecycleState(session, 'active');
+  await waitForStarterLifecyclePause({
+    expectedCount: cdpFreezeCount,
+    expectedReason: 'freeze',
+    expectedVisibilityState: 'visible',
+    failureArtifactPath,
+    failureMetrics,
+    session,
+    timeoutReason: 'lifecycle-cdp-freeze-timeout',
+  });
+  await waitForStarterLifecycleResume({
+    expectedCount: pageshowCount + 3,
+    expectedReason: 'resume',
+    failureArtifactPath,
+    failureMetrics,
+    session,
+    timeoutReason: 'lifecycle-cdp-active-timeout',
+  });
+
   await session.evaluate(`(() => {
     window.dispatchEvent(new Event('beforeunload'));
     return true;
   })()`);
   await waitForStarterLifecyclePause({
-    expectedCount: freezeCount + 1,
+    expectedCount: cdpFreezeCount + 1,
     expectedReason: 'beforeunload',
     expectedShutdownSignalCount: 1,
     failureArtifactPath,
@@ -1373,6 +1394,13 @@ async function proveStarterBrowserLifecycleResume(
     session,
     timeoutReason: 'lifecycle-beforeunload-timeout',
   });
+}
+
+async function setStarterChromeWebLifecycleState(
+  session: CdpSession,
+  state: 'active' | 'frozen'
+): Promise<void> {
+  await session.send('Page.setWebLifecycleState', { state });
 }
 
 async function proveStarterLifecycleLockContention(args: {
