@@ -44,7 +44,8 @@ use `minor`), and describe the change. Commit the generated
 3. Refresh the lockfile and review: `bun install`, then inspect the diff
    (versions, changelogs, Cargo.toml files).
 4. Optionally rehearse: `bun run release:rehearsal` (npm + cargo publish
-   dry-runs in a clean worktree, fresh-app smokes, docs stale check).
+   dry-runs in a clean worktree, fresh-app smokes, Next/Vite framework import
+   smokes, docs stale check).
    To exercise native Node sqlite driver packaging on a runner with native
    module support, also run:
 

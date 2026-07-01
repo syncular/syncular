@@ -8,6 +8,7 @@ interface Options {
   allowDirty: boolean;
   skipPublishDryRuns: boolean;
   skipFreshAppSmokes: boolean;
+  skipFrameworkImportSmokes: boolean;
   skipDocsStaleCheck: boolean;
   keepWorktree: boolean;
   workDir: string;
@@ -23,6 +24,8 @@ options:
   --allow-dirty               Allow a dirty worktree for local rehearsal
   --skip-publish-dry-runs     Skip npm and Cargo publish dry-runs
   --skip-fresh-app-smokes     Skip local fresh-app generation smokes
+  --skip-framework-import-smokes
+                              Skip local Next/Vite root import smokes
   --skip-docs-stale-check     Skip stale public-docs checks
   --work-dir <path>           Publish dry-run worktree path (default: .context/release-rehearsal/<version>)
   --keep-worktree             Keep the publish dry-run worktree after the run
@@ -60,6 +63,7 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
   let allowDirty = false;
   let skipPublishDryRuns = false;
   let skipFreshAppSmokes = false;
+  let skipFrameworkImportSmokes = false;
   let skipDocsStaleCheck = false;
   let keepWorktree = false;
   let workDir = '';
@@ -84,6 +88,11 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
 
     if (arg === '--skip-fresh-app-smokes') {
       skipFreshAppSmokes = true;
+      continue;
+    }
+
+    if (arg === '--skip-framework-import-smokes') {
+      skipFrameworkImportSmokes = true;
       continue;
     }
 
@@ -129,6 +138,7 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
     allowDirty,
     skipPublishDryRuns,
     skipFreshAppSmokes,
+    skipFrameworkImportSmokes,
     skipDocsStaleCheck,
     keepWorktree,
     workDir,
@@ -298,6 +308,9 @@ async function main(): Promise<void> {
   }
   if (!options.skipFreshAppSmokes) {
     await run('bun', ['run', 'fresh-app-smokes']);
+  }
+  if (!options.skipFrameworkImportSmokes) {
+    await run('bun', ['run', 'framework-import-smokes']);
   }
   if (!options.skipPublishDryRuns) {
     await runPublishDryRuns(options, sourceDirty);

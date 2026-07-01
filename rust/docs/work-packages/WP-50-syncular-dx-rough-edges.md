@@ -1522,6 +1522,10 @@ online propagation, or reconnect behavior can change.
   import marker. The smoke resolver now also understands Bun's
   `node_modules/.bun/<package>@.../node_modules/<package>` dependency layout so
   it can reuse workspace-installed Vite without a network install.
+- 2026-07-01: Wired `bun run release:rehearsal` to run
+  `framework-import-smokes` by default after docs/fresh-app checks and before
+  publish dry-runs, with `--skip-framework-import-smokes` for local iteration
+  when a maintainer is not exercising bundler/package-surface readiness.
 - 2026-07-01: Wired the `create-syncular-app` starter to export a composed
   redacted support-bundle summary after the database opens. The task panel now
   exposes stable support-bundle DOM markers for status, redaction, section
@@ -1780,6 +1784,14 @@ Most recent framework-import-smoke rerun:
 - `bun run docs:stale-check`
 - `git diff --check`
 
+Most recent release-rehearsal framework-smoke wiring rerun:
+
+- `bunx biome check scripts/release-rehearsal.ts scripts/framework-import-smokes.ts package.json`
+- `bun scripts/release-rehearsal.ts --help`
+- `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check`
+- `bun run docs:stale-check`
+- `git diff --check`
+
 Most recent local-recovery rerun:
 
 - `bun test packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts`
@@ -2029,9 +2041,10 @@ Most recent mutation-status rerun:
   roots from source and verifies the WASM glue dynamic import path is
   warning-clean under webpack, and a Vite 8 browser production-build smoke
   that follows browser-conditioned package exports for the client root.
-  Remaining matrix work is real browser/framework execution beyond these build
-  proofs, especially Vite runtime, Cloudflare, Safari, Firefox, private mode,
-  WebViews, and PWAs.
+  Release rehearsal now runs those framework build proofs by default before
+  publish dry-runs. Remaining matrix work is real browser/framework execution
+  beyond these build proofs, especially Vite runtime, Cloudflare, Safari,
+  Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
