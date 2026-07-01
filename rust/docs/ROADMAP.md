@@ -234,11 +234,12 @@ read-only review:
     visibility, plus deployment-preflight storage/quota status when Chrome/CDP
     is available, including available bytes, usage ratio, and quota pressure.
     Hosted CI narrowed the remaining browser-preview failure to first paint
-    being blocked while lifecycle sync/realtime had already started; the
-    starter now resolves after local database/schema/subscription setup,
-    renders the local-first UI, starts sync in a post-mount frame-yielded
-    background effect, and exposes a hidden `starterOpen` phase/diagnostic
-    marker that the Chrome/CDP artifact records.
+    being blocked after local storage/auth setup but before the app could
+    commit the ready render; the starter now resolves after local
+    database/schema setup, renders the local-first UI, then registers default
+    subscriptions and starts sync in a post-mount frame-yielded background
+    effect while exposing a hidden `starterOpen` phase/diagnostic marker that
+    the Chrome/CDP artifact records.
     The Console client detail runtime panel now renders those browser-preview
     asset, support-policy, deployment-preflight, service-worker, quota, and
     lifecycle/Web Lock summaries from the stored quick fields, so operators

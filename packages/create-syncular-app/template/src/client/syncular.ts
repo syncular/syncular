@@ -7,6 +7,7 @@ import SyncularWorker from '@syncular/client/worker?worker';
 import type { Selectable } from 'kysely';
 import {
   createSyncularAppDatabase,
+  defaultSyncularSubscriptions,
   type SyncularAppDatabase,
   type SyncularAppDb,
   syncularGeneratedRequiredRuntimeFeatures,
@@ -31,7 +32,13 @@ export {
 /** The managed client surface that `@syncular/client/react` consumes. */
 export type AppSyncClient = SyncularAppDatabase;
 
-export type StarterOpenPhase = 'idle' | 'preflight' | 'database' | 'ready';
+export type StarterOpenPhase =
+  | 'idle'
+  | 'preflight'
+  | 'database'
+  | 'ready'
+  | 'subscriptions'
+  | 'sync';
 
 export interface OpenAppClientOptions {
   onDiagnostic?: (event: SyncularDiagnosticEvent) => void;
@@ -62,6 +69,16 @@ function createSyncularStarterWorker() {
 const syncBaseUrl =
   import.meta.env.VITE_SYNCULAR_SYNC_URL ?? 'http://127.0.0.1:4100/sync';
 
+function yieldToBrowser(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame !== 'function') {
+      setTimeout(resolve, 0);
+      return;
+    }
+    requestAnimationFrame(() => setTimeout(resolve, 0));
+  });
+}
+
 function currentClientId(): string {
   if (typeof window === 'undefined') return defaultClientId;
   const requested = new URLSearchParams(window.location.search).get(
@@ -74,9 +91,9 @@ function currentClientId(): string {
 
 /**
  * Opens the local database (SQLite persisted in IndexedDB). The generated
- * factory installs the app schema and registers the default subscriptions
- * before resolving. The React app starts the sync lifecycle after the local
- * database is mounted so first paint is not blocked on network/realtime work.
+ * factory installs the app schema before resolving. The React app registers
+ * subscriptions and starts the sync lifecycle after the local database is
+ * mounted so first paint is not blocked on bootstrap/network/realtime work.
  */
 export async function openAppClient(
   options: OpenAppClientOptions = {}
@@ -87,6 +104,7 @@ export async function openAppClient(
       ? 'syncular-app-v1.sqlite'
       : `syncular-app-v1-${clientId}.sqlite`;
   options.onPhase?.('preflight');
+  await yieldToBrowser();
   const preflight = await getSyncularBrowserDeploymentPreflight({
     requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
     runtimeArtifacts: syncularStarterRuntimeArtifacts,
@@ -103,6 +121,7 @@ export async function openAppClient(
   }
 
   options.onPhase?.('database');
+  await yieldToBrowser();
   const database = await createSyncularAppDatabase({
     config: {
       baseUrl: syncBaseUrl,
@@ -113,6 +132,7 @@ export async function openAppClient(
     },
     worker: createSyncularStarterWorker,
     runtimeArtifacts: syncularStarterRuntimeArtifacts,
+    subscriptions: false,
     requestTimeoutMs: 15_000,
     lifecycle: { autoStart: false },
     getHeaders: async () => ({
@@ -128,4 +148,13 @@ export async function openAppClient(
 
   options.onPhase?.('ready');
   return database;
+}
+
+export async function installAppClientSubscriptions(
+  client: AppSyncClient
+): Promise<void> {
+  await yieldToBrowser();
+  await client.setSubscriptions(
+    defaultSyncularSubscriptions({ actorId: appActorId })
+  );
 }

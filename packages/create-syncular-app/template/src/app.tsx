@@ -17,11 +17,12 @@ import {
 } from '@syncular/client';
 import { createSyncularReact } from '@syncular/client/react';
 import type { Dispatch, FormEvent, SetStateAction } from 'react';
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   type AppDb,
   type AppSyncClient,
   appActorId,
+  installAppClientSubscriptions,
   openAppClient,
   type StarterOpenPhase,
   syncularGeneratedRequiredRuntimeFeatures,
@@ -174,25 +175,91 @@ export function App() {
   const [starterTimeline, setStarterTimeline] =
     useState<StarterTimelinePreview>(initialStarterTimeline);
 
+  const writeStarterOpenMarker = useCallback(
+    (next: Partial<StarterOpenPreview>) => {
+      const marker = document.querySelector<HTMLElement>(
+        '[data-syncular-starter-open-phase]'
+      );
+      if (!marker) return;
+      if (next.diagnosticCode !== undefined) {
+        marker.setAttribute(
+          'data-syncular-starter-open-diagnostic-code',
+          next.diagnosticCode ?? ''
+        );
+      }
+      if (next.diagnosticCount !== undefined) {
+        marker.setAttribute(
+          'data-syncular-starter-open-diagnostic-count',
+          String(next.diagnosticCount)
+        );
+      }
+      if (next.diagnosticLevel !== undefined) {
+        marker.setAttribute(
+          'data-syncular-starter-open-diagnostic-level',
+          next.diagnosticLevel ?? ''
+        );
+      }
+      if (next.diagnosticSource !== undefined) {
+        marker.setAttribute(
+          'data-syncular-starter-open-diagnostic-source',
+          next.diagnosticSource ?? ''
+        );
+      }
+      if (next.error !== undefined) {
+        marker.setAttribute(
+          'data-syncular-starter-open-error',
+          next.error ?? ''
+        );
+      }
+      if (next.phase !== undefined) {
+        marker.setAttribute('data-syncular-starter-open-phase', next.phase);
+      }
+    },
+    []
+  );
+
+  const reportStarterOpenPhase = useCallback(
+    (phase: StarterOpenPhase) => {
+      console.info('[syncular-starter]', 'open', phase);
+      writeStarterOpenMarker({ error: null, phase });
+      setStarterOpen((current) => ({ ...current, error: null, phase }));
+    },
+    [writeStarterOpenMarker]
+  );
+
+  const reportStarterOpenError = useCallback(
+    (error: unknown) => {
+      const message = errorMessage(error);
+      setOpenError(message);
+      writeStarterOpenMarker({ error: message });
+      setStarterOpen((current) => ({ ...current, error: message }));
+    },
+    [writeStarterOpenMarker]
+  );
+
   useEffect(() => {
     let disposed = false;
     let opened: AppSyncClient | null = null;
     let lifecycleResume: SyncularBrowserLifecycleResumeController | null = null;
     const reportPhase = (phase: StarterOpenPhase) => {
       if (!disposed) {
-        setStarterOpen((current) => ({ ...current, error: null, phase }));
+        reportStarterOpenPhase(phase);
       }
     };
     const reportDiagnostic = (event: SyncularDiagnosticEvent) => {
       console.info('[syncular-starter]', event.source, event.code);
       if (!disposed) {
-        setStarterOpen((current) => ({
-          ...current,
-          diagnosticCode: event.code,
-          diagnosticCount: current.diagnosticCount + 1,
-          diagnosticLevel: event.level,
-          diagnosticSource: event.source,
-        }));
+        setStarterOpen((current) => {
+          const next = {
+            ...current,
+            diagnosticCode: event.code,
+            diagnosticCount: current.diagnosticCount + 1,
+            diagnosticLevel: event.level,
+            diagnosticSource: event.source,
+          };
+          writeStarterOpenMarker(next);
+          return next;
+        });
       }
     };
 
@@ -279,11 +346,7 @@ export function App() {
       })
       .catch((error) => {
         if (!disposed) {
-          setOpenError(errorMessage(error));
-          setStarterOpen((current) => ({
-            ...current,
-            error: errorMessage(error),
-          }));
+          reportStarterOpenError(error);
         }
       });
 
@@ -292,7 +355,7 @@ export function App() {
       lifecycleResume?.destroy();
       if (opened) void opened.close().catch(() => undefined);
     };
-  }, []);
+  }, [reportStarterOpenError, reportStarterOpenPhase, writeStarterOpenMarker]);
 
   useEffect(() => {
     if (!client) return undefined;
@@ -300,14 +363,14 @@ export function App() {
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const frame = requestAnimationFrame(() => {
       timeout = setTimeout(() => {
-        void client.start().catch((error) => {
-          if (!disposed) {
-            setOpenError(errorMessage(error));
-            setStarterOpen((current) => ({
-              ...current,
-              error: errorMessage(error),
-            }));
-          }
+        void (async () => {
+          reportStarterOpenPhase('subscriptions');
+          await installAppClientSubscriptions(client);
+          if (disposed) return;
+          reportStarterOpenPhase('sync');
+          await client.start();
+        })().catch((error) => {
+          if (!disposed) reportStarterOpenError(error);
         });
       }, 0);
     });
@@ -316,7 +379,7 @@ export function App() {
       cancelAnimationFrame(frame);
       if (timeout) clearTimeout(timeout);
     };
-  }, [client]);
+  }, [client, reportStarterOpenError, reportStarterOpenPhase]);
 
   return (
     <main className="app-shell">
