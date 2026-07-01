@@ -3780,15 +3780,23 @@ Most recent mutation-status rerun:
   installed Ubuntu's Binaryen 108 package, matching the known old wasm-opt
   externref table bug. Shared setup now installs official Binaryen 130 and the
   release build script rejects `wasm-opt` versions older than 123 before
-  producing package artifacts. Remaining depth is observing hosted
+  producing package artifacts. Hosted run `28517563893` confirmed the Binaryen
+  pin (`wasm-opt version 130`) and advanced through app startup/realtime
+  connect, but the `starter-browser-preview` smoke then hung until GitHub
+  canceled the 20-minute job before the upload-artifact step could run. The
+  smoke harness now binds Chrome DevTools to `127.0.0.1`, normalizes
+  `localhost` WebSocket URLs to `127.0.0.1`, adds explicit CDP connect/command
+  timeouts, logs each real-browser phase, and writes a bounded
+  `real-browser-smoke-timeout`/`real-browser-smoke-error` artifact if the CDP
+  path stalls. Remaining depth is observing the next hosted
   browser/Cloudflare artifacts and deciding whether future hosted artifact
   uploads need richer Console/Fleet orchestration.
 
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. Strong candidates
-are observing the hosted starter browser-preview job after the Binaryen 130 CI
-pin, deeper browser
+are observing the hosted starter browser-preview job after the CDP timeout
+harness hardening, deeper browser
 suspension/shutdown lifecycle coverage, canonical real-browser support-bundle
 failure artifacts,
 browser/bundler matrix execution, or automating production-ops checks, because

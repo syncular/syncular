@@ -42,6 +42,9 @@ const repoRoot = resolve(join(packageDir, '../..'));
 const STARTER_LIFECYCLE_RESUME_LOCK_NAME =
   'syncular:create-syncular-app:lifecycle-resume';
 const STARTER_LIFECYCLE_RESUME_LOCK_TIMEOUT_MS = 10_000;
+const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
+const CDP_CONNECT_TIMEOUT_MS = 10_000;
+const CDP_COMMAND_TIMEOUT_MS = 10_000;
 const keep = process.argv.includes('--keep');
 const requireBrowserPreviewSmoke =
   process.env.SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE === 'required' ||
@@ -448,30 +451,36 @@ async function runBrowserPreviewSmoke(args: {
   });
   let propagatedTitle: string | null = null;
 
-  try {
+  const smokeOperation = (async () => {
+    log('real-browser smoke: creating first Chrome target');
     const target = await createChromeTarget(chrome.debugPort, targetUrl);
     const session = await CdpSession.connect(target.webSocketDebuggerUrl);
     let secondSession: CdpSession | null = null;
     try {
+      log('real-browser smoke: enabling first Chrome target');
       await session.send('Runtime.enable');
       await session.send('Page.enable');
       await session.send('Log.enable');
       await session.send('Network.enable');
+      log('real-browser smoke: waiting for first page readiness');
       await waitForStarterBrowserReady(
         session,
         args.failureArtifactPath,
         args.failureMetrics
       );
+      log('real-browser smoke: proving first page lifecycle');
       await proveStarterBrowserLifecycleResume(
         session,
         args.failureArtifactPath,
         args.failureMetrics
       );
+      log('real-browser smoke: proving lifecycle lock contention');
       await proveStarterLifecycleLockContention({
         failureMetrics: args.failureMetrics,
         failureArtifactPath: args.failureArtifactPath,
         session,
       });
+      log('real-browser smoke: creating second Chrome target');
       const secondTarget = await createChromeTarget(
         chrome.debugPort,
         `${args.origin}/?syncularClientId=web-second`
@@ -479,27 +488,32 @@ async function runBrowserPreviewSmoke(args: {
       secondSession = await CdpSession.connect(
         secondTarget.webSocketDebuggerUrl
       );
+      log('real-browser smoke: enabling second Chrome target');
       await secondSession.send('Runtime.enable');
       await secondSession.send('Page.enable');
       await secondSession.send('Log.enable');
       await secondSession.send('Network.enable');
+      log('real-browser smoke: waiting for second page readiness');
       await waitForStarterBrowserReady(
         secondSession,
         args.failureArtifactPath,
         args.failureMetrics
       );
+      log('real-browser smoke: proving two-tab lifecycle coordination');
       await proveStarterTwoTabLifecycleResumeCoordination({
         failureMetrics: args.failureMetrics,
         failureArtifactPath: args.failureArtifactPath,
         first: session,
         second: secondSession,
       });
+      log('real-browser smoke: proving two-tab propagation');
       propagatedTitle = await proveStarterTwoTabPropagation({
         failureMetrics: args.failureMetrics,
         failureArtifactPath: args.failureArtifactPath,
         first: session,
         second: secondSession,
       });
+      log('real-browser smoke: proving reload persistence');
       await proveStarterReloadPersistence({
         failureMetrics: args.failureMetrics,
         failureArtifactPath: args.failureArtifactPath,
@@ -511,6 +525,31 @@ async function runBrowserPreviewSmoke(args: {
       secondSession?.close();
       session.close();
     }
+  })();
+  smokeOperation.catch(() => undefined);
+
+  try {
+    await withTimeout({
+      description: 'real-browser built-preview smoke',
+      operation: smokeOperation,
+      timeoutMs: BROWSER_PREVIEW_SMOKE_TIMEOUT_MS,
+      onTimeout: async () => {
+        await writeBrowserPreviewFailureArtifactIfMissing(
+          args.failureArtifactPath,
+          'real-browser-smoke-timeout',
+          null,
+          args.failureMetrics
+        );
+      },
+    });
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'real-browser-smoke-error',
+      null,
+      args.failureMetrics
+    );
+    throw error;
   } finally {
     await stopProcess(chrome.process);
   }
@@ -518,15 +557,54 @@ async function runBrowserPreviewSmoke(args: {
   if (propagatedTitle === null) {
     throw new Error('Built preview browser smoke did not produce a task title');
   }
-  await proveStarterBrowserProcessRestart({
-    chrome: args.chrome,
-    failureArtifactPath: args.failureArtifactPath,
-    failureMetrics: args.failureMetrics,
-    origin: args.origin,
-    title: propagatedTitle,
-    userDataDir: args.userDataDir,
-  });
+  log('real-browser smoke: proving browser process restart persistence');
+  try {
+    await proveStarterBrowserProcessRestart({
+      chrome: args.chrome,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      origin: args.origin,
+      title: propagatedTitle,
+      userDataDir: args.userDataDir,
+    });
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'browser-restart-smoke-error',
+      null,
+      args.failureMetrics
+    );
+    throw error;
+  }
   log('real-browser built-preview preflight smoke passed');
+}
+
+async function withTimeout<T>(args: {
+  description: string;
+  operation: Promise<T>;
+  timeoutMs: number;
+  onTimeout: () => Promise<void>;
+}): Promise<T> {
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  const timeoutPromise = new Promise<never>((_resolve, reject) => {
+    timeout = setTimeout(() => {
+      void args
+        .onTimeout()
+        .catch(() => undefined)
+        .finally(() => {
+          reject(
+            new Error(
+              `Timed out after ${args.timeoutMs}ms waiting for ${args.description}`
+            )
+          );
+        });
+    }, args.timeoutMs);
+  });
+  try {
+    return await Promise.race([args.operation, timeoutPromise]);
+  } finally {
+    if (timeout !== null) clearTimeout(timeout);
+  }
 }
 
 async function startBrowserPreviewChrome(args: {
@@ -545,6 +623,7 @@ async function startBrowserPreviewChrome(args: {
       '--disable-gpu',
       '--disable-dev-shm-usage',
       '--remote-allow-origins=*',
+      '--remote-debugging-address=127.0.0.1',
       `--remote-debugging-port=${debugPort}`,
       `--user-data-dir=${args.userDataDir}`,
       'about:blank',
@@ -580,7 +659,21 @@ async function createChromeTarget(
   if (!target.webSocketDebuggerUrl) {
     throw new Error('Chrome target did not return a WebSocket debugger URL');
   }
-  return { webSocketDebuggerUrl: target.webSocketDebuggerUrl };
+  return {
+    webSocketDebuggerUrl: normalizeChromeWebSocketUrl(
+      target.webSocketDebuggerUrl
+    ),
+  };
+}
+
+function normalizeChromeWebSocketUrl(url: string): string {
+  try {
+    const parsed = new URL(url);
+    if (parsed.hostname === 'localhost') parsed.hostname = '127.0.0.1';
+    return parsed.toString();
+  } catch {
+    return url;
+  }
 }
 
 type BrowserPreviewProbe = {
@@ -1791,6 +1884,16 @@ async function writeBrowserPreviewFailureArtifact(
   await writeFile(path, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
 }
 
+async function writeBrowserPreviewFailureArtifactIfMissing(
+  path: string,
+  reason: string,
+  probe: BrowserPreviewProbe | null,
+  metrics: BrowserPreviewFailureMetricsInput
+): Promise<void> {
+  if (existsSync(path)) return;
+  await writeBrowserPreviewFailureArtifact(path, reason, probe, metrics);
+}
+
 async function verifyBrowserPreviewFailureArtifactSelfCheck(
   workDir: string,
   metrics: BrowserPreviewFailureMetricsInput
@@ -2342,16 +2445,59 @@ class CdpSession {
 
   private constructor(private readonly socket: WebSocket) {
     socket.addEventListener('message', (event) => this.#handleMessage(event));
+    socket.addEventListener('close', () =>
+      this.#rejectPending(new Error('Chrome DevTools WebSocket closed'))
+    );
+    socket.addEventListener('error', () =>
+      this.#rejectPending(new Error('Chrome DevTools WebSocket errored'))
+    );
   }
 
   static connect(url: string): Promise<CdpSession> {
+    const normalizedUrl = normalizeChromeWebSocketUrl(url);
     return new Promise((resolveConnect, reject) => {
-      const socket = new WebSocket(url);
-      socket.addEventListener('open', () =>
-        resolveConnect(new CdpSession(socket))
+      let settled = false;
+      let socket: WebSocket | null = null;
+      const fail = (error: Error) => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        try {
+          socket?.close();
+        } catch {
+          // The connection is already failed; close errors are not useful here.
+        }
+        reject(error);
+      };
+      const timeout = setTimeout(
+        () =>
+          fail(
+            new Error(
+              `Timed out after ${CDP_CONNECT_TIMEOUT_MS}ms connecting to Chrome DevTools at ${normalizedUrl}`
+            )
+          ),
+        CDP_CONNECT_TIMEOUT_MS
       );
+      socket = new WebSocket(normalizedUrl);
+      socket.addEventListener('open', () => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timeout);
+        resolveConnect(new CdpSession(socket));
+      });
       socket.addEventListener('error', () =>
-        reject(new Error('Chrome DevTools WebSocket failed to connect'))
+        fail(
+          new Error(
+            `Chrome DevTools WebSocket failed to connect at ${normalizedUrl}`
+          )
+        )
+      );
+      socket.addEventListener('close', () =>
+        fail(
+          new Error(
+            `Chrome DevTools WebSocket closed before connect at ${normalizedUrl}`
+          )
+        )
       );
     });
   }
@@ -2361,8 +2507,31 @@ class CdpSession {
     const payload =
       params === undefined ? { id, method } : { id, method, params };
     return new Promise((resolveSend, reject) => {
-      this.#pending.set(id, { resolve: resolveSend, reject });
-      this.socket.send(JSON.stringify(payload));
+      const timeout = setTimeout(() => {
+        this.#pending.delete(id);
+        reject(
+          new Error(
+            `Timed out after ${CDP_COMMAND_TIMEOUT_MS}ms waiting for Chrome DevTools command ${method}`
+          )
+        );
+      }, CDP_COMMAND_TIMEOUT_MS);
+      this.#pending.set(id, {
+        resolve: (value) => {
+          clearTimeout(timeout);
+          resolveSend(value);
+        },
+        reject: (reason) => {
+          clearTimeout(timeout);
+          reject(reason);
+        },
+      });
+      try {
+        this.socket.send(JSON.stringify(payload));
+      } catch (error) {
+        clearTimeout(timeout);
+        this.#pending.delete(id);
+        reject(error);
+      }
     });
   }
 
@@ -2393,6 +2562,13 @@ class CdpSession {
 
   close(): void {
     this.socket.close();
+  }
+
+  #rejectPending(error: Error): void {
+    for (const [id, pending] of this.#pending) {
+      this.#pending.delete(id);
+      pending.reject(error);
+    }
   }
 
   #handleMessage(event: MessageEvent): void {

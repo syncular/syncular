@@ -285,9 +285,14 @@ read-only review:
     rehearsal now runs the
     create-syncular-app
     built-preview smoke by default and can require the Chrome/CDP path with
-    `--require-starter-browser-preview`. Next slice: observe the hosted Chrome
-    job or continue broadening browser/framework runtime execution beyond
-    Vite. The
+    `--require-starter-browser-preview`. Hosted Chrome verification has now
+    moved past the old WASM failures with Binaryen 130, but run `28517563893`
+    exposed a CDP/browser-smoke hang after app startup and realtime connect;
+    the smoke harness now has explicit CDP connect/command timeouts, Chrome
+    DevTools `127.0.0.1` binding/URL normalization, phase logs, and bounded
+    failure artifacts before the GitHub job timeout can cancel the upload.
+    Next slice: observe the hosted Chrome job after that harness hardening or
+    continue broadening browser/framework runtime execution beyond Vite. The
     post-publish
     JavaScript install smoke now
     also creates a fresh optional import matrix project that installs
