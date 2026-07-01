@@ -18,6 +18,7 @@ import {
   type SyncularCommandTimelineProof,
   type SyncularDiagnosticEvent,
   type SyncularLocalRecoveryActionLockState,
+  type SyncularLocalRecoveryActionOutboxSafetyStatus,
   type SyncularLocalVisibilityEvidence,
   type SyncularSchemaReadinessResult,
   type SyncularSupportBundle,
@@ -106,6 +107,8 @@ type StorageRecoveryProofPreview = {
   clearBlobCacheCompleted: boolean;
   compactCompleted: boolean;
   count: number;
+  dataLossConsequenceCount: number;
+  destructiveSafetyCount: number;
   error: string | null;
   errorCode: string | null;
   issueCodes: string[];
@@ -118,6 +121,7 @@ type StorageRecoveryProofPreview = {
   requestPersistenceSupported: boolean | null;
   source: 'synthetic' | 'browser-observed' | null;
   status: 'idle' | 'running' | 'complete' | 'failed';
+  outboxSafetyStatus: SyncularLocalRecoveryActionOutboxSafetyStatus | null;
   usageBytes: number | null;
   usageRatio: number | null;
 };
@@ -302,6 +306,8 @@ const initialStorageRecoveryProof: StorageRecoveryProofPreview = {
   clearBlobCacheCompleted: false,
   compactCompleted: false,
   count: 0,
+  dataLossConsequenceCount: 0,
+  destructiveSafetyCount: 0,
   error: null,
   errorCode: null,
   issueCodes: [],
@@ -314,6 +320,7 @@ const initialStorageRecoveryProof: StorageRecoveryProofPreview = {
   requestPersistenceSupported: null,
   source: null,
   status: 'idle',
+  outboxSafetyStatus: null,
   usageBytes: null,
   usageRatio: null,
 };
@@ -1085,6 +1092,8 @@ function TaskPane({
         availableBytes: null,
         clearBlobCacheCompleted: false,
         compactCompleted: false,
+        dataLossConsequenceCount: 0,
+        destructiveSafetyCount: 0,
         error: null,
         errorCode: null,
         issueCodes: [],
@@ -1097,6 +1106,7 @@ function TaskPane({
         requestPersistenceSupported: null,
         source: null,
         status: 'running',
+        outboxSafetyStatus: null,
         usageBytes: null,
         usageRatio: null,
       }));
@@ -1105,6 +1115,20 @@ function TaskPane({
           await starterStorageRecoveryDeploymentPreflight(event);
         const plan = await client.localRecoveryPlan({ deploymentPreflight });
         const actionKinds = plan.actions.map((action) => action.kind);
+        const destructiveActions = plan.actions.filter(
+          (candidate) => candidate.destructive
+        );
+        const destructiveSafetyCount = destructiveActions.filter(
+          (candidate) => candidate.safety
+        ).length;
+        const dataLossConsequenceCount = destructiveActions.reduce(
+          (count, candidate) =>
+            count + (candidate.safety?.dataLossConsequences.length ?? 0),
+          0
+        );
+        const outboxSafetyStatus =
+          destructiveActions.find((candidate) => candidate.safety)?.safety
+            ?.outbox.status ?? null;
         const issueCodes = deploymentPreflight.issues.map(
           (issue) => issue.code
         );
@@ -1146,6 +1170,8 @@ function TaskPane({
           clearBlobCacheCompleted: Boolean(clearBlobCache),
           compactCompleted: true,
           count: current.count + 1,
+          dataLossConsequenceCount,
+          destructiveSafetyCount,
           error: null,
           errorCode: null,
           issueCodes,
@@ -1164,6 +1190,7 @@ function TaskPane({
               : null,
           source,
           status: 'complete',
+          outboxSafetyStatus,
           usageBytes: deploymentPreflight.storage.usageBytes ?? null,
           usageRatio: deploymentPreflight.storage.usageRatio ?? null,
         }));
@@ -1715,6 +1742,12 @@ function StorageRecoveryProofMarker({
         storageRecoveryProof.compactCompleted
       )}
       data-syncular-storage-recovery-proof-count={storageRecoveryProof.count}
+      data-syncular-storage-recovery-proof-data-loss-consequence-count={
+        storageRecoveryProof.dataLossConsequenceCount
+      }
+      data-syncular-storage-recovery-proof-destructive-safety-count={
+        storageRecoveryProof.destructiveSafetyCount
+      }
       data-syncular-storage-recovery-proof-error={
         storageRecoveryProof.error ?? ''
       }
@@ -1753,6 +1786,9 @@ function StorageRecoveryProofMarker({
         storageRecoveryProof.source ?? ''
       }
       data-syncular-storage-recovery-proof-status={storageRecoveryProof.status}
+      data-syncular-storage-recovery-proof-outbox-safety-status={
+        storageRecoveryProof.outboxSafetyStatus ?? ''
+      }
       data-syncular-storage-recovery-proof-usage-bytes={
         storageRecoveryProof.usageBytes ?? ''
       }

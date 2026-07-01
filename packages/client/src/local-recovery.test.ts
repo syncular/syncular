@@ -346,6 +346,16 @@ describe('local recovery plan', () => {
       severity: 'warning',
       destructive: true,
       requiresConfirmation: true,
+      safety: {
+        dataLossConsequences: [expect.stringContaining('cached blob bytes')],
+        outbox: {
+          failed: null,
+          pending: null,
+          sending: null,
+          status: 'unknown',
+          total: null,
+        },
+      },
       reasonCodes: [
         'browser.storage_pressure_high',
         'browser.storage_quota_low',
@@ -363,6 +373,70 @@ describe('local recovery plan', () => {
     });
     expect(client.calls).toContainEqual(['compactStorage']);
     expect(client.calls).toContainEqual(['clearBlobCache']);
+  });
+
+  it('annotates destructive actions with safety metadata and outbox blockers', async () => {
+    const client = new FakeRecoveryClient({
+      snapshot: {
+        ...diagnosticSnapshot(),
+        outboxStats: {
+          acked: 0,
+          failed: 0,
+          pending: 2,
+          sending: 1,
+          total: 3,
+        },
+      },
+    });
+    const plan = await getSyncularLocalRecoveryPlan(client, {
+      includeMaintenanceActions: true,
+      includeResetAction: true,
+      resetClearSyncedRows: true,
+    });
+
+    const clearCache = requiredAction(plan.actions, 'clear-blob-cache');
+    expect(clearCache.blockers).toBeUndefined();
+    expect(clearCache.safety).toMatchObject({
+      outbox: {
+        pending: 2,
+        sending: 1,
+        failed: 0,
+        status: 'has-unsynced-work',
+        total: 3,
+      },
+      dataLossConsequences: [expect.stringContaining('cached blob bytes')],
+    });
+
+    const reset = requiredAction(plan.actions, 'reset-local-sync-state');
+    expect(reset.safety).toMatchObject({
+      outbox: {
+        pending: 2,
+        sending: 1,
+        failed: 0,
+        status: 'has-unsynced-work',
+        total: 3,
+      },
+      dataLossConsequences: [
+        expect.stringContaining('selected synced app rows'),
+      ],
+    });
+    expect(reset.blockers).toEqual([
+      expect.objectContaining({
+        code: 'local.unsynced_outbox_work_present',
+        recommendedAction: 'drainOutbox',
+        details: {
+          failed: 0,
+          pending: 2,
+          sending: 1,
+          total: 3,
+        },
+      }),
+    ]);
+    await expect(
+      runSyncularLocalRecoveryAction(client, reset, {
+        confirmationText: reset.confirmationText,
+      })
+    ).rejects.toBeInstanceOf(SyncularLocalRecoveryBlockedError);
   });
 
   it('does not offer blob-cache clearing when the runtime lacks blob support', async () => {

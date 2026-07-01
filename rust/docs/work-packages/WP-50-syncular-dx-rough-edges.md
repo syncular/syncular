@@ -3987,7 +3987,11 @@ Most recent browser-health failure-artifact rerun:
   when the snapshot identifies errored subscription IDs. Destructive recovery
   actions now expose opt-in `browser.multi_tab_coordination_required` blockers
   when the app requires coordinated tabs and the browser preflight reports a
-  weaker or unknown multi-tab mode. Storage preflight persistence and quota
+  weaker or unknown multi-tab mode. Destructive actions also carry `safety`
+  metadata with data-loss consequences and observed outbox state; actions that
+  can clear synced rows add `local.unsynced_outbox_work_present` with
+  `recommendedAction: drainOutbox` while pending, sending, or failed outbox
+  work exists. Storage preflight persistence and quota
   warnings now map to app-facing recovery actions: request persistent browser
   storage when the API is available, compact local storage, or confirmed blob
   cache clearing, with the original storage issue codes preserved on each
@@ -4477,6 +4481,23 @@ Most recent browser-health failure-artifact rerun:
   `bun run docs:stale-check`, `bun --cwd apps/docs types:check`, and
   `git diff --check`. Chrome was not installed locally, so hosted Checks should
   remain the real-browser proof for the marker in built Chrome artifacts.
+- 2026-07-01: Added destructive local recovery safety metadata. Every
+  destructive action now exposes `action.safety.dataLossConsequences` plus
+  `action.safety.outbox`, row-clearing actions add
+  `local.unsynced_outbox_work_present` blockers with `drainOutbox` guidance
+  while pending/sending/failed outbox work exists, and blob-cache clearing
+  remains destructive but is not blocked by unrelated synced-row outbox work.
+  The starter storage-recovery marker and browser-preview failure artifact
+  shape now carry destructive safety counts, data-loss consequence counts, and
+  outbox safety status when storage recovery actions are proven through public
+  APIs. Local gates with Bun `1.3.9` passed:
+  `bun test packages/client/src/local-recovery.test.ts`,
+  `bun --cwd packages/client tsgo`,
+  `bun --cwd packages/create-syncular-app tsgo`,
+  `bun --cwd packages/create-syncular-app smoke`,
+  `bunx biome check` for touched TypeScript and docs files,
+  `bun run docs:stale-check`, and `bun --cwd apps/docs types:check`. Chrome
+  was not installed locally, so the real-browser marker proof remains hosted.
 
 ## Next Action
 
@@ -4505,7 +4526,9 @@ joined-scope, request/sync, realtime cursor, pull reason, local apply, and
 local-visibility evidence through starter smoke, testkit assertions, and
 Console/Fleet ingestion. Cloudflare runtime failure artifacts now also carry
 redacted negative-path proof for auth-required, forbidden/revoked scope,
-invalid blob request/token, and blob access-denial outcomes. The next
+invalid blob request/token, and blob access-denial outcomes. Destructive local
+recovery actions now expose data-loss/outbox safety metadata and block
+row-clearing actions while unsynced outbox work exists. The next
 lifecycle-facing slice should deepen browser lifecycle coverage below the
 current generated task proof.
 Production ops readiness is now part of release rehearsal when evidence is

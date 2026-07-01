@@ -844,6 +844,16 @@ if (action) {
 }
 ```
 
+Every destructive action also includes `action.safety`. Show
+`safety.dataLossConsequences` before confirmation, and use `safety.outbox` to
+tell whether the plan saw pending, sending, or failed local work. Actions that
+can clear synced rows, such as sign-out cleanup or a reset with
+`clearSyncedRows`, add a `local.unsynced_outbox_work_present` blocker with
+`recommendedAction: 'drainOutbox'` until pending, sending, and failed outbox
+work is drained or resolved. Blob-cache clearing is still marked destructive,
+but it only deletes cached bytes and is not blocked by unrelated synced-row
+outbox work.
+
 Use `localRecoveryPlan({ includeSignOutAction: true })` for sign-out cleanup.
 It offers a confirmed `prepare-sign-out` action only when the local outbox is
 empty, then resets subscription/bootstrap state, clears synced rows, and clears

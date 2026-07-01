@@ -50,14 +50,34 @@ export type SyncularLocalRecoveryActionSource =
   | 'storage';
 
 export type SyncularLocalRecoveryActionBlockerCode =
-  'browser.multi_tab_coordination_required';
+  | 'browser.multi_tab_coordination_required'
+  | 'local.unsynced_outbox_work_present';
 
 export type SyncularLocalRecoveryActionBlockerMultiTabMode =
   | SyncularBrowserDeploymentPreflightMultiTabMode
   | 'unknown';
 
 export type SyncularLocalRecoveryActionRecommendedAction =
-  'coordinateBrowserTabs';
+  | 'coordinateBrowserTabs'
+  | 'drainOutbox';
+
+export type SyncularLocalRecoveryActionOutboxSafetyStatus =
+  | 'empty'
+  | 'has-unsynced-work'
+  | 'unknown';
+
+export interface SyncularLocalRecoveryActionOutboxSafety {
+  status: SyncularLocalRecoveryActionOutboxSafetyStatus;
+  pending: number | null;
+  sending: number | null;
+  failed: number | null;
+  total: number | null;
+}
+
+export interface SyncularLocalRecoveryActionSafety {
+  dataLossConsequences: string[];
+  outbox: SyncularLocalRecoveryActionOutboxSafety;
+}
 
 export interface SyncularLocalRecoveryActionBlocker {
   code: SyncularLocalRecoveryActionBlockerCode;
@@ -77,6 +97,7 @@ export interface SyncularLocalRecoveryAction {
   destructive: boolean;
   requiresConfirmation: boolean;
   confirmationText?: string;
+  safety?: SyncularLocalRecoveryActionSafety;
   subscriptionIds?: string[];
   tables?: string[];
   blockers?: SyncularLocalRecoveryActionBlocker[];
@@ -372,7 +393,7 @@ export async function getSyncularLocalRecoveryPlan(
     ...actionsForRequestedOptions(options, status, snapshot),
   ];
   const uniqueActions = applyRecoveryActionBlockers(
-    dedupeActions(actions),
+    applyRecoveryActionSafety(dedupeActions(actions), status, snapshot),
     options
   );
   const recoveryStatus = summarizeRecoveryStatus({
@@ -652,6 +673,32 @@ function applyRecoveryActionBlockers(
   );
 }
 
+function applyRecoveryActionSafety(
+  actions: readonly SyncularLocalRecoveryAction[],
+  status: SyncularClientStatus | undefined,
+  snapshot: SyncularDiagnosticSnapshot
+): SyncularLocalRecoveryAction[] {
+  const outbox = localRecoveryOutboxSafety(status, snapshot);
+  return actions.map((action) => {
+    if (!action.destructive) return action;
+    const blockers = [...(action.blockers ?? [])];
+    if (
+      outbox.status === 'has-unsynced-work' &&
+      destructiveActionRequiresEmptyOutbox(action)
+    ) {
+      blockers.push(unsyncedOutboxBlocker(outbox));
+    }
+    return {
+      ...action,
+      blockers: blockers.length > 0 ? blockers : undefined,
+      safety: {
+        dataLossConsequences: dataLossConsequencesForAction(action),
+        outbox,
+      },
+    };
+  });
+}
+
 function multiTabCoordinationBlocker(
   mode: SyncularLocalRecoveryActionBlockerMultiTabMode
 ): SyncularLocalRecoveryActionBlocker {
@@ -662,6 +709,103 @@ function multiTabCoordinationBlocker(
     recommendedAction: 'coordinateBrowserTabs',
     details: { multiTabMode: mode },
   };
+}
+
+function unsyncedOutboxBlocker(
+  outbox: SyncularLocalRecoveryActionOutboxSafety
+): SyncularLocalRecoveryActionBlocker {
+  return {
+    code: 'local.unsynced_outbox_work_present',
+    message:
+      'This destructive local recovery action can clear synced local rows and is blocked while unsynced outbox work exists. Drain, retry, or resolve the outbox before running it.',
+    recommendedAction: 'drainOutbox',
+    details: {
+      failed: outbox.failed,
+      pending: outbox.pending,
+      sending: outbox.sending,
+      total: outbox.total,
+    },
+  };
+}
+
+function localRecoveryOutboxSafety(
+  status: SyncularClientStatus | undefined,
+  snapshot: SyncularDiagnosticSnapshot
+): SyncularLocalRecoveryActionOutboxSafety {
+  const outbox = snapshot.outboxStats ?? status?.outbox ?? null;
+  if (!outbox) {
+    return {
+      failed: null,
+      pending: null,
+      sending: null,
+      status: 'unknown',
+      total: null,
+    };
+  }
+  const pending = outbox.pending ?? 0;
+  const sending = outbox.sending ?? 0;
+  const failed = outbox.failed ?? 0;
+  return {
+    failed,
+    pending,
+    sending,
+    status: pending + sending + failed > 0 ? 'has-unsynced-work' : 'empty',
+    total: outbox.total ?? pending + sending + failed + (outbox.acked ?? 0),
+  };
+}
+
+function destructiveActionRequiresEmptyOutbox(
+  action: SyncularLocalRecoveryAction
+): boolean {
+  return (
+    action.kind === 'prepare-sign-out' ||
+    action.kind === 'clear-orphaned-synced-rows' ||
+    (action.kind === 'reset-local-sync-state' &&
+      action.clearSyncedRows === true)
+  );
+}
+
+function dataLossConsequencesForAction(
+  action: SyncularLocalRecoveryAction
+): string[] {
+  switch (action.kind) {
+    case 'clear-blob-cache':
+      return [
+        'Deletes locally cached blob bytes. Synced metadata and remote blob objects are kept, and downloads re-fetch on demand.',
+      ];
+    case 'force-rebootstrap':
+      return [
+        'Deletes local bootstrap/subscription checkpoints for affected subscriptions. Server data remains authoritative and will be pulled again.',
+      ];
+    case 'clear-orphaned-state':
+      return [
+        'Deletes local subscription state and verified roots that no longer match configured subscriptions. Server data remains authoritative.',
+      ];
+    case 'clear-orphaned-synced-rows':
+      return [
+        'Deletes local synced app rows outside the currently configured subscription scopes. Local-only rows are not targeted, and unsynced outbox work must be drained first.',
+      ];
+    case 'reset-local-sync-state':
+      return action.clearSyncedRows === true
+        ? [
+            'Deletes local sync/bootstrap checkpoints and selected synced app rows. Server data remains authoritative, and unsynced outbox work must be drained first.',
+          ]
+        : [
+            'Deletes local sync/bootstrap checkpoints so subscriptions rebootstrap from server authority. Synced app rows are kept.',
+          ];
+    case 'prepare-sign-out':
+      return action.clearBlobCache
+        ? [
+            'Deletes local sync/bootstrap state, synced app rows, and cached blob bytes for sign-out. Unsynced outbox work must be drained first.',
+          ]
+        : [
+            'Deletes local sync/bootstrap state and synced app rows for sign-out. Unsynced outbox work must be drained first.',
+          ];
+    default:
+      return [
+        'Runs a destructive local recovery operation. Review confirmation text, blockers, and outbox state before continuing.',
+      ];
+  }
 }
 
 function supportBundleAction(): SyncularLocalRecoveryAction {

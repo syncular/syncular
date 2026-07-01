@@ -1017,6 +1017,8 @@ type BrowserPreviewProbe = {
     clearBlobCacheCompleted: string | null;
     compactCompleted: string | null;
     count: number;
+    dataLossConsequenceCount: number;
+    destructiveSafetyCount: number;
     error: string | null;
     errorCode: string | null;
     issueCodes: string[];
@@ -1029,6 +1031,7 @@ type BrowserPreviewProbe = {
     requestPersistenceSupported: string | null;
     source: string | null;
     status: string | null;
+    outboxSafetyStatus: string | null;
     usageBytes: number | null;
     usageRatio: number | null;
   };
@@ -1327,6 +1330,8 @@ async function readStarterBrowserProbe(
     const storageRecoveryProofClearBlobCacheCompleted = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-clear-blob-cache-completed') ?? null;
     const storageRecoveryProofCompactCompleted = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-compact-completed') ?? null;
     const storageRecoveryProofCount = Number(storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-count') ?? 0);
+    const storageRecoveryProofDataLossConsequenceCount = Number(storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-data-loss-consequence-count') ?? 0);
+    const storageRecoveryProofDestructiveSafetyCount = Number(storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-destructive-safety-count') ?? 0);
     const storageRecoveryProofError = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-error') ?? null;
     const storageRecoveryProofErrorCode = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-error-code') ?? null;
     const storageRecoveryProofIssueCodesText = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-issue-codes') ?? '';
@@ -1340,6 +1345,7 @@ async function readStarterBrowserProbe(
     const storageRecoveryProofRequestPersistenceSupported = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-request-persistence-supported') ?? null;
     const storageRecoveryProofSource = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-source') ?? null;
     const storageRecoveryProofStatus = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-status') ?? null;
+    const storageRecoveryProofOutboxSafetyStatus = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-outbox-safety-status') ?? null;
     const storageRecoveryProofUsageBytes = readStorageRecoveryProofNumber('data-syncular-storage-recovery-proof-usage-bytes');
     const storageRecoveryProofUsageRatio = readStorageRecoveryProofNumber('data-syncular-storage-recovery-proof-usage-ratio');
     const quotaPressureProof = document.querySelector('[data-syncular-quota-pressure-proof-status]');
@@ -1701,6 +1707,8 @@ async function readStarterBrowserProbe(
           storageRecoveryProofClearBlobCacheCompleted,
         compactCompleted: storageRecoveryProofCompactCompleted,
         count: storageRecoveryProofCount,
+        dataLossConsequenceCount: storageRecoveryProofDataLossConsequenceCount,
+        destructiveSafetyCount: storageRecoveryProofDestructiveSafetyCount,
         error:
           storageRecoveryProofError === ''
             ? null
@@ -1732,6 +1740,10 @@ async function readStarterBrowserProbe(
             ? null
             : storageRecoveryProofSource,
         status: storageRecoveryProofStatus,
+        outboxSafetyStatus:
+          storageRecoveryProofOutboxSafetyStatus === ''
+            ? null
+            : storageRecoveryProofOutboxSafetyStatus,
         usageBytes: storageRecoveryProofUsageBytes,
         usageRatio: storageRecoveryProofUsageRatio,
       },
@@ -2257,7 +2269,10 @@ async function waitForStarterStorageRecoveryCompletion(args: {
           probe.storageRecoveryProof.availableBytes !== null &&
           probe.storageRecoveryProof.issueCount >= 1)) &&
       (clearBlobCacheOffered
-        ? probe.storageRecoveryProof.clearBlobCacheCompleted === 'true'
+        ? probe.storageRecoveryProof.clearBlobCacheCompleted === 'true' &&
+          probe.storageRecoveryProof.destructiveSafetyCount >= 1 &&
+          probe.storageRecoveryProof.dataLossConsequenceCount >= 1 &&
+          probe.storageRecoveryProof.outboxSafetyStatus === 'empty'
         : probe.storageRecoveryProof.clearBlobCacheCompleted === 'false')
     ) {
       return;
@@ -4410,6 +4425,8 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         clearBlobCacheCompleted: 'false',
         compactCompleted: 'true',
         count: 1,
+        dataLossConsequenceCount: 0,
+        destructiveSafetyCount: 0,
         error: null,
         errorCode: null,
         issueCodes: ['browser.storage_pressure_high'],
@@ -4422,6 +4439,7 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         requestPersistenceSupported: 'true',
         source: 'browser-observed',
         status: 'complete',
+        outboxSafetyStatus: null,
         usageBytes: 9_961_472,
         usageRatio: 0.95,
       },
@@ -5174,6 +5192,7 @@ function assertBrowserPreviewStorageRecoveryProofShape(
     'requestPersistenceSupported',
     'source',
     'status',
+    'outboxSafetyStatus',
   ] as const) {
     if (value[key] !== null && typeof value[key] !== 'string') {
       throw new Error(
@@ -5181,7 +5200,13 @@ function assertBrowserPreviewStorageRecoveryProofShape(
       );
     }
   }
-  for (const key of ['count', 'issueCount', 'planActionCount'] as const) {
+  for (const key of [
+    'count',
+    'dataLossConsequenceCount',
+    'destructiveSafetyCount',
+    'issueCount',
+    'planActionCount',
+  ] as const) {
     if (
       !isNonNegativeFiniteNumber(value[key]) ||
       !Number.isInteger(value[key])

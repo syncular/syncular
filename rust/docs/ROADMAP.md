@@ -502,7 +502,11 @@ read-only review:
     deployment preflight evidence: when apps require coordinated tabs and the
     reported multi-tab mode is not `coordinated` or was not passed, the action
     is surfaced with a `browser.multi_tab_coordination_required` blocker
-    instead of running. `runSyncularLocalRecoveryAction(...)` now also accepts
+    instead of running. Destructive recovery actions now also carry `safety`
+    metadata with concrete data-loss consequences and observed outbox state,
+    and row-clearing actions add a `local.unsynced_outbox_work_present`
+    blocker with `drainOutbox` guidance while pending/sending/failed outbox
+    work exists. `runSyncularLocalRecoveryAction(...)` now also accepts
     optional Web Locks coordination so the action execution itself can
     serialize across browser tabs, report lock state in the result, and fail
     closed with `SyncularLocalRecoveryActionLockError` when a required lock is

@@ -205,6 +205,14 @@ if (repair) {
 }
 ```
 
+Destructive recovery actions carry `action.safety` so UI and support flows can
+show concrete data-loss consequences before asking for confirmation. The same
+metadata includes an outbox summary; actions that can clear synced rows add a
+`local.unsynced_outbox_work_present` blocker with
+`recommendedAction: "drainOutbox"` while pending, sending, or failed outbox
+work remains. Blob-cache clearing is destructive because cached bytes are
+deleted, but it does not erase synced rows or block on unrelated outbox work.
+
 Use `localRecoveryPlan({ includeSignOutAction: true })` for sign-out cleanup.
 It only offers the confirmed cleanup action when the local outbox is empty; if
 unsynced work remains, the plan asks the app to drain or retry sync first. Use

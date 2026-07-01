@@ -212,6 +212,11 @@ Local recovery actions use the same `lock.timeoutMs` pattern when passed to
 `runLocalRecoveryAction(...)`, rejecting with
 `SyncularLocalRecoveryActionLockTimeoutError` if another tab holds the
 recovery lock too long.
+For destructive local recovery, read `action.safety` before rendering the
+confirmation UI. It lists the data-loss consequences and the observed outbox
+state, and row-clearing actions surface a
+`local.unsynced_outbox_work_present` blocker until pending, sending, and failed
+outbox work is drained or resolved.
 The optional `onPause` callback reports hidden-tab, `pagehide`, `freeze`, and
 `beforeunload` signals, and browser `resume` events trigger foreground
 catch-up. Browser smokes and support artifacts can distinguish restored-page
