@@ -2139,8 +2139,17 @@ online propagation, or reconnect behavior can change.
   `pagehide.persisted`, shutdown-signal count, and visibility state in its
   hidden lifecycle marker; browser-preview failure artifacts and Console/Fleet
   ingestion preserve the same `lifecyclePause` object. The CDP path now
-  dispatches a persisted `pagehide` before the restored-page `pageshow` proof
-  and dispatches `beforeunload` after the online catch-up proof.
+  dispatches hidden and visible `visibilitychange` events, verifies hidden
+  pause evidence, waits for a completed visible-tab catch-up, dispatches a
+  persisted `pagehide` before the restored-page `pageshow` proof, and
+  dispatches `beforeunload` after the online catch-up proof.
+- 2026-07-01: Extended the starter Chrome/CDP lifecycle proof with a concrete
+  hidden-tab pause and visible-tab resume cycle. The smoke overrides
+  `document.visibilityState` inside the test page, dispatches
+  `visibilitychange`, waits for `lifecyclePause.reason` of
+  `visibilitychange` with `visibilityState` of `hidden`, restores visible
+  state, and waits for `lifecycleResume.reason` of `visibilitychange` before
+  continuing through pagehide/pageshow/online/beforeunload.
 - 2026-07-01: Added the first starter two-tab runtime proof for Chrome-capable
   runners. The starter can derive a per-tab client id/database file from
   `?syncularClientId=...`; the CDP smoke opens a second tab with a distinct
@@ -2704,10 +2713,13 @@ Most recent browser lifecycle resume helper rerun:
     `lifecyclePause.shutdownSignalCount`.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available. On browser-capable runners the same CDP path now
-    dispatches persisted `pagehide`, verifies pause evidence, dispatches
-    persisted `pageshow`, waits for a completed restored-page lifecycle marker,
-    dispatches `online`, waits for a second completed lifecycle marker,
-    dispatches `beforeunload`, verifies shutdown-signal evidence, opens a
+    dispatches hidden `visibilitychange`, verifies hidden pause evidence,
+    dispatches visible `visibilitychange`, waits for a completed visible-tab
+    lifecycle marker, dispatches persisted `pagehide`, verifies pause
+    evidence, dispatches persisted `pageshow`, waits for a completed
+    restored-page lifecycle marker, dispatches `online`, waits for a second
+    completed lifecycle marker, dispatches `beforeunload`, verifies
+    shutdown-signal evidence, opens a
     second tab with a distinct client id/database file, dispatches `online` in
     both tabs, verifies both tabs report the starter lifecycle Web Lock as
     acquired, creates a task in the first tab, and waits for the second tab to

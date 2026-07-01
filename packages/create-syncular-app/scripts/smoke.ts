@@ -994,7 +994,31 @@ async function proveStarterBrowserLifecycleResume(
   failureMetrics: BrowserPreviewFailureMetricsInput
 ): Promise<void> {
   const initialProbe = await readStarterBrowserProbe(session);
-  const pagehideCount = initialProbe.lifecyclePause.count + 1;
+
+  const visibilityPauseCount = initialProbe.lifecyclePause.count + 1;
+  await dispatchStarterVisibilityChange(session, 'hidden');
+  await waitForStarterLifecyclePause({
+    expectedCount: visibilityPauseCount,
+    expectedReason: 'visibilitychange',
+    expectedVisibilityState: 'hidden',
+    failureArtifactPath,
+    failureMetrics,
+    session,
+    timeoutReason: 'lifecycle-visibility-hidden-timeout',
+  });
+
+  const visibilityResumeCount = initialProbe.lifecycleResume.count + 1;
+  await dispatchStarterVisibilityChange(session, 'visible');
+  await waitForStarterLifecycleResume({
+    expectedCount: visibilityResumeCount,
+    expectedReason: 'visibilitychange',
+    failureArtifactPath,
+    failureMetrics,
+    session,
+    timeoutReason: 'lifecycle-visibility-visible-timeout',
+  });
+
+  const pagehideCount = visibilityPauseCount + 1;
   await session.evaluate(`(() => {
     let event;
     if (typeof PageTransitionEvent === 'function') {
@@ -1016,7 +1040,7 @@ async function proveStarterBrowserLifecycleResume(
     timeoutReason: 'lifecycle-pagehide-timeout',
   });
 
-  const pageshowCount = initialProbe.lifecycleResume.count + 1;
+  const pageshowCount = visibilityResumeCount + 1;
   await session.evaluate(`(() => {
     const event =
       typeof PageTransitionEvent === 'function'
@@ -1113,6 +1137,7 @@ async function waitForStarterLifecyclePause(args: {
   expectedPagehidePersisted?: string;
   expectedReason: string;
   expectedShutdownSignalCount?: number;
+  expectedVisibilityState?: string;
   failureArtifactPath: string;
   failureMetrics: BrowserPreviewFailureMetricsInput;
   session: CdpSession;
@@ -1143,11 +1168,15 @@ async function waitForStarterLifecyclePause(args: {
       args.expectedShutdownSignalCount === undefined ||
       probe.lifecyclePause.shutdownSignalCount >=
         args.expectedShutdownSignalCount;
+    const visibilityStateMatches =
+      args.expectedVisibilityState === undefined ||
+      probe.lifecyclePause.visibilityState === args.expectedVisibilityState;
     if (
       probe.lifecyclePause.count >= args.expectedCount &&
       probe.lifecyclePause.reason === args.expectedReason &&
       pagehidePersistedMatches &&
-      shutdownSignalMatches
+      shutdownSignalMatches &&
+      visibilityStateMatches
     ) {
       return;
     }
@@ -1162,6 +1191,46 @@ async function waitForStarterLifecyclePause(args: {
   throw new Error(
     `Timed out waiting for built preview lifecycle pause (${args.expectedReason}). Failure artifact: ${args.failureArtifactPath}`
   );
+}
+
+async function dispatchStarterVisibilityChange(
+  session: CdpSession,
+  visibilityState: 'hidden' | 'visible'
+): Promise<void> {
+  const result = await session.evaluate<{
+    ok: boolean;
+    visibilityState: string | null;
+  }>(`(() => {
+    const nextVisibilityState = ${JSON.stringify(visibilityState)};
+    const defineVisibilityState = (target) => {
+      try {
+        Object.defineProperty(target, 'visibilityState', {
+          configurable: true,
+          get: () => nextVisibilityState,
+        });
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const defined =
+      defineVisibilityState(document) ||
+      defineVisibilityState(Object.getPrototypeOf(document));
+    const observed =
+      typeof document.visibilityState === 'string'
+        ? document.visibilityState
+        : null;
+    if (!defined || observed !== nextVisibilityState) {
+      return { ok: false, visibilityState: observed };
+    }
+    document.dispatchEvent(new Event('visibilitychange'));
+    return { ok: true, visibilityState: observed };
+  })()`);
+  if (!result.ok) {
+    throw new Error(
+      `Could not simulate document.visibilityState=${visibilityState}; observed ${result.visibilityState}`
+    );
+  }
 }
 
 async function proveStarterTwoTabLifecycleResumeCoordination(args: {

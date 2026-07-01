@@ -237,9 +237,10 @@ read-only review:
     The starter installs it after opening Syncular and emits hidden lifecycle
     markers for resume lock state plus pause count, `pagehide.persisted`, and
     shutdown-signal count. Local asset smokes prove the marker is in the
-    production bundle, and the Chrome/CDP path dispatches a persisted
-    `pagehide`, a persisted `pageshow` restored-page signal, `online`, and
-    `beforeunload`, waiting for the corresponding marker evidence. The
+    production bundle, and the Chrome/CDP path dispatches hidden and visible
+    `visibilitychange` events, waits for hidden pause plus visible resume
+    marker evidence, then dispatches a persisted `pagehide`, a persisted
+    `pageshow` restored-page signal, `online`, and `beforeunload`. The
     Chrome/CDP path now also opens a second generated-app tab with its own
     client id/database file, dispatches `online` in both tabs, verifies both
     lifecycle markers report the starter Web Lock as acquired, creates a task
