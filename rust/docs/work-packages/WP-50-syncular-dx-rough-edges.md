@@ -2388,6 +2388,11 @@ online propagation, or reconnect behavior can change.
   deployment-preflight status, support tier, persistence/quota pressure,
   service-worker control, and lifecycle resume/pause/Web Lock evidence without
   opening raw diagnostic JSON.
+- 2026-07-01: Surfaced Cloudflare runtime failure summaries in the same
+  Console client detail panel. The panel now shows failed route, sync/blob/
+  WebSocket route bases, exit/output context, and R2 blob byte/timing evidence
+  from the stored quick fields, while keeping app blob-upload queue cards
+  separate from runtime smoke metrics.
 - 2026-07-01: Expanded production operations docs beyond the first upgrade
   runbook. Deployment now includes restore-drill steps, blob storage
   consistency sampling, rate-limit tuning, credential rotation cadence, and
@@ -2719,6 +2724,20 @@ Most recent Cloudflare runtime artifact ingestion rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/routes/shared.ts packages/server/src/hono/console/routes/clients.ts packages/server/src/hono/__tests__/console-routes.test.ts apps/docs/content/docs/operate/console/fleet.mdx apps/docs/content/docs/operate/observability.mdx apps/docs/content/docs/reference/api/index.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
+
+Most recent Cloudflare runtime Console UI summary rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/console tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/console build`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/console/src/pages/ClientDetails.tsx apps/docs/content/docs/operate/console/fleet.mdx apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `git diff --check`
+  - Passed with the Console client detail runtime panel rendering conditional
+    Cloudflare runtime route/exit/output summaries and R2 blob byte/timing
+    summaries from `transportStats`, `blobUploadStats`, and the latest timing
+    row. The production build emitted the existing Vite large-chunk warning
+    only.
 
 Most recent browser lifecycle resume helper rerun:
 
@@ -3557,7 +3576,9 @@ Most recent mutation-status rerun:
   diagnosis. Cloudflare runtime artifacts now feed Console/Fleet through
   `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
   route, exit, bounded output, and safe blob timing/byte metrics as
-  `cloudflare.runtime_failure` diagnostics. Remaining work is to observe the
+  `cloudflare.runtime_failure` diagnostics, and the Console client detail
+  runtime panel renders route/exit/output plus R2 blob byte/timing cards from
+  those stored quick fields. Remaining work is to observe the
   hosted Chrome job for this proof and decide whether Console/Fleet or release
   rehearsal should orchestrate additional ingestion/artifact checks.
 - Outbox and conflict UX: first app-facing status slice is done for
@@ -3623,7 +3644,9 @@ Most recent mutation-status rerun:
   reference flows. Starter browser artifacts can now feed Console/Fleet as
   redacted `browser.preview_failure` diagnostic records, and Cloudflare
   runtime artifacts can now feed Console/Fleet as redacted
-  `cloudflare.runtime_failure` diagnostic records. Remaining depth is
+  `cloudflare.runtime_failure` diagnostic records. Console client detail views
+  now surface both artifact families from the stored quick fields instead of
+  requiring raw JSON inspection for the first triage pass. Remaining depth is
   observing hosted browser/Cloudflare artifacts and deciding whether future
   `doctor` checks should orchestrate these artifact shapes.
 

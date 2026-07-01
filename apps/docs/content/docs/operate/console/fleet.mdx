@@ -53,7 +53,9 @@ Cloudflare framework/runtime smokes can post the raw
 `POST /console/client-diagnostics/cloudflare-runtime-failure`. Console stores
 it as `cloudflare.runtime_failure` with the failed route, sync/blob/WebSocket
 route bases, exit status, bounded output excerpt, and R2 blob route
-timing/byte metrics.
+timing/byte metrics. The client detail runtime panel surfaces those route,
+exit/output, and R2 byte/timing summaries without requiring raw JSON
+inspection.
 
 ## Evicting a client
 

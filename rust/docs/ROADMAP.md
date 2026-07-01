@@ -229,6 +229,10 @@ read-only review:
     asset, deployment-preflight, service-worker, quota, and lifecycle/Web Lock
     summaries from the stored quick fields, so operators get a first diagnosis
     without opening raw diagnostic JSON.
+    Cloudflare runtime failure diagnostics now get the same first-triage
+    treatment: the Console client detail runtime panel surfaces failed route,
+    sync/blob/WebSocket route bases, exit/output context, and R2 blob
+    byte/timing summaries from stored quick fields.
     The support-bundle marker also reports redacted runtime
     timeline event counts for sync, realtime, local apply, blob, cursors, and
     request/sync-attempt ids. The same smoke

@@ -565,6 +565,46 @@ function ClientRuntimeDiagnostics({
     'lifecyclePauseVisibilityState',
     'lifecycleShutdownSignalCount',
   ]);
+  const cloudflareBlobMetrics =
+    objectField(latestTiming, 'blobMetrics') ?? diagnostics.blobUploadStats;
+  const hasCloudflareRuntimeSummary = hasAnyField(transport, [
+    'route',
+    'port',
+    'syncRouteBase',
+    'blobRouteBase',
+    'webSocketRoute',
+    'outputExcerptLength',
+    'blobMetricsAttempted',
+    'blobContentBytes',
+    'blobDownloadBytes',
+    'blobPartitionedDownloadBytes',
+  ]);
+  const hasCloudflareBlobSummary =
+    hasAnyField(transport, [
+      'blobMetricsAttempted',
+      'blobContentBytes',
+      'blobDownloadBytes',
+      'blobPartitionedDownloadBytes',
+    ]) ||
+    hasAnyField(cloudflareBlobMetrics, [
+      'attempted',
+      'contentBytes',
+      'downloadBytes',
+      'partitionedDownloadBytes',
+      'uploadInitMs',
+      'uploadBytesMs',
+      'completeUploadMs',
+      'downloadUrlMs',
+      'downloadBytesMs',
+      'partitionedDownloadUrlMs',
+      'partitionedDownloadBytesMs',
+      'totalMs',
+    ]);
+  const hasBlobUploadQueue = hasAnyField(diagnostics.blobUploadStats, [
+    'pending',
+    'uploading',
+    'failed',
+  ]);
   const recentDiagnostics = [...diagnostics.recentDiagnostics]
     .slice(-8)
     .reverse();
@@ -651,12 +691,14 @@ function ClientRuntimeDiagnostics({
             stats={diagnostics.conflictStats}
             fields={['unresolved', 'resolved', 'total']}
           />
-          <QueuePanel
-            icon={<Database className="h-3.5 w-3.5" />}
-            title="Blob Uploads"
-            stats={diagnostics.blobUploadStats}
-            fields={['pending', 'uploading', 'failed']}
-          />
+          {hasBlobUploadQueue || !hasCloudflareRuntimeSummary ? (
+            <QueuePanel
+              icon={<Database className="h-3.5 w-3.5" />}
+              title="Blob Uploads"
+              stats={diagnostics.blobUploadStats}
+              fields={['pending', 'uploading', 'failed']}
+            />
+          ) : null}
         </div>
       </PanelShell>
 
@@ -846,6 +888,104 @@ function ClientRuntimeDiagnostics({
                   numberField(latestTiming, 'lifecycleShutdownSignalCount')
                 )}
                 detail={stringField(latestTiming, 'lifecycleResumeLockName')}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        {hasCloudflareRuntimeSummary ? (
+          <div className="mt-4">
+            <p className="font-mono text-[10px] text-neutral-500 uppercase tracking-wide">
+              Cloudflare Runtime
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-3">
+              <Metric
+                label="Route"
+                value={stringField(transport, 'route')}
+                detail={`port ${stringField(transport, 'port')}`}
+              />
+              <Metric
+                label="Sync Route"
+                value={stringField(transport, 'syncRouteBase')}
+                detail={`ws ${stringField(transport, 'webSocketRoute')}`}
+              />
+              <Metric
+                label="Blob Route"
+                value={stringField(transport, 'blobRouteBase')}
+                detail={`r2 ${stringField(transport, 'blobMetricsAttempted')}`}
+              />
+              <Metric
+                label="Exit"
+                value={`code ${stringField(bootstrap, 'exitCode')}`}
+                detail={`signal ${stringField(bootstrap, 'exitSignal')}`}
+                intent={
+                  numberField(bootstrap, 'exitCode') !== null &&
+                  numberField(bootstrap, 'exitCode') !== 0
+                }
+              />
+              <Metric
+                label="Output Excerpt"
+                value={formatNumber(
+                  numberField(transport, 'outputExcerptLength')
+                )}
+                detail="redacted chars"
+              />
+              <Metric
+                label="Expected"
+                value={stringField(bootstrap, 'expectedText')}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        {hasCloudflareBlobSummary ? (
+          <div className="mt-4">
+            <p className="font-mono text-[10px] text-neutral-500 uppercase tracking-wide">
+              Cloudflare R2 Blob Smoke
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-3">
+              <Metric
+                label="Content"
+                value={formatBytes(
+                  numberField(transport, 'blobContentBytes') ??
+                    numberField(cloudflareBlobMetrics, 'contentBytes')
+                )}
+                detail={`attempted ${stringField(cloudflareBlobMetrics, 'attempted', stringField(transport, 'blobMetricsAttempted'))}`}
+              />
+              <Metric
+                label="Download Bytes"
+                value={formatBytes(
+                  numberField(transport, 'blobDownloadBytes') ??
+                    numberField(cloudflareBlobMetrics, 'downloadBytes')
+                )}
+                detail={`partition ${formatBytes(numberField(transport, 'blobPartitionedDownloadBytes') ?? numberField(cloudflareBlobMetrics, 'partitionedDownloadBytes'))}`}
+              />
+              <Metric
+                label="Upload"
+                value={formatDurationMs(
+                  numberField(cloudflareBlobMetrics, 'uploadInitMs')
+                )}
+                detail={`bytes ${formatDurationMs(numberField(cloudflareBlobMetrics, 'uploadBytesMs'))} / complete ${formatDurationMs(numberField(cloudflareBlobMetrics, 'completeUploadMs'))}`}
+              />
+              <Metric
+                label="Owner Download"
+                value={formatDurationMs(
+                  numberField(cloudflareBlobMetrics, 'downloadUrlMs')
+                )}
+                detail={`bytes ${formatDurationMs(numberField(cloudflareBlobMetrics, 'downloadBytesMs'))}`}
+              />
+              <Metric
+                label="Partition Download"
+                value={formatDurationMs(
+                  numberField(cloudflareBlobMetrics, 'partitionedDownloadUrlMs')
+                )}
+                detail={`bytes ${formatDurationMs(numberField(cloudflareBlobMetrics, 'partitionedDownloadBytesMs'))}`}
+              />
+              <Metric
+                label="Blob Total"
+                value={formatDurationMs(
+                  numberField(cloudflareBlobMetrics, 'totalMs')
+                )}
               />
             </div>
           </div>

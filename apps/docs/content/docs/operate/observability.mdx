@@ -107,7 +107,9 @@ operators can post it to
 `POST /console/client-diagnostics/cloudflare-runtime-failure`. The Console
 stores it as a redacted `cloudflare.runtime_failure` diagnostic record with
 the failed route, sync/blob/WebSocket route bases, exit status, bounded output
-excerpt, and safe R2 blob route timing/byte metrics.
+excerpt, and safe R2 blob route timing/byte metrics. The Console client detail
+runtime panel renders the compact route, exit/output, and R2 byte/timing
+summary after ingestion.
 Before ingesting those artifacts in tests, assert their shape and redaction
 with `requireBrowserPreviewFailureArtifact(...)` or
 `requireCloudflareRuntimeFailureArtifact(...)` from `@syncular/testkit`.
