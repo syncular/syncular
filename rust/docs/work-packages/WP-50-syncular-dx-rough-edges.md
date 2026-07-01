@@ -2181,9 +2181,11 @@ online propagation, or reconnect behavior can change.
   severity, stable code, recommended action, and message instead of only the
   latest report's issue count.
 - 2026-07-01: Added recent issue-code grouping to the Console Ops readiness
-  panel from the same redacted `ops_readiness` audit history. Operators can now
-  see recurring codes, severity, hit count, affected targets, latest seen time,
-  and latest recommended action without adding a second history endpoint.
+  panel from the same redacted `ops_readiness` audit history. The trend view
+  groups up to the latest 100 readiness records while the raw recent table stays
+  compact, so operators can see recurring codes, severity, hit count, affected
+  targets, latest seen time, and latest recommended action without adding a
+  second history endpoint.
 
 ## Latest Gates
 
@@ -3125,9 +3127,9 @@ Most recent mutation-status rerun:
   readiness reads across selected Console gateway instances while deploy writes
   remain explicitly single-instance. The panel now also lists per-instance
   redacted issue drilldown, recent issue-code grouping, and readiness audit
-  history across the selected gateway scope. Remaining depth is longer-range
-  readiness visualization beyond the recent audit window and deciding whether a
-  future broader `doctor` should orchestrate those checks once enough
+  history across the selected gateway scope. Remaining depth is longer-retained
+  readiness visualization beyond the operation-audit page window and deciding
+  whether a future broader `doctor` should orchestrate those checks once enough
   independently useful checks exist.
 - Performance and failure artifacts: keep package/WASM size, bootstrap
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch

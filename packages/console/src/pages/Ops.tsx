@@ -446,7 +446,7 @@ function OpsReadinessView() {
     error: readinessHistoryError,
   } = useOperationEvents(
     {
-      limit: 20,
+      limit: 100,
       offset: 0,
       operationType: 'ops_readiness',
     },
@@ -467,6 +467,7 @@ function OpsReadinessView() {
     data?.missingInstanceCount ??
     instanceReports.filter((entry) => !entry.available || !entry.report)
       .length + failedInstances.length;
+  const readinessHistoryItems = readinessHistory?.items ?? [];
 
   return (
     <SectionCard
@@ -659,10 +660,10 @@ function OpsReadinessView() {
             </div>
           ) : null}
 
-          <OpsReadinessIssueTrendView events={readinessHistory?.items ?? []} />
+          <OpsReadinessIssueTrendView events={readinessHistoryItems} />
 
           <OpsReadinessHistoryView
-            events={readinessHistory?.items ?? []}
+            events={readinessHistoryItems.slice(0, 8)}
             isLoading={readinessHistoryLoading}
             error={readinessHistoryError}
           />
@@ -767,7 +768,8 @@ function OpsReadinessIssueTrendView({
           Issue Trends
         </div>
         <Badge variant="ghost">
-          {trends.length} code{trends.length === 1 ? '' : 's'}
+          {trends.length} code{trends.length === 1 ? '' : 's'} / {events.length}{' '}
+          record{events.length === 1 ? '' : 's'}
         </Badge>
       </div>
       <div className="overflow-x-auto">
