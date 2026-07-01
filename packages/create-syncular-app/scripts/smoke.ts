@@ -13,6 +13,8 @@ import { Buffer } from 'node:buffer';
  *    `bun scripts/dev.ts --preview`.
  * 4. When Chrome/Chromium is available, opens the built preview in a real
  *    browser and waits for the starter's Syncular health/schema/support lines.
+ *    Browser failures write browser-preview-failure.json with redacted marker
+ *    state under the smoke work dir.
  *    Set SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required to fail when no browser
  *    is available.
  *
@@ -250,6 +252,7 @@ async function maybeRunBrowserPreviewSmoke(args: {
   await runBrowserPreviewSmoke({
     chrome,
     origin: args.origin,
+    failureArtifactPath: join(args.workDir, 'browser-preview-failure.json'),
     userDataDir: join(args.workDir, 'chrome-profile'),
   });
 }
@@ -271,6 +274,7 @@ function resolveChromeExecutable(): string | null {
 
 async function runBrowserPreviewSmoke(args: {
   chrome: string;
+  failureArtifactPath: string;
   origin: string;
   userDataDir: string;
 }): Promise<void> {
@@ -302,7 +306,7 @@ async function runBrowserPreviewSmoke(args: {
       await session.send('Runtime.enable');
       await session.send('Page.enable');
       await session.send('Log.enable');
-      await waitForStarterBrowserReady(session);
+      await waitForStarterBrowserReady(session, args.failureArtifactPath);
     } finally {
       session.close();
     }
@@ -333,26 +337,51 @@ async function createChromeTarget(
   return { webSocketDebuggerUrl: target.webSocketDebuggerUrl };
 }
 
-async function waitForStarterBrowserReady(session: CdpSession): Promise<void> {
+type BrowserPreviewProbe = {
+  ready: boolean;
+  errors: string[];
+  markers: {
+    durableHealthLine: boolean;
+    schemaLine: boolean;
+    preflightFailure: boolean;
+    databaseOpening: boolean;
+  };
+  supportBundle: {
+    status: string | null;
+    redacted: string | null;
+    sectionCount: number;
+    issueCount: number;
+    requestIdCount: number;
+    sectionErrorCount: number;
+  };
+  textExcerpt: string;
+};
+
+async function waitForStarterBrowserReady(
+  session: CdpSession,
+  failureArtifactPath: string
+): Promise<void> {
   const deadline = Date.now() + 60_000;
-  let lastText = '';
+  let lastProbe: BrowserPreviewProbe | null = null;
   while (Date.now() < deadline) {
-    const evaluation = await session.evaluate<{
-      ready: boolean;
-      text: string;
-      errors: string[];
-      supportBundleStatus: string | null;
-    }>(`(() => {
+    const evaluation = await session.evaluate<BrowserPreviewProbe>(`(() => {
       const text = document.body?.innerText ?? '';
       const supportBundle = document.querySelector('[data-syncular-support-bundle-status]');
       const supportBundleStatus = supportBundle?.getAttribute('data-syncular-support-bundle-status') ?? null;
       const supportBundleRedacted = supportBundle?.getAttribute('data-syncular-support-bundle-redacted') ?? null;
       const supportBundleSectionCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-section-count') ?? 0);
+      const supportBundleIssueCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-issue-count') ?? 0);
+      const supportBundleRequestIdCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-request-id-count') ?? 0);
+      const supportBundleSectionErrorCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-section-error-count') ?? 0);
+      const durableHealthLine = text.includes('indexedDb durable');
+      const schemaLine = text.includes('schema v');
+      const preflightFailure = text.includes('Syncular browser preflight failed');
+      const databaseOpening = text.includes('Opening local database');
       const errors = [];
-      if (text.includes('Syncular browser preflight failed')) {
+      if (preflightFailure) {
         errors.push('preflight failed');
       }
-      if (text.includes('Opening local database') && text.includes('Error')) {
+      if (databaseOpening && text.includes('Error')) {
         errors.push('database open failed');
       }
       if (supportBundleStatus === 'failed') {
@@ -363,29 +392,74 @@ async function waitForStarterBrowserReady(session: CdpSession): Promise<void> {
       }
       return {
         ready:
-          text.includes('indexedDb durable') &&
-          text.includes('schema v') &&
+          durableHealthLine &&
+          schemaLine &&
           supportBundleStatus !== null &&
           supportBundleRedacted === 'true' &&
           supportBundleSectionCount >= 4 &&
-          !text.includes('Opening local database') &&
-          !text.includes('Syncular browser preflight failed'),
-        text,
+          !databaseOpening &&
+          !preflightFailure,
         errors,
-        supportBundleStatus,
+        markers: {
+          durableHealthLine,
+          schemaLine,
+          preflightFailure,
+          databaseOpening,
+        },
+        supportBundle: {
+          status: supportBundleStatus,
+          redacted: supportBundleRedacted,
+          sectionCount: supportBundleSectionCount,
+          issueCount: supportBundleIssueCount,
+          requestIdCount: supportBundleRequestIdCount,
+          sectionErrorCount: supportBundleSectionErrorCount,
+        },
+        textExcerpt: text.slice(0, 4000),
       };
     })()`);
-    lastText = evaluation.text;
+    lastProbe = evaluation;
     if (evaluation.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        failureArtifactPath,
+        'page-reported-errors',
+        evaluation
+      );
       throw new Error(
-        `Built preview browser smoke failed: ${evaluation.errors.join(', ')}`
+        `Built preview browser smoke failed: ${evaluation.errors.join(
+          ', '
+        )}. Failure artifact: ${failureArtifactPath}`
       );
     }
     if (evaluation.ready) return;
     await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
   }
+  await writeBrowserPreviewFailureArtifact(
+    failureArtifactPath,
+    'readiness-timeout',
+    lastProbe
+  );
   throw new Error(
-    `Timed out waiting for built preview browser readiness. Last page text: ${lastText}`
+    `Timed out waiting for built preview browser readiness. Failure artifact: ${failureArtifactPath}`
+  );
+}
+
+async function writeBrowserPreviewFailureArtifact(
+  path: string,
+  reason: string,
+  probe: BrowserPreviewProbe | null
+): Promise<void> {
+  await writeFile(
+    path,
+    `${JSON.stringify(
+      {
+        generatedAt: new Date().toISOString(),
+        reason,
+        probe,
+      },
+      null,
+      2
+    )}\n`,
+    'utf8'
   );
 }
 

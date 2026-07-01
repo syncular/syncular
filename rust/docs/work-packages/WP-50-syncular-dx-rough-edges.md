@@ -1552,6 +1552,12 @@ online propagation, or reconnect behavior can change.
   smoke now proves the production build contains that marker and, when Chrome
   is available, waits for redacted support-bundle DOM evidence alongside the
   existing health/schema readiness checks.
+- 2026-07-01: Extended the starter real-browser preview smoke to write a
+  redacted `browser-preview-failure.json` artifact when browser readiness times
+  out or the page reports health/support-bundle failures. The artifact records
+  marker booleans, support-bundle counts, redaction state, issue/request-id
+  counts, and a bounded text excerpt so hosted Chrome failures produce
+  inspectable support evidence.
 - 2026-07-01: Expanded production operations docs beyond the first upgrade
   runbook. Deployment now includes restore-drill steps, blob storage
   consistency sampling, rate-limit tuning, credential rotation cadence, and
@@ -1738,6 +1744,20 @@ Most recent starter support-bundle artifact rerun:
     including the support-bundle marker in the production JavaScript asset.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available.
+- `git diff --check`
+
+Most recent starter browser-failure artifact rerun:
+
+- `bunx biome check packages/create-syncular-app/scripts/smoke.ts`
+- `bun --cwd packages/create-syncular-app tsgo`
+- `bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available. The artifact writer runs on browser-capable runners
+    when the page reports health/support-bundle failures or readiness times
+    out.
+- `bun run docs:stale-check`
 - `git diff --check`
 
 Most recent production-ops docs rerun:
@@ -2090,10 +2110,11 @@ Most recent mutation-status rerun:
   subscription cursors, and diagnostic redaction policy. The starter now emits
   a compact redacted support-bundle artifact marker, and the scaffold smoke
   asserts the production build contains it; the Chrome/CDP smoke waits for the
-  same marker when a browser is available. Remaining work is to observe the
-  hosted Chrome job for this proof, create a canonical real-browser failure
-  artifact, and decide whether server Console/Fleet should ingest the same
-  artifact shape.
+  same marker when a browser is available. That browser path now writes a
+  redacted `browser-preview-failure.json` artifact on readiness timeout or
+  page-reported health/support-bundle failures. Remaining work is to observe
+  the hosted Chrome job for this proof and decide whether server Console/Fleet
+  should ingest the same artifact shape.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
   conflict detail rows, last mutation-related errors, and recommended actions.

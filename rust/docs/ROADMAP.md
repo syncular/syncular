@@ -266,7 +266,9 @@ read-only review:
     assets, and has an opt-in Chrome/Chromium CDP path for opening the built
     page and waiting for Syncular health/schema lines; local evidence passed
     the build/preview asset path and skipped the browser execution because no
-    Chrome/Chromium binary was installed.
+    Chrome/Chromium binary was installed. Browser readiness failures now write
+    a redacted `browser-preview-failure.json` artifact with health/schema and
+    support-bundle marker state under the smoke work dir.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested
