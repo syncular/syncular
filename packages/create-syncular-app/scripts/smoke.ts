@@ -2561,11 +2561,18 @@ class CdpSession {
     if (message.method === 'Network.loadingFailed') {
       const params = message.params as
         | {
+            canceled?: boolean;
             errorText?: string;
             requestId?: string;
             type?: string;
           }
         | undefined;
+      if (
+        params?.canceled === true ||
+        params?.errorText === 'net::ERR_ABORTED'
+      ) {
+        return;
+      }
       const request = params?.requestId
         ? this.#requests.get(params.requestId)
         : undefined;
