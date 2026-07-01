@@ -143,14 +143,17 @@ read-only review:
     Framework import smokes now cover a Next 16 SSR production build that
     imports `@syncular/client` plus `@syncular/server` roots, and a Vite 8
     browser production build that imports the `@syncular/client` root through
-    browser-conditioned package exports and serves the built HTML/JavaScript
-    through Vite preview, and a Cloudflare Worker proof that bundles
+    browser-conditioned package exports, serves the built HTML/JavaScript
+    through Vite preview, and can execute that built preview in Chrome/CDP to
+    observe the browser root import marker. Cloudflare coverage bundles
     `@syncular/server/cloudflare` through Wrangler dry-run and then serves the
     generated Worker through local `wrangler dev` to verify a real request
     reaches the `createSyncWorker(...)` route. WASM glue dynamic imports
     include webpack ignore metadata so the Next build stays warning-clean.
     Release rehearsal runs the framework import smoke by default before
-    publish dry-runs, with an explicit skip flag for local iteration.
+    publish dry-runs, with an explicit skip flag for local iteration and an
+    opt-in `--require-framework-vite-browser-runtime` flag for Chrome-capable
+    runners.
     Browser deployment preflight now exposes
     `getSyncularBrowserDeploymentPreflight(...)` from `@syncular/client` so
     deploy previews can check Worker/WebAssembly support, secure-context and
@@ -184,7 +187,7 @@ read-only review:
     create-syncular-app built-preview smoke by default and can require the
     Chrome/CDP path with `--require-starter-browser-preview`. Next slice:
     observe the hosted Chrome job or continue broadening browser/framework
-    runtime execution. The
+    runtime execution beyond Vite. The
     post-publish
     JavaScript install smoke now
     also creates a fresh optional import matrix project that installs

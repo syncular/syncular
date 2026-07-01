@@ -12,6 +12,7 @@ interface Options {
   skipStarterSmoke: boolean;
   skipDocsStaleCheck: boolean;
   requireStarterBrowserPreview: boolean;
+  requireFrameworkViteBrowserRuntime: boolean;
   keepWorktree: boolean;
   workDir: string;
 }
@@ -31,6 +32,8 @@ options:
   --skip-starter-smoke        Skip create-syncular-app built-preview smoke
   --require-starter-browser-preview
                               Require Chrome/Chromium CDP execution in the starter smoke
+  --require-framework-vite-browser-runtime
+                              Require Chrome/Chromium CDP execution in the Vite framework smoke
   --skip-docs-stale-check     Skip stale public-docs checks
   --work-dir <path>           Publish dry-run worktree path (default: .context/release-rehearsal/<version>)
   --keep-worktree             Keep the publish dry-run worktree after the run
@@ -72,6 +75,7 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
   let skipStarterSmoke = false;
   let skipDocsStaleCheck = false;
   let requireStarterBrowserPreview = false;
+  let requireFrameworkViteBrowserRuntime = false;
   let keepWorktree = false;
   let workDir = '';
 
@@ -110,6 +114,11 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
 
     if (arg === '--require-starter-browser-preview') {
       requireStarterBrowserPreview = true;
+      continue;
+    }
+
+    if (arg === '--require-framework-vite-browser-runtime') {
+      requireFrameworkViteBrowserRuntime = true;
       continue;
     }
 
@@ -159,6 +168,7 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
     skipStarterSmoke,
     skipDocsStaleCheck,
     requireStarterBrowserPreview,
+    requireFrameworkViteBrowserRuntime,
     keepWorktree,
     workDir,
   };
@@ -339,7 +349,13 @@ async function main(): Promise<void> {
     ]);
   }
   if (!options.skipFrameworkImportSmokes) {
-    await run('bun', ['run', 'framework-import-smokes']);
+    await run('bun', [
+      'run',
+      'framework-import-smokes',
+      ...(options.requireFrameworkViteBrowserRuntime
+        ? ['--require-vite-browser-runtime']
+        : []),
+    ]);
   }
   if (!options.skipPublishDryRuns) {
     await runPublishDryRuns(options, sourceDirty);

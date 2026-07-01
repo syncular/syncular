@@ -157,6 +157,13 @@ bun run --cwd packages/client tsgo
 bun run --cwd packages/testkit tsgo
 ```
 
+On Chrome-capable release or CI runners, make the Vite framework browser
+execution path mandatory:
+
+```bash
+bun scripts/framework-import-smokes.ts --require-vite-browser-runtime
+```
+
 ## Browser E2E Performance Guardrails
 
 The legacy TypeScript-vs-Rust browser scoreboard was removed with the pure

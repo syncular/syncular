@@ -986,7 +986,9 @@ online propagation, or reconnect behavior can change.
   imports stay warning-clean after WASM glue dynamic imports gained webpack
   ignore metadata. The Vite path imports the client root through
   browser-conditioned package exports and verifies the production bundle
-  contains the expected Syncular marker. The Cloudflare path imports
+  contains the expected Syncular marker, then serves the built preview and can
+  execute it in Chrome/CDP to observe the browser root import marker. The
+  Cloudflare path imports
   `@syncular/server/cloudflare` and verifies Wrangler can bundle a Worker
   without deploy credentials.
 - The post-publish JavaScript install smoke now runs a release-time optional
@@ -1630,6 +1632,11 @@ online propagation, or reconnect behavior can change.
   import marker. The smoke resolver now also understands Bun's
   `node_modules/.bun/<package>@.../node_modules/<package>` dependency layout so
   it can reuse workspace-installed Vite without a network install.
+- 2026-07-01: Extended the Vite framework smoke with an optional Chrome/CDP
+  browser runtime proof. When Chrome is available, the smoke opens the served
+  Vite preview and waits for the browser-executed
+  `data-syncular-vite-root-import="ready"` marker; release rehearsal can make
+  that path mandatory with `--require-framework-vite-browser-runtime`.
 - 2026-07-01: Extended the Vite framework smoke from bundle inspection to
   production-preview serving proof. After `vite build`, the smoke starts
   `vite preview` on a free localhost port, fetches the built HTML, verifies it
@@ -1979,34 +1986,45 @@ Most recent native-sqlite release-policy docs rerun:
 
 Most recent framework-import-smoke rerun:
 
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check scripts/framework-import-smokes.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check scripts/framework-import-smokes.ts scripts/release-rehearsal.ts RELEASING.md rust/docs/QUALITY_GATES.md rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --help`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts`
   - Passed the Next 16 SSR production build proof.
   - Passed the Vite 8 browser production build proof.
   - Passed the Vite production-preview HTTP proof for the built HTML and
     served JavaScript bundle marker.
+  - Skipped the optional Vite Chrome/CDP browser-runtime proof because no
+    Chrome/Chromium binary was available on this local machine.
   - Passed the Wrangler dry-run Cloudflare Worker bundle proof.
   - Passed the local `wrangler dev --local` runtime fetch proof for the
     generated `createSyncWorker(...)` route.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts --require-vite-browser-runtime`
+  - Expected nonzero status locally because Chrome/Chromium is unavailable;
+    confirms the required Vite browser-runtime path fails loudly instead of
+    accepting a skipped browser proof.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke`
   - Confirmed release rehearsal still runs the framework smoke by default and
-    returns cleanly after the Vite preview HTTP proof and local Cloudflare
-    Worker runtime probe.
+    returns cleanly after the Vite preview HTTP proof, optional local Chrome
+    skip, and local Cloudflare Worker runtime probe.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke --require-framework-vite-browser-runtime`
+  - Expected nonzero status locally because release rehearsal passes the new
+    required Vite browser-runtime flag through to `framework-import-smokes`
+    and the local machine has no Chrome/Chromium binary.
 - `bun run docs:stale-check`
 - `git diff --check`
 
 Most recent release-rehearsal framework-smoke wiring rerun:
 
-- `bunx biome check scripts/release-rehearsal.ts scripts/framework-import-smokes.ts package.json RELEASING.md rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bunx biome check scripts/release-rehearsal.ts scripts/framework-import-smokes.ts RELEASING.md rust/docs/QUALITY_GATES.md rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun scripts/release-rehearsal.ts --help`
-- `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-framework-import-smokes`
-  - Ran the default starter built-preview smoke in rehearsal.
-  - Passed dev server health/page/module/preflight transform checks.
-  - Passed Vite production build, preview serving, and built asset checks.
-  - Skipped the real-browser CDP check locally because no Chrome/Chromium
-    binary was available.
-  - Confirmed the starter smoke returns cleanly from the rehearsal process
-    after the per-attempt fetch timeout guard.
+- `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke`
+  - Ran version stamp dry-runs, then the default framework import smoke.
+  - Passed Next, Vite build/preview, and Cloudflare dry-run/runtime proofs
+    while skipping optional local Chrome execution.
+- `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke --require-framework-vite-browser-runtime`
+  - Expected nonzero status locally because the new required Vite
+    browser-runtime flag is passed through and no Chrome/Chromium binary is
+    available.
 - `bun run docs:stale-check`
 - `git diff --check`
 
@@ -2286,14 +2304,17 @@ Most recent mutation-status rerun:
   roots from source and verifies the WASM glue dynamic import path is
   warning-clean under webpack, and a Vite 8 browser production-build smoke
   that follows browser-conditioned package exports for the client root and
-  serves the built HTML/JavaScript through Vite preview. The Cloudflare smoke
-  now bundles `@syncular/server/cloudflare` through Wrangler dry-run and then
+  serves the built HTML/JavaScript through Vite preview, with an optional
+  Chrome/CDP execution path that observes the browser root import marker.
+  The Cloudflare smoke now bundles `@syncular/server/cloudflare` through
+  Wrangler dry-run and then
   starts the generated Worker with local `wrangler dev`, proving a real
   request reaches the `createSyncWorker(...)` route. Release rehearsal now
-  runs those framework proofs by default before publish dry-runs. Remaining
-  matrix work is real browser/framework execution beyond these proofs,
-  especially browser-executed Vite runtime, deeper Cloudflare binding/Durable
-  Object variants, Safari, Firefox, private mode, WebViews, and PWAs.
+  runs those framework proofs by default before publish dry-runs and can
+  require the Vite browser execution path on Chrome-capable runners.
+  Remaining matrix work is deeper browser/framework execution beyond these
+  proofs, especially Cloudflare binding/Durable Object variants, Safari,
+  Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
