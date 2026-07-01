@@ -168,7 +168,9 @@ bun run --cwd packages/testkit tsgo
 
 `framework-import-smokes` also self-checks the Vite browser-runtime failure
 artifact shape after the production-preview HTTP proof, so non-Chrome runners
-still cover the failure JSON contract before the optional Chrome/CDP path.
+still cover the failure JSON contract before the optional Chrome/CDP path. The
+same smoke self-checks the Cloudflare local Worker runtime failure artifact
+after the `wrangler dev --local` DO/D1/R2/WebSocket proof.
 
 On Chrome-capable release or CI runners, make the Vite framework browser
 execution path mandatory:

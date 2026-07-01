@@ -77,6 +77,10 @@ async function runLocalWorkerRuntimeProbe(args: {
   webSocketRoute?: string;
 }): Promise<void> {
   const port = await getFreePort();
+  const failureArtifactPath = join(
+    args.appDir,
+    'cloudflare-runtime-failure.json'
+  );
   const output: string[] = [];
   let exited: { code: number | null; signal: NodeJS.Signals | null } | null =
     null;
@@ -150,8 +154,176 @@ async function runLocalWorkerRuntimeProbe(args: {
         getExit: () => exited,
       });
     }
+    await verifyCloudflareRuntimeFailureArtifactSelfCheck(args.appDir, {
+      blobRouteBase: args.blobRouteBase,
+      expectedText: args.expectedText,
+      output,
+      port,
+      route: args.route,
+      syncRouteBase: args.syncRouteBase,
+      webSocketRoute: args.webSocketRoute,
+      exited,
+    });
+  } catch (error) {
+    await writeCloudflareRuntimeFailureArtifact(failureArtifactPath, error, {
+      blobRouteBase: args.blobRouteBase,
+      expectedText: args.expectedText,
+      output,
+      port,
+      route: args.route,
+      syncRouteBase: args.syncRouteBase,
+      webSocketRoute: args.webSocketRoute,
+      exited,
+    });
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`${message}\nFailure artifact: ${failureArtifactPath}`);
   } finally {
     await stopProcess(child);
+  }
+}
+
+type CloudflareRuntimeFailureProbe = {
+  blobRouteBase: string | null;
+  expectedText: string;
+  exited: {
+    code: number | null;
+    signal: string | null;
+  } | null;
+  outputExcerpt: string;
+  port: number;
+  route: string;
+  syncRouteBase: string | null;
+  webSocketRoute: string | null;
+};
+
+type CloudflareRuntimeFailureArtifact = {
+  generatedAt: string;
+  reason: string;
+  probe: CloudflareRuntimeFailureProbe;
+};
+
+type CloudflareRuntimeFailureProbeInput = {
+  blobRouteBase?: string;
+  expectedText: string;
+  exited: { code: number | null; signal: NodeJS.Signals | null } | null;
+  output: string[];
+  port: number;
+  route: string;
+  syncRouteBase?: string;
+  webSocketRoute?: string;
+};
+
+async function writeCloudflareRuntimeFailureArtifact(
+  path: string,
+  reason: unknown,
+  input: CloudflareRuntimeFailureProbeInput
+): Promise<void> {
+  const artifact: CloudflareRuntimeFailureArtifact = {
+    generatedAt: new Date().toISOString(),
+    reason: errorMessage(reason),
+    probe: cloudflareRuntimeFailureProbe(input),
+  };
+  assertCloudflareRuntimeFailureArtifactShape(artifact, path);
+  await writeFile(path, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
+}
+
+async function verifyCloudflareRuntimeFailureArtifactSelfCheck(
+  appDir: string,
+  input: CloudflareRuntimeFailureProbeInput
+): Promise<void> {
+  const path = join(appDir, 'cloudflare-runtime-failure.self-check.json');
+  await writeCloudflareRuntimeFailureArtifact(
+    path,
+    'cloudflare-runtime-artifact-self-check',
+    input
+  );
+  const artifact = JSON.parse(await Bun.file(path).text()) as unknown;
+  assertCloudflareRuntimeFailureArtifactShape(artifact, path);
+  await rm(path, { force: true });
+  console.log(
+    '[framework-import-smokes] Cloudflare runtime failure artifact shape check passed'
+  );
+}
+
+function cloudflareRuntimeFailureProbe(
+  input: CloudflareRuntimeFailureProbeInput
+): CloudflareRuntimeFailureProbe {
+  return {
+    blobRouteBase: input.blobRouteBase ?? null,
+    expectedText: input.expectedText,
+    exited: input.exited
+      ? {
+          code: input.exited.code,
+          signal: input.exited.signal ?? null,
+        }
+      : null,
+    outputExcerpt: boundedOutput(input.output),
+    port: input.port,
+    route: input.route,
+    syncRouteBase: input.syncRouteBase ?? null,
+    webSocketRoute: input.webSocketRoute ?? null,
+  };
+}
+
+function assertCloudflareRuntimeFailureArtifactShape(
+  artifact: unknown,
+  path: string
+): asserts artifact is CloudflareRuntimeFailureArtifact {
+  if (!isRecord(artifact)) {
+    throw new Error(`${path} did not contain a JSON object`);
+  }
+  if (
+    typeof artifact.generatedAt !== 'string' ||
+    Number.isNaN(Date.parse(artifact.generatedAt))
+  ) {
+    throw new Error(`${path} had an invalid generatedAt value`);
+  }
+  if (
+    typeof artifact.reason !== 'string' ||
+    artifact.reason.trim().length === 0
+  ) {
+    throw new Error(`${path} had an invalid reason value`);
+  }
+  assertCloudflareRuntimeFailureProbeShape(artifact.probe, path);
+}
+
+function assertCloudflareRuntimeFailureProbeShape(
+  probe: unknown,
+  path: string
+): asserts probe is CloudflareRuntimeFailureProbe {
+  if (!isRecord(probe)) {
+    throw new Error(`${path} probe was not a JSON object`);
+  }
+  for (const key of [
+    'blobRouteBase',
+    'syncRouteBase',
+    'webSocketRoute',
+  ] as const) {
+    if (probe[key] !== null && typeof probe[key] !== 'string') {
+      throw new Error(`${path} probe.${key} was not nullable text`);
+    }
+  }
+  for (const key of ['expectedText', 'outputExcerpt', 'route'] as const) {
+    if (typeof probe[key] !== 'string') {
+      throw new Error(`${path} probe.${key} was not text`);
+    }
+  }
+  if (!Number.isInteger(probe.port) || probe.port <= 0) {
+    throw new Error(`${path} probe.port was not a positive integer`);
+  }
+  if (probe.exited !== null) {
+    if (!isRecord(probe.exited)) {
+      throw new Error(`${path} probe.exited was not a JSON object`);
+    }
+    if (probe.exited.code !== null && typeof probe.exited.code !== 'number') {
+      throw new Error(`${path} probe.exited.code was not nullable number`);
+    }
+    if (
+      probe.exited.signal !== null &&
+      typeof probe.exited.signal !== 'string'
+    ) {
+      throw new Error(`${path} probe.exited.signal was not nullable text`);
+    }
   }
 }
 
@@ -643,6 +815,19 @@ function appendProcessOutput(
   while (output.join('').length > 12_000) {
     output.shift();
   }
+}
+
+function boundedOutput(output: string[]): string {
+  return truncateString(output.join(''), 12_000);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+function truncateString(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value;
+  return `${value.slice(0, maxLength)}...`;
 }
 
 async function waitForHttpText(args: {

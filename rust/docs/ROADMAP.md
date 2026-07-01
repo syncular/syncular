@@ -170,6 +170,9 @@ read-only review:
     failure artifact shape without requiring Chrome, while Chrome-capable
     runners can still execute the page and upload the real artifact on
     timeout.
+    The local Cloudflare `wrangler dev --local` proof now self-checks a
+    bounded runtime failure artifact so DO/D1/R2/WebSocket failures leave
+    route, exit, and recent-output context.
     Release rehearsal runs the framework import smoke by default before
     publish dry-runs, with an explicit skip flag for local iteration and an
     opt-in `--require-framework-vite-browser-runtime` flag for Chrome-capable

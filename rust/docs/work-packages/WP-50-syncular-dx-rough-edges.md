@@ -1814,6 +1814,12 @@ online propagation, or reconnect behavior can change.
   marker. This proves the local Wrangler + Durable Object WebSocket bridge can
   carry non-Syncular traffic and remains a lower-level transport regression
   guard alongside the real Syncular realtime route proof.
+- 2026-07-01: Added a deterministic Cloudflare local-runtime failure artifact
+  self-check to `framework-import-smokes`. The `wrangler dev --local`
+  DO/D1/R2/WebSocket proof now writes, validates, reads, and removes a
+  synthetic `cloudflare-runtime-failure.self-check.json`; real runtime
+  failures write `cloudflare-runtime-failure.json` with route, local port,
+  process exit, and bounded recent-output context.
 - 2026-07-01: Made `framework-import-smokes` use a run-specific temporary
   workspace by default so a direct local smoke and a release-rehearsal smoke
   cannot delete each other's generated Next/Vite/Cloudflare app directories.
@@ -2183,6 +2189,8 @@ Most recent framework-import-smoke rerun:
     WebSocket push-response and decoded binary sync-pack delta, R2-backed blob
     route upload/complete/download, forbidden `blob.forbidden` download URL
     details, and Durable Object WebSocket echo.
+  - Passed the deterministic Cloudflare local-runtime failure artifact shape
+    self-check.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts --require-vite-browser-runtime`
   - Expected nonzero status locally because Chrome/Chromium is unavailable;
     confirms the required Vite browser-runtime path fails loudly after the
@@ -2509,7 +2517,9 @@ Most recent mutation-status rerun:
   through the writer socket, decodes the reader's binary sync-pack delta for
   the D1 row, drives an R2-backed blob route upload/complete/download flow,
   rejects a forbidden blob download URL with stable access details, and echoes
-  through a DO-backed WebSocket route.
+  through a DO-backed WebSocket route. The same local runtime proof now
+  self-checks a bounded Cloudflare failure artifact so failed DO/D1/R2/WebSocket
+  runs can leave route, exit, and recent-output context instead of logs alone.
   Release rehearsal now runs those framework proofs by default before publish
   dry-runs and can require the Vite browser execution path on Chrome-capable
   runners. Remaining matrix work is deeper browser/framework execution beyond
