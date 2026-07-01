@@ -254,7 +254,14 @@ read-only review:
     acceptance matrix so future slices treat browser persistence, local
     freshness, auth, realtime, blobs, deploy readiness, E2E artifacts, API
     audience hygiene, optional dependencies, and production operations as
-    public contracts with gates rather than broad sentiment. Local recovery
+    public contracts with gates rather than broad sentiment. A final retention
+    pass also adds stability tiers, verified snippets, auth-transition race
+    semantics, request/command correlation, retry/backpressure visibility,
+    migration concurrency, dev/prod fences, runtime self-reporting,
+    worker/concurrency semantics, offline truthfulness, artifact ingestion,
+    public-package release confidence, unsupported-environment states,
+    telemetry naming, and destructive-action guardrails to that register.
+    Local recovery
     controls now expose a
     first app-facing plan/action API through
     `getSyncularLocalRecoveryPlan(...)`,

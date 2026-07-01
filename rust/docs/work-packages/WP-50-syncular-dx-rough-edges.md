@@ -894,6 +894,95 @@ Do not retain these as solutions:
   console-only insight should map back to a stable app-facing code, support
   bundle field, or testkit assertion.
 
+### 2026-07-01 Additional Retention Prompts
+
+These are the extra edges worth keeping from the review pass. They are not a
+new product direction; they are pressure tests for whether the Rust-first
+surface is actually comfortable in real apps.
+
+- Public-contract stability tiers: distinguish stable app-facing helpers,
+  generated wrapper contracts, deploy/operator contracts, debug/support
+  shapes, and experimental diagnostics. Once tests or docs tell users to
+  assert a code or field, renames and semantic reclassification need an
+  explicit migration note.
+- Snippet and recipe verification: code snippets for starter, generated
+  client, server adapters, schema checks, auth replacement, blobs, and
+  testkit recipes should eventually compile or run against a fixture. Stale
+  prose is a DX bug when the import surface is intentionally subpath-heavy.
+- Auth replacement race semantics: replacing auth context should define what
+  happens to in-flight HTTP sync, websocket messages from the old token,
+  queued local commands, old subscription cursors, and diagnostics emitted
+  during the transition. The safe default is to ignore or fence old-authority
+  evidence rather than merge it silently.
+- Request and command correlation discipline: client-generated request ids,
+  server request/event ids, outbox ids, generated mutation receipts,
+  realtime cursors, pull reasons, and local visibility evidence should remain
+  joinable without exposing payloads. This is the bridge between tests,
+  support bundles, console rows, and production logs.
+- Backpressure and retry visibility: apps need to know when the runtime is
+  intentionally delaying sync because of rate limits, offline state, outbox
+  pressure, blob upload retries, or realtime reconnect jitter. "Pending" is
+  not enough if the app needs to decide between waiting, refreshing auth,
+  asking the user, or escalating to an operator.
+- Migration execution safety: deploy-time schema setup should be idempotent,
+  version-stamped, and safe under concurrent deploys. Docs and checks should
+  eventually mention locking/advisory locking expectations, partial-failure
+  recovery, and how generated-client compatibility is decided during a rolling
+  deploy.
+- Dev/prod configuration fences: dangerous conveniences such as memory
+  storage fallback, debug payload capture, local token shortcuts, request-log
+  verbosity, and destructive local reset actions should be visibly marked as
+  dev/test/debug-only or require explicit production confirmation.
+- Environment self-reporting: every runtime should be able to describe the
+  package version, generated schema version, server schema/protocol contract,
+  storage backend, worker/WASM asset source, host runtime, and support tier in
+  a redacted form. Users should not reverse-engineer this from stack traces or
+  build output.
+- Worker and concurrency model: browser docs should explain the single-writer
+  database model, worker ownership, tab coordination assumptions, lock
+  behavior, shutdown/resume expectations, and what an app may safely do while
+  the runtime is opening, recovering, or being destroyed.
+- Offline truthfulness: optimistic UI, queued mutations, local read freshness,
+  conflict status, and server acknowledgement need a crisp story. Apps should
+  be able to show "saved locally", "syncing", "accepted by server",
+  "conflicted", and "needs action" without reading outbox internals.
+- Security review path: the authority model should be easy to audit from
+  docs and tests. For every route or helper that grants access to rows, blob
+  refs, snapshot chunks, direct-transfer URLs, or realtime deltas, there
+  should be a negative-path test that proves the wrong actor/scope fails with
+  a typed reason.
+- Support artifact ingestion decision: starter browser failures and
+  Cloudflare runtime failures now leave safe JSON artifacts. Decide whether
+  Console/Fleet, `syncular ops check`, or a future `doctor` command should
+  ingest those shapes, and keep the artifact schema redacted, bounded, and
+  versioned if it becomes public.
+- Docs information scent: first-run docs should route users by task
+  ("build a browser app", "add React", "deploy a server", "test scoped auth",
+  "inspect a failure") before naming packages. Package and subpath reference
+  pages should support the path, not become the path.
+- Release confidence from public packages: post-publish smokes should keep
+  proving that a blank external project can install the public npm packages,
+  import optional subpaths with the right peers, generate code, and run a
+  browser/offline smoke without relying on repo-local state or ignored `dist`
+  files.
+- Cross-environment unsupported states: Safari/private-mode/WebView/PWA/SSR
+  failures should use the same capability issue model as Chrome/Vite
+  failures. Unsupported should be a named product state, not a surprise
+  timeout.
+- Data-shape escape hatches: raw Kysely reads, local-only tables, generated
+  mutations, app-owned audit tables, blob reference rows, CRDT fields, and
+  advanced custom apply hooks should each say what they are for and what they
+  cannot guarantee. This prevents users from turning an escape hatch into
+  their main sync contract.
+- Telemetry naming: diagnostic codes, metric names, support-bundle fields,
+  console filters, and Sentry/log attributes should converge on the same
+  vocabulary. A production alert for `schema.generated_too_old` should point
+  at the same concept as the app health issue, CLI readiness output, and docs.
+- Local destructive actions: reset, rebootstrap, cache clear, sign-out wipe,
+  conflict discard, and blob-cache eviction should always state data-loss
+  consequences, required confirmations, multi-tab blockers, and whether
+  unsynced outbox work exists.
+
 ### Feedback-Driven Acceptance Matrix
 
 Use this matrix when selecting future slices. A feedback item is only "done"
@@ -1091,6 +1180,15 @@ online propagation, or reconnect behavior can change.
   model, runtime truth, failure specificity, recovery ownership, freshness,
   authority, deploy confidence, browser persistence, optional dependencies,
   failure artifacts, audience labels, and public contract stability.
+- A final retention pass added the remaining review prompts that are easy to
+  lose while implementing locally useful helpers: public stability tiers,
+  snippet verification, auth-transition race semantics, request/command
+  correlation, retry/backpressure visibility, concurrent migration safety,
+  dev/prod fences, runtime self-reporting, worker/concurrency semantics,
+  offline truthfulness, security-review negative tests, artifact ingestion,
+  docs information scent, public-package release confidence,
+  cross-environment unsupported states, data-shape escape hatches, telemetry
+  naming, and destructive local-action guardrails.
 - The first browser deployment preflight slice adds
   `getSyncularBrowserDeploymentPreflight(...)` to `@syncular/client`, checking
   Worker/WebAssembly support, secure-context/cross-origin-isolation flags,
