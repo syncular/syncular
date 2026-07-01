@@ -66,6 +66,8 @@ type DeploymentPreflightPreview = {
   preflightMs: number;
   quotaPressure: SyncularBrowserDeploymentPreflight['storage']['quotaPressure'];
   quotaBytes: number | null;
+  serviceWorker: boolean | null;
+  serviceWorkerControlled: boolean | null;
   status: SyncularBrowserDeploymentPreflight['status'] | 'failed';
   supportTier: SyncularBrowserDeploymentPreflight['support']['tier'];
   usageRatio: number | null;
@@ -723,6 +725,16 @@ function DeploymentPreflightMarker({
       data-syncular-deployment-preflight-quota-bytes={
         deploymentPreflight.quotaBytes ?? ''
       }
+      data-syncular-deployment-preflight-service-worker={
+        deploymentPreflight.serviceWorker === null
+          ? ''
+          : String(deploymentPreflight.serviceWorker)
+      }
+      data-syncular-deployment-preflight-service-worker-controlled={
+        deploymentPreflight.serviceWorkerControlled === null
+          ? ''
+          : String(deploymentPreflight.serviceWorkerControlled)
+      }
       data-syncular-deployment-preflight-status={deploymentPreflight.status}
       data-syncular-deployment-preflight-support-tier={
         deploymentPreflight.supportTier
@@ -773,6 +785,8 @@ function summarizeDeploymentPreflight(
     preflightMs,
     quotaPressure: preflight.storage.quotaPressure,
     quotaBytes: preflight.storage.quotaBytes ?? null,
+    serviceWorker: preflight.browser.serviceWorker ?? null,
+    serviceWorkerControlled: preflight.browser.serviceWorkerControlled ?? null,
     status: preflight.status,
     supportTier: preflight.support.tier,
     usageRatio: preflight.storage.usageRatio ?? null,
@@ -795,6 +809,8 @@ function failedDeploymentPreflightPreview(
     preflightMs,
     quotaPressure: 'unknown',
     quotaBytes: null,
+    serviceWorker: null,
+    serviceWorkerControlled: null,
     status: 'failed',
     supportTier: 'unknown',
     usageRatio: null,

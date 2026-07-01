@@ -303,6 +303,10 @@ read-only review:
     marker plus `browser-preview-failure.json` artifact carry the
     expected-vs-observed browser support status, stable policy reason codes,
     required evidence, known risks, and next steps through Console ingestion.
+    Browser deployment preflight now also reports service-worker availability
+    and whether the page is service-worker controlled, so PWA/cache-skew
+    context survives into starter artifacts without treating service workers
+    as an automatic failure.
     Cloudflare local-runtime failure artifacts now feed Console/Fleet through
     `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
     route, exit, bounded output, and safe R2 blob timing/byte metrics as

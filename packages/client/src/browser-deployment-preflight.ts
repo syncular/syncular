@@ -105,6 +105,8 @@ export interface SyncularBrowserDeploymentPreflightBrowser {
   secureContext: boolean | null;
   crossOriginIsolated: boolean | null;
   indexedDB: boolean | null;
+  serviceWorker: boolean | null;
+  serviceWorkerControlled: boolean | null;
 }
 
 export type SyncularBrowserDeploymentPreflightMultiTabMode =
@@ -209,6 +211,9 @@ export interface SyncularBrowserDeploymentPreflightNavigator {
   locks?: {
     request?: unknown;
   };
+  serviceWorker?: {
+    controller?: unknown;
+  };
   storage?: {
     getDirectory?: unknown;
     persisted?: () => Promise<boolean>;
@@ -223,7 +228,7 @@ export async function getSyncularBrowserDeploymentPreflight(
   const issues: SyncularBrowserDeploymentPreflightIssue[] = [];
   const globalRef = resolveGlobal(options.global);
   const navigatorRef = resolveNavigator(options.navigator);
-  const browser = summarizeBrowser(globalRef);
+  const browser = summarizeBrowser(globalRef, navigatorRef);
   const lifecycle = summarizeLifecycle(globalRef, navigatorRef);
   const storage = await summarizeStorage({
     expectedStorage: resolveExpectedStorage(options.storage),
@@ -330,8 +335,11 @@ function resolveFetch(): SyncularBrowserDeploymentPreflightFetch | undefined {
 }
 
 function summarizeBrowser(
-  globalRef: SyncularBrowserDeploymentPreflightGlobal
+  globalRef: SyncularBrowserDeploymentPreflightGlobal,
+  navigatorRef?: SyncularBrowserDeploymentPreflightNavigator
 ): SyncularBrowserDeploymentPreflightBrowser {
+  const serviceWorkerAvailable =
+    navigatorRef == null ? null : navigatorRef.serviceWorker != null;
   return {
     worker: typeof globalRef.Worker === 'function',
     webAssembly: globalRef.WebAssembly != null,
@@ -344,6 +352,12 @@ function summarizeBrowser(
         ? globalRef.crossOriginIsolated
         : null,
     indexedDB: globalRef.indexedDB != null,
+    serviceWorker: serviceWorkerAvailable,
+    serviceWorkerControlled:
+      serviceWorkerAvailable == null
+        ? null
+        : serviceWorkerAvailable &&
+          navigatorRef?.serviceWorker?.controller != null,
   };
 }
 

@@ -50,6 +50,8 @@ describe('Syncular browser deployment preflight', () => {
         webAssembly: true,
         secureContext: true,
         indexedDB: true,
+        serviceWorker: false,
+        serviceWorkerControlled: false,
       },
       lifecycle: {
         broadcastChannel: true,
@@ -342,6 +344,39 @@ describe('Syncular browser deployment preflight', () => {
     });
   });
 
+  it('reports service-worker controlled pages for PWA and cache-skew diagnostics', async () => {
+    await expect(
+      getSyncularBrowserDeploymentPreflight({
+        runtime: {
+          wasmGlueUrl: 'https://cdn.example/syncular.js',
+          wasmUrl: 'https://cdn.example/syncular_bg.wasm',
+        },
+        checkRuntimeAssets: false,
+        storage: 'indexedDb',
+        global: browserGlobal(),
+        navigator: browserNavigator({
+          opfs: true,
+          persisted: true,
+          quotaBytes: 250 * 1024 * 1024,
+          serviceWorker: true,
+          serviceWorkerControlled: true,
+        }),
+      })
+    ).resolves.toMatchObject({
+      status: 'ready',
+      requiresAction: false,
+      browser: {
+        serviceWorker: true,
+        serviceWorkerControlled: true,
+      },
+      support: {
+        tier: 'unknown',
+        issueCodes: [],
+      },
+      issues: [],
+    });
+  });
+
   it('flags runtime assets served as HTML or missing from deployment', async () => {
     const fetch = fakeFetch({
       'https://app.example/assets/syncular.js': response(200, 'text/html'),
@@ -524,6 +559,8 @@ function browserNavigator(options: {
   opfs: boolean;
   persisted?: boolean;
   quotaBytes?: number;
+  serviceWorker?: boolean;
+  serviceWorkerControlled?: boolean;
   usageBytes?: number;
 }): SyncularBrowserDeploymentPreflightNavigator {
   return {
@@ -534,6 +571,15 @@ function browserNavigator(options: {
             request() {},
           },
         }),
+    ...(options.serviceWorker
+      ? {
+          serviceWorker: {
+            ...(options.serviceWorkerControlled
+              ? { controller: { state: 'activated' } }
+              : {}),
+          },
+        }
+      : {}),
     storage: {
       ...(options.opfs
         ? {

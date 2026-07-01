@@ -1317,8 +1317,8 @@ online propagation, or reconnect behavior can change.
   Worker/WebAssembly support, secure-context/cross-origin-isolation flags,
   OPFS/IndexedDB durable storage availability, persistent-storage status,
   quota budgets, available free-space budgets, storage usage ratio, quota
-  pressure, and served WASM runtime asset status/content types before a
-  database is opened.
+  pressure, service-worker availability/control, and served WASM runtime asset
+  status/content types before a database is opened.
 - Browser deployment preflight now carries an explicit support decision:
   `persistent-offline`, `ephemeral-development`, `unsupported`, or `unknown`,
   plus persistence mode, production-readiness, issue codes, and recommended
@@ -2000,6 +2000,10 @@ online propagation, or reconnect behavior can change.
   starter hidden preflight marker and `browser-preview-failure.json` self-check
   now preserve those fields so browser artifacts can distinguish low total
   quota, low free space, high usage pressure, and persistence-grant gaps.
+- 2026-07-01: Added service-worker availability/control to browser deployment
+  preflight and the starter hidden marker/failure artifact. PWA/service-worker
+  pages are still preflight-gated, but cache-skew investigations now retain
+  whether the observed page was service-worker controlled.
 - 2026-07-01: Added policy-level `browser_support.*` reason codes to
   `evaluateSyncularBrowserSupportPolicy(...)` and threaded them into the
   `create-syncular-app` hidden support-policy marker and
@@ -2862,13 +2866,14 @@ Most recent starter storage/quota artifact rerun:
   - Passed the deterministic browser failure artifact shape and safe-metrics
     self-check with deployment-preflight status, support tier, persistence
     mode, persisted flag, quota/usage/available bytes, minimum quota,
-    minimum available bytes, usage ratio, quota pressure, issue count, and
-    recommended-action count.
+    minimum available bytes, usage ratio, quota pressure, service-worker
+    availability/control, issue count, and recommended-action count.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available. On browser-capable runners the failure artifact can
     now distinguish low total quota, low free space, high storage pressure, or
-    persistence-grant gaps from bootstrap, realtime, local-visibility, and
-    support-bundle failures.
+    persistence-grant gaps from service-worker-controlled PWA/cache-skew
+    context, bootstrap, realtime, local-visibility, and support-bundle
+    failures.
 
 Most recent starter support-timeline artifact rerun:
 
@@ -3335,10 +3340,11 @@ Most recent mutation-status rerun:
   assets, MIME/content types, cross-origin isolation option, OPFS/IndexedDB
   requirements, durable storage availability, fallback behavior, persistence
   grant status, quota budgets, BroadcastChannel, Web Locks, page visibility,
-  `pagehide`, `beforeunload`, resume/shutdown signal availability, and
-  multi-tab mode. It now also reports a single support tier and persistence
-  mode so apps can distinguish persistent offline support, development-only
-  memory storage, unsupported deployments, and unproven checks. Apps can make
+  `pagehide`, `beforeunload`, resume/shutdown signal availability,
+  service-worker availability/control, and multi-tab mode. It now also reports
+  a single support tier and persistence mode so apps can distinguish
+  persistent offline support, development-only memory storage, unsupported
+  deployments, and unproven checks. Apps can make
   missing tab coordination or page lifecycle resume signals fail the
   preflight. The starter now runs the helper before opening Syncular. The
   scaffold smoke checks the transformed preflight module,

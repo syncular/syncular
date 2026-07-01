@@ -558,6 +558,8 @@ type BrowserPreviewProbe = {
     preflightMs: number | null;
     quotaPressure: string | null;
     quotaBytes: number | null;
+    serviceWorker: string | null;
+    serviceWorkerControlled: string | null;
     status: string | null;
     supportTier: string | null;
     usageRatio: number | null;
@@ -709,6 +711,8 @@ async function readStarterBrowserProbe(
     const deploymentPreflightPreflightMs = readDeploymentPreflightNumber('data-syncular-deployment-preflight-preflight-ms');
     const deploymentPreflightQuotaPressure = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-quota-pressure') ?? null;
     const deploymentPreflightQuotaBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-quota-bytes');
+    const deploymentPreflightServiceWorker = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-service-worker') ?? null;
+    const deploymentPreflightServiceWorkerControlled = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-service-worker-controlled') ?? null;
     const deploymentPreflightStatus = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-status') ?? null;
     const deploymentPreflightSupportTier = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-support-tier') ?? null;
     const deploymentPreflightUsageRatio = readDeploymentPreflightNumber('data-syncular-deployment-preflight-usage-ratio');
@@ -857,6 +861,8 @@ async function readStarterBrowserProbe(
         preflightMs: deploymentPreflightPreflightMs,
         quotaPressure: deploymentPreflightQuotaPressure,
         quotaBytes: deploymentPreflightQuotaBytes,
+        serviceWorker: deploymentPreflightServiceWorker,
+        serviceWorkerControlled: deploymentPreflightServiceWorkerControlled,
         status: deploymentPreflightStatus,
         supportTier: deploymentPreflightSupportTier,
         usageRatio: deploymentPreflightUsageRatio,
@@ -1522,6 +1528,8 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         preflightMs: 2,
         quotaPressure: 'normal',
         quotaBytes: 107_374_182_400,
+        serviceWorker: 'true',
+        serviceWorkerControlled: 'true',
         status: 'ready',
         supportTier: 'persistent-offline',
         usageRatio: 0.00000003814697265625,
@@ -1816,6 +1824,8 @@ function assertBrowserPreviewDeploymentPreflightShape(
     'persistence',
     'persisted',
     'quotaPressure',
+    'serviceWorker',
+    'serviceWorkerControlled',
     'status',
     'supportTier',
   ] as const) {

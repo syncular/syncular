@@ -78,9 +78,11 @@ availability, persistent storage status, quota, and WASM asset status/content
 types. The storage result includes total quota, current usage, available bytes,
 usage ratio, and `quotaPressure`, so previews and support artifacts can
 separate "the browser grants little storage" from "the origin is nearly full."
-It also reports browser lifecycle and multi-tab primitives:
-`BroadcastChannel`, Web Locks, page visibility, `pagehide`, and
-`beforeunload`. The result also includes `preflight.support.tier`, which is the
+It also reports service-worker availability/control plus browser lifecycle and
+multi-tab primitives: `BroadcastChannel`, Web Locks, page visibility,
+`pagehide`, and `beforeunload`. Service-worker control is not a failure by
+itself, but support artifacts should retain it for PWA/cache-skew debugging.
+The result also includes `preflight.support.tier`, which is the
 app-facing support decision: `persistent-offline`,
 `ephemeral-development`, `unsupported`, or `unknown`.
 
