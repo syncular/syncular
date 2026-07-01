@@ -2893,8 +2893,12 @@ Most recent generated write-pressure local rerun:
     <https://github.com/syncular/syncular/actions/runs/28534746069> passed on
     commit `316955f9`, including `starter-browser-preview`, proving the
     duplicate-tab contention path in Chrome plus the full Rust/native package
-    matrix before the generated write-pressure extension. The write-pressure
-    extension still needs hosted Chrome confirmation after push.
+    matrix before the generated write-pressure extension.
+  - Hosted Checks run
+    <https://github.com/syncular/syncular/actions/runs/28535566013> passed on
+    commit `b04d15f6`, including `starter-browser-preview`, proving the new
+    generated write-pressure path in Chrome plus the full Rust/native package
+    matrix.
 
 Previous Chrome CDP lifecycle-state proof rerun:
 
@@ -4132,11 +4136,10 @@ Most recent mutation-status rerun:
 
 Pick the next implementation slice from the remaining risks. The immediate
 starter browser-preview blocker is cleared, same-client duplicate-tab open
-contention is now covered in hosted Chrome, generated write pressure is covered
-locally and awaits hosted Chrome confirmation, and production ops readiness is
-now part of release rehearsal when evidence is present or required. Strong
-follow-ups are actual browser suspension/shutdown lifecycle coverage,
-quota/eviction and storage-shutdown recovery, same-database multi-tab write
-contention beyond duplicate-open/generated write-pressure proofs, and
-browser/bundler matrix execution, especially Safari, Firefox, private mode,
-WebViews, and PWAs.
+contention and generated write pressure are now covered in hosted Chrome, and
+production ops readiness is now part of release rehearsal when evidence is
+present or required. Strong follow-ups are actual browser suspension/shutdown
+lifecycle coverage, quota/eviction and storage-shutdown recovery,
+same-database multi-tab write contention beyond duplicate-open/generated
+write-pressure proofs, and browser/bundler matrix execution, especially Safari,
+Firefox, private mode, WebViews, and PWAs.
