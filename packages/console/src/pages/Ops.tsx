@@ -165,6 +165,43 @@ function summarizeOperation(event: ConsoleOperationEvent): string {
   return `${deletedCommits} commits removed${watermark}`;
 }
 
+function opsReadinessEventResult(
+  event: ConsoleOperationEvent
+): Record<string, unknown> | null {
+  if (event.operationType !== 'ops_readiness') return null;
+  return asObject(event.resultPayload);
+}
+
+function opsReadinessEventStatus(event: ConsoleOperationEvent): string {
+  const result = opsReadinessEventResult(event);
+  if (typeof result?.status === 'string') return result.status;
+  if (result?.ready === true) return 'ready';
+  if (result?.ready === false) return 'not-ready';
+  return 'unknown';
+}
+
+function opsReadinessEventIssueCount(
+  event: ConsoleOperationEvent
+): number | null {
+  const result = opsReadinessEventResult(event);
+  return typeof result?.issueCount === 'number' ? result.issueCount : null;
+}
+
+function opsReadinessEventEnvironment(event: ConsoleOperationEvent): string {
+  const result = opsReadinessEventResult(event);
+  return typeof result?.environment === 'string' &&
+    result.environment.length > 0
+    ? result.environment
+    : 'unknown';
+}
+
+function opsReadinessEventGeneratedAt(
+  event: ConsoleOperationEvent
+): string | null {
+  const result = opsReadinessEventResult(event);
+  return typeof result?.generatedAt === 'string' ? result.generatedAt : null;
+}
+
 function formatDateTime(iso: string): string {
   const parsed = Date.parse(iso);
   if (!Number.isFinite(parsed)) return iso;
@@ -179,7 +216,7 @@ function opsReadinessBadgeVariant(
   status: string
 ): 'healthy' | 'offline' | 'ghost' {
   if (status === 'ready') return 'healthy';
-  if (status === 'not-applicable') return 'ghost';
+  if (status === 'not-applicable' || status === 'unknown') return 'ghost';
   return 'offline';
 }
 
@@ -276,6 +313,18 @@ function OpsReadinessView() {
   const { data, isLoading, error } = useOpsReadiness({
     refetchIntervalMs: 30000,
   });
+  const {
+    data: readinessHistory,
+    isLoading: readinessHistoryLoading,
+    error: readinessHistoryError,
+  } = useOperationEvents(
+    {
+      limit: 6,
+      offset: 0,
+      operationType: 'ops_readiness',
+    },
+    { refetchIntervalMs: 30000 }
+  );
   const instanceReports = data?.instanceReports ?? [];
   const failedInstances = data?.failedInstances ?? [];
   const report = latestOpsReadinessReport(data);
@@ -506,9 +555,96 @@ function OpsReadinessView() {
               </Table>
             </div>
           ) : null}
+
+          <OpsReadinessHistoryView
+            events={readinessHistory?.items ?? []}
+            isLoading={readinessHistoryLoading}
+            error={readinessHistoryError}
+          />
         </div>
       )}
     </SectionCard>
+  );
+}
+
+function OpsReadinessHistoryView({
+  events,
+  isLoading,
+  error,
+}: {
+  events: ConsoleOperationEvent[];
+  isLoading: boolean;
+  error: Error | null;
+}) {
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="font-mono text-[10px] uppercase text-neutral-500">
+        Recent Readiness
+      </div>
+      {isLoading ? (
+        <div className="flex items-center justify-center py-5">
+          <Spinner size="sm" />
+        </div>
+      ) : error ? (
+        <Alert variant="destructive">
+          <AlertDescription>
+            Failed to load readiness history: {error.message}
+          </AlertDescription>
+        </Alert>
+      ) : events.length === 0 ? (
+        <div className="px-2 py-3 text-sm text-neutral-500">
+          No readiness history has been recorded.
+        </div>
+      ) : (
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Recorded</TableHead>
+                <TableHead>Target</TableHead>
+                <TableHead>Environment</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead>Generated</TableHead>
+                <TableHead>Issues</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {events.map((event, index) => {
+                const status = opsReadinessEventStatus(event);
+                const issueCount = opsReadinessEventIssueCount(event);
+                const generatedAt = opsReadinessEventGeneratedAt(event);
+                return (
+                  <TableRow
+                    key={`${event.operationId}:${event.createdAt}:${index}`}
+                  >
+                    <TableCell className="whitespace-nowrap font-mono text-xs">
+                      {formatDateTime(event.createdAt)}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {event.instanceId ?? 'local'}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {opsReadinessEventEnvironment(event)}
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant={opsReadinessBadgeVariant(status)}>
+                        {formatOpsReadinessStatus(status)}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap font-mono text-xs">
+                      {generatedAt ? formatDateTime(generatedAt) : 'unknown'}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {issueCount ?? '-'}
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+        </div>
+      )}
+    </div>
   );
 }
 

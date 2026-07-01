@@ -377,7 +377,8 @@ read-only review:
     operation-audit event with local paths omitted, exposes the latest report
     at `GET /console/ops/readiness`, and renders the latest readiness panel in
     the Console Ops view. Console gateway mode aggregates readiness reads across
-    selected instances while deploy writes remain explicitly single-instance.
+    selected instances while deploy writes remain explicitly single-instance,
+    and the Ops panel now lists recent redacted readiness audit history.
     The `create-syncular-app` scaffold smoke now
     also builds the generated app, serves Vite preview, verifies built preview
     assets, and has an opt-in Chrome/Chromium CDP path for opening the built

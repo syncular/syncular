@@ -1492,7 +1492,8 @@ online propagation, or reconnect behavior can change.
   issue codes. The server omits CLI local paths and rejects secret-shaped keys
   before recording the report. Console gateway mode aggregates readiness reads
   across selected instances while deploy writes remain explicitly
-  single-instance.
+  single-instance, and the Ops panel lists recent redacted readiness audit
+  history alongside the latest report.
 - 2026-06-30 ninth implementation slice added
   `createScopedBlobAccessDecisionChecker(...)`, allowed Hono blob routes to
   consume boolean or structured access decisions, and exposed typed blob route
@@ -2170,6 +2171,10 @@ online propagation, or reconnect behavior can change.
   readiness checks and issue codes. Console gateway mode now aggregates
   readiness reads across selected instances while writes remain targeted to one
   instance.
+- 2026-07-01: Added recent readiness history to the Console Ops readiness
+  panel by reusing redacted `ops_readiness` operation audit events. Gateway mode
+  inherits existing merged operation history, so the panel can show recent
+  per-instance readiness records without a second history API.
 
 ## Latest Gates
 
@@ -2584,6 +2589,16 @@ Most recent ops-readiness Console aggregation rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/console tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/gateway.ts packages/server/src/hono/__tests__/console-gateway-routes.test.ts packages/server/src/hono/__tests__/console-routes.test.ts packages/console/src/hooks/useConsoleApi.ts packages/console/src/lib/types.ts packages/console/src/pages/Ops.tsx apps/docs/content/docs/operate/console/operations.mdx apps/docs/content/docs/reference/cli/ops-check.mdx apps/docs/content/docs/operate/deployment.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `git diff --check`
+
+Most recent ops-readiness Console history rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/console tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-routes.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-gateway-routes.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/console/src/pages/Ops.tsx apps/docs/content/docs/operate/console/operations.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
 
@@ -3079,10 +3094,11 @@ Most recent mutation-status rerun:
   `ops_readiness` operation audit event, exposes the latest report over the
   Console API, renders the latest production-readiness panel, and aggregates
   readiness reads across selected Console gateway instances while deploy writes
-  remain explicitly single-instance. Remaining depth is historical readiness
-  trends, richer Fleet drilldown, and deciding whether a future broader
-  `doctor` should orchestrate those checks once enough independently useful
-  checks exist.
+  remain explicitly single-instance. The panel now also lists recent redacted
+  readiness audit history across the selected gateway scope. Remaining depth is
+  longer-range readiness trend visualization, richer issue drilldown across
+  instances, and deciding whether a future broader `doctor` should orchestrate
+  those checks once enough independently useful checks exist.
 - Performance and failure artifacts: keep package/WASM size, bootstrap
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch
   latency, storage/quota pressure, and redacted E2E failure artifacts
