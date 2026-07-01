@@ -93,6 +93,36 @@ describe('waitForSyncularLocalVisibility', () => {
     ).resolves.toEqual([{ id: 'task-1', title: 'Executable' }]);
   });
 
+  it('binds destructured Kysely methods for visibility query callbacks', async () => {
+    const db = {
+      marker: 'syncular-test-db',
+      selectFrom(this: { marker: string }, table: string) {
+        if (this.marker !== 'syncular-test-db') {
+          throw new TypeError('selectFrom lost its receiver');
+        }
+        return {
+          select: (column: string) => ({
+            where: () => ({
+              limit: () => ({
+                execute: async () => [{ column, id: 'task-1', table }],
+              }),
+            }),
+          }),
+        };
+      },
+    } as unknown as Kysely<TestDb>;
+    const client = new FakeLocalVisibilityClient<TestDb>(db);
+
+    await expect(
+      waitForSyncularLocalVisibility(
+        client,
+        ({ selectFrom }) =>
+          selectFrom('tasks').select('id').where('id', '=', 'task-1').limit(1),
+        { tables: ['tasks'] }
+      )
+    ).resolves.toEqual([{ column: 'id', id: 'task-1', table: 'tasks' }]);
+  });
+
   it('rejects with a typed timeout when visibility does not arrive', async () => {
     const client = new FakeLocalVisibilityClient<TestDb>();
     const evidence: SyncularLocalVisibilityEvidence[] = [];
@@ -166,11 +196,12 @@ describe('waitForSyncularLocalVisibility', () => {
 class FakeLocalVisibilityClient<DB>
   implements SyncularLocalVisibilityClient<DB>
 {
-  readonly db = {} as Kysely<DB>;
   readonly #listeners = new Map<
     SyncularClientEventType,
     Set<SyncularClientEventSink<SyncularClientEventType>>
   >();
+
+  constructor(readonly db = {} as Kysely<DB>) {}
 
   on<T extends SyncularClientEventType>(
     event: T,

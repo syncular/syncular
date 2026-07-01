@@ -3851,19 +3851,31 @@ Most recent mutation-status rerun:
   binary-sync-pack apply, or live-query drain calls. Local client typecheck,
   full client tests (`289` tests), focused worker queue/realtime/lifecycle
   tests, focused Biome, diff check, `create-syncular-app` smoke, repo
-  typecheck, repo lint, and root tests (`1208` tests) pass with Bun 1.3.9;
-  Chrome is not installed locally, so the next hosted artifact remains the
-  authority for the required real-browser path.
+  typecheck, repo lint, and root tests (`1208` tests) pass with Bun 1.3.9.
+  Hosted run `28525933895` then confirmed the Rust aliasing failure is fixed and
+  the smoke now advances through lifecycle, diagnostics, and two-tab
+  propagation, but fails the local-visibility proof with `TypeError`. The
+  visible task row is already rendered, so the failure is in the proof query:
+  `awaitLocalVisibility(...)` passed raw Kysely while the starter uses the same
+  destructured `({ selectFrom }) => ...` shape as React live-query examples;
+  detached Kysely methods lose their receiver in the browser build. The local
+  visibility helper now evaluates callbacks against a bound Kysely proxy,
+  preserving direct `db.selectFrom(...)` callers and supporting destructured
+  methods. Focused local-visibility tests, client typecheck, full client tests
+  (`290` tests), Biome, repo typecheck, repo lint, knip, `create-syncular-app`
+  smoke, diff check, and root tests (`1209` tests) pass with Bun 1.3.9; Chrome
+  is not installed locally, so the next hosted artifact remains the authority
+  for the required real-browser path.
 
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. Immediate next
-step is observing the hosted starter browser-preview job after the worker-side
-Rust operation queue. Strong follow-ups are deeper browser suspension/shutdown
-lifecycle coverage, canonical real-browser support-bundle failure artifacts,
-browser/bundler matrix execution, or automating production-ops checks, because
-those remain broad DX holes after the first local recovery browser proof,
-upgrade runbook, production-ops runbook, built-preview asset smoke, runtime
-timeline helper, composed support-bundle helper, starter support-bundle marker,
-mutation status helper, command timeline evidence chain, and CI browser-smoke
-enforcement.
+step is observing the hosted starter browser-preview job after the
+local-visibility bound-query fix. Strong follow-ups are deeper browser
+suspension/shutdown lifecycle coverage, canonical real-browser support-bundle
+failure artifacts, browser/bundler matrix execution, or automating
+production-ops checks, because those remain broad DX holes after the first local
+recovery browser proof, upgrade runbook, production-ops runbook, built-preview
+asset smoke, runtime timeline helper, composed support-bundle helper, starter
+support-bundle marker, mutation status helper, command timeline evidence chain,
+and CI browser-smoke enforcement.

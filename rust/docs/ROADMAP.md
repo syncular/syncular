@@ -329,10 +329,18 @@ read-only review:
     worker-owned client. Browser worker requests and realtime-triggered recovery
     pulls now share a small operation queue before touching the Rust client;
     `cancel` still bypasses the queue so request timeouts can abort active work.
-    Local client typecheck, full client tests (`289` tests), focused worker
-    queue/realtime/lifecycle tests, focused Biome, diff check,
+    Hosted run `28525933895` then confirmed that Rust aliasing crash is gone and
+    the real-browser smoke advances through lifecycle, diagnostics, and two-tab
+    propagation, but it failed the local-visibility proof with `TypeError`.
+    React live queries already pass a bound `selectFrom` helper, while
+    `awaitLocalVisibility(...)` passed raw Kysely and made the starter's
+    destructured `({ selectFrom }) => ...` callback lose its receiver. Local
+    visibility now evaluates queries against a bound Kysely proxy, preserving
+    direct `db.selectFrom(...)` callers while allowing destructured methods.
+    Local client typecheck, full client tests (`290` tests), focused local
+    visibility/worker queue/realtime/lifecycle tests, focused Biome, diff check,
     `create-syncular-app` smoke, repo typecheck, repo lint, and root tests
-    (`1208` tests) pass with Bun 1.3.9; Chrome is not installed locally, so the
+    (`1209` tests) pass with Bun 1.3.9; Chrome is not installed locally, so the
     hosted `starter-browser-preview` job remains the authority for the required
     real-browser path. The
     post-publish

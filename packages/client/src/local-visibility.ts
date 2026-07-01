@@ -8,6 +8,7 @@ import type {
 } from './types';
 
 const DEFAULT_LOCAL_VISIBILITY_TIMEOUT_MS = 10_000;
+const localVisibilityQueryDbCache = new WeakMap<object, unknown>();
 
 type ExecutableQuery<TResult> = {
   execute(): Promise<TResult>;
@@ -88,6 +89,7 @@ export async function waitForSyncularLocalVisibility<DB, TResult>(
     let timeout: ReturnType<typeof setTimeout> | undefined;
     const unsubscribers: Array<() => void> = [];
     const tableList = tables ? Array.from(tables).sort() : undefined;
+    const queryDb = createLocalVisibilityQueryDb(client.db);
 
     const finish = (
       result: { ok: true; value: TResult } | { ok: false; error: unknown }
@@ -136,7 +138,7 @@ export async function waitForSyncularLocalVisibility<DB, TResult>(
       }
       evaluating = true;
       evaluationCount += 1;
-      void executeLocalVisibilityQuery(client.db, query)
+      void executeLocalVisibilityQuery(queryDb, query)
         .then((result) => {
           if (predicate(result)) {
             emitEvidence(
@@ -268,6 +270,21 @@ function isExecutableQuery<TResult>(
     typeof value === 'object' &&
     typeof (value as { execute?: unknown }).execute === 'function'
   );
+}
+
+function createLocalVisibilityQueryDb<DB>(db: Kysely<DB>): Kysely<DB> {
+  const objectDb = db as object;
+  const cached = localVisibilityQueryDbCache.get(objectDb);
+  if (cached) return cached as Kysely<DB>;
+
+  const queryDb = new Proxy(objectDb, {
+    get(target, property) {
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  }) as Kysely<DB>;
+  localVisibilityQueryDbCache.set(objectDb, queryDb);
+  return queryDb;
 }
 
 function errorEvidence(error: unknown): Record<string, unknown> {
