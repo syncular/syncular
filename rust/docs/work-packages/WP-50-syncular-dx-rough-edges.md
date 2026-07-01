@@ -4516,8 +4516,9 @@ Most recent browser-health failure-artifact rerun:
   `bunx biome check packages/create-syncular-app/scripts/smoke.ts`,
   `bun --cwd packages/create-syncular-app smoke`,
   `bun run docs:stale-check`, and `git diff --check`. Chrome was not
-  installed locally, so hosted `starter-browser-preview` remains the
-  real-browser authority after push.
+  installed locally; hosted Checks run `28551532309` on commit `8220c90f`
+  passed the full matrix, including `starter-browser-preview`, confirming the
+  target activation branch in Chrome.
 
 ## Next Action
 
@@ -4548,11 +4549,11 @@ Console/Fleet ingestion. Cloudflare runtime failure artifacts now also carry
 redacted negative-path proof for auth-required, forbidden/revoked scope,
 invalid blob request/token, and blob access-denial outcomes. Destructive local
 recovery actions now expose data-loss/outbox safety metadata and block
-row-clearing actions while unsynced outbox work exists. The next
-lifecycle-facing slice adds real target activation background/foreground
-coverage below the current generated task proof; hosted Chrome should confirm
-that branch. After that, lifecycle follow-up should move to discarded-tab,
-shutdown/restart, eviction, and lower-level storage-failure behavior.
+row-clearing actions while unsynced outbox work exists. Real browser target
+activation background/foreground coverage below the generated task proof is now
+confirmed in hosted Chrome. The next lifecycle follow-up should move to
+discarded-tab, shutdown/restart, eviction, and lower-level storage-failure
+behavior.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 discard/shutdown lifecycle coverage, eviction and storage-shutdown browser
