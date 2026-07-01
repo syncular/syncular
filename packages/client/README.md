@@ -215,6 +215,8 @@ const timeline = await syncular.commandTimeline({
   command: mutation.commit,
   localVisibility,
 });
+console.debug(timeline.summary.proof.complete);
+console.debug(timeline.summary.proof.realtimeCursorObserved);
 console.debug(timeline.summary.missingEvidence);
 console.debug(timeline.summary.requestIds);
 console.debug(timeline.trackedCommit.outbox?.outboxId);

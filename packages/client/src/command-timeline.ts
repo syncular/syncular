@@ -92,6 +92,7 @@ export interface SyncularCommandTimelineEvent {
 export interface SyncularCommandTimelineSummary {
   state: SyncularTrackedMutationState;
   requiresAction: boolean;
+  proof: SyncularCommandTimelineProof;
   matchedEventCount: number;
   contextEventCount: number;
   requestIds: string[];
@@ -99,6 +100,18 @@ export interface SyncularCommandTimelineSummary {
   traceIds: string[];
   spanIds: string[];
   missingEvidence: SyncularCommandTimelineMissingEvidence[];
+}
+
+export interface SyncularCommandTimelineProof {
+  outboxPersisted: boolean;
+  requestCorrelated: boolean;
+  syncAttemptObserved: boolean;
+  serverCommitObserved: boolean;
+  realtimeCursorObserved: boolean;
+  pullReasonObserved: boolean;
+  localApplyObserved: boolean;
+  localVisibilityObserved: boolean;
+  complete: boolean;
 }
 
 export interface SyncularCommandTimeline {
@@ -378,9 +391,14 @@ function summarizeCommandTimeline(args: {
   localVisibility: SyncularCommandTimelineVisibilityEvidence | undefined;
 }): SyncularCommandTimelineSummary {
   const missingEvidence = missingCommandEvidence(args);
+  const proof = commandProof(args);
   return {
     state: args.trackedCommit.state,
     requiresAction: trackedCommitRequiresAction(args.trackedCommit),
+    proof: {
+      ...proof,
+      complete: missingEvidence.length === 0,
+    },
     matchedEventCount: args.runtimeEvents.filter(
       (event) => event.relation === 'matched'
     ).length,
@@ -408,6 +426,38 @@ function summarizeCommandTimeline(args: {
         .filter((value): value is string => Boolean(value))
     ),
     missingEvidence,
+  };
+}
+
+function commandProof(args: {
+  trackedCommit: SyncularTrackedMutationCommit;
+  runtimeEvents: readonly SyncularCommandTimelineEvent[];
+  localVisibility: SyncularCommandTimelineVisibilityEvidence | undefined;
+}): Omit<SyncularCommandTimelineProof, 'complete'> {
+  const outboxPersisted =
+    Boolean(args.trackedCommit.outbox) ||
+    eventsHaveDetail(args.runtimeEvents, 'outboxSeq') ||
+    eventsHaveDetail(args.runtimeEvents, 'outboxId');
+  const localApplyObserved =
+    Boolean(args.trackedCommit.outbox) ||
+    args.runtimeEvents.some((event) => event.phase === 'local-apply');
+  return {
+    outboxPersisted,
+    requestCorrelated: args.runtimeEvents.some((event) =>
+      Boolean(event.requestId)
+    ),
+    syncAttemptObserved: args.runtimeEvents.some((event) =>
+      Boolean(event.syncAttemptId || event.traceId)
+    ),
+    serverCommitObserved:
+      args.trackedCommit.outbox?.ackedCommitSeq != null ||
+      eventsHaveDetail(args.runtimeEvents, 'commitSeq'),
+    realtimeCursorObserved: args.runtimeEvents.some(
+      (event) => event.phase === 'realtime' && event.cursor != null
+    ),
+    pullReasonObserved: eventsHavePullReason(args.runtimeEvents),
+    localApplyObserved,
+    localVisibilityObserved: args.localVisibility?.state === 'visible',
   };
 }
 

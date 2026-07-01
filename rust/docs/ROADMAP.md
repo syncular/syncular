@@ -353,7 +353,10 @@ read-only review:
     redacted runtime timeline events, optional local-visibility evidence, and
     explicit missing-evidence markers for outbox sequence, realtime cursor,
     pull reason, and local visibility when the runtime cannot yet prove those
-    links. Redacted support-bundle outbox commit summaries now include
+    links. The summary now also exposes `proof` booleans for the
+    outbox/request/sync-attempt/server-commit/realtime-cursor/pull-reason/
+    local-apply/local-visibility chain. Redacted support-bundle outbox commit
+    summaries now include
     `outboxId` for the local outbox row and `ackedCommitSeq` for acked commits,
     so mutation status and command timelines can prove the local durable
     outbox link plus server commit sequence without exposing operation

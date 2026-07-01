@@ -2006,6 +2006,13 @@ online propagation, or reconnect behavior can change.
   `SyncularDatabase.commandTimeline(...)` as a deterministic receipt/command
   artifact over mutation status, runtime timeline events, optional
   local-visibility evidence, and explicit missing-evidence markers.
+- 2026-07-01: Extended command timelines with
+  `summary.proof`, a stable app/test/support summary over the command evidence
+  chain: local outbox persisted, request correlated, sync attempt observed,
+  server commit observed, realtime cursor observed, pull reason observed,
+  local apply observed, local visibility observed, and whether the proof chain
+  is complete. This lets E2E and support tooling assert the core realtime and
+  freshness story without reinterpreting event arrays.
 - 2026-07-01: Extended redacted local support bundle outbox commit summaries
   with `ackedCommitSeq` for acked commits, and threaded that through mutation
   status plus command timeline receipt events so command artifacts can prove
@@ -2443,6 +2450,23 @@ Most recent command pull-reason rerun:
 - `bun --cwd packages/client tsgo`
 - `bunx biome check packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/src/rust-client.ts rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
+- `git diff --check`
+
+Most recent command proof-summary rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/command-timeline.test.ts packages/client/src/public-api.test.ts`
+  - Passed complete proof-chain assertions for outbox persistence, request id,
+    sync attempt, server commit, realtime cursor, pull reason, local apply,
+    and local visibility.
+  - Passed partial proof assertions for context-only timelines where missing
+    evidence remains explicit.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx`
+  - Passed for the TypeScript files. The repo Biome config ignores Markdown
+    and MDX, so use docs typecheck/stale-check, `git diff --check`, and manual
+    readback for those pages.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
 
 Most recent realtime cursor evidence rerun:
@@ -3362,7 +3386,9 @@ Most recent mutation-status rerun:
   First command-timeline artifacts are done for receipt state, redacted runtime
   events, local-visibility evidence captured from `awaitLocalVisibility(...)`,
   client-generated request id evidence that matches Hono server request event
-  rows, and explicit missing-evidence markers.
+  rows, explicit missing-evidence markers, and `summary.proof` booleans for
+  the outbox/request/sync-attempt/server-commit/realtime-cursor/pull-reason/
+  local-apply/local-visibility chain.
 - Upgrade and production ops runbooks: turn schema/package/protocol upgrade
   order, backup/restore, blob-store consistency, rate limits, credential
   rotation, local database recovery, and rollback into copyable operator docs.
