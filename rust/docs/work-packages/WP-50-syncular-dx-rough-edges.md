@@ -2246,6 +2246,23 @@ Most recent starter storage/quota artifact rerun:
     now distinguish storage/quota or persistence pressure from bootstrap,
     realtime, local-visibility, and support-bundle failures.
 
+Most recent starter support-timeline artifact rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-support-timeline-smoke bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks,
+    including support-bundle runtime-timeline marker fields.
+  - Passed the deterministic browser failure artifact shape and safe-metrics
+    self-check with sync/realtime/local-apply/blob phase counts, cursor count,
+    request-id count, sync-attempt-id count, and latest phase codes.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available. The starter now refreshes the support-bundle marker
+    on `rowsChanged`, so browser-capable failure artifacts can include the
+    latest public timeline evidence after generated mutations instead of only
+    the initial page-open snapshot.
+
 Most recent production-ops docs rerun:
 
 - `bun run docs:stale-check`
@@ -2723,10 +2740,12 @@ Most recent mutation-status rerun:
   local visibility when the browser probe can run. The starter also emits
   deployment-preflight storage/quota facts so browser failures can separate
   quota, persistence, and support-tier problems from sync lifecycle failures.
-  The Chrome/CDP path waits for the local-visibility marker before proving
-  two-tab propagation. Remaining depth is to add richer sync apply/realtime
-  event cursor and blob-fetch measurements where browser/app flows can expose
-  them without manual log scraping.
+  The support-bundle marker now adds redacted runtime timeline counts for
+  sync, realtime, local-apply, blob, cursors, request ids, sync-attempt ids,
+  and latest phase codes, and refreshes on row changes. The Chrome/CDP path
+  waits for the local-visibility marker before proving two-tab propagation.
+  Remaining depth is direct blob-fetch measurement where a browser/app flow
+  can expose it without manual log scraping.
 
 ## Next Action
 

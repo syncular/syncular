@@ -207,7 +207,9 @@ read-only review:
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local
     visibility, plus deployment-preflight storage/quota status when Chrome/CDP
-    is available. The same smoke
+    is available. The support-bundle marker also reports redacted runtime
+    timeline event counts for sync, realtime, local apply, blob, cursors, and
+    request/sync-attempt ids. The same smoke
     self-checks the redacted browser failure artifact shape and safe smoke
     metrics even when no browser is installed. Browser pages can now
     install `installSyncularBrowserLifecycleResume(...)` to coalesce

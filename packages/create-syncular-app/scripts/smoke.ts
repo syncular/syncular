@@ -267,9 +267,9 @@ async function verifyBuiltPreviewAssets(
         assetBody.includes('data-syncular-starter-database-open-ms') &&
         assetBody.includes('data-syncular-starter-local-visibility-ms') &&
         assetBody.includes('data-syncular-starter-realtime-connected-ms');
-      sawSupportBundleMarker ||= assetBody.includes(
-        'data-syncular-support-bundle-status'
-      );
+      sawSupportBundleMarker ||=
+        assetBody.includes('data-syncular-support-bundle-status') &&
+        assetBody.includes('data-syncular-support-bundle-timeline-event-count');
     } else {
       const assetBytes = (await response.arrayBuffer()).byteLength;
       totalAssetBytes += assetBytes;
@@ -498,8 +498,19 @@ type BrowserPreviewProbe = {
     redacted: string | null;
     sectionCount: number;
     issueCount: number;
+    blobEventCount: number;
+    cursorCount: number;
+    latestBlobCode: string | null;
+    latestLocalApplyCode: string | null;
+    latestRealtimeCode: string | null;
+    latestSyncCode: string | null;
+    localApplyEventCount: number;
+    realtimeEventCount: number;
     requestIdCount: number;
     sectionErrorCount: number;
+    syncAttemptIdCount: number;
+    syncEventCount: number;
+    timelineEventCount: number;
   };
   lifecycleResume: {
     status: string | null;
@@ -566,8 +577,19 @@ async function readStarterBrowserProbe(
     const supportBundleRedacted = supportBundle?.getAttribute('data-syncular-support-bundle-redacted') ?? null;
     const supportBundleSectionCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-section-count') ?? 0);
     const supportBundleIssueCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-issue-count') ?? 0);
+    const supportBundleBlobEventCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-blob-event-count') ?? 0);
+    const supportBundleCursorCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-cursor-count') ?? 0);
+    const supportBundleLatestBlobCode = supportBundle?.getAttribute('data-syncular-support-bundle-latest-blob-code') ?? null;
+    const supportBundleLatestLocalApplyCode = supportBundle?.getAttribute('data-syncular-support-bundle-latest-local-apply-code') ?? null;
+    const supportBundleLatestRealtimeCode = supportBundle?.getAttribute('data-syncular-support-bundle-latest-realtime-code') ?? null;
+    const supportBundleLatestSyncCode = supportBundle?.getAttribute('data-syncular-support-bundle-latest-sync-code') ?? null;
+    const supportBundleLocalApplyEventCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-local-apply-event-count') ?? 0);
+    const supportBundleRealtimeEventCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-realtime-event-count') ?? 0);
     const supportBundleRequestIdCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-request-id-count') ?? 0);
     const supportBundleSectionErrorCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-section-error-count') ?? 0);
+    const supportBundleSyncAttemptIdCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-sync-attempt-id-count') ?? 0);
+    const supportBundleSyncEventCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-sync-event-count') ?? 0);
+    const supportBundleTimelineEventCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-timeline-event-count') ?? 0);
     const deploymentPreflight = document.querySelector('[data-syncular-deployment-preflight-status]');
     const readDeploymentPreflightNumber = (name) => {
       const value = deploymentPreflight?.getAttribute(name) ?? null;
@@ -684,8 +706,19 @@ async function readStarterBrowserProbe(
         redacted: supportBundleRedacted,
         sectionCount: supportBundleSectionCount,
         issueCount: supportBundleIssueCount,
+        blobEventCount: supportBundleBlobEventCount,
+        cursorCount: supportBundleCursorCount,
+        latestBlobCode: supportBundleLatestBlobCode,
+        latestLocalApplyCode: supportBundleLatestLocalApplyCode,
+        latestRealtimeCode: supportBundleLatestRealtimeCode,
+        latestSyncCode: supportBundleLatestSyncCode,
+        localApplyEventCount: supportBundleLocalApplyEventCount,
+        realtimeEventCount: supportBundleRealtimeEventCount,
         requestIdCount: supportBundleRequestIdCount,
         sectionErrorCount: supportBundleSectionErrorCount,
+        syncAttemptIdCount: supportBundleSyncAttemptIdCount,
+        syncEventCount: supportBundleSyncEventCount,
+        timelineEventCount: supportBundleTimelineEventCount,
       },
       lifecycleResume: {
         status: lifecycleResumeStatus,
@@ -987,8 +1020,19 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         redacted: 'true',
         sectionCount: 4,
         issueCount: 1,
+        blobEventCount: 0,
+        cursorCount: 1,
+        latestBlobCode: null,
+        latestLocalApplyCode: 'local.visibility.visible',
+        latestRealtimeCode: 'realtime.sync_wakeup',
+        latestSyncCode: 'sync.pull.complete',
+        localApplyEventCount: 1,
+        realtimeEventCount: 2,
         requestIdCount: 0,
         sectionErrorCount: 1,
+        syncAttemptIdCount: 1,
+        syncEventCount: 3,
+        timelineEventCount: 12,
       },
       lifecycleResume: {
         status: 'complete',
@@ -1238,7 +1282,14 @@ function assertBrowserPreviewSupportBundleShape(
   if (!isRecord(value)) {
     throw new Error(`${path} probe.supportBundle was not a JSON object`);
   }
-  for (const key of ['status', 'redacted'] as const) {
+  for (const key of [
+    'status',
+    'redacted',
+    'latestBlobCode',
+    'latestLocalApplyCode',
+    'latestRealtimeCode',
+    'latestSyncCode',
+  ] as const) {
     if (value[key] !== null && typeof value[key] !== 'string') {
       throw new Error(
         `${path} probe.supportBundle.${key} was not nullable text`
@@ -1246,10 +1297,17 @@ function assertBrowserPreviewSupportBundleShape(
     }
   }
   for (const key of [
-    'sectionCount',
+    'blobEventCount',
+    'cursorCount',
     'issueCount',
+    'localApplyEventCount',
+    'realtimeEventCount',
     'requestIdCount',
+    'sectionCount',
     'sectionErrorCount',
+    'syncAttemptIdCount',
+    'syncEventCount',
+    'timelineEventCount',
   ] as const) {
     if (!isNonNegativeFiniteNumber(value[key])) {
       throw new Error(

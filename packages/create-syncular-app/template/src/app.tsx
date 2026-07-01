@@ -359,10 +359,12 @@ function TaskPane({
     refresh();
     const unsubscribeLifecycle = client.on('lifecycleChanged', refresh);
     const unsubscribeBootstrap = client.on('bootstrapChanged', refresh);
+    const unsubscribeRows = client.on('rowsChanged', refresh);
     return () => {
       disposed = true;
       unsubscribeLifecycle();
       unsubscribeBootstrap();
+      unsubscribeRows();
     };
   }, [client, updateStarterTimeline]);
 
@@ -604,10 +606,21 @@ function DeploymentPreflightMarker({
 type SupportBundlePreview = {
   status: SyncularSupportBundle['summary']['status'] | 'failed';
   redacted: boolean;
+  blobEventCount: number;
+  cursorCount: number;
   includedSections: number;
   issueCount: number;
+  latestBlobCode: string | null;
+  latestLocalApplyCode: string | null;
+  latestRealtimeCode: string | null;
+  latestSyncCode: string | null;
+  localApplyEventCount: number;
+  realtimeEventCount: number;
   requestIdCount: number;
   sectionErrorCount: number;
+  syncAttemptIdCount: number;
+  syncEventCount: number;
+  timelineEventCount: number;
 };
 
 function summarizeDeploymentPreflight(
@@ -648,15 +661,27 @@ function failedDeploymentPreflightPreview(
 function summarizeSupportBundle(
   bundle: SyncularSupportBundle
 ): SupportBundlePreview {
+  const timelineEvents = bundle.runtimeTimeline?.events ?? [];
   return {
     status: bundle.summary.status,
     redacted: bundle.redacted,
+    blobEventCount: countTimelinePhase(timelineEvents, 'blob'),
+    cursorCount: timelineEvents.filter((event) => event.cursor != null).length,
     includedSections: Object.values(bundle.sections).filter(
       (sectionStatus) => sectionStatus === 'included'
     ).length,
     issueCount: bundle.summary.issueCodes.length,
+    latestBlobCode: latestTimelineCode(timelineEvents, 'blob'),
+    latestLocalApplyCode: latestTimelineCode(timelineEvents, 'local-apply'),
+    latestRealtimeCode: latestTimelineCode(timelineEvents, 'realtime'),
+    latestSyncCode: latestTimelineCode(timelineEvents, 'sync'),
+    localApplyEventCount: countTimelinePhase(timelineEvents, 'local-apply'),
+    realtimeEventCount: countTimelinePhase(timelineEvents, 'realtime'),
     requestIdCount: bundle.summary.requestIds.length,
     sectionErrorCount: bundle.sectionErrors.length,
+    syncAttemptIdCount: bundle.summary.syncAttemptIds.length,
+    syncEventCount: countTimelinePhase(timelineEvents, 'sync'),
+    timelineEventCount: timelineEvents.length,
   };
 }
 
@@ -664,11 +689,36 @@ function failedSupportBundlePreview(): SupportBundlePreview {
   return {
     status: 'failed',
     redacted: false,
+    blobEventCount: 0,
+    cursorCount: 0,
     includedSections: 0,
     issueCount: 1,
+    latestBlobCode: null,
+    latestLocalApplyCode: null,
+    latestRealtimeCode: null,
+    latestSyncCode: null,
+    localApplyEventCount: 0,
+    realtimeEventCount: 0,
     requestIdCount: 0,
     sectionErrorCount: 1,
+    syncAttemptIdCount: 0,
+    syncEventCount: 0,
+    timelineEventCount: 0,
   };
+}
+
+function countTimelinePhase(
+  events: NonNullable<SyncularSupportBundle['runtimeTimeline']>['events'],
+  phase: string
+): number {
+  return events.filter((event) => event.phase === phase).length;
+}
+
+function latestTimelineCode(
+  events: NonNullable<SyncularSupportBundle['runtimeTimeline']>['events'],
+  phase: string
+): string | null {
+  return events.findLast((event) => event.phase === phase)?.code ?? null;
 }
 
 function SupportBundleLine({
@@ -684,8 +734,30 @@ function SupportBundleLine({
   return (
     <p
       className={`health-line ${supportBundle.status}`}
+      data-syncular-support-bundle-blob-event-count={
+        supportBundle.blobEventCount
+      }
+      data-syncular-support-bundle-cursor-count={supportBundle.cursorCount}
       data-syncular-support-bundle-issue-count={supportBundle.issueCount}
+      data-syncular-support-bundle-latest-blob-code={
+        supportBundle.latestBlobCode ?? ''
+      }
+      data-syncular-support-bundle-latest-local-apply-code={
+        supportBundle.latestLocalApplyCode ?? ''
+      }
+      data-syncular-support-bundle-latest-realtime-code={
+        supportBundle.latestRealtimeCode ?? ''
+      }
+      data-syncular-support-bundle-latest-sync-code={
+        supportBundle.latestSyncCode ?? ''
+      }
+      data-syncular-support-bundle-local-apply-event-count={
+        supportBundle.localApplyEventCount
+      }
       data-syncular-support-bundle-redacted={String(supportBundle.redacted)}
+      data-syncular-support-bundle-realtime-event-count={
+        supportBundle.realtimeEventCount
+      }
       data-syncular-support-bundle-request-id-count={
         supportBundle.requestIdCount
       }
@@ -696,6 +768,15 @@ function SupportBundleLine({
         supportBundle.sectionErrorCount
       }
       data-syncular-support-bundle-status={supportBundle.status}
+      data-syncular-support-bundle-sync-attempt-id-count={
+        supportBundle.syncAttemptIdCount
+      }
+      data-syncular-support-bundle-sync-event-count={
+        supportBundle.syncEventCount
+      }
+      data-syncular-support-bundle-timeline-event-count={
+        supportBundle.timelineEventCount
+      }
     >
       {label}
     </p>
