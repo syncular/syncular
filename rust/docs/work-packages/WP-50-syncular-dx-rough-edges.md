@@ -4208,19 +4208,20 @@ Most recent mutation-status rerun:
   survive concurrent generated writes from both same-database tabs and propagate
   both rows to a separate observer; local `create-syncular-app` typecheck,
   focused Biome, non-Chrome scaffold smoke, docs stale check, and diff check
-  pass, and the Chrome-required part still needs the next hosted
-  starter-browser-preview run for browser confirmation.
+  passed. Hosted Checks run `28538884038` on commit `8fd1c74d` then passed the
+  full matrix, including `starter-browser-preview`, confirming the same-database
+  duplicate-tab writer proof in hosted Chrome.
 
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. The immediate
 starter browser-preview blocker is cleared, same-client duplicate-tab open
 contention, generated write pressure, and storage recovery action mapping are
-covered in hosted Chrome. The next same-database writer branch is implemented
-in the smoke harness and needs hosted Chrome confirmation. Production ops
-readiness is now part of release rehearsal when evidence is present or
-required. Strong follow-ups are actual browser suspension/shutdown lifecycle
-coverage, actual quota-exhaustion/eviction and storage-shutdown browser proof,
-lower-level storage contention/failure behavior beyond duplicate-tab generated
-writes, and browser/bundler matrix execution, especially Safari, Firefox,
-private mode, WebViews, and PWAs.
+covered in hosted Chrome, and the same-database duplicate-tab writer branch is
+now also confirmed in hosted Chrome. Production ops readiness is now part of
+release rehearsal when evidence is present or required. Strong follow-ups are
+actual browser suspension/shutdown lifecycle coverage, actual
+quota-exhaustion/eviction and storage-shutdown browser proof, lower-level
+storage contention/failure behavior beyond duplicate-tab generated writes, and
+browser/bundler matrix execution, especially Safari, Firefox, private mode,
+WebViews, and PWAs.
