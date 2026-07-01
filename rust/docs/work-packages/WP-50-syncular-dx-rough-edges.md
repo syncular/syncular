@@ -2405,6 +2405,15 @@ online propagation, or reconnect behavior can change.
   and section-error evidence. The Checks upload glob now captures
   `browser-preview-*.json` so both normal and support-bundle failure artifacts
   are preserved on hosted failures.
+- 2026-07-01: Hosted Checks run `28529052910` proved the new
+  support-bundle artifact upload path and exposed an over-strict verifier
+  assertion: the live artifact contained ready deployment-preflight evidence
+  and a concrete `supported-after-preflight` browser policy, but hosted Chrome
+  reported the policy as `warning` with
+  `browser_support.persistence_mismatch` because persistence evidence was
+  unknown. The verifier now accepts `met` or `warning` policy verdicts while
+  still rejecting missing, unsupported, not-applicable, or not-met policy
+  evidence.
 - 2026-07-01: Promoted the newer browser-preview deployment-preflight artifact
   fields into Console ingestion schema coverage and route assertions. Console
   now validates and preserves available-byte budgets, quota pressure,
@@ -2969,6 +2978,24 @@ Most recent live support-bundle failure artifact rerun:
     `browser-preview-failure.support-bundle.json`, and fails if the artifact
     omits live deployment-preflight, support-policy, support-bundle issue, or
     section-error evidence.
+- Hosted Checks run `28529052910` failed in `starter-browser-preview` after
+  uploading `starter-browser-preview-28529052910`. The downloaded
+  `browser-preview-failure.support-bundle.json` proved the live artifact path:
+  `reason=page-reported-errors`, support bundle `status=failed`,
+  `redacted=true`, ready deployment preflight, and browser support policy
+  `policy=supported-after-preflight` with `status=warning` /
+  `browser_support.persistence_mismatch`. The local verifier has been
+  corrected to treat that warning verdict as actionable evidence while still
+  failing missing or unsupported policy states; rerun hosted Checks before
+  closing the slice.
+- After the verifier correction:
+  `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts`
+- After the verifier correction:
+  `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- After the verifier correction:
+  `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
+  - Passed the same local scaffold/build/runtime-asset/artifact self-checks;
+    skipped Chrome locally because no Chrome/Chromium binary was available.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
 
@@ -3753,9 +3780,14 @@ Most recent mutation-status rerun:
   runtime panel renders route/exit/output plus R2 blob byte/timing cards from
   those stored quick fields. Release rehearsal now runs focused Console
   ingestion tests for both failure artifact families by default, while
-  `doctor` stays limited to local schema/ops readiness. Remaining work is to
-  observe the hosted Chrome job for the live support-bundle failure-artifact
-  proof and decide whether future hosted artifact uploads need deeper
+  `doctor` stays limited to local schema/ops readiness. Hosted Checks run
+  `28529052910` proved the new support-bundle failure artifact is uploaded and
+  contains live redacted browser probe data, then failed only because the
+  verifier required a `met` support-policy verdict instead of accepting the
+  legitimate hosted Chrome `warning` verdict for unknown persistence evidence.
+  Remaining work is to observe the corrected hosted Chrome rerun for the live
+  support-bundle failure-artifact proof and decide whether future hosted
+  artifact uploads need deeper
   Console/Fleet orchestration.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
@@ -3935,7 +3967,8 @@ Pick the next implementation slice from the remaining risks. The immediate
 starter browser-preview blocker is cleared, and production ops readiness is now
 part of release rehearsal when evidence is present or required. Strong
 follow-ups are deeper browser suspension/shutdown lifecycle coverage, canonical
-real-browser support-bundle failure artifacts, and browser/bundler matrix
+real-browser support-bundle failure artifacts after the hosted verifier rerun,
+and browser/bundler matrix
 execution, because those remain broad DX holes after the first local recovery
 browser proof, upgrade runbook, production-ops runbook, release ops-readiness
 gate, built-preview asset smoke, runtime timeline helper, composed

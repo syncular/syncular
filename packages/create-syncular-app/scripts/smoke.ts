@@ -1983,9 +1983,19 @@ async function verifyExpectedSupportBundleFailureArtifact(
       `${path} did not include ready deployment-preflight evidence`
     );
   }
-  if (artifact.probe.browserSupportPolicy.status !== 'met') {
+  if (
+    artifact.probe.browserSupportPolicy.policy !== 'supported-after-preflight'
+  ) {
     throw new Error(
-      `${path} did not include met browser support-policy evidence`
+      `${path} did not include supported-after-preflight browser support-policy evidence`
+    );
+  }
+  if (
+    artifact.probe.browserSupportPolicy.status !== 'met' &&
+    artifact.probe.browserSupportPolicy.status !== 'warning'
+  ) {
+    throw new Error(
+      `${path} did not include actionable browser support-policy evidence`
     );
   }
   log('support-bundle failure artifact check passed');
