@@ -2414,6 +2414,11 @@ online propagation, or reconnect behavior can change.
   unknown. The verifier now accepts `met` or `warning` policy verdicts while
   still rejecting missing, unsupported, not-applicable, or not-met policy
   evidence.
+- 2026-07-01: Follow-up hosted Checks run `28529443648` passed the full
+  matrix on `56cf1c48`, including `starter-browser-preview`. That hosted
+  Chrome lane now proves the starter happy path, browser reload/reopen and
+  process-restart persistence, the live support-bundle failure artifact
+  verifier, and the full Rust/browser/native packaging matrix together.
 - 2026-07-01: Promoted the newer browser-preview deployment-preflight artifact
   fields into Console ingestion schema coverage and route assertions. Console
   now validates and preserves available-byte budgets, quota pressure,
@@ -2986,8 +2991,10 @@ Most recent live support-bundle failure artifact rerun:
   `policy=supported-after-preflight` with `status=warning` /
   `browser_support.persistence_mismatch`. The local verifier has been
   corrected to treat that warning verdict as actionable evidence while still
-  failing missing or unsupported policy states; rerun hosted Checks before
-  closing the slice.
+  failing missing or unsupported policy states.
+- Hosted Checks run `28529443648` passed on `56cf1c48`, including
+  `starter-browser-preview`. That closes the hosted live
+  support-bundle-failure artifact proof for this slice.
 - After the verifier correction:
   `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts`
 - After the verifier correction:
@@ -3785,10 +3792,10 @@ Most recent mutation-status rerun:
   contains live redacted browser probe data, then failed only because the
   verifier required a `met` support-policy verdict instead of accepting the
   legitimate hosted Chrome `warning` verdict for unknown persistence evidence.
-  Remaining work is to observe the corrected hosted Chrome rerun for the live
-  support-bundle failure-artifact proof and decide whether future hosted
-  artifact uploads need deeper
-  Console/Fleet orchestration.
+  Hosted Checks run `28529443648` passed after that verifier correction,
+  closing the live hosted support-bundle failure-artifact proof for this slice.
+  Remaining work is to decide whether future hosted artifact uploads need
+  deeper Console/Fleet orchestration.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
   conflict detail rows, last mutation-related errors, and recommended actions.
@@ -3967,10 +3974,10 @@ Pick the next implementation slice from the remaining risks. The immediate
 starter browser-preview blocker is cleared, and production ops readiness is now
 part of release rehearsal when evidence is present or required. Strong
 follow-ups are deeper browser suspension/shutdown lifecycle coverage, canonical
-real-browser support-bundle failure artifacts after the hosted verifier rerun,
-and browser/bundler matrix
+real-browser lifecycle/recovery contention proofs, and browser/bundler matrix
 execution, because those remain broad DX holes after the first local recovery
 browser proof, upgrade runbook, production-ops runbook, release ops-readiness
 gate, built-preview asset smoke, runtime timeline helper, composed
-support-bundle helper, starter support-bundle marker, mutation status helper,
+support-bundle helper, hosted starter support-bundle failure artifact proof,
+starter support-bundle marker, mutation status helper,
 command timeline evidence chain, and CI browser-smoke enforcement.
