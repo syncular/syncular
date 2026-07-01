@@ -893,6 +893,52 @@ hit the problem.
   checks, rate-limit tuning, credential rotation, rollback guidance, and local
   database recovery procedures.
 
+### DX Completion Smell Tests
+
+Use these as a final filter before calling any feedback-driven slice done.
+They are intentionally phrased from the app developer and maintainer
+perspective rather than from internal module ownership.
+
+- First-run clarity: can a new app developer explain, after the starter path,
+  what is local SQLite state, what is authoritative server state, what
+  subscriptions do, how generated mutations sync, and how local reads become
+  fresh without learning runtime internals?
+- Runtime truth: can UI code, tests, support bundles, and the Console all
+  answer the same core questions: durable or ephemeral storage, schema
+  compatibility, bootstrap readiness, realtime state, last failure, recovery
+  owner, and safe next action?
+- Failure specificity: does the failure produce a stable code and safe detail
+  fields for the real blocker instead of a generic timeout, bootstrap failure,
+  or human-only log message?
+- Recovery ownership: does every action-required state say whether the runtime
+  will retry, the app should refresh auth/change scope, the user must choose a
+  destructive/local action, or an operator must deploy/migrate/rollback?
+- Freshness discipline: does the solution avoid teaching app code to call
+  manual `sync()` as the normal stale-read fix, and instead use bootstrap,
+  realtime recovery, generated visibility helpers, or command timelines?
+- Authority discipline: do auth, scope, partition, blob, and package/base data
+  examples preserve fail-closed authority boundaries instead of granting access
+  through global rows, hashes, or convenient fallback behavior?
+- Deployment confidence: can CI or deploy tooling prove generated output,
+  migrations, server schema, package/runtime versions, and browser WASM assets
+  line up before traffic sees the app?
+- Browser confidence: does the proof cover built assets in a real browser and
+  at least one reopen/restart-style persistence boundary where the platform
+  makes that observable, not only a same-page happy path?
+- Optional dependency isolation: can root imports and common starter paths run
+  without loading Bun-only, native-driver, Cloudflare-only, S3, Sentry, React
+  Native, Tauri, or CRDT/Yjs code until the matching subpath is imported?
+- Artifact usefulness: when a smoke or E2E fails, does it leave a redacted
+  artifact with the lifecycle phase, health/schema/support details, request or
+  sync ids, realtime cursors when available, and enough safe context to
+  reproduce the failure?
+- Audience hygiene: does each public helper or doc example clearly belong to
+  UI-facing app code, generated app wrappers, operator/deploy checks,
+  testkit/E2E, debug/support, or an advanced escape hatch?
+- Stability promise: if app tests are expected to assert a code, helper shape,
+  marker, readiness issue, or artifact field, is it treated as a public
+  contract with additive evolution rather than casual renaming?
+
 ## Required Gates
 
 For planning/doc-only edits:
@@ -986,6 +1032,10 @@ online propagation, or reconnect behavior can change.
   stability policy, generated-client ownership boundaries, failure-driven docs
   examples, reproducible fixture topology, and first-run docs that route users
   through the golden app loop before reference pages.
+- A final checklist pass added DX completion smell tests for first-run mental
+  model, runtime truth, failure specificity, recovery ownership, freshness,
+  authority, deploy confidence, browser persistence, optional dependencies,
+  failure artifacts, audience labels, and public contract stability.
 - The first browser deployment preflight slice adds
   `getSyncularBrowserDeploymentPreflight(...)` to `@syncular/client`, checking
   Worker/WebAssembly support, secure-context/cross-origin-isolation flags,
@@ -1551,6 +1601,11 @@ online propagation, or reconnect behavior can change.
   examples, reproducible test fixture topology, and first-run docs that keep
   users on the golden scaffold/generate/run/mutate/recover/deploy loop before
   sending them into reference material.
+- 2026-07-01: Added DX completion smell tests so future slices have a compact
+  final filter for first-run clarity, runtime truth, typed failures, recovery
+  ownership, freshness discipline, authority boundaries, deploy/browser
+  confidence, optional dependency isolation, redacted artifacts, audience
+  hygiene, and public contract stability.
 - 2026-07-01: Added `preflight.support` to
   `getSyncularBrowserDeploymentPreflight(...)`, classifying browser/deployment
   support as `persistent-offline`, `ephemeral-development`, `unsupported`, or
