@@ -9,6 +9,7 @@ interface Options {
   skipPublishDryRuns: boolean;
   skipFreshAppSmokes: boolean;
   skipFrameworkImportSmokes: boolean;
+  skipConsoleArtifactIngestion: boolean;
   skipStarterSmoke: boolean;
   skipDocsStaleCheck: boolean;
   requireStarterBrowserPreview: boolean;
@@ -29,6 +30,8 @@ options:
   --skip-fresh-app-smokes     Skip local fresh-app generation smokes
   --skip-framework-import-smokes
                               Skip local Next/Vite root import smokes
+  --skip-console-artifact-ingestion
+                              Skip focused Console failure-artifact ingestion tests
   --skip-starter-smoke        Skip create-syncular-app built-preview smoke
   --require-starter-browser-preview
                               Require Chrome/Chromium CDP execution in the starter smoke
@@ -72,6 +75,7 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
   let skipPublishDryRuns = false;
   let skipFreshAppSmokes = false;
   let skipFrameworkImportSmokes = false;
+  let skipConsoleArtifactIngestion = false;
   let skipStarterSmoke = false;
   let skipDocsStaleCheck = false;
   let requireStarterBrowserPreview = false;
@@ -104,6 +108,11 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
 
     if (arg === '--skip-framework-import-smokes') {
       skipFrameworkImportSmokes = true;
+      continue;
+    }
+
+    if (arg === '--skip-console-artifact-ingestion') {
+      skipConsoleArtifactIngestion = true;
       continue;
     }
 
@@ -165,6 +174,7 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
     skipPublishDryRuns,
     skipFreshAppSmokes,
     skipFrameworkImportSmokes,
+    skipConsoleArtifactIngestion,
     skipStarterSmoke,
     skipDocsStaleCheck,
     requireStarterBrowserPreview,
@@ -355,6 +365,14 @@ async function main(): Promise<void> {
       ...(options.requireFrameworkViteBrowserRuntime
         ? ['--require-vite-browser-runtime']
         : []),
+    ]);
+  }
+  if (!options.skipConsoleArtifactIngestion) {
+    await run('bun', [
+      'test',
+      'packages/server/src/hono/__tests__/console-routes.test.ts',
+      '-t',
+      'ingests browser preview failure artifacts|ingests Cloudflare runtime failure artifacts',
     ]);
   }
   if (!options.skipPublishDryRuns) {

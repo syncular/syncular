@@ -46,9 +46,11 @@ use `minor`), and describe the change. Commit the generated
 4. Optionally rehearse: `bun run release:rehearsal` (npm + cargo publish
    dry-runs in a clean worktree, fresh-app smokes, the
    `create-syncular-app` built-preview smoke, Next/Vite/Cloudflare framework
-   import smokes, docs stale check). On a Chrome-capable release runner, add
-   `--require-starter-browser-preview` to make the starter's real-browser CDP
-   path mandatory instead of skipping when Chrome is unavailable; add
+   import smokes, focused Console failure-artifact ingestion tests, docs stale
+   check). Use `--skip-console-artifact-ingestion` only for local iteration
+   that is not proving release readiness. On a Chrome-capable release runner,
+   add `--require-starter-browser-preview` to make the starter's real-browser
+   CDP path mandatory instead of skipping when Chrome is unavailable; add
    `--require-framework-vite-browser-runtime` to require the Vite framework
    smoke to execute the built preview in Chrome and observe the browser root
    import marker.

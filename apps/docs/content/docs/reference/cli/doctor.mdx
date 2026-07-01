@@ -45,8 +45,9 @@ npx syncular doctor --manifest-dir . --skip-ops --json
 ## Scope
 
 `doctor` is intentionally narrow. It does not run browser/CDP checks,
-framework import smokes, post-publish package install smokes, or publish
-dry-runs. Those stay in release rehearsal:
+framework import smokes, Console failure-artifact ingestion tests,
+post-publish package install smokes, or publish dry-runs. Those stay in
+release rehearsal:
 
 ```bash
 bun scripts/release-rehearsal.ts --require-starter-browser-preview
@@ -59,4 +60,3 @@ bun scripts/release-rehearsal.ts --require-starter-browser-preview
 
 The JSON output includes stable schema/ops issue codes and recommended actions
 so deploy pipelines can fail on codes instead of parsing human text.
-

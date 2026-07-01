@@ -2393,6 +2393,10 @@ online propagation, or reconnect behavior can change.
   WebSocket route bases, exit/output context, and R2 blob byte/timing evidence
   from the stored quick fields, while keeping app blob-upload queue cards
   separate from runtime smoke metrics.
+- 2026-07-01: Wired release rehearsal to run focused Console failure-artifact
+  ingestion tests by default for `browser.preview_failure` and
+  `cloudflare.runtime_failure`, with `--skip-console-artifact-ingestion` only
+  for local iteration that is not proving release readiness.
 - 2026-07-01: Expanded production operations docs beyond the first upgrade
   runbook. Deployment now includes restore-drill steps, blob storage
   consistency sampling, rate-limit tuning, credential rotation cadence, and
@@ -2413,8 +2417,8 @@ online propagation, or reconnect behavior can change.
   always runs schema readiness and runs ops readiness when `syncular.ops.json`,
   `--ops-config`, or `--require-ops` is present. Missing ops evidence is
   skipped by default for local development apps; browser/CDP, framework,
-  post-publish install, and publish dry-run checks remain release-rehearsal
-  gates.
+  Console artifact ingestion, post-publish install, and publish dry-run checks
+  remain release-rehearsal gates.
 - 2026-07-01: Added Console Ops readiness ingestion for
   `syncular ops check --json`: `POST /console/ops/readiness` stores a redacted
   `ops_readiness` operation audit event, `GET /console/ops/readiness` returns
@@ -3181,6 +3185,23 @@ Most recent release-rehearsal framework-smoke wiring rerun:
 - `bun run docs:stale-check`
 - `git diff --check`
 
+Most recent release-rehearsal Console artifact ingestion rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx tsgo --ignoreConfig --noEmit --target ES2022 --module ESNext --moduleResolution Bundler --types bun --skipLibCheck scripts/release-rehearsal.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --help`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke --skip-framework-import-smokes`
+  - Passed version and Cargo version stamp dry-runs, then ran the default
+    focused Console ingestion gate for
+    `browser.preview_failure` and `cloudflare.runtime_failure` artifacts:
+    `bun test packages/server/src/hono/__tests__/console-routes.test.ts -t "ingests browser preview failure artifacts|ingests Cloudflare runtime failure artifacts"`.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke --skip-framework-import-smokes --skip-console-artifact-ingestion`
+  - Passed version and Cargo version stamp dry-runs and skipped the Console
+    artifact ingestion gate for local iteration.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check scripts/release-rehearsal.ts RELEASING.md rust/docs/QUALITY_GATES.md rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md apps/docs/content/docs/reference/cli/doctor.mdx`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `git diff --check`
+
 Most recent release-rehearsal local gate rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --skip-publish-dry-runs`
@@ -3386,7 +3407,8 @@ Most recent mutation-status rerun:
   `getSyncularServerSchemaReadiness(...)` owns live database/server readiness.
   `syncular doctor --json` now provides the narrow local umbrella over schema
   readiness plus optional/required ops readiness. Browser/CDP, framework,
-  post-publish install, and publish dry-run checks stay in release rehearsal.
+  Console artifact ingestion, post-publish install, and publish dry-run checks
+  stay in release rehearsal.
 - The first canonical starter stays React + Bun/Hono by default for this WP.
   That is not a claim that Syncular is React- or Bun-only; it is the one
   executable golden path with the strongest current smoke coverage. Additional
@@ -3400,7 +3422,8 @@ Most recent mutation-status rerun:
   stale-pattern checks, package typechecks, and focused adapter tests for files
   touched in the PR. Release rehearsal should own the broader import/install
   matrix for Bun, Node, Cloudflare, database adapters, blob stores, Sentry,
-  React Native, Tauri, CRDT/Yjs, and post-publish package installation.
+  React Native, Tauri, CRDT/Yjs, Console artifact ingestion, and post-publish
+  package installation.
 - Generated app clients should not invent campaign/project join helpers around
   `replaceAuthContext(...)` until the app contract has enough product semantics
   to define membership and token refresh safely. The root managed database
@@ -3409,8 +3432,9 @@ Most recent mutation-status rerun:
 - `syncular schema check` remains the narrow deploy/CI readiness command.
   `syncular doctor` is deliberately narrower than release rehearsal: it
   orchestrates schema readiness plus optional/required ops readiness, and does
-  not hide browser/CDP, framework, adapter import, package-install, or publish
-  dry-run gates behind a local command that cannot prove them.
+  not hide browser/CDP, framework, adapter import, Console artifact ingestion,
+  package-install, or publish dry-run gates behind a local command that cannot
+  prove them.
 
 ## Remaining Implementation Risks
 
@@ -3578,9 +3602,11 @@ Most recent mutation-status rerun:
   route, exit, bounded output, and safe blob timing/byte metrics as
   `cloudflare.runtime_failure` diagnostics, and the Console client detail
   runtime panel renders route/exit/output plus R2 blob byte/timing cards from
-  those stored quick fields. Remaining work is to observe the
-  hosted Chrome job for this proof and decide whether Console/Fleet or release
-  rehearsal should orchestrate additional ingestion/artifact checks.
+  those stored quick fields. Release rehearsal now runs focused Console
+  ingestion tests for both failure artifact families by default, while
+  `doctor` stays limited to local schema/ops readiness. Remaining work is to
+  observe the hosted Chrome job for this proof and decide whether future
+  hosted artifact uploads need deeper Console/Fleet orchestration.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
   conflict detail rows, last mutation-related errors, and recommended actions.
@@ -3617,8 +3643,8 @@ Most recent mutation-status rerun:
   aggregation, issue trends, buckets, matched/scanned counts, and truncation
   signaling. `syncular doctor --json` now composes schema readiness plus
   optional/required ops readiness for local/deploy preflight use; broader
-  browser/CDP, framework, package-install, and publish dry-run orchestration
-  stays in release rehearsal.
+  browser/CDP, framework, Console artifact ingestion, package-install, and
+  publish dry-run orchestration stays in release rehearsal.
 - Performance and failure artifacts: keep package/WASM size, bootstrap
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch
   latency, storage/quota pressure, and redacted E2E failure artifacts
@@ -3646,9 +3672,11 @@ Most recent mutation-status rerun:
   runtime artifacts can now feed Console/Fleet as redacted
   `cloudflare.runtime_failure` diagnostic records. Console client detail views
   now surface both artifact families from the stored quick fields instead of
-  requiring raw JSON inspection for the first triage pass. Remaining depth is
-  observing hosted browser/Cloudflare artifacts and deciding whether future
-  `doctor` checks should orchestrate these artifact shapes.
+  requiring raw JSON inspection for the first triage pass. Release rehearsal
+  now owns the focused Console ingestion proof for both artifact families.
+  Remaining depth is observing hosted browser/Cloudflare artifacts and
+  deciding whether future hosted artifact uploads need richer Console/Fleet
+  orchestration.
 
 ## Next Action
 

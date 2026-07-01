@@ -233,6 +233,9 @@ read-only review:
     treatment: the Console client detail runtime panel surfaces failed route,
     sync/blob/WebSocket route bases, exit/output context, and R2 blob
     byte/timing summaries from stored quick fields.
+    Release rehearsal now runs focused Console ingestion tests for the starter
+    browser-preview and Cloudflare runtime failure artifact shapes by default,
+    while `doctor` stays limited to local schema and ops readiness.
     The support-bundle marker also reports redacted runtime
     timeline event counts for sync, realtime, local apply, blob, cursors, and
     request/sync-attempt ids. The same smoke

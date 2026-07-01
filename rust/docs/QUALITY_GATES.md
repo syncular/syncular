@@ -179,6 +179,11 @@ artifact shape after the production-preview HTTP proof, so non-Chrome runners
 still cover the failure JSON contract before the optional Chrome/CDP path. The
 same smoke self-checks the Cloudflare local Worker runtime failure artifact
 after the `wrangler dev --local` DO/D1/R2/WebSocket proof.
+`bun run release:rehearsal` then runs the focused Console ingestion tests for
+the starter browser-preview and Cloudflare runtime failure artifacts by
+default, so release readiness proves both artifact shape and Console/Fleet
+normalization. Use `--skip-console-artifact-ingestion` only for local
+iteration.
 
 On Chrome-capable release or CI runners, make the Vite framework browser
 execution path mandatory:
