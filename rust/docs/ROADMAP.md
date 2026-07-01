@@ -231,11 +231,13 @@ read-only review:
     Local recovery now consumes storage-related deployment-preflight warnings:
     persistent-storage grant gaps can become a non-destructive
     `navigator.storage.persist()` request when supported, while quota/pressure
-    warnings map to compaction and confirmed blob-cache clearing actions with
-    their original issue codes preserved. The starter Chrome/CDP smoke now
-    exercises that path with a synthetic storage-warning preflight, proving the
-    generated app exposes and can run request-persistence, compaction, and
-    confirmed blob-cache clearing through public recovery APIs.
+    warnings map to compaction and, only when the active Rust runtime reports
+    `blobs` support, confirmed blob-cache clearing actions with their original
+    issue codes preserved. The starter Chrome/CDP smoke now exercises that path
+    with a synthetic storage-warning preflight, proving the generated app
+    exposes and can run request-persistence plus compaction in the core runtime,
+    and blob-cache clearing when a blob-capable runtime offers it, through
+    public recovery APIs.
     Browser preview artifacts now include starter timings for database open,
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local

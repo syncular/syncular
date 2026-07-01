@@ -367,7 +367,7 @@ export async function getSyncularLocalRecoveryPlan(
     ...actionsForLifecycle(status, snapshot),
     ...actionsForOutbox(status, snapshot),
     ...actionsForBlobUploads(status, snapshot),
-    ...actionsForStoragePreflight(options),
+    ...actionsForStoragePreflight(options, snapshot),
     ...actionsForHealth(health),
     ...actionsForRequestedOptions(options, status, snapshot),
   ];
@@ -805,7 +805,8 @@ function actionsForBlobUploads(
 }
 
 function actionsForStoragePreflight(
-  options: SyncularLocalRecoveryPlanOptions
+  options: SyncularLocalRecoveryPlanOptions,
+  snapshot: SyncularDiagnosticSnapshot
 ): SyncularLocalRecoveryAction[] {
   const preflight = options.deploymentPreflight;
   if (!preflight) return [];
@@ -853,19 +854,21 @@ function actionsForStoragePreflight(
       requiresConfirmation: false,
       compactStorageOptions: options.compactStorageOptions,
     });
-    actions.push({
-      id: 'blob.clear-cache',
-      kind: 'clear-blob-cache',
-      severity: 'warning',
-      source: 'blob',
-      title: 'Clear local blob cache for quota pressure',
-      description:
-        'Clear cached blob bytes to free browser storage. Synced metadata and remote blob objects are not deleted.',
-      reasonCodes: quotaReasonCodes,
-      destructive: true,
-      requiresConfirmation: true,
-      confirmationText: 'clear local blob cache',
-    });
+    if (canClearBlobCache(snapshot)) {
+      actions.push({
+        id: 'blob.clear-cache',
+        kind: 'clear-blob-cache',
+        severity: 'warning',
+        source: 'blob',
+        title: 'Clear local blob cache for quota pressure',
+        description:
+          'Clear cached blob bytes to free browser storage. Synced metadata and remote blob objects are not deleted.',
+        reasonCodes: quotaReasonCodes,
+        destructive: true,
+        requiresConfirmation: true,
+        confirmationText: 'clear local blob cache',
+      });
+    }
   }
 
   return actions.filter((action) => action.reasonCodes.length > 0);
@@ -889,6 +892,7 @@ function actionsForRequestedOptions(
   snapshot: SyncularDiagnosticSnapshot
 ): SyncularLocalRecoveryAction[] {
   const actions: SyncularLocalRecoveryAction[] = [];
+  const blobCacheClearAvailable = canClearBlobCache(snapshot);
   if (options.includeMaintenanceActions) {
     actions.push({
       id: 'storage.compact',
@@ -903,19 +907,21 @@ function actionsForRequestedOptions(
       requiresConfirmation: false,
       compactStorageOptions: options.compactStorageOptions,
     });
-    actions.push({
-      id: 'blob.clear-cache',
-      kind: 'clear-blob-cache',
-      severity: 'warning',
-      source: 'blob',
-      title: 'Clear local blob cache',
-      description:
-        'Clear cached blob bytes. Synced metadata and remote blob objects are not deleted.',
-      reasonCodes: ['blob.cache_clear_requested'],
-      destructive: true,
-      requiresConfirmation: true,
-      confirmationText: 'clear local blob cache',
-    });
+    if (blobCacheClearAvailable) {
+      actions.push({
+        id: 'blob.clear-cache',
+        kind: 'clear-blob-cache',
+        severity: 'warning',
+        source: 'blob',
+        title: 'Clear local blob cache',
+        description:
+          'Clear cached blob bytes. Synced metadata and remote blob objects are not deleted.',
+        reasonCodes: ['blob.cache_clear_requested'],
+        destructive: true,
+        requiresConfirmation: true,
+        confirmationText: 'clear local blob cache',
+      });
+    }
   }
   if (options.includeResetAction) {
     actions.push({
@@ -950,25 +956,33 @@ function actionsForRequestedOptions(
         requiresConfirmation: false,
       });
     } else {
+      const clearBlobCache =
+        options.signOutClearBlobCache !== false && blobCacheClearAvailable;
       actions.push({
         id: 'storage.prepare-sign-out',
         kind: 'prepare-sign-out',
         severity: 'danger',
         source: 'storage',
         title: 'Prepare local data for sign-out',
-        description:
-          'Reset subscription/bootstrap state, clear synced app rows, and clear cached blob bytes so the next user reboots from server authority.',
+        description: clearBlobCache
+          ? 'Reset subscription/bootstrap state, clear synced app rows, and clear cached blob bytes so the next user reboots from server authority.'
+          : 'Reset subscription/bootstrap state and clear synced app rows so the next user reboots from server authority.',
         reasonCodes: ['sign_out.clear_local_data_requested'],
         destructive: true,
         requiresConfirmation: true,
         confirmationText: 'prepare local sign-out',
         subscriptionIds: [...(options.signOutSubscriptionIds ?? [])],
         clearSyncedRows: true,
-        clearBlobCache: options.signOutClearBlobCache !== false,
+        clearBlobCache,
       });
     }
   }
   return actions;
+}
+
+function canClearBlobCache(snapshot: SyncularDiagnosticSnapshot): boolean {
+  const features = snapshot.runtime.rust?.features;
+  return !features || features.includes('blobs');
 }
 
 async function requestPersistentBrowserStorage(

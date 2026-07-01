@@ -365,6 +365,51 @@ describe('local recovery plan', () => {
     expect(client.calls).toContainEqual(['clearBlobCache']);
   });
 
+  it('does not offer blob-cache clearing when the runtime lacks blob support', async () => {
+    const client = new FakeRecoveryClient({
+      snapshot: diagnosticSnapshotWithRuntimeFeatures([
+        'web-owned-sqlite-core',
+      ]),
+    });
+    const plan = await getSyncularLocalRecoveryPlan(client, {
+      deploymentPreflight: storagePressurePreflight({
+        persistRequestSupported: true,
+      }),
+      includeMaintenanceActions: true,
+      includeSignOutAction: true,
+    });
+
+    expect(
+      plan.actions.some((action) => action.kind === 'clear-blob-cache')
+    ).toBe(false);
+    expect(requiredAction(plan.actions, 'compact-storage')).toMatchObject({
+      id: 'storage.compact',
+      reasonCodes: [
+        'browser.storage_pressure_high',
+        'browser.storage_quota_low',
+      ],
+    });
+
+    const signOut = requiredAction(plan.actions, 'prepare-sign-out');
+    expect(signOut).toMatchObject({
+      clearBlobCache: false,
+      description:
+        'Reset subscription/bootstrap state and clear synced app rows so the next user reboots from server authority.',
+    });
+
+    await expect(
+      runSyncularLocalRecoveryAction(client, signOut, {
+        confirmationText: signOut.confirmationText,
+      })
+    ).resolves.toMatchObject({
+      action: 'prepare-sign-out',
+      clearedBlobCache: false,
+    });
+    expect(client.calls.some(([call]) => call === 'clearBlobCache')).toBe(
+      false
+    );
+  });
+
   it('does not offer browser persistence requests when preflight proves the API is unavailable', async () => {
     const client = new FakeRecoveryClient();
     const plan = await getSyncularLocalRecoveryPlan(client, {
@@ -996,6 +1041,24 @@ function diagnosticSnapshot(): SyncularDiagnosticSnapshot {
     subscriptions: [],
     recentDiagnostics: [],
     recentSyncTimings: [],
+  };
+}
+
+function diagnosticSnapshotWithRuntimeFeatures(
+  features: readonly string[]
+): SyncularDiagnosticSnapshot {
+  const snapshot = diagnosticSnapshot();
+  return {
+    ...snapshot,
+    runtime: {
+      ...snapshot.runtime,
+      rust: {
+        crateName: 'syncular-runtime',
+        crateVersion: '0.0.0-test',
+        schemaVersion: 1,
+        features: [...features],
+      },
+    },
   };
 }
 

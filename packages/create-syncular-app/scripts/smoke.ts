@@ -1732,18 +1732,20 @@ async function waitForStarterStorageRecoveryCompletion(args: {
       );
     }
     const actionKinds = new Set(probe.storageRecoveryProof.actionKinds);
+    const clearBlobCacheOffered = actionKinds.has('clear-blob-cache');
     if (
       probe.storageRecoveryProof.status === 'complete' &&
       probe.storageRecoveryProof.count >= args.expectedCount &&
-      probe.storageRecoveryProof.planActionCount >= 3 &&
+      probe.storageRecoveryProof.planActionCount >= 2 &&
       actionKinds.has('request-persistent-storage') &&
       actionKinds.has('compact-storage') &&
-      actionKinds.has('clear-blob-cache') &&
       probe.storageRecoveryProof.requestPersistenceOffered === 'true' &&
       probe.storageRecoveryProof.requestPersistenceSupported === 'true' &&
       probe.storageRecoveryProof.requestPersistenceGranted === 'true' &&
       probe.storageRecoveryProof.compactCompleted === 'true' &&
-      probe.storageRecoveryProof.clearBlobCacheCompleted === 'true'
+      (clearBlobCacheOffered
+        ? probe.storageRecoveryProof.clearBlobCacheCompleted === 'true'
+        : probe.storageRecoveryProof.clearBlobCacheCompleted === 'false')
     ) {
       return;
     }
@@ -3054,17 +3056,13 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         status: 'complete',
       },
       storageRecoveryProof: {
-        actionKinds: [
-          'request-persistent-storage',
-          'compact-storage',
-          'clear-blob-cache',
-        ],
-        clearBlobCacheCompleted: 'true',
+        actionKinds: ['request-persistent-storage', 'compact-storage'],
+        clearBlobCacheCompleted: 'false',
         compactCompleted: 'true',
         count: 1,
         error: null,
         errorCode: null,
-        planActionCount: 3,
+        planActionCount: 2,
         requestPersistenceGranted: 'true',
         requestPersistenceOffered: 'true',
         requestPersistenceSupported: 'true',

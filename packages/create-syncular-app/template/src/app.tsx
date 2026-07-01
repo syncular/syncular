@@ -948,7 +948,7 @@ function TaskPane({
         const clearBlobCache = plan.actions.find(
           (candidate) => candidate.kind === 'clear-blob-cache'
         );
-        if (!requestPersistence || !compactStorage || !clearBlobCache) {
+        if (!requestPersistence || !compactStorage) {
           throw new Error(
             `Starter storage recovery plan missed expected actions: ${actionKinds.join(', ')}`
           );
@@ -966,12 +966,14 @@ function TaskPane({
           }
         );
         await client.runLocalRecoveryAction(compactStorage);
-        await client.runLocalRecoveryAction(clearBlobCache, {
-          confirmationText: 'clear local blob cache',
-        });
+        if (clearBlobCache) {
+          await client.runLocalRecoveryAction(clearBlobCache, {
+            confirmationText: 'clear local blob cache',
+          });
+        }
         setStorageRecoveryProof((current) => ({
           actionKinds,
-          clearBlobCacheCompleted: true,
+          clearBlobCacheCompleted: Boolean(clearBlobCache),
           compactCompleted: true,
           count: current.count + 1,
           error: null,

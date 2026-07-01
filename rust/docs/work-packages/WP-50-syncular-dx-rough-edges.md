@@ -2033,15 +2033,15 @@ online propagation, or reconnect behavior can change.
   `navigator.storage.persist()` is requestable, the recovery plan can offer a
   non-destructive persistent-storage request, and quota/pressure warnings map
   to compaction plus confirmed blob-cache clearing actions with the originating
-  storage issue codes.
+  storage issue codes when the active Rust runtime reports `blobs` support.
 - 2026-07-01: Added a generated-app storage recovery proof to the
   `create-syncular-app` browser-preview smoke. The starter builds a synthetic
   storage-warning deployment preflight from the live browser facts, runs it
   through `client.localRecoveryPlan(...)`, then executes request-persistent
-  storage with a safe stub navigator, compaction, and confirmed blob-cache
-  clearing through public recovery APIs. The hidden marker, built-asset check,
-  Chrome/CDP wait, and failure artifact self-check now preserve the offered
-  actions and completion state.
+  storage with a safe stub navigator, compaction, and, only when offered by a
+  blob-capable runtime, confirmed blob-cache clearing through public recovery
+  APIs. The hidden marker, built-asset check, Chrome/CDP wait, and failure
+  artifact self-check now preserve the offered actions and completion state.
 - 2026-07-01: Added service-worker availability/control to browser deployment
   preflight and the starter hidden marker/failure artifact. PWA/service-worker
   pages are still preflight-gated, but cache-skew investigations now retain
@@ -3243,22 +3243,36 @@ Most recent starter storage/quota artifact rerun:
 
 Most recent starter storage recovery action-mapping rerun:
 
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/local-recovery.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-storage-recovery-proof-smoke bun --cwd packages/create-syncular-app smoke`
-  - Passed the generated app typecheck and focused Biome check.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/local-recovery.ts packages/client/src/local-recovery.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-storage-recovery-capability-smoke bun --cwd packages/create-syncular-app smoke`
+  - Passed focused local recovery tests, including the regression where a
+    known core-only runtime omits `clear-blob-cache` and sign-out skips
+    `clearBlobCache`.
+  - Passed client and generated app typechecks plus focused Biome check.
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, and built asset checks,
     including the storage recovery proof marker.
   - Passed the deterministic browser failure artifact shape and safe-metrics
     self-check with `storageRecoveryProof.actionKinds`, request-persistence
-    support/grant state, compaction completion, and confirmed blob-cache clear
-    completion.
+    support/grant state, compaction completion, and the conditional
+    blob-cache clear completion state.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
-    binary was available. On browser-capable runners the starter now dispatches
+    binary was available.
+  - Hosted Checks run `28537538486` on commit `bc6dc432` failed the
+    `starter-browser-preview` job because the old smoke required
+    `clear-blob-cache` in the core starter runtime; the browser failure artifact
+    reported `worker.failed` / `blob support is not enabled in this Syncular
+    runtime build`. The local recovery plan is now capability-aware: known
+    core-only runtime snapshots omit blob-cache clearing, while unknown or
+    blob-capable runtimes keep the existing clear action.
+  - On browser-capable runners the starter now dispatches
     `syncular-starter-run-storage-recovery-proof` and requires the generated
-    app to plan and run request-persistence, compaction, and confirmed
-    blob-cache clearing through public local recovery APIs.
+    app to plan and run request-persistence plus compaction through public local
+    recovery APIs; confirmed blob-cache clearing is required only when the
+    active plan offers `clear-blob-cache`.
 
 Most recent starter support-timeline artifact rerun:
 
@@ -3848,7 +3862,10 @@ Most recent mutation-status rerun:
   tab, every row must pass local visibility, and the observer tab must receive
   each row through sync/realtime. The starter now also runs a browser-observed
   storage recovery action-mapping proof from a synthetic storage-warning
-  preflight through the public generated app recovery APIs.
+  preflight through the public generated app recovery APIs. The recovery plan
+  is now runtime-capability-aware, so the core browser runtime proves
+  persistent-storage request plus compaction and does not advertise
+  blob-cache clearing without `blobs` support.
   Remaining work is richer browser lifecycle execution: actual backgrounded or
   discarded tab suspension/restoration outside CDP lifecycle-state forcing,
   storage shutdown, true quota-exhaustion and eviction, same-database multi-tab
@@ -4183,8 +4200,9 @@ Pick the next implementation slice from the remaining risks. The immediate
 starter browser-preview blocker is cleared, same-client duplicate-tab open
 contention and generated write pressure are now covered in hosted Chrome, and
 storage recovery action mapping is now wired into the generated browser smoke
-pending hosted Chrome confirmation. Production ops readiness is now part of
-release rehearsal when evidence is present or required. Strong follow-ups are
+with the core-runtime blob capability fix pending hosted Chrome confirmation.
+Production ops readiness is now part of release rehearsal when evidence is
+present or required. Strong follow-ups are
 actual browser suspension/shutdown lifecycle coverage, actual
 quota-exhaustion/eviction and storage-shutdown browser proof,
 same-database multi-tab write contention beyond duplicate-open/generated
