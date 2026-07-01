@@ -2699,10 +2699,12 @@ Most recent browser support-matrix rerun:
 Most recent browser support-policy artifact rerun:
 
 - `gh run list --repo syncular/syncular --workflow checks.yml --limit 10 --json databaseId,displayTitle,headBranch,headSha,status,conclusion,createdAt,updatedAt,event,url`
-- `gh api repos/syncular/syncular/actions/runs/<run-id>/jobs --paginate --jq '.jobs[] | {name, conclusion, status, html_url}'`
-  - Confirmed recent `main` Checks runs did not contain
+- `gh run view 28459201533 --repo syncular/syncular --json jobs,conclusion,status,headSha,createdAt,updatedAt,event,workflowName`
+- `git show origin/main:.github/workflows/checks.yml | rg -n "starter-browser-preview|browser-preview" -C 2`
+  - Confirmed the latest observed `main` Checks run
+    `28459201533` for `origin/main` `7f0081b6` did not contain
     `starter-browser-preview`; `git show origin/main:.github/workflows/checks.yml`
-    also lacks the job, while `HEAD` contains it.
+    also lacks the job, while branch `HEAD` `c7f32182` contains it.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-support-matrix.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-routes.test.ts`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
@@ -3466,13 +3468,13 @@ Most recent mutation-status rerun:
   `starter-browser-preview` job that installs Chrome and requires this path on
   starter-relevant PRs and all pushes. Release rehearsal now runs the starter
   built-preview smoke by default and can require the Chrome/CDP path with
-  `--require-starter-browser-preview`. Current hosted observation: `gh run
-  list --repo syncular/syncular --workflow checks.yml` plus raw run job reads
-  on 2026-07-01 showed no `starter-browser-preview` job in recent `main` runs
-  because `origin/main` does not yet contain the workflow job. Remaining work
-  is to observe the job after this branch is pushed/merged and then decide
-  whether that strict release flag should be mandatory for every stable
-  release.
+  `--require-starter-browser-preview`. Current hosted observation on
+  2026-07-01: latest checked `main` Checks run `28459201533` at
+  `origin/main` `7f0081b6` did not contain a `starter-browser-preview` job,
+  and `git show origin/main:.github/workflows/checks.yml` also lacks the job,
+  while this branch's `HEAD` `c7f32182` contains it. Remaining work is to
+  observe the job after this branch is pushed/merged and then decide whether
+  that strict release flag should be mandatory for every stable release.
 - Adapter import side-effect isolation: the first root import graph smoke now
   proves root client/server imports do not statically reach optional Bun,
   Cloudflare, S3, Sentry, Neon, Tauri, React Native, or CRDT/Yjs subpaths.
