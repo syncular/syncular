@@ -6,6 +6,8 @@ import {
   createSyncularDatabase,
   getSyncularBrowserDeploymentPreflight,
   getSyncularBrowserHealth,
+  getSyncularBrowserSupportMatrix,
+  getSyncularBrowserSupportPolicy,
   getSyncularCommandTimeline,
   getSyncularLocalRecoveryPlan,
   getSyncularMutationStatus,
@@ -67,6 +69,11 @@ describe('@syncular/client public API', () => {
 
   it('exports the browser deployment preflight helper', () => {
     expect(typeof getSyncularBrowserDeploymentPreflight).toBe('function');
+  });
+
+  it('exports the browser support matrix helpers', () => {
+    expect(typeof getSyncularBrowserSupportMatrix).toBe('function');
+    expect(typeof getSyncularBrowserSupportPolicy).toBe('function');
   });
 
   it('exports the browser lifecycle resume helper', () => {

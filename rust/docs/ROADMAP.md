@@ -266,6 +266,13 @@ read-only review:
     truth, bootstrap/freshness semantics, auth/scope failures, realtime proof,
     blob/package authority, deploy/schema readiness, deterministic app tests,
     and shared public API/log vocabulary.
+    Browser support policy now exposes
+    `getSyncularBrowserSupportMatrix(...)` and
+    `getSyncularBrowserSupportPolicy(...)`, making Chrome/Chromium
+    secure-page support preflight-gated, Firefox/Safari/WebView/PWA support
+    explicitly `unknown` until target-host evidence exists,
+    private/incognito development-only, and SSR/build unsupported for database
+    open.
     Local recovery
     controls now expose a
     first app-facing plan/action API through

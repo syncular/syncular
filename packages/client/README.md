@@ -680,6 +680,34 @@ Use `preflight.lifecycle.multiTabMode` to choose between coordinated multi-tab
 behavior, best-effort coordination, or a single-open-database-tab policy. If
 your host owns lifecycle signals instead of the browser page, call
 `resumeFromBackground()` from that host signal.
+
+The package also exposes a static support policy matrix for docs, testkit
+recipes, and app diagnostics:
+
+```ts
+import { getSyncularBrowserSupportMatrix } from '@syncular/client';
+
+const supportMatrix = getSyncularBrowserSupportMatrix();
+```
+
+The matrix does not sniff user agents and does not replace the deployment
+preflight. It names the product policy for common environments:
+
+| Context | Policy | Expected tier before target evidence |
+| --- | --- | --- |
+| Chrome/Chromium secure page | supported after preflight | `persistent-offline` |
+| Firefox secure page | preflight required | `unknown` |
+| Safari secure page | preflight required | `unknown` |
+| Private/incognito mode | development/test only | `ephemeral-development` |
+| Native WebView host | preflight required | `unknown` |
+| Installed PWA/service-worker page | preflight required | `unknown` |
+| SSR/build context | unsupported for database open | `unsupported` |
+
+Treat `unknown` as "collect target-host preflight and persistence evidence,"
+not as implicit support. Private/incognito mode should not promise production
+offline persistence. SSR/build contexts may import the root package, but
+database open and deployment preflight belong in client-only browser code.
+
 For normal browser pages, install the lifecycle helper after opening the
 managed database so visible-tab, restored-page, and online signals run the
 foreground catch-up path without app code calling `sync()` directly:

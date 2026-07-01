@@ -105,6 +105,35 @@ database from multiple tabs should require multi-tab coordination and use the
 reported lifecycle fields to decide whether to allow multiple open tabs, use a
 single-open-tab policy, or call `resumeFromBackground()` from host lifecycle
 signals after tab suspension.
+
+The package also exports a static support policy matrix for product docs,
+testkit recipes, and app diagnostics. It does not replace the deployment
+preflight; it names which environments are supported only after evidence, which
+are still target-host preflight work, and which should not promise production
+offline persistence:
+
+```ts
+import { getSyncularBrowserSupportMatrix } from '@syncular/client';
+
+const supportMatrix = getSyncularBrowserSupportMatrix();
+```
+
+| Context | Policy | Expected tier before target evidence |
+| --- | --- | --- |
+| Chrome/Chromium secure page | supported after preflight | `persistent-offline` |
+| Firefox secure page | preflight required | `unknown` |
+| Safari secure page | preflight required | `unknown` |
+| Private/incognito mode | development/test only | `ephemeral-development` |
+| Native WebView host | preflight required | `unknown` |
+| Installed PWA/service-worker page | preflight required | `unknown` |
+| SSR/build context | unsupported for database open | `unsupported` |
+
+For Firefox, Safari, WebViews, and PWAs, treat `unknown` as "run and retain
+target-host evidence" rather than "probably fine." For private/incognito modes,
+fail production durable mode loudly or show an explicit development/test-only
+storage state. SSR/build contexts may import the package root, but database
+open and deployment preflight belong behind client-only browser boundaries.
+
 For normal browser pages, install the lifecycle resume helper after opening the
 managed database so restored-page, visible-tab, and online signals trigger the
 foreground catch-up path without app code calling `sync()` directly:

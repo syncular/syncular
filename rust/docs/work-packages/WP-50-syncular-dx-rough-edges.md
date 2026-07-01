@@ -1252,6 +1252,12 @@ online propagation, or reconnect behavior can change.
   plus persistence mode, production-readiness, issue codes, and recommended
   actions. This keeps app health UI and release smokes from inferring
   production browser support from scattered capability booleans.
+- Browser support policy is now public through
+  `getSyncularBrowserSupportMatrix(...)` and
+  `getSyncularBrowserSupportPolicy(...)`, naming Chrome/Chromium secure pages
+  as supported only after preflight evidence, Firefox/Safari/WebView/PWA as
+  preflight-gated `unknown` contexts, private/incognito as development/test
+  only, and SSR/build as unsupported for database open.
 - The starter now calls browser deployment preflight before opening
   `createSyncularAppDatabase(...)`, using the generated required runtime
   feature list and its configured IndexedDB storage expectation. The scaffold
@@ -2298,6 +2304,15 @@ Most recent browser support-tier preflight rerun:
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available.
 
+Most recent browser support-matrix rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-support-matrix.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-support-matrix.ts packages/client/src/browser-support-matrix.test.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `git diff --check`
+
 Most recent browser lifecycle resume helper rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-lifecycle.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
@@ -2858,6 +2873,11 @@ Most recent mutation-status rerun:
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
   Cloudflare, Chrome, Safari, Firefox, private mode, WebViews, and PWAs.
+  The public support policy matrix now names the intended browser/host
+  decisions: Chrome/Chromium secure pages are supported only after preflight
+  evidence, Firefox/Safari/WebView/PWA remain preflight-gated `unknown`
+  contexts, private/incognito is development/test only, and SSR/build is
+  unsupported for database open.
   Root source imports are now guarded by static graph checks, dynamic import
   checks, a Next 16 production-build smoke that imports the client/server
   roots from source and verifies the WASM glue dynamic import path is
@@ -2896,8 +2916,9 @@ Most recent mutation-status rerun:
   Release rehearsal now runs those framework proofs by default before publish
   dry-runs and can require the Vite browser execution path on Chrome-capable
   runners. Remaining matrix work is deeper browser/framework execution beyond
-  these proofs, especially richer multi-client/browser Syncular realtime over
-  Durable Object WebSocket, Safari, Firefox, private mode, WebViews, and PWAs.
+  the policy matrix and existing proofs, especially richer
+  multi-client/browser Syncular realtime over Durable Object WebSocket,
+  Safari, Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
