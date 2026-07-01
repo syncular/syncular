@@ -17,9 +17,9 @@ import { Buffer } from 'node:buffer';
  *    evidence, restored-page, online, DOM and CDP page-lifecycle resume
  *    signals, two-tab lock-coordinated lifecycle resume, browser-observed lifecycle Web Lock
  *    contention timeout/recovery, browser-observed local recovery Web Lock
- *    contention timeout/recovery, two-tab propagation, same-client
- *    page reload/reopen persistence, same-client duplicate-tab open
- *    contention, generated write pressure, and
+ *    contention timeout/recovery, storage preflight-to-recovery action
+ *    mapping, two-tab propagation, same-client page reload/reopen persistence,
+ *    same-client duplicate-tab open contention, generated write pressure, and
  *    same-profile browser process restart persistence.
  *    After the happy path, the browser smoke also forces a hidden
  *    support-bundle marker failure and verifies the live
@@ -257,6 +257,7 @@ async function verifyBuiltPreviewAssets(
   let sawBrowserSupportPolicyMarker = false;
   let sawDeploymentPreflightMarker = false;
   let sawStarterTimelineMarker = false;
+  let sawStorageRecoveryMarker = false;
   let sawSupportBundleMarker = false;
   let totalAssetBytes = 0;
   let jsAssetCount = 0;
@@ -302,6 +303,9 @@ async function verifyBuiltPreviewAssets(
         assetBody.includes('data-syncular-starter-database-open-ms') &&
         assetBody.includes('data-syncular-starter-local-visibility-ms') &&
         assetBody.includes('data-syncular-starter-realtime-connected-ms');
+      sawStorageRecoveryMarker ||=
+        assetBody.includes('data-syncular-storage-recovery-proof-status') &&
+        assetBody.includes('data-syncular-storage-recovery-proof-action-kinds');
       sawSupportBundleMarker ||=
         assetBody.includes('data-syncular-support-bundle-status') &&
         assetBody.includes('data-syncular-support-bundle-timeline-event-count');
@@ -342,6 +346,11 @@ async function verifyBuiltPreviewAssets(
       'Built preview assets did not include the starter timeline smoke marker'
     );
   }
+  if (!sawStorageRecoveryMarker) {
+    throw new Error(
+      'Built preview assets did not include the storage recovery proof marker'
+    );
+  }
 
   return {
     assetCheckMs: elapsedSince(startedAtMs),
@@ -356,6 +365,7 @@ async function verifyBuiltPreviewAssets(
     otherAssetBytes,
     otherAssetCount,
     starterTimelineMarkerInAssets: sawStarterTimelineMarker,
+    storageRecoveryMarkerInAssets: sawStorageRecoveryMarker,
     supportBundleMarkerInAssets: sawSupportBundleMarker,
     totalAssetBytes,
   };
@@ -410,6 +420,7 @@ type BuiltPreviewAssetMetrics = {
   otherAssetBytes: number;
   otherAssetCount: number;
   starterTimelineMarkerInAssets: boolean;
+  storageRecoveryMarkerInAssets: boolean;
   supportBundleMarkerInAssets: boolean;
   totalAssetBytes: number;
 };
@@ -495,6 +506,12 @@ async function runBrowserPreviewSmoke(args: {
       });
       log('real-browser smoke: proving local recovery lock contention');
       await proveStarterLocalRecoveryLockContention({
+        failureMetrics: args.failureMetrics,
+        failureArtifactPath: args.failureArtifactPath,
+        session,
+      });
+      log('real-browser smoke: proving storage recovery action mapping');
+      await proveStarterStorageRecoveryActionMapping({
         failureMetrics: args.failureMetrics,
         failureArtifactPath: args.failureArtifactPath,
         session,
@@ -838,6 +855,19 @@ type BrowserPreviewProbe = {
     lockTimeoutMs: number | null;
     status: string | null;
   };
+  storageRecoveryProof: {
+    actionKinds: string[];
+    clearBlobCacheCompleted: string | null;
+    compactCompleted: string | null;
+    count: number;
+    error: string | null;
+    errorCode: string | null;
+    planActionCount: number;
+    requestPersistenceGranted: string | null;
+    requestPersistenceOffered: string | null;
+    requestPersistenceSupported: string | null;
+    status: string | null;
+  };
   writePressureProof: {
     durationMs: number | null;
     error: string | null;
@@ -895,6 +925,7 @@ type BrowserPreviewFailureMetrics = {
   otherAssetCount: number;
   previewReadyMs: number;
   starterTimelineMarkerInAssets: boolean;
+  storageRecoveryMarkerInAssets: boolean;
   supportBundleMarkerInAssets: boolean;
   totalAssetBytes: number;
 };
@@ -1022,6 +1053,19 @@ async function readStarterBrowserProbe(
       return Number.isFinite(number) && number >= 0 ? number : null;
     };
     const localRecoveryProofLockTimeoutMs = readLocalRecoveryProofNumber('data-syncular-local-recovery-proof-lock-timeout-ms');
+    const storageRecoveryProof = document.querySelector('[data-syncular-storage-recovery-proof-status]');
+    const storageRecoveryProofActionKindsText = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-action-kinds') ?? '';
+    const storageRecoveryProofActionKinds = storageRecoveryProofActionKindsText === '' ? [] : storageRecoveryProofActionKindsText.split(',').filter(Boolean);
+    const storageRecoveryProofClearBlobCacheCompleted = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-clear-blob-cache-completed') ?? null;
+    const storageRecoveryProofCompactCompleted = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-compact-completed') ?? null;
+    const storageRecoveryProofCount = Number(storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-count') ?? 0);
+    const storageRecoveryProofError = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-error') ?? null;
+    const storageRecoveryProofErrorCode = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-error-code') ?? null;
+    const storageRecoveryProofPlanActionCount = Number(storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-plan-action-count') ?? 0);
+    const storageRecoveryProofRequestPersistenceGranted = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-request-persistence-granted') ?? null;
+    const storageRecoveryProofRequestPersistenceOffered = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-request-persistence-offered') ?? null;
+    const storageRecoveryProofRequestPersistenceSupported = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-request-persistence-supported') ?? null;
+    const storageRecoveryProofStatus = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-status') ?? null;
     const writePressureProof = document.querySelector('[data-syncular-write-pressure-proof-status]');
     const writePressureProofError = writePressureProof?.getAttribute('data-syncular-write-pressure-proof-error') ?? null;
     const writePressureProofErrorCode = writePressureProof?.getAttribute('data-syncular-write-pressure-proof-error-code') ?? null;
@@ -1098,6 +1142,13 @@ async function readStarterBrowserProbe(
           : 'local visibility failed'
       );
     }
+    if (storageRecoveryProofStatus === 'failed') {
+      errors.push(
+        storageRecoveryProofErrorCode
+          ? 'storage recovery proof failed: ' + storageRecoveryProofErrorCode
+          : 'storage recovery proof failed'
+      );
+    }
     if (writePressureProofStatus === 'failed') {
       errors.push(
         writePressureProofErrorCode
@@ -1114,6 +1165,7 @@ async function readStarterBrowserProbe(
         deploymentPreflightStatus !== null &&
         lifecycleResumeStatus !== null &&
         localRecoveryProof !== null &&
+        storageRecoveryProof !== null &&
         writePressureProof !== null &&
         starterTimeline !== null &&
         bootstrapStatus !== null &&
@@ -1222,6 +1274,33 @@ async function readStarterBrowserProbe(
         lockState: localRecoveryProofLockState,
         lockTimeoutMs: localRecoveryProofLockTimeoutMs,
         status: localRecoveryProofStatus,
+      },
+      storageRecoveryProof: {
+        actionKinds: storageRecoveryProofActionKinds,
+        clearBlobCacheCompleted:
+          storageRecoveryProofClearBlobCacheCompleted,
+        compactCompleted: storageRecoveryProofCompactCompleted,
+        count: storageRecoveryProofCount,
+        error:
+          storageRecoveryProofError === ''
+            ? null
+            : storageRecoveryProofError,
+        errorCode:
+          storageRecoveryProofErrorCode === ''
+            ? null
+            : storageRecoveryProofErrorCode,
+        planActionCount: storageRecoveryProofPlanActionCount,
+        requestPersistenceGranted:
+          storageRecoveryProofRequestPersistenceGranted === ''
+            ? null
+            : storageRecoveryProofRequestPersistenceGranted,
+        requestPersistenceOffered:
+          storageRecoveryProofRequestPersistenceOffered,
+        requestPersistenceSupported:
+          storageRecoveryProofRequestPersistenceSupported === ''
+            ? null
+            : storageRecoveryProofRequestPersistenceSupported,
+        status: storageRecoveryProofStatus,
       },
       writePressureProof: {
         durationMs: writePressureProofDurationMs,
@@ -1600,6 +1679,85 @@ async function dispatchStarterLocalRecoveryProof(
     );
     return true;
   })()`);
+}
+
+async function proveStarterStorageRecoveryActionMapping(args: {
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  failureArtifactPath: string;
+  session: CdpSession;
+}): Promise<void> {
+  const before = await readStarterBrowserProbe(args.session);
+  await dispatchStarterStorageRecoveryProof(args.session);
+  await waitForStarterStorageRecoveryCompletion({
+    expectedCount: before.storageRecoveryProof.count + 1,
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.session,
+  });
+}
+
+async function dispatchStarterStorageRecoveryProof(
+  session: CdpSession
+): Promise<void> {
+  await session.evaluate(`(() => {
+    window.dispatchEvent(
+      new Event('syncular-starter-run-storage-recovery-proof')
+    );
+    return true;
+  })()`);
+}
+
+async function waitForStarterStorageRecoveryCompletion(args: {
+  expectedCount: number;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 20_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'storage-recovery-action-mapping-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview storage recovery action mapping failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    const actionKinds = new Set(probe.storageRecoveryProof.actionKinds);
+    if (
+      probe.storageRecoveryProof.status === 'complete' &&
+      probe.storageRecoveryProof.count >= args.expectedCount &&
+      probe.storageRecoveryProof.planActionCount >= 3 &&
+      actionKinds.has('request-persistent-storage') &&
+      actionKinds.has('compact-storage') &&
+      actionKinds.has('clear-blob-cache') &&
+      probe.storageRecoveryProof.requestPersistenceOffered === 'true' &&
+      probe.storageRecoveryProof.requestPersistenceSupported === 'true' &&
+      probe.storageRecoveryProof.requestPersistenceGranted === 'true' &&
+      probe.storageRecoveryProof.compactCompleted === 'true' &&
+      probe.storageRecoveryProof.clearBlobCacheCompleted === 'true'
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'storage-recovery-action-mapping-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview storage recovery action mapping. Failure artifact: ${args.failureArtifactPath}`
+  );
 }
 
 async function holdStarterLocalRecoveryLock(
@@ -2895,6 +3053,23 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         lockTimeoutMs: STARTER_LOCAL_RECOVERY_LOCK_TIMEOUT_MS,
         status: 'complete',
       },
+      storageRecoveryProof: {
+        actionKinds: [
+          'request-persistent-storage',
+          'compact-storage',
+          'clear-blob-cache',
+        ],
+        clearBlobCacheCompleted: 'true',
+        compactCompleted: 'true',
+        count: 1,
+        error: null,
+        errorCode: null,
+        planActionCount: 3,
+        requestPersistenceGranted: 'true',
+        requestPersistenceOffered: 'true',
+        requestPersistenceSupported: 'true',
+        status: 'complete',
+      },
       writePressureProof: {
         durationMs: 8,
         error: null,
@@ -2985,6 +3160,7 @@ function finalizeBrowserPreviewFailureMetrics(
     otherAssetCount: metrics.otherAssetCount,
     previewReadyMs: metrics.previewReadyMs,
     starterTimelineMarkerInAssets: metrics.starterTimelineMarkerInAssets,
+    storageRecoveryMarkerInAssets: metrics.storageRecoveryMarkerInAssets,
     supportBundleMarkerInAssets: metrics.supportBundleMarkerInAssets,
     totalAssetBytes: metrics.totalAssetBytes,
   };
@@ -3019,6 +3195,7 @@ function assertBrowserPreviewFailureMetricsShape(
     'deploymentPreflightMarkerInAssets',
     'lifecycleResumeMarkerInAssets',
     'starterTimelineMarkerInAssets',
+    'storageRecoveryMarkerInAssets',
     'supportBundleMarkerInAssets',
   ] as const) {
     if (typeof metrics[key] !== 'boolean') {
@@ -3050,6 +3227,10 @@ function assertBrowserPreviewProbeShape(
   assertBrowserPreviewLifecycleResumeShape(probe.lifecycleResume, path);
   assertBrowserPreviewLifecyclePauseShape(probe.lifecyclePause, path);
   assertBrowserPreviewLocalRecoveryProofShape(probe.localRecoveryProof, path);
+  assertBrowserPreviewStorageRecoveryProofShape(
+    probe.storageRecoveryProof,
+    path
+  );
   assertBrowserPreviewWritePressureProofShape(probe.writePressureProof, path);
   assertBrowserPreviewStarterTimelineShape(probe.starterTimeline, path);
   assertBrowserPreviewStarterOpenShape(probe.starterOpen, path);
@@ -3409,6 +3590,49 @@ function assertBrowserPreviewLocalRecoveryProofShape(
     throw new Error(
       `${path} probe.localRecoveryProof.lockTimeoutMs was not nullable non-negative number`
     );
+  }
+}
+
+function assertBrowserPreviewStorageRecoveryProofShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.storageRecoveryProof was not a JSON object`);
+  }
+  if (
+    !Array.isArray(value.actionKinds) ||
+    value.actionKinds.some((actionKind) => typeof actionKind !== 'string')
+  ) {
+    throw new Error(
+      `${path} probe.storageRecoveryProof.actionKinds was not a string array`
+    );
+  }
+  for (const key of [
+    'clearBlobCacheCompleted',
+    'compactCompleted',
+    'error',
+    'errorCode',
+    'requestPersistenceGranted',
+    'requestPersistenceOffered',
+    'requestPersistenceSupported',
+    'status',
+  ] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.storageRecoveryProof.${key} was not nullable text`
+      );
+    }
+  }
+  for (const key of ['count', 'planActionCount'] as const) {
+    if (
+      !isNonNegativeFiniteNumber(value[key]) ||
+      !Number.isInteger(value[key])
+    ) {
+      throw new Error(
+        `${path} probe.storageRecoveryProof.${key} was not a non-negative integer`
+      );
+    }
   }
 }
 

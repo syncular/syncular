@@ -73,6 +73,20 @@ type LocalRecoveryProofPreview = {
   status: 'idle' | 'running' | 'complete' | 'failed';
 };
 
+type StorageRecoveryProofPreview = {
+  actionKinds: string[];
+  clearBlobCacheCompleted: boolean;
+  compactCompleted: boolean;
+  count: number;
+  error: string | null;
+  errorCode: string | null;
+  planActionCount: number;
+  requestPersistenceGranted: boolean | null;
+  requestPersistenceOffered: boolean;
+  requestPersistenceSupported: boolean | null;
+  status: 'idle' | 'running' | 'complete' | 'failed';
+};
+
 type WritePressureProofPreview = {
   durationMs: number | null;
   error: string | null;
@@ -170,6 +184,20 @@ const initialLocalRecoveryProof: LocalRecoveryProofPreview = {
   lockRequired: false,
   lockState: 'not-requested',
   lockTimeoutMs: null,
+  status: 'idle',
+};
+
+const initialStorageRecoveryProof: StorageRecoveryProofPreview = {
+  actionKinds: [],
+  clearBlobCacheCompleted: false,
+  compactCompleted: false,
+  count: 0,
+  error: null,
+  errorCode: null,
+  planActionCount: 0,
+  requestPersistenceGranted: null,
+  requestPersistenceOffered: false,
+  requestPersistenceSupported: null,
   status: 'idle',
 };
 
@@ -598,9 +626,12 @@ function TaskPane({
     useState<SupportBundlePreview | null>(null);
   const [localRecoveryProof, setLocalRecoveryProof] =
     useState<LocalRecoveryProofPreview>(initialLocalRecoveryProof);
+  const [storageRecoveryProof, setStorageRecoveryProof] =
+    useState<StorageRecoveryProofPreview>(initialStorageRecoveryProof);
   const [writePressureProof, setWritePressureProof] =
     useState<WritePressureProofPreview>(initialWritePressureProof);
   const localRecoveryProofRunning = useRef(false);
+  const storageRecoveryProofRunning = useRef(false);
   const writePressureProofRunning = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -887,6 +918,104 @@ function TaskPane({
   }, [client]);
 
   useEffect(() => {
+    const runProof = async () => {
+      if (storageRecoveryProofRunning.current) return;
+      storageRecoveryProofRunning.current = true;
+      setStorageRecoveryProof((current) => ({
+        ...current,
+        actionKinds: [],
+        clearBlobCacheCompleted: false,
+        compactCompleted: false,
+        error: null,
+        errorCode: null,
+        planActionCount: 0,
+        requestPersistenceGranted: null,
+        requestPersistenceOffered: false,
+        requestPersistenceSupported: null,
+        status: 'running',
+      }));
+      try {
+        const deploymentPreflight =
+          await starterStorageRecoveryDeploymentPreflight();
+        const plan = await client.localRecoveryPlan({ deploymentPreflight });
+        const actionKinds = plan.actions.map((action) => action.kind);
+        const requestPersistence = plan.actions.find(
+          (candidate) => candidate.kind === 'request-persistent-storage'
+        );
+        const compactStorage = plan.actions.find(
+          (candidate) => candidate.kind === 'compact-storage'
+        );
+        const clearBlobCache = plan.actions.find(
+          (candidate) => candidate.kind === 'clear-blob-cache'
+        );
+        if (!requestPersistence || !compactStorage || !clearBlobCache) {
+          throw new Error(
+            `Starter storage recovery plan missed expected actions: ${actionKinds.join(', ')}`
+          );
+        }
+        const persistenceResult = await client.runLocalRecoveryAction(
+          requestPersistence,
+          {
+            navigator: {
+              storage: {
+                async persist() {
+                  return true;
+                },
+              },
+            },
+          }
+        );
+        await client.runLocalRecoveryAction(compactStorage);
+        await client.runLocalRecoveryAction(clearBlobCache, {
+          confirmationText: 'clear local blob cache',
+        });
+        setStorageRecoveryProof((current) => ({
+          actionKinds,
+          clearBlobCacheCompleted: true,
+          compactCompleted: true,
+          count: current.count + 1,
+          error: null,
+          errorCode: null,
+          planActionCount: plan.actions.length,
+          requestPersistenceGranted:
+            persistenceResult.action === 'request-persistent-storage'
+              ? persistenceResult.granted
+              : null,
+          requestPersistenceOffered: true,
+          requestPersistenceSupported:
+            persistenceResult.action === 'request-persistent-storage'
+              ? persistenceResult.supported
+              : null,
+          status: 'complete',
+        }));
+      } catch (error) {
+        setStorageRecoveryProof((current) => ({
+          ...current,
+          count: current.count + 1,
+          error: errorMessage(error),
+          errorCode: syncularErrorCode(error),
+          status: 'failed',
+        }));
+      } finally {
+        storageRecoveryProofRunning.current = false;
+      }
+    };
+    const onProof = () => {
+      void runProof();
+    };
+    window.addEventListener(
+      'syncular-starter-run-storage-recovery-proof',
+      onProof
+    );
+    return () => {
+      window.removeEventListener(
+        'syncular-starter-run-storage-recovery-proof',
+        onProof
+      );
+    };
+  }, [client]);
+
+  useEffect(() => {
     const runProof = async (requestedCount: number, titlePrefix: string) => {
       if (writePressureProofRunning.current) return;
       writePressureProofRunning.current = true;
@@ -1071,6 +1200,7 @@ function TaskPane({
         <SupportBundleLine supportBundle={supportBundle} />
       ) : null}
       <LocalRecoveryProofMarker localRecoveryProof={localRecoveryProof} />
+      <StorageRecoveryProofMarker storageRecoveryProof={storageRecoveryProof} />
       <WritePressureProofMarker writePressureProof={writePressureProof} />
       <StarterTimelineMarker starterTimeline={starterTimeline} />
 
@@ -1139,6 +1269,51 @@ function LocalRecoveryProofMarker({
         localRecoveryProof.lockTimeoutMs ?? ''
       }
       data-syncular-local-recovery-proof-status={localRecoveryProof.status}
+      hidden
+    />
+  );
+}
+
+function StorageRecoveryProofMarker({
+  storageRecoveryProof,
+}: {
+  storageRecoveryProof: StorageRecoveryProofPreview;
+}) {
+  return (
+    <span
+      data-syncular-storage-recovery-proof-action-kinds={storageRecoveryProof.actionKinds.join(
+        ','
+      )}
+      data-syncular-storage-recovery-proof-clear-blob-cache-completed={String(
+        storageRecoveryProof.clearBlobCacheCompleted
+      )}
+      data-syncular-storage-recovery-proof-compact-completed={String(
+        storageRecoveryProof.compactCompleted
+      )}
+      data-syncular-storage-recovery-proof-count={storageRecoveryProof.count}
+      data-syncular-storage-recovery-proof-error={
+        storageRecoveryProof.error ?? ''
+      }
+      data-syncular-storage-recovery-proof-error-code={
+        storageRecoveryProof.errorCode ?? ''
+      }
+      data-syncular-storage-recovery-proof-plan-action-count={
+        storageRecoveryProof.planActionCount
+      }
+      data-syncular-storage-recovery-proof-request-persistence-granted={
+        storageRecoveryProof.requestPersistenceGranted === null
+          ? ''
+          : String(storageRecoveryProof.requestPersistenceGranted)
+      }
+      data-syncular-storage-recovery-proof-request-persistence-offered={String(
+        storageRecoveryProof.requestPersistenceOffered
+      )}
+      data-syncular-storage-recovery-proof-request-persistence-supported={
+        storageRecoveryProof.requestPersistenceSupported === null
+          ? ''
+          : String(storageRecoveryProof.requestPersistenceSupported)
+      }
+      data-syncular-storage-recovery-proof-status={storageRecoveryProof.status}
       hidden
     />
   );
@@ -1402,6 +1577,96 @@ function failedDeploymentPreflightPreview(
     supportTier: 'unknown',
     usageRatio: null,
     usageBytes: null,
+  };
+}
+
+async function starterStorageRecoveryDeploymentPreflight(): Promise<SyncularBrowserDeploymentPreflight> {
+  const live = await getSyncularBrowserDeploymentPreflight(
+    starterDeploymentPreflightOptions
+  );
+  const storageIssues: SyncularBrowserDeploymentPreflight['issues'] = [
+    {
+      code: 'browser.storage_persistence_not_granted',
+      details: { persistRequestSupported: true },
+      message:
+        'Synthetic starter proof: persistent browser storage is requestable but not granted.',
+      recommendedAction: 'requestPersistentStorage',
+      severity: 'warning',
+      target: 'storage',
+    },
+    {
+      code: 'browser.storage_pressure_high',
+      details: {
+        quotaBytes: live.storage.quotaBytes ?? 100_000,
+        usageBytes: live.storage.usageBytes ?? 92_000,
+        usageRatio: 0.92,
+      },
+      message:
+        'Synthetic starter proof: browser storage usage is close to quota.',
+      recommendedAction: 'freeStorageQuota',
+      severity: 'warning',
+      target: 'storage',
+    },
+    {
+      code: 'browser.storage_quota_low',
+      details: {
+        availableBytes: live.storage.availableBytes ?? 8_000,
+        minimumAvailableBytes:
+          live.storage.minimumAvailableBytes ??
+          starterDeploymentPreflightOptions.minimumAvailableBytes,
+        minimumQuotaBytes:
+          live.storage.minimumQuotaBytes ??
+          starterDeploymentPreflightOptions.minimumQuotaBytes,
+        quotaBytes: live.storage.quotaBytes ?? 100_000,
+      },
+      message:
+        'Synthetic starter proof: available browser storage is below the Syncular budget.',
+      recommendedAction: 'freeStorageQuota',
+      severity: 'warning',
+      target: 'storage',
+    },
+  ];
+  const issueCodes = [
+    ...new Set([
+      ...live.support.issueCodes,
+      ...storageIssues.map((issue) => issue.code),
+    ]),
+  ];
+  const recommendedActions = [
+    ...new Set([
+      ...live.support.recommendedActions,
+      'requestPersistentStorage' as const,
+      'freeStorageQuota' as const,
+    ]),
+  ];
+  return {
+    ...live,
+    issues: [...live.issues, ...storageIssues],
+    ready: false,
+    requiresAction: live.requiresAction,
+    status: live.status === 'not-ready' ? 'not-ready' : 'warning',
+    storage: {
+      ...live.storage,
+      availableBytes: live.storage.availableBytes ?? 8_000,
+      persistenceSupported: true,
+      persistRequestSupported: true,
+      persisted: false,
+      quotaBytes: live.storage.quotaBytes ?? 100_000,
+      quotaPressure: 'high',
+      usageBytes: live.storage.usageBytes ?? 92_000,
+      usageRatio: Math.max(live.storage.usageRatio ?? 0, 0.92),
+    },
+    support: {
+      ...live.support,
+      issueCodes,
+      persistence: 'evictable',
+      persistentOffline: false,
+      productionReady: false,
+      recommendedActions,
+      summary:
+        'Synthetic starter proof storage warning for local recovery action mapping.',
+      tier: live.support.tier === 'unsupported' ? 'unsupported' : 'unknown',
+    },
   };
 }
 

@@ -232,7 +232,10 @@ read-only review:
     persistent-storage grant gaps can become a non-destructive
     `navigator.storage.persist()` request when supported, while quota/pressure
     warnings map to compaction and confirmed blob-cache clearing actions with
-    their original issue codes preserved.
+    their original issue codes preserved. The starter Chrome/CDP smoke now
+    exercises that path with a synthetic storage-warning preflight, proving the
+    generated app exposes and can run request-persistence, compaction, and
+    confirmed blob-cache clearing through public recovery APIs.
     Browser preview artifacts now include starter timings for database open,
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local

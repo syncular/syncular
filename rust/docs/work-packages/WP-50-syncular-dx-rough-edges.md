@@ -2034,6 +2034,14 @@ online propagation, or reconnect behavior can change.
   non-destructive persistent-storage request, and quota/pressure warnings map
   to compaction plus confirmed blob-cache clearing actions with the originating
   storage issue codes.
+- 2026-07-01: Added a generated-app storage recovery proof to the
+  `create-syncular-app` browser-preview smoke. The starter builds a synthetic
+  storage-warning deployment preflight from the live browser facts, runs it
+  through `client.localRecoveryPlan(...)`, then executes request-persistent
+  storage with a safe stub navigator, compaction, and confirmed blob-cache
+  clearing through public recovery APIs. The hidden marker, built-asset check,
+  Chrome/CDP wait, and failure artifact self-check now preserve the offered
+  actions and completion state.
 - 2026-07-01: Added service-worker availability/control to browser deployment
   preflight and the starter hidden marker/failure artifact. PWA/service-worker
   pages are still preflight-gated, but cache-skew investigations now retain
@@ -3233,6 +3241,25 @@ Most recent starter storage/quota artifact rerun:
     context, including controller state/script path, bootstrap, realtime,
     local-visibility, and support-bundle failures.
 
+Most recent starter storage recovery action-mapping rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-storage-recovery-proof-smoke bun --cwd packages/create-syncular-app smoke`
+  - Passed the generated app typecheck and focused Biome check.
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks,
+    including the storage recovery proof marker.
+  - Passed the deterministic browser failure artifact shape and safe-metrics
+    self-check with `storageRecoveryProof.actionKinds`, request-persistence
+    support/grant state, compaction completion, and confirmed blob-cache clear
+    completion.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available. On browser-capable runners the starter now dispatches
+    `syncular-starter-run-storage-recovery-proof` and requires the generated
+    app to plan and run request-persistence, compaction, and confirmed
+    blob-cache clearing through public local recovery APIs.
+
 Most recent starter support-timeline artifact rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts`
@@ -3819,14 +3846,17 @@ Most recent mutation-status rerun:
   The starter Chrome/CDP path now also includes a bounded generated
   write-pressure proof: four generated mutations run concurrently in one app
   tab, every row must pass local visibility, and the observer tab must receive
-  each row through sync/realtime.
+  each row through sync/realtime. The starter now also runs a browser-observed
+  storage recovery action-mapping proof from a synthetic storage-warning
+  preflight through the public generated app recovery APIs.
   Remaining work is richer browser lifecycle execution: actual backgrounded or
   discarded tab suspension/restoration outside CDP lifecycle-state forcing,
-  storage shutdown, quota/eviction, same-database multi-tab write contention
-  beyond duplicate-open and generated write-pressure proofs, and deeper
-  recovery coordination for persistent browser databases beyond dispatched page
-  lifecycle events, CDP lifecycle forcing, and lock-serialized foreground
-  resume/recovery actions. Local
+  storage shutdown, true quota-exhaustion and eviction, same-database multi-tab
+  write contention beyond duplicate-open and generated write-pressure proofs,
+  and deeper recovery coordination for persistent browser databases beyond
+  dispatched page lifecycle events, CDP lifecycle forcing, synthetic storage
+  warning action mapping, and lock-serialized foreground resume/recovery
+  actions. Local
   execution of the new browser branches still needs a Chrome-capable runner;
   this machine has no Chrome/Chromium binary.
 - Local recovery controls: first plan/action slice is done for support bundles,
@@ -3862,7 +3892,11 @@ Most recent mutation-status rerun:
   active tab must stay writable. The same browser path now adds a generated
   write-pressure proof where four generated mutations run concurrently, each
   row reaches local visibility, and an observer tab receives every row through
-  sync/realtime. Remaining work is richer browser-process proof: actual
+  sync/realtime. The generated app browser smoke now also proves that a
+  synthetic storage-warning deployment preflight produces and can run the
+  expected request-persistence, compaction, and confirmed blob-cache clearing
+  actions through public local recovery APIs. Remaining work is richer
+  browser-process proof: actual
   target-browser background/discard suspension and restoration,
   shutdown/restart states, real storage shutdown, quota-exhaustion and eviction
   behavior in a browser, same-database multi-tab write contention beyond the
@@ -4148,10 +4182,11 @@ Most recent mutation-status rerun:
 Pick the next implementation slice from the remaining risks. The immediate
 starter browser-preview blocker is cleared, same-client duplicate-tab open
 contention and generated write pressure are now covered in hosted Chrome, and
-production ops readiness is now part of release rehearsal when evidence is
-present or required. Strong follow-ups are actual browser suspension/shutdown
-lifecycle coverage, actual quota-exhaustion/eviction and storage-shutdown
-browser proof,
+storage recovery action mapping is now wired into the generated browser smoke
+pending hosted Chrome confirmation. Production ops readiness is now part of
+release rehearsal when evidence is present or required. Strong follow-ups are
+actual browser suspension/shutdown lifecycle coverage, actual
+quota-exhaustion/eviction and storage-shutdown browser proof,
 same-database multi-tab write contention beyond duplicate-open/generated
 write-pressure proofs, and browser/bundler matrix execution, especially Safari,
 Firefox, private mode, WebViews, and PWAs.
