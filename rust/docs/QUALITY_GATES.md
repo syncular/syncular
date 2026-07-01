@@ -42,8 +42,9 @@ until the full browser Worker/WASM suite is green on Linux.
   `bun run framework-import-smokes` so those roots still build under the
   current Next SSR and Vite browser production graphs, so Vite preview serves
   the built app assets, and so the Cloudflare subpaths bundle with Durable
-  Object, D1, and R2 bindings under Wrangler and answer a local runtime
-  request that performs tiny D1 SQL and R2 object IO through those bindings.
+  Object, D1, R2, and WebSocket routes under Wrangler and answer local runtime
+  probes that perform tiny D1 SQL, R2 object IO, and a Durable Object
+  WebSocket echo through those bindings.
   For release/post-publish
   checks,
   `bun scripts/post-publish-install-smokes.ts --version <version>` also runs

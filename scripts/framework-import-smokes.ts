@@ -60,6 +60,9 @@ async function runLocalWorkerRuntimeProbe(args: {
   wranglerBin: string;
   route: string;
   expectedText: string;
+  webSocketExpectedText?: string;
+  webSocketMessage?: string;
+  webSocketRoute?: string;
 }): Promise<void> {
   const port = await getFreePort();
   const output: string[] = [];
@@ -109,6 +112,16 @@ async function runLocalWorkerRuntimeProbe(args: {
       output,
       getExit: () => exited,
     });
+    if (args.webSocketRoute && args.webSocketMessage) {
+      await waitForWebSocketText({
+        label: 'Cloudflare Durable Object WebSocket smoke',
+        url: `ws://127.0.0.1:${port}${args.webSocketRoute}`,
+        sendText: args.webSocketMessage,
+        expectedText: args.webSocketExpectedText ?? args.webSocketMessage,
+        output,
+        getExit: () => exited,
+      });
+    }
   } finally {
     await stopProcess(child);
   }
@@ -566,6 +579,115 @@ async function waitForHttpText(args: {
   );
 }
 
+async function waitForWebSocketText(args: {
+  label: string;
+  url: string;
+  sendText: string;
+  expectedText: string;
+  output: string[];
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<void> {
+  let socket: WebSocket | null = null;
+  let settled = false;
+  let lastError = 'no WebSocket event observed';
+  let timeout: ReturnType<typeof setTimeout> | undefined;
+  let exitPoll: ReturnType<typeof setInterval> | undefined;
+
+  await new Promise<void>((resolvePromise, reject) => {
+    const cleanup = () => {
+      if (timeout) clearTimeout(timeout);
+      if (exitPoll) clearInterval(exitPoll);
+      if (
+        socket &&
+        (socket.readyState === WebSocket.CONNECTING ||
+          socket.readyState === WebSocket.OPEN)
+      ) {
+        try {
+          socket.close();
+        } catch {
+          // ignore close errors during cleanup
+        }
+      }
+    };
+    const fail = (error: Error) => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(error);
+    };
+    const pass = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      resolvePromise();
+    };
+
+    timeout = setTimeout(() => {
+      fail(
+        new Error(
+          `Timed out waiting for ${args.label} at ${args.url}: ${lastError}\n${args.output.join(
+            ''
+          )}`
+        )
+      );
+    }, 30_000);
+    exitPoll = setInterval(() => {
+      const exit = args.getExit();
+      if (!exit) return;
+      fail(
+        new Error(
+          `${args.label} exited before serving ${args.url}: code=${
+            exit.code ?? 'null'
+          } signal=${exit.signal ?? 'null'}\n${args.output.join('')}`
+        )
+      );
+    }, 250);
+
+    try {
+      socket = new WebSocket(args.url);
+    } catch (error) {
+      fail(error instanceof Error ? error : new Error(String(error)));
+      return;
+    }
+
+    socket.addEventListener('open', () => {
+      lastError = 'WebSocket opened without expected message';
+      socket?.send(args.sendText);
+    });
+    socket.addEventListener('message', (event) => {
+      const text = webSocketDataToText(event.data);
+      if (text.includes(args.expectedText)) {
+        pass();
+        return;
+      }
+      lastError = `unexpected WebSocket message: ${text.slice(0, 200)}`;
+    });
+    socket.addEventListener('error', () => {
+      lastError = 'WebSocket error event';
+    });
+    socket.addEventListener('close', (event) => {
+      fail(
+        new Error(
+          `${args.label} closed before expected message: code=${event.code} reason=${
+            event.reason || 'null'
+          }; ${lastError}\n${args.output.join('')}`
+        )
+      );
+    });
+  });
+}
+
+function webSocketDataToText(data: unknown): string {
+  if (typeof data === 'string') return data;
+  if (data instanceof ArrayBuffer) return new TextDecoder().decode(data);
+  if (ArrayBuffer.isView(data)) {
+    return new TextDecoder().decode(
+      new Uint8Array(data.buffer, data.byteOffset, data.byteLength)
+    );
+  }
+  return String(data);
+}
+
 async function fetchTextWithTimeout(url: string, timeoutMs: number) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -843,7 +965,7 @@ type Env = {
 };
 
 export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
-  setup(app) {
+  setup(app, _env, upgradeWebSocket) {
     app.get('/syncular-framework-import-smoke', async (c) => {
       if (!c.env.SYNC_DO) {
         throw new Error('Durable Object binding was not available');
@@ -887,6 +1009,18 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
       }
       return c.text('syncular-cloudflare-runtime-io-ready');
     });
+    app.get('/syncular-framework-import-smoke/ws', (c) =>
+      upgradeWebSocket(c, {
+        onOpen(_event, ws) {
+          ws.send('syncular-cloudflare-websocket-open');
+        },
+        onMessage(event, ws) {
+          ws.send(
+            \`syncular-cloudflare-websocket-echo:\${String(event.data)}\`
+          );
+        },
+      })
+    );
   }
 }
 
@@ -1056,18 +1190,25 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
   );
   for (const bundleName of bundleNames) {
     const bundle = await Bun.file(join(outDir, bundleName)).text();
-    if (bundle.includes('syncular-cloudflare-runtime-io-ready')) {
+    if (
+      bundle.includes('syncular-cloudflare-runtime-io-ready') &&
+      bundle.includes('syncular-cloudflare-websocket-echo')
+    ) {
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1/R2 import smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1/R2/WebSocket import smoke passed'
       );
       await runLocalWorkerRuntimeProbe({
         appDir,
         wranglerBin,
         route: '/syncular-framework-import-smoke',
         expectedText: 'syncular-cloudflare-runtime-io-ready',
+        webSocketRoute: '/syncular-framework-import-smoke/ws',
+        webSocketMessage: 'syncular-cloudflare-websocket-ping',
+        webSocketExpectedText:
+          'syncular-cloudflare-websocket-echo:syncular-cloudflare-websocket-ping',
       });
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1/R2 runtime IO smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1/R2/WebSocket runtime IO smoke passed'
       );
       return;
     }
