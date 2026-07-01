@@ -541,14 +541,25 @@ const ConsoleBrowserPreviewFailureProbeSchema = z
     deploymentPreflight: z
       .object({
         actionCount: z.number().int().nonnegative(),
+        availableBytes: ConsoleBrowserPreviewFailureNullableNumberSchema,
         issueCount: z.number().int().nonnegative(),
+        minimumAvailableBytes: ConsoleBrowserPreviewFailureNullableNumberSchema,
         minimumQuotaBytes: ConsoleBrowserPreviewFailureNullableNumberSchema,
         persistence: ConsoleBrowserPreviewFailureNullableStringSchema,
         persisted: ConsoleBrowserPreviewFailureNullableStringSchema,
         preflightMs: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        quotaPressure: ConsoleBrowserPreviewFailureNullableStringSchema,
         quotaBytes: ConsoleBrowserPreviewFailureNullableNumberSchema,
+        serviceWorker: ConsoleBrowserPreviewFailureNullableStringSchema,
+        serviceWorkerControlled:
+          ConsoleBrowserPreviewFailureNullableStringSchema,
+        serviceWorkerControllerScriptPath:
+          ConsoleBrowserPreviewFailureNullableStringSchema,
+        serviceWorkerControllerState:
+          ConsoleBrowserPreviewFailureNullableStringSchema,
         status: ConsoleBrowserPreviewFailureNullableStringSchema,
         supportTier: ConsoleBrowserPreviewFailureNullableStringSchema,
+        usageRatio: ConsoleBrowserPreviewFailureNullableNumberSchema,
         usageBytes: ConsoleBrowserPreviewFailureNullableNumberSchema,
       })
       .passthrough(),

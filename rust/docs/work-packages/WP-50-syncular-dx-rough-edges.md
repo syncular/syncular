@@ -2362,6 +2362,12 @@ online propagation, or reconnect behavior can change.
   work dir in `.context/starter-browser-preview-smoke` and upload
   `browser-preview-failure.json` on job failure, so hosted Chrome readiness
   failures leave downloadable redacted support evidence instead of only logs.
+- 2026-07-01: Promoted the newer browser-preview deployment-preflight artifact
+  fields into Console ingestion schema coverage and route assertions. Console
+  now validates and preserves available-byte budgets, quota pressure,
+  service-worker availability/control, controller state, redacted controller
+  script path, and usage ratio inside the stored `browser.preview_failure`
+  diagnostic details instead of relying on passthrough.
 - 2026-07-01: Expanded production operations docs beyond the first upgrade
   runbook. Deployment now includes restore-drill steps, blob storage
   consistency sampling, rate-limit tuning, credential rotation cadence, and
@@ -2831,8 +2837,9 @@ Most recent browser-failure Console ingestion rerun:
 - `git diff --check`
   - Passed route coverage for raw artifact ingestion, wrapped artifact
     ingestion with client identity, sensitive-field rejection, normalized
-    `browser.preview_failure` records, safe metrics/timing preservation, and
-    dropping the artifact page `textExcerpt`.
+    `browser.preview_failure` records, deployment-preflight storage/quota and
+    service-worker controller detail preservation, safe metrics/timing
+    preservation, and dropping the artifact page `textExcerpt`.
 
 Most recent starter local-visibility artifact rerun:
 

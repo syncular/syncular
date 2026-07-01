@@ -534,14 +534,22 @@ describe('console timeline route filters', () => {
         },
         deploymentPreflight: {
           actionCount: 0,
+          availableBytes: 107_374_178_304,
           issueCount: 0,
+          minimumAvailableBytes: 26_214_400,
           minimumQuotaBytes: 52_428_800,
           persistence: 'persistent',
           persisted: 'true',
           preflightMs: 2,
+          quotaPressure: 'normal',
           quotaBytes: 107_374_182_400,
+          serviceWorker: 'true',
+          serviceWorkerControlled: 'true',
+          serviceWorkerControllerScriptPath: '/__syncular/sw.js',
+          serviceWorkerControllerState: 'activated',
           status: 'ready',
           supportTier: 'persistent-offline',
+          usageRatio: 0.00000003814697265625,
           usageBytes: 4096,
         },
         browserSupportPolicy: {
@@ -2693,6 +2701,19 @@ describe('console timeline route filters', () => {
           | undefined
       )?.requiredEvidence
     ).toEqual(['deployment preflight passed']);
+    const deploymentPreflight = diagnostic?.details?.deploymentPreflight as
+      | Record<string, unknown>
+      | undefined;
+    expect(deploymentPreflight?.availableBytes).toBe(107_374_178_304);
+    expect(deploymentPreflight?.minimumAvailableBytes).toBe(26_214_400);
+    expect(deploymentPreflight?.quotaPressure).toBe('normal');
+    expect(deploymentPreflight?.serviceWorker).toBe('true');
+    expect(deploymentPreflight?.serviceWorkerControlled).toBe('true');
+    expect(deploymentPreflight?.serviceWorkerControllerScriptPath).toBe(
+      '/__syncular/sw.js'
+    );
+    expect(deploymentPreflight?.serviceWorkerControllerState).toBe('activated');
+    expect(deploymentPreflight?.usageRatio).toBe(0.00000003814697265625);
     expect(
       (
         diagnostic?.details?.lifecyclePause as
