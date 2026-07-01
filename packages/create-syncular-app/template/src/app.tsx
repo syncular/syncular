@@ -27,11 +27,15 @@ type LifecycleResumePreview = {
 };
 
 type StarterTimelinePreview = {
+  bootstrapReadyMs: number | null;
+  bootstrapStatus: 'pending' | 'ready';
   databaseOpenMs: number | null;
   healthRefreshMs: number | null;
   localVisibilityErrorCode: string | null;
   localVisibilityMs: number | null;
   localVisibilityStatus: 'idle' | 'running' | 'visible' | 'failed';
+  realtimeConnectedMs: number | null;
+  realtimeStatus: 'pending' | 'connected';
   schemaReadinessMs: number | null;
   supportBundleExportMs: number | null;
 };
@@ -44,11 +48,15 @@ const initialLifecycleResume: LifecycleResumePreview = {
 };
 
 const initialStarterTimeline: StarterTimelinePreview = {
+  bootstrapReadyMs: null,
+  bootstrapStatus: 'pending',
   databaseOpenMs: null,
   healthRefreshMs: null,
   localVisibilityErrorCode: null,
   localVisibilityMs: null,
   localVisibilityStatus: 'idle',
+  realtimeConnectedMs: null,
+  realtimeStatus: 'pending',
   schemaReadinessMs: null,
   supportBundleExportMs: null,
 };
@@ -203,6 +211,40 @@ function TaskPane({
   const [supportBundle, setSupportBundle] =
     useState<SupportBundlePreview | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    const bootstrapReady = status.lifecycle.bootstrap?.complete === true;
+    const realtimeConnected = status.connection.realtime === 'connected';
+    updateStarterTimeline((current) => {
+      const nextBootstrapStatus = bootstrapReady ? 'ready' : 'pending';
+      const nextRealtimeStatus = realtimeConnected ? 'connected' : 'pending';
+      const nextBootstrapReadyMs =
+        current.bootstrapReadyMs ??
+        (bootstrapReady ? elapsedSince(appStartedAtMs) : null);
+      const nextRealtimeConnectedMs =
+        current.realtimeConnectedMs ??
+        (realtimeConnected ? elapsedSince(appStartedAtMs) : null);
+      if (
+        current.bootstrapReadyMs === nextBootstrapReadyMs &&
+        current.bootstrapStatus === nextBootstrapStatus &&
+        current.realtimeConnectedMs === nextRealtimeConnectedMs &&
+        current.realtimeStatus === nextRealtimeStatus
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        bootstrapReadyMs: nextBootstrapReadyMs,
+        bootstrapStatus: nextBootstrapStatus,
+        realtimeConnectedMs: nextRealtimeConnectedMs,
+        realtimeStatus: nextRealtimeStatus,
+      };
+    });
+  }, [
+    status.connection.realtime,
+    status.lifecycle.bootstrap?.complete,
+    updateStarterTimeline,
+  ]);
 
   useEffect(() => {
     let disposed = false;
@@ -397,6 +439,10 @@ function StarterTimelineMarker({
 }) {
   return (
     <span
+      data-syncular-starter-bootstrap-ready-ms={
+        starterTimeline.bootstrapReadyMs ?? ''
+      }
+      data-syncular-starter-bootstrap-status={starterTimeline.bootstrapStatus}
       data-syncular-starter-database-open-ms={
         starterTimeline.databaseOpenMs ?? ''
       }
@@ -412,6 +458,10 @@ function StarterTimelineMarker({
       data-syncular-starter-local-visibility-status={
         starterTimeline.localVisibilityStatus
       }
+      data-syncular-starter-realtime-connected-ms={
+        starterTimeline.realtimeConnectedMs ?? ''
+      }
+      data-syncular-starter-realtime-status={starterTimeline.realtimeStatus}
       data-syncular-starter-schema-readiness-ms={
         starterTimeline.schemaReadinessMs ?? ''
       }

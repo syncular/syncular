@@ -259,8 +259,10 @@ async function verifyBuiltPreviewAssets(
         'data-syncular-lifecycle-resume-status'
       );
       sawStarterTimelineMarker ||=
+        assetBody.includes('data-syncular-starter-bootstrap-ready-ms') &&
         assetBody.includes('data-syncular-starter-database-open-ms') &&
-        assetBody.includes('data-syncular-starter-local-visibility-ms');
+        assetBody.includes('data-syncular-starter-local-visibility-ms') &&
+        assetBody.includes('data-syncular-starter-realtime-connected-ms');
       sawSupportBundleMarker ||= assetBody.includes(
         'data-syncular-support-bundle-status'
       );
@@ -483,12 +485,16 @@ type BrowserPreviewProbe = {
     error: string | null;
   };
   starterTimeline: {
+    bootstrapReadyMs: number | null;
+    bootstrapStatus: string | null;
     databaseOpenMs: number | null;
     healthRefreshMs: number | null;
     localVisibilityErrorCode: string | null;
     localVisibilityMs: number | null;
     localVisibilityStatus: string | null;
     marker: boolean;
+    realtimeConnectedMs: number | null;
+    realtimeStatus: string | null;
     schemaReadinessMs: number | null;
     supportBundleExportMs: number | null;
   };
@@ -550,11 +556,15 @@ async function readStarterBrowserProbe(
       const number = Number(value);
       return Number.isFinite(number) && number >= 0 ? number : null;
     };
+    const bootstrapReadyMs = readStarterTimelineMs('data-syncular-starter-bootstrap-ready-ms');
+    const bootstrapStatus = starterTimeline?.getAttribute('data-syncular-starter-bootstrap-status') ?? null;
     const databaseOpenMs = readStarterTimelineMs('data-syncular-starter-database-open-ms');
     const healthRefreshMs = readStarterTimelineMs('data-syncular-starter-health-refresh-ms');
     const localVisibilityErrorCode = starterTimeline?.getAttribute('data-syncular-starter-local-visibility-error-code') ?? null;
     const localVisibilityMs = readStarterTimelineMs('data-syncular-starter-local-visibility-ms');
     const localVisibilityStatus = starterTimeline?.getAttribute('data-syncular-starter-local-visibility-status') ?? null;
+    const realtimeConnectedMs = readStarterTimelineMs('data-syncular-starter-realtime-connected-ms');
+    const realtimeStatus = starterTimeline?.getAttribute('data-syncular-starter-realtime-status') ?? null;
     const schemaReadinessMs = readStarterTimelineMs('data-syncular-starter-schema-readiness-ms');
     const supportBundleExportMs = readStarterTimelineMs('data-syncular-starter-support-bundle-export-ms');
     const durableHealthLine = text.includes('indexedDb durable');
@@ -591,9 +601,11 @@ async function readStarterBrowserProbe(
         supportBundleStatus !== null &&
         lifecycleResumeStatus !== null &&
         starterTimeline !== null &&
+        bootstrapStatus !== null &&
         databaseOpenMs !== null &&
         healthRefreshMs !== null &&
         localVisibilityStatus !== null &&
+        realtimeStatus !== null &&
         schemaReadinessMs !== null &&
         supportBundleExportMs !== null &&
         supportBundleRedacted === 'true' &&
@@ -622,12 +634,16 @@ async function readStarterBrowserProbe(
         error: lifecycleResumeError,
       },
       starterTimeline: {
+        bootstrapReadyMs,
+        bootstrapStatus,
         databaseOpenMs,
         healthRefreshMs,
         localVisibilityErrorCode,
         localVisibilityMs,
         localVisibilityStatus,
         marker: starterTimeline !== null,
+        realtimeConnectedMs,
+        realtimeStatus,
         schemaReadinessMs,
         supportBundleExportMs,
       },
@@ -909,12 +925,16 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         error: null,
       },
       starterTimeline: {
+        bootstrapReadyMs: 10,
+        bootstrapStatus: 'ready',
         databaseOpenMs: 12,
         healthRefreshMs: 3,
         localVisibilityErrorCode: null,
         localVisibilityMs: 5,
         localVisibilityStatus: 'visible',
         marker: true,
+        realtimeConnectedMs: 14,
+        realtimeStatus: 'connected',
         schemaReadinessMs: 2,
         supportBundleExportMs: 4,
       },
@@ -1051,9 +1071,11 @@ function assertBrowserPreviewStarterTimelineShape(
     throw new Error(`${path} probe.starterTimeline.marker was not a boolean`);
   }
   for (const key of [
+    'bootstrapReadyMs',
     'databaseOpenMs',
     'healthRefreshMs',
     'localVisibilityMs',
+    'realtimeConnectedMs',
     'schemaReadinessMs',
     'supportBundleExportMs',
   ] as const) {
@@ -1064,8 +1086,10 @@ function assertBrowserPreviewStarterTimelineShape(
     }
   }
   for (const key of [
+    'bootstrapStatus',
     'localVisibilityErrorCode',
     'localVisibilityStatus',
+    'realtimeStatus',
   ] as const) {
     if (value[key] !== null && typeof value[key] !== 'string') {
       throw new Error(

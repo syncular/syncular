@@ -2213,6 +2213,22 @@ Most recent starter local-visibility artifact rerun:
     local-visibility timing marker to become `visible`, and then waits for the
     second tab to observe the row through the normal sync/realtime path.
 
+Most recent starter bootstrap/realtime artifact rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-bootstrap-realtime-smoke bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks,
+    including bootstrap-ready, realtime-connected, and local-visibility timing
+    markers in the starter timeline asset check.
+  - Passed the deterministic browser failure artifact shape and safe-metrics
+    self-check with bootstrap/realtime timing fields.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available. On browser-capable runners the artifact can now show
+    whether bootstrap and realtime were still pending or had first-observed
+    elapsed timings before any local-visibility or two-tab timeout.
+
 Most recent production-ops docs rerun:
 
 - `bun run docs:stale-check`
@@ -2685,13 +2701,13 @@ Most recent mutation-status rerun:
   latency, storage/quota pressure, and redacted E2E failure artifacts
   measurable. The starter browser failure artifact now carries safe
   preview/asset timing and byte metrics plus starter runtime timings for
-  database open, browser health refresh, schema readiness, and support-bundle
-  export when the browser probe can run. The starter also records
-  generated-mutation local-visibility status and elapsed time, and the
-  Chrome/CDP path waits for that marker before proving two-tab propagation.
-  Remaining depth is to add richer bootstrap, realtime, storage/quota, and
-  blob-fetch measurements where browser/app flows can expose them without
-  manual log scraping.
+  database open, browser health refresh, schema readiness, support-bundle
+  export, bootstrap readiness, realtime connection, and generated-mutation
+  local visibility when the browser probe can run. The Chrome/CDP path waits
+  for that local-visibility marker before proving two-tab propagation.
+  Remaining depth is to add richer sync apply/realtime event cursor,
+  storage/quota, and blob-fetch measurements where browser/app flows can
+  expose them without manual log scraping.
 
 ## Next Action
 
