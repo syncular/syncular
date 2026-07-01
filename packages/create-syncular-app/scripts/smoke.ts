@@ -1362,21 +1362,22 @@ async function proveStarterBrowserLifecycleResume(
     timeoutReason: 'lifecycle-resume-event-timeout',
   });
 
-  const cdpFreezeCount = freezeCount + 1;
+  const beforeCdpLifecycle = await readStarterBrowserProbe(session);
+  const cdpLifecycleSuspensionCount =
+    session.chromeLifecycleSuspensionCount() + 1;
+  const cdpLifecycleResumeCount = beforeCdpLifecycle.lifecycleResume.count + 1;
   await setStarterChromeWebLifecycleState(session, 'frozen');
   await setStarterChromeWebLifecycleState(session, 'active');
-  await waitForStarterLifecyclePause({
-    expectedCount: cdpFreezeCount,
-    expectedReason: 'freeze',
-    expectedVisibilityState: 'visible',
+  await waitForStarterChromeLifecycleSuspension({
+    expectedCount: cdpLifecycleSuspensionCount,
     failureArtifactPath,
     failureMetrics,
     session,
-    timeoutReason: 'lifecycle-cdp-freeze-timeout',
+    timeoutReason: 'lifecycle-cdp-suspension-timeout',
   });
   await waitForStarterLifecycleResume({
-    expectedCount: pageshowCount + 3,
-    expectedReason: 'resume',
+    expectedCount: cdpLifecycleResumeCount,
+    expectedReason: 'visibilitychange',
     failureArtifactPath,
     failureMetrics,
     session,
@@ -1388,7 +1389,7 @@ async function proveStarterBrowserLifecycleResume(
     return true;
   })()`);
   await waitForStarterLifecyclePause({
-    expectedCount: cdpFreezeCount + 1,
+    expectedCount: freezeCount + 1,
     expectedReason: 'beforeunload',
     expectedShutdownSignalCount: 1,
     failureArtifactPath,
@@ -1403,6 +1404,47 @@ async function setStarterChromeWebLifecycleState(
   state: 'active' | 'frozen'
 ): Promise<void> {
   await session.send('Page.setWebLifecycleState', { state });
+}
+
+async function waitForStarterChromeLifecycleSuspension(args: {
+  expectedCount: number;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+  timeoutReason: string;
+}): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    if (args.session.chromeLifecycleSuspensionCount() >= args.expectedCount) {
+      return;
+    }
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'lifecycle-cdp-suspension-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview Chrome lifecycle suspension failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    args.timeoutReason,
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview Chrome lifecycle suspension. Failure artifact: ${args.failureArtifactPath}`
+  );
 }
 
 async function proveStarterLifecycleLockContention(args: {
@@ -3072,6 +3114,7 @@ class CdpSession {
     { resolve(value: unknown): void; reject(reason: unknown): void }
   >();
   #errors: string[] = [];
+  #chromeLifecycleSuspensionCount = 0;
   #eventWaiters = new Set<CdpEventWaiter>();
   #requests = new Map<string, { type?: string; url: string }>();
 
@@ -3226,6 +3269,10 @@ class CdpSession {
       );
     }
     return response.result?.value as T;
+  }
+
+  chromeLifecycleSuspensionCount(): number {
+    return this.#chromeLifecycleSuspensionCount;
   }
 
   close(): void {
@@ -3434,6 +3481,7 @@ class CdpSession {
 
   #recordBrowserDiagnostic(message: string): void {
     if (message.includes(CHROME_BFCACHE_LIFECYCLE_SUSPENSION_TEXT)) {
+      this.#chromeLifecycleSuspensionCount += 1;
       return;
     }
     this.#errors.push(message);
