@@ -765,9 +765,10 @@ running concurrently against the same persistent local database. The default
 lock is optional and falls back to an uncoordinated resume if Web Locks are not
 available; set `lock.required: true` only after preflight proves Web Locks and
 your app wants a hard failure instead of best-effort recovery.
-The optional `onPause` callback reports hidden-tab, `pagehide`, and
-`beforeunload` signals so browser smokes and support artifacts can distinguish
-restored-page catch-up from shutdown/suspension intent.
+The optional `onPause` callback reports hidden-tab, `pagehide`, `freeze`, and
+`beforeunload` signals, and browser `resume` events trigger foreground
+catch-up. Browser smokes and support artifacts can distinguish restored-page
+catch-up from shutdown/suspension intent.
 
 ## Storage
 

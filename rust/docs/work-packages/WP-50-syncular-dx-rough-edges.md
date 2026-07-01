@@ -2167,8 +2167,8 @@ online propagation, or reconnect behavior can change.
   `pageshow` catch-up, then dispatches `online` and waits for a second
   completed catch-up.
 - 2026-07-01: Extended the browser lifecycle helper with an app-facing pause
-  callback for hidden-tab `visibilitychange`, `pagehide`, and `beforeunload`
-  signals. The starter now records pause count, last pause reason,
+  callback for hidden-tab `visibilitychange`, `pagehide`, `freeze`, and
+  `beforeunload` signals. The starter now records pause count, last pause reason,
   `pagehide.persisted`, shutdown-signal count, and visibility state in its
   hidden lifecycle marker; browser-preview failure artifacts and Console/Fleet
   ingestion preserve the same `lifecyclePause` object. The CDP path now
@@ -2183,6 +2183,14 @@ online propagation, or reconnect behavior can change.
   `visibilitychange` with `visibilityState` of `hidden`, restores visible
   state, and waits for `lifecycleResume.reason` of `visibilitychange` before
   continuing through pagehide/pageshow/online/beforeunload.
+- 2026-07-01: Extended browser lifecycle coverage with Chrome Page Lifecycle
+  `freeze` and browser `resume` events. The root helper now reports `freeze`
+  through `onPause(...)`, treats browser `resume` as a foreground catch-up
+  reason, and focused client tests cover both event contracts and teardown.
+  The starter Chrome/CDP path dispatches `freeze`, verifies pause marker
+  evidence, dispatches `resume`, and waits for a completed
+  `resumeFromBackground()` marker before the existing `beforeunload` shutdown
+  proof.
 - 2026-07-01: Added the first starter two-tab runtime proof for Chrome-capable
   runners. The starter can derive a per-tab client id/database file from
   `?syncularClientId=...`; the CDP smoke opens a second tab with a distinct
@@ -2839,11 +2847,13 @@ Most recent browser lifecycle resume helper rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-lifecycle.test.ts packages/client/src/public-api.test.ts`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-lifecycle.ts packages/client/src/browser-lifecycle.test.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-lifecycle.ts packages/client/src/browser-lifecycle.test.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx packages/create-syncular-app/scripts/smoke.ts rust/docs/ROADMAP.md rust/docs/QUALITY_GATES.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
+  - Focused lifecycle tests now pass for browser `resume` catch-up, `freeze`
+    pause evidence, and listener teardown for both events.
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, and built asset checks,
     including the lifecycle-resume lock-state, lock-timeout, and
@@ -2858,6 +2868,8 @@ Most recent browser lifecycle resume helper rerun:
     lifecycle marker, dispatches persisted `pagehide`, verifies pause
     evidence, dispatches persisted `pageshow`, waits for a completed
     restored-page lifecycle marker, dispatches `online`, waits for a second
+    completed lifecycle marker, dispatches `freeze`, verifies page-lifecycle
+    suspension intent evidence, dispatches browser `resume`, waits for a
     completed lifecycle marker, dispatches `beforeunload`, verifies
     shutdown-signal evidence, opens a
     second tab with a distinct client id/database file, dispatches `online` in
@@ -2869,9 +2881,6 @@ Most recent browser lifecycle resume helper rerun:
     verifies timeout/recovery marker evidence, then stops Chrome, starts a
     fresh Chrome process with the same profile directory and client id, and
     waits for the task to survive that browser-process boundary.
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
-- `git diff --check`
 
 Most recent starter two-tab lifecycle coordination rerun:
 
@@ -3714,11 +3723,14 @@ Most recent mutation-status rerun:
   recover. The starter also exposes a hidden local-recovery proof marker, and
   the CDP smoke can hold the real browser local-recovery Web Lock, prove a
   non-destructive support-bundle recovery action times out, release the lock,
-  and prove that the same action completes under the acquired lock. Remaining
-  work is richer browser lifecycle execution: real tab suspension, storage
+  and prove that the same action completes under the acquired lock. The helper
+  and starter Chrome/CDP proof now also cover Page Lifecycle `freeze` and
+  browser `resume` events as explicit suspension/resume intent markers.
+  Remaining work is richer browser lifecycle execution: actual backgrounded
+  tab suspension/resume from browser automation or target browsers, storage
   shutdown, quota/eviction, database lock contention beyond the local recovery
   action coordinator, and deeper recovery coordination for persistent browser
-  databases beyond simulated page lifecycle events and lock-serialized
+  databases beyond dispatched page lifecycle events and lock-serialized
   foreground resume/recovery actions. Local execution of the new contention
   branches still needs a Chrome-capable runner; this machine has no
   Chrome/Chromium binary.
@@ -3741,10 +3753,12 @@ Most recent mutation-status rerun:
   does not run later. The starter/browser-preview smoke now adds the first
   browser-observed recovery lock proof by timing out and then completing the
   non-destructive support-bundle recovery action under the real browser Web
-  Locks API. Remaining work is richer browser-process proof:
-  suspended/resumed tabs, shutdown/restart states, storage shutdown,
-  quota/eviction, database lock contention beyond the recovery action
-  coordinator, and deeper persistent database recovery coordination.
+  Locks API. The root lifecycle helper and starter Chrome/CDP proof now also
+  cover Page Lifecycle `freeze` and browser `resume` events. Remaining work is
+  richer browser-process proof: actual target-browser background suspension
+  and restoration, shutdown/restart states, storage shutdown, quota/eviction,
+  database lock contention beyond the recovery action coordinator, and deeper
+  persistent database recovery coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,

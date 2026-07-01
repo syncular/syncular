@@ -83,6 +83,28 @@ describe('Syncular browser lifecycle resume', () => {
     expect(completions).toEqual(['pageshow']);
   });
 
+  it('resumes with a resume reason for page lifecycle resume events', async () => {
+    const client = new FakeResumeClient();
+    const document = new FakeDocument('visible');
+    const global = new FakeGlobal(document);
+    const completions: string[] = [];
+    installSyncularBrowserLifecycleResume(client, {
+      global,
+      syncOptions: ({ reason }) => ({
+        syncAttempt: { id: `resume:${reason}`, startedAt: 1 },
+      }),
+      onResumeComplete(_result, context) {
+        completions.push(context.reason);
+      },
+    });
+
+    global.dispatch('resume');
+
+    expect(client.calls).toEqual(['resume:resume']);
+    await waitFor(() => completions.length === 1);
+    expect(completions).toEqual(['resume']);
+  });
+
   it('reports pause signals for hidden tabs and page shutdown', () => {
     const client = new FakeResumeClient();
     const document = new FakeDocument('visible');
@@ -100,11 +122,13 @@ describe('Syncular browser lifecycle resume', () => {
     document.visibilityState = 'hidden';
     document.dispatch('visibilitychange');
     global.dispatch('pagehide', { persisted: true });
+    global.dispatch('freeze');
     global.dispatch('beforeunload');
 
     expect(pauses).toEqual([
       'visibilitychange:hidden:false',
       'pagehide:hidden:true',
+      'freeze:hidden:false',
       'beforeunload:hidden:false',
     ]);
     expect(client.calls).toEqual([]);
@@ -267,8 +291,10 @@ describe('Syncular browser lifecycle resume', () => {
     document.dispatch('visibilitychange');
     global.dispatch('pagehide');
     global.dispatch('beforeunload');
+    global.dispatch('freeze');
     global.dispatch('pageshow');
     global.dispatch('online');
+    global.dispatch('resume');
 
     expect(client.calls).toEqual([]);
   });

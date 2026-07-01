@@ -4,10 +4,12 @@ export type SyncularBrowserLifecycleResumeReason =
   | 'manual'
   | 'online'
   | 'pageshow'
+  | 'resume'
   | 'visibilitychange';
 
 export type SyncularBrowserLifecyclePauseReason =
   | 'beforeunload'
+  | 'freeze'
   | 'pagehide'
   | 'visibilitychange';
 
@@ -328,16 +330,22 @@ export function installSyncularBrowserLifecycleResume(
     const onPageShow = () => resumeFromBrowserSignal('pageshow');
     const onPageHide = (event: Event) => notifyPause('pagehide', event);
     const onBeforeUnload = () => notifyPause('beforeunload');
+    const onFreeze = () => notifyPause('freeze');
     const onOnline = () => resumeFromBrowserSignal('online');
+    const onResume = () => resumeFromBrowserSignal('resume');
     globalRef.addEventListener('pagehide', onPageHide);
     globalRef.addEventListener('beforeunload', onBeforeUnload);
+    globalRef.addEventListener('freeze', onFreeze);
     globalRef.addEventListener('pageshow', onPageShow);
     globalRef.addEventListener('online', onOnline);
+    globalRef.addEventListener('resume', onResume);
     unsubscribers.push(() => {
       globalRef.removeEventListener?.('pagehide', onPageHide);
       globalRef.removeEventListener?.('beforeunload', onBeforeUnload);
+      globalRef.removeEventListener?.('freeze', onFreeze);
       globalRef.removeEventListener?.('pageshow', onPageShow);
       globalRef.removeEventListener?.('online', onOnline);
+      globalRef.removeEventListener?.('resume', onResume);
     });
   }
 

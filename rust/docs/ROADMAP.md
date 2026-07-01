@@ -274,16 +274,18 @@ read-only review:
     self-checks the redacted browser failure artifact shape and safe smoke
     metrics even when no browser is installed. Browser pages can now
     install `installSyncularBrowserLifecycleResume(...)` to coalesce
-    `visibilitychange`, `pageshow`, and `online` signals into the managed
-    `resumeFromBackground()` catch-up path, and to report hidden-tab
-    `visibilitychange`, `pagehide`, and `beforeunload` pause/shutdown signals.
+    `visibilitychange`, `pageshow`, `online`, and browser `resume` signals
+    into the managed `resumeFromBackground()` catch-up path, and to report
+    hidden-tab `visibilitychange`, `pagehide`, `freeze`, and `beforeunload`
+    pause/shutdown signals.
     The starter installs it after opening Syncular and emits hidden lifecycle
     markers for resume lock state plus pause count, `pagehide.persisted`, and
     shutdown-signal count. Local asset smokes prove the marker is in the
     production bundle, and the Chrome/CDP path dispatches hidden and visible
     `visibilitychange` events, waits for hidden pause plus visible resume
     marker evidence, then dispatches a persisted `pagehide`, a persisted
-    `pageshow` restored-page signal, `online`, and `beforeunload`. The
+    `pageshow` restored-page signal, `online`, `freeze`, browser `resume`,
+    and `beforeunload`. The
     Chrome/CDP path now also opens a second generated-app tab with its own
     client id/database file, dispatches `online` in both tabs, verifies both
     lifecycle markers report the starter Web Lock as acquired, creates a task

@@ -13,8 +13,8 @@ import { Buffer } from 'node:buffer';
  *    `bun scripts/dev.ts --preview`.
  * 4. When Chrome/Chromium is available, opens the built preview in a real
  *    browser and waits for the starter's Syncular health/schema/support lines.
- *    The browser path also proves pagehide/beforeunload pause evidence,
- *    restored-page and online lifecycle resume signals, two-tab
+ *    The browser path also proves pagehide/freeze/beforeunload pause
+ *    evidence, restored-page, online, and page-lifecycle resume signals, two-tab
  *    lock-coordinated lifecycle resume, browser-observed lifecycle Web Lock
  *    contention timeout/recovery, browser-observed local recovery Web Lock
  *    contention timeout/recovery, two-tab propagation, same-client
@@ -1332,12 +1332,40 @@ async function proveStarterBrowserLifecycleResume(
     timeoutReason: 'lifecycle-online-timeout',
   });
 
+  const freezeCount = pagehideCount + 1;
+  await session.evaluate(`(() => {
+    window.dispatchEvent(new Event('freeze'));
+    return true;
+  })()`);
+  await waitForStarterLifecyclePause({
+    expectedCount: freezeCount,
+    expectedReason: 'freeze',
+    expectedVisibilityState: 'visible',
+    failureArtifactPath,
+    failureMetrics,
+    session,
+    timeoutReason: 'lifecycle-freeze-timeout',
+  });
+
+  await session.evaluate(`(() => {
+    window.dispatchEvent(new Event('resume'));
+    return true;
+  })()`);
+  await waitForStarterLifecycleResume({
+    expectedCount: pageshowCount + 2,
+    expectedReason: 'resume',
+    failureArtifactPath,
+    failureMetrics,
+    session,
+    timeoutReason: 'lifecycle-resume-event-timeout',
+  });
+
   await session.evaluate(`(() => {
     window.dispatchEvent(new Event('beforeunload'));
     return true;
   })()`);
   await waitForStarterLifecyclePause({
-    expectedCount: pagehideCount + 1,
+    expectedCount: freezeCount + 1,
     expectedReason: 'beforeunload',
     expectedShutdownSignalCount: 1,
     failureArtifactPath,

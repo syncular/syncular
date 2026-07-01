@@ -212,9 +212,10 @@ Local recovery actions use the same `lock.timeoutMs` pattern when passed to
 `runLocalRecoveryAction(...)`, rejecting with
 `SyncularLocalRecoveryActionLockTimeoutError` if another tab holds the
 recovery lock too long.
-The optional `onPause` callback reports hidden-tab, `pagehide`, and
-`beforeunload` signals so browser smokes and support artifacts can distinguish
-restored-page catch-up from shutdown/suspension intent.
+The optional `onPause` callback reports hidden-tab, `pagehide`, `freeze`, and
+`beforeunload` signals, and browser `resume` events trigger foreground
+catch-up. Browser smokes and support artifacts can distinguish restored-page
+catch-up from shutdown/suspension intent.
 
 ## React apps
 
