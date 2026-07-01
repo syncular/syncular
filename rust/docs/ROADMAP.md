@@ -175,11 +175,12 @@ read-only review:
     `resumeFromBackground()` catch-up path, and the starter installs it after
     opening Syncular. The starter now emits a hidden lifecycle-resume marker,
     local asset smokes prove the marker is in the production bundle, and the
-    Chrome/CDP path dispatches `online` and waits for a completed
-    `resumeFromBackground()` marker. The Chrome/CDP path now also opens a
-    second generated-app tab with its own client id/database file, creates a
-    task in the first tab, and waits for the second tab to observe it through
-    the normal sync/realtime path. Release rehearsal now runs the
+    Chrome/CDP path dispatches a persisted `pageshow` restored-page signal,
+    waits for a completed `resumeFromBackground()` marker, then dispatches
+    `online` and waits for a second completed marker. The Chrome/CDP path now
+    also opens a second generated-app tab with its own client id/database file,
+    creates a task in the first tab, and waits for the second tab to observe it
+    through the normal sync/realtime path. Release rehearsal now runs the
     create-syncular-app built-preview smoke by default and can require the
     Chrome/CDP path with `--require-starter-browser-preview`. Next slice:
     observe the hosted Chrome job or continue broadening browser/framework

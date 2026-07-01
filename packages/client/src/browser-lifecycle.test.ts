@@ -57,6 +57,28 @@ describe('Syncular browser lifecycle resume', () => {
     expect(completions).toEqual(['manual']);
   });
 
+  it('resumes with a pageshow reason for restored pages', async () => {
+    const client = new FakeResumeClient();
+    const document = new FakeDocument('visible');
+    const global = new FakeGlobal(document);
+    const completions: string[] = [];
+    installSyncularBrowserLifecycleResume(client, {
+      global,
+      syncOptions: ({ reason }) => ({
+        syncAttempt: { id: `resume:${reason}`, startedAt: 1 },
+      }),
+      onResumeComplete(_result, context) {
+        completions.push(context.reason);
+      },
+    });
+
+    global.dispatch('pageshow');
+
+    expect(client.calls).toEqual(['resume:pageshow']);
+    await waitFor(() => completions.length === 1);
+    expect(completions).toEqual(['pageshow']);
+  });
+
   it('coalesces overlapping browser resume signals', async () => {
     const client = new FakeResumeClient({ deferred: true });
     const document = new FakeDocument('visible');

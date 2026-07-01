@@ -13,8 +13,10 @@ import { Buffer } from 'node:buffer';
  *    `bun scripts/dev.ts --preview`.
  * 4. When Chrome/Chromium is available, opens the built preview in a real
  *    browser and waits for the starter's Syncular health/schema/support lines.
- *    Browser failures write browser-preview-failure.json with redacted marker
- *    state under the smoke work dir.
+ *    The browser path also proves restored-page and online lifecycle resume
+ *    signals plus two-tab propagation. Browser failures write
+ *    browser-preview-failure.json with redacted marker state under the smoke
+ *    work dir.
  *    Set SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required to fail when no browser
  *    is available.
  *
@@ -515,42 +517,77 @@ async function proveStarterBrowserLifecycleResume(
   session: CdpSession,
   failureArtifactPath: string
 ): Promise<void> {
+  const initialProbe = await readStarterBrowserProbe(session);
+  const pageshowCount = initialProbe.lifecycleResume.count + 1;
+  await session.evaluate(`(() => {
+    const event =
+      typeof PageTransitionEvent === 'function'
+        ? new PageTransitionEvent('pageshow', { persisted: true })
+        : new Event('pageshow');
+    window.dispatchEvent(event);
+    return true;
+  })()`);
+  await waitForStarterLifecycleResume({
+    expectedCount: pageshowCount,
+    expectedReason: 'pageshow',
+    failureArtifactPath,
+    session,
+    timeoutReason: 'lifecycle-pageshow-timeout',
+  });
+
   await session.evaluate(`(() => {
     window.dispatchEvent(new Event('online'));
     return true;
   })()`);
+  await waitForStarterLifecycleResume({
+    expectedCount: pageshowCount + 1,
+    expectedReason: 'online',
+    failureArtifactPath,
+    session,
+    timeoutReason: 'lifecycle-online-timeout',
+  });
+}
+
+async function waitForStarterLifecycleResume(args: {
+  expectedCount: number;
+  expectedReason: string;
+  failureArtifactPath: string;
+  session: CdpSession;
+  timeoutReason: string;
+}): Promise<void> {
   const deadline = Date.now() + 15_000;
   let lastProbe: BrowserPreviewProbe | null = null;
   while (Date.now() < deadline) {
-    const probe = await readStarterBrowserProbe(session);
+    const probe = await readStarterBrowserProbe(args.session);
     lastProbe = probe;
     if (probe.errors.length > 0) {
       await writeBrowserPreviewFailureArtifact(
-        failureArtifactPath,
+        args.failureArtifactPath,
         'lifecycle-resume-errors',
         probe
       );
       throw new Error(
         `Built preview lifecycle resume failed: ${probe.errors.join(
           ', '
-        )}. Failure artifact: ${failureArtifactPath}`
+        )}. Failure artifact: ${args.failureArtifactPath}`
       );
     }
     if (
       probe.lifecycleResume.status === 'complete' &&
-      probe.lifecycleResume.count >= 1
+      probe.lifecycleResume.count >= args.expectedCount &&
+      probe.lifecycleResume.reason === args.expectedReason
     ) {
       return;
     }
     await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
   }
   await writeBrowserPreviewFailureArtifact(
-    failureArtifactPath,
-    'lifecycle-resume-timeout',
+    args.failureArtifactPath,
+    args.timeoutReason,
     lastProbe
   );
   throw new Error(
-    `Timed out waiting for built preview lifecycle resume. Failure artifact: ${failureArtifactPath}`
+    `Timed out waiting for built preview lifecycle resume (${args.expectedReason}). Failure artifact: ${args.failureArtifactPath}`
   );
 }
 

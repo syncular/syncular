@@ -1584,6 +1584,12 @@ online propagation, or reconnect behavior can change.
   scaffold smoke now proves the production bundle contains the lifecycle
   marker, and the Chrome/CDP browser path dispatches an `online` event and
   waits for the marker to report a completed `resumeFromBackground()` catch-up.
+- 2026-07-01: Extended the starter lifecycle proof from online-only to
+  restored-page plus online. Focused client tests now assert the `pageshow`
+  reason contract, and the Chrome/CDP browser path dispatches a persisted
+  `pageshow` event, waits for the lifecycle marker to report a completed
+  `pageshow` catch-up, then dispatches `online` and waits for a second
+  completed catch-up.
 - 2026-07-01: Added the first starter two-tab runtime proof for Chrome-capable
   runners. The starter can derive a per-tab client id/database file from
   `?syncularClientId=...`; the CDP smoke opens a second tab with a distinct
@@ -1834,22 +1840,24 @@ Most recent browser support-tier preflight rerun:
 
 Most recent browser lifecycle resume helper rerun:
 
-- `bun test packages/client/src/browser-lifecycle.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
-- `bun --cwd packages/client tsgo`
-- `bun --cwd packages/create-syncular-app tsgo`
-- `bunx biome check packages/client/src/browser-lifecycle.ts packages/client/src/browser-lifecycle.test.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/template/src/client/syncular.ts packages/create-syncular-app/scripts/smoke.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
-- `bun --cwd packages/create-syncular-app smoke`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-lifecycle.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-lifecycle.test.ts packages/create-syncular-app/scripts/smoke.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, and built asset checks,
     including the lifecycle-resume and support-bundle markers in the
     production JavaScript asset.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available. On browser-capable runners the same CDP path now
-    dispatches `online`, waits for a completed lifecycle-resume marker, opens a
-    second tab with a distinct client id/database file, creates a task in the
-    first tab, and waits for the second tab to observe it through sync/realtime.
-- `bun run docs:stale-check`
-- `bun --cwd apps/docs types:check`
+    dispatches persisted `pageshow`, waits for a completed restored-page
+    lifecycle marker, dispatches `online`, waits for a second completed
+    lifecycle marker, opens a second tab with a distinct client id/database
+    file, creates a task in the first tab, and waits for the second tab to
+    observe it through sync/realtime.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
 
 Most recent starter browser-preview rerun:
@@ -2238,13 +2246,14 @@ Most recent mutation-status rerun:
   restored-page, and online signals into the managed
   `resumeFromBackground()` catch-up path, and the starter installs it. The
   starter browser smoke now asserts the marker exists in production assets and,
-  on Chrome-capable runners, dispatches `online` and waits for a completed
-  resume marker. The first Chrome two-tab runtime proof is also in place:
-  distinct generated-app tabs use distinct client ids/database files, one tab
-  creates a task, and the second tab must observe it through the normal
+  on Chrome-capable runners, dispatches persisted `pageshow`, waits for a
+  restored-page resume marker, dispatches `online`, and waits for a second
+  completed resume marker. The first Chrome two-tab runtime proof is also in
+  place: distinct generated-app tabs use distinct client ids/database files,
+  one tab creates a task, and the second tab must observe it through the normal
   sync/realtime path. Remaining work is richer two-tab lifecycle execution:
-  tab suspension/resume, storage locks, shutdown, app restarts, and recovery
-  coordination for persistent browser databases.
+  true tab suspension/resume, storage locks, shutdown, app restarts, and
+  recovery coordination for persistent browser databases.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
   and guarded sync-state reset, with a focused Hono/WASM proof for corrupted
