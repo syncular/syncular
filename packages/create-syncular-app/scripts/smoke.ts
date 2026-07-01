@@ -18,7 +18,8 @@ import { Buffer } from 'node:buffer';
  *    signals, two-tab lock-coordinated lifecycle resume, browser-observed lifecycle Web Lock
  *    contention timeout/recovery, browser-observed local recovery Web Lock
  *    contention timeout/recovery, two-tab propagation, same-client
- *    page reload/reopen persistence, and
+ *    page reload/reopen persistence, same-client duplicate-tab open
+ *    contention, and
  *    same-profile browser process restart persistence.
  *    After the happy path, the browser smoke also forces a hidden
  *    support-bundle marker failure and verifies the live
@@ -536,6 +537,15 @@ async function runBrowserPreviewSmoke(args: {
         session: secondSession,
         title: propagatedTitle,
         url: `${args.origin}/?syncularClientId=web-second&syncularReloadProof=${Date.now()}`,
+      });
+      log('real-browser smoke: proving same-client duplicate-tab contention');
+      await proveStarterSameClientDuplicateOpenContention({
+        failureMetrics: args.failureMetrics,
+        failureArtifactPath: args.failureArtifactPath,
+        active: secondSession,
+        debugPort: chrome.debugPort,
+        origin: args.origin,
+        title: propagatedTitle,
       });
     } finally {
       secondSession?.close();
@@ -2060,7 +2070,31 @@ async function proveStarterTwoTabPropagation(args: {
   second: CdpSession;
 }): Promise<string> {
   const title = `two-tab ${Date.now()}`;
-  await args.first.evaluate(`(() => {
+  await submitStarterTask(args.first, title);
+
+  await waitForStarterLocalVisibility({
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.first,
+  });
+
+  await waitForStarterText({
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.second,
+    title,
+    errorReason: 'two-tab-propagation-errors',
+    timeoutReason: 'two-tab-propagation-timeout',
+    timeoutMessage: 'Timed out waiting for built preview two-tab propagation',
+  });
+  return title;
+}
+
+async function submitStarterTask(
+  session: CdpSession,
+  title: string
+): Promise<void> {
+  await session.evaluate(`(() => {
     const input = document.querySelector('input[aria-label="New task"]');
     if (!(input instanceof HTMLInputElement)) {
       throw new Error('Task input not found');
@@ -2073,45 +2107,169 @@ async function proveStarterTwoTabPropagation(args: {
     form.requestSubmit();
     return true;
   })()`);
+}
 
-  await waitForStarterLocalVisibility({
-    failureArtifactPath: args.failureArtifactPath,
-    failureMetrics: args.failureMetrics,
-    session: args.first,
-  });
-
+async function waitForStarterText(args: {
+  errorReason: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+  timeoutMessage: string;
+  timeoutReason: string;
+  title: string;
+}): Promise<void> {
   const deadline = Date.now() + 20_000;
   let lastProbe: BrowserPreviewProbe | null = null;
   while (Date.now() < deadline) {
-    const probe = await readStarterBrowserProbe(args.second);
+    const probe = await readStarterBrowserProbe(args.session);
     lastProbe = probe;
     if (probe.errors.length > 0) {
       await writeBrowserPreviewFailureArtifact(
         args.failureArtifactPath,
-        'two-tab-propagation-errors',
+        args.errorReason,
         probe,
         args.failureMetrics
       );
       throw new Error(
-        `Built preview two-tab propagation failed: ${probe.errors.join(
-          ', '
-        )}. Failure artifact: ${args.failureArtifactPath}`
+        `Built preview text proof failed: ${probe.errors.join(', ')}. Failure artifact: ${args.failureArtifactPath}`
       );
     }
-    const propagated = await args.second.evaluate<boolean>(
-      `document.body?.innerText.includes(${JSON.stringify(title)}) ?? false`
+    const visible = await args.session.evaluate<boolean>(
+      `document.body?.innerText.includes(${JSON.stringify(args.title)}) ?? false`
     );
-    if (propagated) return title;
+    if (visible) return;
     await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
   }
   await writeBrowserPreviewFailureArtifact(
     args.failureArtifactPath,
-    'two-tab-propagation-timeout',
+    args.timeoutReason,
     lastProbe,
     args.failureMetrics
   );
   throw new Error(
-    `Timed out waiting for built preview two-tab propagation. Failure artifact: ${args.failureArtifactPath}`
+    `${args.timeoutMessage}. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+type SameClientDuplicateOpenOutcome = {
+  status: 'blocked' | 'ready';
+  probe: BrowserPreviewProbe;
+};
+
+async function proveStarterSameClientDuplicateOpenContention(args: {
+  active: CdpSession;
+  debugPort: number;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  failureArtifactPath: string;
+  origin: string;
+  title: string;
+}): Promise<void> {
+  await waitForStarterText({
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.active,
+    title: args.title,
+    errorReason: 'same-client-active-before-contention-errors',
+    timeoutReason: 'same-client-active-before-contention-timeout',
+    timeoutMessage:
+      'Timed out waiting for built preview active same-client tab before duplicate open',
+  });
+
+  const duplicateUrl = `${args.origin}/?syncularClientId=web-second&syncularDuplicateProof=${Date.now()}`;
+  const target = await createChromeTarget(args.debugPort, 'about:blank');
+  const duplicate = await CdpSession.connect(target.webSocketDebuggerUrl);
+  try {
+    await enableChromeTarget(duplicate);
+    await navigateChromeTarget(duplicate, duplicateUrl);
+    const outcome = await waitForStarterSameClientDuplicateOpenOutcome({
+      duplicate,
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+    });
+    if (outcome.status === 'ready') {
+      await waitForStarterText({
+        failureArtifactPath: args.failureArtifactPath,
+        failureMetrics: args.failureMetrics,
+        session: duplicate,
+        title: args.title,
+        errorReason: 'same-client-duplicate-existing-task-errors',
+        timeoutReason: 'same-client-duplicate-existing-task-timeout',
+        timeoutMessage:
+          'Timed out waiting for built preview same-client duplicate tab to show the existing task',
+      });
+    }
+
+    const postContentionTitle = `same-client contention ${Date.now()}`;
+    await submitStarterTask(args.active, postContentionTitle);
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: args.active,
+      title: postContentionTitle,
+      errorReason: 'same-client-active-post-contention-errors',
+      timeoutReason: 'same-client-active-post-contention-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview active same-client tab after duplicate open',
+    });
+  } finally {
+    duplicate.close();
+  }
+}
+
+async function waitForStarterSameClientDuplicateOpenOutcome(args: {
+  duplicate: CdpSession;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+}): Promise<SameClientDuplicateOpenOutcome> {
+  const deadline = Date.now() + 30_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.duplicate);
+    lastProbe = probe;
+    const unexpectedErrors = probe.errors.filter(
+      (error) => error !== 'database open failed'
+    );
+    if (unexpectedErrors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'same-client-duplicate-open-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview same-client duplicate tab failed unexpectedly: ${unexpectedErrors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    if (probe.ready) {
+      if (probe.starterOpen.error !== null) {
+        await writeBrowserPreviewFailureArtifact(
+          args.failureArtifactPath,
+          'same-client-duplicate-ready-with-error',
+          probe,
+          args.failureMetrics
+        );
+        throw new Error(
+          `Built preview same-client duplicate tab became ready with an open error. Failure artifact: ${args.failureArtifactPath}`
+        );
+      }
+      return { status: 'ready', probe };
+    }
+    if (probe.starterOpen.error !== null) {
+      return { status: 'blocked', probe };
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'same-client-duplicate-open-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview same-client duplicate tab to settle. Failure artifact: ${args.failureArtifactPath}`
   );
 }
 

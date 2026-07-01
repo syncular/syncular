@@ -2227,6 +2227,13 @@ online propagation, or reconnect behavior can change.
   second tab back through app startup with the same `syncularClientId` and
   waits for the propagated task to reappear, giving the browser path its first
   generated-app restart-style persistence boundary.
+- 2026-07-01: Extended the starter Chrome/CDP path with a same-client
+  duplicate-tab open contention proof. With the second tab still active on a
+  client/database, the smoke opens a duplicate tab using the same
+  `syncularClientId`. The duplicate must either reach ready state and show the
+  existing task or settle into an explicit starter-open error instead of
+  hanging, and the original tab must remain writable by accepting a fresh task
+  after the duplicate attempt.
 - 2026-07-01: Extended the starter Chrome/CDP path with a same-profile
   browser-process restart proof. After the two-tab and reload/reopen checks,
   the smoke stops Chrome, starts a fresh Chrome process with the same profile
@@ -2851,31 +2858,38 @@ Most recent Cloudflare runtime Console UI summary rerun:
     row. The production build emitted the existing Vite large-chunk warning
     only.
 
-Most recent Chrome CDP lifecycle-state proof local rerun:
+Most recent same-client duplicate-tab contention local rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
-- `git diff --check`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts rust/docs/ROADMAP.md rust/docs/QUALITY_GATES.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
   - Passed starter TypeScript checks.
-  - Passed whitespace checks for the current diff.
-  - Biome checked the starter smoke script. The repo Biome config ignores the
-    Markdown planning docs, so `git diff --check` and manual Markdown reads
-    remain the doc sanity checks for this slice.
+  - Biome checked the starter smoke script.
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, built runtime asset checks,
     browser failure artifact shape self-check, and safe smoke metrics.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
-    binary was available. Hosted Checks run
-    <https://github.com/syncular/syncular/actions/runs/28533712104> passed on
-    commit `6e547607`, including `starter-browser-preview`. An earlier failed
-    hosted artifact showed `Page.setWebLifecycleState({ state: "frozen" })` and
-    `Page.setWebLifecycleState({ state: "active" })` do not emit the same
-    app-facing `freeze` pause marker; Chrome instead reports the BFCache
-    lifecycle suspension diagnostic and the app recovers through a
-    `visibilitychange` resume marker. The smoke now requires that diagnostic
-    plus recovery marker before continuing through the existing `beforeunload`,
-    Web Lock, two-tab, reload, restart, and support-bundle artifact proofs.
+    binary was available. On browser-capable runners, the CDP path now opens a
+    duplicate tab with the same `syncularClientId` while the active same-client
+    tab remains open. The duplicate must either become ready and show the
+    existing task or report an explicit starter-open error, and the active tab
+    must still accept a fresh task after the duplicate attempt. This adds a
+    bounded same-client browser database contention proof between reload/reopen
+    persistence and browser-process restart persistence.
+
+Previous Chrome CDP lifecycle-state proof rerun:
+
+- Hosted Checks run
+  <https://github.com/syncular/syncular/actions/runs/28533712104> passed on
+  commit `6e547607`, including `starter-browser-preview`. An earlier failed
+  hosted artifact showed `Page.setWebLifecycleState({ state: "frozen" })` and
+  `Page.setWebLifecycleState({ state: "active" })` do not emit the same
+  app-facing `freeze` pause marker; Chrome instead reports the BFCache
+  lifecycle suspension diagnostic and the app recovers through a
+  `visibilitychange` resume marker. The smoke now requires that diagnostic plus
+  recovery marker before continuing through the existing `beforeunload`, Web
+  Lock, two-tab, reload, duplicate-tab, restart, and support-bundle artifact
+  proofs.
 
 Previous browser lifecycle resume helper rerun:
 
@@ -3755,8 +3769,11 @@ Most recent mutation-status rerun:
   Lock as acquired, one tab creates a task, and the second tab must observe it
   through the normal sync/realtime path. The CDP path now also performs a
   same-client reload/reopen after propagation and waits for the task to
-  reappear after app startup, then restarts Chrome with the same profile
-  directory and waits for the task to survive a fresh browser process.
+  reappear after app startup, opens a duplicate tab with the same
+  client/database and requires it to settle as either ready with the existing
+  task or an explicit starter-open error while the original tab stays writable,
+  then restarts Chrome with the same profile directory and waits for the task to
+  survive a fresh browser process.
   The helper now also has an opt-in bounded Web Lock contention path:
   `lock.timeoutMs` aborts a stuck lock request and reports
   `browser.web_locks_timeout` with `lockState: "timed-out"`, and the
@@ -3772,10 +3789,11 @@ Most recent mutation-status rerun:
   suspension diagnostic evidence followed by app `visibilitychange` recovery.
   Remaining work is richer browser lifecycle execution: actual backgrounded or
   discarded tab suspension/restoration outside CDP lifecycle-state forcing,
-  storage shutdown, quota/eviction, database lock contention beyond the local
-  recovery action coordinator, and deeper recovery coordination for persistent
-  browser databases beyond dispatched page lifecycle events, CDP lifecycle
-  forcing, and lock-serialized foreground resume/recovery actions. Local
+  storage shutdown, quota/eviction, database write contention beyond the
+  duplicate-open proof and local recovery action coordinator, and deeper
+  recovery coordination for persistent browser databases beyond dispatched page
+  lifecycle events, CDP lifecycle forcing, and lock-serialized foreground
+  resume/recovery actions. Local
   execution of the new browser branches still needs a Chrome-capable runner;
   this machine has no Chrome/Chromium binary.
 - Local recovery controls: first plan/action slice is done for support bundles,
@@ -3801,11 +3819,14 @@ Most recent mutation-status rerun:
   cover Page Lifecycle `freeze` and browser `resume` events through
   DOM-dispatched events, plus Chrome `Page.setWebLifecycleState` frozen/active
   BFCache suspension diagnostic evidence followed by app `visibilitychange`
-  recovery. Remaining work is richer browser-process proof: actual target-browser
-  background/discard suspension and restoration, shutdown/restart states,
-  storage shutdown, quota/eviction, database lock contention beyond the
-  recovery action coordinator, and deeper persistent database recovery
-  coordination.
+  recovery. The starter/browser-preview smoke also has a bounded same-client
+  duplicate-tab open contention proof: the duplicate tab must either become
+  ready with the existing task or report an explicit starter-open error, and the
+  active tab must stay writable. Remaining work is richer browser-process proof:
+  actual target-browser background/discard suspension and restoration,
+  shutdown/restart states, storage shutdown, quota/eviction, concurrent
+  database write contention beyond the duplicate-open proof and recovery action
+  coordinator, and deeper persistent database recovery coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,

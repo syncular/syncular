@@ -298,9 +298,12 @@ read-only review:
     `lockState: "timed-out"`, releases the held lock, and verifies a follow-up
     `online` resume recovers with the lock acquired. The same CDP path now
     navigates the second tab through a same-client page reload/reopen and waits
-    for the task to reappear after app startup, then restarts Chrome with the
-    same profile directory and verifies that the same client id can still see
-    the task in a fresh browser process. Release
+    for the task to reappear after app startup, opens a duplicate tab with the
+    same client id/database and requires it to settle as either ready with the
+    existing task or an explicit starter-open error while the active tab remains
+    writable, then restarts Chrome with the same profile directory and verifies
+    that the same client id can still see the task in a fresh browser process.
+    Release
     rehearsal now runs the
     create-syncular-app
     built-preview smoke by default and can require the Chrome/CDP path with
