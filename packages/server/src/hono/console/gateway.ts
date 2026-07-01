@@ -23,6 +23,7 @@ import type {
   ConsoleClient,
   ConsoleCommitListItem,
   ConsoleOperationEvent,
+  ConsoleOpsReadinessResponse,
   ConsolePaginatedResponse,
   ConsoleRequestEvent,
   ConsoleTimelineItem,
@@ -49,6 +50,8 @@ import {
   ConsoleHandlerSchema,
   ConsoleOperationEventSchema,
   ConsoleOperationsQuerySchema,
+  ConsoleOpsReadinessIngestSchema,
+  ConsoleOpsReadinessResponseSchema,
   ConsolePaginatedResponseSchema,
   ConsolePaginationQuerySchema,
   ConsolePartitionedPaginationQuerySchema,
@@ -1439,6 +1442,71 @@ export function createConsoleGatewayRoutes(
           method: 'GET',
           path: '/handlers',
           responseSchema: GatewayHandlersResponseSchema,
+        });
+      });
+    }
+  );
+
+  routes.get(
+    '/ops/readiness',
+    describeConsoleGatewayRoute({
+      summary:
+        'Get latest production ops readiness report from a single target instance (requires instance selection)',
+      responses: {
+        200: {
+          description: 'Ops readiness report',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleOpsReadinessResponseSchema),
+            },
+          },
+        },
+      },
+    }),
+    zValidator('query', GatewaySingleInstanceQuerySchema),
+    async (c) => {
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        return proxySingleInstanceJsonRequest<ConsoleOpsReadinessResponse>({
+          c,
+          query,
+          method: 'GET',
+          path: '/ops/readiness',
+          responseSchema: ConsoleOpsReadinessResponseSchema,
+        });
+      });
+    }
+  );
+
+  routes.post(
+    '/ops/readiness',
+    describeConsoleGatewayRoute({
+      summary:
+        'Ingest production ops readiness report on a single target instance (requires instance selection)',
+      responses: {
+        202: {
+          description: 'Accepted ops readiness report',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleOpsReadinessResponseSchema),
+            },
+          },
+        },
+      },
+    }),
+    zValidator('query', GatewaySingleInstanceQuerySchema),
+    zValidator('json', ConsoleOpsReadinessIngestSchema),
+    async (c) => {
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const body = c.req.valid('json');
+        return proxySingleInstanceJsonRequest<ConsoleOpsReadinessResponse>({
+          c,
+          query,
+          method: 'POST',
+          path: '/ops/readiness',
+          body,
+          responseSchema: ConsoleOpsReadinessResponseSchema,
         });
       });
     }

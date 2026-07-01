@@ -17,6 +17,7 @@ import type {
   ConsoleNotifyDataChangeResponse,
   ConsoleOperationEvent,
   ConsoleOperationType,
+  ConsoleOpsReadinessResponse,
   ConsoleRequestEvent,
   ConsoleRequestPayload,
   ConsoleRowInvestigationResponse,
@@ -145,6 +146,8 @@ const queryKeys = {
     ['console', 'prune', 'preview', instanceId] as const,
   operations: (params?: OperationEventsParams) =>
     ['console', 'operations', params] as const,
+  opsReadiness: (instanceId?: string) =>
+    ['console', 'ops', 'readiness', instanceId] as const,
   apiKeys: (params?: ApiKeysParams) => ['console', 'api-keys', params] as const,
   storage: (params?: Record<string, unknown>) =>
     ['console', 'storage', params] as const,
@@ -662,6 +665,20 @@ export function useOperationEvents(
     errorMessage: 'Failed to fetch operations',
     enabled: options.enabled,
     refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 10000),
+  });
+}
+
+export function useOpsReadiness(
+  options: { instanceId?: string; refetchIntervalMs?: number } = {}
+) {
+  const instanceId = useEffectiveInstanceId(options.instanceId);
+
+  return useConsoleJsonQuery<ConsoleOpsReadinessResponse>({
+    queryKey: queryKeys.opsReadiness(instanceId),
+    path: '/console/ops/readiness',
+    query: { instanceId },
+    errorMessage: 'Failed to fetch ops readiness',
+    refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 30000),
   });
 }
 

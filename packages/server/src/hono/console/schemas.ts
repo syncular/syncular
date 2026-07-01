@@ -946,6 +946,7 @@ export const ConsoleOperationTypeSchema = z.enum([
   'compact',
   'notify_data_change',
   'evict_client',
+  'ops_readiness',
 ]);
 
 export type ConsoleOperationType = z.infer<typeof ConsoleOperationTypeSchema>;
@@ -962,6 +963,84 @@ export const ConsoleOperationEventSchema = z.object({
 });
 
 export type ConsoleOperationEvent = z.infer<typeof ConsoleOperationEventSchema>;
+
+const ConsoleOpsReadinessStatusSchema = z.enum(['ready', 'not-ready']);
+
+const ConsoleOpsReadinessCheckStatusSchema = z.enum([
+  'ready',
+  'not-ready',
+  'not-applicable',
+  'missing',
+]);
+
+const ConsoleOpsReadinessChecksSchema = z.object({
+  schemaReadiness: ConsoleOpsReadinessCheckStatusSchema,
+  restoreDrill: ConsoleOpsReadinessCheckStatusSchema,
+  blobConsistency: ConsoleOpsReadinessCheckStatusSchema,
+  credentialRotation: ConsoleOpsReadinessCheckStatusSchema,
+  rateLimits: ConsoleOpsReadinessCheckStatusSchema,
+  logRetention: ConsoleOpsReadinessCheckStatusSchema,
+  supportWindow: ConsoleOpsReadinessCheckStatusSchema,
+});
+
+export const ConsoleOpsReadinessIssueSchema = z.object({
+  code: z.string().min(1),
+  severity: z.enum(['warning', 'error']),
+  message: z.string().min(1),
+  recommendedAction: z.string().min(1),
+  details: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const ConsoleOpsReadinessInputSchema = z.object({
+  generatedAt: z.string().datetime(),
+  status: ConsoleOpsReadinessStatusSchema,
+  ready: z.boolean(),
+  manifestDir: z.string().optional(),
+  configPath: z.string().optional(),
+  environment: z.string().nullable(),
+  checks: ConsoleOpsReadinessChecksSchema,
+  issues: z.array(ConsoleOpsReadinessIssueSchema),
+});
+
+export type ConsoleOpsReadinessInput = z.infer<
+  typeof ConsoleOpsReadinessInputSchema
+>;
+
+export const ConsoleOpsReadinessIngestSchema = ConsoleOpsReadinessInputSchema;
+
+export type ConsoleOpsReadinessIngest = z.infer<
+  typeof ConsoleOpsReadinessIngestSchema
+>;
+
+export const ConsoleOpsReadinessReportSchema = z.object({
+  artifactSchema: z.literal('syncular.ops-readiness.v1'),
+  generatedAt: z.string().datetime(),
+  environment: z.string().nullable(),
+  status: ConsoleOpsReadinessStatusSchema,
+  ready: z.boolean(),
+  checks: ConsoleOpsReadinessChecksSchema,
+  issueCount: z.number().int().nonnegative(),
+  issues: z.array(ConsoleOpsReadinessIssueSchema),
+  redaction: z.object({
+    localPaths: z.literal('omitted'),
+    sensitiveKeys: z.literal('rejected'),
+  }),
+});
+
+export type ConsoleOpsReadinessReport = z.infer<
+  typeof ConsoleOpsReadinessReportSchema
+>;
+
+export const ConsoleOpsReadinessResponseSchema = z.object({
+  available: z.boolean(),
+  operationId: z.number().int().nullable(),
+  recordedAt: z.string().nullable(),
+  report: ConsoleOpsReadinessReportSchema.nullable(),
+});
+
+export type ConsoleOpsReadinessResponse = z.infer<
+  typeof ConsoleOpsReadinessResponseSchema
+>;
 
 // ============================================================================
 // API Key Schemas

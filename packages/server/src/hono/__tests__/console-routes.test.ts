@@ -154,7 +154,12 @@ type EventsResponse = {
 type OperationsResponse = {
   items: Array<{
     operationId: number;
-    operationType: 'prune' | 'compact' | 'notify_data_change' | 'evict_client';
+    operationType:
+      | 'prune'
+      | 'compact'
+      | 'notify_data_change'
+      | 'evict_client'
+      | 'ops_readiness';
     consoleUserId: string | null;
     partitionId: string | null;
     targetClientId: string | null;
@@ -165,6 +170,32 @@ type OperationsResponse = {
   total: number;
   offset: number;
   limit: number;
+};
+
+type OpsReadinessResponse = {
+  available: boolean;
+  operationId: number | null;
+  recordedAt: string | null;
+  report: {
+    artifactSchema: 'syncular.ops-readiness.v1';
+    generatedAt: string;
+    environment: string | null;
+    status: 'ready' | 'not-ready';
+    ready: boolean;
+    checks: Record<string, string>;
+    issueCount: number;
+    issues: Array<{
+      code: string;
+      severity: 'warning' | 'error';
+      message: string;
+      recommendedAction: string;
+      details?: Record<string, unknown>;
+    }>;
+    redaction: {
+      localPaths: 'omitted';
+      sensitiveKeys: 'rejected';
+    };
+  } | null;
 };
 
 type ApiKeysResponse = {
@@ -404,6 +435,26 @@ describe('console timeline route filters', () => {
     );
   }
 
+  async function requestOpsReadiness(targetApp: Hono = app): Promise<Response> {
+    return targetApp.request('http://localhost/console/ops/readiness', {
+      headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+    });
+  }
+
+  async function postOpsReadiness(
+    body: unknown,
+    targetApp: Hono = app
+  ): Promise<Response> {
+    return targetApp.request('http://localhost/console/ops/readiness', {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${CONSOLE_TOKEN}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+  }
+
   function createBrowserPreviewFailureArtifact(): Record<string, unknown> {
     return {
       generatedAt: new Date(baseTimeMs).toISOString(),
@@ -537,6 +588,48 @@ describe('console timeline route filters', () => {
         syncRouteBase: '/syncular-framework-import-smoke/full-sync',
         webSocketRoute: '/syncular-framework-import-smoke/ws',
       },
+    };
+  }
+
+  function createOpsReadinessReport(
+    overrides: Partial<{
+      ready: boolean;
+      status: 'ready' | 'not-ready';
+      issues: Array<Record<string, unknown>>;
+    }> = {}
+  ): Record<string, unknown> {
+    const ready = overrides.ready ?? false;
+    return {
+      generatedAt: new Date(baseTimeMs).toISOString(),
+      status: overrides.status ?? (ready ? 'ready' : 'not-ready'),
+      ready,
+      manifestDir: '/Users/example/app',
+      configPath: '/Users/example/app/syncular.ops.json',
+      environment: 'production',
+      checks: {
+        schemaReadiness: 'ready',
+        restoreDrill: ready ? 'ready' : 'not-ready',
+        blobConsistency: 'ready',
+        credentialRotation: 'ready',
+        rateLimits: 'ready',
+        logRetention: 'ready',
+        supportWindow: 'ready',
+      },
+      issues:
+        overrides.issues ??
+        (ready
+          ? []
+          : [
+              {
+                code: 'ops.restore_drill_stale',
+                severity: 'error',
+                message:
+                  'Syncular restore drill evidence is older than allowed.',
+                path: '/Users/example/app/syncular.ops.json',
+                recommendedAction: 'runRestoreDrill',
+                details: { ageDays: 181.0, maxAgeDays: 90 },
+              },
+            ]),
     };
   }
 
@@ -1922,6 +2015,98 @@ describe('console timeline route filters', () => {
     expect(pruneOps.total).toBe(1);
     expect(pruneOps.items[0]?.operationType).toBe('prune');
     expect(pruneOps.items[0]?.consoleUserId).toBe('console-test');
+  });
+
+  it('ingests production ops readiness reports into operation audit', async () => {
+    const missingResponse = await requestOpsReadiness();
+    expect(missingResponse.status).toBe(200);
+    expect((await missingResponse.json()) as OpsReadinessResponse).toEqual({
+      available: false,
+      operationId: null,
+      recordedAt: null,
+      report: null,
+    });
+
+    const response = await postOpsReadiness(createOpsReadinessReport());
+    expect(response.status).toBe(202);
+    const payload = (await response.json()) as OpsReadinessResponse;
+    expect(payload.available).toBe(true);
+    expect(payload.operationId).toBeNumber();
+    expect(payload.recordedAt).toBeString();
+    expect(payload.report).toMatchObject({
+      artifactSchema: 'syncular.ops-readiness.v1',
+      environment: 'production',
+      ready: false,
+      status: 'not-ready',
+      checks: {
+        restoreDrill: 'not-ready',
+      },
+      issueCount: 1,
+      issues: [
+        {
+          code: 'ops.restore_drill_stale',
+          severity: 'error',
+          recommendedAction: 'runRestoreDrill',
+          details: { ageDays: 181.0, maxAgeDays: 90 },
+        },
+      ],
+      redaction: {
+        localPaths: 'omitted',
+        sensitiveKeys: 'rejected',
+      },
+    });
+
+    const serializedPayload = JSON.stringify(payload);
+    expect(serializedPayload).not.toContain('/Users/example/app');
+    expect(serializedPayload).not.toContain('syncular.ops.json');
+
+    const latestResponse = await requestOpsReadiness();
+    expect(latestResponse.status).toBe(200);
+    const latest = (await latestResponse.json()) as OpsReadinessResponse;
+    expect(latest).toEqual(payload);
+
+    const ops = await readOperations({ operationType: 'ops_readiness' });
+    expect(ops.total).toBe(1);
+    expect(ops.items[0]?.consoleUserId).toBe('console-test');
+    expect(ops.items[0]?.requestPayload).toEqual({
+      source: 'syncular.ops.check',
+      generatedAt: new Date(baseTimeMs).toISOString(),
+      environment: 'production',
+      status: 'not-ready',
+      ready: false,
+      issueCount: 1,
+    });
+    expect(ops.items[0]?.resultPayload).toEqual(payload.report);
+    expect(JSON.stringify(ops.items[0])).not.toContain('/Users/example/app');
+  });
+
+  it('accepts ready ops readiness reports and rejects sensitive fields', async () => {
+    const readyResponse = await postOpsReadiness(
+      createOpsReadinessReport({
+        ready: true,
+        status: 'ready',
+        issues: [],
+      })
+    );
+    expect(readyResponse.status).toBe(202);
+    const ready = (await readyResponse.json()) as OpsReadinessResponse;
+    expect(ready.report?.ready).toBe(true);
+    expect(ready.report?.issueCount).toBe(0);
+
+    const sensitiveResponse = await postOpsReadiness(
+      createOpsReadinessReport({
+        issues: [
+          {
+            code: 'ops.config_invalid',
+            severity: 'error',
+            message: 'Invalid ops evidence.',
+            recommendedAction: 'createOpsReadinessFile',
+            details: { secret: 'do-not-store' },
+          },
+        ],
+      })
+    );
+    expect(sensitiveResponse.status).toBe(400);
   });
 
   it('supports notify-data-change and records an operation audit event', async () => {

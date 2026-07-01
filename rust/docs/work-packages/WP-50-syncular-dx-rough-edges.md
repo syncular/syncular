@@ -1485,6 +1485,13 @@ online propagation, or reconnect behavior can change.
   rotation ownership/cadence, and rate-limit review status. This keeps the
   first production-ops automation concrete without introducing a broad
   `doctor` command before enough narrower checks exist.
+- Console Ops now accepts that deploy evidence through
+  `POST /console/ops/readiness`, stores a redacted `ops_readiness` operation
+  audit event, exposes the latest report through `GET /console/ops/readiness`,
+  and renders a production-readiness panel with per-check status and actionable
+  issue codes. The server omits CLI local paths and rejects secret-shaped keys
+  before recording the report. Console gateway mode proxies the same
+  read/write path to a selected target instance.
 - 2026-06-30 ninth implementation slice added
   `createScopedBlobAccessDecisionChecker(...)`, allowed Hono blob routes to
   consume boolean or structured access decisions, and exposed typed blob route
@@ -2150,6 +2157,12 @@ online propagation, or reconnect behavior can change.
   support-window evidence, so deploys can fail on stale Console retention
   reviews, missing request-payload snapshot policy, prune windows smaller than
   the promised offline window, and missing compaction full-history sizing.
+- 2026-07-01: Added Console Ops readiness ingestion for
+  `syncular ops check --json`: `POST /console/ops/readiness` stores a redacted
+  `ops_readiness` operation audit event, `GET /console/ops/readiness` returns
+  the latest report, and the Console Ops page renders the latest production
+  readiness checks and issue codes. Console gateway mode proxies the read/write
+  path to a selected target instance.
 
 ## Latest Gates
 
@@ -2346,6 +2359,7 @@ Most recent browser support-policy artifact rerun:
 Most recent Cloudflare runtime artifact ingestion rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-routes.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-gateway-routes.test.ts`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run generate:openapi`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/core tsgo`
@@ -2524,6 +2538,18 @@ Most recent production-ops automation rerun:
     support-window evidence, including help output, ready-state JSON, stale
     retention review, missing payload snapshot policy, and prune windows
     smaller than the promised offline window.
+
+Most recent ops-readiness Console ingestion rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-routes.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run generate:openapi`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/core tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/console tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/routes/context.ts packages/server/src/hono/console/routes/maintenance.ts packages/server/src/hono/console/gateway.ts packages/server/src/hono/__tests__/console-routes.test.ts packages/server/src/hono/__tests__/console-gateway-routes.test.ts packages/console/src/hooks/useConsoleApi.ts packages/console/src/lib/types.ts packages/console/src/pages/Ops.tsx apps/docs/content/docs/reference/api/index.mdx apps/docs/content/docs/reference/cli/ops-check.mdx apps/docs/content/docs/operate/console/operations.mdx apps/docs/content/docs/operate/deployment.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `git diff --check`
 
 Most recent generated-helper rerun:
 
@@ -3011,9 +3037,13 @@ Most recent mutation-status rerun:
   readiness, restore drill freshness, external blob consistency, credential
   rotation ownership/cadence, rate-limit review status, Console log/event
   retention, request-payload snapshot policy, and offline support-window
-  sizing. Remaining depth is to connect these same facts to live Console/Fleet
-  views or a future broader `doctor` once enough independently useful checks
-  exist.
+  sizing. Console Ops now ingests the same JSON, records a redacted
+  `ops_readiness` operation audit event, exposes the latest report over the
+  Console API, renders the latest production-readiness panel, and proxies the
+  same path through Console gateway mode for a selected instance. Remaining
+  depth is merged multi-instance/Fleet aggregation of those facts and deciding
+  whether a future broader `doctor` should orchestrate them once enough
+  independently useful checks exist.
 - Performance and failure artifacts: keep package/WASM size, bootstrap
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch
   latency, storage/quota pressure, and redacted E2E failure artifacts

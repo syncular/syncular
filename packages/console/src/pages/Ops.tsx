@@ -5,6 +5,7 @@ import {
   useLocalStorage,
   useNotifyDataChangeMutation,
   useOperationEvents,
+  useOpsReadiness,
   usePartitionContext,
   usePruneMutation,
   usePrunePreview,
@@ -14,6 +15,7 @@ import type {
   ConsoleNotifyDataChangeResponse,
   ConsoleOperationEvent,
   ConsoleOperationType,
+  ConsoleOpsReadinessReport,
 } from '../lib/types';
 import type { AlertThresholds, HandlerEntry, MaintenanceStat } from '../ui';
 import {
@@ -58,6 +60,28 @@ const DEFAULT_ALERT_CONFIG: AlertConfig = {
   enabled: false,
 };
 
+type OpsReadinessCheckKey = keyof ConsoleOpsReadinessReport['checks'];
+
+const OPS_READINESS_CHECK_ORDER: OpsReadinessCheckKey[] = [
+  'schemaReadiness',
+  'restoreDrill',
+  'blobConsistency',
+  'credentialRotation',
+  'rateLimits',
+  'logRetention',
+  'supportWindow',
+];
+
+const OPS_READINESS_CHECK_LABELS: Record<OpsReadinessCheckKey, string> = {
+  schemaReadiness: 'Schema',
+  restoreDrill: 'Restore',
+  blobConsistency: 'Blob Store',
+  credentialRotation: 'Credentials',
+  rateLimits: 'Rate Limits',
+  logRetention: 'Retention',
+  supportWindow: 'Offline Window',
+};
+
 function formatDuration(ms: number): string {
   if (ms < 1000) return `${ms}ms`;
   if (ms < 60000) return `${Math.round(ms / 1000)}s`;
@@ -81,6 +105,8 @@ function formatOperationTypeLabel(type: ConsoleOperationType): string {
       return 'Evict';
     case 'compact':
       return 'Compact';
+    case 'ops_readiness':
+      return 'Ops Ready';
     default:
       return 'Prune';
   }
@@ -119,6 +145,13 @@ function summarizeOperation(event: ConsoleOperationEvent): string {
     return `${deletedChanges} changes removed`;
   }
 
+  if (event.operationType === 'ops_readiness') {
+    const status = typeof result?.status === 'string' ? result.status : '?';
+    const issueCount =
+      typeof result?.issueCount === 'number' ? result.issueCount : 0;
+    return `${status}, ${issueCount} issue${issueCount === 1 ? '' : 's'}`;
+  }
+
   const deletedCommits =
     typeof result?.deletedCommits === 'number' ? result.deletedCommits : 0;
   const watermark =
@@ -134,11 +167,24 @@ function formatDateTime(iso: string): string {
   return new Date(parsed).toLocaleString();
 }
 
+function formatOpsReadinessStatus(status: string): string {
+  return status.replace(/-/g, ' ');
+}
+
+function opsReadinessBadgeVariant(
+  status: string
+): 'healthy' | 'offline' | 'ghost' {
+  if (status === 'ready') return 'healthy';
+  if (status === 'not-applicable') return 'ghost';
+  return 'offline';
+}
+
 export function Ops() {
   const { partitionId } = usePartitionContext();
 
   return (
     <div className="flex flex-col gap-4 px-5 py-5">
+      <OpsReadinessView />
       <div className="grid gap-4 lg:grid-cols-2">
         <HandlersView />
         <AlertsView />
@@ -150,6 +196,131 @@ export function Ops() {
       </div>
       <OperationsAuditView partitionId={partitionId} />
     </div>
+  );
+}
+
+function OpsReadinessView() {
+  const { data, isLoading, error } = useOpsReadiness({
+    refetchIntervalMs: 30000,
+  });
+  const report = data?.report ?? null;
+
+  return (
+    <SectionCard
+      title="Production Readiness"
+      description="Latest syncular ops check report from the deploy pipeline."
+      actions={
+        report ? (
+          <Badge variant={report.ready ? 'healthy' : 'offline'}>
+            {report.status}
+          </Badge>
+        ) : (
+          <Badge variant="ghost">No Report</Badge>
+        )
+      }
+      contentClassName="pt-4"
+    >
+      {isLoading ? (
+        <div className="flex items-center justify-center py-8">
+          <Spinner size="sm" />
+        </div>
+      ) : error ? (
+        <Alert variant="destructive">
+          <AlertDescription>
+            Failed to load ops readiness: {error.message}
+          </AlertDescription>
+        </Alert>
+      ) : !data?.available || !report ? (
+        <div className="px-2 py-6 text-sm text-neutral-500">
+          No production ops readiness report has been ingested.
+        </div>
+      ) : (
+        <div className="flex flex-col gap-4">
+          <div className="grid gap-3 md:grid-cols-4">
+            <div>
+              <div className="font-mono text-[10px] uppercase text-neutral-500">
+                Environment
+              </div>
+              <div className="mt-1 font-mono text-sm text-neutral-100">
+                {report.environment ?? 'unknown'}
+              </div>
+            </div>
+            <div>
+              <div className="font-mono text-[10px] uppercase text-neutral-500">
+                Generated
+              </div>
+              <div className="mt-1 font-mono text-sm text-neutral-100">
+                {formatDateTime(report.generatedAt)}
+              </div>
+            </div>
+            <div>
+              <div className="font-mono text-[10px] uppercase text-neutral-500">
+                Recorded
+              </div>
+              <div className="mt-1 font-mono text-sm text-neutral-100">
+                {data.recordedAt ? formatDateTime(data.recordedAt) : 'unknown'}
+              </div>
+            </div>
+            <div>
+              <div className="font-mono text-[10px] uppercase text-neutral-500">
+                Issues
+              </div>
+              <div className="mt-1 font-mono text-sm text-neutral-100">
+                {report.issueCount}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-2 md:grid-cols-4 xl:grid-cols-7">
+            {OPS_READINESS_CHECK_ORDER.map((key) => {
+              const status = report.checks[key];
+              return (
+                <div
+                  key={key}
+                  className="flex min-h-[54px] flex-col justify-between rounded-sm border border-border bg-panel/40 px-3 py-2"
+                >
+                  <span className="font-mono text-[10px] uppercase text-neutral-500">
+                    {OPS_READINESS_CHECK_LABELS[key]}
+                  </span>
+                  <Badge variant={opsReadinessBadgeVariant(status)}>
+                    {formatOpsReadinessStatus(status)}
+                  </Badge>
+                </div>
+              );
+            })}
+          </div>
+
+          {report.issues.length > 0 ? (
+            <div className="overflow-x-auto">
+              <Table>
+                <TableHeader>
+                  <TableRow>
+                    <TableHead>Code</TableHead>
+                    <TableHead>Action</TableHead>
+                    <TableHead>Message</TableHead>
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {report.issues.slice(0, 5).map((issue, index) => (
+                    <TableRow key={`${issue.code}:${index}`}>
+                      <TableCell className="font-mono text-xs text-offline">
+                        {issue.code}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {issue.recommendedAction}
+                      </TableCell>
+                      <TableCell className="text-xs text-neutral-300">
+                        {issue.message}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </div>
+          ) : null}
+        </div>
+      )}
+    </SectionCard>
   );
 }
 
@@ -607,7 +778,7 @@ function OperationsAuditView({ partitionId }: { partitionId?: string }) {
   return (
     <SectionCard
       title="Operation Audit"
-      description="Recent prune/compact/notify/evict actions with actor and result context."
+      description="Recent readiness, prune, compact, notify, and evict actions with actor and result context."
       actions={
         <div className="flex items-center gap-2">
           <Button
@@ -648,6 +819,15 @@ function OperationsAuditView({ partitionId }: { partitionId?: string }) {
             onClick={() => setOperationTypeFilter('evict_client')}
           >
             Evict
+          </Button>
+          <Button
+            variant={
+              operationTypeFilter === 'ops_readiness' ? 'default' : 'ghost'
+            }
+            size="sm"
+            onClick={() => setOperationTypeFilter('ops_readiness')}
+          >
+            Ops
           </Button>
         </div>
       }
@@ -698,6 +878,9 @@ function OperationsAuditView({ partitionId }: { partitionId?: string }) {
                   <TableCell className="font-mono text-xs">
                     {event.targetClientId ??
                       event.partitionId ??
+                      (event.operationType === 'ops_readiness'
+                        ? 'production readiness'
+                        : null) ??
                       (event.operationType === 'notify_data_change'
                         ? 'partition default'
                         : 'global')}

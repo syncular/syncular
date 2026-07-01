@@ -370,6 +370,12 @@ read-only review:
     log/event retention, request-payload snapshot policy, and offline
     support-window sizing, giving deploy pipelines a first narrow ops
     automation gate without introducing a broad `doctor` command.
+    Console Ops can now ingest that JSON through
+    `POST /console/ops/readiness`, stores a redacted `ops_readiness`
+    operation-audit event with local paths omitted, exposes the latest report
+    at `GET /console/ops/readiness`, and renders the latest readiness panel in
+    the Console Ops view. Console gateway mode proxies the same read/write path
+    to a selected target instance.
     The `create-syncular-app` scaffold smoke now
     also builds the generated app, serves Vite preview, verifies built preview
     assets, and has an opt-in Chrome/Chromium CDP path for opening the built

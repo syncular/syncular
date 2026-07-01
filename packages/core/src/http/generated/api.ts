@@ -434,6 +434,24 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/console/ops/readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get latest production ops readiness report */
+        get: operations["getConsoleOpsReadiness"];
+        put?: never;
+        /** Ingest production ops readiness report */
+        post: operations["postConsoleOpsReadiness"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/console/prune/preview": {
         parameters: {
             query?: never;
@@ -4344,7 +4362,7 @@ export interface operations {
                 limit?: number;
                 offset?: number;
                 partitionId?: string;
-                operationType?: "prune" | "compact" | "notify_data_change" | "evict_client";
+                operationType?: "prune" | "compact" | "notify_data_change" | "evict_client" | "ops_readiness";
             };
             header?: never;
             path?: never;
@@ -4362,7 +4380,7 @@ export interface operations {
                         items: {
                             operationId: number;
                             /** @enum {string} */
-                            operationType: "prune" | "compact" | "notify_data_change" | "evict_client";
+                            operationType: "prune" | "compact" | "notify_data_change" | "evict_client" | "ops_readiness";
                             consoleUserId: string | null;
                             partitionId: string | null;
                             targetClientId: string | null;
@@ -4373,6 +4391,242 @@ export interface operations {
                         total: number;
                         offset: number;
                         limit: number;
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleOpsReadiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Latest ops readiness report */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        available: boolean;
+                        operationId: number | null;
+                        recordedAt: string | null;
+                        report: {
+                            /** @constant */
+                            artifactSchema: "syncular.ops-readiness.v1";
+                            /** Format: date-time */
+                            generatedAt: string;
+                            environment: string | null;
+                            /** @enum {string} */
+                            status: "ready" | "not-ready";
+                            ready: boolean;
+                            checks: {
+                                /** @enum {string} */
+                                schemaReadiness: "ready" | "not-ready" | "not-applicable" | "missing";
+                                /** @enum {string} */
+                                restoreDrill: "ready" | "not-ready" | "not-applicable" | "missing";
+                                /** @enum {string} */
+                                blobConsistency: "ready" | "not-ready" | "not-applicable" | "missing";
+                                /** @enum {string} */
+                                credentialRotation: "ready" | "not-ready" | "not-applicable" | "missing";
+                                /** @enum {string} */
+                                rateLimits: "ready" | "not-ready" | "not-applicable" | "missing";
+                                /** @enum {string} */
+                                logRetention: "ready" | "not-ready" | "not-applicable" | "missing";
+                                /** @enum {string} */
+                                supportWindow: "ready" | "not-ready" | "not-applicable" | "missing";
+                            };
+                            issueCount: number;
+                            issues: {
+                                code: string;
+                                /** @enum {string} */
+                                severity: "warning" | "error";
+                                message: string;
+                                recommendedAction: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                            }[];
+                            redaction: {
+                                /** @constant */
+                                localPaths: "omitted";
+                                /** @constant */
+                                sensitiveKeys: "rejected";
+                            };
+                        } | null;
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    postConsoleOpsReadiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": {
+                    /** Format: date-time */
+                    generatedAt: string;
+                    /** @enum {string} */
+                    status: "ready" | "not-ready";
+                    ready: boolean;
+                    manifestDir?: string;
+                    configPath?: string;
+                    environment: string | null;
+                    checks: {
+                        /** @enum {string} */
+                        schemaReadiness: "ready" | "not-ready" | "not-applicable" | "missing";
+                        /** @enum {string} */
+                        restoreDrill: "ready" | "not-ready" | "not-applicable" | "missing";
+                        /** @enum {string} */
+                        blobConsistency: "ready" | "not-ready" | "not-applicable" | "missing";
+                        /** @enum {string} */
+                        credentialRotation: "ready" | "not-ready" | "not-applicable" | "missing";
+                        /** @enum {string} */
+                        rateLimits: "ready" | "not-ready" | "not-applicable" | "missing";
+                        /** @enum {string} */
+                        logRetention: "ready" | "not-ready" | "not-applicable" | "missing";
+                        /** @enum {string} */
+                        supportWindow: "ready" | "not-ready" | "not-applicable" | "missing";
+                    };
+                    issues: {
+                        code: string;
+                        /** @enum {string} */
+                        severity: "warning" | "error";
+                        message: string;
+                        recommendedAction: string;
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    }[];
+                };
+            };
+        };
+        responses: {
+            /** @description Accepted ops readiness report */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        available: boolean;
+                        operationId: number | null;
+                        recordedAt: string | null;
+                        report: {
+                            /** @constant */
+                            artifactSchema: "syncular.ops-readiness.v1";
+                            /** Format: date-time */
+                            generatedAt: string;
+                            environment: string | null;
+                            /** @enum {string} */
+                            status: "ready" | "not-ready";
+                            ready: boolean;
+                            checks: {
+                                /** @enum {string} */
+                                schemaReadiness: "ready" | "not-ready" | "not-applicable" | "missing";
+                                /** @enum {string} */
+                                restoreDrill: "ready" | "not-ready" | "not-applicable" | "missing";
+                                /** @enum {string} */
+                                blobConsistency: "ready" | "not-ready" | "not-applicable" | "missing";
+                                /** @enum {string} */
+                                credentialRotation: "ready" | "not-ready" | "not-applicable" | "missing";
+                                /** @enum {string} */
+                                rateLimits: "ready" | "not-ready" | "not-applicable" | "missing";
+                                /** @enum {string} */
+                                logRetention: "ready" | "not-ready" | "not-applicable" | "missing";
+                                /** @enum {string} */
+                                supportWindow: "ready" | "not-ready" | "not-applicable" | "missing";
+                            };
+                            issueCount: number;
+                            issues: {
+                                code: string;
+                                /** @enum {string} */
+                                severity: "warning" | "error";
+                                message: string;
+                                recommendedAction: string;
+                                details?: {
+                                    [key: string]: unknown;
+                                };
+                            }[];
+                            redaction: {
+                                /** @constant */
+                                localPaths: "omitted";
+                                /** @constant */
+                                sensitiveKeys: "rejected";
+                            };
+                        } | null;
+                    };
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
                     };
                 };
             };

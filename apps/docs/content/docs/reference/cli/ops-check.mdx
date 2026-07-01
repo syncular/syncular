@@ -119,6 +119,32 @@ npx syncular ops check \
 The JSON output includes stable issue codes and recommended actions so deploy
 pipelines can fail on codes instead of parsing human text.
 
+## Publish To Console
+
+Deploy pipelines can publish the JSON report to Console after running the
+check:
+
+```bash
+set +e
+npx syncular ops check --config ./ops/production.syncular.json --json \
+  > .syncular-ops-readiness.json
+ops_status=$?
+set -e
+
+curl -fsS \
+  -H "Authorization: Bearer $SYNC_CONSOLE_TOKEN" \
+  -H "Content-Type: application/json" \
+  --data @.syncular-ops-readiness.json \
+  "$SYNC_CONSOLE_URL/console/ops/readiness"
+
+exit "$ops_status"
+```
+
+Console stores a redacted summary in the operation audit, omitting local file
+paths from `manifestDir`, `configPath`, and issue paths while rejecting
+secret-shaped keys in issue details. In Console gateway mode, post to a single
+target instance by including `?instanceId=<id>` on the Console URL.
+
 ## Related Guides
 
 - [Deployment](/operate/deployment)

@@ -215,6 +215,13 @@ export type ConsoleOperationType =
 export type ConsoleOperationEvent = PaginatedItem<'getConsoleOperations'> &
   GatewayOperationFields;
 
+export type ConsoleOpsReadinessResponse =
+  JsonSuccessResponse<'getConsoleOpsReadiness'>;
+
+export type ConsoleOpsReadinessReport = NonNullable<
+  ConsoleOpsReadinessResponse['report']
+>;
+
 export type ConsoleNotifyDataChangeResponse =
   JsonSuccessResponse<'postConsoleNotifyDataChange'>;
 

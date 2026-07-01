@@ -7,6 +7,7 @@ import type {
   ConsoleCommitListItem,
   ConsoleHandler,
   ConsoleOperationEvent,
+  ConsoleOpsReadinessResponse,
   ConsolePaginatedResponse,
   ConsoleRequestEvent,
   ConsoleRequestPayload,
@@ -23,6 +24,7 @@ interface MockInstanceData {
   timeseries: TimeseriesStatsResponse;
   latency: LatencyStatsResponse;
   handlers: ConsoleHandler[];
+  opsReadiness: ConsoleOpsReadinessResponse;
   apiKeys: ConsoleApiKey[];
   commits: ConsoleCommitListItem[];
   clients: ConsoleClient[];
@@ -143,6 +145,62 @@ function createMockGatewayApp(args: {
         if (pathname.endsWith('/console/handlers') && method === 'GET') {
           return new Response(JSON.stringify({ items: data.handlers }), {
             status: 200,
+          });
+        }
+        if (pathname.endsWith('/console/ops/readiness') && method === 'GET') {
+          return new Response(JSON.stringify(data.opsReadiness), {
+            status: 200,
+          });
+        }
+        if (pathname.endsWith('/console/ops/readiness') && method === 'POST') {
+          const body = parseJsonBody(init) as {
+            generatedAt?: string;
+            environment?: string | null;
+            status?: 'ready' | 'not-ready';
+            ready?: boolean;
+            checks?: NonNullable<
+              ConsoleOpsReadinessResponse['report']
+            >['checks'];
+            issues?: NonNullable<
+              ConsoleOpsReadinessResponse['report']
+            >['issues'];
+          } | null;
+          const issues = (body?.issues ?? []).map((issue) => ({
+            code: issue.code,
+            severity: issue.severity,
+            message: issue.message,
+            recommendedAction: issue.recommendedAction,
+            ...(issue.details === undefined ? {} : { details: issue.details }),
+          }));
+          data.opsReadiness = {
+            available: true,
+            operationId: 9001,
+            recordedAt: '2026-02-17T10:10:30.000Z',
+            report: {
+              artifactSchema: 'syncular.ops-readiness.v1',
+              generatedAt: body?.generatedAt ?? '2026-02-17T10:10:00.000Z',
+              environment: body?.environment ?? 'production',
+              status: body?.status ?? 'not-ready',
+              ready: body?.ready ?? false,
+              checks: body?.checks ?? {
+                schemaReadiness: 'ready',
+                restoreDrill: 'not-ready',
+                blobConsistency: 'ready',
+                credentialRotation: 'ready',
+                rateLimits: 'ready',
+                logRetention: 'ready',
+                supportWindow: 'ready',
+              },
+              issueCount: issues.length,
+              issues,
+              redaction: {
+                localPaths: 'omitted',
+                sensitiveKeys: 'rejected',
+              },
+            },
+          };
+          return new Response(JSON.stringify(data.opsReadiness), {
+            status: 202,
           });
         }
         if (pathname.endsWith('/console/prune/preview') && method === 'POST') {
@@ -727,6 +785,41 @@ describe('createConsoleGatewayRoutes', () => {
     },
   ];
 
+  const alphaOpsReadiness: ConsoleOpsReadinessResponse = {
+    available: true,
+    operationId: 301,
+    recordedAt: '2026-02-17T10:07:00.000Z',
+    report: {
+      artifactSchema: 'syncular.ops-readiness.v1',
+      generatedAt: '2026-02-17T10:06:55.000Z',
+      environment: 'production',
+      status: 'ready',
+      ready: true,
+      checks: {
+        schemaReadiness: 'ready',
+        restoreDrill: 'ready',
+        blobConsistency: 'ready',
+        credentialRotation: 'ready',
+        rateLimits: 'ready',
+        logRetention: 'ready',
+        supportWindow: 'ready',
+      },
+      issueCount: 0,
+      issues: [],
+      redaction: {
+        localPaths: 'omitted',
+        sensitiveKeys: 'rejected',
+      },
+    },
+  };
+
+  const betaOpsReadiness: ConsoleOpsReadinessResponse = {
+    available: false,
+    operationId: null,
+    recordedAt: null,
+    report: null,
+  };
+
   const alphaTimeline: ConsoleTimelineItem[] = [
     {
       type: 'commit',
@@ -757,6 +850,7 @@ describe('createConsoleGatewayRoutes', () => {
       timeseries: alphaTimeseries,
       latency: alphaLatency,
       handlers: alphaHandlers,
+      opsReadiness: alphaOpsReadiness,
       apiKeys: alphaApiKeys,
       commits: alphaCommits,
       clients: alphaClients,
@@ -783,6 +877,7 @@ describe('createConsoleGatewayRoutes', () => {
       timeseries: betaTimeseries,
       latency: betaLatency,
       handlers: betaHandlers,
+      opsReadiness: betaOpsReadiness,
       apiKeys: betaApiKeys,
       commits: betaCommits,
       clients: betaClients,
@@ -1295,6 +1390,20 @@ describe('createConsoleGatewayRoutes', () => {
     };
     expect(handlersBody.error).toBe('console.invalid_request');
     expect(handlersBody.details.consoleError).toBe('instance_required');
+
+    const opsReadinessWithoutInstance = await app.request(
+      'http://localhost/console/ops/readiness',
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(opsReadinessWithoutInstance.status).toBe(400);
+    const opsReadinessBody = (await opsReadinessWithoutInstance.json()) as {
+      error: string;
+      details: { consoleError: string };
+    };
+    expect(opsReadinessBody.error).toBe('console.invalid_request');
+    expect(opsReadinessBody.details.consoleError).toBe('instance_required');
   });
 
   it('proxies single-instance mutation and config endpoints', async () => {
@@ -1311,6 +1420,60 @@ describe('createConsoleGatewayRoutes', () => {
       items: ConsoleHandler[];
     };
     expect(handlersBody.items[0]?.table).toBe('tasks');
+
+    const opsReadinessResponse = await app.request(
+      'http://localhost/console/ops/readiness?instanceId=alpha',
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(opsReadinessResponse.status).toBe(200);
+    const opsReadinessBody =
+      (await opsReadinessResponse.json()) as ConsoleOpsReadinessResponse;
+    expect(opsReadinessBody.report?.ready).toBe(true);
+    expect(opsReadinessBody.report?.checks.restoreDrill).toBe('ready');
+
+    const postOpsReadinessResponse = await app.request(
+      'http://localhost/console/ops/readiness?instanceId=alpha',
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${CONSOLE_TOKEN}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          generatedAt: '2026-02-17T10:10:00.000Z',
+          status: 'not-ready',
+          ready: false,
+          manifestDir: '/workspace/app',
+          configPath: '/workspace/app/syncular.ops.json',
+          environment: 'production',
+          checks: {
+            schemaReadiness: 'ready',
+            restoreDrill: 'not-ready',
+            blobConsistency: 'ready',
+            credentialRotation: 'ready',
+            rateLimits: 'ready',
+            logRetention: 'ready',
+            supportWindow: 'ready',
+          },
+          issues: [
+            {
+              code: 'ops.restore_drill_stale',
+              severity: 'error',
+              message: 'Syncular restore drill evidence is older than allowed.',
+              path: '/workspace/app/syncular.ops.json',
+              recommendedAction: 'runRestoreDrill',
+            },
+          ],
+        }),
+      }
+    );
+    expect(postOpsReadinessResponse.status).toBe(202);
+    const postedOpsReadiness =
+      (await postOpsReadinessResponse.json()) as ConsoleOpsReadinessResponse;
+    expect(postedOpsReadiness.report?.ready).toBe(false);
+    expect(postedOpsReadiness.report?.issueCount).toBe(1);
 
     const pruneResponse = await app.request(
       'http://localhost/console/prune?instanceId=alpha',

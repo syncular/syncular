@@ -413,7 +413,8 @@ export function createConsoleRoutesContext(
       row.operation_type === 'prune' ||
       row.operation_type === 'compact' ||
       row.operation_type === 'notify_data_change' ||
-      row.operation_type === 'evict_client'
+      row.operation_type === 'evict_client' ||
+      row.operation_type === 'ops_readiness'
         ? row.operation_type
         : 'prune',
     consoleUserId: row.console_user_id ?? null,

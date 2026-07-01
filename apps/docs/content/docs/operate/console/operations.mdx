@@ -5,7 +5,27 @@ description: Run maintenance actions safely with preview, auditability, and part
 
 # Operations
 
-The Ops view contains maintenance controls and an operation audit trail.
+The Ops view contains production readiness, maintenance controls, and an
+operation audit trail.
+
+## Production Readiness
+
+The Production Readiness panel shows the latest `syncular ops check --json`
+report posted to `POST /console/ops/readiness` by your deploy pipeline. It
+keeps the deploy-time facts visible after CI finishes:
+
+- schema readiness
+- restore drill freshness
+- blob consistency
+- credential rotation ownership
+- rate-limit review status
+- Console log/event retention
+- offline support-window sizing
+
+Console stores the report as an `ops_readiness` operation event, omits local
+file paths from the CLI output, and rejects secret-shaped keys before the
+report is recorded. In Console gateway mode, select one instance before the
+panel fetches the report or post the deploy artifact with `?instanceId=<id>`.
 
 ## Actions
 
@@ -52,8 +72,13 @@ Every action is logged with:
 - partition target
 - result summary
 
+`ops_readiness` events are recorded by deploy automation when posting the
+latest ops-check report.
+
 ## Related API pages
 
+- [Ops readiness](/reference/api/getConsoleOpsReadiness)
+- [Post ops readiness](/reference/api/postConsoleOpsReadiness)
 - [Prune preview](/reference/api/postConsolePrunePreview)
 - [Prune](/reference/api/postConsolePrune)
 - [Compact](/reference/api/postConsoleCompact)

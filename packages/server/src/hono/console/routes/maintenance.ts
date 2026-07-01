@@ -25,6 +25,12 @@ import {
   type ConsoleOperationEvent,
   ConsoleOperationEventSchema,
   ConsoleOperationsQuerySchema,
+  ConsoleOpsReadinessIngestSchema,
+  type ConsoleOpsReadinessInput,
+  type ConsoleOpsReadinessReport,
+  ConsoleOpsReadinessReportSchema,
+  type ConsoleOpsReadinessResponse,
+  ConsoleOpsReadinessResponseSchema,
   type ConsolePaginatedResponse,
   ConsolePaginatedResponseSchema,
   type ConsolePrunePreview,
@@ -35,9 +41,38 @@ import {
 import type { ConsoleRoutesContext } from './context';
 import {
   clientIdParamSchema,
+  consoleRouteError,
+  DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES,
   evictClientQuerySchema,
+  findSensitiveDiagnosticField,
   handlersResponseSchema,
+  jsonByteLength,
 } from './shared';
+
+function buildOpsReadinessReport(
+  input: ConsoleOpsReadinessInput
+): ConsoleOpsReadinessReport {
+  return {
+    artifactSchema: 'syncular.ops-readiness.v1',
+    generatedAt: input.generatedAt,
+    environment: input.environment,
+    status: input.status,
+    ready: input.ready,
+    checks: input.checks,
+    issueCount: input.issues.length,
+    issues: input.issues.map((issue) => ({
+      code: issue.code,
+      severity: issue.severity,
+      message: issue.message,
+      recommendedAction: issue.recommendedAction,
+      details: issue.details,
+    })),
+    redaction: {
+      localPaths: 'omitted',
+      sensitiveKeys: 'rejected',
+    },
+  };
+}
 
 export function registerMaintenanceRoutes(ctx: ConsoleRoutesContext): void {
   const {
@@ -48,6 +83,38 @@ export function registerMaintenanceRoutes(ctx: ConsoleRoutesContext): void {
     mapOperationEvent,
     recordOperationEvent,
   } = ctx;
+
+  const readLatestOpsReadiness =
+    async (): Promise<ConsoleOpsReadinessResponse> => {
+      const row = await db
+        .selectFrom('sync_operation_events')
+        .select(operationEventSelectColumns)
+        .where('operation_type', '=', 'ops_readiness')
+        .orderBy('created_at', 'desc')
+        .limit(1)
+        .executeTakeFirst();
+
+      if (!row) {
+        return {
+          available: false,
+          operationId: null,
+          recordedAt: null,
+          report: null,
+        };
+      }
+
+      const operation = mapOperationEvent(row);
+      const report = ConsoleOpsReadinessReportSchema.safeParse(
+        operation.resultPayload
+      );
+
+      return {
+        available: report.success,
+        operationId: operation.operationId,
+        recordedAt: operation.createdAt,
+        report: report.success ? report.data : null,
+      };
+    };
 
   // -------------------------------------------------------------------------
   // GET /handlers
@@ -153,6 +220,112 @@ export function registerMaintenanceRoutes(ctx: ConsoleRoutesContext): void {
 
       c.header('X-Total-Count', String(total));
       return c.json(response, 200);
+    }
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /ops/readiness - Latest production ops readiness report
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/ops/readiness',
+    describeConsoleRoute({
+      summary: 'Get latest production ops readiness report',
+      responses: {
+        200: {
+          description: 'Latest ops readiness report',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleOpsReadinessResponseSchema),
+            },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    async (c) => c.json(await readLatestOpsReadiness(), 200)
+  );
+
+  // -------------------------------------------------------------------------
+  // POST /ops/readiness - Ingest production ops readiness report
+  // -------------------------------------------------------------------------
+
+  routes.post(
+    '/ops/readiness',
+    describeConsoleRoute({
+      summary: 'Ingest production ops readiness report',
+      responses: {
+        202: {
+          description: 'Accepted ops readiness report',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleOpsReadinessResponseSchema),
+            },
+          },
+        },
+        400: {
+          description: 'Invalid request',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('json', ConsoleOpsReadinessIngestSchema),
+    async (c) => {
+      const input = c.req.valid('json');
+      const sensitiveField = findSensitiveDiagnosticField(input);
+      if (sensitiveField) {
+        return consoleRouteError(c, 400, 'console.invalid_request', undefined, {
+          fieldPath: sensitiveField,
+          reason: 'ops_readiness_sensitive_field',
+        });
+      }
+
+      const report = buildOpsReadinessReport(input);
+      const recordBytes = jsonByteLength(report);
+      if (recordBytes > DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES) {
+        return consoleRouteError(c, 400, 'console.invalid_request', undefined, {
+          maxBytes: DEFAULT_CLIENT_DIAGNOSTICS_MAX_JSON_BYTES,
+          actualBytes: recordBytes,
+          reason: 'ops_readiness_report_too_large',
+        });
+      }
+
+      await recordOperationEvent({
+        operationType: 'ops_readiness',
+        consoleUserId: c.var.consoleAuth.consoleUserId,
+        requestPayload: {
+          source: 'syncular.ops.check',
+          generatedAt: input.generatedAt,
+          environment: input.environment,
+          status: input.status,
+          ready: input.ready,
+          issueCount: input.issues.length,
+        },
+        resultPayload: report,
+      });
+
+      logSyncEvent({
+        event: 'console.ops_readiness',
+        consoleUserId: c.var.consoleAuth.consoleUserId,
+        environment: input.environment ?? undefined,
+        ready: input.ready,
+        issueCount: input.issues.length,
+      });
+
+      return c.json(await readLatestOpsReadiness(), 202);
     }
   );
 
