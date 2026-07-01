@@ -506,11 +506,14 @@ read-only review:
     behind another tab; the exported
     `SyncularLocalRecoveryActionLockTimeoutError` reports the action, lock
     name, and timeout, and tests prove the timed-out queued action does not run
-    later after the held lock is released. Production operations docs now add
-    concrete restore drills, blob storage consistency sampling, rate-limit
-    tuning, credential rotation cadence, and upgrade preflight checks so the
-    remaining ops prompts are copyable operator work rather than vague launch
-    advice.
+    later after the held lock is released. The starter now exposes a hidden
+    local-recovery proof marker, and the browser-preview smoke can hold the
+    real recovery Web Lock, prove a support-bundle recovery action times out,
+    release the lock, and prove the same action completes under the acquired
+    lock. Production operations docs now add concrete restore drills, blob
+    storage consistency sampling, rate-limit tuning, credential rotation
+    cadence, and upgrade preflight checks so the remaining ops prompts are
+    copyable operator work rather than vague launch advice.
     `syncular ops check --json` now validates a production evidence file for
     schema readiness, restore drill freshness, external blob consistency,
     credential rotation ownership/cadence, rate-limit review status, Console

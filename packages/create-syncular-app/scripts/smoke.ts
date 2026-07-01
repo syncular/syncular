@@ -16,6 +16,7 @@ import { Buffer } from 'node:buffer';
  *    The browser path also proves pagehide/beforeunload pause evidence,
  *    restored-page and online lifecycle resume signals, two-tab
  *    lock-coordinated lifecycle resume, browser-observed lifecycle Web Lock
+ *    contention timeout/recovery, browser-observed local recovery Web Lock
  *    contention timeout/recovery, two-tab propagation, same-client
  *    page reload/reopen persistence, and
  *    same-profile browser process restart persistence.
@@ -45,6 +46,9 @@ const repoRoot = resolve(join(packageDir, '../..'));
 const STARTER_LIFECYCLE_RESUME_LOCK_NAME =
   'syncular:create-syncular-app:lifecycle-resume';
 const STARTER_LIFECYCLE_RESUME_LOCK_TIMEOUT_MS = 10_000;
+const STARTER_LOCAL_RECOVERY_LOCK_NAME =
+  'syncular:create-syncular-app:local-recovery';
+const STARTER_LOCAL_RECOVERY_LOCK_TIMEOUT_MS = 1_000;
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
 const CDP_CONNECT_TIMEOUT_MS = 10_000;
 const CDP_COMMAND_TIMEOUT_MS = 30_000;
@@ -485,6 +489,12 @@ async function runBrowserPreviewSmoke(args: {
         failureArtifactPath: args.failureArtifactPath,
         session,
       });
+      log('real-browser smoke: proving local recovery lock contention');
+      await proveStarterLocalRecoveryLockContention({
+        failureMetrics: args.failureMetrics,
+        failureArtifactPath: args.failureArtifactPath,
+        session,
+      });
       log('real-browser smoke: creating second Chrome target');
       const secondUrl = `${args.origin}/?syncularClientId=web-second`;
       const secondTarget = await createChromeTarget(
@@ -797,6 +807,17 @@ type BrowserPreviewProbe = {
     shutdownSignalCount: number;
     visibilityState: string | null;
   };
+  localRecoveryProof: {
+    actionKind: string | null;
+    count: number;
+    error: string | null;
+    errorCode: string | null;
+    lockName: string | null;
+    lockRequired: string | null;
+    lockState: string | null;
+    lockTimeoutMs: number | null;
+    status: string | null;
+  };
   starterTimeline: {
     bootstrapReadyMs: number | null;
     bootstrapStatus: string | null;
@@ -955,6 +976,22 @@ async function readStarterBrowserProbe(
     const lifecyclePausePagehidePersisted = lifecycleResume?.getAttribute('data-syncular-lifecycle-pause-pagehide-persisted') ?? null;
     const lifecyclePauseShutdownSignalCount = Number(lifecycleResume?.getAttribute('data-syncular-lifecycle-pause-shutdown-signal-count') ?? 0);
     const lifecyclePauseVisibilityState = lifecycleResume?.getAttribute('data-syncular-lifecycle-pause-visibility-state') ?? null;
+    const localRecoveryProof = document.querySelector('[data-syncular-local-recovery-proof-status]');
+    const localRecoveryProofActionKind = localRecoveryProof?.getAttribute('data-syncular-local-recovery-proof-action-kind') ?? null;
+    const localRecoveryProofCount = Number(localRecoveryProof?.getAttribute('data-syncular-local-recovery-proof-count') ?? 0);
+    const localRecoveryProofError = localRecoveryProof?.getAttribute('data-syncular-local-recovery-proof-error') ?? null;
+    const localRecoveryProofErrorCode = localRecoveryProof?.getAttribute('data-syncular-local-recovery-proof-error-code') ?? null;
+    const localRecoveryProofLockName = localRecoveryProof?.getAttribute('data-syncular-local-recovery-proof-lock-name') ?? null;
+    const localRecoveryProofLockRequired = localRecoveryProof?.getAttribute('data-syncular-local-recovery-proof-lock-required') ?? null;
+    const localRecoveryProofLockState = localRecoveryProof?.getAttribute('data-syncular-local-recovery-proof-lock-state') ?? null;
+    const localRecoveryProofStatus = localRecoveryProof?.getAttribute('data-syncular-local-recovery-proof-status') ?? null;
+    const readLocalRecoveryProofNumber = (name) => {
+      const value = localRecoveryProof?.getAttribute(name) ?? null;
+      if (value === null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    };
+    const localRecoveryProofLockTimeoutMs = readLocalRecoveryProofNumber('data-syncular-local-recovery-proof-lock-timeout-ms');
     const starterTimeline = document.querySelector('[data-syncular-starter-database-open-ms]');
     const readStarterTimelineMs = (name) => {
       const value = starterTimeline?.getAttribute(name) ?? null;
@@ -1024,6 +1061,7 @@ async function readStarterBrowserProbe(
         browserSupportPolicyStatus !== null &&
         deploymentPreflightStatus !== null &&
         lifecycleResumeStatus !== null &&
+        localRecoveryProof !== null &&
         starterTimeline !== null &&
         bootstrapStatus !== null &&
         databaseOpenMs !== null &&
@@ -1120,6 +1158,17 @@ async function readStarterBrowserProbe(
         pagehidePersisted: lifecyclePausePagehidePersisted,
         shutdownSignalCount: lifecyclePauseShutdownSignalCount,
         visibilityState: lifecyclePauseVisibilityState,
+      },
+      localRecoveryProof: {
+        actionKind: localRecoveryProofActionKind === '' ? null : localRecoveryProofActionKind,
+        count: localRecoveryProofCount,
+        error: localRecoveryProofError === '' ? null : localRecoveryProofError,
+        errorCode: localRecoveryProofErrorCode === '' ? null : localRecoveryProofErrorCode,
+        lockName: localRecoveryProofLockName === '' ? null : localRecoveryProofLockName,
+        lockRequired: localRecoveryProofLockRequired,
+        lockState: localRecoveryProofLockState,
+        lockTimeoutMs: localRecoveryProofLockTimeoutMs,
+        status: localRecoveryProofStatus,
       },
       starterTimeline: {
         bootstrapReadyMs,
@@ -1339,6 +1388,226 @@ async function proveStarterLifecycleLockContention(args: {
     session: args.session,
     timeoutReason: 'lifecycle-lock-contention-recovery-timeout',
   });
+}
+
+async function proveStarterLocalRecoveryLockContention(args: {
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  failureArtifactPath: string;
+  session: CdpSession;
+}): Promise<void> {
+  const before = await readStarterBrowserProbe(args.session);
+  const holdResult = await holdStarterLocalRecoveryLock(args.session);
+  if (!holdResult.ok) {
+    await writeBrowserPreviewFailureArtifact(
+      args.failureArtifactPath,
+      'local-recovery-lock-contention-setup-failed',
+      before,
+      args.failureMetrics
+    );
+    throw new Error(
+      `Could not hold built preview local recovery Web Lock (${holdResult.reason}). Failure artifact: ${args.failureArtifactPath}`
+    );
+  }
+
+  let timeoutProbe: BrowserPreviewProbe | null = null;
+  try {
+    await dispatchStarterLocalRecoveryProof(args.session);
+    timeoutProbe = await waitForStarterLocalRecoveryLockTimeout({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: args.session,
+    });
+  } finally {
+    await releaseStarterLocalRecoveryLock(args.session);
+  }
+
+  await dispatchStarterLocalRecoveryProof(args.session);
+  await waitForStarterLocalRecoveryCompletion({
+    expectedCount: (timeoutProbe ?? before).localRecoveryProof.count + 1,
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.session,
+  });
+}
+
+async function dispatchStarterLocalRecoveryProof(
+  session: CdpSession
+): Promise<void> {
+  await session.evaluate(`(() => {
+    window.dispatchEvent(
+      new Event('syncular-starter-run-local-recovery-proof')
+    );
+    return true;
+  })()`);
+}
+
+async function holdStarterLocalRecoveryLock(
+  session: CdpSession
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  return session.evaluate<
+    { ok: true } | { ok: false; reason: string }
+  >(`(async () => {
+    const lockName = ${JSON.stringify(STARTER_LOCAL_RECOVERY_LOCK_NAME)};
+    const locks = globalThis.navigator?.locks;
+    if (typeof locks?.request !== 'function') {
+      return { ok: false, reason: 'web-locks-unavailable' };
+    }
+    const existingRelease =
+      globalThis.__syncularStarterHeldLocalRecoveryLockRelease;
+    if (typeof existingRelease === 'function') {
+      existingRelease();
+      try {
+        await globalThis.__syncularStarterHeldLocalRecoveryLockPromise;
+      } catch {
+        // Ignore cleanup errors from a previous setup attempt.
+      }
+    }
+    globalThis.__syncularStarterHeldLocalRecoveryLockAcquired = false;
+    globalThis.__syncularStarterHeldLocalRecoveryLockPromise = locks.request(
+      lockName,
+      { mode: 'exclusive' },
+      () =>
+        new Promise((resolve) => {
+          globalThis.__syncularStarterHeldLocalRecoveryLockAcquired = true;
+          globalThis.__syncularStarterHeldLocalRecoveryLockRelease = () => {
+            globalThis.__syncularStarterHeldLocalRecoveryLockRelease = null;
+            resolve(true);
+          };
+        })
+    );
+    globalThis.__syncularStarterHeldLocalRecoveryLockPromise.catch(
+      () => undefined
+    );
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      if (
+        globalThis.__syncularStarterHeldLocalRecoveryLockAcquired === true &&
+        typeof globalThis.__syncularStarterHeldLocalRecoveryLockRelease ===
+          'function'
+      ) {
+        return { ok: true };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return { ok: false, reason: 'lock-acquire-timeout' };
+  })()`);
+}
+
+async function releaseStarterLocalRecoveryLock(
+  session: CdpSession
+): Promise<void> {
+  await session.evaluate(`(async () => {
+    const release = globalThis.__syncularStarterHeldLocalRecoveryLockRelease;
+    if (typeof release !== 'function') return true;
+    release();
+    try {
+      await Promise.race([
+        globalThis.__syncularStarterHeldLocalRecoveryLockPromise,
+        new Promise((resolve) => setTimeout(resolve, 1_000)),
+      ]);
+    } catch {
+      // The smoke only needs the lock released; cleanup rejections are nonfatal.
+    }
+    return true;
+  })()`);
+}
+
+async function waitForStarterLocalRecoveryLockTimeout(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<BrowserPreviewProbe> {
+  const deadline = Date.now() + STARTER_LOCAL_RECOVERY_LOCK_TIMEOUT_MS + 7_500;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'local-recovery-lock-contention-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview local recovery lock contention failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    const errorText = probe.localRecoveryProof.error ?? '';
+    if (
+      probe.localRecoveryProof.status === 'failed' &&
+      probe.localRecoveryProof.actionKind === 'export-support-bundle' &&
+      probe.localRecoveryProof.errorCode ===
+        'syncular.local_recovery_web_locks_timeout' &&
+      probe.localRecoveryProof.lockName === STARTER_LOCAL_RECOVERY_LOCK_NAME &&
+      probe.localRecoveryProof.lockState === 'timed-out' &&
+      probe.localRecoveryProof.lockTimeoutMs ===
+        STARTER_LOCAL_RECOVERY_LOCK_TIMEOUT_MS &&
+      errorText.includes('Timed out waiting')
+    ) {
+      return probe;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'local-recovery-lock-contention-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview local recovery Web Lock contention. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+async function waitForStarterLocalRecoveryCompletion(args: {
+  expectedCount: number;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 15_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'local-recovery-completion-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview local recovery completion failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    if (
+      probe.localRecoveryProof.status === 'complete' &&
+      probe.localRecoveryProof.count >= args.expectedCount &&
+      probe.localRecoveryProof.actionKind === 'export-support-bundle' &&
+      probe.localRecoveryProof.lockName === STARTER_LOCAL_RECOVERY_LOCK_NAME &&
+      probe.localRecoveryProof.lockState === 'acquired' &&
+      probe.localRecoveryProof.lockTimeoutMs ===
+        STARTER_LOCAL_RECOVERY_LOCK_TIMEOUT_MS
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'local-recovery-completion-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview local recovery completion. Failure artifact: ${args.failureArtifactPath}`
+  );
 }
 
 async function holdStarterLifecycleResumeLock(
@@ -2197,6 +2466,17 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         shutdownSignalCount: 1,
         visibilityState: 'visible',
       },
+      localRecoveryProof: {
+        actionKind: 'export-support-bundle',
+        count: 2,
+        error: null,
+        errorCode: null,
+        lockName: STARTER_LOCAL_RECOVERY_LOCK_NAME,
+        lockRequired: 'false',
+        lockState: 'acquired',
+        lockTimeoutMs: STARTER_LOCAL_RECOVERY_LOCK_TIMEOUT_MS,
+        status: 'complete',
+      },
       starterTimeline: {
         bootstrapReadyMs: 10,
         bootstrapStatus: 'ready',
@@ -2341,6 +2621,7 @@ function assertBrowserPreviewProbeShape(
   assertBrowserPreviewSupportBundleShape(probe.supportBundle, path);
   assertBrowserPreviewLifecycleResumeShape(probe.lifecycleResume, path);
   assertBrowserPreviewLifecyclePauseShape(probe.lifecyclePause, path);
+  assertBrowserPreviewLocalRecoveryProofShape(probe.localRecoveryProof, path);
   assertBrowserPreviewStarterTimelineShape(probe.starterTimeline, path);
   assertBrowserPreviewStarterOpenShape(probe.starterOpen, path);
   if (
@@ -2662,6 +2943,43 @@ function assertBrowserPreviewLifecyclePauseShape(
         `${path} probe.lifecyclePause.${key} was not a non-negative number`
       );
     }
+  }
+}
+
+function assertBrowserPreviewLocalRecoveryProofShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.localRecoveryProof was not a JSON object`);
+  }
+  for (const key of [
+    'actionKind',
+    'error',
+    'errorCode',
+    'lockName',
+    'lockRequired',
+    'lockState',
+    'status',
+  ] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.localRecoveryProof.${key} was not nullable text`
+      );
+    }
+  }
+  if (!isNonNegativeFiniteNumber(value.count)) {
+    throw new Error(
+      `${path} probe.localRecoveryProof.count was not a non-negative number`
+    );
+  }
+  if (
+    value.lockTimeoutMs !== null &&
+    !isNonNegativeFiniteNumber(value.lockTimeoutMs)
+  ) {
+    throw new Error(
+      `${path} probe.localRecoveryProof.lockTimeoutMs was not nullable non-negative number`
+    );
   }
 }
 

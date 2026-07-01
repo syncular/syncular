@@ -12,6 +12,7 @@ import {
   type SyncularBrowserSupportPolicyEvaluation,
   type SyncularClientStatus,
   type SyncularDiagnosticEvent,
+  type SyncularLocalRecoveryActionLockState,
   type SyncularSchemaReadinessResult,
   type SyncularSupportBundle,
 } from '@syncular/client';
@@ -58,6 +59,18 @@ type StarterTimelinePreview = {
   realtimeStatus: 'pending' | 'connected';
   schemaReadinessMs: number | null;
   supportBundleExportMs: number | null;
+};
+
+type LocalRecoveryProofPreview = {
+  actionKind: string | null;
+  count: number;
+  error: string | null;
+  errorCode: string | null;
+  lockName: string | null;
+  lockRequired: boolean;
+  lockState: SyncularLocalRecoveryActionLockState;
+  lockTimeoutMs: number | null;
+  status: 'idle' | 'running' | 'complete' | 'failed';
 };
 
 type StarterOpenPreview = {
@@ -137,6 +150,18 @@ const initialStarterTimeline: StarterTimelinePreview = {
   supportBundleExportMs: null,
 };
 
+const initialLocalRecoveryProof: LocalRecoveryProofPreview = {
+  actionKind: null,
+  count: 0,
+  error: null,
+  errorCode: null,
+  lockName: null,
+  lockRequired: false,
+  lockState: 'not-requested',
+  lockTimeoutMs: null,
+  status: 'idle',
+};
+
 const initialStarterOpen: StarterOpenPreview = {
   diagnosticCode: null,
   diagnosticCount: 0,
@@ -147,6 +172,9 @@ const initialStarterOpen: StarterOpenPreview = {
 };
 
 const appStartedAtMs = performance.now();
+const starterLocalRecoveryLockName =
+  'syncular:create-syncular-app:local-recovery';
+const starterLocalRecoveryLockTimeoutMs = 1_000;
 
 // One hook set, bound to this app's database schema.
 const {
@@ -546,6 +574,9 @@ function TaskPane({
     useState<SyncularSchemaReadinessResult | null>(null);
   const [supportBundle, setSupportBundle] =
     useState<SupportBundlePreview | null>(null);
+  const [localRecoveryProof, setLocalRecoveryProof] =
+    useState<LocalRecoveryProofPreview>(initialLocalRecoveryProof);
+  const localRecoveryProofRunning = useRef(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -750,6 +781,86 @@ function TaskPane({
     };
   }, [client, reportStarterOpenPhase, updateStarterTimeline]);
 
+  useEffect(() => {
+    const runProof = async () => {
+      if (localRecoveryProofRunning.current) return;
+      localRecoveryProofRunning.current = true;
+      setLocalRecoveryProof((current) => ({
+        ...current,
+        actionKind: 'export-support-bundle',
+        error: null,
+        errorCode: null,
+        lockName: starterLocalRecoveryLockName,
+        lockRequired: false,
+        lockState: 'waiting',
+        lockTimeoutMs: starterLocalRecoveryLockTimeoutMs,
+        status: 'running',
+      }));
+      try {
+        const plan = await client.localRecoveryPlan();
+        const action = plan.actions.find(
+          (candidate) => candidate.kind === 'export-support-bundle'
+        );
+        if (!action) {
+          throw new Error(
+            'Starter local recovery plan had no support bundle action'
+          );
+        }
+        const result = await client.runLocalRecoveryAction(action, {
+          lock: {
+            name: starterLocalRecoveryLockName,
+            timeoutMs: starterLocalRecoveryLockTimeoutMs,
+          },
+        });
+        setLocalRecoveryProof((current) => ({
+          actionKind: result.action,
+          count: current.count + 1,
+          error: null,
+          errorCode: null,
+          lockName:
+            result.coordination.lockName ?? starterLocalRecoveryLockName,
+          lockRequired: result.coordination.lockRequired,
+          lockState: result.coordination.lockState,
+          lockTimeoutMs:
+            result.coordination.lockTimeoutMs ??
+            starterLocalRecoveryLockTimeoutMs,
+          status: 'complete',
+        }));
+      } catch (error) {
+        setLocalRecoveryProof((current) => ({
+          ...current,
+          count: current.count + 1,
+          error: errorMessage(error),
+          errorCode: syncularErrorCode(error),
+          lockName: starterLocalRecoveryLockName,
+          lockRequired: false,
+          lockState:
+            syncularErrorCode(error) ===
+            'syncular.local_recovery_web_locks_timeout'
+              ? 'timed-out'
+              : current.lockState,
+          lockTimeoutMs: starterLocalRecoveryLockTimeoutMs,
+          status: 'failed',
+        }));
+      } finally {
+        localRecoveryProofRunning.current = false;
+      }
+    };
+    const onProof = () => {
+      void runProof();
+    };
+    window.addEventListener(
+      'syncular-starter-run-local-recovery-proof',
+      onProof
+    );
+    return () => {
+      window.removeEventListener(
+        'syncular-starter-run-local-recovery-proof',
+        onProof
+      );
+    };
+  }, [client]);
+
   const rows = tasks ?? [];
   const doneCount = rows.filter((task) => task.completed).length;
   const queued = (outbox?.pending ?? 0) + (outbox?.sending ?? 0);
@@ -822,6 +933,7 @@ function TaskPane({
       {supportBundle ? (
         <SupportBundleLine supportBundle={supportBundle} />
       ) : null}
+      <LocalRecoveryProofMarker localRecoveryProof={localRecoveryProof} />
       <StarterTimelineMarker starterTimeline={starterTimeline} />
 
       <form className="add-row" onSubmit={addTask}>
@@ -858,6 +970,39 @@ function TaskPane({
         {rows.length} task{rows.length === 1 ? '' : 's'} · {doneCount} done
       </p>
     </>
+  );
+}
+
+function LocalRecoveryProofMarker({
+  localRecoveryProof,
+}: {
+  localRecoveryProof: LocalRecoveryProofPreview;
+}) {
+  return (
+    <span
+      data-syncular-local-recovery-proof-action-kind={
+        localRecoveryProof.actionKind ?? ''
+      }
+      data-syncular-local-recovery-proof-count={localRecoveryProof.count}
+      data-syncular-local-recovery-proof-error={localRecoveryProof.error ?? ''}
+      data-syncular-local-recovery-proof-error-code={
+        localRecoveryProof.errorCode ?? ''
+      }
+      data-syncular-local-recovery-proof-lock-name={
+        localRecoveryProof.lockName ?? ''
+      }
+      data-syncular-local-recovery-proof-lock-required={String(
+        localRecoveryProof.lockRequired
+      )}
+      data-syncular-local-recovery-proof-lock-state={
+        localRecoveryProof.lockState
+      }
+      data-syncular-local-recovery-proof-lock-timeout-ms={
+        localRecoveryProof.lockTimeoutMs ?? ''
+      }
+      data-syncular-local-recovery-proof-status={localRecoveryProof.status}
+      hidden
+    />
   );
 }
 

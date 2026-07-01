@@ -1965,6 +1965,15 @@ online propagation, or reconnect behavior can change.
   `SyncularLocalRecoveryActionLockTimeoutError` and the action does not run
   later after the held lock releases. Package README, browser docs, and public
   error-handling docs now show the timeout option.
+- 2026-07-01: Added a starter/browser-observable local recovery lock
+  contention proof. The generated starter now exposes a hidden local-recovery
+  proof marker for the support-bundle recovery action, and the Chrome/CDP
+  built-preview smoke can hold the real browser `local-recovery` Web Lock,
+  verify the action fails with
+  `syncular.local_recovery_web_locks_timeout`, release the lock, rerun the
+  same non-destructive action, and require an acquired/completed coordination
+  marker. Browser failure artifacts now include that marker so a stuck
+  recovery button points at lock contention instead of a generic timeout.
 - 2026-06-30: Extended the Hono-backed browser/WASM local-health test so it
   repairs corrupted subscription state and orphaned verified roots through the
   new local recovery plan/action API instead of direct low-level repair calls.
@@ -2967,6 +2976,31 @@ Most recent starter browser-failure artifact rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
 
+Most recent starter local recovery lock proof rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, runtime asset checks, and
+    deterministic browser failure artifact shape/safe-metrics self-check with
+    the new `probe.localRecoveryProof` section.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available. On browser-capable runners, the starter smoke now
+    holds the real browser local-recovery Web Lock, verifies the
+    non-destructive support-bundle recovery action fails with
+    `syncular.local_recovery_web_locks_timeout`, releases the lock, reruns the
+    same action, and requires an acquired/completed marker.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs`
+  - Passed version and Cargo version stamp dry-runs, docs stale check,
+    JavaScript and Rust fresh-app smokes, `create-syncular-app` smoke with the
+    new local-recovery proof artifact section, Next/Vite/Cloudflare framework
+    smokes, Cloudflare local runtime IO proof, and focused Console ingestion
+    tests for browser-preview and Cloudflare runtime failure artifacts.
+  - Skipped local Chrome/Chromium execution in starter and Vite browser smokes
+    because this machine has no Chrome/Chromium binary. Publish dry-runs were
+    intentionally skipped for this local WP-50 iteration gate.
+
 Most recent live support-bundle failure artifact rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts .github/workflows/checks.yml rust/docs/ROADMAP.md rust/docs/QUALITY_GATES.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
@@ -3543,12 +3577,12 @@ Most recent mutation-status rerun:
     is done for production build and preview asset serving, and the smoke now
     has an opt-in Chrome/Chromium CDP path for executing the built page in a
     real browser. That CDP path now covers lifecycle pause/resume markers,
-    Web Lock acquisition, browser-observed Web Lock timeout/recovery, two-tab
-    propagation, reload/reopen persistence, and same-profile browser-process
-    restart persistence. The Checks workflow now enforces that path in a
-    dedicated Chrome-provisioned starter job for starter-relevant PRs and all
-    pushes; remaining work is to observe the hosted runner and decide whether
-    release rehearsal should also require it.
+    Web Lock acquisition, browser-observed lifecycle and local-recovery Web
+    Lock timeout/recovery, two-tab propagation, reload/reopen persistence, and
+    same-profile browser-process restart persistence. The Checks workflow now
+    enforces that path in a dedicated Chrome-provisioned starter job for
+    starter-relevant PRs and all pushes; remaining work is to observe the
+    hosted runner and decide whether release rehearsal should also require it.
 
 ## Resolved Decisions
 
@@ -3671,12 +3705,16 @@ Most recent mutation-status rerun:
   `browser.web_locks_timeout` with `lockState: "timed-out"`, and the
   Chrome/CDP starter path now holds the real browser lock, observes that
   timeout marker, releases the lock, and proves the next foreground resume can
-  recover. Remaining work is richer browser lifecycle execution: real tab
-  suspension, storage shutdown, quota/eviction, database/recovery lock
-  contention beyond lifecycle resume, and deeper recovery coordination for
-  persistent browser databases beyond simulated page lifecycle events and
-  lock-serialized foreground resume. Local execution of the new contention
-  branch still needs a Chrome-capable runner; this machine has no
+  recover. The starter also exposes a hidden local-recovery proof marker, and
+  the CDP smoke can hold the real browser local-recovery Web Lock, prove a
+  non-destructive support-bundle recovery action times out, release the lock,
+  and prove that the same action completes under the acquired lock. Remaining
+  work is richer browser lifecycle execution: real tab suspension, storage
+  shutdown, quota/eviction, database lock contention beyond the local recovery
+  action coordinator, and deeper recovery coordination for persistent browser
+  databases beyond simulated page lifecycle events and lock-serialized
+  foreground resume/recovery actions. Local execution of the new contention
+  branches still needs a Chrome-capable runner; this machine has no
   Chrome/Chromium binary.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
@@ -3694,8 +3732,11 @@ Most recent mutation-status rerun:
   serialize actions through optional Web Locks, report lock state, or fail
   closed when a required lock is unavailable; bounded lock timeouts now fail
   with a typed timeout error and tests prove a timed-out queued recovery action
-  does not run later. Remaining work is richer browser-process proof:
-  suspended/resumed tabs, hosted/browser-observed recovery lock contention,
+  does not run later. The starter/browser-preview smoke now adds the first
+  browser-observed recovery lock proof by timing out and then completing the
+  non-destructive support-bundle recovery action under the real browser Web
+  Locks API. Remaining work is richer browser-process proof:
+  suspended/resumed tabs, hosted observation of this new recovery-lock branch,
   shutdown, and restart states.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
