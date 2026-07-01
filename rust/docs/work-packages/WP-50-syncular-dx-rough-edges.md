@@ -2383,6 +2383,11 @@ online propagation, or reconnect behavior can change.
   snapshots now expose support tier, persistence, quota pressure, available
   bytes, usage ratio, and service-worker controller context in quick list/detail
   summaries as well as the full diagnostic payload.
+- 2026-07-01: Surfaced browser-preview summaries in the Console client detail
+  runtime panel. Operators can now see built asset counts/bytes,
+  deployment-preflight status, support tier, persistence/quota pressure,
+  service-worker control, and lifecycle resume/pause/Web Lock evidence without
+  opening raw diagnostic JSON.
 - 2026-07-01: Expanded production operations docs beyond the first upgrade
   runbook. Deployment now includes restore-drill steps, blob storage
   consistency sampling, rate-limit tuning, credential rotation cadence, and
@@ -2857,6 +2862,18 @@ Most recent browser-failure Console ingestion rerun:
     preservation, deployment-preflight transport summary preservation,
     lifecycle timing-summary preservation, safe metrics/timing preservation,
     and dropping the artifact page `textExcerpt`.
+
+Most recent browser-failure Console UI summary rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/console tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/console build`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/console/src/pages/ClientDetails.tsx`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `git diff --check`
+  - Passed with the Console client detail runtime panel rendering conditional
+    browser-preview asset, deployment-preflight, service-worker, and lifecycle
+    summary cards from `transportStats` and the latest timing summary. The
+    production build emitted the existing Vite large-chunk warning only.
 
 Most recent starter local-visibility artifact rerun:
 
@@ -3534,7 +3551,10 @@ Most recent mutation-status rerun:
   into a redacted `browser.preview_failure` client diagnostic record without
   storing the artifact page text excerpt, and preserving the browser
   support-policy evaluation alongside deployment-preflight and support-bundle
-  summaries. Cloudflare runtime artifacts now feed Console/Fleet through
+  summaries. The Console client detail runtime panel now renders those quick
+  summaries as asset, deployment-preflight, service-worker, quota, and
+  lifecycle/Web Lock cards so operators do not need raw JSON for the first
+  diagnosis. Cloudflare runtime artifacts now feed Console/Fleet through
   `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
   route, exit, bounded output, and safe blob timing/byte metrics as
   `cloudflare.runtime_failure` diagnostics. Remaining work is to observe the

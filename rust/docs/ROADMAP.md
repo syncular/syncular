@@ -225,6 +225,10 @@ read-only review:
     bootstrap readiness, realtime connection, and generated-mutation local
     visibility, plus deployment-preflight storage/quota status when Chrome/CDP
     is available, including available bytes, usage ratio, and quota pressure.
+    The Console client detail runtime panel now renders those browser-preview
+    asset, deployment-preflight, service-worker, quota, and lifecycle/Web Lock
+    summaries from the stored quick fields, so operators get a first diagnosis
+    without opening raw diagnostic JSON.
     The support-bundle marker also reports redacted runtime
     timeline event counts for sync, realtime, local apply, blob, cursors, and
     request/sync-attempt ids. The same smoke

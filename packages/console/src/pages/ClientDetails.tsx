@@ -70,6 +70,27 @@ function numberField(
   return null;
 }
 
+function objectField(
+  record: Record<string, unknown> | null | undefined,
+  key: string
+): Record<string, unknown> | null {
+  const value = record?.[key];
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return value as Record<string, unknown>;
+  }
+  return null;
+}
+
+function hasAnyField(
+  record: Record<string, unknown> | null | undefined,
+  fields: string[]
+): boolean {
+  return fields.some((field) => {
+    const value = record?.[field];
+    return value !== null && value !== undefined && value !== '';
+  });
+}
+
 function formatNumber(value: number | null | undefined): string {
   if (value === null || value === undefined || !Number.isFinite(value)) {
     return '--';
@@ -82,6 +103,14 @@ function formatDurationMs(value: number | null | undefined): string {
     return '--';
   }
   return `${value.toFixed(value >= 10 ? 0 : 1)}ms`;
+}
+
+function formatPercent(value: number | null | undefined): string {
+  if (value === null || value === undefined || !Number.isFinite(value)) {
+    return '--';
+  }
+  const percent = value <= 1 ? value * 100 : value;
+  return `${percent.toFixed(percent >= 10 ? 1 : 2)}%`;
 }
 
 function formatBytes(value: number | null | undefined): string {
@@ -499,7 +528,43 @@ function ClientRuntimeDiagnostics({
     : (runtime?.storage ?? '--');
   const latestTiming =
     diagnostics.recentSyncTimings[diagnostics.recentSyncTimings.length - 1] ??
-    null;
+    objectField(diagnostics.timingSummary, 'latest');
+  const hasBrowserAssetSummary = hasAnyField(transport, [
+    'assetCount',
+    'totalAssetBytes',
+    'browserSupportPolicyMarkerInAssets',
+    'deploymentPreflightMarkerInAssets',
+    'lifecycleResumeMarkerInAssets',
+    'starterTimelineMarkerInAssets',
+    'supportBundleMarkerInAssets',
+  ]);
+  const hasBrowserDeploymentSummary = hasAnyField(transport, [
+    'deploymentPreflightStatus',
+    'deploymentPreflightSupportTier',
+    'deploymentPreflightPersistence',
+    'deploymentPreflightQuotaPressure',
+    'deploymentPreflightAvailableBytes',
+    'deploymentPreflightQuotaBytes',
+    'deploymentPreflightUsageBytes',
+    'deploymentPreflightUsageRatio',
+    'serviceWorker',
+    'serviceWorkerControlled',
+    'serviceWorkerControllerState',
+    'serviceWorkerControllerScriptPath',
+  ]);
+  const hasBrowserLifecycleSummary = hasAnyField(latestTiming, [
+    'lifecycleResumeCount',
+    'lifecycleResumeStatus',
+    'lifecycleResumeReason',
+    'lifecycleResumeLockName',
+    'lifecycleResumeLockRequired',
+    'lifecycleResumeLockState',
+    'lifecycleResumeLockTimeoutMs',
+    'lifecyclePauseCount',
+    'lifecyclePauseReason',
+    'lifecyclePauseVisibilityState',
+    'lifecycleShutdownSignalCount',
+  ]);
   const recentDiagnostics = [...diagnostics.recentDiagnostics]
     .slice(-8)
     .reverse();
@@ -652,6 +717,139 @@ function ClientRuntimeDiagnostics({
             detail={`${formatNumber(numberField(latestTiming, 'snapshotArtifactCheckpointCount'))} checkpoints`}
           />
         </div>
+
+        {hasBrowserAssetSummary ? (
+          <div className="mt-4">
+            <p className="font-mono text-[10px] text-neutral-500 uppercase tracking-wide">
+              Browser Preview Assets
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-3">
+              <Metric
+                label="Assets"
+                value={formatNumber(numberField(transport, 'assetCount'))}
+                detail={`${formatNumber(numberField(transport, 'jsAssetCount'))} js / ${formatNumber(numberField(transport, 'cssAssetCount'))} css`}
+              />
+              <Metric
+                label="Asset Bytes"
+                value={formatBytes(numberField(transport, 'totalAssetBytes'))}
+                detail={`${formatBytes(numberField(transport, 'jsAssetBytes'))} js`}
+              />
+              <Metric
+                label="Preflight Marker"
+                value={stringField(
+                  transport,
+                  'deploymentPreflightMarkerInAssets'
+                )}
+                detail={`support ${stringField(transport, 'browserSupportPolicyMarkerInAssets')}`}
+              />
+              <Metric
+                label="Runtime Markers"
+                value={`timeline ${stringField(transport, 'starterTimelineMarkerInAssets')}`}
+                detail={`bundle ${stringField(transport, 'supportBundleMarkerInAssets')}`}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        {hasBrowserDeploymentSummary ? (
+          <div className="mt-4">
+            <p className="font-mono text-[10px] text-neutral-500 uppercase tracking-wide">
+              Browser Deployment Preflight
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-3">
+              <Metric
+                label="Preflight"
+                value={stringField(transport, 'deploymentPreflightStatus')}
+                detail={stringField(
+                  transport,
+                  'deploymentPreflightSupportTier'
+                )}
+                intent={
+                  stringField(transport, 'deploymentPreflightStatus') !==
+                  'ready'
+                }
+              />
+              <Metric
+                label="Persistence"
+                value={stringField(transport, 'deploymentPreflightPersistence')}
+                detail={`quota ${stringField(transport, 'deploymentPreflightQuotaPressure')}`}
+                intent={
+                  stringField(transport, 'deploymentPreflightPersistence') ===
+                  'memory'
+                }
+              />
+              <Metric
+                label="Available"
+                value={formatBytes(
+                  numberField(transport, 'deploymentPreflightAvailableBytes')
+                )}
+                detail={`min ${formatBytes(numberField(transport, 'deploymentPreflightMinimumAvailableBytes'))}`}
+              />
+              <Metric
+                label="Usage"
+                value={formatPercent(
+                  numberField(transport, 'deploymentPreflightUsageRatio')
+                )}
+                detail={`${formatBytes(numberField(transport, 'deploymentPreflightUsageBytes'))} / ${formatBytes(numberField(transport, 'deploymentPreflightQuotaBytes'))}`}
+              />
+              <Metric
+                label="Service Worker"
+                value={`controlled ${stringField(transport, 'serviceWorkerControlled')}`}
+                detail={`state ${stringField(transport, 'serviceWorkerControllerState')}`}
+                intent={
+                  stringField(transport, 'serviceWorkerControlled') === 'false'
+                }
+              />
+              <Metric
+                label="Controller"
+                value={stringField(
+                  transport,
+                  'serviceWorkerControllerScriptPath'
+                )}
+                detail={`available ${stringField(transport, 'serviceWorker')}`}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        {hasBrowserLifecycleSummary ? (
+          <div className="mt-4">
+            <p className="font-mono text-[10px] text-neutral-500 uppercase tracking-wide">
+              Browser Lifecycle
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-3">
+              <Metric
+                label="Resume"
+                value={stringField(latestTiming, 'lifecycleResumeStatus')}
+                detail={`${stringField(latestTiming, 'lifecycleResumeReason')} / ${formatNumber(numberField(latestTiming, 'lifecycleResumeCount'))}x`}
+                intent={
+                  stringField(latestTiming, 'lifecycleResumeStatus') === 'error'
+                }
+              />
+              <Metric
+                label="Resume Lock"
+                value={stringField(latestTiming, 'lifecycleResumeLockState')}
+                detail={`${stringField(latestTiming, 'lifecycleResumeLockRequired')} required / ${formatDurationMs(numberField(latestTiming, 'lifecycleResumeLockTimeoutMs'))}`}
+                intent={
+                  stringField(latestTiming, 'lifecycleResumeLockState') ===
+                  'timed-out'
+                }
+              />
+              <Metric
+                label="Pause"
+                value={stringField(latestTiming, 'lifecyclePauseReason')}
+                detail={`${stringField(latestTiming, 'lifecyclePauseVisibilityState')} / ${formatNumber(numberField(latestTiming, 'lifecyclePauseCount'))}x`}
+              />
+              <Metric
+                label="Shutdown"
+                value={formatNumber(
+                  numberField(latestTiming, 'lifecycleShutdownSignalCount')
+                )}
+                detail={stringField(latestTiming, 'lifecycleResumeLockName')}
+              />
+            </div>
+          </div>
+        ) : null}
       </PanelShell>
 
       <PanelShell
