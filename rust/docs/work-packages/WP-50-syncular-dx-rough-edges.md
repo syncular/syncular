@@ -1743,6 +1743,11 @@ online propagation, or reconnect behavior can change.
   Vite preview and waits for the browser-executed
   `data-syncular-vite-root-import="ready"` marker; release rehearsal can make
   that path mandatory with `--require-framework-vite-browser-runtime`.
+- 2026-07-01: Added a deterministic Vite browser-runtime failure artifact
+  self-check to `framework-import-smokes`. The production-preview HTTP proof
+  now writes, validates, reads, and removes a synthetic
+  `vite-browser-runtime-failure.self-check.json`, while Chrome/CDP failures
+  still write the real `vite-browser-runtime-failure.json` artifact.
 - 2026-07-01: Extended the Vite framework smoke from bundle inspection to
   production-preview serving proof. After `vite build`, the smoke starts
   `vite preview` on a free localhost port, fetches the built HTML, verifies it
@@ -2162,6 +2167,8 @@ Most recent framework-import-smoke rerun:
   - Passed the Vite 8 browser production build proof.
   - Passed the Vite production-preview HTTP proof for the built HTML and
     served JavaScript bundle marker.
+  - Passed the deterministic Vite browser-runtime failure artifact shape
+    self-check.
   - Skipped the optional Vite Chrome/CDP browser-runtime proof because no
     Chrome/Chromium binary was available on this local machine.
   - Passed the Wrangler dry-run Cloudflare Durable Object + D1 schema/authz +
@@ -2178,8 +2185,9 @@ Most recent framework-import-smoke rerun:
     details, and Durable Object WebSocket echo.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts --require-vite-browser-runtime`
   - Expected nonzero status locally because Chrome/Chromium is unavailable;
-    confirms the required Vite browser-runtime path fails loudly instead of
-    accepting a skipped browser proof.
+    confirms the required Vite browser-runtime path fails loudly after the
+    Next build, Vite build, preview HTTP proof, and Vite failure artifact
+    self-check instead of accepting a skipped browser proof.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke`
   - Confirmed release rehearsal still runs the framework smoke by default and
     returns cleanly after the Vite preview HTTP proof, optional local Chrome
@@ -2482,8 +2490,9 @@ Most recent mutation-status rerun:
   roots from source and verifies the WASM glue dynamic import path is
   warning-clean under webpack, and a Vite 8 browser production-build smoke
   that follows browser-conditioned package exports for the client root and
-  serves the built HTML/JavaScript through Vite preview, with an optional
-  Chrome/CDP execution path that observes the browser root import marker.
+  serves the built HTML/JavaScript through Vite preview, self-checks the Vite
+  browser-runtime failure artifact shape, and has an optional Chrome/CDP
+  execution path that observes the browser root import marker.
   The Cloudflare smoke now declares `SYNC_DO`, D1, and R2 bindings, aliases
   the Syncular server/core subpaths to workspace source, bundles
   `@syncular/server/cloudflare`, `@syncular/server/d1`,

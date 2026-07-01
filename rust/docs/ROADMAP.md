@@ -166,6 +166,10 @@ read-only review:
     message through a Durable Object WebSocket route. WASM glue dynamic
     imports include webpack
     ignore metadata so the Next build stays warning-clean.
+    The Vite production-preview proof now self-checks the browser-runtime
+    failure artifact shape without requiring Chrome, while Chrome-capable
+    runners can still execute the page and upload the real artifact on
+    timeout.
     Release rehearsal runs the framework import smoke by default before
     publish dry-runs, with an explicit skip flag for local iteration and an
     opt-in `--require-framework-vite-browser-runtime` flag for Chrome-capable

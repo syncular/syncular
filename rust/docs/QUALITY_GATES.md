@@ -166,6 +166,10 @@ bun run --cwd packages/client tsgo
 bun run --cwd packages/testkit tsgo
 ```
 
+`framework-import-smokes` also self-checks the Vite browser-runtime failure
+artifact shape after the production-preview HTTP proof, so non-Chrome runners
+still cover the failure JSON contract before the optional Chrome/CDP path.
+
 On Chrome-capable release or CI runners, make the Vite framework browser
 execution path mandatory:
 

@@ -212,6 +212,7 @@ async function runVitePreviewRuntimeProbe(args: {
       getExit: () => exited,
     });
     console.log('[framework-import-smokes] Vite preview serving smoke passed');
+    await verifyViteBrowserRuntimeFailureArtifactSelfCheck(args.appDir);
     await maybeRunViteBrowserRuntimeSmoke({
       origin: baseUrl,
       workDir: args.appDir,
@@ -381,6 +382,12 @@ type ViteBrowserRuntimeProbe = {
   readyState: string;
 };
 
+type ViteBrowserRuntimeFailureArtifact = {
+  generatedAt: string;
+  reason: string;
+  probe: ViteBrowserRuntimeProbe | null;
+};
+
 async function readViteBrowserRuntimeProbe(
   session: CdpSession
 ): Promise<ViteBrowserRuntimeProbe> {
@@ -430,19 +437,84 @@ async function writeViteBrowserRuntimeFailureArtifact(
   reason: string,
   probe: ViteBrowserRuntimeProbe | null
 ): Promise<void> {
-  await writeFile(
+  const artifact: ViteBrowserRuntimeFailureArtifact = {
+    generatedAt: new Date().toISOString(),
+    reason,
+    probe,
+  };
+  assertViteBrowserRuntimeFailureArtifactShape(artifact, path);
+  await writeFile(path, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
+}
+
+async function verifyViteBrowserRuntimeFailureArtifactSelfCheck(
+  appDir: string
+): Promise<void> {
+  const path = join(appDir, 'vite-browser-runtime-failure.self-check.json');
+  await writeViteBrowserRuntimeFailureArtifact(
     path,
-    `${JSON.stringify(
-      {
-        generatedAt: new Date().toISOString(),
-        reason,
-        probe,
-      },
-      null,
-      2
-    )}\n`,
-    'utf8'
+    'vite-browser-runtime-artifact-self-check',
+    {
+      appHtml:
+        '<div id="app" data-syncular-vite-root-import="ready">ready</div>',
+      bodyText: 'Syncular Vite root import ready',
+      href: 'http://127.0.0.1:5173/',
+      marker: 'ready',
+      readyState: 'complete',
+    }
   );
+  const artifact = JSON.parse(await Bun.file(path).text()) as unknown;
+  assertViteBrowserRuntimeFailureArtifactShape(artifact, path);
+  await rm(path, { force: true });
+  console.log(
+    '[framework-import-smokes] Vite browser runtime failure artifact shape check passed'
+  );
+}
+
+function assertViteBrowserRuntimeFailureArtifactShape(
+  artifact: unknown,
+  path: string
+): asserts artifact is ViteBrowserRuntimeFailureArtifact {
+  if (!isRecord(artifact)) {
+    throw new Error(`${path} did not contain a JSON object`);
+  }
+  if (
+    typeof artifact.generatedAt !== 'string' ||
+    Number.isNaN(Date.parse(artifact.generatedAt))
+  ) {
+    throw new Error(`${path} had an invalid generatedAt value`);
+  }
+  if (
+    typeof artifact.reason !== 'string' ||
+    artifact.reason.trim().length === 0
+  ) {
+    throw new Error(`${path} had an invalid reason value`);
+  }
+  if (artifact.probe !== null) {
+    assertViteBrowserRuntimeProbeShape(artifact.probe, path);
+  }
+}
+
+function assertViteBrowserRuntimeProbeShape(
+  probe: unknown,
+  path: string
+): asserts probe is ViteBrowserRuntimeProbe {
+  if (!isRecord(probe)) {
+    throw new Error(`${path} probe was not a JSON object`);
+  }
+  for (const key of ['appHtml', 'marker'] as const) {
+    if (probe[key] !== null && typeof probe[key] !== 'string') {
+      throw new Error(`${path} probe.${key} was not nullable text`);
+    }
+  }
+  for (const key of ['bodyText', 'href', 'readyState'] as const) {
+    if (typeof probe[key] !== 'string') {
+      throw new Error(`${path} probe.${key} was not text`);
+    }
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 type CdpResponse = {
