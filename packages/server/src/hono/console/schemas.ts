@@ -563,6 +563,8 @@ const ConsoleBrowserPreviewFailureProbeSchema = z
         observedSupportTier: ConsoleBrowserPreviewFailureNullableStringSchema,
         policy: ConsoleBrowserPreviewFailureNullableStringSchema,
         preflightRequired: ConsoleBrowserPreviewFailureNullableStringSchema,
+        reasonCodes: z.array(z.string()).default([]),
+        reasonCount: z.number().int().nonnegative().optional(),
         status: ConsoleBrowserPreviewFailureNullableStringSchema,
       })
       .passthrough()

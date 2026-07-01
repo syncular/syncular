@@ -283,7 +283,8 @@ read-only review:
     `evaluateSyncularBrowserSupportPolicy(...)` now ties that policy to
     observed deployment preflight results, and the starter's hidden smoke
     marker plus `browser-preview-failure.json` artifact carry the
-    expected-vs-observed browser support status through Console ingestion.
+    expected-vs-observed browser support status and stable policy reason codes
+    through Console ingestion.
     Cloudflare local-runtime failure artifacts now feed Console/Fleet through
     `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
     route, exit, bounded output, and safe R2 blob timing/byte metrics as

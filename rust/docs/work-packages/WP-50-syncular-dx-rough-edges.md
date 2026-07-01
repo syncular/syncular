@@ -1330,6 +1330,13 @@ online propagation, or reconnect behavior can change.
   starter records that expected-vs-observed policy result in its hidden smoke
   marker and `browser-preview-failure.json`, and Console/Fleet preserves the
   redacted policy status when ingesting starter browser artifacts.
+- Browser support policy evaluations now include stable
+  `browser_support.*` reason codes. The starter records those codes in its
+  hidden smoke marker and `browser-preview-failure.json`, so app diagnostics
+  and hosted artifacts can distinguish missing preflight evidence,
+  target-host evidence gaps, persistence mismatches, production-readiness gaps,
+  development-only contexts, unsupported contexts, and a fully met policy
+  without parsing prose.
 - The starter now calls browser deployment preflight before opening
   `createSyncularAppDatabase(...)`, using the generated required runtime
   feature list and its configured IndexedDB storage expectation. The scaffold
@@ -1932,6 +1939,12 @@ online propagation, or reconnect behavior can change.
   `unknown` with persistence mode, production readiness, issue codes, and
   recommended actions. The starter error, package README, public browser docs,
   and support-bundle tests now use the same support-tier vocabulary.
+- 2026-07-01: Added policy-level `browser_support.*` reason codes to
+  `evaluateSyncularBrowserSupportPolicy(...)` and threaded them into the
+  `create-syncular-app` hidden support-policy marker and
+  `browser-preview-failure.json` self-check. This separates deployment
+  capability issue codes from product-policy verdict reasons in browser
+  artifacts.
 - 2026-07-01: Added `packages/client/src/runtime-timeline.ts`, exported
   `getSyncularRuntimeTimeline(...)` from `@syncular/client`, and added
   `SyncularDatabase.runtimeTimeline(...)` as a managed database method. The
@@ -2452,18 +2465,26 @@ Most recent browser support-matrix rerun:
 
 Most recent browser support-policy artifact rerun:
 
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-support-matrix.test.ts packages/client/src/public-api.test.ts`
+- `gh run list --repo syncular/syncular --workflow checks.yml --limit 10 --json databaseId,displayTitle,headBranch,headSha,status,conclusion,createdAt,updatedAt,event,url`
+- `gh api repos/syncular/syncular/actions/runs/<run-id>/jobs --paginate --jq '.jobs[] | {name, conclusion, status, html_url}'`
+  - Confirmed recent `main` Checks runs did not contain
+    `starter-browser-preview`; `git show origin/main:.github/workflows/checks.yml`
+    also lacks the job, while `HEAD` contains it.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-support-matrix.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-routes.test.ts`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/core tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run generate:openapi`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, built asset checks,
-    browser support-policy marker checks, and failure-artifact self-checks.
+    browser support-policy marker reason-code checks, and failure-artifact
+    self-checks.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available.
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-support-matrix.ts packages/client/src/browser-support-matrix.test.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/routes/shared.ts packages/server/src/hono/__tests__/console-routes.test.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-support-matrix.ts packages/client/src/browser-support-matrix.test.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts packages/server/src/hono/console/schemas.ts packages/server/src/hono/__tests__/console-routes.test.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -3079,9 +3100,13 @@ Most recent mutation-status rerun:
   `starter-browser-preview` job that installs Chrome and requires this path on
   starter-relevant PRs and all pushes. Release rehearsal now runs the starter
   built-preview smoke by default and can require the Chrome/CDP path with
-  `--require-starter-browser-preview`. Remaining work is to observe the new CI
-  job on hosted runners and decide whether that strict release flag should be
-  mandatory for every stable release.
+  `--require-starter-browser-preview`. Current hosted observation: `gh run
+  list --repo syncular/syncular --workflow checks.yml` plus raw run job reads
+  on 2026-07-01 showed no `starter-browser-preview` job in recent `main` runs
+  because `origin/main` does not yet contain the workflow job. Remaining work
+  is to observe the job after this branch is pushed/merged and then decide
+  whether that strict release flag should be mandatory for every stable
+  release.
 - Adapter import side-effect isolation: the first root import graph smoke now
   proves root client/server imports do not statically reach optional Bun,
   Cloudflare, S3, Sentry, Neon, Tauri, React Native, or CRDT/Yjs subpaths.
@@ -3255,9 +3280,9 @@ Most recent mutation-status rerun:
   deployment-preflight storage/quota facts so browser failures can separate
   quota, persistence, and support-tier problems from sync lifecycle failures.
   Browser preview artifacts now also carry the expected-vs-observed browser
-  support-policy status for the starter's Chrome/Chromium context, which lets
-  Console/Fleet distinguish "preflight incomplete" from "support policy not
-  met" without user-agent sniffing.
+  support-policy status and reason codes for the starter's Chrome/Chromium
+  context, which lets Console/Fleet distinguish "preflight incomplete" from
+  "support policy not met" without user-agent sniffing or prose parsing.
   The support-bundle marker now adds redacted runtime timeline counts for
   sync, realtime, local-apply, blob, cursors, request ids, sync-attempt ids,
   and latest phase codes, and refreshes on row changes. The Chrome/CDP path

@@ -261,9 +261,9 @@ async function verifyBuiltPreviewAssets(
       sawLifecycleResumeMarker ||=
         assetBody.includes('data-syncular-lifecycle-resume-status') &&
         assetBody.includes('data-syncular-lifecycle-resume-lock-state');
-      sawBrowserSupportPolicyMarker ||= assetBody.includes(
-        'data-syncular-browser-support-policy-status'
-      );
+      sawBrowserSupportPolicyMarker ||=
+        assetBody.includes('data-syncular-browser-support-policy-status') &&
+        assetBody.includes('data-syncular-browser-support-policy-reason-count');
       sawDeploymentPreflightMarker ||= assetBody.includes(
         'data-syncular-deployment-preflight-status'
       );
@@ -522,6 +522,8 @@ type BrowserPreviewProbe = {
     observedSupportTier: string | null;
     policy: string | null;
     preflightRequired: string | null;
+    reasonCodes: string[];
+    reasonCount: number;
     status: string | null;
   };
   supportBundle: {
@@ -652,6 +654,9 @@ async function readStarterBrowserProbe(
     const browserSupportPolicyObservedSupportTier = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-observed-support-tier') ?? null;
     const browserSupportPolicyPolicy = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-policy') ?? null;
     const browserSupportPolicyPreflightRequired = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-preflight-required') ?? null;
+    const browserSupportPolicyReasonCodesText = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-reason-codes') ?? '';
+    const browserSupportPolicyReasonCodes = browserSupportPolicyReasonCodesText === '' ? [] : browserSupportPolicyReasonCodesText.split(',').filter(Boolean);
+    const browserSupportPolicyReasonCount = Number(browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-reason-count') ?? browserSupportPolicyReasonCodes.length);
     const browserSupportPolicyStatus = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-status') ?? null;
     const lifecycleResume = document.querySelector('[data-syncular-lifecycle-resume-status]');
     const lifecycleResumeStatus = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-status') ?? null;
@@ -764,6 +769,8 @@ async function readStarterBrowserProbe(
         observedSupportTier: browserSupportPolicyObservedSupportTier,
         policy: browserSupportPolicyPolicy,
         preflightRequired: browserSupportPolicyPreflightRequired,
+        reasonCodes: browserSupportPolicyReasonCodes,
+        reasonCount: browserSupportPolicyReasonCount,
         status: browserSupportPolicyStatus,
       },
       supportBundle: {
@@ -1179,6 +1186,8 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         observedSupportTier: 'persistent-offline',
         policy: 'supported-after-preflight',
         preflightRequired: 'true',
+        reasonCodes: ['browser_support.policy_met'],
+        reasonCount: 1,
         status: 'met',
       },
       supportBundle: {
@@ -1455,12 +1464,25 @@ function assertBrowserPreviewSupportPolicyShape(
   if (!isRecord(value)) {
     throw new Error(`${path} probe.browserSupportPolicy was not a JSON object`);
   }
-  for (const key of ['actionCount', 'issueCount'] as const) {
+  for (const key of ['actionCount', 'issueCount', 'reasonCount'] as const) {
     if (!isNonNegativeFiniteNumber(value[key])) {
       throw new Error(
         `${path} probe.browserSupportPolicy.${key} was not a non-negative number`
       );
     }
+  }
+  if (
+    !Array.isArray(value.reasonCodes) ||
+    !value.reasonCodes.every((reasonCode) => typeof reasonCode === 'string')
+  ) {
+    throw new Error(
+      `${path} probe.browserSupportPolicy.reasonCodes was not a text array`
+    );
+  }
+  if (value.reasonCount !== value.reasonCodes.length) {
+    throw new Error(
+      `${path} probe.browserSupportPolicy.reasonCount did not match reasonCodes length`
+    );
   }
   for (const key of [
     'context',

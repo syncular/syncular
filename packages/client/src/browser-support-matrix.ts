@@ -41,6 +41,19 @@ export type SyncularBrowserSupportPolicyEvaluationStatus =
   | 'not-met'
   | 'not-applicable';
 
+export type SyncularBrowserSupportPolicyReasonCode =
+  | 'browser_support.development_only_context'
+  | 'browser_support.development_only_mismatch'
+  | 'browser_support.persistence_mismatch'
+  | 'browser_support.policy_met'
+  | 'browser_support.preflight_missing'
+  | 'browser_support.preflight_not_ready'
+  | 'browser_support.production_ready_missing'
+  | 'browser_support.support_tier_mismatch'
+  | 'browser_support.target_evidence_required'
+  | 'browser_support.unsupported_context'
+  | 'browser_support.unsupported_tier';
+
 export interface SyncularBrowserSupportPolicyEvaluation {
   context: SyncularBrowserSupportContext;
   label: string;
@@ -54,6 +67,7 @@ export interface SyncularBrowserSupportPolicyEvaluation {
   preflightStatus: SyncularBrowserDeploymentPreflight['status'] | null;
   productionReady: boolean | null;
   issueCodes: readonly SyncularBrowserDeploymentPreflightIssueCode[];
+  reasonCodes: readonly SyncularBrowserSupportPolicyReasonCode[];
   recommendedActions: readonly SyncularBrowserDeploymentPreflightRecommendedAction[];
   summary: string;
 }
@@ -340,11 +354,16 @@ export function evaluateSyncularBrowserSupportPolicy(
   const preflightStatus = preflight?.status ?? null;
   const productionReady = preflight?.support.productionReady ?? null;
   const issueCodes = preflight?.support.issueCodes ?? [];
+  const status = evaluateBrowserSupportPolicyStatus(policy, preflight);
+  const reasonCodes = evaluateBrowserSupportPolicyReasonCodes({
+    policy,
+    preflight,
+    status,
+  });
   const recommendedActions = uniqueBrowserSupportRecommendedActions([
     ...(preflight?.support.recommendedActions ?? []),
     ...policy.recommendedActions,
   ]);
-  const status = evaluateBrowserSupportPolicyStatus(policy, preflight);
   return {
     context: policy.context,
     label: policy.label,
@@ -358,6 +377,7 @@ export function evaluateSyncularBrowserSupportPolicy(
     preflightStatus,
     productionReady,
     issueCodes,
+    reasonCodes,
     recommendedActions,
     summary: summarizeBrowserSupportPolicyEvaluation({
       policy,
@@ -416,6 +436,69 @@ function evaluateBrowserSupportPolicyStatus(
   return preflight.support.productionReady ? 'met' : 'warning';
 }
 
+function evaluateBrowserSupportPolicyReasonCodes(args: {
+  policy: SyncularBrowserSupportMatrixEntry;
+  preflight?: SyncularBrowserDeploymentPreflight | null;
+  status: SyncularBrowserSupportPolicyEvaluationStatus;
+}): SyncularBrowserSupportPolicyReasonCode[] {
+  const reasons: SyncularBrowserSupportPolicyReasonCode[] = [];
+
+  if (args.policy.policy === 'unsupported') {
+    reasons.push('browser_support.unsupported_context');
+    return reasons;
+  }
+
+  if (!args.preflight) {
+    reasons.push('browser_support.preflight_missing');
+    return reasons;
+  }
+
+  if (args.preflight.status === 'not-ready') {
+    reasons.push('browser_support.preflight_not_ready');
+  }
+  if (args.preflight.support.tier === 'unsupported') {
+    reasons.push('browser_support.unsupported_tier');
+  }
+
+  if (args.policy.policy === 'development-only') {
+    reasons.push(
+      args.status === 'met'
+        ? 'browser_support.development_only_context'
+        : 'browser_support.development_only_mismatch'
+    );
+    return uniqueBrowserSupportReasonCodes(reasons);
+  }
+
+  if (args.policy.expectedSupportTier === 'unknown') {
+    reasons.push('browser_support.target_evidence_required');
+  } else if (args.preflight.support.tier !== args.policy.expectedSupportTier) {
+    reasons.push('browser_support.support_tier_mismatch');
+  }
+
+  if (
+    args.policy.expectedPersistence === 'persistent' &&
+    args.preflight.support.persistence !== 'persistent'
+  ) {
+    reasons.push('browser_support.persistence_mismatch');
+  }
+
+  if (
+    args.policy.expectedSupportTier !== 'unknown' &&
+    args.preflight.support.tier === args.policy.expectedSupportTier &&
+    args.policy.expectedPersistence === 'persistent' &&
+    args.preflight.support.persistence === 'persistent' &&
+    !args.preflight.support.productionReady
+  ) {
+    reasons.push('browser_support.production_ready_missing');
+  }
+
+  if (reasons.length === 0 && args.status === 'met') {
+    reasons.push('browser_support.policy_met');
+  }
+
+  return uniqueBrowserSupportReasonCodes(reasons);
+}
+
 function summarizeBrowserSupportPolicyEvaluation(args: {
   policy: SyncularBrowserSupportMatrixEntry;
   preflight?: SyncularBrowserDeploymentPreflight | null;
@@ -440,4 +523,10 @@ function uniqueBrowserSupportRecommendedActions(
   actions: readonly SyncularBrowserDeploymentPreflightRecommendedAction[]
 ): SyncularBrowserDeploymentPreflightRecommendedAction[] {
   return [...new Set(actions)];
+}
+
+function uniqueBrowserSupportReasonCodes(
+  reasonCodes: readonly SyncularBrowserSupportPolicyReasonCode[]
+): SyncularBrowserSupportPolicyReasonCode[] {
+  return [...new Set(reasonCodes)];
 }

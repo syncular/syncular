@@ -71,6 +71,7 @@ type BrowserSupportPolicyPreview = {
   observedSupportTier: SyncularBrowserSupportPolicyEvaluation['observedSupportTier'];
   policy: SyncularBrowserSupportPolicyEvaluation['policy'];
   preflightRequired: boolean;
+  reasonCodes: readonly string[];
   status: SyncularBrowserSupportPolicyEvaluation['status'];
 };
 
@@ -731,6 +732,7 @@ function summarizeBrowserSupportPolicy(
     observedSupportTier: evaluation.observedSupportTier,
     policy: evaluation.policy,
     preflightRequired: evaluation.preflightRequired,
+    reasonCodes: evaluation.reasonCodes,
     status: evaluation.status,
   };
 }
@@ -767,6 +769,12 @@ function BrowserSupportPolicyMarker({
         browserSupportPolicy.preflightRequired
       )}
       data-syncular-browser-support-policy-policy={browserSupportPolicy.policy}
+      data-syncular-browser-support-policy-reason-codes={browserSupportPolicy.reasonCodes.join(
+        ','
+      )}
+      data-syncular-browser-support-policy-reason-count={
+        browserSupportPolicy.reasonCodes.length
+      }
       data-syncular-browser-support-policy-status={browserSupportPolicy.status}
       hidden
     />

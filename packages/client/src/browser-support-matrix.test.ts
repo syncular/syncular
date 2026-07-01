@@ -126,6 +126,7 @@ describe('Syncular browser support matrix', () => {
       context: 'chromium-secure-page',
       policy: 'supported-after-preflight',
       status: 'met',
+      reasonCodes: ['browser_support.policy_met'],
       expectedSupportTier: 'persistent-offline',
       observedSupportTier: 'persistent-offline',
       expectedPersistence: 'persistent',
@@ -147,6 +148,7 @@ describe('Syncular browser support matrix', () => {
       )
     ).toMatchObject({
       status: 'warning',
+      reasonCodes: ['browser_support.support_tier_mismatch'],
       observedSupportTier: 'unknown',
       observedPersistence: 'persistent',
       preflightStatus: 'ready',
@@ -167,6 +169,12 @@ describe('Syncular browser support matrix', () => {
       )
     ).toMatchObject({
       status: 'not-met',
+      reasonCodes: [
+        'browser_support.preflight_not_ready',
+        'browser_support.unsupported_tier',
+        'browser_support.support_tier_mismatch',
+        'browser_support.persistence_mismatch',
+      ],
       observedSupportTier: 'unsupported',
       observedPersistence: 'unsupported',
       issueCodes: ['browser.worker_unavailable'],
@@ -187,6 +195,7 @@ describe('Syncular browser support matrix', () => {
     ).toMatchObject({
       policy: 'development-only',
       status: 'met',
+      reasonCodes: ['browser_support.development_only_context'],
       observedSupportTier: 'ephemeral-development',
       observedPersistence: 'ephemeral',
     });
@@ -196,9 +205,47 @@ describe('Syncular browser support matrix', () => {
     ).toMatchObject({
       policy: 'unsupported',
       status: 'not-applicable',
+      reasonCodes: ['browser_support.unsupported_context'],
       observedSupportTier: null,
       observedPersistence: null,
       preflightRequired: false,
+    });
+  });
+
+  it('returns reason codes for missing evidence and production-readiness gaps', () => {
+    expect(
+      evaluateSyncularBrowserSupportPolicy('chromium-secure-page', null)
+    ).toMatchObject({
+      status: 'not-met',
+      reasonCodes: ['browser_support.preflight_missing'],
+    });
+
+    expect(
+      evaluateSyncularBrowserSupportPolicy(
+        'chromium-secure-page',
+        preflight({
+          persistence: 'persistent',
+          productionReady: false,
+          supportTier: 'persistent-offline',
+        })
+      )
+    ).toMatchObject({
+      status: 'warning',
+      reasonCodes: ['browser_support.production_ready_missing'],
+    });
+
+    expect(
+      evaluateSyncularBrowserSupportPolicy(
+        'firefox-secure-page',
+        preflight({
+          persistence: 'persistent',
+          productionReady: true,
+          supportTier: 'persistent-offline',
+        })
+      )
+    ).toMatchObject({
+      status: 'warning',
+      reasonCodes: ['browser_support.target_evidence_required'],
     });
   });
 });

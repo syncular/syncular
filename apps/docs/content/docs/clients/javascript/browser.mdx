@@ -125,6 +125,13 @@ const supportPolicy = evaluateSyncularBrowserSupportPolicy(
 );
 ```
 
+`supportPolicy.reasonCodes` explains the policy-level verdict, such as missing
+preflight evidence, target-host evidence still required, persistence mismatch,
+production-readiness gaps, development-only contexts, unsupported contexts, or
+a fully met policy. Use those alongside preflight `issueCodes`: issue codes
+name missing browser or deployment capabilities, while reason codes explain the
+support-policy decision.
+
 | Context | Policy | Expected tier before target evidence |
 | --- | --- | --- |
 | Chrome/Chromium secure page | supported after preflight | `persistent-offline` |

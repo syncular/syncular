@@ -554,6 +554,8 @@ describe('console timeline route filters', () => {
           observedSupportTier: 'persistent-offline',
           policy: 'supported-after-preflight',
           preflightRequired: 'true',
+          reasonCodes: ['browser_support.policy_met'],
+          reasonCount: 1,
           status: 'met',
         },
         supportBundle: {
@@ -2657,6 +2659,13 @@ describe('console timeline route filters', () => {
           | undefined
       )?.status
     ).toBe('met');
+    expect(
+      (
+        diagnostic?.details?.browserSupportPolicy as
+          | Record<string, unknown>
+          | undefined
+      )?.reasonCodes
+    ).toEqual(['browser_support.policy_met']);
     expect(
       (accepted.transportStats as Record<string, unknown> | undefined)
         ?.browserSupportPolicyMarkerInAssets

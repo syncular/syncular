@@ -697,6 +697,13 @@ const supportPolicy = evaluateSyncularBrowserSupportPolicy(
 );
 ```
 
+`supportPolicy.reasonCodes` explains the policy-level verdict, such as missing
+preflight evidence, target-host evidence still required, persistence mismatch,
+production-readiness gaps, development-only contexts, unsupported contexts, or
+a fully met policy. Use those alongside preflight `issueCodes`: issue codes
+name missing browser or deployment capabilities, while reason codes explain the
+support-policy decision.
+
 The matrix does not sniff user agents and does not replace the deployment
 preflight. It names the product policy for common environments:
 

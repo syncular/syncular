@@ -3275,6 +3275,9 @@ export interface operations {
                                 observedSupportTier: string | null;
                                 policy: string | null;
                                 preflightRequired: string | null;
+                                /** @default [] */
+                                reasonCodes?: string[];
+                                reasonCount?: number;
                                 status: string | null;
                             } & {
                                 [key: string]: unknown;
@@ -3390,6 +3393,9 @@ export interface operations {
                             observedSupportTier: string | null;
                             policy: string | null;
                             preflightRequired: string | null;
+                            /** @default [] */
+                            reasonCodes?: string[];
+                            reasonCount?: number;
                             status: string | null;
                         } & {
                             [key: string]: unknown;
