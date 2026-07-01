@@ -310,8 +310,16 @@ read-only review:
     settled, so the smoke now attaches CDP to `about:blank`, navigates with
     `Page.navigate`, waits for `Page.loadEventFired`, and only then reads
     readiness markers.
-    Next slice: observe the hosted Chrome job after that navigation hardening
-    or continue broadening browser/framework runtime execution beyond Vite. The
+    Later hosted runs narrowed the hang past local database open, subscription
+    install, initial sync, realtime connect, and task-pane mount. The starter
+    now coalesces post-mount diagnostic refreshes, yields a browser frame
+    between health, schema-readiness, deployment-preflight, and support-bundle
+    collection, records hidden diagnostic phases, and omits the worker-local
+    support-bundle section from the browser-preview bundle while still keeping
+    four redacted app-facing support sections. Local `create-syncular-app`
+    type/lint/smoke gates pass with Bun 1.3.9; next slice is observing the
+    hosted `starter-browser-preview` Chrome job for this diagnostic sequencing
+    change or continuing browser/framework runtime execution beyond Vite. The
     post-publish
     JavaScript install smoke now
     also creates a fresh optional import matrix project that installs

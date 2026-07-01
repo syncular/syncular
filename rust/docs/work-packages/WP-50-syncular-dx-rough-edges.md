@@ -3824,21 +3824,27 @@ Most recent mutation-status rerun:
   starter task list now avoids the live-query registration path during browser
   preview startup: it runs a plain query and refetches on `rowsChanged`, keeping
   the starter's browser proof on the core generated client/sync path while a
-  later dedicated test can isolate live-query behavior. The next hosted
-  artifact should distinguish task-pane support diagnostics from lower-level
-  local open, subscription install, background lifecycle, realtime, and
-  page-thread starvation failures without raw browser inspection. Remaining
-  depth is
-  observing the next hosted browser/Cloudflare artifacts and deciding whether
-  future hosted artifact uploads need richer Console/Fleet orchestration.
+  later dedicated test can isolate live-query behavior. Hosted run
+  `28523649113` then reached `open taskpane` and `taskpane mounted`, proving the
+  remaining hang was after app open, subscription install, sync, realtime, and
+  first task-pane mount. The starter now coalesces task-pane diagnostic
+  refreshes, yields a browser frame between health, schema-readiness,
+  deployment-preflight, and support-bundle collection, records hidden
+  `diagnostics-*` phases for Chrome/CDP artifacts, and omits the worker-local
+  support-bundle section from the browser-preview bundle while preserving four
+  redacted support sections. Local focused `tsgo`, lint, diff, and
+  `create-syncular-app` smoke gates pass with Bun 1.3.9; Chrome is not
+  installed locally, so the next hosted artifact remains the authority for the
+  required real-browser path. Remaining depth is observing that hosted
+  `starter-browser-preview` job and deciding whether future hosted artifact
+  uploads need richer Console/Fleet orchestration.
 
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. Strong candidates
-are observing the hosted starter browser-preview job after local-first first
-paint/subscription-deferral/background-sync hardening, deeper browser
-suspension/shutdown lifecycle coverage, canonical real-browser support-bundle
-failure artifacts,
+are observing the hosted starter browser-preview job after post-mount
+diagnostic sequencing, deeper browser suspension/shutdown lifecycle coverage,
+canonical real-browser support-bundle failure artifacts,
 browser/bundler matrix execution, or automating production-ops checks, because
 those remain broad DX holes after the first local recovery browser proof,
 upgrade runbook, production-ops runbook, built-preview asset smoke, runtime

@@ -165,6 +165,16 @@ const starterDeploymentPreflightOptions = {
   minimumQuotaBytes: 50 * 1024 * 1024,
 } as const;
 
+function yieldStarterFrame(): Promise<void> {
+  return new Promise((resolve) => {
+    if (typeof requestAnimationFrame !== 'function') {
+      setTimeout(resolve, 0);
+      return;
+    }
+    requestAnimationFrame(() => setTimeout(resolve, 0));
+  });
+}
+
 export function App() {
   const [client, setClient] = useState<AppSyncClient | null>(null);
   const [lifecycleResume, setLifecycleResume] =
@@ -403,6 +413,7 @@ export function App() {
             {taskPaneMounted ? (
               <TaskPane
                 client={client}
+                reportStarterOpenPhase={reportStarterOpenPhase}
                 starterTimeline={starterTimeline}
                 updateStarterTimeline={setStarterTimeline}
               />
@@ -500,10 +511,12 @@ function LifecycleResumeMarker({
 
 function TaskPane({
   client,
+  reportStarterOpenPhase,
   starterTimeline,
   updateStarterTimeline,
 }: {
   client: AppSyncClient;
+  reportStarterOpenPhase: (phase: StarterOpenPhase) => void;
   starterTimeline: StarterTimelinePreview;
   updateStarterTimeline: Dispatch<SetStateAction<StarterTimelinePreview>>;
 }) {
@@ -577,108 +590,155 @@ function TaskPane({
 
   useEffect(() => {
     let disposed = false;
-    const refresh = () => {
+    let refreshQueued = false;
+    let refreshRunning = false;
+
+    const runRefresh = async () => {
+      reportStarterOpenPhase('diagnostics-health');
+      await yieldStarterFrame();
       const healthStartedAtMs = performance.now();
-      void getSyncularBrowserHealth(client)
-        .then((nextHealth) => {
-          if (!disposed) {
-            setHealth(nextHealth);
-            updateStarterTimeline((current) => ({
-              ...current,
-              healthRefreshMs: elapsedSince(healthStartedAtMs),
-            }));
-          }
-        })
-        .catch(() => {
-          if (!disposed) {
-            setHealth(null);
-            updateStarterTimeline((current) => ({
-              ...current,
-              healthRefreshMs: elapsedSince(healthStartedAtMs),
-            }));
-          }
-        });
+      try {
+        const nextHealth = await getSyncularBrowserHealth(client);
+        if (!disposed) {
+          setHealth(nextHealth);
+          updateStarterTimeline((current) => ({
+            ...current,
+            healthRefreshMs: elapsedSince(healthStartedAtMs),
+          }));
+        }
+      } catch {
+        if (!disposed) {
+          setHealth(null);
+          updateStarterTimeline((current) => ({
+            ...current,
+            healthRefreshMs: elapsedSince(healthStartedAtMs),
+          }));
+        }
+      }
+
+      reportStarterOpenPhase('diagnostics-schema');
+      await yieldStarterFrame();
       const schemaStartedAtMs = performance.now();
-      void client
-        .schemaReadiness()
-        .then((nextReadiness) => {
-          if (!disposed) {
-            setSchemaReadiness(nextReadiness);
-            updateStarterTimeline((current) => ({
-              ...current,
-              schemaReadinessMs: elapsedSince(schemaStartedAtMs),
-            }));
-          }
-        })
-        .catch(() => {
-          if (!disposed) {
-            setSchemaReadiness(null);
-            updateStarterTimeline((current) => ({
-              ...current,
-              schemaReadinessMs: elapsedSince(schemaStartedAtMs),
-            }));
-          }
-        });
-      const supportBundleStartedAtMs = performance.now();
+      try {
+        const nextReadiness = await client.schemaReadiness();
+        if (!disposed) {
+          setSchemaReadiness(nextReadiness);
+          updateStarterTimeline((current) => ({
+            ...current,
+            schemaReadinessMs: elapsedSince(schemaStartedAtMs),
+          }));
+        }
+      } catch {
+        if (!disposed) {
+          setSchemaReadiness(null);
+          updateStarterTimeline((current) => ({
+            ...current,
+            schemaReadinessMs: elapsedSince(schemaStartedAtMs),
+          }));
+        }
+      }
+
+      reportStarterOpenPhase('diagnostics-preflight');
+      await yieldStarterFrame();
       const preflightStartedAtMs = performance.now();
-      void getSyncularBrowserDeploymentPreflight(
-        starterDeploymentPreflightOptions
-      )
-        .then((preflight) => {
-          if (!disposed) {
-            setDeploymentPreflight(
-              summarizeDeploymentPreflight(
-                preflight,
-                elapsedSince(preflightStartedAtMs)
+      let preflight: SyncularBrowserDeploymentPreflight | null = null;
+      try {
+        preflight = await getSyncularBrowserDeploymentPreflight(
+          starterDeploymentPreflightOptions
+        );
+        if (!disposed) {
+          setDeploymentPreflight(
+            summarizeDeploymentPreflight(
+              preflight,
+              elapsedSince(preflightStartedAtMs)
+            )
+          );
+          setBrowserSupportPolicy(
+            summarizeBrowserSupportPolicy(
+              evaluateSyncularBrowserSupportPolicy(
+                getSyncularBrowserSupportPolicyContextHint({
+                  preflight,
+                }).context,
+                preflight
               )
-            );
-            setBrowserSupportPolicy(
-              summarizeBrowserSupportPolicy(
-                evaluateSyncularBrowserSupportPolicy(
-                  getSyncularBrowserSupportPolicyContextHint({
-                    preflight,
-                  }).context,
-                  preflight
-                )
+            )
+          );
+        }
+      } catch {
+        if (!disposed) {
+          setDeploymentPreflight(
+            failedDeploymentPreflightPreview(elapsedSince(preflightStartedAtMs))
+          );
+          setBrowserSupportPolicy(
+            summarizeBrowserSupportPolicy(
+              evaluateSyncularBrowserSupportPolicy(
+                getSyncularBrowserSupportPolicyContextHint().context,
+                null
               )
-            );
-          }
-          return client.exportSupportBundle({
-            deploymentPreflight: preflight,
-          });
-        })
-        .then((bundle) => {
-          if (!disposed) {
-            setSupportBundle(summarizeSupportBundle(bundle));
-            updateStarterTimeline((current) => ({
-              ...current,
-              supportBundleExportMs: elapsedSince(supportBundleStartedAtMs),
-            }));
-          }
-        })
-        .catch(() => {
-          if (!disposed) {
-            setDeploymentPreflight(
-              failedDeploymentPreflightPreview(
-                elapsedSince(preflightStartedAtMs)
-              )
-            );
-            setBrowserSupportPolicy(
-              summarizeBrowserSupportPolicy(
-                evaluateSyncularBrowserSupportPolicy(
-                  getSyncularBrowserSupportPolicyContextHint().context,
-                  null
-                )
-              )
-            );
-            setSupportBundle(failedSupportBundlePreview());
-            updateStarterTimeline((current) => ({
-              ...current,
-              supportBundleExportMs: elapsedSince(supportBundleStartedAtMs),
-            }));
-          }
+            )
+          );
+        }
+      }
+
+      reportStarterOpenPhase('diagnostics-support-bundle');
+      await yieldStarterFrame();
+      const supportBundleStartedAtMs = performance.now();
+      if (!preflight) {
+        if (!disposed) {
+          setSupportBundle(failedSupportBundlePreview());
+          updateStarterTimeline((current) => ({
+            ...current,
+            supportBundleExportMs: elapsedSince(supportBundleStartedAtMs),
+          }));
+        }
+        return;
+      }
+
+      try {
+        const bundle = await client.exportSupportBundle({
+          deploymentPreflight: preflight,
+          includeLocalSupportBundle: false,
         });
+        if (!disposed) {
+          setSupportBundle(summarizeSupportBundle(bundle));
+          updateStarterTimeline((current) => ({
+            ...current,
+            supportBundleExportMs: elapsedSince(supportBundleStartedAtMs),
+          }));
+        }
+      } catch {
+        if (!disposed) {
+          setSupportBundle(failedSupportBundlePreview());
+          updateStarterTimeline((current) => ({
+            ...current,
+            supportBundleExportMs: elapsedSince(supportBundleStartedAtMs),
+          }));
+        }
+      }
+
+      reportStarterOpenPhase('diagnostics-ready');
     };
+
+    const refresh = () => {
+      if (disposed) return;
+      if (refreshRunning) {
+        refreshQueued = true;
+        return;
+      }
+      refreshRunning = true;
+      void (async () => {
+        try {
+          do {
+            refreshQueued = false;
+            await runRefresh();
+          } while (!disposed && refreshQueued);
+        } finally {
+          refreshRunning = false;
+          if (!disposed && refreshQueued) refresh();
+        }
+      })();
+    };
+
     refresh();
     const unsubscribeLifecycle = client.on('lifecycleChanged', refresh);
     const unsubscribeBootstrap = client.on('bootstrapChanged', refresh);
@@ -689,7 +749,7 @@ function TaskPane({
       unsubscribeBootstrap();
       unsubscribeRows();
     };
-  }, [client, updateStarterTimeline]);
+  }, [client, reportStarterOpenPhase, updateStarterTimeline]);
 
   const rows = tasks ?? [];
   const doneCount = rows.filter((task) => task.completed).length;
