@@ -6,6 +6,7 @@
       "**/*.tsx",
       "!**/*.d.ts",
       "!.claude",
+      "!.context",
       "!.ignore",
       "!**/.source",
       "!**/.next",

@@ -1038,12 +1038,6 @@ export type ConsoleOpsReadinessInput = z.infer<
   typeof ConsoleOpsReadinessInputSchema
 >;
 
-export const ConsoleOpsReadinessIngestSchema = ConsoleOpsReadinessInputSchema;
-
-export type ConsoleOpsReadinessIngest = z.infer<
-  typeof ConsoleOpsReadinessIngestSchema
->;
-
 export const ConsoleOpsReadinessReportSchema = z.object({
   artifactSchema: z.literal('syncular.ops-readiness.v1'),
   generatedAt: z.string().datetime(),

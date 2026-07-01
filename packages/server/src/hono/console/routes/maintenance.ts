@@ -25,8 +25,8 @@ import {
   type ConsoleOperationEvent,
   ConsoleOperationEventSchema,
   ConsoleOperationsQuerySchema,
-  ConsoleOpsReadinessIngestSchema,
   type ConsoleOpsReadinessInput,
+  ConsoleOpsReadinessInputSchema,
   type ConsoleOpsReadinessReport,
   ConsoleOpsReadinessReportSchema,
   type ConsoleOpsReadinessResponse,
@@ -506,7 +506,7 @@ export function registerMaintenanceRoutes(ctx: ConsoleRoutesContext): void {
         },
       },
     }),
-    zValidator('json', ConsoleOpsReadinessIngestSchema),
+    zValidator('json', ConsoleOpsReadinessInputSchema),
     async (c) => {
       const input = c.req.valid('json');
       const sensitiveField = findSensitiveDiagnosticField(input);

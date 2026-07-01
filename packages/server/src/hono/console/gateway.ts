@@ -51,7 +51,7 @@ import {
   ConsoleHandlerSchema,
   ConsoleOperationEventSchema,
   ConsoleOperationsQuerySchema,
-  ConsoleOpsReadinessIngestSchema,
+  ConsoleOpsReadinessInputSchema,
   ConsoleOpsReadinessResponseSchema,
   ConsoleOpsReadinessTrendsQuerySchema,
   ConsoleOpsReadinessTrendsResponseSchema,
@@ -1805,7 +1805,7 @@ export function createConsoleGatewayRoutes(
       },
     }),
     zValidator('query', GatewaySingleInstanceQuerySchema),
-    zValidator('json', ConsoleOpsReadinessIngestSchema),
+    zValidator('json', ConsoleOpsReadinessInputSchema),
     async (c) => {
       return withGatewayAuth(c, async () => {
         const query = c.req.valid('query');
