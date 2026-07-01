@@ -68,6 +68,8 @@ type DeploymentPreflightPreview = {
   quotaBytes: number | null;
   serviceWorker: boolean | null;
   serviceWorkerControlled: boolean | null;
+  serviceWorkerControllerScriptPath: string | null;
+  serviceWorkerControllerState: string | null;
   status: SyncularBrowserDeploymentPreflight['status'] | 'failed';
   supportTier: SyncularBrowserDeploymentPreflight['support']['tier'];
   usageRatio: number | null;
@@ -735,6 +737,12 @@ function DeploymentPreflightMarker({
           ? ''
           : String(deploymentPreflight.serviceWorkerControlled)
       }
+      data-syncular-deployment-preflight-service-worker-controller-script-path={
+        deploymentPreflight.serviceWorkerControllerScriptPath ?? ''
+      }
+      data-syncular-deployment-preflight-service-worker-controller-state={
+        deploymentPreflight.serviceWorkerControllerState ?? ''
+      }
       data-syncular-deployment-preflight-status={deploymentPreflight.status}
       data-syncular-deployment-preflight-support-tier={
         deploymentPreflight.supportTier
@@ -787,6 +795,10 @@ function summarizeDeploymentPreflight(
     quotaBytes: preflight.storage.quotaBytes ?? null,
     serviceWorker: preflight.browser.serviceWorker ?? null,
     serviceWorkerControlled: preflight.browser.serviceWorkerControlled ?? null,
+    serviceWorkerControllerScriptPath:
+      preflight.browser.serviceWorkerControllerScriptPath ?? null,
+    serviceWorkerControllerState:
+      preflight.browser.serviceWorkerControllerState ?? null,
     status: preflight.status,
     supportTier: preflight.support.tier,
     usageRatio: preflight.storage.usageRatio ?? null,
@@ -811,6 +823,8 @@ function failedDeploymentPreflightPreview(
     quotaBytes: null,
     serviceWorker: null,
     serviceWorkerControlled: null,
+    serviceWorkerControllerScriptPath: null,
+    serviceWorkerControllerState: null,
     status: 'failed',
     supportTier: 'unknown',
     usageRatio: null,

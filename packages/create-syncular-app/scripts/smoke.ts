@@ -560,6 +560,8 @@ type BrowserPreviewProbe = {
     quotaBytes: number | null;
     serviceWorker: string | null;
     serviceWorkerControlled: string | null;
+    serviceWorkerControllerScriptPath: string | null;
+    serviceWorkerControllerState: string | null;
     status: string | null;
     supportTier: string | null;
     usageRatio: number | null;
@@ -713,6 +715,8 @@ async function readStarterBrowserProbe(
     const deploymentPreflightQuotaBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-quota-bytes');
     const deploymentPreflightServiceWorker = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-service-worker') ?? null;
     const deploymentPreflightServiceWorkerControlled = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-service-worker-controlled') ?? null;
+    const deploymentPreflightServiceWorkerControllerScriptPath = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-service-worker-controller-script-path') ?? null;
+    const deploymentPreflightServiceWorkerControllerState = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-service-worker-controller-state') ?? null;
     const deploymentPreflightStatus = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-status') ?? null;
     const deploymentPreflightSupportTier = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-support-tier') ?? null;
     const deploymentPreflightUsageRatio = readDeploymentPreflightNumber('data-syncular-deployment-preflight-usage-ratio');
@@ -863,6 +867,10 @@ async function readStarterBrowserProbe(
         quotaBytes: deploymentPreflightQuotaBytes,
         serviceWorker: deploymentPreflightServiceWorker,
         serviceWorkerControlled: deploymentPreflightServiceWorkerControlled,
+        serviceWorkerControllerScriptPath:
+          deploymentPreflightServiceWorkerControllerScriptPath,
+        serviceWorkerControllerState:
+          deploymentPreflightServiceWorkerControllerState,
         status: deploymentPreflightStatus,
         supportTier: deploymentPreflightSupportTier,
         usageRatio: deploymentPreflightUsageRatio,
@@ -1530,6 +1538,8 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         quotaBytes: 107_374_182_400,
         serviceWorker: 'true',
         serviceWorkerControlled: 'true',
+        serviceWorkerControllerScriptPath: '/__syncular/sw.js',
+        serviceWorkerControllerState: 'activated',
         status: 'ready',
         supportTier: 'persistent-offline',
         usageRatio: 0.00000003814697265625,
@@ -1826,6 +1836,8 @@ function assertBrowserPreviewDeploymentPreflightShape(
     'quotaPressure',
     'serviceWorker',
     'serviceWorkerControlled',
+    'serviceWorkerControllerScriptPath',
+    'serviceWorkerControllerState',
     'status',
     'supportTier',
   ] as const) {

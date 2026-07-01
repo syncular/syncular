@@ -107,6 +107,8 @@ export interface SyncularBrowserDeploymentPreflightBrowser {
   indexedDB: boolean | null;
   serviceWorker: boolean | null;
   serviceWorkerControlled: boolean | null;
+  serviceWorkerControllerState: string | null;
+  serviceWorkerControllerScriptPath: string | null;
 }
 
 export type SyncularBrowserDeploymentPreflightMultiTabMode =
@@ -340,6 +342,14 @@ function summarizeBrowser(
 ): SyncularBrowserDeploymentPreflightBrowser {
   const serviceWorkerAvailable =
     navigatorRef == null ? null : navigatorRef.serviceWorker != null;
+  const serviceWorkerController = navigatorRef?.serviceWorker?.controller;
+  const serviceWorkerControlled =
+    serviceWorkerAvailable == null
+      ? null
+      : serviceWorkerAvailable && serviceWorkerController != null;
+  const serviceWorkerControllerRecord = isRecord(serviceWorkerController)
+    ? serviceWorkerController
+    : null;
   return {
     worker: typeof globalRef.Worker === 'function',
     webAssembly: globalRef.WebAssembly != null,
@@ -353,12 +363,34 @@ function summarizeBrowser(
         : null,
     indexedDB: globalRef.indexedDB != null,
     serviceWorker: serviceWorkerAvailable,
-    serviceWorkerControlled:
-      serviceWorkerAvailable == null
-        ? null
-        : serviceWorkerAvailable &&
-          navigatorRef?.serviceWorker?.controller != null,
+    serviceWorkerControlled,
+    serviceWorkerControllerState:
+      typeof serviceWorkerControllerRecord?.state === 'string'
+        ? serviceWorkerControllerRecord.state
+        : null,
+    serviceWorkerControllerScriptPath: summarizeServiceWorkerScriptPath(
+      serviceWorkerControllerRecord?.scriptURL
+    ),
   };
+}
+
+function summarizeServiceWorkerScriptPath(scriptUrl: unknown): string | null {
+  if (typeof scriptUrl !== 'string' || scriptUrl.length === 0) return null;
+  try {
+    return truncateBrowserDiagnosticText(new URL(scriptUrl).pathname);
+  } catch {
+    const path = scriptUrl.split(/[?#]/, 1)[0];
+    if (!path?.startsWith('/')) return null;
+    return truncateBrowserDiagnosticText(path);
+  }
+}
+
+function truncateBrowserDiagnosticText(value: string): string {
+  return value.length > 200 ? `${value.slice(0, 197)}...` : value;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
 }
 
 function summarizeLifecycle(

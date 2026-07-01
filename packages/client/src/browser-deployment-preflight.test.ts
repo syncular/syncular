@@ -52,6 +52,8 @@ describe('Syncular browser deployment preflight', () => {
         indexedDB: true,
         serviceWorker: false,
         serviceWorkerControlled: false,
+        serviceWorkerControllerScriptPath: null,
+        serviceWorkerControllerState: null,
       },
       lifecycle: {
         broadcastChannel: true,
@@ -360,6 +362,9 @@ describe('Syncular browser deployment preflight', () => {
           quotaBytes: 250 * 1024 * 1024,
           serviceWorker: true,
           serviceWorkerControlled: true,
+          serviceWorkerControllerScriptURL:
+            'https://app.example/__syncular/sw.js?v=secret',
+          serviceWorkerControllerState: 'activated',
         }),
       })
     ).resolves.toMatchObject({
@@ -368,6 +373,8 @@ describe('Syncular browser deployment preflight', () => {
       browser: {
         serviceWorker: true,
         serviceWorkerControlled: true,
+        serviceWorkerControllerScriptPath: '/__syncular/sw.js',
+        serviceWorkerControllerState: 'activated',
       },
       support: {
         tier: 'unknown',
@@ -561,6 +568,8 @@ function browserNavigator(options: {
   quotaBytes?: number;
   serviceWorker?: boolean;
   serviceWorkerControlled?: boolean;
+  serviceWorkerControllerScriptURL?: string;
+  serviceWorkerControllerState?: string;
   usageBytes?: number;
 }): SyncularBrowserDeploymentPreflightNavigator {
   return {
@@ -575,7 +584,12 @@ function browserNavigator(options: {
       ? {
           serviceWorker: {
             ...(options.serviceWorkerControlled
-              ? { controller: { state: 'activated' } }
+              ? {
+                  controller: {
+                    scriptURL: options.serviceWorkerControllerScriptURL,
+                    state: options.serviceWorkerControllerState ?? 'activated',
+                  },
+                }
               : {}),
           },
         }
