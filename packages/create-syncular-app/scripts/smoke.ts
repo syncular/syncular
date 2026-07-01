@@ -228,6 +228,7 @@ async function verifyBuiltPreviewAssets(
   }
 
   let sawLifecycleResumeMarker = false;
+  let sawDeploymentPreflightMarker = false;
   let sawStarterTimelineMarker = false;
   let sawSupportBundleMarker = false;
   let totalAssetBytes = 0;
@@ -258,6 +259,9 @@ async function verifyBuiltPreviewAssets(
       sawLifecycleResumeMarker ||= assetBody.includes(
         'data-syncular-lifecycle-resume-status'
       );
+      sawDeploymentPreflightMarker ||= assetBody.includes(
+        'data-syncular-deployment-preflight-status'
+      );
       sawStarterTimelineMarker ||=
         assetBody.includes('data-syncular-starter-bootstrap-ready-ms') &&
         assetBody.includes('data-syncular-starter-database-open-ms') &&
@@ -283,6 +287,11 @@ async function verifyBuiltPreviewAssets(
       'Built preview assets did not include the support-bundle smoke marker'
     );
   }
+  if (!sawDeploymentPreflightMarker) {
+    throw new Error(
+      'Built preview assets did not include the deployment-preflight smoke marker'
+    );
+  }
   if (!sawLifecycleResumeMarker) {
     throw new Error(
       'Built preview assets did not include the lifecycle-resume smoke marker'
@@ -299,6 +308,7 @@ async function verifyBuiltPreviewAssets(
     assetCount: assetPaths.length,
     cssAssetBytes,
     cssAssetCount,
+    deploymentPreflightMarkerInAssets: sawDeploymentPreflightMarker,
     jsAssetBytes,
     jsAssetCount,
     lifecycleResumeMarkerInAssets: sawLifecycleResumeMarker,
@@ -315,6 +325,7 @@ type BuiltPreviewAssetMetrics = {
   assetCount: number;
   cssAssetBytes: number;
   cssAssetCount: number;
+  deploymentPreflightMarkerInAssets: boolean;
   jsAssetBytes: number;
   jsAssetCount: number;
   lifecycleResumeMarkerInAssets: boolean;
@@ -470,6 +481,18 @@ type BrowserPreviewProbe = {
     preflightFailure: boolean;
     databaseOpening: boolean;
   };
+  deploymentPreflight: {
+    actionCount: number;
+    issueCount: number;
+    minimumQuotaBytes: number | null;
+    persistence: string | null;
+    persisted: string | null;
+    preflightMs: number | null;
+    quotaBytes: number | null;
+    status: string | null;
+    supportTier: string | null;
+    usageBytes: number | null;
+  };
   supportBundle: {
     status: string | null;
     redacted: string | null;
@@ -514,6 +537,7 @@ type BrowserPreviewFailureMetrics = {
   assetCount: number;
   cssAssetBytes: number;
   cssAssetCount: number;
+  deploymentPreflightMarkerInAssets: boolean;
   jsAssetBytes: number;
   jsAssetCount: number;
   lifecycleResumeMarkerInAssets: boolean;
@@ -544,6 +568,23 @@ async function readStarterBrowserProbe(
     const supportBundleIssueCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-issue-count') ?? 0);
     const supportBundleRequestIdCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-request-id-count') ?? 0);
     const supportBundleSectionErrorCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-section-error-count') ?? 0);
+    const deploymentPreflight = document.querySelector('[data-syncular-deployment-preflight-status]');
+    const readDeploymentPreflightNumber = (name) => {
+      const value = deploymentPreflight?.getAttribute(name) ?? null;
+      if (value === null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    };
+    const deploymentPreflightActionCount = Number(deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-action-count') ?? 0);
+    const deploymentPreflightIssueCount = Number(deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-issue-count') ?? 0);
+    const deploymentPreflightMinimumQuotaBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-minimum-quota-bytes');
+    const deploymentPreflightPersistence = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-persistence') ?? null;
+    const deploymentPreflightPersisted = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-persisted') ?? null;
+    const deploymentPreflightPreflightMs = readDeploymentPreflightNumber('data-syncular-deployment-preflight-preflight-ms');
+    const deploymentPreflightQuotaBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-quota-bytes');
+    const deploymentPreflightStatus = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-status') ?? null;
+    const deploymentPreflightSupportTier = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-support-tier') ?? null;
+    const deploymentPreflightUsageBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-usage-bytes');
     const lifecycleResume = document.querySelector('[data-syncular-lifecycle-resume-status]');
     const lifecycleResumeStatus = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-status') ?? null;
     const lifecycleResumeCount = Number(lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-count') ?? 0);
@@ -584,6 +625,12 @@ async function readStarterBrowserProbe(
     if (supportBundleStatus !== null && supportBundleRedacted !== 'true') {
       errors.push('support bundle was not redacted');
     }
+    if (deploymentPreflightStatus === 'failed') {
+      errors.push('deployment preflight failed');
+    }
+    if (deploymentPreflightStatus === 'not-ready') {
+      errors.push('deployment preflight not ready');
+    }
     if (lifecycleResumeStatus === 'failed') {
       errors.push('lifecycle resume failed');
     }
@@ -599,6 +646,7 @@ async function readStarterBrowserProbe(
         durableHealthLine &&
         schemaLine &&
         supportBundleStatus !== null &&
+        deploymentPreflightStatus !== null &&
         lifecycleResumeStatus !== null &&
         starterTimeline !== null &&
         bootstrapStatus !== null &&
@@ -618,6 +666,18 @@ async function readStarterBrowserProbe(
         schemaLine,
         preflightFailure,
         databaseOpening,
+      },
+      deploymentPreflight: {
+        actionCount: deploymentPreflightActionCount,
+        issueCount: deploymentPreflightIssueCount,
+        minimumQuotaBytes: deploymentPreflightMinimumQuotaBytes,
+        persistence: deploymentPreflightPersistence,
+        persisted: deploymentPreflightPersisted,
+        preflightMs: deploymentPreflightPreflightMs,
+        quotaBytes: deploymentPreflightQuotaBytes,
+        status: deploymentPreflightStatus,
+        supportTier: deploymentPreflightSupportTier,
+        usageBytes: deploymentPreflightUsageBytes,
       },
       supportBundle: {
         status: supportBundleStatus,
@@ -910,6 +970,18 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         preflightFailure: false,
         databaseOpening: false,
       },
+      deploymentPreflight: {
+        actionCount: 0,
+        issueCount: 0,
+        minimumQuotaBytes: 52_428_800,
+        persistence: 'persistent',
+        persisted: 'true',
+        preflightMs: 2,
+        quotaBytes: 107_374_182_400,
+        status: 'ready',
+        supportTier: 'persistent-offline',
+        usageBytes: 4096,
+      },
       supportBundle: {
         status: 'failed',
         redacted: 'true',
@@ -985,6 +1057,8 @@ function finalizeBrowserPreviewFailureMetrics(
     assetCount: metrics.assetCount,
     cssAssetBytes: metrics.cssAssetBytes,
     cssAssetCount: metrics.cssAssetCount,
+    deploymentPreflightMarkerInAssets:
+      metrics.deploymentPreflightMarkerInAssets,
     jsAssetBytes: metrics.jsAssetBytes,
     jsAssetCount: metrics.jsAssetCount,
     lifecycleResumeMarkerInAssets: metrics.lifecycleResumeMarkerInAssets,
@@ -1022,6 +1096,7 @@ function assertBrowserPreviewFailureMetricsShape(
     }
   }
   for (const key of [
+    'deploymentPreflightMarkerInAssets',
     'lifecycleResumeMarkerInAssets',
     'starterTimelineMarkerInAssets',
     'supportBundleMarkerInAssets',
@@ -1049,6 +1124,7 @@ function assertBrowserPreviewProbeShape(
     throw new Error(`${path} probe.errors was not a string array`);
   }
   assertBrowserPreviewMarkersShape(probe.markers, path);
+  assertBrowserPreviewDeploymentPreflightShape(probe.deploymentPreflight, path);
   assertBrowserPreviewSupportBundleShape(probe.supportBundle, path);
   assertBrowserPreviewLifecycleResumeShape(probe.lifecycleResume, path);
   assertBrowserPreviewStarterTimelineShape(probe.starterTimeline, path);
@@ -1111,6 +1187,46 @@ function assertBrowserPreviewMarkersShape(value: unknown, path: string): void {
   ] as const) {
     if (typeof value[key] !== 'boolean') {
       throw new Error(`${path} probe.markers.${key} was not a boolean`);
+    }
+  }
+}
+
+function assertBrowserPreviewDeploymentPreflightShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.deploymentPreflight was not a JSON object`);
+  }
+  for (const key of ['actionCount', 'issueCount'] as const) {
+    if (!isNonNegativeFiniteNumber(value[key])) {
+      throw new Error(
+        `${path} probe.deploymentPreflight.${key} was not a non-negative number`
+      );
+    }
+  }
+  for (const key of [
+    'minimumQuotaBytes',
+    'preflightMs',
+    'quotaBytes',
+    'usageBytes',
+  ] as const) {
+    if (value[key] !== null && !isNonNegativeFiniteNumber(value[key])) {
+      throw new Error(
+        `${path} probe.deploymentPreflight.${key} was not nullable non-negative number`
+      );
+    }
+  }
+  for (const key of [
+    'persistence',
+    'persisted',
+    'status',
+    'supportTier',
+  ] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.deploymentPreflight.${key} was not nullable text`
+      );
     }
   }
 }

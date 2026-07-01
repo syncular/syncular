@@ -206,7 +206,8 @@ read-only review:
     Browser preview artifacts now include starter timings for database open,
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local
-    visibility when Chrome/CDP is available. The same smoke
+    visibility, plus deployment-preflight storage/quota status when Chrome/CDP
+    is available. The same smoke
     self-checks the redacted browser failure artifact shape and safe smoke
     metrics even when no browser is installed. Browser pages can now
     install `installSyncularBrowserLifecycleResume(...)` to coalesce

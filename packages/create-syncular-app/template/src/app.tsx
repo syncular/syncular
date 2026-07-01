@@ -1,6 +1,8 @@
 import {
+  getSyncularBrowserDeploymentPreflight,
   getSyncularBrowserHealth,
   installSyncularBrowserLifecycleResume,
+  type SyncularBrowserDeploymentPreflight,
   type SyncularBrowserHealth,
   type SyncularBrowserLifecycleResumeController,
   type SyncularClientStatus,
@@ -40,6 +42,19 @@ type StarterTimelinePreview = {
   supportBundleExportMs: number | null;
 };
 
+type DeploymentPreflightPreview = {
+  actionCount: number;
+  issueCount: number;
+  minimumQuotaBytes: number | null;
+  persistence: SyncularBrowserDeploymentPreflight['support']['persistence'];
+  persisted: boolean | null;
+  preflightMs: number;
+  quotaBytes: number | null;
+  status: SyncularBrowserDeploymentPreflight['status'] | 'failed';
+  supportTier: SyncularBrowserDeploymentPreflight['support']['tier'];
+  usageBytes: number | null;
+};
+
 const initialLifecycleResume: LifecycleResumePreview = {
   count: 0,
   error: null,
@@ -71,6 +86,13 @@ const {
   useSyncQuery,
   useSyncStatus,
 } = createSyncularReact<AppDb>();
+
+const starterDeploymentPreflightOptions = {
+  requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
+  storage: 'indexedDb',
+  checkRuntimeAssets: false,
+  minimumQuotaBytes: 50 * 1024 * 1024,
+} as const;
 
 export function App() {
   const [client, setClient] = useState<AppSyncClient | null>(null);
@@ -205,6 +227,8 @@ function TaskPane({
   const mutations = useMutations();
   const outbox = useOutboxStats();
   const status = useSyncStatus();
+  const [deploymentPreflight, setDeploymentPreflight] =
+    useState<DeploymentPreflightPreview | null>(null);
   const [health, setHealth] = useState<SyncularBrowserHealth | null>(null);
   const [schemaReadiness, setSchemaReadiness] =
     useState<SyncularSchemaReadinessResult | null>(null);
@@ -291,14 +315,22 @@ function TaskPane({
           }
         });
       const supportBundleStartedAtMs = performance.now();
-      void client
-        .exportSupportBundle({
-          deploymentPreflight: {
-            requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
-            storage: 'indexedDb',
-            checkRuntimeAssets: false,
-            minimumQuotaBytes: 50 * 1024 * 1024,
-          },
+      const preflightStartedAtMs = performance.now();
+      void getSyncularBrowserDeploymentPreflight(
+        starterDeploymentPreflightOptions
+      )
+        .then((preflight) => {
+          if (!disposed) {
+            setDeploymentPreflight(
+              summarizeDeploymentPreflight(
+                preflight,
+                elapsedSince(preflightStartedAtMs)
+              )
+            );
+          }
+          return client.exportSupportBundle({
+            deploymentPreflight: preflight,
+          });
         })
         .then((bundle) => {
           if (!disposed) {
@@ -311,6 +343,11 @@ function TaskPane({
         })
         .catch(() => {
           if (!disposed) {
+            setDeploymentPreflight(
+              failedDeploymentPreflightPreview(
+                elapsedSince(preflightStartedAtMs)
+              )
+            );
             setSupportBundle(failedSupportBundlePreview());
             updateStarterTimeline((current) => ({
               ...current,
@@ -389,6 +426,9 @@ function TaskPane({
       {health ? <HealthLine health={health} /> : null}
       {schemaReadiness ? (
         <SchemaLine schemaReadiness={schemaReadiness} />
+      ) : null}
+      {deploymentPreflight ? (
+        <DeploymentPreflightMarker deploymentPreflight={deploymentPreflight} />
       ) : null}
       {supportBundle ? (
         <SupportBundleLine supportBundle={supportBundle} />
@@ -519,6 +559,48 @@ function TaskItem({
   );
 }
 
+function DeploymentPreflightMarker({
+  deploymentPreflight,
+}: {
+  deploymentPreflight: DeploymentPreflightPreview;
+}) {
+  return (
+    <span
+      data-syncular-deployment-preflight-action-count={
+        deploymentPreflight.actionCount
+      }
+      data-syncular-deployment-preflight-issue-count={
+        deploymentPreflight.issueCount
+      }
+      data-syncular-deployment-preflight-minimum-quota-bytes={
+        deploymentPreflight.minimumQuotaBytes ?? ''
+      }
+      data-syncular-deployment-preflight-persistence={
+        deploymentPreflight.persistence
+      }
+      data-syncular-deployment-preflight-persisted={
+        deploymentPreflight.persisted === null
+          ? ''
+          : String(deploymentPreflight.persisted)
+      }
+      data-syncular-deployment-preflight-preflight-ms={
+        deploymentPreflight.preflightMs
+      }
+      data-syncular-deployment-preflight-quota-bytes={
+        deploymentPreflight.quotaBytes ?? ''
+      }
+      data-syncular-deployment-preflight-status={deploymentPreflight.status}
+      data-syncular-deployment-preflight-support-tier={
+        deploymentPreflight.supportTier
+      }
+      data-syncular-deployment-preflight-usage-bytes={
+        deploymentPreflight.usageBytes ?? ''
+      }
+      hidden
+    />
+  );
+}
+
 type SupportBundlePreview = {
   status: SyncularSupportBundle['summary']['status'] | 'failed';
   redacted: boolean;
@@ -527,6 +609,41 @@ type SupportBundlePreview = {
   requestIdCount: number;
   sectionErrorCount: number;
 };
+
+function summarizeDeploymentPreflight(
+  preflight: SyncularBrowserDeploymentPreflight,
+  preflightMs: number
+): DeploymentPreflightPreview {
+  return {
+    actionCount: preflight.support.recommendedActions.length,
+    issueCount: preflight.issues.length,
+    minimumQuotaBytes: preflight.storage.minimumQuotaBytes ?? null,
+    persistence: preflight.support.persistence,
+    persisted: preflight.storage.persisted ?? null,
+    preflightMs,
+    quotaBytes: preflight.storage.quotaBytes ?? null,
+    status: preflight.status,
+    supportTier: preflight.support.tier,
+    usageBytes: preflight.storage.usageBytes ?? null,
+  };
+}
+
+function failedDeploymentPreflightPreview(
+  preflightMs: number
+): DeploymentPreflightPreview {
+  return {
+    actionCount: 1,
+    issueCount: 1,
+    minimumQuotaBytes: starterDeploymentPreflightOptions.minimumQuotaBytes,
+    persistence: 'unknown',
+    persisted: null,
+    preflightMs,
+    quotaBytes: null,
+    status: 'failed',
+    supportTier: 'unknown',
+    usageBytes: null,
+  };
+}
 
 function summarizeSupportBundle(
   bundle: SyncularSupportBundle

@@ -2229,6 +2229,23 @@ Most recent starter bootstrap/realtime artifact rerun:
     whether bootstrap and realtime were still pending or had first-observed
     elapsed timings before any local-visibility or two-tab timeout.
 
+Most recent starter storage/quota artifact rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-storage-quota-smoke bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks,
+    including the deployment-preflight storage/quota marker.
+  - Passed the deterministic browser failure artifact shape and safe-metrics
+    self-check with deployment-preflight status, support tier, persistence
+    mode, persisted flag, quota/usage bytes, minimum quota, issue count, and
+    recommended-action count.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available. On browser-capable runners the failure artifact can
+    now distinguish storage/quota or persistence pressure from bootstrap,
+    realtime, local-visibility, and support-bundle failures.
+
 Most recent production-ops docs rerun:
 
 - `bun run docs:stale-check`
@@ -2703,11 +2720,13 @@ Most recent mutation-status rerun:
   preview/asset timing and byte metrics plus starter runtime timings for
   database open, browser health refresh, schema readiness, support-bundle
   export, bootstrap readiness, realtime connection, and generated-mutation
-  local visibility when the browser probe can run. The Chrome/CDP path waits
-  for that local-visibility marker before proving two-tab propagation.
-  Remaining depth is to add richer sync apply/realtime event cursor,
-  storage/quota, and blob-fetch measurements where browser/app flows can
-  expose them without manual log scraping.
+  local visibility when the browser probe can run. The starter also emits
+  deployment-preflight storage/quota facts so browser failures can separate
+  quota, persistence, and support-tier problems from sync lifecycle failures.
+  The Chrome/CDP path waits for the local-visibility marker before proving
+  two-tab propagation. Remaining depth is to add richer sync apply/realtime
+  event cursor and blob-fetch measurements where browser/app flows can expose
+  them without manual log scraping.
 
 ## Next Action
 
