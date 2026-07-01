@@ -52,6 +52,8 @@ export interface OpsCheckCommandOptions {
   maxBlobConsistencyAgeDays?: number;
   maxCredentialReviewAgeDays?: number;
   maxRateLimitReviewAgeDays?: number;
+  maxLogRetentionReviewAgeDays?: number;
+  maxSupportWindowReviewAgeDays?: number;
 }
 
 export type SyncularCliCommand =
@@ -149,7 +151,17 @@ export type OpsCheckIssueCode =
   | 'ops.credential_rotation_owner_missing'
   | 'ops.rate_limits_missing'
   | 'ops.rate_limits_status_invalid'
-  | 'ops.rate_limits_stale';
+  | 'ops.rate_limits_stale'
+  | 'ops.log_retention_missing'
+  | 'ops.log_retention_stale'
+  | 'ops.log_retention_request_days_invalid'
+  | 'ops.log_retention_operation_days_invalid'
+  | 'ops.log_retention_payload_policy_missing'
+  | 'ops.support_window_missing'
+  | 'ops.support_window_stale'
+  | 'ops.support_window_offline_days_invalid'
+  | 'ops.support_window_prune_window_invalid'
+  | 'ops.support_window_full_history_missing';
 
 export type OpsCheckIssueSeverity = 'error';
 
@@ -164,7 +176,9 @@ export interface OpsCheckIssue {
     | 'runRestoreDrill'
     | 'runBlobConsistencyCheck'
     | 'reviewCredentialRotation'
-    | 'tuneRateLimits';
+    | 'tuneRateLimits'
+    | 'reviewLogRetention'
+    | 'reviewSupportWindow';
   details?: Record<string, unknown>;
 }
 
@@ -181,6 +195,8 @@ export interface OpsCheckResult {
     blobConsistency: 'ready' | 'not-ready' | 'not-applicable' | 'missing';
     credentialRotation: 'ready' | 'not-ready' | 'missing';
     rateLimits: 'ready' | 'not-ready' | 'missing';
+    logRetention: 'ready' | 'not-ready' | 'missing';
+    supportWindow: 'ready' | 'not-ready' | 'missing';
   };
   issues: OpsCheckIssue[];
 }
@@ -198,6 +214,8 @@ interface SyncularOpsCheckConfig {
   blobConsistency?: unknown;
   credentialRotation?: unknown;
   rateLimits?: unknown;
+  logRetention?: unknown;
+  supportWindow?: unknown;
 }
 
 function usage(): string {
@@ -257,13 +275,14 @@ Use --json for machine-readable output. A not-ready result exits with status 1.
 }
 
 function opsCheckUsage(): string {
-  return `usage: syncular ops check [--manifest-dir <path>] [--config <path>] [--json] [--pretty] [--max-restore-drill-age-days <days>] [--max-blob-consistency-age-days <days>] [--max-credential-review-age-days <days>] [--max-rate-limit-review-age-days <days>]
+  return `usage: syncular ops check [--manifest-dir <path>] [--config <path>] [--json] [--pretty] [--max-restore-drill-age-days <days>] [--max-blob-consistency-age-days <days>] [--max-credential-review-age-days <days>] [--max-rate-limit-review-age-days <days>] [--max-log-retention-review-age-days <days>] [--max-support-window-review-age-days <days>]
 
 Checks a production operations evidence file before deploy continues.
 
 By default the command reads <manifest-dir>/syncular.ops.json and verifies
 schema readiness, restore-drill evidence, blob consistency policy, credential
-rotation ownership/cadence, and rate-limit review status.
+rotation ownership/cadence, rate-limit review status, log/event retention, and
+offline support-window sizing.
 
 Use --json for machine-readable output. A not-ready result exits with status 1.
 `;
@@ -527,6 +546,8 @@ function parseOpsCheckArgs(args: readonly string[]): OpsCheckCommandOptions {
     maxBlobConsistencyAgeDays: 7,
     maxCredentialReviewAgeDays: 90,
     maxRateLimitReviewAgeDays: 90,
+    maxLogRetentionReviewAgeDays: 90,
+    maxSupportWindowReviewAgeDays: 90,
   };
 
   for (let index = 0; index < args.length; index += 1) {
@@ -601,6 +622,31 @@ function parseOpsCheckArgs(args: readonly string[]): OpsCheckCommandOptions {
     if (maxRateLimitReviewAgeDays) {
       options.maxRateLimitReviewAgeDays = maxRateLimitReviewAgeDays.value;
       index = maxRateLimitReviewAgeDays.nextIndex;
+      continue;
+    }
+
+    const maxLogRetentionReviewAgeDays = readPositiveNumberOptionValue(
+      args,
+      index,
+      arg,
+      '--max-log-retention-review-age-days'
+    );
+    if (maxLogRetentionReviewAgeDays) {
+      options.maxLogRetentionReviewAgeDays = maxLogRetentionReviewAgeDays.value;
+      index = maxLogRetentionReviewAgeDays.nextIndex;
+      continue;
+    }
+
+    const maxSupportWindowReviewAgeDays = readPositiveNumberOptionValue(
+      args,
+      index,
+      arg,
+      '--max-support-window-review-age-days'
+    );
+    if (maxSupportWindowReviewAgeDays) {
+      options.maxSupportWindowReviewAgeDays =
+        maxSupportWindowReviewAgeDays.value;
+      index = maxSupportWindowReviewAgeDays.nextIndex;
       continue;
     }
 
@@ -903,6 +949,20 @@ export function runOpsCheckCommand(
       issues,
       configPath,
       maxAgeDays: options.maxRateLimitReviewAgeDays ?? 90,
+      now,
+    }),
+    logRetention: checkOpsLogRetention({
+      section: config?.logRetention,
+      issues,
+      configPath,
+      maxAgeDays: options.maxLogRetentionReviewAgeDays ?? 90,
+      now,
+    }),
+    supportWindow: checkOpsSupportWindow({
+      section: config?.supportWindow,
+      issues,
+      configPath,
+      maxAgeDays: options.maxSupportWindowReviewAgeDays ?? 90,
       now,
     }),
   };
@@ -1398,10 +1458,177 @@ function checkOpsRateLimits(args: {
   return ready ? 'ready' : 'not-ready';
 }
 
+function checkOpsLogRetention(args: {
+  section: unknown;
+  issues: OpsCheckIssue[];
+  configPath: string;
+  maxAgeDays: number;
+  now: Date;
+}): OpsCheckResult['checks']['logRetention'] {
+  if (!isPlainRecord(args.section)) {
+    args.issues.push({
+      code: 'ops.log_retention_missing',
+      severity: 'error',
+      message:
+        'Syncular ops evidence must include Console log/event retention settings.',
+      path: args.configPath,
+      recommendedAction: 'reviewLogRetention',
+    });
+    return 'missing';
+  }
+
+  let ready = true;
+  const reviewedAt = readFreshDate({
+    value: args.section.reviewedAt,
+    now: args.now,
+    maxAgeDays: args.maxAgeDays,
+    missingCode: 'ops.log_retention_stale',
+    staleCode: 'ops.log_retention_stale',
+    missingMessage: 'Syncular log-retention evidence must include reviewedAt.',
+    staleMessage: 'Syncular log-retention evidence is older than allowed.',
+    recommendedAction: 'reviewLogRetention',
+    path: args.configPath,
+    issues: args.issues,
+  });
+  if (!reviewedAt) ready = false;
+
+  if (!isPositiveFiniteNumber(args.section.requestEventRetentionDays)) {
+    args.issues.push({
+      code: 'ops.log_retention_request_days_invalid',
+      severity: 'error',
+      message:
+        'Syncular log-retention evidence must include positive requestEventRetentionDays.',
+      path: args.configPath,
+      recommendedAction: 'reviewLogRetention',
+    });
+    ready = false;
+  }
+
+  if (!isPositiveFiniteNumber(args.section.operationEventRetentionDays)) {
+    args.issues.push({
+      code: 'ops.log_retention_operation_days_invalid',
+      severity: 'error',
+      message:
+        'Syncular log-retention evidence must include positive operationEventRetentionDays.',
+      path: args.configPath,
+      recommendedAction: 'reviewLogRetention',
+    });
+    ready = false;
+  }
+
+  if (!nonEmptyString(args.section.payloadSnapshotPolicy)) {
+    args.issues.push({
+      code: 'ops.log_retention_payload_policy_missing',
+      severity: 'error',
+      message:
+        'Syncular log-retention evidence must record the request-payload snapshot policy.',
+      path: args.configPath,
+      recommendedAction: 'reviewLogRetention',
+    });
+    ready = false;
+  }
+
+  return ready ? 'ready' : 'not-ready';
+}
+
+function checkOpsSupportWindow(args: {
+  section: unknown;
+  issues: OpsCheckIssue[];
+  configPath: string;
+  maxAgeDays: number;
+  now: Date;
+}): OpsCheckResult['checks']['supportWindow'] {
+  if (!isPlainRecord(args.section)) {
+    args.issues.push({
+      code: 'ops.support_window_missing',
+      severity: 'error',
+      message:
+        'Syncular ops evidence must include offline support-window sizing.',
+      path: args.configPath,
+      recommendedAction: 'reviewSupportWindow',
+    });
+    return 'missing';
+  }
+
+  let ready = true;
+  const reviewedAt = readFreshDate({
+    value: args.section.reviewedAt,
+    now: args.now,
+    maxAgeDays: args.maxAgeDays,
+    missingCode: 'ops.support_window_stale',
+    staleCode: 'ops.support_window_stale',
+    missingMessage: 'Syncular support-window evidence must include reviewedAt.',
+    staleMessage: 'Syncular support-window evidence is older than allowed.',
+    recommendedAction: 'reviewSupportWindow',
+    path: args.configPath,
+    issues: args.issues,
+  });
+  if (!reviewedAt) ready = false;
+
+  const offlineWindowDays = readPositiveFiniteNumber(
+    args.section.offlineWindowDays
+  );
+  if (offlineWindowDays === null) {
+    args.issues.push({
+      code: 'ops.support_window_offline_days_invalid',
+      severity: 'error',
+      message:
+        'Syncular support-window evidence must include positive offlineWindowDays.',
+      path: args.configPath,
+      recommendedAction: 'reviewSupportWindow',
+    });
+    ready = false;
+  }
+
+  const pruneActiveWindowDays = readPositiveFiniteNumber(
+    args.section.pruneActiveWindowDays
+  );
+  if (
+    pruneActiveWindowDays === null ||
+    (offlineWindowDays !== null && pruneActiveWindowDays < offlineWindowDays)
+  ) {
+    args.issues.push({
+      code: 'ops.support_window_prune_window_invalid',
+      severity: 'error',
+      message:
+        'Syncular support-window evidence must set pruneActiveWindowDays greater than or equal to offlineWindowDays.',
+      path: args.configPath,
+      recommendedAction: 'reviewSupportWindow',
+      details: {
+        offlineWindowDays,
+        pruneActiveWindowDays,
+      },
+    });
+    ready = false;
+  }
+
+  if (!isPositiveFiniteNumber(args.section.fullHistoryHours)) {
+    args.issues.push({
+      code: 'ops.support_window_full_history_missing',
+      severity: 'error',
+      message:
+        'Syncular support-window evidence must include positive fullHistoryHours for compaction.',
+      path: args.configPath,
+      recommendedAction: 'reviewSupportWindow',
+    });
+    ready = false;
+  }
+
+  return ready ? 'ready' : 'not-ready';
+}
+
 function validDate(value: unknown): value is string {
   if (typeof value !== 'string') return false;
   const time = Date.parse(value);
   return Number.isFinite(time);
+}
+
+function readPositiveFiniteNumber(value: unknown): number | null {
+  return isPositiveFiniteNumber(value) ? value : null;
+}
+
+function isPositiveFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value > 0;
 }
 
 function readFreshDate(args: {

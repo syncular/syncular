@@ -107,6 +107,9 @@ describe('syncular CLI', () => {
         '--max-credential-review-age-days',
         '45',
         '--max-rate-limit-review-age-days=60',
+        '--max-log-retention-review-age-days',
+        '75',
+        '--max-support-window-review-age-days=120',
         '--json',
         '--pretty',
       ])
@@ -121,6 +124,8 @@ describe('syncular CLI', () => {
         maxBlobConsistencyAgeDays: 2,
         maxCredentialReviewAgeDays: 45,
         maxRateLimitReviewAgeDays: 60,
+        maxLogRetentionReviewAgeDays: 75,
+        maxSupportWindowReviewAgeDays: 120,
       },
     });
   });
@@ -365,6 +370,8 @@ describe('syncular CLI', () => {
           blobConsistency: 'ready',
           credentialRotation: 'ready',
           rateLimits: 'ready',
+          logRetention: 'ready',
+          supportWindow: 'ready',
         },
         issues: [],
       });
@@ -381,6 +388,9 @@ describe('syncular CLI', () => {
         blobStatus: 'fail',
         credentialReviewedAt: '2026-01-01T00:00:00.000Z',
         rateLimitStatus: 'disabled',
+        logRetentionReviewedAt: '2026-01-01T00:00:00.000Z',
+        payloadSnapshotPolicy: '',
+        pruneActiveWindowDays: 7,
       });
 
       const result = runOpsCheckCommand(
@@ -407,6 +417,18 @@ describe('syncular CLI', () => {
           expect.objectContaining({
             code: 'ops.rate_limits_status_invalid',
             recommendedAction: 'tuneRateLimits',
+          }),
+          expect.objectContaining({
+            code: 'ops.log_retention_stale',
+            recommendedAction: 'reviewLogRetention',
+          }),
+          expect.objectContaining({
+            code: 'ops.log_retention_payload_policy_missing',
+            recommendedAction: 'reviewLogRetention',
+          }),
+          expect.objectContaining({
+            code: 'ops.support_window_prune_window_invalid',
+            recommendedAction: 'reviewSupportWindow',
           }),
         ])
       );
@@ -464,6 +486,9 @@ function writeOpsCheckFixture(
     blobStatus?: string;
     credentialReviewedAt?: string;
     rateLimitStatus?: string;
+    logRetentionReviewedAt?: string;
+    payloadSnapshotPolicy?: string;
+    pruneActiveWindowDays?: number;
   } = {}
 ): void {
   writeFileSync(
@@ -497,6 +522,20 @@ function writeOpsCheckFixture(
       rateLimits: {
         reviewedAt: '2026-06-15T00:00:00.000Z',
         status: options.rateLimitStatus ?? 'enabled',
+      },
+      logRetention: {
+        reviewedAt:
+          options.logRetentionReviewedAt ?? '2026-06-15T00:00:00.000Z',
+        requestEventRetentionDays: 14,
+        operationEventRetentionDays: 30,
+        payloadSnapshotPolicy:
+          options.payloadSnapshotPolicy ?? 'redacted-bounded',
+      },
+      supportWindow: {
+        reviewedAt: '2026-06-15T00:00:00.000Z',
+        offlineWindowDays: 14,
+        pruneActiveWindowDays: options.pruneActiveWindowDays ?? 14,
+        fullHistoryHours: 168,
       },
     })
   );

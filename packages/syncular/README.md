@@ -30,7 +30,8 @@ tool cache explicitly.
 `syncular schema check --json` verifies generated config, migrations, and
 generated client/server schema versions before deploy. `syncular ops check
 --json` validates the production runbook evidence file for restore drills,
-blob consistency, credential rotation, and rate-limit review status.
+blob consistency, credential rotation, rate-limit review status, log/event
+retention, and offline support-window sizing.
 
 ## Documentation
 

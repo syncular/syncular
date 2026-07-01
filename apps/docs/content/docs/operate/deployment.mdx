@@ -434,8 +434,9 @@ npx syncular ops check --config ./ops/production.syncular.ops.json --json
 ```
 
 The check validates the facts from this page: schema readiness, latest restore
-drill, blob consistency policy, credential rotation ownership/cadence, and
-rate-limit review status. It does not replace live probes such as
+drill, blob consistency policy, credential rotation ownership/cadence,
+rate-limit review status, Console log/event retention, and offline
+support-window sizing. It does not replace live probes such as
 `GET <mount>/health`; it makes the operator runbook evidence machine-readable
 so CI can block an unsafe deploy before traffic moves.
 
@@ -473,6 +474,8 @@ for their next HTTP pull instead of waking immediately.
         [Upgrade Guide](/reference/upgrade-guide)
   - [ ] Backups configured and restore tested
   - [ ] Last restore drill recorded with expected client re-bootstrap load
+  - [ ] Offline support window reviewed; `routes.prune.activeWindowMs` covers it
+  - [ ] Compaction `fullHistoryHours` reviewed for support/debug expectations
 - **Authentication**
   - [ ] `authenticate` validates real tokens/sessions; secrets from env, not source
   - [ ] Auth, console, API-key, and storage credential rotation owners/cadence set
@@ -484,6 +487,8 @@ for their next HTTP pull instead of waking immediately.
 - **Maintenance**
   - [ ] `routes.prune` enabled with an `activeWindowMs` ≥ your users' realistic offline window
   - [ ] `routes.compact` enabled with `options.fullHistoryHours` set
+  - [ ] Console request-event and operation-event retention windows reviewed
+  - [ ] Request-payload snapshot policy recorded as disabled or redacted/bounded
   - [ ] Blob consistency sampling configured when using external blob storage
   - [ ] Health endpoint wired into platform checks and alerting
 - **Console** (if enabled)

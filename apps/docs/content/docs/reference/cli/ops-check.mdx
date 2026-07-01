@@ -54,6 +54,18 @@ npx syncular ops check --config ./ops/production.syncular.json --json
   "rateLimits": {
     "reviewedAt": "2026-06-15T00:00:00.000Z",
     "status": "enabled"
+  },
+  "logRetention": {
+    "reviewedAt": "2026-06-15T00:00:00.000Z",
+    "requestEventRetentionDays": 14,
+    "operationEventRetentionDays": 30,
+    "payloadSnapshotPolicy": "redacted-bounded"
+  },
+  "supportWindow": {
+    "reviewedAt": "2026-06-15T00:00:00.000Z",
+    "offlineWindowDays": 14,
+    "pruneActiveWindowDays": 14,
+    "fullHistoryHours": 168
   }
 }
 ```
@@ -78,6 +90,8 @@ If your app does not use external blob storage, set:
 | `blobConsistency` | Pass/fail evidence for external blob storage, or an explicit not-applicable declaration |
 | `credentialRotation` | Review date plus owners for auth and Console credentials; storage owner is required when blob storage is required |
 | `rateLimits` | Rate limits are enabled in Syncular or owned by a gateway, with review date |
+| `logRetention` | Console request-event and operation-event retention windows plus request-payload snapshot policy |
+| `supportWindow` | Offline support window, prune active window, and compaction full-history window |
 
 ## Freshness Flags
 
@@ -91,6 +105,8 @@ npx syncular ops check \
   --max-blob-consistency-age-days 1 \
   --max-credential-review-age-days 45 \
   --max-rate-limit-review-age-days 45 \
+  --max-log-retention-review-age-days 45 \
+  --max-support-window-review-age-days 45 \
   --json
 ```
 
