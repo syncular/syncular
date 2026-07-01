@@ -52,7 +52,7 @@ export type SyncularWasmInitInput =
         | Promise<SyncularWasmModuleInput>;
     };
 
-type SyncularWasmFetchInput = string | URL | Request;
+type SyncularWasmFetchInput = string | URL | Request | Response;
 
 let modulePromise: Promise<SyncularWasmGlue> | undefined;
 
@@ -94,7 +94,7 @@ export async function prepareSyncularWasmModuleInput(
   wasmUrl: SyncularWasmModuleInput = getSyncularWasmUrl()
 ): Promise<SyncularWasmModuleInput> {
   if (!shouldReadWasmUrlAsBytes(wasmUrl)) return wasmUrl;
-  const response = await fetch(wasmUrl);
+  const response = isResponseInput(wasmUrl) ? wasmUrl : await fetch(wasmUrl);
   if (!response.ok) {
     throw new Error(
       `Syncular WASM runtime artifact could not be loaded from ${describeSyncularWasmInput(
@@ -114,32 +114,35 @@ export function readSyncularRustRuntimeInfo(
 function shouldReadWasmUrlAsBytes(
   input: SyncularWasmModuleInput
 ): input is SyncularWasmFetchInput {
-  return isBunRuntime() && isFileUrlInput(input);
+  return isFetchableWasmInput(input);
 }
 
-function isBunRuntime(): boolean {
-  return (globalThis as typeof globalThis & { Bun?: unknown }).Bun != null;
-}
-
-function isFileUrlInput(
+function isFetchableWasmInput(
   input: SyncularWasmModuleInput
 ): input is SyncularWasmFetchInput {
-  if (input instanceof URL) return input.protocol === 'file:';
-  if (input instanceof Request) return isFileUrlString(input.url);
-  if (typeof input === 'string') return isFileUrlString(input);
-  return false;
+  return (
+    typeof input === 'string' ||
+    isUrlInput(input) ||
+    isRequestInput(input) ||
+    isResponseInput(input)
+  );
 }
 
-function isFileUrlString(input: string): boolean {
-  try {
-    return new URL(input).protocol === 'file:';
-  } catch {
-    return false;
-  }
+function isUrlInput(input: SyncularWasmModuleInput): input is URL {
+  return typeof URL === 'function' && input instanceof URL;
 }
 
-function describeSyncularWasmInput(input: string | URL | Request): string {
+function isRequestInput(input: SyncularWasmModuleInput): input is Request {
+  return typeof Request === 'function' && input instanceof Request;
+}
+
+function isResponseInput(input: SyncularWasmModuleInput): input is Response {
+  return typeof Response === 'function' && input instanceof Response;
+}
+
+function describeSyncularWasmInput(input: SyncularWasmFetchInput): string {
   if (input instanceof URL) return input.href;
   if (input instanceof Request) return input.url;
+  if (input instanceof Response) return input.url || '<inline response>';
   return input;
 }
