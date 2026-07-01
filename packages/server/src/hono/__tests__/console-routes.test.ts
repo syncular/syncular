@@ -2654,14 +2654,20 @@ describe('console timeline route filters', () => {
     expect(accepted.bootstrap?.status).toBe('ready');
     expect(accepted.bootstrap?.supportBundleIssueCount).toBe(1);
     expect(accepted.timingSummary?.count).toBe(1);
-    expect(
-      (accepted.timingSummary?.latest as Record<string, unknown> | undefined)
-        ?.localVisibilityMs
-    ).toBe(5);
-    expect(
-      (accepted.timingSummary?.latest as Record<string, unknown> | undefined)
-        ?.lifecyclePauseCount
-    ).toBe(2);
+    const timingLatest = accepted.timingSummary?.latest as
+      | Record<string, unknown>
+      | undefined;
+    expect(timingLatest?.localVisibilityMs).toBe(5);
+    expect(timingLatest?.lifecycleResumeCount).toBe(2);
+    expect(timingLatest?.lifecycleResumeReason).toBe('online');
+    expect(timingLatest?.lifecycleResumeLockName).toBe(
+      'syncular:create-syncular-app:lifecycle-resume'
+    );
+    expect(timingLatest?.lifecycleResumeLockState).toBe('acquired');
+    expect(timingLatest?.lifecycleResumeLockTimeoutMs).toBe(10_000);
+    expect(timingLatest?.lifecyclePauseCount).toBe(2);
+    expect(timingLatest?.lifecyclePauseReason).toBe('beforeunload');
+    expect(timingLatest?.lifecyclePauseVisibilityState).toBe('visible');
 
     const diagnostic = accepted.recentDiagnostics[0];
     expect(diagnostic?.source).toBe('browser-preview');

@@ -2373,6 +2373,11 @@ online propagation, or reconnect behavior can change.
   validates and preserves lifecycle lock name, required flag, acquired/timed
   out state, and timeout budget inside stored `browser.preview_failure`
   diagnostic details.
+- 2026-07-01: Added browser-preview lifecycle resume/pause evidence to the
+  Console timing summary. Stored `browser.preview_failure` snapshots now carry
+  resume count/status/reason, Web Lock name/state/timeout, pause count/reason,
+  shutdown count, and pause visibility state in the quick timing row as well
+  as the detailed diagnostic payload.
 - 2026-07-01: Expanded production operations docs beyond the first upgrade
   runbook. Deployment now includes restore-drill steps, blob storage
   consistency sampling, rate-limit tuning, credential rotation cadence, and
@@ -2844,8 +2849,8 @@ Most recent browser-failure Console ingestion rerun:
     ingestion with client identity, sensitive-field rejection, normalized
     `browser.preview_failure` records, deployment-preflight storage/quota and
     service-worker controller detail preservation, lifecycle Web Lock detail
-    preservation, safe metrics/timing preservation, and dropping the artifact
-    page `textExcerpt`.
+    preservation, lifecycle timing-summary preservation, safe metrics/timing
+    preservation, and dropping the artifact page `textExcerpt`.
 
 Most recent starter local-visibility artifact rerun:
 

@@ -848,7 +848,17 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
           realtimeConnectedMs: starterTimeline?.realtimeConnectedMs ?? null,
           localVisibilityMs: starterTimeline?.localVisibilityMs ?? null,
           supportBundleExportMs: starterTimeline?.supportBundleExportMs ?? null,
+          lifecycleResumeCount: lifecycleResume?.count ?? null,
+          lifecycleResumeStatus: lifecycleResume?.status ?? null,
+          lifecycleResumeReason: lifecycleResume?.reason ?? null,
+          lifecycleResumeLockName: lifecycleResume?.lockName ?? null,
+          lifecycleResumeLockRequired: lifecycleResume?.lockRequired ?? null,
+          lifecycleResumeLockState: lifecycleResume?.lockState ?? null,
+          lifecycleResumeLockTimeoutMs: lifecycleResume?.lockTimeoutMs ?? null,
           lifecyclePauseCount: lifecyclePause?.count ?? null,
+          lifecyclePauseReason: lifecyclePause?.reason ?? null,
+          lifecyclePauseVisibilityState:
+            lifecyclePause?.visibilityState ?? null,
           lifecycleShutdownSignalCount:
             lifecyclePause?.shutdownSignalCount ?? null,
         }),
