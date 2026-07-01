@@ -99,8 +99,11 @@ If a `create-syncular-app` browser preview smoke writes
 `browser-preview-failure.json`, operators can post that artifact to
 `POST /console/client-diagnostics/browser-preview-failure`. The Console stores
 it as a redacted `browser.preview_failure` diagnostic record, keeping safe
-preview metrics, deployment-preflight facts, support-bundle counts, and
-runtime timing summaries while dropping the page text excerpt.
+preview metrics, browser support-policy verdicts/reason codes,
+deployment-preflight facts, support-bundle counts, and runtime timing
+summaries while dropping the page text excerpt. The client detail runtime
+panel renders the compact policy status, reason, required evidence, known
+risk, next step, and observed-vs-expected persistence/support-tier summary.
 
 If `framework-import-smokes` writes `cloudflare-runtime-failure.json`,
 operators can post it to

@@ -44,8 +44,11 @@ Starter/browser preview smokes can also post the raw
 `clientId`/`actorId`/`partitionId`, to
 `POST /console/client-diagnostics/browser-preview-failure`. Console normalizes
 that artifact into a `browser.preview_failure` diagnostic record with safe
-asset metrics, deployment-preflight facts, support-bundle counts, lifecycle
-timings, and timeline counters. The bounded page `textExcerpt` from the
+asset metrics, browser support-policy verdicts/reason codes, deployment
+preflight facts, support-bundle counts, lifecycle timings, and timeline
+counters. The client detail runtime panel surfaces the support-policy status,
+observed vs expected support tier/persistence, first reason, required
+evidence, known risk, and next step. The bounded page `textExcerpt` from the
 artifact is not retained in the normalized Console record.
 
 Cloudflare framework/runtime smokes can post the raw

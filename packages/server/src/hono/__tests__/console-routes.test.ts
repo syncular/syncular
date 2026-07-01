@@ -2668,6 +2668,31 @@ describe('console timeline route filters', () => {
     expect(accepted.transportStats?.serviceWorkerControllerScriptPath).toBe(
       '/__syncular/sw.js'
     );
+    expect(accepted.transportStats?.browserSupportPolicy).toBe(
+      'supported-after-preflight'
+    );
+    expect(accepted.transportStats?.browserSupportPolicyStatus).toBe('met');
+    expect(accepted.transportStats?.browserSupportPolicyContext).toBe(
+      'chromium-secure-page'
+    );
+    expect(
+      accepted.transportStats?.browserSupportPolicyObservedSupportTier
+    ).toBe('persistent-offline');
+    expect(
+      accepted.transportStats?.browserSupportPolicyObservedPersistence
+    ).toBe('persistent');
+    expect(accepted.transportStats?.browserSupportPolicyFirstReason).toBe(
+      'browser_support.policy_met'
+    );
+    expect(
+      accepted.transportStats?.browserSupportPolicyFirstRequiredEvidence
+    ).toBe('deployment preflight passed');
+    expect(accepted.transportStats?.browserSupportPolicyFirstKnownRisk).toBe(
+      'storage can be evicted'
+    );
+    expect(accepted.transportStats?.browserSupportPolicyFirstNextStep).toBe(
+      'run reopen smoke'
+    );
     expect(accepted.bootstrap?.status).toBe('ready');
     expect(accepted.bootstrap?.supportBundleIssueCount).toBe(1);
     expect(accepted.timingSummary?.count).toBe(1);

@@ -2388,6 +2388,11 @@ online propagation, or reconnect behavior can change.
   deployment-preflight status, support tier, persistence/quota pressure,
   service-worker control, and lifecycle resume/pause/Web Lock evidence without
   opening raw diagnostic JSON.
+- 2026-07-01: Promoted browser support-policy verdicts into Console quick
+  summaries and the client detail runtime panel. Stored
+  `browser.preview_failure` snapshots now expose policy/status/context,
+  observed-vs-expected support tier and persistence, first reason code,
+  required evidence, known risk, and next step without requiring raw JSON.
 - 2026-07-01: Surfaced Cloudflare runtime failure summaries in the same
   Console client detail panel. The panel now shows failed route, sync/blob/
   WebSocket route bases, exit/output context, and R2 blob byte/timing evidence
@@ -2883,20 +2888,25 @@ Most recent browser-failure Console ingestion rerun:
     `browser.preview_failure` records, deployment-preflight storage/quota and
     service-worker controller detail preservation, lifecycle Web Lock detail
     preservation, deployment-preflight transport summary preservation,
-    lifecycle timing-summary preservation, safe metrics/timing preservation,
-    and dropping the artifact page `textExcerpt`.
+    browser support-policy transport summary preservation, lifecycle
+    timing-summary preservation, safe metrics/timing preservation, and dropping
+    the artifact page `textExcerpt`.
 
 Most recent browser-failure Console UI summary rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/console tsgo`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/console build`
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/console/src/pages/ClientDetails.tsx`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke --skip-framework-import-smokes`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/server/src/hono/console/routes/shared.ts packages/server/src/hono/__tests__/console-routes.test.ts packages/console/src/pages/ClientDetails.tsx apps/docs/content/docs/operate/console/fleet.mdx apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
   - Passed with the Console client detail runtime panel rendering conditional
-    browser-preview asset, deployment-preflight, service-worker, and lifecycle
-    summary cards from `transportStats` and the latest timing summary. The
-    production build emitted the existing Vite large-chunk warning only.
+    browser-preview asset, support-policy, deployment-preflight,
+    service-worker, and lifecycle summary cards from `transportStats` and the
+    latest timing summary. The release-rehearsal focused ingestion path also
+    passed with the promoted support-policy quick fields. The production build
+    emitted the existing Vite large-chunk warning only.
 
 Most recent starter local-visibility artifact rerun:
 
@@ -3595,9 +3605,10 @@ Most recent mutation-status rerun:
   storing the artifact page text excerpt, and preserving the browser
   support-policy evaluation alongside deployment-preflight and support-bundle
   summaries. The Console client detail runtime panel now renders those quick
-  summaries as asset, deployment-preflight, service-worker, quota, and
-  lifecycle/Web Lock cards so operators do not need raw JSON for the first
-  diagnosis. Cloudflare runtime artifacts now feed Console/Fleet through
+  summaries as asset, browser support-policy, deployment-preflight,
+  service-worker, quota, and lifecycle/Web Lock cards so operators do not need
+  raw JSON for the first diagnosis. Cloudflare runtime artifacts now feed
+  Console/Fleet through
   `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
   route, exit, bounded output, and safe blob timing/byte metrics as
   `cloudflare.runtime_failure` diagnostics, and the Console client detail
@@ -3660,7 +3671,9 @@ Most recent mutation-status rerun:
   next steps for the starter's Chrome/Chromium context, which lets
   Console/Fleet distinguish "preflight incomplete" from "support policy not
   met" and surface the missing evidence without user-agent sniffing or prose
-  parsing.
+  parsing. Console now promotes the compact policy verdict, first reason,
+  required evidence, known risk, and next step into quick fields and client
+  detail cards for first-pass triage.
   The support-bundle marker now adds redacted runtime timeline counts for
   sync, realtime, local-apply, blob, cursors, request ids, sync-attempt ids,
   and latest phase codes, and refreshes on row changes. The Chrome/CDP path

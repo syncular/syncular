@@ -538,6 +538,24 @@ function ClientRuntimeDiagnostics({
     'starterTimelineMarkerInAssets',
     'supportBundleMarkerInAssets',
   ]);
+  const hasBrowserSupportPolicySummary = hasAnyField(transport, [
+    'browserSupportPolicy',
+    'browserSupportPolicyStatus',
+    'browserSupportPolicyContext',
+    'browserSupportPolicyExpectedSupportTier',
+    'browserSupportPolicyObservedSupportTier',
+    'browserSupportPolicyExpectedPersistence',
+    'browserSupportPolicyObservedPersistence',
+    'browserSupportPolicyPreflightRequired',
+    'browserSupportPolicyReasonCount',
+    'browserSupportPolicyFirstReason',
+    'browserSupportPolicyRequiredEvidenceCount',
+    'browserSupportPolicyFirstRequiredEvidence',
+    'browserSupportPolicyKnownRiskCount',
+    'browserSupportPolicyFirstKnownRisk',
+    'browserSupportPolicyNextStepCount',
+    'browserSupportPolicyFirstNextStep',
+  ]);
   const hasBrowserDeploymentSummary = hasAnyField(transport, [
     'deploymentPreflightStatus',
     'deploymentPreflightSupportTier',
@@ -788,6 +806,83 @@ function ClientRuntimeDiagnostics({
                 label="Runtime Markers"
                 value={`timeline ${stringField(transport, 'starterTimelineMarkerInAssets')}`}
                 detail={`bundle ${stringField(transport, 'supportBundleMarkerInAssets')}`}
+              />
+            </div>
+          </div>
+        ) : null}
+
+        {hasBrowserSupportPolicySummary ? (
+          <div className="mt-4">
+            <p className="font-mono text-[10px] text-neutral-500 uppercase tracking-wide">
+              Browser Support Policy
+            </p>
+            <div className="mt-2 grid grid-cols-2 gap-3">
+              <Metric
+                label="Policy"
+                value={stringField(transport, 'browserSupportPolicyStatus')}
+                detail={stringField(transport, 'browserSupportPolicy')}
+                intent={
+                  stringField(transport, 'browserSupportPolicyStatus') !== 'met'
+                }
+              />
+              <Metric
+                label="Context"
+                value={stringField(transport, 'browserSupportPolicyContext')}
+                detail={`preflight ${stringField(transport, 'browserSupportPolicyPreflightRequired')}`}
+              />
+              <Metric
+                label="Support Tier"
+                value={stringField(
+                  transport,
+                  'browserSupportPolicyObservedSupportTier'
+                )}
+                detail={`expected ${stringField(transport, 'browserSupportPolicyExpectedSupportTier')}`}
+              />
+              <Metric
+                label="Persistence"
+                value={stringField(
+                  transport,
+                  'browserSupportPolicyObservedPersistence'
+                )}
+                detail={`expected ${stringField(transport, 'browserSupportPolicyExpectedPersistence')}`}
+                intent={
+                  stringField(
+                    transport,
+                    'browserSupportPolicyObservedPersistence'
+                  ) === 'memory'
+                }
+              />
+              <Metric
+                label="Reason"
+                value={stringField(
+                  transport,
+                  'browserSupportPolicyFirstReason'
+                )}
+                detail={`${formatNumber(numberField(transport, 'browserSupportPolicyReasonCount'))} codes`}
+              />
+              <Metric
+                label="Required Evidence"
+                value={stringField(
+                  transport,
+                  'browserSupportPolicyFirstRequiredEvidence'
+                )}
+                detail={`${formatNumber(numberField(transport, 'browserSupportPolicyRequiredEvidenceCount'))} items`}
+              />
+              <Metric
+                label="Known Risk"
+                value={stringField(
+                  transport,
+                  'browserSupportPolicyFirstKnownRisk'
+                )}
+                detail={`${formatNumber(numberField(transport, 'browserSupportPolicyKnownRiskCount'))} items`}
+              />
+              <Metric
+                label="Next Step"
+                value={stringField(
+                  transport,
+                  'browserSupportPolicyFirstNextStep'
+                )}
+                detail={`${formatNumber(numberField(transport, 'browserSupportPolicyNextStepCount'))} items`}
               />
             </div>
           </div>

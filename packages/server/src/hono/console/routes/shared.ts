@@ -879,6 +879,43 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
         otherAssetBytes: artifact.metrics.otherAssetBytes,
         browserSupportPolicyMarkerInAssets:
           artifact.metrics.browserSupportPolicyMarkerInAssets ?? null,
+        browserSupportPolicy: browserSupportPolicy?.policy ?? null,
+        browserSupportPolicyStatus: browserSupportPolicy?.status ?? null,
+        browserSupportPolicyContext: browserSupportPolicy?.context ?? null,
+        browserSupportPolicyExpectedSupportTier:
+          browserSupportPolicy?.expectedSupportTier ?? null,
+        browserSupportPolicyObservedSupportTier:
+          browserSupportPolicy?.observedSupportTier ?? null,
+        browserSupportPolicyExpectedPersistence:
+          browserSupportPolicy?.expectedPersistence ?? null,
+        browserSupportPolicyObservedPersistence:
+          browserSupportPolicy?.observedPersistence ?? null,
+        browserSupportPolicyPreflightRequired:
+          browserSupportPolicy?.preflightRequired ?? null,
+        browserSupportPolicyReasonCount:
+          browserSupportPolicy?.reasonCount ??
+          browserSupportPolicy?.reasonCodes?.length ??
+          null,
+        browserSupportPolicyFirstReason:
+          browserSupportPolicy?.reasonCodes[0] ?? null,
+        browserSupportPolicyRequiredEvidenceCount:
+          browserSupportPolicy?.requiredEvidenceCount ??
+          browserSupportPolicy?.requiredEvidence?.length ??
+          null,
+        browserSupportPolicyFirstRequiredEvidence:
+          browserSupportPolicy?.requiredEvidence[0] ?? null,
+        browserSupportPolicyKnownRiskCount:
+          browserSupportPolicy?.knownRiskCount ??
+          browserSupportPolicy?.knownRisks?.length ??
+          null,
+        browserSupportPolicyFirstKnownRisk:
+          browserSupportPolicy?.knownRisks[0] ?? null,
+        browserSupportPolicyNextStepCount:
+          browserSupportPolicy?.nextStepCount ??
+          browserSupportPolicy?.nextSteps?.length ??
+          null,
+        browserSupportPolicyFirstNextStep:
+          browserSupportPolicy?.nextSteps[0] ?? null,
         deploymentPreflightMarkerInAssets:
           artifact.metrics.deploymentPreflightMarkerInAssets,
         deploymentPreflightStatus: deploymentPreflight?.status ?? null,

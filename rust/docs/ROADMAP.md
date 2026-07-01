@@ -226,9 +226,12 @@ read-only review:
     visibility, plus deployment-preflight storage/quota status when Chrome/CDP
     is available, including available bytes, usage ratio, and quota pressure.
     The Console client detail runtime panel now renders those browser-preview
-    asset, deployment-preflight, service-worker, quota, and lifecycle/Web Lock
-    summaries from the stored quick fields, so operators get a first diagnosis
-    without opening raw diagnostic JSON.
+    asset, support-policy, deployment-preflight, service-worker, quota, and
+    lifecycle/Web Lock summaries from the stored quick fields, so operators
+    get a first diagnosis without opening raw diagnostic JSON. Browser
+    support-policy cards now show status, context, observed vs expected
+    support/persistence, first reason, required evidence, known risk, and next
+    step.
     Cloudflare runtime failure diagnostics now get the same first-triage
     treatment: the Console client detail runtime panel surfaces failed route,
     sync/blob/WebSocket route bases, exit/output context, and R2 blob
