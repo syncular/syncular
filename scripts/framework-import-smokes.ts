@@ -1988,6 +1988,16 @@ async function runBlobRouteFlow(args: {
     referenceTable: 'syncular_framework_tasks',
     referenceColumn: 'image_blob_ref',
   });
+
+  await runPartitionedBlobReferenceFlow({
+    actorId,
+    origin: args.origin,
+    output: args.output,
+    partitionId,
+    routeBase: args.routeBase,
+    syncRouteBase: args.syncRouteBase,
+    getExit: args.getExit,
+  });
 }
 
 async function pushBlobReferenceRow(args: {
@@ -2072,6 +2082,345 @@ async function pushBlobReferenceRow(args: {
   ) {
     throw new Error(
       `${label} blob reference push did not apply: ${JSON.stringify(
+        pushBody
+      ).slice(0, 500)}`
+    );
+  }
+}
+
+async function runPartitionedBlobReferenceFlow(args: {
+  actorId: string;
+  origin: string;
+  output: string[];
+  partitionId: string;
+  routeBase: string;
+  syncRouteBase: string;
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<void> {
+  const label = 'Cloudflare R2 blob route smoke';
+  const alternatePartitionId = `${args.partitionId}-alternate`;
+  const contentText = `syncular-cloudflare-r2-partitioned-route-content-${Date.now()}`;
+  const content = new TextEncoder().encode(contentText);
+  const hash = `sha256:${createHash('sha256').update(content).digest('hex')}`;
+  const headers = {
+    'content-type': 'application/json',
+    'x-syncular-smoke-actor': args.actorId,
+    'x-syncular-smoke-partition': args.partitionId,
+  };
+
+  const initResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/upload`,
+    init: {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        hash,
+        size: content.byteLength,
+        mimeType: 'text/plain',
+      }),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(
+    label,
+    'partitioned upload init',
+    initResponse,
+    args.output
+  );
+  const initBody = (await readJsonResponse(
+    label,
+    'partitioned upload init',
+    initResponse
+  )) as {
+    headers?: Record<string, string>;
+    uploadMethod?: string;
+    uploadUrl?: string;
+  };
+  if (typeof initBody.uploadUrl !== 'string') {
+    throw new Error(
+      `${label} did not return a partitioned upload URL: ${JSON.stringify(
+        initBody
+      )}`
+    );
+  }
+
+  const uploadResponse = await fetchWorkerResponse({
+    label,
+    url: resolveWorkerRouteUrl(args.origin, initBody.uploadUrl),
+    init: {
+      method: initBody.uploadMethod ?? 'PUT',
+      headers: {
+        ...(initBody.headers ?? {}),
+        'content-type': 'text/plain',
+        'content-length': String(content.byteLength),
+      },
+      body: content,
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(
+    label,
+    'partitioned upload bytes',
+    uploadResponse,
+    args.output
+  );
+
+  const completeResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+      hash
+    )}/complete`,
+    init: {
+      method: 'POST',
+      headers: {
+        'x-syncular-smoke-actor': args.actorId,
+        'x-syncular-smoke-partition': args.partitionId,
+      },
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(
+    label,
+    'partitioned complete upload',
+    completeResponse,
+    args.output
+  );
+
+  await pushPartitionedBlobReferenceRow({
+    actorId: args.actorId,
+    hash,
+    mimeType: 'text/plain',
+    origin: args.origin,
+    output: args.output,
+    partitionId: alternatePartitionId,
+    routeBase: args.syncRouteBase,
+    size: content.byteLength,
+    getExit: args.getExit,
+  });
+
+  const wrongPartitionUrlResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+      hash
+    )}/url`,
+    init: {
+      headers: {
+        'x-syncular-smoke-actor': args.actorId,
+        'x-syncular-smoke-partition': args.partitionId,
+      },
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  const wrongPartitionUrlBody = await expectJsonErrorResponse(
+    label,
+    'wrong-partition download URL',
+    {
+      response: wrongPartitionUrlResponse,
+      output: args.output,
+      status: 403,
+      code: 'blob.forbidden',
+      category: 'forbidden',
+      recommendedAction: 'checkPermissions',
+    }
+  );
+  assertBlobAccessDeniedDetails(label, 'wrong-partition download URL', {
+    body: wrongPartitionUrlBody,
+    partitionId: args.partitionId,
+    accessReason: 'missing_reference',
+    accessStage: 'reference',
+  });
+
+  await pushPartitionedBlobReferenceRow({
+    actorId: args.actorId,
+    hash,
+    mimeType: 'text/plain',
+    origin: args.origin,
+    output: args.output,
+    partitionId: args.partitionId,
+    routeBase: args.syncRouteBase,
+    size: content.byteLength,
+    getExit: args.getExit,
+  });
+
+  const downloadUrlResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+      hash
+    )}/url`,
+    init: {
+      headers: {
+        'x-syncular-smoke-actor': args.actorId,
+        'x-syncular-smoke-partition': args.partitionId,
+      },
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(
+    label,
+    'partitioned download URL',
+    downloadUrlResponse,
+    args.output
+  );
+  const downloadUrlBody = (await readJsonResponse(
+    label,
+    'partitioned download URL',
+    downloadUrlResponse
+  )) as { url?: string };
+  if (typeof downloadUrlBody.url !== 'string') {
+    throw new Error(
+      `${label} did not return a partitioned download URL: ${JSON.stringify(
+        downloadUrlBody
+      )}`
+    );
+  }
+
+  const forbiddenDownloadUrlResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+      hash
+    )}/url`,
+    init: {
+      headers: {
+        'x-syncular-smoke-actor': `${args.actorId}-intruder`,
+        'x-syncular-smoke-partition': args.partitionId,
+      },
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  const forbiddenDownloadUrlBody = await expectJsonErrorResponse(
+    label,
+    'partitioned forbidden download URL',
+    {
+      response: forbiddenDownloadUrlResponse,
+      output: args.output,
+      status: 403,
+      code: 'blob.forbidden',
+      category: 'forbidden',
+      recommendedAction: 'checkPermissions',
+    }
+  );
+  assertBlobAccessDeniedDetails(label, 'partitioned forbidden download URL', {
+    body: forbiddenDownloadUrlBody,
+    partitionId: args.partitionId,
+    accessReason: 'scope_denied',
+    accessStage: 'scope',
+    referenceTable: 'syncular_framework_file_versions',
+    referenceColumn: 'blob_ref',
+  });
+
+  const downloadResponse = await fetchWorkerResponse({
+    label,
+    url: resolveWorkerRouteUrl(args.origin, downloadUrlBody.url),
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(
+    label,
+    'partitioned download bytes',
+    downloadResponse,
+    args.output
+  );
+  const downloadedText = await downloadResponse.text();
+  if (downloadedText !== contentText) {
+    throw new Error(
+      `${label} downloaded unexpected partitioned content: ${downloadedText.slice(
+        0,
+        200
+      )}`
+    );
+  }
+}
+
+async function pushPartitionedBlobReferenceRow(args: {
+  actorId: string;
+  hash: string;
+  mimeType: string;
+  origin: string;
+  output: string[];
+  partitionId: string;
+  routeBase: string;
+  size: number;
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<void> {
+  const label = 'Cloudflare R2 blob route smoke';
+  const rowId = `syncular-framework-file-version-${args.partitionId}-${Date.now()}`;
+  const pushResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}`,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-syncular-smoke-actor': args.actorId,
+      },
+      body: JSON.stringify({
+        clientId: `syncular-framework-file-version-writer-${args.partitionId}`,
+        push: {
+          commits: [
+            {
+              clientCommitId: `commit-${rowId}`,
+              schemaVersion: 1,
+              operations: [
+                {
+                  table: 'syncular_framework_file_versions',
+                  row_id: rowId,
+                  op: 'upsert',
+                  payload: {
+                    id: rowId,
+                    owner_id: args.actorId,
+                    partition_id: args.partitionId,
+                    content_hash: args.hash,
+                    blob_ref: JSON.stringify({
+                      hash: args.hash,
+                      size: args.size,
+                      mimeType: args.mimeType,
+                    }),
+                    server_version: 0,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(
+    label,
+    'partitioned blob reference push',
+    pushResponse,
+    args.output
+  );
+  const pushBody = (await readSyncRouteResponse(
+    label,
+    'partitioned blob reference push',
+    pushResponse
+  )) as {
+    ok?: boolean;
+    push?: {
+      commits?: Array<{
+        results?: Array<{ status?: string }>;
+        status?: string;
+      }>;
+    };
+  };
+  const pushedCommit = pushBody.push?.commits?.[0];
+  if (
+    pushBody.ok !== true ||
+    pushedCommit?.status !== 'applied' ||
+    pushedCommit.results?.[0]?.status !== 'applied'
+  ) {
+    throw new Error(
+      `${label} partitioned blob reference push did not apply: ${JSON.stringify(
         pushBody
       ).slice(0, 500)}`
     );
@@ -2664,6 +3013,18 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
         col.notNull().defaultTo(0)
       )
       .execute();
+    await db.schema
+      .createTable('syncular_framework_file_versions')
+      .ifNotExists()
+      .addColumn('id', 'text', (col) => col.primaryKey())
+      .addColumn('owner_id', 'text', (col) => col.notNull())
+      .addColumn('partition_id', 'text', (col) => col.notNull())
+      .addColumn('content_hash', 'text', (col) => col.notNull())
+      .addColumn('blob_ref', 'text')
+      .addColumn('server_version', 'integer', (col) =>
+        col.notNull().defaultTo(0)
+      )
+      .execute();
     const taskHandler = createServerHandler({
       table: 'syncular_framework_tasks',
       scopes: ['user:{user_id}'],
@@ -2671,11 +3032,18 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
         user_id: [ctx.actorId],
       }),
     });
+    const fileVersionHandler = createServerHandler({
+      table: 'syncular_framework_file_versions',
+      scopes: ['user:{owner_id}'],
+      resolveScopes: async (ctx) => ({
+        owner_id: [ctx.actorId],
+      }),
+    });
     const { syncRoutes } = createSyncServer({
       db,
       dialect: syncDialect,
       sync: {
-        handlers: [taskHandler],
+        handlers: [taskHandler, fileVersionHandler],
         authenticate: async (request) => {
           const actorId =
             request.headers.get('x-syncular-smoke-actor') ??
@@ -2703,12 +3071,18 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
         },
         canAccessBlob: createScopedBlobAccessDecisionChecker({
           db,
-          handlers: [taskHandler],
+          handlers: [taskHandler, fileVersionHandler],
           references: [
             {
               table: 'syncular_framework_tasks',
               blobColumns: ['image_blob_ref'],
               hashColumn: 'image_blob_hash',
+            },
+            {
+              table: 'syncular_framework_file_versions',
+              blobColumns: ['blob_ref'],
+              hashColumn: 'content_hash',
+              partitionColumn: 'partition_id',
             },
           ],
         }),

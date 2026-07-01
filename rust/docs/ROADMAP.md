@@ -163,12 +163,13 @@ read-only review:
     reader/writer WebSockets over the Durable Object upgrade bridge, pushes
     through the writer socket, and decodes the reader's binary sync-pack delta
     for the D1 row, drives an R2-backed Syncular blob route
-    upload/complete/download flow whose download URL is authorized by a scoped
-    D1 app row with an exact `hashColumn`, rejects unauthenticated and invalid
-    upload initiation, invalid direct-upload tokens, forbidden upload
-    completion, missing-reference owner download URL attempts, and forbidden
-    blob download URLs with stable access details, and echoes a message through
-    a Durable Object WebSocket route. WASM glue dynamic
+    upload/complete/download flow whose download URL is authorized by scoped
+    D1 app rows with exact `hashColumn` lookup, including a second
+    partition-column file-version style table, rejects unauthenticated and
+    invalid upload initiation, invalid direct-upload tokens, forbidden upload
+    completion, missing-reference owner and wrong-partition download URL
+    attempts, and forbidden blob download URLs with stable access details, and
+    echoes a message through a Durable Object WebSocket route. WASM glue dynamic
     imports include webpack
     ignore metadata so the Next build stays warning-clean.
     The Vite production-preview proof now self-checks the browser-runtime

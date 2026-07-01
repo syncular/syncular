@@ -22,6 +22,7 @@ interface PackageAssetsTable {
   id: string;
   partition_id: string;
   project_id: string;
+  asset_hash: string;
   asset: string | null;
   server_version: number;
 }
@@ -43,6 +44,7 @@ interface ClientDb {
     id: string;
     partition_id: string;
     project_id: string;
+    asset_hash: string;
     asset: BlobRef | null;
     server_version: number;
   };
@@ -278,6 +280,7 @@ describe('createScopedBlobAccessChecker', () => {
       .addColumn('id', 'text', (col) => col.primaryKey())
       .addColumn('partition_id', 'text', (col) => col.notNull())
       .addColumn('project_id', 'text', (col) => col.notNull())
+      .addColumn('asset_hash', 'text', (col) => col.notNull())
       .addColumn('asset', 'text')
       .addColumn('server_version', 'integer', (col) =>
         col.notNull().defaultTo(0)
@@ -300,6 +303,7 @@ describe('createScopedBlobAccessChecker', () => {
         {
           table: 'package_assets',
           blobColumns: ['asset'],
+          hashColumn: 'asset_hash',
           partitionColumn: 'partition_id',
         },
       ],
@@ -311,6 +315,7 @@ describe('createScopedBlobAccessChecker', () => {
         id: 'base-asset-global',
         partition_id: 'global',
         project_id: 'project-1',
+        asset_hash: blob.hash,
         asset: JSON.stringify(blob),
         server_version: 1,
       })
@@ -333,6 +338,7 @@ describe('createScopedBlobAccessChecker', () => {
         id: 'base-asset-campaign-a',
         partition_id: 'campaign-a',
         project_id: 'project-1',
+        asset_hash: blob.hash,
         asset: JSON.stringify(blob),
         server_version: 1,
       })

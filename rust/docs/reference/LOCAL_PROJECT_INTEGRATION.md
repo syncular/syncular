@@ -842,7 +842,10 @@ For server-side scoped blob download authorization, keep the typed `BlobRef`
 JSON column and prefer a separate exact content-hash column in the same scoped
 row. Pass that column as `hashColumn` to
 `createScopedBlobAccessDecisionChecker(...)`; D1 rejects long hash searches via
-`LIKE`, so exact hash lookup is the portable route shape.
+`LIKE`, so exact hash lookup is the portable route shape. When one reference
+table stores grants for multiple route partitions, pair it with
+`partitionColumn` so hash knowledge in another partition does not authorize the
+download.
 
 Store bytes locally and queue upload:
 

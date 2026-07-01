@@ -50,8 +50,9 @@ until the full browser Worker/WASM suite is green on Linux.
   failures, a real Syncular realtime route over the Durable Object WebSocket
   bridge with a WebSocket push and binary sync-pack delta, an R2-backed
   Syncular blob route upload/complete/download flow whose download URL is
-  authorized through an exact-hash scoped app row, stable unauthenticated,
-  invalid-init, invalid-token, forbidden-completion, missing-reference, and
+  authorized through exact-hash scoped app rows including a partition-column
+  file-version style reference table, stable unauthenticated, invalid-init,
+  invalid-token, forbidden-completion, wrong-partition missing-reference, and
   forbidden-download blob failures, and a Durable Object WebSocket echo through
   those bindings.
   For release/post-publish
