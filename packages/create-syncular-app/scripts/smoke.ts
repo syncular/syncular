@@ -498,6 +498,7 @@ async function runBrowserPreviewSmoke(args: {
       await session.send('Runtime.enable');
       await session.send('Page.enable');
       await session.send('Log.enable');
+      await session.send('Network.enable');
       await waitForStarterBrowserReady(
         session,
         args.failureArtifactPath,
@@ -523,6 +524,7 @@ async function runBrowserPreviewSmoke(args: {
       await secondSession.send('Runtime.enable');
       await secondSession.send('Page.enable');
       await secondSession.send('Log.enable');
+      await secondSession.send('Network.enable');
       await waitForStarterBrowserReady(
         secondSession,
         args.failureArtifactPath,
@@ -1691,6 +1693,7 @@ async function proveStarterBrowserProcessRestart(args: {
     await session.send('Runtime.enable');
     await session.send('Page.enable');
     await session.send('Log.enable');
+    await session.send('Network.enable');
     await waitForStarterBrowserReady(
       session,
       args.failureArtifactPath,
@@ -2377,6 +2380,7 @@ class CdpSession {
     { resolve(value: unknown): void; reject(reason: unknown): void }
   >();
   #errors: string[] = [];
+  #requests = new Map<string, { type?: string; url: string }>();
 
   private constructor(private readonly socket: WebSocket) {
     socket.addEventListener('message', (event) => this.#handleMessage(event));
@@ -2458,25 +2462,141 @@ class CdpSession {
         | {
             exceptionDetails?: {
               text?: string;
+              url?: string;
+              lineNumber?: number;
+              columnNumber?: number;
               exception?: { description?: string };
+              stackTrace?: {
+                callFrames?: {
+                  url?: string;
+                  lineNumber?: number;
+                  columnNumber?: number;
+                }[];
+              };
             };
           }
         | undefined;
+      const details = params?.exceptionDetails;
       this.#errors.push(
-        params?.exceptionDetails?.exception?.description ??
-          params?.exceptionDetails?.text ??
-          'Browser runtime exception'
+        formatBrowserDiagnostic(
+          details?.exception?.description ??
+            details?.text ??
+            'Browser runtime exception',
+          details?.url ??
+            details?.stackTrace?.callFrames?.find((frame) => frame.url)?.url,
+          details?.lineNumber,
+          details?.columnNumber
+        )
       );
     }
     if (message.method === 'Log.entryAdded') {
       const params = message.params as
-        | { entry?: { level?: string; text?: string } }
+        | {
+            entry?: {
+              level?: string;
+              lineNumber?: number;
+              networkRequestId?: string;
+              text?: string;
+              url?: string;
+            };
+          }
         | undefined;
       if (params?.entry?.level === 'error') {
-        this.#errors.push(params.entry.text ?? 'Browser log error');
+        const request =
+          params.entry.networkRequestId === undefined
+            ? undefined
+            : this.#requests.get(params.entry.networkRequestId);
+        this.#errors.push(
+          formatBrowserDiagnostic(
+            params.entry.text ?? 'Browser log error',
+            params.entry.url ?? request?.url,
+            params.entry.lineNumber
+          )
+        );
+      }
+    }
+    if (message.method === 'Network.requestWillBeSent') {
+      const params = message.params as
+        | {
+            requestId?: string;
+            request?: { url?: string };
+            type?: string;
+          }
+        | undefined;
+      if (params?.requestId && params.request?.url) {
+        this.#requests.set(params.requestId, {
+          type: params.type,
+          url: params.request.url,
+        });
+      }
+    }
+    if (message.method === 'Network.responseReceived') {
+      const params = message.params as
+        | {
+            requestId?: string;
+            response?: {
+              mimeType?: string;
+              status?: number;
+              url?: string;
+            };
+            type?: string;
+          }
+        | undefined;
+      const response = params?.response;
+      const url =
+        response?.url ??
+        (params?.requestId ? this.#requests.get(params.requestId)?.url : null);
+      if (
+        url &&
+        response?.mimeType?.includes('text/html') &&
+        isModuleLikeAssetUrl(url)
+      ) {
+        this.#errors.push(
+          `Browser loaded ${params?.type ?? 'asset'} ${url} as ${
+            response.mimeType
+          }${response.status === undefined ? '' : ` (${response.status})`}`
+        );
+      }
+    }
+    if (message.method === 'Network.loadingFailed') {
+      const params = message.params as
+        | {
+            errorText?: string;
+            requestId?: string;
+            type?: string;
+          }
+        | undefined;
+      const request = params?.requestId
+        ? this.#requests.get(params.requestId)
+        : undefined;
+      if (request) {
+        this.#errors.push(
+          `Browser request failed: ${params?.type ?? request.type ?? 'asset'} ${
+            request.url
+          }${params?.errorText ? ` (${params.errorText})` : ''}`
+        );
       }
     }
   }
+}
+
+function formatBrowserDiagnostic(
+  message: string,
+  url?: string | null,
+  lineNumber?: number,
+  columnNumber?: number
+): string {
+  if (!url) return message;
+  const location =
+    lineNumber === undefined
+      ? ''
+      : `:${lineNumber + 1}${columnNumber === undefined ? '' : `:${columnNumber + 1}`}`;
+  return `${message} (${url}${location})`;
+}
+
+function isModuleLikeAssetUrl(url: string): boolean {
+  const pathname = new URL(url, 'http://syncular.local').pathname;
+  return pathname.endsWith('.js') || pathname.endsWith('.wasm');
 }
 
 async function main(): Promise<void> {
