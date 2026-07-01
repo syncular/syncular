@@ -495,6 +495,28 @@ surface stays too implicit.
   every issue visible in the console should map back to a stable app-facing
   code, recommended action, or testkit assertion. Otherwise the console becomes
   the only reliable way to understand production failures.
+- Explicit browser support tiers: for Chrome, Safari, Firefox, private mode,
+  WebViews, and PWAs, Syncular should name whether persistent offline storage
+  is supported, unsupported, or development/test-only ephemeral. Silent
+  in-memory fallback is not acceptable for production browser apps.
+- First-run asset/version compatibility: opening a browser database should
+  prove that the served Worker/WASM assets, JS glue, generated client schema
+  version, runtime package version, and server protocol/schema contract belong
+  together. Stale service-worker/cache/CDN assets should produce typed
+  compatibility failures rather than bootstrap timeouts.
+- Recovery ownership should be explicit in every lifecycle and health state:
+  runtime retry, app auth/scope action, user action, or operator/deploy action.
+  The state should also say which operations are valid now and which operations
+  are blocked until recovery completes.
+- Support bundle provenance: redacted bundles should include enough
+  non-secret context to reproduce the environment: app build id if available,
+  package/runtime/generated schema versions, browser/runtime feature summary,
+  storage backend, deployment preflight result, server endpoint origin,
+  request/sync/timeline cursors, and redaction policy version.
+- Browser persistence proof should include reopen/restart behavior, not only a
+  same-page happy path. Real offline-first confidence needs evidence across
+  tab close, page restore, browser restart where possible, storage locks, quota
+  pressure, and blocked/denied persistence grants.
 
 ### Feedback Triage
 
@@ -767,6 +789,20 @@ Retain these as implementation requirements:
   Next/SSR, Bun, Node, Cloudflare, Chrome, Safari, Firefox, private mode,
   WebViews, and PWAs, including which cases are unsupported and should fail
   loudly.
+- Runtime support policy: when an environment is unsupported or only partially
+  supported, the public API should fail with a named capability issue and a
+  recommended action. It should not leave apps to infer support from missing
+  IndexedDB/OPFS/Worker globals, vague initialization errors, or stalled
+  bootstrap.
+- Version and asset skew policy: deployment docs and checks should explain how
+  to roll JS, WASM, generated client output, server package versions, database
+  schema, and browser caches together. The accepted behavior for skew should
+  be observable warnings or hard compatibility failures, not undefined local
+  database state.
+- Evidence budgets: starter and E2E artifacts should keep the key latency and
+  durability facts measurable: runtime open time, schema readiness, bootstrap,
+  local visibility after authoritative command, realtime wake-to-apply delay,
+  offline replay drain, blob fetch, and support-bundle export time.
 
 Do not retain these as solutions:
 
@@ -812,10 +848,18 @@ hit the problem.
 - E2E and failure artifacts: happy-path smokes are insufficient. The canonical
   recipe should exercise real auth, real browser persistence, realtime,
   offline replay, denied scope, blob access, and redacted failure artifacts.
+- Browser durability: a same-page insert/query proof is not enough. Acceptance
+  requires at least one real-browser reopen path, and future matrix work should
+  add restart, private-mode, storage-lock, quota-pressure, and PWA/WebView
+  variants where the host makes those states observable.
 - API audience hygiene: every exposed helper should say whether it is
   UI-facing, generated-app-facing, operator/deploy, testkit/E2E,
   debug/support, or advanced. If the audience is unclear, app code will grow
   accidental escape hatches.
+- Version skew: generated output, runtime package, WASM assets, server
+  package, schema version, and browser cache state must have a detectable
+  compatibility story. Stale or mixed deploys should produce typed readiness
+  issues before app code starts making misleading freshness or sync decisions.
 - Dependency and package shape: keep optional peers behind subpaths and prove
   side-effect isolation with import matrices. Do not split or publish packages
   merely to make dependency graphs look smaller.
@@ -1437,6 +1481,10 @@ online propagation, or reconnect behavior can change.
 - 2026-07-01: Added a feedback-driven acceptance matrix for future WP-50
   slices, making the pasted feedback actionable by audience and completion
   standard instead of leaving it as broad DX sentiment.
+- 2026-07-01: Added a final feedback guardrail pass for explicit browser
+  support tiers, first-run asset/version compatibility, recovery ownership,
+  support-bundle provenance, browser reopen/restart persistence evidence,
+  version-skew policy, and latency/durability evidence budgets.
 - 2026-07-01: Added `packages/client/src/runtime-timeline.ts`, exported
   `getSyncularRuntimeTimeline(...)` from `@syncular/client`, and added
   `SyncularDatabase.runtimeTimeline(...)` as a managed database method. The
