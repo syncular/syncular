@@ -24,8 +24,9 @@ import { Buffer } from 'node:buffer';
  *    origin-storage eviction/rebootstrap recovery, two-tab propagation,
  *    same-client page reload/reopen persistence, same-client duplicate-tab
  *    open/write contention, generated write pressure, same-profile browser
- *    process restart persistence, sync-held shutdown replay recovery, and
- *    service-worker-controlled PWA plus incognito memory-storage
+ *    process restart persistence, sync-held shutdown replay recovery,
+ *    renderer-crash replay recovery, and service-worker-controlled PWA plus
+ *    incognito memory-storage
  *    support-policy classification.
  *    After the happy path, the browser smoke also forces a hidden
  *    support-bundle marker failure and verifies the live
@@ -730,6 +731,16 @@ async function runBrowserPreviewSmoke(args: {
     origin: args.origin,
     userDataDir: `${args.userDataDir}-shutdown-replay`,
   });
+  log('real-browser smoke: proving renderer-crash replay recovery');
+  await proveStarterRendererCrashReplayRecovery({
+    chrome: args.chrome,
+    failureArtifactPath: rendererCrashReplayFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-renderer-crash-replay`,
+  });
   log('real-browser smoke: proving support-bundle failure artifact');
   await proveStarterSupportBundleFailureArtifact({
     chrome: args.chrome,
@@ -821,6 +832,14 @@ function shutdownReplayFailureArtifactPath(
   return failureArtifactPath.endsWith('.json')
     ? failureArtifactPath.replace(/\.json$/u, '.shutdown-replay.json')
     : `${failureArtifactPath}.shutdown-replay.json`;
+}
+
+function rendererCrashReplayFailureArtifactPath(
+  failureArtifactPath: string
+): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.renderer-crash-replay.json')
+    : `${failureArtifactPath}.renderer-crash-replay.json`;
 }
 
 async function withTimeout<T>(args: {
@@ -3734,6 +3753,236 @@ async function proveStarterShutdownReplayRecovery(args: {
   }
 }
 
+async function proveStarterRendererCrashReplayRecovery(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const clientId = 'web-renderer-crash-replay';
+  const title = `renderer crash replay ${Date.now()}`;
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  let activeSession: CdpSession | null = null;
+  let activeTargetId: string | null = null;
+  let recoverySession: CdpSession | null = null;
+  let recoveryTargetId: string | null = null;
+  let observerSession: CdpSession | null = null;
+  let observerTargetId: string | null = null;
+  let lastProbe: BrowserPreviewProbe | null = null;
+
+  try {
+    const activeTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    activeTargetId = activeTarget.id;
+    activeSession = await CdpSession.connect(activeTarget.webSocketDebuggerUrl);
+    await enableChromeTarget(activeSession);
+    await navigateChromeTarget(
+      activeSession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularSyncStartup=manual&syncularRendererCrashReplayProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      activeSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(activeSession);
+    await submitStarterTask(activeSession, title);
+    await waitForStarterLocalVisibility({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+    });
+    await waitForStarterRenderedText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: activeSession,
+      timeoutMessage:
+        'Timed out waiting for built preview renderer-crash local render before crash',
+      timeoutReason: 'renderer-crash-local-render-timeout',
+      title,
+    });
+
+    await crashStarterChromeRenderer(activeSession);
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    activeSession = null;
+    activeTargetId = null;
+
+    const recoveryTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    recoveryTargetId = recoveryTarget.id;
+    recoverySession = await CdpSession.connect(
+      recoveryTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(recoverySession);
+    await navigateChromeTarget(
+      recoverySession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularSyncStartup=manual&syncularRendererCrashRestoreProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      recoverySession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    lastProbe = await readStarterBrowserProbe(recoverySession);
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: recoverySession,
+      title,
+      errorReason: 'renderer-crash-local-restore-errors',
+      timeoutReason: 'renderer-crash-local-restore-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview renderer-crash local restore',
+    });
+
+    await navigateChromeTarget(
+      recoverySession,
+      `${args.origin}/?syncularClientId=${clientId}&syncularRendererCrashOnlineProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      recoverySession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await dispatchStarterOnlineEvent(recoverySession);
+
+    const observerTarget = await createChromeTarget(
+      chrome.debugPort,
+      'about:blank'
+    );
+    observerTargetId = observerTarget.id;
+    observerSession = await CdpSession.connect(
+      observerTarget.webSocketDebuggerUrl
+    );
+    await enableChromeTarget(observerSession);
+    await navigateChromeTarget(
+      observerSession,
+      `${args.origin}/?syncularClientId=web-renderer-crash-replay-observer&syncularRendererCrashObserverProof=${Date.now()}`
+    );
+    await waitForStarterBrowserReady(
+      observerSession,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: observerSession,
+      title,
+      errorReason: 'renderer-crash-propagation-errors',
+      timeoutReason: 'renderer-crash-propagation-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview renderer-crash replay propagation',
+    });
+  } catch (error) {
+    await writeBrowserPreviewFailureArtifactIfMissing(
+      args.failureArtifactPath,
+      'renderer-crash-replay-smoke-error',
+      lastProbe,
+      args.failureMetrics
+    );
+    throw error;
+  } finally {
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: observerSession,
+      targetId: observerTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: recoverySession,
+      targetId: recoveryTargetId,
+    });
+    await closeStarterChromeTarget({
+      debugPort: chrome.debugPort,
+      session: activeSession,
+      targetId: activeTargetId,
+    });
+    await stopProcess(chrome.process);
+  }
+}
+
+async function crashStarterChromeRenderer(session: CdpSession): Promise<void> {
+  const crashed = session
+    .waitForEvent('Inspector.targetCrashed', 5_000)
+    .then(() => true)
+    .catch(() => false);
+  const crashCommand = session
+    .send('Page.crash', undefined, 2_000)
+    .then(() => true)
+    .catch((error) => {
+      if (
+        isExpectedChromeRendererCrashError(error) ||
+        isChromeDevToolsCommandTimeout(error, 'Page.crash')
+      ) {
+        return false;
+      }
+      throw error;
+    });
+  const observedCrash = await Promise.race([
+    crashed,
+    crashCommand,
+    new Promise<false>((resolveSleep) => setTimeout(resolveSleep, 2_000)),
+  ]);
+  if (!observedCrash) await assertStarterChromeRendererUnavailable(session);
+  await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+}
+
+async function assertStarterChromeRendererUnavailable(
+  session: CdpSession
+): Promise<void> {
+  try {
+    await session.send(
+      'Runtime.evaluate',
+      { expression: '1', returnByValue: true },
+      2_000
+    );
+  } catch (error) {
+    if (
+      isExpectedChromeRendererCrashError(error) ||
+      isChromeDevToolsCommandTimeout(error, 'Runtime.evaluate')
+    ) {
+      return;
+    }
+    throw error;
+  }
+  throw new Error('Chrome renderer stayed responsive after Page.crash');
+}
+
+function isExpectedChromeRendererCrashError(error: unknown): boolean {
+  const message = describeError(error);
+  return (
+    message.includes('Chrome DevTools WebSocket closed') ||
+    message.includes('Inspector.detached') ||
+    message.includes('Target closed') ||
+    message.includes('target closed') ||
+    message.includes('Render process gone')
+  );
+}
+
+function isChromeDevToolsCommandTimeout(
+  error: unknown,
+  method: string
+): boolean {
+  const message = describeError(error);
+  return (
+    message.includes('Timed out after') &&
+    message.includes(`Chrome DevTools command ${method}`)
+  );
+}
+
 async function proveStarterSupportBundleFailureArtifact(args: {
   chrome: string;
   failureArtifactPath: string;
@@ -6249,7 +6498,11 @@ class CdpSession {
     });
   }
 
-  send(method: string, params?: Record<string, unknown>): Promise<unknown> {
+  send(
+    method: string,
+    params?: Record<string, unknown>,
+    timeoutMs = CDP_COMMAND_TIMEOUT_MS
+  ): Promise<unknown> {
     const id = this.#nextId++;
     const payload =
       params === undefined ? { id, method } : { id, method, params };
@@ -6258,10 +6511,10 @@ class CdpSession {
         this.#pending.delete(id);
         reject(
           new Error(
-            `Timed out after ${CDP_COMMAND_TIMEOUT_MS}ms waiting for Chrome DevTools command ${method}`
+            `Timed out after ${timeoutMs}ms waiting for Chrome DevTools command ${method}`
           )
         );
-      }, CDP_COMMAND_TIMEOUT_MS);
+      }, timeoutMs);
       this.#pending.set(id, {
         resolve: (value) => {
           clearTimeout(timeout);

@@ -267,11 +267,21 @@ read-only review:
     dedicated client with sync startup deliberately held, creates a generated
     task, waits for local visibility and rendered local text, stops Chrome,
     restarts the same profile and client id with sync still held to prove the
-    unsynced row restored from the persistent browser database, then reloads
+    task restored from the persistent browser database, then reloads
     with normal sync startup and waits for a separate observer client to
     receive the replay through sync/realtime. Hosted Checks run `28553329494`
-    on commit `58870d5c` confirmed that branch in Chrome. Host-driven eviction
-    and storage-shutdown behavior remain matrix work. The starter now also records
+    on commit `58870d5c` confirmed that branch in Chrome. The starter smoke now
+    also has a sync-held renderer-crash replay proof. It crashes the page
+    renderer through a short-bounded Chrome CDP `Page.crash`, verifies the
+    renderer is unavailable, opens the same profile and client id with sync
+    still held to prove the row restored from persistent browser storage after
+    abrupt renderer loss, then resumes normal sync and waits for a separate
+    observer client to receive the replay. Hosted Chrome confirmation is
+    pending. A stronger targeted sync-transport-offline replay proof remains
+    outstanding; globally forcing Chrome offline before the generated write
+    blocked the starter runtime lifecycle before local mutation evidence.
+    Host-driven eviction and storage-shutdown behavior remain matrix work. The
+    starter now also records
     a browser-observable command-timeline proof after generated task creation,
     linking the mutation receipt to redacted outbox persistence, local-apply
     evidence, and local-visibility evidence in the hidden marker and browser

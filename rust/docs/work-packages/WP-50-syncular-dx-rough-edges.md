@@ -4045,15 +4045,27 @@ Most recent browser-health failure-artifact rerun:
   replay proof for persistent browser databases: it opens a dedicated client
   with sync startup deliberately held, creates a generated task, waits for
   local visibility and rendered local text, stops Chrome, restarts the same
-  profile and client id with sync still held to prove the unsynced row restored
+  profile and client id with sync still held to prove the task restored
   from local browser storage, then reloads with normal sync startup and waits
   for a separate observer client to receive the replay through sync/realtime.
+  The next slice adds a renderer-crash replay proof for the same sync-held
+  generated-write flow: it opens a dedicated client with sync startup held,
+  writes a generated task, waits for local visibility and rendered text, sends
+  Chrome CDP `Page.crash` through a short bounded command, verifies the
+  renderer is unavailable, reopens the same profile/client id with sync still
+  held to prove the row restored from persistent browser storage after abrupt
+  renderer loss, then resumes normal sync and waits for a separate observer
+  client to receive the replay through sync/realtime. Local non-Chrome gates
+  pass; hosted Chrome confirmation is pending. A stronger targeted
+  offline-transport replay proof remains outstanding; globally forcing Chrome
+  offline before the generated write blocked the starter runtime lifecycle and
+  did not exercise the desired local mutation path.
   Remaining work is richer browser-process proof: actual
   target-browser background/discard suspension and restoration,
   real storage shutdown, browser/host-driven eviction beyond explicit CDP
   origin clear, lower-level storage contention/failure behavior beyond
-  duplicate-tab generated writes, and deeper persistent database recovery
-  coordination.
+  duplicate-tab generated writes and renderer crash, and deeper persistent
+  database recovery coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
@@ -4558,7 +4570,7 @@ Most recent browser-health failure-artifact rerun:
   unchanged, mounts the task pane without starting sync, and lets the smoke
   create a generated task that reaches local visibility before Chrome is
   stopped. The proof restarts the same profile and client id with sync still
-  held, requires the unsynced task to render from the persistent browser
+  held, requires the task to render from the persistent browser
   database, then reloads with normal sync startup and waits for a separate
   observer client to receive the replay through sync/realtime. Local gates with
   Bun `1.3.9` passed:
@@ -4571,6 +4583,22 @@ Most recent browser-health failure-artifact rerun:
   `real-browser smoke: proving browser storage eviction recovery`, and then
   `real-browser built-preview preflight smoke passed`, confirming the new
   shutdown replay branch in hosted Chrome.
+- 2026-07-02: Added a sync-held renderer-crash replay proof to the starter
+  Chrome/CDP branch. The renderer-crash proof uses the same manual-sync startup
+  mode as the shutdown replay proof, writes a generated task, waits for local
+  visibility and rendered local text, sends Chrome CDP `Page.crash` through a
+  short bounded command, verifies the renderer is unavailable, opens the same
+  profile and client id with sync still held to prove the task restored from
+  local browser storage, then resumes normal sync and waits for a separate
+  observer client to receive the replay through sync/realtime. An attempted
+  stronger variant that globally forced Chrome offline before the generated
+  write was dropped because hosted Chrome proved it blocks the starter runtime
+  lifecycle before the local mutation path starts; targeted sync-transport
+  failure remains outstanding. Local gates with Bun `1.3.9` passed:
+  `bun --cwd packages/create-syncular-app tsgo`,
+  `bunx biome check packages/create-syncular-app/scripts/smoke.ts`, and
+  `bun --cwd packages/create-syncular-app smoke`. Chrome was not installed
+  locally, so hosted Chrome confirmation is pending.
 
 ## Next Action
 
@@ -4605,10 +4633,13 @@ row-clearing actions while unsynced outbox work exists. Real browser target
 activation background/foreground coverage below the generated task proof is now
 confirmed in hosted Chrome. Explicit origin-storage eviction/rebootstrap
 recovery is also confirmed in hosted Chrome through Checks run `28552359995`.
-The sync-held shutdown replay proof now covers an unsynced generated write
-surviving browser process stop/restart and replaying after normal sync resumes;
-hosted Checks run `28553329494` confirmed that branch in Chrome. The next
-lifecycle follow-up should move to discarded-tab, browser/host-driven eviction
+The sync-held shutdown replay proof now covers a generated write surviving
+browser process stop/restart and replaying after normal sync resumes; hosted
+Checks run `28553329494` confirmed that branch in Chrome. The current slice
+adds renderer-crash replay recovery for the same sync-held generated-write
+flow; local non-Chrome gates pass and hosted Chrome confirmation is pending.
+The next lifecycle follow-up after that should move to targeted
+sync-transport-offline replay, discarded-tab, browser/host-driven eviction
 beyond explicit CDP origin clear, storage-shutdown, and lower-level
 storage-failure behavior.
 Production ops readiness is now part of release rehearsal when evidence is
