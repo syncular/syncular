@@ -1,4 +1,5 @@
 export * from './audit';
+export * from './client-bridge';
 export * from './command-proof';
 export * from './deterministic';
 export * from './diagnostic-markers';
