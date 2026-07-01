@@ -2235,7 +2235,7 @@ async function runPartitionedBlobReferenceFlow(args: {
     accessStage: 'reference',
   });
 
-  await pushPartitionedBlobReferenceRow({
+  const referenceRowId = await pushPartitionedBlobReferenceRow({
     actorId: args.actorId,
     hash,
     mimeType: 'text/plain',
@@ -2336,6 +2336,50 @@ async function runPartitionedBlobReferenceFlow(args: {
       )}`
     );
   }
+
+  await pushPartitionedBlobReferenceRevocation({
+    actorId: args.actorId,
+    hash,
+    origin: args.origin,
+    output: args.output,
+    partitionId: args.partitionId,
+    routeBase: args.syncRouteBase,
+    rowId: referenceRowId,
+    getExit: args.getExit,
+  });
+  await expectBlobDownloadUrlDenied({
+    accessReason: 'missing_reference',
+    accessStage: 'reference',
+    actorId: args.actorId,
+    hash,
+    origin: args.origin,
+    output: args.output,
+    partitionId: args.partitionId,
+    routeBase: args.routeBase,
+    step: 'revoked partitioned download URL',
+    getExit: args.getExit,
+  });
+
+  await pushPartitionedBlobReferenceDelete({
+    actorId: args.actorId,
+    origin: args.origin,
+    output: args.output,
+    routeBase: args.syncRouteBase,
+    rowId: referenceRowId,
+    getExit: args.getExit,
+  });
+  await expectBlobDownloadUrlDenied({
+    accessReason: 'missing_reference',
+    accessStage: 'reference',
+    actorId: args.actorId,
+    hash,
+    origin: args.origin,
+    output: args.output,
+    partitionId: args.partitionId,
+    routeBase: args.routeBase,
+    step: 'deleted partitioned download URL',
+    getExit: args.getExit,
+  });
 }
 
 async function pushPartitionedBlobReferenceRow(args: {
@@ -2348,7 +2392,7 @@ async function pushPartitionedBlobReferenceRow(args: {
   routeBase: string;
   size: number;
   getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
-}): Promise<void> {
+}): Promise<string> {
   const label = 'Cloudflare R2 blob route smoke';
   const rowId = `syncular-framework-file-version-${args.partitionId}-${Date.now()}`;
   const pushResponse = await fetchWorkerResponse({
@@ -2421,6 +2465,195 @@ async function pushPartitionedBlobReferenceRow(args: {
   ) {
     throw new Error(
       `${label} partitioned blob reference push did not apply: ${JSON.stringify(
+        pushBody
+      ).slice(0, 500)}`
+    );
+  }
+  return rowId;
+}
+
+async function pushPartitionedBlobReferenceRevocation(args: {
+  actorId: string;
+  hash: string;
+  origin: string;
+  output: string[];
+  partitionId: string;
+  routeBase: string;
+  rowId: string;
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<void> {
+  const label = 'Cloudflare R2 blob route smoke';
+  const pushResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}`,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-syncular-smoke-actor': args.actorId,
+      },
+      body: JSON.stringify({
+        clientId: `syncular-framework-file-version-revoker-${args.partitionId}`,
+        push: {
+          commits: [
+            {
+              clientCommitId: `commit-revoke-${args.rowId}`,
+              schemaVersion: 1,
+              operations: [
+                {
+                  table: 'syncular_framework_file_versions',
+                  row_id: args.rowId,
+                  op: 'upsert',
+                  payload: {
+                    id: args.rowId,
+                    owner_id: args.actorId,
+                    partition_id: args.partitionId,
+                    content_hash: args.hash,
+                    blob_ref: null,
+                    server_version: 0,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectAppliedPushResponse({
+    label,
+    output: args.output,
+    response: pushResponse,
+    step: 'partitioned blob reference revocation',
+  });
+}
+
+async function pushPartitionedBlobReferenceDelete(args: {
+  actorId: string;
+  origin: string;
+  output: string[];
+  routeBase: string;
+  rowId: string;
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<void> {
+  const label = 'Cloudflare R2 blob route smoke';
+  const pushResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}`,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-syncular-smoke-actor': args.actorId,
+      },
+      body: JSON.stringify({
+        clientId: 'syncular-framework-file-version-deleter',
+        push: {
+          commits: [
+            {
+              clientCommitId: `commit-delete-${args.rowId}`,
+              schemaVersion: 1,
+              operations: [
+                {
+                  table: 'syncular_framework_file_versions',
+                  row_id: args.rowId,
+                  op: 'delete',
+                  payload: null,
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectAppliedPushResponse({
+    label,
+    output: args.output,
+    response: pushResponse,
+    step: 'partitioned blob reference delete',
+  });
+}
+
+async function expectBlobDownloadUrlDenied(args: {
+  accessReason: string;
+  accessStage: string;
+  actorId: string;
+  hash: string;
+  origin: string;
+  output: string[];
+  partitionId: string;
+  referenceColumn?: string;
+  referenceTable?: string;
+  routeBase: string;
+  step: string;
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<void> {
+  const label = 'Cloudflare R2 blob route smoke';
+  const response = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+      args.hash
+    )}/url`,
+    init: {
+      headers: {
+        'x-syncular-smoke-actor': args.actorId,
+        'x-syncular-smoke-partition': args.partitionId,
+      },
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  const body = await expectJsonErrorResponse(label, args.step, {
+    response,
+    output: args.output,
+    status: 403,
+    code: 'blob.forbidden',
+    category: 'forbidden',
+    recommendedAction: 'checkPermissions',
+  });
+  assertBlobAccessDeniedDetails(label, args.step, {
+    body,
+    partitionId: args.partitionId,
+    accessReason: args.accessReason,
+    accessStage: args.accessStage,
+    referenceColumn: args.referenceColumn,
+    referenceTable: args.referenceTable,
+  });
+}
+
+async function expectAppliedPushResponse(args: {
+  label: string;
+  output: string[];
+  response: Response;
+  step: string;
+}): Promise<void> {
+  await expectOkResponse(args.label, args.step, args.response, args.output);
+  const pushBody = (await readSyncRouteResponse(
+    args.label,
+    args.step,
+    args.response
+  )) as {
+    ok?: boolean;
+    push?: {
+      commits?: Array<{
+        results?: Array<{ status?: string }>;
+        status?: string;
+      }>;
+    };
+  };
+  const pushedCommit = pushBody.push?.commits?.[0];
+  if (
+    pushBody.ok !== true ||
+    pushedCommit?.status !== 'applied' ||
+    pushedCommit.results?.[0]?.status !== 'applied'
+  ) {
+    throw new Error(
+      `${args.label} ${args.step} did not apply: ${JSON.stringify(
         pushBody
       ).slice(0, 500)}`
     );

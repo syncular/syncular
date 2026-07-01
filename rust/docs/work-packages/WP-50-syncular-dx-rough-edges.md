@@ -1831,6 +1831,13 @@ online propagation, or reconnect behavior can change.
   `blob.forbidden`, then sync-pushes the matching partition row, downloads the
   R2-backed bytes, and proves a different actor receives `scope_denied`
   details naming `syncular_framework_file_versions.blob_ref`.
+- 2026-07-01: Extended the partitioned Cloudflare R2 reference proof through
+  revocation and deletion. After the matching file-version row authorizes an
+  R2 download, the smoke sync-pushes the same row with `blob_ref: null` and
+  proves the owner is back to a missing-reference `blob.forbidden`, then
+  sync-pushes a real delete operation for that row and proves the owner still
+  cannot mint a download URL. This covers the common revoke/remove file-version
+  flows instead of only proving initial reference creation.
 - 2026-07-01: Extended the Cloudflare runtime proof with a DO-backed
   WebSocket echo route. The generated `SyncDurableObject` now receives
   `upgradeWebSocket`, registers `/syncular-framework-import-smoke/ws`, and the
@@ -2553,18 +2560,17 @@ Most recent mutation-status rerun:
   exact `hashColumn` lookup, including a second partition-column file-version
   style table, rejects unauthenticated upload initiation, invalid upload-init
   bodies, invalid direct-upload tokens, forbidden upload completion,
-  missing-reference owner and wrong-partition download URL attempts, and
-  forbidden blob download URLs with stable access details, and echoes through a
-  DO-backed WebSocket route. The same local runtime proof now
+  missing-reference owner, wrong-partition, revoked-reference, and
+  deleted-reference download URL attempts, and forbidden blob download URLs
+  with stable access details, and echoes through a DO-backed WebSocket route.
+  The same local runtime proof now
   self-checks a bounded Cloudflare failure artifact so failed DO/D1/R2/WebSocket
   runs can leave route, exit, and recent-output context instead of logs alone.
   Release rehearsal now runs those framework proofs by default before publish
   dry-runs and can require the Vite browser execution path on Chrome-capable
   runners. Remaining matrix work is deeper browser/framework execution beyond
   these proofs, especially richer multi-client/browser Syncular realtime over
-  Durable Object WebSocket, larger app-level scoped D1/R2 route combinations
-  such as revoking or deleting blob reference rows, Safari, Firefox, private
-  mode, WebViews, and PWAs.
+  Durable Object WebSocket, Safari, Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.

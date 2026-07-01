@@ -167,9 +167,10 @@ read-only review:
     D1 app rows with exact `hashColumn` lookup, including a second
     partition-column file-version style table, rejects unauthenticated and
     invalid upload initiation, invalid direct-upload tokens, forbidden upload
-    completion, missing-reference owner and wrong-partition download URL
-    attempts, and forbidden blob download URLs with stable access details, and
-    echoes a message through a Durable Object WebSocket route. WASM glue dynamic
+    completion, missing-reference owner, wrong-partition, revoked-reference,
+    and deleted-reference download URL attempts, and forbidden blob download
+    URLs with stable access details, and echoes a message through a Durable
+    Object WebSocket route. WASM glue dynamic
     imports include webpack
     ignore metadata so the Next build stays warning-clean.
     The Vite production-preview proof now self-checks the browser-runtime

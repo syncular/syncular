@@ -52,9 +52,9 @@ until the full browser Worker/WASM suite is green on Linux.
   Syncular blob route upload/complete/download flow whose download URL is
   authorized through exact-hash scoped app rows including a partition-column
   file-version style reference table, stable unauthenticated, invalid-init,
-  invalid-token, forbidden-completion, wrong-partition missing-reference, and
-  forbidden-download blob failures, and a Durable Object WebSocket echo through
-  those bindings.
+  invalid-token, forbidden-completion, wrong-partition, revoked-reference,
+  deleted-reference, and forbidden-download blob failures, and a Durable
+  Object WebSocket echo through those bindings.
   For release/post-publish
   checks,
   `bun scripts/post-publish-install-smokes.ts --version <version>` also runs
