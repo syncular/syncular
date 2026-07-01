@@ -311,11 +311,15 @@ read-only review:
     for the task to reappear after app startup, opens a duplicate tab with the
     same client id/database and requires it to settle as either ready with the
     existing task or an explicit starter-open error while the active tab remains
-    writable, runs a generated write-pressure proof that fires multiple
-    generated task mutations concurrently, waits for each local visibility
-    proof, and requires the observer tab to see every row through sync/realtime,
-    then restarts Chrome with the same profile directory and verifies that the
-    same client id can still see the task in a fresh browser process.
+    writable; if the duplicate same-database tab reaches ready, the smoke now
+    fires concurrent generated writes from both same-client tabs and requires
+    both rows to render in both tabs plus the separate observer tab through
+    sync/realtime. It also runs a generated write-pressure proof that fires
+    multiple generated task mutations concurrently, waits for each local
+    visibility proof, and requires the observer tab to see every row through
+    sync/realtime, then restarts Chrome with the same profile directory and
+    verifies that the same client id can still see the task in a fresh browser
+    process.
     Release
     rehearsal now runs the
     create-syncular-app

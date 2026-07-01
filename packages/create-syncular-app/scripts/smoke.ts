@@ -19,8 +19,8 @@ import { Buffer } from 'node:buffer';
  *    contention timeout/recovery, browser-observed local recovery Web Lock
  *    contention timeout/recovery, storage preflight-to-recovery action
  *    mapping, two-tab propagation, same-client page reload/reopen persistence,
- *    same-client duplicate-tab open contention, generated write pressure, and
- *    same-profile browser process restart persistence.
+ *    same-client duplicate-tab open/write contention, generated write
+ *    pressure, and same-profile browser process restart persistence.
  *    After the happy path, the browser smoke also forces a hidden
  *    support-bundle marker failure and verifies the live
  *    browser-preview-failure artifact contract from real Chrome probe data.
@@ -562,6 +562,7 @@ async function runBrowserPreviewSmoke(args: {
         failureArtifactPath: args.failureArtifactPath,
         active: secondSession,
         debugPort: chrome.debugPort,
+        observer: session,
         origin: args.origin,
         title: propagatedTitle,
       });
@@ -2481,6 +2482,7 @@ async function proveStarterSameClientDuplicateOpenContention(args: {
   debugPort: number;
   failureMetrics: BrowserPreviewFailureMetricsInput;
   failureArtifactPath: string;
+  observer: CdpSession;
   origin: string;
   title: string;
 }): Promise<void> {
@@ -2517,6 +2519,13 @@ async function proveStarterSameClientDuplicateOpenContention(args: {
         timeoutMessage:
           'Timed out waiting for built preview same-client duplicate tab to show the existing task',
       });
+      await proveStarterSameClientDuplicateWriterContention({
+        active: args.active,
+        duplicate,
+        failureArtifactPath: args.failureArtifactPath,
+        failureMetrics: args.failureMetrics,
+        observer: args.observer,
+      });
     }
 
     const postContentionTitle = `same-client contention ${Date.now()}`;
@@ -2533,6 +2542,56 @@ async function proveStarterSameClientDuplicateOpenContention(args: {
     });
   } finally {
     duplicate.close();
+  }
+}
+
+async function proveStarterSameClientDuplicateWriterContention(args: {
+  active: CdpSession;
+  duplicate: CdpSession;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  observer: CdpSession;
+}): Promise<void> {
+  const titlePrefix = `same-db write contention ${Date.now()}`;
+  const activeTitle = `${titlePrefix} active`;
+  const duplicateTitle = `${titlePrefix} duplicate`;
+
+  await Promise.all([
+    submitStarterTask(args.active, activeTitle),
+    submitStarterTask(args.duplicate, duplicateTitle),
+  ]);
+
+  for (const title of [activeTitle, duplicateTitle]) {
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: args.active,
+      title,
+      errorReason: 'same-client-active-write-contention-errors',
+      timeoutReason: 'same-client-active-write-contention-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview same-client active tab write contention',
+    });
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: args.duplicate,
+      title,
+      errorReason: 'same-client-duplicate-write-contention-errors',
+      timeoutReason: 'same-client-duplicate-write-contention-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview same-client duplicate tab write contention',
+    });
+    await waitForStarterText({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: args.observer,
+      title,
+      errorReason: 'same-client-observer-write-contention-errors',
+      timeoutReason: 'same-client-observer-write-contention-timeout',
+      timeoutMessage:
+        'Timed out waiting for built preview same-client write contention propagation',
+    });
   }
 }
 

@@ -3865,11 +3865,17 @@ Most recent mutation-status rerun:
   preflight through the public generated app recovery APIs. The recovery plan
   is now runtime-capability-aware, so the core browser runtime proves
   persistent-storage request plus compaction and does not advertise
-  blob-cache clearing without `blobs` support.
+  blob-cache clearing without `blobs` support. The same-client duplicate-tab
+  branch now also has a same-database writer proof: when Chrome can open the
+  duplicate tab against the same client id/database, the smoke fires concurrent
+  generated writes from both tabs and requires both rows to render in both
+  same-client tabs plus the separate observer tab through sync/realtime; if the
+  duplicate tab is rejected by browser storage locking, the smoke still requires
+  an explicit starter-open error and proves the active tab remains writable.
   Remaining work is richer browser lifecycle execution: actual backgrounded or
   discarded tab suspension/restoration outside CDP lifecycle-state forcing,
-  storage shutdown, true quota-exhaustion and eviction, same-database multi-tab
-  write contention beyond duplicate-open and generated write-pressure proofs,
+  storage shutdown, true quota-exhaustion and eviction, lower-level storage
+  contention/failure behavior beyond the same-database duplicate-tab branch,
   and deeper recovery coordination for persistent browser databases beyond
   dispatched page lifecycle events, CDP lifecycle forcing, synthetic storage
   warning action mapping, and lock-serialized foreground resume/recovery
@@ -3906,19 +3912,22 @@ Most recent mutation-status rerun:
   recovery. The starter/browser-preview smoke also has a bounded same-client
   duplicate-tab open contention proof: the duplicate tab must either become
   ready with the existing task or report an explicit starter-open error, and the
-  active tab must stay writable. The same browser path now adds a generated
-  write-pressure proof where four generated mutations run concurrently, each
-  row reaches local visibility, and an observer tab receives every row through
-  sync/realtime. The generated app browser smoke now also proves that a
+  active tab must stay writable; when the duplicate same-database tab reaches
+  ready, the smoke also fires concurrent generated writes from both
+  same-client tabs and requires both rows in both tabs plus the separate
+  observer. The same browser path now adds a generated write-pressure proof
+  where four generated mutations run concurrently, each row reaches local
+  visibility, and an observer tab receives every row through sync/realtime.
+  The generated app browser smoke now also proves that a
   synthetic storage-warning deployment preflight produces and can run the
   expected request-persistence, compaction, and confirmed blob-cache clearing
   actions through public local recovery APIs. Remaining work is richer
   browser-process proof: actual
   target-browser background/discard suspension and restoration,
   shutdown/restart states, real storage shutdown, quota-exhaustion and eviction
-  behavior in a browser, same-database multi-tab write contention beyond the
-  duplicate-open and generated write-pressure proofs, and deeper persistent
-  database recovery coordination.
+  behavior in a browser, lower-level storage contention/failure behavior beyond
+  duplicate-tab generated writes, and deeper persistent database recovery
+  coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,
@@ -4192,19 +4201,26 @@ Most recent mutation-status rerun:
   Checks run `28534746069` on commit `316955f9` passed the full matrix,
   including `starter-browser-preview`, confirming the bounded same-client
   duplicate-tab open contention proof between reload/reopen and browser-process
-  restart persistence.
+  restart persistence. Hosted Checks run `28538374326` on commit `89616b7f`
+  passed the full matrix after the core-runtime blob capability fix, confirming
+  the storage recovery action mapping proof in hosted Chrome. This slice now
+  extends the same-client duplicate-tab branch so a ready duplicate tab must
+  survive concurrent generated writes from both same-database tabs and propagate
+  both rows to a separate observer; local `create-syncular-app` typecheck,
+  focused Biome, non-Chrome scaffold smoke, docs stale check, and diff check
+  pass, and the Chrome-required part still needs the next hosted
+  starter-browser-preview run for browser confirmation.
 
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. The immediate
 starter browser-preview blocker is cleared, same-client duplicate-tab open
-contention and generated write pressure are now covered in hosted Chrome, and
-storage recovery action mapping is now wired into the generated browser smoke
-with the core-runtime blob capability fix pending hosted Chrome confirmation.
-Production ops readiness is now part of release rehearsal when evidence is
-present or required. Strong follow-ups are
-actual browser suspension/shutdown lifecycle coverage, actual
-quota-exhaustion/eviction and storage-shutdown browser proof,
-same-database multi-tab write contention beyond duplicate-open/generated
-write-pressure proofs, and browser/bundler matrix execution, especially Safari,
-Firefox, private mode, WebViews, and PWAs.
+contention, generated write pressure, and storage recovery action mapping are
+covered in hosted Chrome. The next same-database writer branch is implemented
+in the smoke harness and needs hosted Chrome confirmation. Production ops
+readiness is now part of release rehearsal when evidence is present or
+required. Strong follow-ups are actual browser suspension/shutdown lifecycle
+coverage, actual quota-exhaustion/eviction and storage-shutdown browser proof,
+lower-level storage contention/failure behavior beyond duplicate-tab generated
+writes, and browser/bundler matrix execution, especially Safari, Firefox,
+private mode, WebViews, and PWAs.
