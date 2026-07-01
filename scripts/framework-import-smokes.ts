@@ -829,12 +829,16 @@ async function writeCloudflareWorkerApp(appDir: string): Promise<void> {
   );
   await writeFile(
     join(appDir, 'src', 'worker.ts'),
-    `import {
+    `import { createD1Dialect } from '@syncular/server/d1';
+import {
+  createR2BlobStorageAdapter,
   SyncDurableObject,
   createSyncWorkerWithDO,
 } from '@syncular/server/cloudflare';
 
 type Env = {
+  BLOBS: R2Bucket;
+  DB: D1Database;
   SYNC_DO: DurableObjectNamespace;
 };
 
@@ -844,7 +848,29 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
       if (!c.env.SYNC_DO) {
         throw new Error('Durable Object binding was not available');
       }
-      return c.text('syncular-cloudflare-durable-object-ready');
+      if (!c.env.DB) {
+        throw new Error('D1 binding was not available');
+      }
+      if (!c.env.BLOBS) {
+        throw new Error('R2 binding was not available');
+      }
+      const d1Dialect = createD1Dialect(c.env.DB);
+      const blobStorage = createR2BlobStorageAdapter({
+        bucket: c.env.BLOBS,
+        baseUrl: 'http://127.0.0.1/sync',
+        tokenSigner: {
+          async sign() {
+            return 'syncular-framework-smoke-token';
+          },
+          async verify() {
+            return null;
+          },
+        },
+      });
+      if (!d1Dialect || blobStorage.name !== 'r2') {
+        throw new Error('Cloudflare adapter factories did not initialize');
+      }
+      return c.text('syncular-cloudflare-bindings-ready');
     });
   }
 }
@@ -860,6 +886,13 @@ export default createSyncWorkerWithDO<Env>('SYNC_DO');
         name: 'syncular-framework-import-smoke',
         main: 'src/worker.ts',
         compatibility_date: '2026-01-01',
+        d1_databases: [
+          {
+            binding: 'DB',
+            database_name: 'syncular-framework-import-smoke',
+            database_id: '00000000-0000-0000-0000-000000000000',
+          },
+        ],
         durable_objects: {
           bindings: [
             {
@@ -872,6 +905,12 @@ export default createSyncWorkerWithDO<Env>('SYNC_DO');
           {
             tag: 'v1',
             new_classes: ['SyncularSmokeDurableObject'],
+          },
+        ],
+        r2_buckets: [
+          {
+            binding: 'BLOBS',
+            bucket_name: 'syncular-framework-import-smoke',
           },
         ],
       },
@@ -1002,18 +1041,18 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
   );
   for (const bundleName of bundleNames) {
     const bundle = await Bun.file(join(outDir, bundleName)).text();
-    if (bundle.includes('syncular-cloudflare-durable-object-ready')) {
+    if (bundle.includes('syncular-cloudflare-bindings-ready')) {
       console.log(
-        '[framework-import-smokes] Cloudflare Durable Object import smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1/R2 import smoke passed'
       );
       await runLocalWorkerRuntimeProbe({
         appDir,
         wranglerBin,
         route: '/syncular-framework-import-smoke',
-        expectedText: 'syncular-cloudflare-durable-object-ready',
+        expectedText: 'syncular-cloudflare-bindings-ready',
       });
       console.log(
-        '[framework-import-smokes] Cloudflare Durable Object runtime smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1/R2 runtime smoke passed'
       );
       return;
     }

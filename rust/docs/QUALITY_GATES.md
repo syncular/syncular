@@ -41,9 +41,9 @@ until the full browser Worker/WASM suite is green on Linux.
   not start loading optional subpath modules or peers, and run
   `bun run framework-import-smokes` so those roots still build under the
   current Next SSR and Vite browser production graphs, so Vite preview serves
-  the built app assets, and so the Cloudflare subpath bundles with a Durable
-  Object binding under Wrangler and answers a local runtime request through
-  that binding. For release/post-publish
+  the built app assets, and so the Cloudflare subpaths bundle with Durable
+  Object, D1, and R2 bindings under Wrangler and answer a local runtime
+  request through those bindings. For release/post-publish
   checks,
   `bun scripts/post-publish-install-smokes.ts --version <version>` also runs
   the optional subpath install/import matrix unless
