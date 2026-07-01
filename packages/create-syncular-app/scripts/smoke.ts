@@ -343,6 +343,41 @@ async function verifyBuiltPreviewAssets(
   };
 }
 
+async function verifyBuiltPreviewRuntimeAssets(origin: string): Promise<void> {
+  const assets = [
+    {
+      path: '/syncular/wasm-core/syncular.js',
+      expected: 'javascript',
+      label: 'Syncular WASM glue',
+    },
+    {
+      path: '/syncular/wasm-core/syncular_bg.wasm',
+      expected: 'application/wasm',
+      label: 'Syncular WASM binary',
+    },
+  ];
+
+  for (const asset of assets) {
+    const assetUrl = new URL(asset.path, origin);
+    const response = await fetch(assetUrl);
+    if (!response.ok) {
+      throw new Error(
+        `${asset.label} asset ${assetUrl.href} returned ${response.status}`
+      );
+    }
+    const contentType = response.headers.get('content-type') ?? '';
+    const valid =
+      asset.expected === 'javascript'
+        ? contentType.includes('javascript')
+        : contentType.split(';', 1)[0]?.trim() === asset.expected;
+    if (!valid) {
+      throw new Error(
+        `${asset.label} asset ${assetUrl.href} was served as ${contentType}; expected ${asset.expected}`
+      );
+    }
+  }
+}
+
 type BuiltPreviewAssetMetrics = {
   assetCheckMs: number;
   assetCount: number;
@@ -2528,12 +2563,14 @@ async function main(): Promise<void> {
       previewOrigin,
       previewBody
     );
+    await verifyBuiltPreviewRuntimeAssets(previewOrigin);
     const failureMetrics: BrowserPreviewFailureMetricsInput = {
       smokeStartedAtMs,
       previewReadyMs,
       ...assetMetrics,
     };
     log('built preview asset check passed');
+    log('built preview runtime asset check passed');
     await verifyBrowserPreviewFailureArtifactSelfCheck(workDir, failureMetrics);
 
     await maybeRunBrowserPreviewSmoke({

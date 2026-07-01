@@ -1,4 +1,7 @@
-import { getSyncularBrowserDeploymentPreflight } from '@syncular/client';
+import {
+  getSyncularBrowserDeploymentPreflight,
+  type SyncularRuntimeArtifactCandidate,
+} from '@syncular/client';
 import type { Selectable } from 'kysely';
 import {
   createSyncularAppDatabase,
@@ -34,6 +37,14 @@ export type AppSyncClient = SyncularAppDatabase;
 export const appActorId = 'demo-user';
 const appToken = 'demo-user';
 const defaultClientId = 'web';
+export const syncularStarterRuntimeArtifacts = [
+  {
+    name: 'core',
+    features: syncularGeneratedRequiredRuntimeFeatures,
+    wasmGlueUrl: '/syncular/wasm-core/syncular.js',
+    wasmUrl: '/syncular/wasm-core/syncular_bg.wasm',
+  },
+] as const satisfies readonly SyncularRuntimeArtifactCandidate[];
 
 const syncBaseUrl =
   import.meta.env.VITE_SYNCULAR_SYNC_URL ?? 'http://127.0.0.1:4100/sync';
@@ -62,6 +73,7 @@ export async function openAppClient(): Promise<AppSyncClient> {
       : `syncular-app-v1-${clientId}.sqlite`;
   const preflight = await getSyncularBrowserDeploymentPreflight({
     requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
+    runtimeArtifacts: syncularStarterRuntimeArtifacts,
     storage: 'indexedDb',
     minimumQuotaBytes: 50 * 1024 * 1024,
   });
@@ -82,6 +94,7 @@ export async function openAppClient(): Promise<AppSyncClient> {
       fileName,
       storage: 'indexedDb',
     },
+    runtimeArtifacts: syncularStarterRuntimeArtifacts,
     requestTimeoutMs: 15_000,
     getHeaders: async () => ({
       authorization: `Bearer ${appToken}`,

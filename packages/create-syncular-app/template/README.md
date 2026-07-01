@@ -58,6 +58,7 @@ src/server/            Hono sync server (auth, handlers, server-side tables)
 src/client/syncular.ts Client wiring: local DB, sync lifecycle, managed client
 src/app.tsx            React UI built on @syncular/client/react hooks + diagnostics
 scripts/dev.ts         Runs sync server + Vite together
+vite.config.ts         Serves/copies Syncular core WASM assets for browser deploys
 ```
 
 How a change flows: `useMutations().tasks.insert(...)` writes to the local

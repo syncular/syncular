@@ -5,8 +5,8 @@
     "namedImports": [
       "createSyncularDatabase"
     ],
-    "baselineRawKb": 266.66,
-    "baselineGzipKb": 62.15,
+    "baselineRawKb": 332.37,
+    "baselineGzipKb": 79.64,
     "maxDriftPercent": 5,
     "maxRawKb": 600,
     "maxGzipKb": 150

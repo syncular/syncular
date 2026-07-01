@@ -23,6 +23,7 @@ import {
   appActorId,
   openAppClient,
   syncularGeneratedRequiredRuntimeFeatures,
+  syncularStarterRuntimeArtifacts,
   type Task,
 } from './client/syncular';
 
@@ -137,8 +138,8 @@ const {
 
 const starterDeploymentPreflightOptions = {
   requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
+  runtimeArtifacts: syncularStarterRuntimeArtifacts,
   storage: 'indexedDb',
-  checkRuntimeAssets: false,
   minimumAvailableBytes: 25 * 1024 * 1024,
   minimumQuotaBytes: 50 * 1024 * 1024,
 } as const;
