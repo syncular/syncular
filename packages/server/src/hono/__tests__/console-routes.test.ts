@@ -198,6 +198,34 @@ type OpsReadinessResponse = {
   } | null;
 };
 
+type OpsReadinessTrendsResponse = {
+  range: '24h' | '7d' | '30d' | '90d';
+  from: string;
+  to: string;
+  matchedCount: number;
+  scannedCount: number;
+  reportCount: number;
+  readyCount: number;
+  notReadyCount: number;
+  issueCount: number;
+  truncated: boolean;
+  issueTrends: Array<{
+    code: string;
+    severity: 'warning' | 'error';
+    count: number;
+    affectedTargets: string[];
+    latestSeenAt: string;
+    latestAction: string;
+  }>;
+  buckets: Array<{
+    bucketStart: string;
+    reportCount: number;
+    readyCount: number;
+    notReadyCount: number;
+    issueCount: number;
+  }>;
+};
+
 type ApiKeysResponse = {
   items: Array<{
     keyId: string;
@@ -439,6 +467,24 @@ describe('console timeline route filters', () => {
     return targetApp.request('http://localhost/console/ops/readiness', {
       headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
     });
+  }
+
+  async function requestOpsReadinessTrends(
+    query: Record<string, string | number | undefined> = {},
+    targetApp: Hono = app
+  ): Promise<Response> {
+    const params = new URLSearchParams();
+    for (const [key, value] of Object.entries(query)) {
+      if (value === undefined) continue;
+      params.set(key, String(value));
+    }
+    const queryString = params.toString();
+    return targetApp.request(
+      `http://localhost/console/ops/readiness/trends${queryString ? `?${queryString}` : ''}`,
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
   }
 
   async function postOpsReadiness(
@@ -2078,6 +2124,78 @@ describe('console timeline route filters', () => {
     });
     expect(ops.items[0]?.resultPayload).toEqual(payload.report);
     expect(JSON.stringify(ops.items[0])).not.toContain('/Users/example/app');
+  });
+
+  it('summarizes production ops readiness trends over a retained audit window', async () => {
+    const notReadyResponse = await postOpsReadiness(createOpsReadinessReport());
+    expect(notReadyResponse.status).toBe(202);
+    const notReady = (await notReadyResponse.json()) as OpsReadinessResponse;
+
+    const readyResponse = await postOpsReadiness(
+      createOpsReadinessReport({
+        ready: true,
+        status: 'ready',
+        issues: [],
+      })
+    );
+    expect(readyResponse.status).toBe(202);
+    const ready = (await readyResponse.json()) as OpsReadinessResponse;
+
+    const notReadyAt = atIso(-60 * 24 * 40);
+    const readyAt = atIso(-60 * 24 * 5);
+    await db
+      .updateTable('sync_operation_events')
+      .set({ created_at: notReadyAt })
+      .where('operation_id', '=', notReady.operationId ?? -1)
+      .execute();
+    await db
+      .updateTable('sync_operation_events')
+      .set({ created_at: readyAt })
+      .where('operation_id', '=', ready.operationId ?? -1)
+      .execute();
+
+    const response = await requestOpsReadinessTrends({
+      range: '90d',
+      limit: 100,
+      from: atIso(-60 * 24 * 45),
+      to: atIso(10),
+    });
+    expect(response.status).toBe(200);
+    const payload = (await response.json()) as OpsReadinessTrendsResponse;
+
+    expect(payload.range).toBe('90d');
+    expect(payload.matchedCount).toBe(2);
+    expect(payload.scannedCount).toBe(2);
+    expect(payload.reportCount).toBe(2);
+    expect(payload.readyCount).toBe(1);
+    expect(payload.notReadyCount).toBe(1);
+    expect(payload.issueCount).toBe(1);
+    expect(payload.truncated).toBe(false);
+    expect(payload.issueTrends).toHaveLength(1);
+    expect(payload.issueTrends[0]).toMatchObject({
+      code: 'ops.restore_drill_stale',
+      severity: 'error',
+      count: 1,
+      affectedTargets: ['local'],
+      latestSeenAt: notReadyAt,
+      latestAction: 'runRestoreDrill',
+    });
+    expect(payload.buckets).toHaveLength(2);
+    expect(payload.buckets.map((bucket) => bucket.reportCount)).toEqual([1, 1]);
+
+    const limitedResponse = await requestOpsReadinessTrends({
+      range: '90d',
+      limit: 1,
+      from: atIso(-60 * 24 * 45),
+      to: atIso(10),
+    });
+    expect(limitedResponse.status).toBe(200);
+    const limited =
+      (await limitedResponse.json()) as OpsReadinessTrendsResponse;
+    expect(limited.matchedCount).toBe(2);
+    expect(limited.scannedCount).toBe(1);
+    expect(limited.reportCount).toBe(1);
+    expect(limited.truncated).toBe(true);
   });
 
   it('accepts ready ops readiness reports and rejects sensitive fields', async () => {

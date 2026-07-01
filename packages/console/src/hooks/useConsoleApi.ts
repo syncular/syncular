@@ -18,6 +18,7 @@ import type {
   ConsoleOperationEvent,
   ConsoleOperationType,
   ConsoleOpsReadinessResponse,
+  ConsoleOpsReadinessTrendsResponse,
   ConsoleRequestEvent,
   ConsoleRequestPayload,
   ConsoleRowInvestigationResponse,
@@ -94,6 +95,15 @@ type PrunePreviewOptions = {
 type OperationEventsParams = ListParams & {
   operationType?: ConsoleOperationType;
 };
+type OpsReadinessTrendRange = '24h' | '7d' | '30d' | '90d';
+type OpsReadinessTrendsParams = {
+  range?: OpsReadinessTrendRange;
+  limit?: number;
+  from?: string;
+  to?: string;
+  instanceId?: string;
+  refetchIntervalMs?: number;
+};
 type ApiKeysParams = {
   limit?: number;
   offset?: number;
@@ -148,6 +158,8 @@ const queryKeys = {
     ['console', 'operations', params] as const,
   opsReadiness: (instanceId?: string) =>
     ['console', 'ops', 'readiness', instanceId] as const,
+  opsReadinessTrends: (params?: OpsReadinessTrendsParams) =>
+    ['console', 'ops', 'readiness', 'trends', params] as const,
   apiKeys: (params?: ApiKeysParams) => ['console', 'api-keys', params] as const,
   storage: (params?: Record<string, unknown>) =>
     ['console', 'storage', params] as const,
@@ -679,6 +691,27 @@ export function useOpsReadiness(
     query: { instanceId },
     errorMessage: 'Failed to fetch ops readiness',
     refetchInterval: resolveRefetchInterval(options.refetchIntervalMs, 30000),
+  });
+}
+
+export function useOpsReadinessTrends(params: OpsReadinessTrendsParams = {}) {
+  const instanceId = useEffectiveInstanceId(params.instanceId);
+  const range = params.range ?? '30d';
+  const limit = params.limit ?? 1000;
+  const query = {
+    range,
+    limit,
+    from: params.from,
+    to: params.to,
+    instanceId,
+  };
+
+  return useConsoleJsonQuery<ConsoleOpsReadinessTrendsResponse>({
+    queryKey: queryKeys.opsReadinessTrends(query),
+    path: '/console/ops/readiness/trends',
+    query,
+    errorMessage: 'Failed to fetch ops readiness trends',
+    refetchInterval: resolveRefetchInterval(params.refetchIntervalMs, 30000),
   });
 }
 

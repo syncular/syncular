@@ -12,7 +12,7 @@ operation audit trail.
 
 The Production Readiness panel shows the latest `syncular ops check --json`
 report posted to `POST /console/ops/readiness` by your deploy pipeline, issue
-drilldown by instance, issue-code trends from the latest audit window, and
+drilldown by instance, retained readiness trend buckets, issue-code trends, and
 recent readiness audit history. It keeps the deploy-time facts visible after CI
 finishes:
 
@@ -81,6 +81,7 @@ latest ops-check report.
 ## Related API pages
 
 - [Ops readiness](/reference/api/getConsoleOpsReadiness)
+- [Ops readiness trends](/reference/api/getConsoleOpsReadinessTrends)
 - [Post ops readiness](/reference/api/postConsoleOpsReadiness)
 - [Prune preview](/reference/api/postConsolePrunePreview)
 - [Prune](/reference/api/postConsolePrune)

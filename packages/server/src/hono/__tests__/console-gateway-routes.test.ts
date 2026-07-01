@@ -8,6 +8,7 @@ import type {
   ConsoleHandler,
   ConsoleOperationEvent,
   ConsoleOpsReadinessResponse,
+  ConsoleOpsReadinessTrendsResponse,
   ConsolePaginatedResponse,
   ConsoleRequestEvent,
   ConsoleRequestPayload,
@@ -25,6 +26,7 @@ interface MockInstanceData {
   latency: LatencyStatsResponse;
   handlers: ConsoleHandler[];
   opsReadiness: ConsoleOpsReadinessResponse;
+  opsReadinessTrends: ConsoleOpsReadinessTrendsResponse;
   apiKeys: ConsoleApiKey[];
   commits: ConsoleCommitListItem[];
   clients: ConsoleClient[];
@@ -144,6 +146,14 @@ function createMockGatewayApp(args: {
         }
         if (pathname.endsWith('/console/handlers') && method === 'GET') {
           return new Response(JSON.stringify({ items: data.handlers }), {
+            status: 200,
+          });
+        }
+        if (
+          pathname.endsWith('/console/ops/readiness/trends') &&
+          method === 'GET'
+        ) {
+          return new Response(JSON.stringify(data.opsReadinessTrends), {
             status: 200,
           });
         }
@@ -820,6 +830,76 @@ describe('createConsoleGatewayRoutes', () => {
     report: null,
   };
 
+  const alphaOpsReadinessTrends: ConsoleOpsReadinessTrendsResponse = {
+    range: '30d',
+    from: '2026-01-18T10:00:00.000Z',
+    to: '2026-02-17T10:10:00.000Z',
+    matchedCount: 2,
+    scannedCount: 2,
+    reportCount: 2,
+    readyCount: 2,
+    notReadyCount: 0,
+    issueCount: 0,
+    truncated: false,
+    issueTrends: [],
+    buckets: [
+      {
+        bucketStart: '2026-02-16T00:00:00.000Z',
+        reportCount: 1,
+        readyCount: 1,
+        notReadyCount: 0,
+        issueCount: 0,
+      },
+      {
+        bucketStart: '2026-02-17T00:00:00.000Z',
+        reportCount: 1,
+        readyCount: 1,
+        notReadyCount: 0,
+        issueCount: 0,
+      },
+    ],
+  };
+
+  const betaOpsReadinessTrends: ConsoleOpsReadinessTrendsResponse = {
+    range: '30d',
+    from: '2026-01-18T10:00:00.000Z',
+    to: '2026-02-17T10:11:00.000Z',
+    matchedCount: 1,
+    scannedCount: 1,
+    reportCount: 1,
+    readyCount: 0,
+    notReadyCount: 1,
+    issueCount: 2,
+    truncated: false,
+    issueTrends: [
+      {
+        code: 'ops.restore_drill_stale',
+        severity: 'error',
+        count: 1,
+        affectedTargets: ['local'],
+        latestSeenAt: '2026-02-17T10:08:00.000Z',
+        latestAction: 'runRestoreDrill',
+      },
+      {
+        code: 'ops.rate_limits_unreviewed',
+        severity: 'warning',
+        count: 1,
+        affectedTargets: ['local'],
+        latestSeenAt: '2026-02-17T10:09:00.000Z',
+        latestAction: 'reviewRateLimits',
+      },
+    ],
+    buckets: [
+      {
+        bucketStart: '2026-02-17T00:00:00.000Z',
+        reportCount: 1,
+        readyCount: 0,
+        notReadyCount: 1,
+        issueCount: 2,
+      },
+    ],
+  };
+
   const alphaTimeline: ConsoleTimelineItem[] = [
     {
       type: 'commit',
@@ -851,6 +931,7 @@ describe('createConsoleGatewayRoutes', () => {
       latency: alphaLatency,
       handlers: alphaHandlers,
       opsReadiness: alphaOpsReadiness,
+      opsReadinessTrends: alphaOpsReadinessTrends,
       apiKeys: alphaApiKeys,
       commits: alphaCommits,
       clients: alphaClients,
@@ -878,6 +959,7 @@ describe('createConsoleGatewayRoutes', () => {
       latency: betaLatency,
       handlers: betaHandlers,
       opsReadiness: betaOpsReadiness,
+      opsReadinessTrends: betaOpsReadinessTrends,
       apiKeys: betaApiKeys,
       commits: betaCommits,
       clients: betaClients,
@@ -1460,6 +1542,91 @@ describe('createConsoleGatewayRoutes', () => {
     ]);
   });
 
+  it('aggregates ops readiness trends across gateway instances', async () => {
+    const { app } = createMockGatewayApp({ instances: instanceData });
+
+    const response = await app.request(
+      'http://localhost/console/ops/readiness/trends?range=30d&limit=100',
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as ConsoleOpsReadinessTrendsResponse;
+
+    expect(body.range).toBe('30d');
+    expect(body.from).toBe('2026-01-18T10:00:00.000Z');
+    expect(body.to).toBe('2026-02-17T10:11:00.000Z');
+    expect(body.matchedCount).toBe(3);
+    expect(body.scannedCount).toBe(3);
+    expect(body.reportCount).toBe(3);
+    expect(body.readyCount).toBe(2);
+    expect(body.notReadyCount).toBe(1);
+    expect(body.issueCount).toBe(2);
+    expect(body.truncated).toBe(false);
+    expect(body.partial).toBe(false);
+    expect(body.failedInstances).toEqual([]);
+    expect(body.buckets).toEqual([
+      {
+        bucketStart: '2026-02-16T00:00:00.000Z',
+        reportCount: 1,
+        readyCount: 1,
+        notReadyCount: 0,
+        issueCount: 0,
+      },
+      {
+        bucketStart: '2026-02-17T00:00:00.000Z',
+        reportCount: 2,
+        readyCount: 1,
+        notReadyCount: 1,
+        issueCount: 2,
+      },
+    ]);
+    expect(body.issueTrends).toEqual([
+      {
+        code: 'ops.restore_drill_stale',
+        severity: 'error',
+        count: 1,
+        affectedTargets: ['beta'],
+        latestSeenAt: '2026-02-17T10:08:00.000Z',
+        latestAction: 'runRestoreDrill',
+      },
+      {
+        code: 'ops.rate_limits_unreviewed',
+        severity: 'warning',
+        count: 1,
+        affectedTargets: ['beta'],
+        latestSeenAt: '2026-02-17T10:09:00.000Z',
+        latestAction: 'reviewRateLimits',
+      },
+    ]);
+  });
+
+  it('reports partial ops readiness trend aggregation failures', async () => {
+    const { app } = createMockGatewayApp({
+      instances: instanceData,
+      failingInstances: new Set(['beta']),
+    });
+
+    const response = await app.request(
+      'http://localhost/console/ops/readiness/trends?range=30d&limit=100',
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as ConsoleOpsReadinessTrendsResponse;
+
+    expect(body.reportCount).toBe(2);
+    expect(body.readyCount).toBe(2);
+    expect(body.notReadyCount).toBe(0);
+    expect(body.issueTrends).toEqual([]);
+    expect(body.partial).toBe(true);
+    expect(body.failedInstances).toEqual([
+      { instanceId: 'beta', reason: 'HTTP 503', status: 503 },
+    ]);
+  });
+
   it('proxies single-instance mutation and config endpoints', async () => {
     const { app } = createMockGatewayApp({ instances: instanceData });
 
@@ -1486,6 +1653,18 @@ describe('createConsoleGatewayRoutes', () => {
       (await opsReadinessResponse.json()) as ConsoleOpsReadinessResponse;
     expect(opsReadinessBody.report?.ready).toBe(true);
     expect(opsReadinessBody.report?.checks.restoreDrill).toBe('ready');
+
+    const opsReadinessTrendsResponse = await app.request(
+      'http://localhost/console/ops/readiness/trends?instanceId=alpha&range=30d',
+      {
+        headers: { Authorization: `Bearer ${CONSOLE_TOKEN}` },
+      }
+    );
+    expect(opsReadinessTrendsResponse.status).toBe(200);
+    const opsReadinessTrendsBody =
+      (await opsReadinessTrendsResponse.json()) as ConsoleOpsReadinessTrendsResponse;
+    expect(opsReadinessTrendsBody.reportCount).toBe(2);
+    expect(opsReadinessTrendsBody.readyCount).toBe(2);
 
     const postOpsReadinessResponse = await app.request(
       'http://localhost/console/ops/readiness?instanceId=alpha',

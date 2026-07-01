@@ -1063,6 +1063,57 @@ export type ConsoleOpsReadinessResponse = z.infer<
   typeof ConsoleOpsReadinessResponseSchema
 >;
 
+const ConsoleOpsReadinessTrendRangeSchema = z.enum(['24h', '7d', '30d', '90d']);
+
+export const ConsoleOpsReadinessTrendsQuerySchema = z.object({
+  range: ConsoleOpsReadinessTrendRangeSchema.default('30d'),
+  limit: z.coerce.number().int().min(1).max(5000).default(1000),
+  from: z.string().datetime().optional(),
+  to: z.string().datetime().optional(),
+});
+
+export type ConsoleOpsReadinessTrendsQuery = z.infer<
+  typeof ConsoleOpsReadinessTrendsQuerySchema
+>;
+
+export const ConsoleOpsReadinessIssueTrendSchema = z.object({
+  code: z.string().min(1),
+  severity: z.enum(['warning', 'error']),
+  count: z.number().int().nonnegative(),
+  affectedTargets: z.array(z.string()),
+  latestSeenAt: z.string(),
+  latestAction: z.string(),
+});
+
+export const ConsoleOpsReadinessTrendBucketSchema = z.object({
+  bucketStart: z.string(),
+  reportCount: z.number().int().nonnegative(),
+  readyCount: z.number().int().nonnegative(),
+  notReadyCount: z.number().int().nonnegative(),
+  issueCount: z.number().int().nonnegative(),
+});
+
+export const ConsoleOpsReadinessTrendsResponseSchema = z.object({
+  range: ConsoleOpsReadinessTrendRangeSchema,
+  from: z.string().datetime(),
+  to: z.string().datetime(),
+  matchedCount: z.number().int().nonnegative(),
+  scannedCount: z.number().int().nonnegative(),
+  reportCount: z.number().int().nonnegative(),
+  readyCount: z.number().int().nonnegative(),
+  notReadyCount: z.number().int().nonnegative(),
+  issueCount: z.number().int().nonnegative(),
+  truncated: z.boolean(),
+  issueTrends: z.array(ConsoleOpsReadinessIssueTrendSchema),
+  buckets: z.array(ConsoleOpsReadinessTrendBucketSchema),
+  partial: z.boolean().optional(),
+  failedInstances: z.array(ConsoleOpsReadinessGatewayFailureSchema).optional(),
+});
+
+export type ConsoleOpsReadinessTrendsResponse = z.infer<
+  typeof ConsoleOpsReadinessTrendsResponseSchema
+>;
+
 // ============================================================================
 // API Key Schemas
 // ============================================================================

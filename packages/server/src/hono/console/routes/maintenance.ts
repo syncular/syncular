@@ -31,6 +31,10 @@ import {
   ConsoleOpsReadinessReportSchema,
   type ConsoleOpsReadinessResponse,
   ConsoleOpsReadinessResponseSchema,
+  type ConsoleOpsReadinessTrendsQuery,
+  ConsoleOpsReadinessTrendsQuerySchema,
+  type ConsoleOpsReadinessTrendsResponse,
+  ConsoleOpsReadinessTrendsResponseSchema,
   type ConsolePaginatedResponse,
   ConsolePaginatedResponseSchema,
   type ConsolePrunePreview,
@@ -71,6 +75,160 @@ function buildOpsReadinessReport(
       localPaths: 'omitted',
       sensitiveKeys: 'rejected',
     },
+  };
+}
+
+const OPS_READINESS_TREND_RANGE_MS: Record<
+  ConsoleOpsReadinessTrendsQuery['range'],
+  number
+> = {
+  '24h': 24 * 60 * 60 * 1000,
+  '7d': 7 * 24 * 60 * 60 * 1000,
+  '30d': 30 * 24 * 60 * 60 * 1000,
+  '90d': 90 * 24 * 60 * 60 * 1000,
+};
+
+interface OpsReadinessIssueTrendAccumulator {
+  code: string;
+  severity: 'warning' | 'error';
+  count: number;
+  affectedTargets: Set<string>;
+  latestSeenAt: string;
+  latestAction: string;
+}
+
+interface OpsReadinessBucketAccumulator {
+  bucketStart: string;
+  reportCount: number;
+  readyCount: number;
+  notReadyCount: number;
+  issueCount: number;
+}
+
+function isLaterIso(candidate: string, current: string): boolean {
+  const candidateMs = Date.parse(candidate);
+  const currentMs = Date.parse(current);
+  if (!Number.isFinite(candidateMs)) return false;
+  if (!Number.isFinite(currentMs)) return true;
+  return candidateMs > currentMs;
+}
+
+function opsReadinessBucketStartIso(
+  createdAt: string,
+  range: ConsoleOpsReadinessTrendsQuery['range']
+): string | null {
+  const parsed = Date.parse(createdAt);
+  if (!Number.isFinite(parsed)) return null;
+
+  const bucket = new Date(parsed);
+  bucket.setUTCMinutes(0, 0, 0);
+  if (range !== '24h') {
+    bucket.setUTCHours(0, 0, 0, 0);
+  }
+  return bucket.toISOString();
+}
+
+function buildOpsReadinessTrendsResponse(args: {
+  events: ConsoleOperationEvent[];
+  matchedCount: number;
+  range: ConsoleOpsReadinessTrendsQuery['range'];
+  from: string;
+  to: string;
+  targetLabel: string;
+}): ConsoleOpsReadinessTrendsResponse {
+  const issueTrends = new Map<string, OpsReadinessIssueTrendAccumulator>();
+  const buckets = new Map<string, OpsReadinessBucketAccumulator>();
+  let reportCount = 0;
+  let readyCount = 0;
+  let notReadyCount = 0;
+  let issueCount = 0;
+
+  for (const event of args.events) {
+    const parsedReport = ConsoleOpsReadinessReportSchema.safeParse(
+      event.resultPayload
+    );
+    if (!parsedReport.success) continue;
+
+    const report = parsedReport.data;
+    reportCount += 1;
+    if (report.ready) {
+      readyCount += 1;
+    } else {
+      notReadyCount += 1;
+    }
+    issueCount += report.issueCount;
+
+    const bucketStart = opsReadinessBucketStartIso(event.createdAt, args.range);
+    if (bucketStart) {
+      const bucket =
+        buckets.get(bucketStart) ??
+        ({
+          bucketStart,
+          reportCount: 0,
+          readyCount: 0,
+          notReadyCount: 0,
+          issueCount: 0,
+        } satisfies OpsReadinessBucketAccumulator);
+      bucket.reportCount += 1;
+      bucket.readyCount += report.ready ? 1 : 0;
+      bucket.notReadyCount += report.ready ? 0 : 1;
+      bucket.issueCount += report.issueCount;
+      buckets.set(bucketStart, bucket);
+    }
+
+    for (const issue of report.issues) {
+      const existing = issueTrends.get(issue.code);
+      if (!existing) {
+        issueTrends.set(issue.code, {
+          code: issue.code,
+          severity: issue.severity,
+          count: 1,
+          affectedTargets: new Set([args.targetLabel]),
+          latestSeenAt: event.createdAt,
+          latestAction: issue.recommendedAction,
+        });
+        continue;
+      }
+
+      existing.count += 1;
+      existing.affectedTargets.add(args.targetLabel);
+      if (issue.severity === 'error') {
+        existing.severity = 'error';
+      }
+      if (isLaterIso(event.createdAt, existing.latestSeenAt)) {
+        existing.latestSeenAt = event.createdAt;
+        existing.latestAction = issue.recommendedAction;
+      }
+    }
+  }
+
+  return {
+    range: args.range,
+    from: args.from,
+    to: args.to,
+    matchedCount: args.matchedCount,
+    scannedCount: args.events.length,
+    reportCount,
+    readyCount,
+    notReadyCount,
+    issueCount,
+    truncated: args.matchedCount > args.events.length,
+    issueTrends: Array.from(issueTrends.values())
+      .map((trend) => ({
+        ...trend,
+        affectedTargets: Array.from(trend.affectedTargets).sort(),
+      }))
+      .sort((a, b) => {
+        if (a.severity !== b.severity) return a.severity === 'error' ? -1 : 1;
+        if (a.count !== b.count) return b.count - a.count;
+        if (a.latestSeenAt === b.latestSeenAt) {
+          return a.code.localeCompare(b.code);
+        }
+        return isLaterIso(a.latestSeenAt, b.latestSeenAt) ? -1 : 1;
+      }),
+    buckets: Array.from(buckets.values()).sort((a, b) =>
+      a.bucketStart.localeCompare(b.bucketStart)
+    ),
   };
 }
 
@@ -115,6 +273,43 @@ export function registerMaintenanceRoutes(ctx: ConsoleRoutesContext): void {
         report: report.success ? report.data : null,
       };
     };
+
+  const readOpsReadinessTrends = async (
+    query: ConsoleOpsReadinessTrendsQuery
+  ): Promise<ConsoleOpsReadinessTrendsResponse> => {
+    const to = query.to ? new Date(query.to) : new Date();
+    const from = query.from
+      ? new Date(query.from)
+      : new Date(to.getTime() - OPS_READINESS_TREND_RANGE_MS[query.range]);
+    const fromIso = from.toISOString();
+    const toIso = to.toISOString();
+
+    const baseQuery = db
+      .selectFrom('sync_operation_events')
+      .where('operation_type', '=', 'ops_readiness')
+      .where('created_at', '>=', fromIso)
+      .where('created_at', '<=', toIso);
+
+    const [rows, countRow] = await Promise.all([
+      baseQuery
+        .select(operationEventSelectColumns)
+        .orderBy('created_at', 'desc')
+        .limit(query.limit)
+        .execute(),
+      baseQuery
+        .select(({ fn }) => fn.countAll().as('total'))
+        .executeTakeFirst(),
+    ]);
+
+    return buildOpsReadinessTrendsResponse({
+      events: rows.map((row) => mapOperationEvent(row)),
+      matchedCount: coerceNumber(countRow?.total) ?? 0,
+      range: query.range,
+      from: fromIso,
+      to: toIso,
+      targetLabel: 'local',
+    });
+  };
 
   // -------------------------------------------------------------------------
   // GET /handlers
@@ -249,6 +444,35 @@ export function registerMaintenanceRoutes(ctx: ConsoleRoutesContext): void {
       },
     }),
     async (c) => c.json(await readLatestOpsReadiness(), 200)
+  );
+
+  // -------------------------------------------------------------------------
+  // GET /ops/readiness/trends - Production ops readiness trends
+  // -------------------------------------------------------------------------
+
+  routes.get(
+    '/ops/readiness/trends',
+    describeConsoleRoute({
+      summary: 'Get production ops readiness trends',
+      responses: {
+        200: {
+          description: 'Ops readiness trends',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleOpsReadinessTrendsResponseSchema),
+            },
+          },
+        },
+        401: {
+          description: 'Unauthenticated',
+          content: {
+            'application/json': { schema: resolver(ErrorResponseSchema) },
+          },
+        },
+      },
+    }),
+    zValidator('query', ConsoleOpsReadinessTrendsQuerySchema),
+    async (c) => c.json(await readOpsReadinessTrends(c.req.valid('query')), 200)
   );
 
   // -------------------------------------------------------------------------

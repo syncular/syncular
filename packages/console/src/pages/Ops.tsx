@@ -6,6 +6,7 @@ import {
   useNotifyDataChangeMutation,
   useOperationEvents,
   useOpsReadiness,
+  useOpsReadinessTrends,
   usePartitionContext,
   usePruneMutation,
   usePrunePreview,
@@ -17,6 +18,7 @@ import type {
   ConsoleOperationType,
   ConsoleOpsReadinessReport,
   ConsoleOpsReadinessResponse,
+  ConsoleOpsReadinessTrendsResponse,
 } from '../lib/types';
 import type { AlertThresholds, HandlerEntry, MaintenanceStat } from '../ui';
 import {
@@ -71,15 +73,6 @@ interface OpsReadinessIssueRow {
   sourceId: string;
   sourceLabel: string;
   issue: OpsReadinessIssue;
-}
-
-interface OpsReadinessIssueTrend {
-  code: string;
-  severity: OpsReadinessIssue['severity'];
-  count: number;
-  affectedTargets: string[];
-  latestSeenAt: string;
-  latestAction: string;
 }
 
 const OPS_READINESS_CHECK_ORDER: OpsReadinessCheckKey[] = [
@@ -218,40 +211,6 @@ function opsReadinessEventGeneratedAt(
   return typeof result?.generatedAt === 'string' ? result.generatedAt : null;
 }
 
-function parseOpsReadinessIssue(value: unknown): OpsReadinessIssue | null {
-  const issue = asObject(value);
-  if (!issue) return null;
-  if (typeof issue.code !== 'string' || issue.code.length === 0) return null;
-  if (issue.severity !== 'warning' && issue.severity !== 'error') return null;
-  if (typeof issue.message !== 'string' || issue.message.length === 0) {
-    return null;
-  }
-  if (
-    typeof issue.recommendedAction !== 'string' ||
-    issue.recommendedAction.length === 0
-  ) {
-    return null;
-  }
-
-  return {
-    code: issue.code,
-    severity: issue.severity,
-    message: issue.message,
-    recommendedAction: issue.recommendedAction,
-  };
-}
-
-function opsReadinessEventIssues(
-  event: ConsoleOperationEvent
-): OpsReadinessIssue[] {
-  const result = opsReadinessEventResult(event);
-  if (!Array.isArray(result?.issues)) return [];
-  return result.issues.flatMap((issue) => {
-    const parsed = parseOpsReadinessIssue(issue);
-    return parsed ? [parsed] : [];
-  });
-}
-
 function formatDateTime(iso: string): string {
   const parsed = Date.parse(iso);
   if (!Number.isFinite(parsed)) return iso;
@@ -366,56 +325,6 @@ function collectOpsReadinessIssueRows(args: {
   );
 }
 
-function collectOpsReadinessIssueTrends(
-  events: ConsoleOperationEvent[]
-): OpsReadinessIssueTrend[] {
-  const trends = new Map<
-    string,
-    Omit<OpsReadinessIssueTrend, 'affectedTargets'> & {
-      affectedTargets: Set<string>;
-    }
-  >();
-
-  for (const event of events) {
-    const target = event.instanceId ?? 'local';
-    for (const issue of opsReadinessEventIssues(event)) {
-      const existing = trends.get(issue.code);
-      if (!existing) {
-        trends.set(issue.code, {
-          code: issue.code,
-          severity: issue.severity,
-          count: 1,
-          affectedTargets: new Set([target]),
-          latestSeenAt: event.createdAt,
-          latestAction: issue.recommendedAction,
-        });
-        continue;
-      }
-
-      existing.count += 1;
-      existing.affectedTargets.add(target);
-      if (issue.severity === 'error') {
-        existing.severity = 'error';
-      }
-      if (compareNullableIsoDesc(event.createdAt, existing.latestSeenAt) < 0) {
-        existing.latestSeenAt = event.createdAt;
-        existing.latestAction = issue.recommendedAction;
-      }
-    }
-  }
-
-  return Array.from(trends.values())
-    .map((trend) => ({
-      ...trend,
-      affectedTargets: Array.from(trend.affectedTargets).sort(),
-    }))
-    .sort((a, b) => {
-      if (a.severity !== b.severity) return a.severity === 'error' ? -1 : 1;
-      if (a.count !== b.count) return b.count - a.count;
-      return compareNullableIsoDesc(a.latestSeenAt, b.latestSeenAt);
-    });
-}
-
 export function Ops() {
   const { partitionId } = usePartitionContext();
 
@@ -446,12 +355,21 @@ function OpsReadinessView() {
     error: readinessHistoryError,
   } = useOperationEvents(
     {
-      limit: 100,
+      limit: 8,
       offset: 0,
       operationType: 'ops_readiness',
     },
     { refetchIntervalMs: 30000 }
   );
+  const {
+    data: readinessTrends,
+    isLoading: readinessTrendsLoading,
+    error: readinessTrendsError,
+  } = useOpsReadinessTrends({
+    range: '30d',
+    limit: 1000,
+    refetchIntervalMs: 30000,
+  });
   const instanceReports = data?.instanceReports ?? [];
   const failedInstances = data?.failedInstances ?? [];
   const report = latestOpsReadinessReport(data);
@@ -660,10 +578,14 @@ function OpsReadinessView() {
             </div>
           ) : null}
 
-          <OpsReadinessIssueTrendView events={readinessHistoryItems} />
+          <OpsReadinessTrendView
+            data={readinessTrends}
+            isLoading={readinessTrendsLoading}
+            error={readinessTrendsError}
+          />
 
           <OpsReadinessHistoryView
-            events={readinessHistoryItems.slice(0, 8)}
+            events={readinessHistoryItems}
             isLoading={readinessHistoryLoading}
             error={readinessHistoryError}
           />
@@ -751,72 +673,196 @@ function OpsReadinessIssueDrilldownView({
   );
 }
 
-function OpsReadinessIssueTrendView({
-  events,
+function OpsReadinessTrendView({
+  data,
+  isLoading,
+  error,
 }: {
-  events: ConsoleOperationEvent[];
+  data: ConsoleOpsReadinessTrendsResponse | undefined;
+  isLoading: boolean;
+  error: Error | null;
 }) {
-  const trends = collectOpsReadinessIssueTrends(events);
-  if (trends.length === 0) return null;
+  if (isLoading) {
+    return (
+      <div className="flex items-center justify-center py-5">
+        <Spinner size="sm" />
+      </div>
+    );
+  }
 
-  const visibleTrends = trends.slice(0, 6);
+  if (error) {
+    return (
+      <Alert variant="destructive">
+        <AlertDescription>
+          Failed to load readiness trends: {error.message}
+        </AlertDescription>
+      </Alert>
+    );
+  }
+
+  if (!data || data.reportCount === 0) {
+    return null;
+  }
+
+  const visibleBuckets = data.buckets.slice(-8);
+  const visibleTrends = data.issueTrends.slice(0, 6);
 
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center justify-between gap-3">
         <div className="font-mono text-[10px] uppercase text-neutral-500">
-          Issue Trends
+          Readiness Trend
         </div>
         <Badge variant="ghost">
-          {trends.length} code{trends.length === 1 ? '' : 's'} / {events.length}{' '}
-          record{events.length === 1 ? '' : 's'}
+          {data.reportCount} report{data.reportCount === 1 ? '' : 's'} /{' '}
+          {data.range}
         </Badge>
       </div>
-      <div className="overflow-x-auto">
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Severity</TableHead>
-              <TableHead>Code</TableHead>
-              <TableHead>Hits</TableHead>
-              <TableHead>Targets</TableHead>
-              <TableHead>Latest Seen</TableHead>
-              <TableHead>Latest Action</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {visibleTrends.map((trend) => (
-              <TableRow key={trend.code}>
-                <TableCell>
-                  <Badge
-                    variant={opsReadinessIssueBadgeVariant(trend.severity)}
-                  >
-                    {trend.severity}
-                  </Badge>
-                </TableCell>
-                <TableCell className="font-mono text-xs text-offline">
-                  {trend.code}
-                </TableCell>
-                <TableCell className="font-mono text-xs">
-                  {trend.count}
-                </TableCell>
-                <TableCell className="font-mono text-xs">
-                  {trend.affectedTargets.join(', ')}
-                </TableCell>
-                <TableCell className="whitespace-nowrap font-mono text-xs">
-                  {formatDateTime(trend.latestSeenAt)}
-                </TableCell>
-                <TableCell className="font-mono text-xs">
-                  {trend.latestAction}
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+      {data.partial || data.failedInstances?.length ? (
+        <Alert variant="destructive">
+          <AlertDescription>
+            Trend data is partial
+            {data.failedInstances?.length
+              ? `; failed instances: ${data.failedInstances
+                  .map((entry) => entry.instanceId)
+                  .join(', ')}`
+              : ''}
+          </AlertDescription>
+        </Alert>
+      ) : null}
+      <div className="grid gap-3 md:grid-cols-4">
+        <div>
+          <div className="font-mono text-[10px] uppercase text-neutral-500">
+            Ready
+          </div>
+          <div className="mt-1 font-mono text-sm text-neutral-100">
+            {data.readyCount}
+          </div>
+        </div>
+        <div>
+          <div className="font-mono text-[10px] uppercase text-neutral-500">
+            Not Ready
+          </div>
+          <div className="mt-1 font-mono text-sm text-neutral-100">
+            {data.notReadyCount}
+          </div>
+        </div>
+        <div>
+          <div className="font-mono text-[10px] uppercase text-neutral-500">
+            Issues
+          </div>
+          <div className="mt-1 font-mono text-sm text-neutral-100">
+            {data.issueCount}
+          </div>
+        </div>
+        <div>
+          <div className="font-mono text-[10px] uppercase text-neutral-500">
+            Window
+          </div>
+          <div className="mt-1 font-mono text-xs text-neutral-100">
+            {formatDateTime(data.from)} to {formatDateTime(data.to)}
+          </div>
+        </div>
       </div>
-      {trends.length > visibleTrends.length ? (
+      {visibleBuckets.length > 0 ? (
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Bucket</TableHead>
+                <TableHead>Reports</TableHead>
+                <TableHead>Ready</TableHead>
+                <TableHead>Not Ready</TableHead>
+                <TableHead>Issues</TableHead>
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {visibleBuckets.map((bucket) => (
+                <TableRow key={bucket.bucketStart}>
+                  <TableCell className="whitespace-nowrap font-mono text-xs">
+                    {formatDateTime(bucket.bucketStart)}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {bucket.reportCount}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {bucket.readyCount}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {bucket.notReadyCount}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {bucket.issueCount}
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
+      ) : null}
+      {data.issueTrends.length > 0 ? (
+        <>
+          <div className="flex items-center justify-between gap-3 pt-2">
+            <div className="font-mono text-[10px] uppercase text-neutral-500">
+              Issue Codes
+            </div>
+            <Badge variant="ghost">
+              {data.issueTrends.length} code
+              {data.issueTrends.length === 1 ? '' : 's'}
+            </Badge>
+          </div>
+          <div className="overflow-x-auto">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead>Severity</TableHead>
+                  <TableHead>Code</TableHead>
+                  <TableHead>Hits</TableHead>
+                  <TableHead>Targets</TableHead>
+                  <TableHead>Latest Seen</TableHead>
+                  <TableHead>Latest Action</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {visibleTrends.map((trend) => (
+                  <TableRow key={trend.code}>
+                    <TableCell>
+                      <Badge
+                        variant={opsReadinessIssueBadgeVariant(trend.severity)}
+                      >
+                        {trend.severity}
+                      </Badge>
+                    </TableCell>
+                    <TableCell className="font-mono text-xs text-offline">
+                      {trend.code}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {trend.count}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {trend.affectedTargets.join(', ')}
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap font-mono text-xs">
+                      {formatDateTime(trend.latestSeenAt)}
+                    </TableCell>
+                    <TableCell className="font-mono text-xs">
+                      {trend.latestAction}
+                    </TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          </div>
+          {data.issueTrends.length > visibleTrends.length ? (
+            <div className="px-2 font-mono text-[10px] text-neutral-500">
+              Showing {visibleTrends.length} of {data.issueTrends.length}
+            </div>
+          ) : null}
+        </>
+      ) : null}
+      {data.truncated ? (
         <div className="px-2 font-mono text-[10px] text-neutral-500">
-          Showing {visibleTrends.length} of {trends.length}
+          Showing {data.scannedCount} of {data.matchedCount} matching records.
         </div>
       ) : null}
     </div>

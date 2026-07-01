@@ -24,6 +24,7 @@ import type {
   ConsoleCommitListItem,
   ConsoleOperationEvent,
   ConsoleOpsReadinessResponse,
+  ConsoleOpsReadinessTrendsResponse,
   ConsolePaginatedResponse,
   ConsoleRequestEvent,
   ConsoleTimelineItem,
@@ -52,6 +53,8 @@ import {
   ConsoleOperationsQuerySchema,
   ConsoleOpsReadinessIngestSchema,
   ConsoleOpsReadinessResponseSchema,
+  ConsoleOpsReadinessTrendsQuerySchema,
+  ConsoleOpsReadinessTrendsResponseSchema,
   ConsolePaginatedResponseSchema,
   ConsolePaginationQuerySchema,
   ConsolePartitionedPaginationQuerySchema,
@@ -210,6 +213,11 @@ const GatewayTimelineQuerySchema = ConsoleTimelineQuerySchema.extend(
 const GatewayOperationsQuerySchema = ConsoleOperationsQuerySchema.extend(
   GatewayInstanceFilterSchema.shape
 );
+
+const GatewayOpsReadinessTrendsQuerySchema =
+  ConsoleOpsReadinessTrendsQuerySchema.extend(
+    GatewayInstanceFilterSchema.shape
+  );
 
 const GatewayEventsQuerySchema = ConsolePartitionedPaginationQuerySchema.extend(
   {
@@ -629,6 +637,22 @@ function compareIsoDesc(a: string, b: string): number {
   return bMs - aMs;
 }
 
+function isEarlierIso(candidate: string, current: string): boolean {
+  const candidateMs = Date.parse(candidate);
+  const currentMs = Date.parse(current);
+  if (!Number.isFinite(candidateMs)) return false;
+  if (!Number.isFinite(currentMs)) return true;
+  return candidateMs < currentMs;
+}
+
+function isLaterIso(candidate: string, current: string): boolean {
+  const candidateMs = Date.parse(candidate);
+  const currentMs = Date.parse(current);
+  if (!Number.isFinite(candidateMs)) return false;
+  if (!Number.isFinite(currentMs)) return true;
+  return candidateMs > currentMs;
+}
+
 type ConsoleOpsReadinessInstanceReport = NonNullable<
   ConsoleOpsReadinessResponse['instanceReports']
 >[number];
@@ -683,6 +707,142 @@ function buildOpsReadinessGatewayResponse(args: {
     missingInstanceCount:
       instanceReports.filter((entry) => !entry.available || !entry.report)
         .length + args.failedInstances.length,
+    partial: args.failedInstances.length > 0,
+    failedInstances: args.failedInstances,
+  };
+}
+
+type ConsoleOpsReadinessIssueTrend =
+  ConsoleOpsReadinessTrendsResponse['issueTrends'][number];
+type ConsoleOpsReadinessTrendBucket =
+  ConsoleOpsReadinessTrendsResponse['buckets'][number];
+
+interface OpsReadinessTrendIssueAccumulator {
+  code: string;
+  severity: ConsoleOpsReadinessIssueTrend['severity'];
+  count: number;
+  affectedTargets: Set<string>;
+  latestSeenAt: string;
+  latestAction: string;
+}
+
+function mergeOpsReadinessTrendsGatewayResponse(args: {
+  successfulResults: Array<{
+    instance: ConsoleGatewayInstance;
+    data: ConsoleOpsReadinessTrendsResponse;
+  }>;
+  failedInstances: GatewayFailure[];
+}): ConsoleOpsReadinessTrendsResponse {
+  const first = args.successfulResults[0]?.data;
+  const issueTrends = new Map<string, OpsReadinessTrendIssueAccumulator>();
+  const buckets = new Map<string, ConsoleOpsReadinessTrendBucket>();
+  let from = first?.from ?? new Date(0).toISOString();
+  let to = first?.to ?? new Date(0).toISOString();
+  let matchedCount = 0;
+  let scannedCount = 0;
+  let reportCount = 0;
+  let readyCount = 0;
+  let notReadyCount = 0;
+  let issueCount = 0;
+  let truncated = false;
+
+  for (const { instance, data } of args.successfulResults) {
+    if (isEarlierIso(data.from, from)) {
+      from = data.from;
+    }
+    if (isLaterIso(data.to, to)) {
+      to = data.to;
+    }
+    matchedCount += data.matchedCount;
+    scannedCount += data.scannedCount;
+    reportCount += data.reportCount;
+    readyCount += data.readyCount;
+    notReadyCount += data.notReadyCount;
+    issueCount += data.issueCount;
+    truncated = truncated || data.truncated;
+
+    for (const bucket of data.buckets) {
+      const existing = buckets.get(bucket.bucketStart) ?? {
+        bucketStart: bucket.bucketStart,
+        reportCount: 0,
+        readyCount: 0,
+        notReadyCount: 0,
+        issueCount: 0,
+      };
+      existing.reportCount += bucket.reportCount;
+      existing.readyCount += bucket.readyCount;
+      existing.notReadyCount += bucket.notReadyCount;
+      existing.issueCount += bucket.issueCount;
+      buckets.set(bucket.bucketStart, existing);
+    }
+
+    for (const trend of data.issueTrends) {
+      const existing = issueTrends.get(trend.code);
+      const targets =
+        trend.affectedTargets.length > 0 ? trend.affectedTargets : ['local'];
+      if (!existing) {
+        issueTrends.set(trend.code, {
+          code: trend.code,
+          severity: trend.severity,
+          count: trend.count,
+          affectedTargets: new Set(
+            targets.map((target) =>
+              target === 'local'
+                ? instance.instanceId
+                : `${instance.instanceId}:${target}`
+            )
+          ),
+          latestSeenAt: trend.latestSeenAt,
+          latestAction: trend.latestAction,
+        });
+        continue;
+      }
+
+      existing.count += trend.count;
+      for (const target of targets) {
+        existing.affectedTargets.add(
+          target === 'local'
+            ? instance.instanceId
+            : `${instance.instanceId}:${target}`
+        );
+      }
+      if (trend.severity === 'error') {
+        existing.severity = 'error';
+      }
+      if (isLaterIso(trend.latestSeenAt, existing.latestSeenAt)) {
+        existing.latestSeenAt = trend.latestSeenAt;
+        existing.latestAction = trend.latestAction;
+      }
+    }
+  }
+
+  return {
+    range: first?.range ?? '30d',
+    from,
+    to,
+    matchedCount,
+    scannedCount,
+    reportCount,
+    readyCount,
+    notReadyCount,
+    issueCount,
+    truncated,
+    issueTrends: Array.from(issueTrends.values())
+      .map((trend) => ({
+        ...trend,
+        affectedTargets: Array.from(trend.affectedTargets).sort(),
+      }))
+      .sort((a, b) => {
+        if (a.severity !== b.severity) return a.severity === 'error' ? -1 : 1;
+        if (a.count !== b.count) return b.count - a.count;
+        if (a.latestSeenAt === b.latestSeenAt) {
+          return a.code.localeCompare(b.code);
+        }
+        return isLaterIso(a.latestSeenAt, b.latestSeenAt) ? -1 : 1;
+      }),
+    buckets: Array.from(buckets.values()).sort((a, b) =>
+      a.bucketStart.localeCompare(b.bucketStart)
+    ),
     partial: args.failedInstances.length > 0,
     failedInstances: args.failedInstances,
   };
@@ -1562,6 +1722,68 @@ export function createConsoleGatewayRoutes(
             failedInstances: fetched.failedInstances,
           }),
         });
+      });
+    }
+  );
+
+  routes.get(
+    '/ops/readiness/trends',
+    describeConsoleGatewayRoute({
+      summary:
+        'Get production ops readiness trends across selected gateway instances',
+      responses: {
+        200: {
+          description: 'Ops readiness trends or gateway aggregate',
+          content: {
+            'application/json': {
+              schema: resolver(ConsoleOpsReadinessTrendsResponseSchema),
+            },
+          },
+        },
+      },
+    }),
+    zValidator('query', GatewayOpsReadinessTrendsQuerySchema),
+    async (c) => {
+      return withGatewayAuth(c, async () => {
+        const query = c.req.valid('query');
+        const selection = selectTargetInstances(c, query);
+        if (!selection.ok) {
+          return selection.response;
+        }
+
+        if (selection.selectedInstances.length === 1) {
+          return proxySingleInstanceJsonRequest<ConsoleOpsReadinessTrendsResponse>(
+            {
+              c,
+              query,
+              method: 'GET',
+              path: '/ops/readiness/trends',
+              responseSchema: ConsoleOpsReadinessTrendsResponseSchema,
+            }
+          );
+        }
+
+        const forwardQuery = sanitizeForwardQueryParams(
+          new URL(c.req.url).searchParams
+        );
+        const fetched =
+          await fetchFromSelectedInstances<ConsoleOpsReadinessTrendsResponse>({
+            c,
+            selectedInstances: selection.selectedInstances,
+            path: '/ops/readiness/trends',
+            query: forwardQuery,
+            schema: ConsoleOpsReadinessTrendsResponseSchema,
+          });
+        if (!fetched.ok) {
+          return fetched.response;
+        }
+
+        return c.json(
+          mergeOpsReadinessTrendsGatewayResponse({
+            successfulResults: fetched.successfulResults,
+            failedInstances: fetched.failedInstances,
+          })
+        );
       });
     }
   );

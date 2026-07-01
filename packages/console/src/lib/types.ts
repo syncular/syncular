@@ -218,6 +218,9 @@ export type ConsoleOperationEvent = PaginatedItem<'getConsoleOperations'> &
 export type ConsoleOpsReadinessResponse =
   JsonSuccessResponse<'getConsoleOpsReadiness'>;
 
+export type ConsoleOpsReadinessTrendsResponse =
+  JsonSuccessResponse<'getConsoleOpsReadinessTrends'>;
+
 export type ConsoleOpsReadinessReport = NonNullable<
   ConsoleOpsReadinessResponse['report']
 >;

@@ -1553,8 +1553,9 @@ online propagation, or reconnect behavior can change.
   before recording the report. Console gateway mode aggregates readiness reads
   across selected instances while deploy writes remain explicitly
   single-instance, and the Ops panel lists per-instance issue drilldown,
-  recent issue-code grouping, and redacted readiness audit history alongside
-  the latest report.
+  retained readiness trend buckets from `GET /console/ops/readiness/trends`,
+  issue-code grouping, and redacted readiness audit history alongside the
+  latest report.
 - 2026-06-30 ninth implementation slice added
   `createScopedBlobAccessDecisionChecker(...)`, allowed Hono blob routes to
   consume boolean or structured access decisions, and exposed typed blob route
@@ -2251,6 +2252,12 @@ online propagation, or reconnect behavior can change.
   compact, so operators can see recurring codes, severity, hit count, affected
   targets, latest seen time, and latest recommended action without adding a
   second history endpoint.
+- 2026-07-01: Added `GET /console/ops/readiness/trends` with `24h`, `7d`,
+  `30d`, and `90d` ranges, optional `from`/`to` bounds, issue-code
+  aggregation, bucket summaries, matched/scanned/truncated counts, generated
+  OpenAPI/types/docs, Console gateway aggregation across selected instances,
+  and a Console Ops trend panel backed by that retained API instead of the
+  operation-audit page window.
 
 ## Latest Gates
 
@@ -2695,6 +2702,19 @@ Most recent ops-readiness issue trend rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-gateway-routes.test.ts`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/console/src/pages/Ops.tsx apps/docs/content/docs/operate/console/operations.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `git diff --check`
+
+Most recent ops-readiness trends API rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run generate:openapi`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-routes.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-gateway-routes.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/core tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/console tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/routes/maintenance.ts packages/server/src/hono/console/gateway.ts packages/server/src/hono/__tests__/console-routes.test.ts packages/server/src/hono/__tests__/console-gateway-routes.test.ts packages/console/src/hooks/useConsoleApi.ts packages/console/src/lib/types.ts packages/console/src/pages/Ops.tsx apps/docs/content/docs/operate/console/operations.mdx apps/docs/content/docs/reference/api/index.mdx apps/docs/content/docs/reference/api/getConsoleOpsReadinessTrends.mdx rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
 
@@ -3191,11 +3211,14 @@ Most recent mutation-status rerun:
   Console API, renders the latest production-readiness panel, and aggregates
   readiness reads across selected Console gateway instances while deploy writes
   remain explicitly single-instance. The panel now also lists per-instance
-  redacted issue drilldown, recent issue-code grouping, and readiness audit
-  history across the selected gateway scope. Remaining depth is longer-retained
-  readiness visualization beyond the operation-audit page window and deciding
-  whether a future broader `doctor` should orchestrate those checks once enough
-  independently useful checks exist.
+  redacted issue drilldown, retained readiness trend buckets, issue-code
+  grouping, and readiness audit history across the selected gateway scope.
+  `GET /console/ops/readiness/trends` now provides longer-range readiness
+  visualization beyond the operation-audit page window, including gateway
+  aggregation, issue trends, buckets, matched/scanned counts, and truncation
+  signaling. Remaining depth is deciding whether a future broader `doctor`
+  should orchestrate those checks once enough independently useful checks
+  exist.
 - Performance and failure artifacts: keep package/WASM size, bootstrap
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch
   latency, storage/quota pressure, and redacted E2E failure artifacts

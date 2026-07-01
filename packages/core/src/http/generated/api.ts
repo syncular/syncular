@@ -452,6 +452,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/console/ops/readiness/trends": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get production ops readiness trends */
+        get: operations["getConsoleOpsReadinessTrends"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/console/prune/preview": {
         parameters: {
             query?: never;
@@ -4745,6 +4762,88 @@ export interface operations {
                         details?: {
                             [key: string]: unknown;
                         };
+                    };
+                };
+            };
+            /** @description Unauthenticated */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        error: string;
+                        message?: string;
+                        code?: string;
+                        /** @enum {string} */
+                        category?: "auth-required" | "forbidden" | "conflict" | "scope-revoked" | "offline" | "invalid-request" | "not-found" | "schema-mismatch" | "integrity-rejected" | "rate-limited" | "limit-exceeded" | "transport" | "storage" | "blob" | "server" | "internal";
+                        retryable?: boolean;
+                        /** @enum {string} */
+                        recommendedAction?: "refreshAuth" | "checkPermissions" | "fixRequest" | "resetClientId" | "splitBatch" | "reduceInput" | "retryLater" | "forceResync" | "regenerateClient" | "upgradeClient" | "inspectStorage" | "inspectServer" | "resolveConflict" | "recreateClient";
+                        details?: {
+                            [key: string]: unknown;
+                        };
+                    };
+                };
+            };
+        };
+    };
+    getConsoleOpsReadinessTrends: {
+        parameters: {
+            query?: {
+                range?: "24h" | "7d" | "30d" | "90d";
+                limit?: number;
+                from?: string;
+                to?: string;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Ops readiness trends */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        /** @enum {string} */
+                        range: "24h" | "7d" | "30d" | "90d";
+                        /** Format: date-time */
+                        from: string;
+                        /** Format: date-time */
+                        to: string;
+                        matchedCount: number;
+                        scannedCount: number;
+                        reportCount: number;
+                        readyCount: number;
+                        notReadyCount: number;
+                        issueCount: number;
+                        truncated: boolean;
+                        issueTrends: {
+                            code: string;
+                            /** @enum {string} */
+                            severity: "warning" | "error";
+                            count: number;
+                            affectedTargets: string[];
+                            latestSeenAt: string;
+                            latestAction: string;
+                        }[];
+                        buckets: {
+                            bucketStart: string;
+                            reportCount: number;
+                            readyCount: number;
+                            notReadyCount: number;
+                            issueCount: number;
+                        }[];
+                        partial?: boolean;
+                        failedInstances?: {
+                            instanceId: string;
+                            reason: string;
+                            status?: number;
+                        }[];
                     };
                 };
             };
