@@ -123,6 +123,37 @@ These helpers fail with the observed commit ids, operation indexes, statuses,
 or subscription ids, so app tests can assert `sync.forbidden`, conflicts, and
 revoked subscriptions without parsing human error messages.
 
+## Command proof assertions
+
+`database.commandTimeline(...)` exposes `summary.proof` so E2E tests can
+assert the ordered command evidence chain without interpreting timeline event
+arrays. Use `requireCompleteCommandProof(...)` when the test should prove the
+whole chain, or `requireCommandProofEvidence(...)` for narrower browser or
+support-flow checks:
+
+```ts
+import {
+  requireCommandProofEvidence,
+  requireCompleteCommandProof,
+} from '@syncular/testkit';
+
+const timeline = await database.commandTimeline({
+  command: mutation.commit,
+  localVisibility,
+});
+
+requireCompleteCommandProof(timeline.summary.proof);
+requireCommandProofEvidence(timeline.summary.proof, [
+  'requestCorrelated',
+  'realtimeCursorObserved',
+  'pullReasonObserved',
+]);
+```
+
+The assertion failure names the missing evidence keys, such as
+`realtimeCursorObserved` or `localVisibilityObserved`, so a failed test points
+at the broken lifecycle phase instead of a generic timeout.
+
 ## Reference tasks schema
 
 The testkit bundles a complete project-scoped `tasks` table so tests do not

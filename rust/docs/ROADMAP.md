@@ -102,8 +102,9 @@ read-only review:
     campaign/project clients can fetch them. Testkit now includes
     membership-aware project/campaign actor helpers, stable diagnostic marker
     assertions, stable response assertion helpers for denied push results and
-    revoked pull subscriptions, explicit project membership support in the
-    bundled tasks fixture, and binary sync-pack-aware combined response
+    revoked pull subscriptions, stable command proof assertion helpers for
+    command-timeline evidence chains, explicit project membership support in
+    the bundled tasks fixture, and binary sync-pack-aware combined response
     parsing for real route tests. Public docs now lead Fresh JavaScript apps through
     `create-syncular-app`, include a JavaScript import decision table, describe
     optional client/server integrations as subpaths with optional peers, and

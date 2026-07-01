@@ -1,4 +1,5 @@
 export * from './audit';
+export * from './command-proof';
 export * from './deterministic';
 export * from './diagnostic-markers';
 export * from './disposable';

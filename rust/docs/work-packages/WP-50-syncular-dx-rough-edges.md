@@ -1599,6 +1599,14 @@ online propagation, or reconnect behavior can change.
   The project-scoped actor fixture test now asserts denied project writes and
   revoked foreign subscriptions through those helpers instead of digging into
   nested arrays or matching server prose.
+- 2026-07-01: Added testkit command-proof assertion helpers for command
+  timeline `summary.proof` objects:
+  `missingCommandProofEvidence(...)`, `hasCommandProofEvidence(...)`,
+  `requireCommandProofEvidence(...)`, `requireCompleteCommandProof(...)`, and
+  `SYNCULAR_COMMAND_PROOF_EVIDENCE_KEYS`. These helpers let app/E2E tests
+  assert complete or partial outbox/request/sync-attempt/server-commit/
+  realtime-cursor/pull-reason/local-apply/local-visibility proof chains
+  without hand-rolling boolean checks.
 - The testkit `postSyncCombinedRequest(...)` helper now accepts the current
   binary sync-pack response format as well as JSON, so docs examples using the
   real combined route are executable again.
@@ -1782,6 +1790,9 @@ online propagation, or reconnect behavior can change.
   stable push-operation and pull-subscription outcomes, including
   `requirePushErrorCode(...)` for denied writes and
   `requireRevokedSubscription(...)` for revoked subscriptions.
+- 2026-07-01: Added `@syncular/testkit` command proof assertion helpers for
+  `database.commandTimeline(...).summary.proof`, including complete-chain and
+  subset assertions with missing evidence key names.
 - 2026-06-30: Updated `postSyncCombinedRequest(...)` /
   `readSyncCombinedResponse(...)` to decode binary sync-pack combined
   responses in addition to JSON responses.
@@ -2511,6 +2522,21 @@ Most recent testkit negative-path response assertion rerun:
   - Passed for the TypeScript files. The repo Biome config ignores the MDX
     docs, so keep `apps/docs types:check`, `docs:stale-check`, `git diff
     --check`, and manual Markdown sanity reads for those pages.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `git diff --check`
+
+Most recent testkit command-proof assertion rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/testkit/src/command-proof.test.ts`
+  - Passed complete proof assertions for the full command evidence chain.
+  - Passed subset assertions for partial E2E/browser support flows.
+  - Passed actionable missing-evidence messages and canonical key ordering.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/testkit tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/testkit/src/command-proof.ts packages/testkit/src/command-proof.test.ts packages/testkit/src/index.ts apps/docs/content/docs/clients/javascript/testing/primitives.mdx apps/docs/content/docs/clients/javascript/testing/index.mdx apps/docs/content/docs/operate/observability.mdx`
+  - Passed for the TypeScript files. The repo Biome config ignores MDX, so
+    keep `apps/docs types:check`, `docs:stale-check`, `git diff --check`, and
+    manual Markdown sanity reads for those pages.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
