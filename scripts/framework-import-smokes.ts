@@ -84,6 +84,10 @@ async function runLocalWorkerRuntimeProbe(args: {
   const blobMetrics = args.blobRouteBase
     ? createCloudflareBlobRouteMetrics()
     : undefined;
+  const negativePathProof =
+    args.blobRouteBase || args.syncRouteBase
+      ? createCloudflareNegativePathProof()
+      : undefined;
   const output: string[] = [];
   let exited: { code: number | null; signal: NodeJS.Signals | null } | null =
     null;
@@ -140,6 +144,7 @@ async function runLocalWorkerRuntimeProbe(args: {
         routeBase: args.blobRouteBase,
         syncRouteBase: args.syncRouteBase,
         metrics: blobMetrics,
+        negativePathProof,
         output,
         getExit: () => exited,
       });
@@ -148,6 +153,7 @@ async function runLocalWorkerRuntimeProbe(args: {
       await runSyncRouteFlow({
         origin: `http://127.0.0.1:${port}`,
         routeBase: args.syncRouteBase,
+        negativePathProof,
         output,
         getExit: () => exited,
       });
@@ -165,6 +171,7 @@ async function runLocalWorkerRuntimeProbe(args: {
     await verifyCloudflareRuntimeFailureArtifactSelfCheck(args.appDir, {
       blobRouteBase: args.blobRouteBase,
       blobMetrics,
+      negativePathProof,
       expectedText: args.expectedText,
       output,
       port,
@@ -177,6 +184,7 @@ async function runLocalWorkerRuntimeProbe(args: {
     await writeCloudflareRuntimeFailureArtifact(failureArtifactPath, error, {
       blobRouteBase: args.blobRouteBase,
       blobMetrics,
+      negativePathProof,
       expectedText: args.expectedText,
       output,
       port,
@@ -202,9 +210,38 @@ type CloudflareRuntimeFailureProbe = {
   } | null;
   outputExcerpt: string;
   port: number;
+  negativePathProof: CloudflareNegativePathProof | null;
   route: string;
   syncRouteBase: string | null;
   webSocketRoute: string | null;
+};
+
+type CloudflareNegativePathSurface = 'blob' | 'snapshot-chunk' | 'sync';
+
+type CloudflareNegativePathStep = {
+  accessReason?: string;
+  accessStage?: string;
+  category: string;
+  code: string;
+  recommendedAction: string | null;
+  referenceColumn?: string;
+  referenceTable?: string;
+  status: number;
+  step: string;
+  surface: CloudflareNegativePathSurface;
+};
+
+type CloudflareNegativePathProof = {
+  attempted: boolean;
+  authRequiredCount: number;
+  blobDeniedCount: number;
+  count: number;
+  forbiddenCount: number;
+  invalidRequestCount: number;
+  revokedSubscriptionCount: number;
+  snapshotDeniedCount: number;
+  steps: CloudflareNegativePathStep[];
+  syncForbiddenCount: number;
 };
 
 type CloudflareBlobRouteMetrics = {
@@ -244,6 +281,7 @@ type CloudflareRuntimeFailureProbeInput = {
   blobRouteBase?: string;
   expectedText: string;
   exited: { code: number | null; signal: NodeJS.Signals | null } | null;
+  negativePathProof?: CloudflareNegativePathProof;
   output: string[];
   port: number;
   route: string;
@@ -277,6 +315,11 @@ async function verifyCloudflareRuntimeFailureArtifactSelfCheck(
   );
   const artifact = JSON.parse(await Bun.file(path).text()) as unknown;
   assertCloudflareRuntimeFailureArtifactShape(artifact, path);
+  assertCloudflareNegativePathProofComplete(artifact.probe.negativePathProof, {
+    blobRouteBase: input.blobRouteBase,
+    path,
+    syncRouteBase: input.syncRouteBase,
+  });
   await rm(path, { force: true });
   console.log(
     '[framework-import-smokes] Cloudflare runtime failure artifact shape check passed'
@@ -298,6 +341,7 @@ function cloudflareRuntimeFailureProbe(
       : null,
     outputExcerpt: boundedOutput(input.output),
     port: input.port,
+    negativePathProof: input.negativePathProof ?? null,
     route: input.route,
     syncRouteBase: input.syncRouteBase ?? null,
     webSocketRoute: input.webSocketRoute ?? null,
@@ -334,6 +378,7 @@ function assertCloudflareRuntimeFailureProbeShape(
     throw new Error(`${path} probe was not a JSON object`);
   }
   assertCloudflareBlobRouteMetricsShape(probe.blobMetrics, path);
+  assertCloudflareNegativePathProofShape(probe.negativePathProof, path);
   for (const key of [
     'blobRouteBase',
     'syncRouteBase',
@@ -400,6 +445,151 @@ function assertCloudflareBlobRouteMetricsShape(
   }
 }
 
+function assertCloudflareNegativePathProofShape(
+  proof: unknown,
+  path: string
+): asserts proof is CloudflareNegativePathProof | null {
+  if (proof === null) return;
+  if (!isRecord(proof)) {
+    throw new Error(
+      `${path} probe.negativePathProof was not a nullable JSON object`
+    );
+  }
+  if (typeof proof.attempted !== 'boolean') {
+    throw new Error(
+      `${path} probe.negativePathProof.attempted was not a boolean`
+    );
+  }
+  for (const key of [
+    'authRequiredCount',
+    'blobDeniedCount',
+    'count',
+    'forbiddenCount',
+    'invalidRequestCount',
+    'revokedSubscriptionCount',
+    'snapshotDeniedCount',
+    'syncForbiddenCount',
+  ] as const) {
+    if (!Number.isInteger(proof[key]) || proof[key] < 0) {
+      throw new Error(
+        `${path} probe.negativePathProof.${key} was not a non-negative integer`
+      );
+    }
+  }
+  if (!Array.isArray(proof.steps)) {
+    throw new Error(`${path} probe.negativePathProof.steps was not an array`);
+  }
+  if (proof.count !== proof.steps.length) {
+    throw new Error(
+      `${path} probe.negativePathProof.count did not match steps.length`
+    );
+  }
+  for (const [index, step] of proof.steps.entries()) {
+    const stepPath = `${path} probe.negativePathProof.steps[${index}]`;
+    if (!isRecord(step)) {
+      throw new Error(`${stepPath} was not a JSON object`);
+    }
+    if (
+      step.surface !== 'blob' &&
+      step.surface !== 'snapshot-chunk' &&
+      step.surface !== 'sync'
+    ) {
+      throw new Error(`${stepPath}.surface was not a known surface`);
+    }
+    for (const key of ['category', 'code', 'step'] as const) {
+      if (typeof step[key] !== 'string' || step[key].trim().length === 0) {
+        throw new Error(`${stepPath}.${key} was not non-empty text`);
+      }
+    }
+    if (
+      step.recommendedAction !== null &&
+      typeof step.recommendedAction !== 'string'
+    ) {
+      throw new Error(`${stepPath}.recommendedAction was not nullable text`);
+    }
+    if (!Number.isInteger(step.status) || step.status < 0) {
+      throw new Error(`${stepPath}.status was not a non-negative integer`);
+    }
+    for (const key of [
+      'accessReason',
+      'accessStage',
+      'referenceColumn',
+      'referenceTable',
+    ] as const) {
+      if (step[key] !== undefined && typeof step[key] !== 'string') {
+        throw new Error(`${stepPath}.${key} was not optional text`);
+      }
+    }
+  }
+}
+
+function assertCloudflareNegativePathProofComplete(
+  proof: CloudflareNegativePathProof | null,
+  args: {
+    blobRouteBase?: string;
+    path: string;
+    syncRouteBase?: string;
+  }
+): void {
+  if (!args.blobRouteBase && !args.syncRouteBase) return;
+  if (!proof?.attempted) {
+    throw new Error(`${args.path} did not record negative-path proof`);
+  }
+  if (args.syncRouteBase) {
+    assertCloudflareNegativePathHasCode(proof, args.path, 'sync.auth_required');
+    assertCloudflareNegativePathHasCode(proof, args.path, 'sync.forbidden');
+    assertCloudflareNegativePathHasCode(proof, args.path, 'sync.scope_revoked');
+  }
+  if (args.blobRouteBase) {
+    assertCloudflareNegativePathHasCode(proof, args.path, 'blob.forbidden');
+    assertCloudflareNegativePathHasCode(
+      proof,
+      args.path,
+      'blob.invalid_request'
+    );
+    assertCloudflareNegativePathHasCode(proof, args.path, 'blob.invalid_token');
+    assertCloudflareNegativePathHasBlobAccessReason(
+      proof,
+      args.path,
+      'missing_reference'
+    );
+    assertCloudflareNegativePathHasBlobAccessReason(
+      proof,
+      args.path,
+      'scope_denied'
+    );
+  }
+}
+
+function assertCloudflareNegativePathHasCode(
+  proof: CloudflareNegativePathProof,
+  path: string,
+  code: string
+): void {
+  if (proof.steps.some((step) => step.code === code)) return;
+  throw new Error(`${path} negative-path proof did not include ${code}`);
+}
+
+function assertCloudflareNegativePathHasBlobAccessReason(
+  proof: CloudflareNegativePathProof,
+  path: string,
+  accessReason: string
+): void {
+  if (
+    proof.steps.some(
+      (step) =>
+        step.surface === 'blob' &&
+        step.code === 'blob.forbidden' &&
+        step.accessReason === accessReason
+    )
+  ) {
+    return;
+  }
+  throw new Error(
+    `${path} negative-path proof did not include blob ${accessReason}`
+  );
+}
+
 function createCloudflareBlobRouteMetrics(): CloudflareBlobRouteMetrics {
   return {
     attempted: false,
@@ -416,6 +606,107 @@ function createCloudflareBlobRouteMetrics(): CloudflareBlobRouteMetrics {
     uploadBytesMs: null,
     uploadInitMs: null,
   };
+}
+
+function createCloudflareNegativePathProof(): CloudflareNegativePathProof {
+  return {
+    attempted: false,
+    authRequiredCount: 0,
+    blobDeniedCount: 0,
+    count: 0,
+    forbiddenCount: 0,
+    invalidRequestCount: 0,
+    revokedSubscriptionCount: 0,
+    snapshotDeniedCount: 0,
+    steps: [],
+    syncForbiddenCount: 0,
+  };
+}
+
+function recordCloudflareNegativePath(
+  proof: CloudflareNegativePathProof | undefined,
+  step: CloudflareNegativePathStep
+): void {
+  if (!proof) return;
+  proof.attempted = true;
+  proof.steps.push(step);
+  proof.count = proof.steps.length;
+  if (step.category === 'auth-required') proof.authRequiredCount += 1;
+  if (step.category === 'forbidden' || step.code.endsWith('.forbidden')) {
+    proof.forbiddenCount += 1;
+  }
+  if (
+    step.category === 'invalid-request' ||
+    step.code.endsWith('.invalid_request')
+  ) {
+    proof.invalidRequestCount += 1;
+  }
+  if (step.code === 'sync.scope_revoked') {
+    proof.revokedSubscriptionCount += 1;
+  }
+  if (step.surface === 'blob' && step.code === 'blob.forbidden') {
+    proof.blobDeniedCount += 1;
+  }
+  if (step.surface === 'snapshot-chunk') {
+    proof.snapshotDeniedCount += 1;
+  }
+  if (step.surface === 'sync' && step.code === 'sync.forbidden') {
+    proof.syncForbiddenCount += 1;
+  }
+}
+
+function recordCloudflareNegativePathError(
+  proof: CloudflareNegativePathProof | undefined,
+  args: {
+    body: Record<string, unknown>;
+    status: number;
+    step: string;
+    surface: CloudflareNegativePathSurface;
+  }
+): void {
+  const blobDetails = cloudflareBlobAccessProofDetails(args.body);
+  recordCloudflareNegativePath(proof, {
+    ...blobDetails,
+    category: stringValue(args.body.category),
+    code: stringValue(args.body.code ?? args.body.error),
+    recommendedAction:
+      typeof args.body.recommendedAction === 'string'
+        ? args.body.recommendedAction
+        : null,
+    status: args.status,
+    step: args.step,
+    surface: args.surface,
+  });
+}
+
+function cloudflareBlobAccessProofDetails(
+  body: Record<string, unknown>
+): Pick<
+  CloudflareNegativePathStep,
+  'accessReason' | 'accessStage' | 'referenceColumn' | 'referenceTable'
+> {
+  const details = body.details;
+  if (!isRecord(details) || details.failureKind !== 'blob_access_denied') {
+    return {};
+  }
+  return {
+    ...(typeof details.accessReason === 'string'
+      ? { accessReason: details.accessReason }
+      : {}),
+    ...(typeof details.accessStage === 'string'
+      ? { accessStage: details.accessStage }
+      : {}),
+    ...(typeof details.referenceColumn === 'string'
+      ? { referenceColumn: details.referenceColumn }
+      : {}),
+    ...(typeof details.referenceTable === 'string'
+      ? { referenceTable: details.referenceTable }
+      : {}),
+  };
+}
+
+function stringValue(value: unknown): string {
+  return typeof value === 'string' ? value : 'unknown';
 }
 
 async function measureCloudflareBlobMetric<T>(
@@ -1114,6 +1405,7 @@ function closeWebSocket(socket: WebSocket | null): void {
 async function runSyncRouteFlow(args: {
   origin: string;
   routeBase: string;
+  negativePathProof?: CloudflareNegativePathProof;
   output: string[];
   getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
 }): Promise<void> {
@@ -1256,6 +1548,14 @@ async function runSyncRouteFlow(args: {
       ).slice(0, 500)}`
     );
   }
+  recordCloudflareNegativePath(args.negativePathProof, {
+    category: 'forbidden',
+    code: 'sync.forbidden',
+    recommendedAction: 'checkPermissions',
+    status: forbiddenPushResponse.status,
+    step: 'forbidden-scope push',
+    surface: 'sync',
+  });
   const forbiddenReadResponse = await fetchWorkerResponse({
     label,
     url: syncUrl,
@@ -1317,6 +1617,14 @@ async function runSyncRouteFlow(args: {
       ).slice(0, 500)}`
     );
   }
+  recordCloudflareNegativePath(args.negativePathProof, {
+    category: 'revoked-scope',
+    code: 'sync.scope_revoked',
+    recommendedAction: null,
+    status: forbiddenReadResponse.status,
+    step: 'revoked-scope pull',
+    surface: 'sync',
+  });
 
   const unauthenticatedResponse = await fetchWorkerResponse({
     label,
@@ -1339,13 +1647,23 @@ async function runSyncRouteFlow(args: {
     output: args.output,
     getExit: args.getExit,
   });
-  await expectJsonErrorResponse(label, 'unauthenticated sync', {
-    response: unauthenticatedResponse,
-    output: args.output,
+  const unauthenticatedBody = await expectJsonErrorResponse(
+    label,
+    'unauthenticated sync',
+    {
+      response: unauthenticatedResponse,
+      output: args.output,
+      status: 401,
+      code: 'sync.auth_required',
+      category: 'auth-required',
+      recommendedAction: 'refreshAuth',
+    }
+  );
+  recordCloudflareNegativePathError(args.negativePathProof, {
+    body: unauthenticatedBody,
     status: 401,
-    code: 'sync.auth_required',
-    category: 'auth-required',
-    recommendedAction: 'refreshAuth',
+    step: 'unauthenticated sync',
+    surface: 'sync',
   });
 
   const pullResponse = await fetchWorkerResponse({
@@ -1438,13 +1756,23 @@ async function runSyncRouteFlow(args: {
       output: args.output,
       getExit: args.getExit,
     });
-    await expectJsonErrorResponse(label, 'missing-scope snapshot chunk', {
-      response: missingScopeChunkResponse,
-      output: args.output,
+    const missingScopeChunkBody = await expectJsonErrorResponse(
+      label,
+      'missing-scope snapshot chunk',
+      {
+        response: missingScopeChunkResponse,
+        output: args.output,
+        status: 400,
+        code: 'sync.invalid_request',
+        category: 'invalid-request',
+        recommendedAction: 'fixRequest',
+      }
+    );
+    recordCloudflareNegativePathError(args.negativePathProof, {
+      body: missingScopeChunkBody,
       status: 400,
-      code: 'sync.invalid_request',
-      category: 'invalid-request',
-      recommendedAction: 'fixRequest',
+      step: 'missing-scope snapshot chunk',
+      surface: 'snapshot-chunk',
     });
     const forbiddenChunkResponse = await fetchWorkerResponse({
       label,
@@ -1460,13 +1788,23 @@ async function runSyncRouteFlow(args: {
       output: args.output,
       getExit: args.getExit,
     });
-    await expectJsonErrorResponse(label, 'forbidden snapshot chunk', {
-      response: forbiddenChunkResponse,
-      output: args.output,
+    const forbiddenChunkBody = await expectJsonErrorResponse(
+      label,
+      'forbidden snapshot chunk',
+      {
+        response: forbiddenChunkResponse,
+        output: args.output,
+        status: 403,
+        code: 'sync.forbidden',
+        category: 'forbidden',
+        recommendedAction: 'checkPermissions',
+      }
+    );
+    recordCloudflareNegativePathError(args.negativePathProof, {
+      body: forbiddenChunkBody,
       status: 403,
-      code: 'sync.forbidden',
-      category: 'forbidden',
-      recommendedAction: 'checkPermissions',
+      step: 'forbidden snapshot chunk',
+      surface: 'snapshot-chunk',
     });
   }
   const pulledRow = snapshotRows?.find(
@@ -1848,6 +2186,7 @@ async function runBlobRouteFlow(args: {
   routeBase: string;
   syncRouteBase: string;
   metrics?: CloudflareBlobRouteMetrics;
+  negativePathProof?: CloudflareNegativePathProof;
   output: string[];
   getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
 }): Promise<void> {
@@ -1869,6 +2208,7 @@ async function runBlobRouteFlow(args: {
   await assertBlobRouteNegativeMatrix({
     origin: args.origin,
     routeBase: args.routeBase,
+    negativePathProof: args.negativePathProof,
     output: args.output,
     getExit: args.getExit,
   });
@@ -1948,13 +2288,23 @@ async function runBlobRouteFlow(args: {
       output: args.output,
       getExit: args.getExit,
     });
-    await expectJsonErrorResponse(label, 'forbidden upload completion', {
-      response: forbiddenCompleteResponse,
-      output: args.output,
+    const forbiddenCompleteBody = await expectJsonErrorResponse(
+      label,
+      'forbidden upload completion',
+      {
+        response: forbiddenCompleteResponse,
+        output: args.output,
+        status: 403,
+        code: 'blob.forbidden',
+        category: 'forbidden',
+        recommendedAction: 'checkPermissions',
+      }
+    );
+    recordCloudflareNegativePathError(args.negativePathProof, {
+      body: forbiddenCompleteBody,
       status: 403,
-      code: 'blob.forbidden',
-      category: 'forbidden',
-      recommendedAction: 'checkPermissions',
+      step: 'forbidden upload completion',
+      surface: 'blob',
     });
 
     const completeResponse = await measureCloudflareBlobMetric(
@@ -2015,6 +2365,12 @@ async function runBlobRouteFlow(args: {
       partitionId,
       accessReason: 'missing_reference',
       accessStage: 'reference',
+    });
+    recordCloudflareNegativePathError(args.negativePathProof, {
+      body: unreferencedDownloadUrlBody,
+      status: 403,
+      step: 'unreferenced download URL',
+      surface: 'blob',
     });
 
     await measureCloudflareBlobMetric(args.metrics, 'referencePushMs', () =>
@@ -2131,6 +2487,12 @@ async function runBlobRouteFlow(args: {
       referenceTable: 'syncular_framework_tasks',
       referenceColumn: 'image_blob_ref',
     });
+    recordCloudflareNegativePathError(args.negativePathProof, {
+      body: forbiddenDownloadUrlBody,
+      status: 403,
+      step: 'forbidden download URL',
+      surface: 'blob',
+    });
 
     await runPartitionedBlobReferenceFlow({
       actorId,
@@ -2140,6 +2502,7 @@ async function runBlobRouteFlow(args: {
       routeBase: args.routeBase,
       syncRouteBase: args.syncRouteBase,
       metrics: args.metrics,
+      negativePathProof: args.negativePathProof,
       getExit: args.getExit,
     });
   } finally {
@@ -2238,6 +2601,7 @@ async function pushBlobReferenceRow(args: {
 async function runPartitionedBlobReferenceFlow(args: {
   actorId: string;
   metrics?: CloudflareBlobRouteMetrics;
+  negativePathProof?: CloudflareNegativePathProof;
   origin: string;
   output: string[];
   partitionId: string;
@@ -2382,6 +2746,12 @@ async function runPartitionedBlobReferenceFlow(args: {
     accessReason: 'missing_reference',
     accessStage: 'reference',
   });
+  recordCloudflareNegativePathError(args.negativePathProof, {
+    body: wrongPartitionUrlBody,
+    status: 403,
+    step: 'wrong-partition download URL',
+    surface: 'blob',
+  });
 
   const referenceRowId = await pushPartitionedBlobReferenceRow({
     actorId: args.actorId,
@@ -2467,6 +2837,12 @@ async function runPartitionedBlobReferenceFlow(args: {
     referenceTable: 'syncular_framework_file_versions',
     referenceColumn: 'blob_ref',
   });
+  recordCloudflareNegativePathError(args.negativePathProof, {
+    body: forbiddenDownloadUrlBody,
+    status: 403,
+    step: 'partitioned forbidden download URL',
+    surface: 'blob',
+  });
 
   const downloadResponse = await measureCloudflareBlobMetric(
     args.metrics,
@@ -2521,6 +2897,7 @@ async function runPartitionedBlobReferenceFlow(args: {
     partitionId: args.partitionId,
     routeBase: args.routeBase,
     step: 'revoked partitioned download URL',
+    negativePathProof: args.negativePathProof,
     getExit: args.getExit,
   });
 
@@ -2542,6 +2919,7 @@ async function runPartitionedBlobReferenceFlow(args: {
     partitionId: args.partitionId,
     routeBase: args.routeBase,
     step: 'deleted partitioned download URL',
+    negativePathProof: args.negativePathProof,
     getExit: args.getExit,
   });
 }
@@ -2748,6 +3126,7 @@ async function expectBlobDownloadUrlDenied(args: {
   accessStage: string;
   actorId: string;
   hash: string;
+  negativePathProof?: CloudflareNegativePathProof;
   origin: string;
   output: string[];
   partitionId: string;
@@ -2787,6 +3166,12 @@ async function expectBlobDownloadUrlDenied(args: {
     accessStage: args.accessStage,
     referenceColumn: args.referenceColumn,
     referenceTable: args.referenceTable,
+  });
+  recordCloudflareNegativePathError(args.negativePathProof, {
+    body,
+    status: 403,
+    step: args.step,
+    surface: 'blob',
   });
 }
 
@@ -2858,6 +3243,7 @@ function assertBlobAccessDeniedDetails(
 async function assertBlobRouteNegativeMatrix(args: {
   origin: string;
   routeBase: string;
+  negativePathProof?: CloudflareNegativePathProof;
   output: string[];
   getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
 }): Promise<void> {
@@ -2880,13 +3266,23 @@ async function assertBlobRouteNegativeMatrix(args: {
     output: args.output,
     getExit: args.getExit,
   });
-  await expectJsonErrorResponse(label, 'unauthenticated upload init', {
-    response: unauthenticatedUploadInitResponse,
-    output: args.output,
+  const unauthenticatedUploadInitBody = await expectJsonErrorResponse(
+    label,
+    'unauthenticated upload init',
+    {
+      response: unauthenticatedUploadInitResponse,
+      output: args.output,
+      status: 401,
+      code: 'sync.auth_required',
+      category: 'auth-required',
+      recommendedAction: 'refreshAuth',
+    }
+  );
+  recordCloudflareNegativePathError(args.negativePathProof, {
+    body: unauthenticatedUploadInitBody,
     status: 401,
-    code: 'sync.auth_required',
-    category: 'auth-required',
-    recommendedAction: 'refreshAuth',
+    step: 'unauthenticated upload init',
+    surface: 'blob',
   });
 
   const invalidUploadInitResponse = await fetchWorkerResponse({
@@ -2903,13 +3299,23 @@ async function assertBlobRouteNegativeMatrix(args: {
     output: args.output,
     getExit: args.getExit,
   });
-  await expectJsonErrorResponse(label, 'invalid upload init', {
-    response: invalidUploadInitResponse,
-    output: args.output,
+  const invalidUploadInitBody = await expectJsonErrorResponse(
+    label,
+    'invalid upload init',
+    {
+      response: invalidUploadInitResponse,
+      output: args.output,
+      status: 400,
+      code: 'blob.invalid_request',
+      category: 'blob',
+      recommendedAction: 'fixRequest',
+    }
+  );
+  recordCloudflareNegativePathError(args.negativePathProof, {
+    body: invalidUploadInitBody,
     status: 400,
-    code: 'blob.invalid_request',
-    category: 'blob',
-    recommendedAction: 'fixRequest',
+    step: 'invalid upload init',
+    surface: 'blob',
   });
 
   const invalidDirectUploadTokenResponse = await fetchWorkerResponse({
@@ -2952,6 +3358,12 @@ async function assertBlobRouteNegativeMatrix(args: {
       ).slice(0, 500)}`
     );
   }
+  recordCloudflareNegativePathError(args.negativePathProof, {
+    body: invalidTokenBody,
+    status: 401,
+    step: 'invalid direct-upload token',
+    surface: 'blob',
+  });
 }
 
 function resolveWorkerRouteUrl(origin: string, candidate: string): string {

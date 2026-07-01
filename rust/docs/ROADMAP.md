@@ -104,8 +104,10 @@ read-only review:
     assertions, stable response assertion helpers for denied push results and
     revoked pull subscriptions, stable command proof assertion helpers for
     command-timeline evidence chains, stable failure-artifact assertion helpers
-    for browser-preview and Cloudflare runtime artifacts, explicit project
-    membership support in the bundled tasks fixture, and binary
+    for browser-preview and Cloudflare runtime artifacts, redacted Cloudflare
+    runtime `negativePathProof` summaries for auth-required, forbidden/revoked
+    scope, invalid blob requests/tokens, and blob access denial, explicit
+    project membership support in the bundled tasks fixture, and binary
     sync-pack-aware combined response parsing for real route tests. Hono
     rate-limit envelopes and `sync.rate_limit` logs now include structured
     actor, operation type, window count, reset, and retry-after details so

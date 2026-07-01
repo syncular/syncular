@@ -704,6 +704,81 @@ describe('console timeline route filters', () => {
           code: 1,
           signal: null,
         },
+        negativePathProof: {
+          attempted: true,
+          authRequiredCount: 2,
+          blobDeniedCount: 2,
+          count: 7,
+          forbiddenCount: 3,
+          invalidRequestCount: 1,
+          revokedSubscriptionCount: 1,
+          snapshotDeniedCount: 0,
+          syncForbiddenCount: 1,
+          steps: [
+            {
+              category: 'forbidden',
+              code: 'sync.forbidden',
+              recommendedAction: 'checkPermissions',
+              status: 200,
+              step: 'forbidden-scope push',
+              surface: 'sync',
+            },
+            {
+              category: 'revoked-scope',
+              code: 'sync.scope_revoked',
+              recommendedAction: null,
+              status: 200,
+              step: 'revoked-scope pull',
+              surface: 'sync',
+            },
+            {
+              category: 'auth-required',
+              code: 'sync.auth_required',
+              recommendedAction: 'refreshAuth',
+              status: 401,
+              step: 'unauthenticated sync',
+              surface: 'sync',
+            },
+            {
+              category: 'blob',
+              code: 'blob.invalid_request',
+              recommendedAction: 'fixRequest',
+              status: 400,
+              step: 'invalid upload init',
+              surface: 'blob',
+            },
+            {
+              category: 'auth-required',
+              code: 'blob.invalid_token',
+              recommendedAction: 'refreshAuth',
+              status: 401,
+              step: 'invalid direct-upload token',
+              surface: 'blob',
+            },
+            {
+              accessReason: 'missing_reference',
+              accessStage: 'reference',
+              category: 'forbidden',
+              code: 'blob.forbidden',
+              recommendedAction: 'checkPermissions',
+              status: 403,
+              step: 'unreferenced download URL',
+              surface: 'blob',
+            },
+            {
+              accessReason: 'scope_denied',
+              accessStage: 'scope',
+              category: 'forbidden',
+              code: 'blob.forbidden',
+              recommendedAction: 'checkPermissions',
+              referenceColumn: 'image_blob_ref',
+              referenceTable: 'syncular_framework_tasks',
+              status: 403,
+              step: 'forbidden download URL',
+              surface: 'blob',
+            },
+          ],
+        },
         outputExcerpt:
           '[stderr] Durable Object runtime failed during local wrangler smoke',
         port: 8787,
@@ -2968,6 +3043,22 @@ describe('console timeline route filters', () => {
       '/syncular-framework-import-smoke'
     );
     expect(accepted.transportStats?.blobMetricsAttempted).toBe(true);
+    expect(accepted.transportStats?.negativePathAttempted).toBe(true);
+    expect(accepted.transportStats?.negativePathCount).toBe(7);
+    expect(accepted.transportStats?.negativePathAuthRequiredCount).toBe(2);
+    expect(accepted.transportStats?.negativePathForbiddenCount).toBe(3);
+    expect(accepted.transportStats?.negativePathInvalidRequestCount).toBe(1);
+    expect(accepted.transportStats?.negativePathRevokedSubscriptionCount).toBe(
+      1
+    );
+    expect(accepted.transportStats?.negativePathBlobDeniedCount).toBe(2);
+    expect(accepted.transportStats?.negativePathSyncForbiddenCount).toBe(1);
+    expect(accepted.transportStats?.negativePathFirstCode).toBe(
+      'sync.forbidden'
+    );
+    expect(accepted.transportStats?.negativePathFirstBlobAccessReason).toBe(
+      'missing_reference'
+    );
     expect(accepted.blobUploadStats?.downloadBytes).toBe(128);
 
     const diagnostic = accepted.recentDiagnostics[0];
@@ -2984,6 +3075,13 @@ describe('console timeline route filters', () => {
       (diagnostic?.details?.blobMetrics as Record<string, unknown> | undefined)
         ?.totalMs
     ).toBe(32);
+    expect(
+      (
+        diagnostic?.details?.negativePathProof as
+          | Record<string, unknown>
+          | undefined
+      )?.count
+    ).toBe(7);
     expect(diagnostic?.details?.outputExcerpt as string | undefined).toContain(
       'wrangler smoke'
     );

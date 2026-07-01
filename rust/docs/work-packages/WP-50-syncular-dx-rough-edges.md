@@ -2436,6 +2436,14 @@ online propagation, or reconnect behavior can change.
   creation, partitioned byte download, byte counts, and total route duration,
   while excluding hashes, signed URLs, direct-transfer tokens, and payload
   text.
+- 2026-07-01: Promoted the Cloudflare local-runtime denial matrix into a
+  redacted `negativePathProof` failure-artifact contract. The
+  `framework-import-smokes` self-check, real failure artifact writer,
+  `@syncular/testkit` validator, and Console/Fleet ingestion now carry compact
+  counts and step summaries for auth-required sync/blob requests,
+  forbidden-scope push, revoked-scope pull, invalid blob requests/tokens, and
+  blob missing-reference/scope-denied access without storing actors, scopes,
+  headers, tokens, hashes, signed URLs, or partition ids.
 - 2026-07-01: Made `framework-import-smokes` use a run-specific temporary
   workspace by default so a direct local smoke and a release-rehearsal smoke
   cannot delete each other's generated Next/Vite/Cloudflare app directories.
@@ -3511,7 +3519,17 @@ Most recent native-sqlite release-policy docs rerun:
 
 Most recent framework-import-smoke rerun:
 
-- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check scripts/framework-import-smokes.ts scripts/release-rehearsal.ts RELEASING.md rust/docs/QUALITY_GATES.md rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/testkit/src/failure-artifacts.test.ts packages/server/src/hono/__tests__/console-routes.test.ts -t "failure artifact|Cloudflare runtime failure"`
+  - Passed canonical browser-preview and Cloudflare runtime failure-artifact
+    shape/redaction assertions plus Console/Fleet ingestion for both artifact
+    families, including the new Cloudflare runtime `negativePathProof`
+    counters and diagnostic detail preservation.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/testkit tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check scripts/framework-import-smokes.ts packages/testkit/src/failure-artifacts.ts packages/testkit/src/failure-artifacts.test.ts packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/routes/shared.ts packages/server/src/hono/__tests__/console-routes.test.ts apps/docs/content/docs/testing/strategy.mdx apps/docs/content/docs/start/testing-and-confidence.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `git diff --check`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts`
   - Passed the Next 16 SSR production build proof.
   - Passed the Vite 8 browser production build proof.
@@ -3534,11 +3552,10 @@ Most recent framework-import-smoke rerun:
     route upload/complete/download, forbidden `blob.forbidden` download URL
     details, and Durable Object WebSocket echo.
   - Passed the deterministic Cloudflare local-runtime failure artifact shape
-    self-check, including safe `blobMetrics` fields for attempted route
-    coverage, content/download byte counts, upload init, byte upload, upload
-    completion, scoped reference push, download URL creation, byte download,
-    partitioned download URL creation, partitioned byte download, and total
-    route duration.
+    self-check, including safe `blobMetrics` fields and redacted
+    `negativePathProof` counts/step summaries for auth-required sync/blob
+    requests, forbidden-scope push, revoked-scope pull, invalid blob
+    requests/tokens, and blob missing-reference/scope-denied access.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts --require-vite-browser-runtime`
   - Expected nonzero status locally because Chrome/Chromium is unavailable;
     confirms the required Vite browser-runtime path fails loudly after the
@@ -4486,9 +4503,11 @@ browser-preview failure artifact, testkit assertions, and Console/Fleet
 ingestion. Command timeline proof artifacts now also carry the concrete
 joined-scope, request/sync, realtime cursor, pull reason, local apply, and
 local-visibility evidence through starter smoke, testkit assertions, and
-Console/Fleet ingestion. The next lifecycle-facing slice should add the first
-canonical negative-path E2E artifact for auth/scope/blob denial or deepen
-browser lifecycle coverage below the current generated task proof.
+Console/Fleet ingestion. Cloudflare runtime failure artifacts now also carry
+redacted negative-path proof for auth-required, forbidden/revoked scope,
+invalid blob request/token, and blob access-denial outcomes. The next
+lifecycle-facing slice should deepen browser lifecycle coverage below the
+current generated task proof.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, eviction and storage-shutdown browser

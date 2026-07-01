@@ -76,6 +76,7 @@ export type SyncularCloudflareRuntimeFailureProbe = {
   blobRouteBase: string | null;
   expectedText: string;
   exited: { code: number | null; signal: string | null } | null;
+  negativePathProof: SyncularCloudflareNegativePathProof | null;
   outputExcerpt: string;
   port: number;
   route: string;
@@ -97,6 +98,32 @@ export type SyncularCloudflareBlobRouteMetrics = {
   totalMs: number | null;
   uploadBytesMs: number | null;
   uploadInitMs: number | null;
+};
+
+export type SyncularCloudflareNegativePathStep = {
+  accessReason?: string;
+  accessStage?: string;
+  category: string;
+  code: string;
+  recommendedAction: string | null;
+  referenceColumn?: string;
+  referenceTable?: string;
+  status: number;
+  step: string;
+  surface: 'blob' | 'snapshot-chunk' | 'sync';
+};
+
+export type SyncularCloudflareNegativePathProof = {
+  attempted: boolean;
+  authRequiredCount: number;
+  blobDeniedCount: number;
+  count: number;
+  forbiddenCount: number;
+  invalidRequestCount: number;
+  revokedSubscriptionCount: number;
+  snapshotDeniedCount: number;
+  steps: SyncularCloudflareNegativePathStep[];
+  syncForbiddenCount: number;
 };
 
 const BROWSER_TEXT_EXCERPT_MAX = 4000;
@@ -452,6 +479,10 @@ function assertCloudflareRuntimeFailureProbe(
 ): void {
   assertRecord(value, path);
   assertCloudflareBlobRouteMetrics(value.blobMetrics, `${path}.blobMetrics`);
+  assertCloudflareNegativePathProof(
+    value.negativePathProof,
+    `${path}.negativePathProof`
+  );
   for (const key of [
     'blobRouteBase',
     'syncRouteBase',
@@ -478,6 +509,59 @@ function assertCloudflareRuntimeFailureProbe(
     assertRecord(value.exited, `${path}.exited`);
     assertNullableNumber(value.exited.code, `${path}.exited.code`);
     assertNullableString(value.exited.signal, `${path}.exited.signal`);
+  }
+}
+
+function assertCloudflareNegativePathProof(value: unknown, path: string): void {
+  if (value === null) return;
+  assertRecord(value, path);
+  assertBoolean(value.attempted, `${path}.attempted`);
+  for (const key of [
+    'authRequiredCount',
+    'blobDeniedCount',
+    'count',
+    'forbiddenCount',
+    'invalidRequestCount',
+    'revokedSubscriptionCount',
+    'snapshotDeniedCount',
+    'syncForbiddenCount',
+  ] as const) {
+    assertNonNegativeInteger(value[key], `${path}.${key}`);
+  }
+  if (!Array.isArray(value.steps)) {
+    throw new Error(`${path}.steps was not an array`);
+  }
+  if (value.count !== value.steps.length) {
+    throw new Error(`${path}.count did not match steps.length`);
+  }
+  for (const [index, step] of value.steps.entries()) {
+    const stepPath = `${path}.steps[${index}]`;
+    assertRecord(step, stepPath);
+    if (
+      step.surface !== 'blob' &&
+      step.surface !== 'snapshot-chunk' &&
+      step.surface !== 'sync'
+    ) {
+      throw new Error(`${stepPath}.surface was not a known surface`);
+    }
+    for (const key of ['category', 'code', 'step'] as const) {
+      assertNonEmptyString(step[key], `${stepPath}.${key}`);
+    }
+    assertNullableString(
+      step.recommendedAction,
+      `${stepPath}.recommendedAction`
+    );
+    assertNonNegativeInteger(step.status, `${stepPath}.status`);
+    for (const key of [
+      'accessReason',
+      'accessStage',
+      'referenceColumn',
+      'referenceTable',
+    ] as const) {
+      if (step[key] !== undefined) {
+        assertNonEmptyString(step[key], `${stepPath}.${key}`);
+      }
+    }
   }
 }
 
@@ -567,6 +651,12 @@ function assertBoolean(value: unknown, path: string): void {
 function assertNonNegativeNumber(value: unknown, path: string): void {
   if (typeof value !== 'number' || !Number.isFinite(value) || value < 0) {
     throw new Error(`${path} was not a non-negative number`);
+  }
+}
+
+function assertNonNegativeInteger(value: unknown, path: string): void {
+  if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) {
+    throw new Error(`${path} was not a non-negative integer`);
   }
 }
 

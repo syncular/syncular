@@ -783,6 +783,40 @@ const ConsoleCloudflareBlobRouteMetricsSchema = z
   })
   .passthrough();
 
+const ConsoleCloudflareNegativePathStepSchema = z
+  .object({
+    accessReason: z.string().max(200).optional(),
+    accessStage: z.string().max(200).optional(),
+    category: z.string().min(1).max(200),
+    code: z.string().min(1).max(200),
+    recommendedAction: z.string().max(200).nullable(),
+    referenceColumn: z.string().max(200).optional(),
+    referenceTable: z.string().max(200).optional(),
+    status: z.number().int().nonnegative(),
+    step: z.string().min(1).max(200),
+    surface: z.enum(['blob', 'snapshot-chunk', 'sync']),
+  })
+  .passthrough();
+
+const ConsoleCloudflareNegativePathProofSchema = z
+  .object({
+    attempted: z.boolean(),
+    authRequiredCount: z.number().int().nonnegative(),
+    blobDeniedCount: z.number().int().nonnegative(),
+    count: z.number().int().nonnegative(),
+    forbiddenCount: z.number().int().nonnegative(),
+    invalidRequestCount: z.number().int().nonnegative(),
+    revokedSubscriptionCount: z.number().int().nonnegative(),
+    snapshotDeniedCount: z.number().int().nonnegative(),
+    steps: z.array(ConsoleCloudflareNegativePathStepSchema).max(100),
+    syncForbiddenCount: z.number().int().nonnegative(),
+  })
+  .passthrough()
+  .refine((value) => value.count === value.steps.length, {
+    message: 'negativePathProof.count must match steps.length',
+    path: ['count'],
+  });
+
 const ConsoleCloudflareRuntimeFailureProbeSchema = z
   .object({
     blobMetrics: ConsoleCloudflareBlobRouteMetricsSchema.nullable(),
@@ -795,6 +829,7 @@ const ConsoleCloudflareRuntimeFailureProbeSchema = z
       })
       .passthrough()
       .nullable(),
+    negativePathProof: ConsoleCloudflareNegativePathProofSchema.nullable(),
     outputExcerpt: z.string().max(13_000),
     port: z.number().int().positive(),
     route: z.string().min(1).max(500),

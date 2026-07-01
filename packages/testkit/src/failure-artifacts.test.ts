@@ -93,6 +93,20 @@ describe('failure artifact assertions', () => {
     expect(() =>
       requireCloudflareRuntimeFailureArtifact(withLongOutput)
     ).toThrow('$.probe.outputExcerpt was not a bounded string');
+
+    const withMismatchedProofCount = cloudflareRuntimeFailureArtifact({
+      probe: {
+        ...cloudflareRuntimeFailureArtifact().probe,
+        negativePathProof: {
+          ...cloudflareRuntimeFailureArtifact().probe.negativePathProof,
+          count: 99,
+        },
+      },
+    });
+
+    expect(() =>
+      requireCloudflareRuntimeFailureArtifact(withMismatchedProofCount)
+    ).toThrow('$.probe.negativePathProof.count did not match steps.length');
   });
 
   it('supports generic redaction scans for known secret values', () => {
@@ -307,6 +321,81 @@ function cloudflareRuntimeFailureArtifact(
       blobRouteBase: 'http://127.0.0.1:8787/sync/blobs',
       expectedText: 'Syncular Cloudflare smoke',
       exited: { code: null, signal: null },
+      negativePathProof: {
+        attempted: true,
+        authRequiredCount: 2,
+        blobDeniedCount: 2,
+        count: 7,
+        forbiddenCount: 3,
+        invalidRequestCount: 1,
+        revokedSubscriptionCount: 1,
+        snapshotDeniedCount: 0,
+        syncForbiddenCount: 1,
+        steps: [
+          {
+            category: 'forbidden',
+            code: 'sync.forbidden',
+            recommendedAction: 'checkPermissions',
+            status: 200,
+            step: 'forbidden-scope push',
+            surface: 'sync',
+          },
+          {
+            category: 'revoked-scope',
+            code: 'sync.scope_revoked',
+            recommendedAction: null,
+            status: 200,
+            step: 'revoked-scope pull',
+            surface: 'sync',
+          },
+          {
+            category: 'auth-required',
+            code: 'sync.auth_required',
+            recommendedAction: 'refreshAuth',
+            status: 401,
+            step: 'unauthenticated sync',
+            surface: 'sync',
+          },
+          {
+            category: 'blob',
+            code: 'blob.invalid_request',
+            recommendedAction: 'fixRequest',
+            status: 400,
+            step: 'invalid upload init',
+            surface: 'blob',
+          },
+          {
+            category: 'auth-required',
+            code: 'blob.invalid_token',
+            recommendedAction: 'refreshAuth',
+            status: 401,
+            step: 'invalid direct-upload token',
+            surface: 'blob',
+          },
+          {
+            accessReason: 'missing_reference',
+            accessStage: 'reference',
+            category: 'forbidden',
+            code: 'blob.forbidden',
+            recommendedAction: 'checkPermissions',
+            status: 403,
+            step: 'unreferenced download URL',
+            surface: 'blob',
+          },
+          {
+            accessReason: 'scope_denied',
+            accessStage: 'scope',
+            category: 'forbidden',
+            code: 'blob.forbidden',
+            recommendedAction: 'checkPermissions',
+            referenceColumn: 'image_blob_ref',
+            referenceTable: 'syncular_framework_tasks',
+            status: 403,
+            step: 'forbidden download URL',
+            surface: 'blob',
+          },
+        ],
+      },
       outputExcerpt: 'wrangler dev output excerpt',
       port: 8787,
       route: '/sync',

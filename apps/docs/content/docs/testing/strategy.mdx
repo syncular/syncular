@@ -340,6 +340,10 @@ The smallest suite worth shipping behind:
       `sync.scope_revoked`, `realtime.hello`, `realtime.sync_wakeup`,
       `realtime.pull_required`, `blob.forbidden`, `blob.signing_failed`, and
       `sync.local_visibility_timeout`.
+- [ ] Failure-artifact assertions for route/runtime smokes that cover
+      negative paths. Cloudflare runtime artifacts include a redacted
+      `negativePathProof` summary for auth-required, forbidden/revoked scope,
+      invalid blob requests, and blob missing-reference/scope-denied outcomes.
 - [ ] A schema-version test for the oldest deployed app version you still
       support (old `schemaVersion` pull against the current server).
 

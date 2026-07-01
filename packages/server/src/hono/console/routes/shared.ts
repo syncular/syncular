@@ -1003,6 +1003,15 @@ export function buildCloudflareRuntimeFailureClientDiagnosticIngest(
   const generatedAt = cloudflareRuntimeArtifactGeneratedAtMs(artifact);
   const reason = truncateDiagnosticText(artifact.reason, 500);
   const outputExcerpt = truncateDiagnosticText(probe.outputExcerpt, 4000);
+  const negativePathProof = probe.negativePathProof ?? null;
+  const firstNegativePathStep = negativePathProof?.steps[0] ?? null;
+  const firstBlobAccessDeniedStep =
+    negativePathProof?.steps.find(
+      (step) =>
+        step.surface === 'blob' &&
+        step.code === 'blob.forbidden' &&
+        typeof step.accessReason === 'string'
+    ) ?? null;
   const details = compactDiagnosticDetails({
     artifactSchema: 'framework-import-smokes.cloudflare-runtime-failure.v1',
     artifactGeneratedAt: artifact.generatedAt,
@@ -1017,6 +1026,7 @@ export function buildCloudflareRuntimeFailureClientDiagnosticIngest(
     outputExcerpt,
     outputExcerptLength: probe.outputExcerpt.length,
     blobMetrics: probe.blobMetrics,
+    negativePathProof,
   });
 
   return {
@@ -1066,6 +1076,7 @@ export function buildCloudflareRuntimeFailureClientDiagnosticIngest(
           blobRouteBase: probe.blobRouteBase,
           webSocketRoute: probe.webSocketRoute,
           blobMetrics: probe.blobMetrics,
+          negativePathProof,
         }),
       ],
       bootstrap: compactDiagnosticDetails({
@@ -1086,6 +1097,26 @@ export function buildCloudflareRuntimeFailureClientDiagnosticIngest(
         blobDownloadBytes: probe.blobMetrics?.downloadBytes ?? null,
         blobPartitionedDownloadBytes:
           probe.blobMetrics?.partitionedDownloadBytes ?? null,
+        negativePathAttempted: negativePathProof?.attempted ?? null,
+        negativePathCount: negativePathProof?.count ?? null,
+        negativePathAuthRequiredCount:
+          negativePathProof?.authRequiredCount ?? null,
+        negativePathForbiddenCount: negativePathProof?.forbiddenCount ?? null,
+        negativePathInvalidRequestCount:
+          negativePathProof?.invalidRequestCount ?? null,
+        negativePathRevokedSubscriptionCount:
+          negativePathProof?.revokedSubscriptionCount ?? null,
+        negativePathBlobDeniedCount: negativePathProof?.blobDeniedCount ?? null,
+        negativePathSyncForbiddenCount:
+          negativePathProof?.syncForbiddenCount ?? null,
+        negativePathSnapshotDeniedCount:
+          negativePathProof?.snapshotDeniedCount ?? null,
+        negativePathFirstCode: firstNegativePathStep?.code ?? null,
+        negativePathFirstSurface: firstNegativePathStep?.surface ?? null,
+        negativePathFirstBlobAccessReason:
+          firstBlobAccessDeniedStep?.accessReason ?? null,
+        negativePathFirstBlobAccessStage:
+          firstBlobAccessDeniedStep?.accessStage ?? null,
       }),
       blobUploadStats: probe.blobMetrics ?? undefined,
     },
