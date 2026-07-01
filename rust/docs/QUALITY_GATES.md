@@ -76,7 +76,9 @@ until the full browser Worker/WASM suite is green on Linux.
   the dev server, builds the app, serves Vite preview, verifies built assets,
   verifies support-bundle/lifecycle/runtime-timing markers, self-checks the
   browser failure artifact shape and safe smoke metrics, and runs the
-  real-browser preview check when Chrome/Chromium is available.
+  real-browser preview check when Chrome/Chromium is available, including
+  lifecycle resume, two-tab propagation, and same-client page reload/reopen
+  persistence.
   On a browser-capable CI runner, set
   `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` so missing Chrome fails instead
   of skipping the browser execution.

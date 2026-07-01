@@ -1952,6 +1952,11 @@ online propagation, or reconnect behavior can change.
   `?syncularClientId=...`; the CDP smoke opens a second tab with a distinct
   client id, creates a task in the first tab, and waits for the second tab to
   observe the task through the normal sync/realtime path.
+- 2026-07-01: Extended the starter Chrome/CDP path with a same-client
+  reload/reopen proof. After two-tab propagation, the smoke navigates the
+  second tab back through app startup with the same `syncularClientId` and
+  waits for the propagated task to reappear, giving the browser path its first
+  generated-app restart-style persistence boundary.
 - 2026-07-01: Wired `bun run release:rehearsal` to run the
   `create-syncular-app` built-preview smoke by default after fresh-app smokes
   and before framework import smokes. Local rehearsal can skip it with
@@ -2385,10 +2390,26 @@ Most recent browser lifecycle resume helper rerun:
     lifecycle marker, dispatches `online`, waits for a second completed
     lifecycle marker, opens a second tab with a distinct client id/database
     file, creates a task in the first tab, and waits for the second tab to
-    observe it through sync/realtime.
+    observe it through sync/realtime. The Chrome/CDP path now also navigates
+    the second tab through a same-client reload/reopen and waits for the task
+    to reappear after app startup.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
+
+Most recent starter reload/reopen persistence rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-reload-persistence-smoke-2 bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks.
+  - Passed the deterministic browser failure artifact shape and safe-metrics
+    self-check.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available. On browser-capable runners, the CDP path now proves
+    persisted `pageshow`, `online`, two-tab propagation, and same-client
+    reload/reopen task visibility.
 
 Most recent starter browser-preview rerun:
 
@@ -2918,9 +2939,11 @@ Most recent mutation-status rerun:
   completed resume marker. The first Chrome two-tab runtime proof is also in
   place: distinct generated-app tabs use distinct client ids/database files,
   one tab creates a task, and the second tab must observe it through the normal
-  sync/realtime path. Remaining work is richer two-tab lifecycle execution:
-  true tab suspension/resume, storage locks, shutdown, app restarts, and
-  recovery coordination for persistent browser databases.
+  sync/realtime path. The CDP path now also performs a same-client
+  reload/reopen after propagation and waits for the task to reappear after app
+  startup. Remaining work is richer two-tab lifecycle execution: true tab
+  suspension/resume, storage locks, full browser-process restarts, and recovery
+  coordination for persistent browser databases.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
   and guarded sync-state reset, with a focused Hono/WASM proof for corrupted

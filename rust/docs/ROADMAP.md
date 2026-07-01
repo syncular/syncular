@@ -225,7 +225,9 @@ read-only review:
     also opens a second generated-app tab with its own client id/database file,
     creates a task in the first tab, waits for the first tab's
     local-visibility marker, and waits for the second tab to observe it
-    through the normal sync/realtime path. Release rehearsal now runs the
+    through the normal sync/realtime path. The same CDP path now navigates the
+    second tab through a same-client page reload/reopen and waits for the task
+    to reappear after app startup. Release rehearsal now runs the
     create-syncular-app built-preview smoke by default and can require the
     Chrome/CDP path with `--require-starter-browser-preview`. Next slice:
     observe the hosted Chrome job or continue broadening browser/framework

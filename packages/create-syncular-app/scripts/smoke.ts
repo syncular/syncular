@@ -14,7 +14,8 @@ import { Buffer } from 'node:buffer';
  * 4. When Chrome/Chromium is available, opens the built preview in a real
  *    browser and waits for the starter's Syncular health/schema/support lines.
  *    The browser path also proves restored-page and online lifecycle resume
- *    signals plus two-tab propagation. Browser failures write
+ *    signals, two-tab propagation, and same-client page reload/reopen
+ *    persistence. Browser failures write
  *    browser-preview-failure.json with redacted marker state under the smoke
  *    work dir. The normal smoke also self-checks that artifact shape and safe
  *    smoke metrics so non-browser runners keep the failure contract covered.
@@ -446,11 +447,18 @@ async function runBrowserPreviewSmoke(args: {
         args.failureArtifactPath,
         args.failureMetrics
       );
-      await proveStarterTwoTabPropagation({
+      const propagatedTitle = await proveStarterTwoTabPropagation({
         failureMetrics: args.failureMetrics,
         failureArtifactPath: args.failureArtifactPath,
         first: session,
         second: secondSession,
+      });
+      await proveStarterReloadPersistence({
+        failureMetrics: args.failureMetrics,
+        failureArtifactPath: args.failureArtifactPath,
+        session: secondSession,
+        title: propagatedTitle,
+        url: `${args.origin}/?syncularClientId=web-second&syncularReloadProof=${Date.now()}`,
       });
     } finally {
       secondSession?.close();
@@ -922,7 +930,7 @@ async function proveStarterTwoTabPropagation(args: {
   failureArtifactPath: string;
   first: CdpSession;
   second: CdpSession;
-}): Promise<void> {
+}): Promise<string> {
   const title = `two-tab ${Date.now()}`;
   await args.first.evaluate(`(() => {
     const input = document.querySelector('input[aria-label="New task"]');
@@ -965,7 +973,7 @@ async function proveStarterTwoTabPropagation(args: {
     const propagated = await args.second.evaluate<boolean>(
       `document.body?.innerText.includes(${JSON.stringify(title)}) ?? false`
     );
-    if (propagated) return;
+    if (propagated) return title;
     await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
   }
   await writeBrowserPreviewFailureArtifact(
@@ -976,6 +984,92 @@ async function proveStarterTwoTabPropagation(args: {
   );
   throw new Error(
     `Timed out waiting for built preview two-tab propagation. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+async function proveStarterReloadPersistence(args: {
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  failureArtifactPath: string;
+  session: CdpSession;
+  title: string;
+  url: string;
+}): Promise<void> {
+  await args.session.send('Page.navigate', { url: args.url });
+  await waitForStarterBrowserUrl(args);
+  await waitForStarterBrowserReady(
+    args.session,
+    args.failureArtifactPath,
+    args.failureMetrics
+  );
+
+  const deadline = Date.now() + 20_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'reload-persistence-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview reload persistence failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    const restored = await args.session.evaluate<boolean>(
+      `document.body?.innerText.includes(${JSON.stringify(args.title)}) ?? false`
+    );
+    if (restored) return;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'reload-persistence-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview reload persistence. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+async function waitForStarterBrowserUrl(args: {
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  failureArtifactPath: string;
+  session: CdpSession;
+  url: string;
+}): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    try {
+      const href = await args.session.evaluate<string>('window.location.href');
+      if (href === args.url) return;
+    } catch {
+      // The execution context can disappear briefly while the navigation
+      // commits. Keep polling until the new page is observable.
+    }
+    try {
+      lastProbe = await readStarterBrowserProbe(args.session);
+    } catch {
+      // Ignore transient evaluation failures while the page is navigating.
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'reload-navigation-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview reload navigation. Failure artifact: ${args.failureArtifactPath}`
   );
 }
 
