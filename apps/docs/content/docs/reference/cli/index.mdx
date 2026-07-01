@@ -1,6 +1,6 @@
 ---
 title: CLI
-description: The syncular CLI commands - generate, schema check, ops check, and codegen install - plus the create-syncular-app scaffolder.
+description: The syncular CLI commands - doctor, generate, schema check, ops check, and codegen install - plus the create-syncular-app scaffolder.
 ---
 
 # CLI
@@ -11,6 +11,7 @@ The `syncular` npm package is **CLI-only**. It currently ships these commands:
 usage: syncular <command>
 
 commands:
+  doctor [--manifest-dir <path>] [--schema-config <path>] [--ops-config <path>] [--skip-ops] [--require-ops] [--json] [--pretty]
   generate [--check] [--manifest-dir <path>] [--migrations-dir <path>] [--rust-output-dir <path>] [--app <path>]
   schema check [--manifest-dir <path>] [--config <path>] [--migrations-dir <path>] [--generated-client <path>] [--generated-server <path>] [--json] [--pretty]
   ops check [--manifest-dir <path>] [--config <path>] [--json] [--pretty]
@@ -25,13 +26,15 @@ source of truth for available commands and flags.
 
 | Command | What it does |
 |---|---|
+| `syncular doctor --json` | Run the narrow local readiness checks with one machine-readable result |
 | `syncular generate` | Generate the Syncular app handoff (`generated/syncular.codegen.json`) and Rust/TypeScript generated app code |
 | `syncular generate --check` | Verify generated output is current without rewriting files (CI) |
 | `syncular schema check --json` | Verify generated output, migrations, and generated client/server schema versions before deploy |
 | `syncular ops check --json` | Verify machine-readable production runbook evidence before deploy |
 | `syncular codegen install` | Install the Rust `syncular-codegen` binary with Cargo into Syncular's tool cache |
 
-See [Generate Command](/reference/cli/generate) and
+See [Doctor Command](/reference/cli/doctor),
+[Generate Command](/reference/cli/generate), and
 [Ops Check Command](/reference/cli/ops-check) for the full command details.
 
 ## Scaffolding new projects
@@ -60,6 +63,7 @@ Spaces commands under `syncular ...`. Those do not exist in the current CLI:
 ## Related guides
 
 - [Generate Command](/reference/cli/generate)
+- [Doctor Command](/reference/cli/doctor)
 - [Ops Check Command](/reference/cli/ops-check)
 - [Generated Client](/clients/javascript/generated-client) — what generation produces and when to re-run it
 - [Quick Start](/start/quick-start) — scaffold-first walkthrough

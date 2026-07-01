@@ -56,15 +56,34 @@ export interface OpsCheckCommandOptions {
   maxSupportWindowReviewAgeDays?: number;
 }
 
+export interface DoctorCommandOptions {
+  manifestDir: string;
+  schemaConfig?: string;
+  migrationsDir?: string;
+  generatedClient?: string;
+  generatedServer?: string;
+  opsConfig?: string;
+  skipOps: boolean;
+  requireOps: boolean;
+  json: boolean;
+  pretty: boolean;
+}
+
 export type SyncularCliCommand =
   | {
       kind: 'help';
-      topic?: 'generate' | 'codegen-install' | 'schema-check' | 'ops-check';
+      topic?:
+        | 'generate'
+        | 'codegen-install'
+        | 'schema-check'
+        | 'ops-check'
+        | 'doctor';
     }
   | { kind: 'generate'; options: GenerateCommandOptions }
   | { kind: 'codegen-install'; options: CodegenInstallCommandOptions }
   | { kind: 'schema-check'; options: SchemaCheckCommandOptions }
-  | { kind: 'ops-check'; options: OpsCheckCommandOptions };
+  | { kind: 'ops-check'; options: OpsCheckCommandOptions }
+  | { kind: 'doctor'; options: DoctorCommandOptions };
 
 export interface GenerateStep {
   label: string;
@@ -201,6 +220,43 @@ export interface OpsCheckResult {
   issues: OpsCheckIssue[];
 }
 
+export type DoctorCheckStatus = 'ready' | 'not-ready' | 'skipped';
+
+export interface DoctorCheckSummary {
+  name: 'schema' | 'ops';
+  status: DoctorCheckStatus;
+  ready: boolean | null;
+  issueCount: number;
+  recommendedCommand: string;
+  skippedReason?: 'ops_config_missing' | 'ops_skipped_by_flag';
+}
+
+export interface DoctorIssue {
+  source: 'schema' | 'ops';
+  code: SchemaCheckIssueCode | OpsCheckIssueCode;
+  severity: SchemaCheckIssueSeverity | OpsCheckIssueSeverity;
+  message: string;
+  path?: string;
+  recommendedAction:
+    | SchemaCheckIssue['recommendedAction']
+    | OpsCheckIssue['recommendedAction'];
+  details?: Record<string, unknown>;
+}
+
+export interface DoctorResult {
+  generatedAt: string;
+  status: 'ready' | 'not-ready';
+  ready: boolean;
+  manifestDir: string;
+  checks: {
+    schema: DoctorCheckSummary;
+    ops: DoctorCheckSummary;
+  };
+  schema: SchemaCheckResult;
+  ops: OpsCheckResult | null;
+  issues: DoctorIssue[];
+}
+
 interface SyncularCodegenConfig {
   tables?: unknown;
   typescriptOutputPath?: unknown;
@@ -222,18 +278,36 @@ function usage(): string {
   return `usage: syncular <command>
 
 commands:
+  doctor [--manifest-dir <path>] [--schema-config <path>] [--ops-config <path>] [--skip-ops] [--require-ops] [--json] [--pretty]
   generate [--check] [--manifest-dir <path>] [--migrations-dir <path>] [--rust-output-dir <path>] [--app <path>]
   schema check [--manifest-dir <path>] [--config <path>] [--migrations-dir <path>] [--generated-client <path>] [--generated-server <path>] [--json] [--pretty]
   ops check [--manifest-dir <path>] [--config <path>] [--json] [--pretty]
   codegen install [--version <version>] [--root <path>] [--force]
 
 examples:
+  syncular doctor --json
   syncular generate
   syncular generate --check
   syncular generate --manifest-dir ./syncular-app --app ./syncular.app.ts
   syncular schema check --json
   syncular ops check --json
   syncular codegen install
+`;
+}
+
+function doctorUsage(): string {
+  return `usage: syncular doctor [--manifest-dir <path>] [--schema-config <path>] [--migrations-dir <path>] [--generated-client <path>] [--generated-server <path>] [--ops-config <path>] [--skip-ops] [--require-ops] [--json] [--pretty]
+
+Runs the narrow local Syncular readiness checks that already have stable
+machine-readable contracts.
+
+The doctor always runs schema readiness. It runs ops readiness when an ops
+evidence file exists, --ops-config is passed, or --require-ops is set. Missing
+ops evidence is skipped by default so local development apps are not forced to
+create production runbook files.
+
+Browser/CDP, package installation, and framework matrix checks stay in release
+rehearsal; this command only orchestrates schema and ops readiness.
 `;
 }
 
@@ -385,6 +459,16 @@ export function parseSyncularCliArgs(
     };
   }
 
+  if (command === 'doctor') {
+    if (rest.includes('--help') || rest.includes('-h')) {
+      return { kind: 'help', topic: 'doctor' };
+    }
+    return {
+      kind: 'doctor',
+      options: parseDoctorArgs(rest),
+    };
+  }
+
   if (command !== 'generate') {
     throw new Error(`Unknown syncular command: ${command}\n\n${usage()}`);
   }
@@ -445,6 +529,104 @@ export function parseSyncularCliArgs(
   }
 
   return { kind: 'generate', options };
+}
+
+function parseDoctorArgs(args: readonly string[]): DoctorCommandOptions {
+  const options: DoctorCommandOptions = {
+    manifestDir: '.',
+    skipOps: false,
+    requireOps: false,
+    json: false,
+    pretty: false,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+
+    if (arg === '--json') {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === '--pretty') {
+      options.pretty = true;
+      continue;
+    }
+
+    if (arg === '--skip-ops') {
+      options.skipOps = true;
+      continue;
+    }
+
+    if (arg === '--require-ops') {
+      options.requireOps = true;
+      continue;
+    }
+
+    const manifestDir = readOptionValue(args, index, arg, '--manifest-dir');
+    if (manifestDir) {
+      options.manifestDir = manifestDir.value;
+      index = manifestDir.nextIndex;
+      continue;
+    }
+
+    const schemaConfig = readOptionValue(args, index, arg, '--schema-config');
+    if (schemaConfig) {
+      options.schemaConfig = schemaConfig.value;
+      index = schemaConfig.nextIndex;
+      continue;
+    }
+
+    const migrationsDir = readOptionValue(args, index, arg, '--migrations-dir');
+    if (migrationsDir) {
+      options.migrationsDir = migrationsDir.value;
+      index = migrationsDir.nextIndex;
+      continue;
+    }
+
+    const generatedClient = readOptionValue(
+      args,
+      index,
+      arg,
+      '--generated-client'
+    );
+    if (generatedClient) {
+      options.generatedClient = generatedClient.value;
+      index = generatedClient.nextIndex;
+      continue;
+    }
+
+    const generatedServer = readOptionValue(
+      args,
+      index,
+      arg,
+      '--generated-server'
+    );
+    if (generatedServer) {
+      options.generatedServer = generatedServer.value;
+      index = generatedServer.nextIndex;
+      continue;
+    }
+
+    const opsConfig = readOptionValue(args, index, arg, '--ops-config');
+    if (opsConfig) {
+      options.opsConfig = opsConfig.value;
+      index = opsConfig.nextIndex;
+      continue;
+    }
+
+    throw new Error(
+      `Unknown syncular doctor option: ${arg}\n\n${doctorUsage()}`
+    );
+  }
+
+  if (options.skipOps && options.requireOps) {
+    throw new Error(
+      'syncular doctor cannot combine --skip-ops and --require-ops'
+    );
+  }
+
+  return options;
 }
 
 function readPositiveNumberOptionValue(
@@ -985,6 +1167,109 @@ export function runOpsCheckCommand(
     environment,
     checks,
     issues,
+  };
+}
+
+export function runDoctorCommand(
+  options: DoctorCommandOptions,
+  context: { cwd?: string; now?: () => Date } = {}
+): DoctorResult {
+  const cwd = context.cwd ?? process.cwd();
+  const now = context.now?.() ?? new Date();
+  const manifestDir = resolveFrom(cwd, options.manifestDir);
+  const schema = runSchemaCheckCommand(
+    {
+      manifestDir: options.manifestDir,
+      config: options.schemaConfig,
+      migrationsDir: options.migrationsDir,
+      generatedClient: options.generatedClient,
+      generatedServer: options.generatedServer,
+      json: true,
+      pretty: false,
+    },
+    { cwd, now: () => now }
+  );
+
+  const defaultOpsConfigPath = resolveFrom(manifestDir, DEFAULT_OPS_CHECK_FILE);
+  const opsConfigPath = options.opsConfig
+    ? resolveFrom(cwd, options.opsConfig)
+    : defaultOpsConfigPath;
+  const shouldRunOps =
+    !options.skipOps &&
+    (options.requireOps ||
+      options.opsConfig !== undefined ||
+      existsSync(opsConfigPath));
+  const ops = shouldRunOps
+    ? runOpsCheckCommand(
+        {
+          manifestDir: options.manifestDir,
+          config: options.opsConfig,
+          json: true,
+          pretty: false,
+        },
+        { cwd, now: () => now }
+      )
+    : null;
+  const opsSkippedReason = options.skipOps
+    ? 'ops_skipped_by_flag'
+    : ops === null
+      ? 'ops_config_missing'
+      : undefined;
+  const issues = [
+    ...schema.issues.map(doctorSchemaIssue),
+    ...(ops?.issues.map(doctorOpsIssue) ?? []),
+  ];
+  const ready = schema.ready && (ops?.ready ?? true);
+
+  return {
+    generatedAt: now.toISOString(),
+    status: ready ? 'ready' : 'not-ready',
+    ready,
+    manifestDir,
+    checks: {
+      schema: {
+        name: 'schema',
+        status: schema.status,
+        ready: schema.ready,
+        issueCount: schema.issues.length,
+        recommendedCommand: 'syncular schema check --json',
+      },
+      ops: {
+        name: 'ops',
+        status: ops?.status ?? 'skipped',
+        ready: ops?.ready ?? null,
+        issueCount: ops?.issues.length ?? 0,
+        recommendedCommand: 'syncular ops check --json',
+        ...(opsSkippedReason ? { skippedReason: opsSkippedReason } : {}),
+      },
+    },
+    schema,
+    ops,
+    issues,
+  };
+}
+
+function doctorSchemaIssue(issue: SchemaCheckIssue): DoctorIssue {
+  return {
+    source: 'schema',
+    code: issue.code,
+    severity: issue.severity,
+    message: issue.message,
+    ...(issue.path ? { path: issue.path } : {}),
+    recommendedAction: issue.recommendedAction,
+    ...(issue.details ? { details: issue.details } : {}),
+  };
+}
+
+function doctorOpsIssue(issue: OpsCheckIssue): DoctorIssue {
+  return {
+    source: 'ops',
+    code: issue.code,
+    severity: issue.severity,
+    message: issue.message,
+    ...(issue.path ? { path: issue.path } : {}),
+    recommendedAction: issue.recommendedAction,
+    ...(issue.details ? { details: issue.details } : {}),
   };
 }
 
@@ -1710,6 +1995,36 @@ function formatOpsCheckText(result: OpsCheckResult): string {
   ].join('\n');
 }
 
+function formatDoctorText(result: DoctorResult): string {
+  const issueCount = result.issues.length;
+  const lines = [
+    `[syncular] doctor ${result.ready ? 'ready' : 'not ready'} (${issueCount} issue${issueCount === 1 ? '' : 's'})`,
+    `- schema: ${result.checks.schema.status} (${result.checks.schema.issueCount} issue${result.checks.schema.issueCount === 1 ? '' : 's'})`,
+    `- ops: ${formatDoctorOpsCheckText(result.checks.ops)}`,
+  ];
+
+  if (result.issues.length > 0) {
+    lines.push(
+      ...result.issues.map((issue) => {
+        const location = issue.path ? ` at ${issue.path}` : '';
+        return `- ${issue.source}.${issue.code}${location}: ${issue.message}`;
+      })
+    );
+  }
+
+  return lines.join('\n');
+}
+
+function formatDoctorOpsCheckText(check: DoctorCheckSummary): string {
+  if (check.status !== 'skipped') {
+    return `${check.status} (${check.issueCount} issue${check.issueCount === 1 ? '' : 's'})`;
+  }
+  if (check.skippedReason === 'ops_skipped_by_flag') {
+    return 'skipped (--skip-ops)';
+  }
+  return 'skipped (no syncular.ops.json; pass --require-ops to fail when missing)';
+}
+
 function readPackageVersion(): string | undefined {
   try {
     const packageJson = JSON.parse(
@@ -2012,6 +2327,8 @@ export async function runSyncularCli(
         console.log(schemaCheckUsage());
       } else if (parsed.topic === 'ops-check') {
         console.log(opsCheckUsage());
+      } else if (parsed.topic === 'doctor') {
+        console.log(doctorUsage());
       } else {
         console.log(usage());
       }
@@ -2034,6 +2351,14 @@ export async function runSyncularCli(
         parsed.options.json
           ? JSON.stringify(result, null, parsed.options.pretty ? 2 : 0)
           : formatOpsCheckText(result)
+      );
+      return result.ready ? 0 : 1;
+    } else if (parsed.kind === 'doctor') {
+      const result = runDoctorCommand(parsed.options);
+      console.log(
+        parsed.options.json
+          ? JSON.stringify(result, null, parsed.options.pretty ? 2 : 0)
+          : formatDoctorText(result)
       );
       return result.ready ? 0 : 1;
     } else {

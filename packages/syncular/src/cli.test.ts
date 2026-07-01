@@ -14,6 +14,7 @@ import {
   buildGenerateSteps,
   isMainModuleEntrypoint,
   parseSyncularCliArgs,
+  runDoctorCommand,
   runOpsCheckCommand,
   runSchemaCheckCommand,
 } from './cli';
@@ -87,6 +88,41 @@ describe('syncular CLI', () => {
         migrationsDir: './db/migrations',
         generatedClient: './src/generated/client.ts',
         generatedServer: './src/generated/server.ts',
+        json: true,
+        pretty: true,
+      },
+    });
+  });
+
+  it('parses the doctor command', () => {
+    expect(
+      parseSyncularCliArgs([
+        'doctor',
+        '--manifest-dir',
+        './app',
+        '--schema-config=./generated/config.json',
+        '--migrations-dir',
+        './db/migrations',
+        '--generated-client',
+        './src/generated/client.ts',
+        '--generated-server=./src/generated/server.ts',
+        '--ops-config',
+        './ops/prod.json',
+        '--require-ops',
+        '--json',
+        '--pretty',
+      ])
+    ).toEqual({
+      kind: 'doctor',
+      options: {
+        manifestDir: './app',
+        schemaConfig: './generated/config.json',
+        migrationsDir: './db/migrations',
+        generatedClient: './src/generated/client.ts',
+        generatedServer: './src/generated/server.ts',
+        opsConfig: './ops/prod.json',
+        skipOps: false,
+        requireOps: true,
         json: true,
         pretty: true,
       },
@@ -375,6 +411,159 @@ describe('syncular CLI', () => {
         },
         issues: [],
       });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs doctor with schema readiness and optional missing ops evidence', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-doctor-'));
+    try {
+      writeSchemaCheckFixture(dir, { migrationCount: 2, generatedVersion: 2 });
+
+      const result = runDoctorCommand(
+        {
+          manifestDir: dir,
+          skipOps: false,
+          requireOps: false,
+          json: true,
+          pretty: false,
+        },
+        { now: () => new Date('2026-07-01T00:00:00.000Z') }
+      );
+
+      expect(result.ready).toBe(true);
+      expect(result.status).toBe('ready');
+      expect(result.checks.schema).toMatchObject({
+        name: 'schema',
+        status: 'ready',
+        ready: true,
+        issueCount: 0,
+      });
+      expect(result.checks.ops).toMatchObject({
+        name: 'ops',
+        status: 'skipped',
+        ready: null,
+        issueCount: 0,
+        skippedReason: 'ops_config_missing',
+      });
+      expect(result.ops).toBeNull();
+      expect(result.issues).toEqual([]);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails doctor when required ops evidence is missing', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-doctor-'));
+    try {
+      writeSchemaCheckFixture(dir, { migrationCount: 1, generatedVersion: 1 });
+
+      const result = runDoctorCommand(
+        {
+          manifestDir: dir,
+          skipOps: false,
+          requireOps: true,
+          json: true,
+          pretty: false,
+        },
+        { now: () => new Date('2026-07-01T00:00:00.000Z') }
+      );
+
+      expect(result.ready).toBe(false);
+      expect(result.status).toBe('not-ready');
+      expect(result.checks.ops).toMatchObject({
+        status: 'not-ready',
+        ready: false,
+        issueCount: 8,
+      });
+      expect(result.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: 'ops',
+            code: 'ops.config_missing',
+            recommendedAction: 'createOpsReadinessFile',
+          }),
+        ])
+      );
+      expect(result.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: 'ops',
+            code: 'ops.schema_readiness_missing',
+            recommendedAction: 'runSchemaChecks',
+          }),
+        ])
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('runs doctor with production ops evidence when present', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-doctor-'));
+    try {
+      writeSchemaCheckFixture(dir, { migrationCount: 3, generatedVersion: 3 });
+      writeOpsCheckFixture(dir);
+
+      const result = runDoctorCommand(
+        {
+          manifestDir: dir,
+          skipOps: false,
+          requireOps: false,
+          json: true,
+          pretty: false,
+        },
+        { now: () => new Date('2026-07-01T00:00:00.000Z') }
+      );
+
+      expect(result.ready).toBe(true);
+      expect(result.checks.ops).toMatchObject({
+        name: 'ops',
+        status: 'ready',
+        ready: true,
+        issueCount: 0,
+      });
+      expect(result.ops?.environment).toBe('production');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('aggregates schema and ops issues from doctor', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-doctor-'));
+    try {
+      writeSchemaCheckFixture(dir, { migrationCount: 2, generatedVersion: 1 });
+      writeOpsCheckFixture(dir, {
+        restoreCompletedAt: '2026-01-01T00:00:00.000Z',
+      });
+
+      const result = runDoctorCommand(
+        {
+          manifestDir: dir,
+          skipOps: false,
+          requireOps: false,
+          json: true,
+          pretty: false,
+        },
+        { now: () => new Date('2026-07-01T00:00:00.000Z') }
+      );
+
+      expect(result.ready).toBe(false);
+      expect(result.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            source: 'schema',
+            code: 'schema.generated_output_stale',
+            recommendedAction: 'runSyncularGenerate',
+          }),
+          expect.objectContaining({
+            source: 'ops',
+            code: 'ops.restore_drill_stale',
+            recommendedAction: 'runRestoreDrill',
+          }),
+        ])
+      );
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

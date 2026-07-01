@@ -1,0 +1,62 @@
+---
+title: Doctor Command
+description: Use syncular doctor to run the narrow local readiness checks with one JSON result.
+---
+
+# Doctor Command
+
+`syncular doctor` runs the local readiness checks that already have stable
+machine-readable contracts.
+
+It always runs schema readiness. It runs production ops readiness when
+`syncular.ops.json` exists, when `--ops-config` is passed, or when
+`--require-ops` is set:
+
+```bash
+npx syncular doctor --manifest-dir . --json --pretty
+```
+
+For production deploy gates, require ops evidence:
+
+```bash
+npx syncular doctor --manifest-dir . --require-ops --json
+```
+
+For local development apps that do not have a production runbook file yet, the
+ops check is skipped by default. Use `--skip-ops` to make that explicit:
+
+```bash
+npx syncular doctor --manifest-dir . --skip-ops --json
+```
+
+## Flags
+
+- `--manifest-dir <path>`: project directory containing migrations, generated handoff config, and optionally `syncular.ops.json`
+- `--schema-config <path>`: override the schema check config path
+- `--migrations-dir <path>`: override the schema migrations directory
+- `--generated-client <path>`: override the generated client output checked for schema version
+- `--generated-server <path>`: override the generated server output checked for schema version
+- `--ops-config <path>`: run ops readiness against an explicit production evidence file
+- `--skip-ops`: skip ops readiness even if an evidence file is present
+- `--require-ops`: fail when ops evidence is missing or not ready
+- `--json`: print machine-readable output
+- `--pretty`: pretty-print JSON output
+
+## Scope
+
+`doctor` is intentionally narrow. It does not run browser/CDP checks,
+framework import smokes, post-publish package install smokes, or publish
+dry-runs. Those stay in release rehearsal:
+
+```bash
+bun scripts/release-rehearsal.ts --require-starter-browser-preview
+```
+
+## Exit Codes
+
+- `0`: schema readiness is ready, and ops readiness is either ready or skipped.
+- `1`: schema readiness is not ready, or ops readiness is required/present and not ready.
+
+The JSON output includes stable schema/ops issue codes and recommended actions
+so deploy pipelines can fail on codes instead of parsing human text.
+

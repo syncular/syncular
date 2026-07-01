@@ -1047,9 +1047,10 @@ surface is actually comfortable in real apps.
   a typed reason.
 - Support artifact ingestion decision: starter browser failures and
   Cloudflare runtime failures now leave safe JSON artifacts. Decide whether
-  Console/Fleet, `syncular ops check`, or a future `doctor` command should
-  ingest those shapes, and keep the artifact schema redacted, bounded, and
-  versioned if it becomes public.
+  Console/Fleet or release rehearsal should ingest those shapes, and keep the
+  artifact schema redacted, bounded, and versioned if it becomes public.
+  `syncular doctor` remains a narrow schema/ops readiness umbrella, not a
+  browser/runtime artifact ingester.
 - Docs information scent: first-run docs should route users by task
   ("build a browser app", "add React", "deploy a server", "test scoped auth",
   "inspect a failure") before naming packages. Package and subpath reference
@@ -1237,9 +1238,9 @@ online propagation, or reconnect behavior can change.
   questions: keep one React+Bun/Hono golden starter until other templates earn
   their own smokes, keep starter debug state minimal, split adapter coverage
   between PR-focused tests and release-rehearsal matrix checks, keep generated
-  auth-context helpers generic until product semantics exist, and keep
-  `schema check` narrow until a broader `doctor` has multiple checks to
-  orchestrate.
+  auth-context helpers generic until product semantics exist, keep
+  `schema check` narrow, and add only a narrow `doctor` once schema and ops
+  checks have stable contracts.
 - A source feedback coverage audit now maps every worthy pasted integration
   point to shipped slices or explicit remaining WP-50 risks, so future sessions
   can continue from contracts and tests rather than re-triaging the raw notes.
@@ -1559,9 +1560,9 @@ online propagation, or reconnect behavior can change.
 - `syncular ops check` now gives deploy pipelines a narrow machine-readable
   production-ops gate over the manual runbook evidence: schema readiness,
   latest restore drill, external blob consistency policy/status, credential
-  rotation ownership/cadence, and rate-limit review status. This keeps the
-  first production-ops automation concrete without introducing a broad
-  `doctor` command before enough narrower checks exist.
+  rotation ownership/cadence, and rate-limit review status. `syncular doctor`
+  now composes schema readiness and optional/required ops readiness without
+  absorbing release-rehearsal-only browser/framework/package gates.
 - Console Ops now accepts that deploy evidence through
   `POST /console/ops/readiness`, stores a redacted `ops_readiness` operation
   audit event, exposes the latest report through `GET /console/ops/readiness`,
@@ -2275,6 +2276,12 @@ online propagation, or reconnect behavior can change.
   support-window evidence, so deploys can fail on stale Console retention
   reviews, missing request-payload snapshot policy, prune windows smaller than
   the promised offline window, and missing compaction full-history sizing.
+- 2026-07-01: Added `syncular doctor`, a narrow local readiness umbrella that
+  always runs schema readiness and runs ops readiness when `syncular.ops.json`,
+  `--ops-config`, or `--require-ops` is present. Missing ops evidence is
+  skipped by default for local development apps; browser/CDP, framework,
+  post-publish install, and publish dry-run checks remain release-rehearsal
+  gates.
 - 2026-07-01: Added Console Ops readiness ingestion for
   `syncular ops check --json`: `POST /console/ops/readiness` stores a redacted
   `ops_readiness` operation audit event, `GET /console/ops/readiness` returns
@@ -2707,6 +2714,18 @@ Most recent production-ops automation rerun:
     retention review, missing payload snapshot policy, and prune windows
     smaller than the promised offline window.
 
+Most recent doctor readiness rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/syncular/src/cli.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/syncular tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun packages/syncular/src/cli.ts doctor --manifest-dir packages/create-syncular-app/template --json --pretty`
+  - Passed with schema readiness ready and ops readiness skipped because the
+    starter template has no production `syncular.ops.json`.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun packages/syncular/src/cli.ts doctor --manifest-dir packages/create-syncular-app/template --require-ops --json`
+  - Expected nonzero status: schema readiness stayed ready, while required ops
+    readiness failed with stable `ops.*` issue codes for the missing
+    production evidence file.
+
 Most recent ops-readiness Console ingestion rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-routes.test.ts`
@@ -3087,8 +3106,9 @@ Most recent mutation-status rerun:
 - Schema readiness is layered: `syncular schema check --json` owns file-level
   CI/deploy checks for app contract, migrations, and generated output, while
   `getSyncularServerSchemaReadiness(...)` owns live database/server readiness.
-  A future `doctor` command can orchestrate these narrower checks if the
-  product needs a broader umbrella.
+  `syncular doctor --json` now provides the narrow local umbrella over schema
+  readiness plus optional/required ops readiness. Browser/CDP, framework,
+  post-publish install, and publish dry-run checks stay in release rehearsal.
 - The first canonical starter stays React + Bun/Hono by default for this WP.
   That is not a claim that Syncular is React- or Bun-only; it is the one
   executable golden path with the strongest current smoke coverage. Additional
@@ -3109,10 +3129,10 @@ Most recent mutation-status rerun:
   method remains the public contract; app-specific join/create flows belong in
   app code, recipes, or testkit fixtures for now.
 - `syncular schema check` remains the narrow deploy/CI readiness command.
-  Do not add a broad `syncular doctor` until there are several independently
-  useful checks to orchestrate, such as schema readiness, browser deployment
-  preflight, adapter import isolation, package version alignment, and runtime
-  asset serving.
+  `syncular doctor` is deliberately narrower than release rehearsal: it
+  orchestrates schema readiness plus optional/required ops readiness, and does
+  not hide browser/CDP, framework, adapter import, package-install, or publish
+  dry-run gates behind a local command that cannot prove them.
 
 ## Remaining Implementation Risks
 
@@ -3266,8 +3286,8 @@ Most recent mutation-status rerun:
   `POST /console/client-diagnostics/cloudflare-runtime-failure`, preserving
   route, exit, bounded output, and safe blob timing/byte metrics as
   `cloudflare.runtime_failure` diagnostics. Remaining work is to observe the
-  hosted Chrome job for this proof and decide whether a future `doctor`
-  surface should orchestrate these ingestion/artifact checks.
+  hosted Chrome job for this proof and decide whether Console/Fleet or release
+  rehearsal should orchestrate additional ingestion/artifact checks.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
   conflict detail rows, last mutation-related errors, and recommended actions.
@@ -3300,9 +3320,10 @@ Most recent mutation-status rerun:
   `GET /console/ops/readiness/trends` now provides longer-range readiness
   visualization beyond the operation-audit page window, including gateway
   aggregation, issue trends, buckets, matched/scanned counts, and truncation
-  signaling. Remaining depth is deciding whether a future broader `doctor`
-  should orchestrate those checks once enough independently useful checks
-  exist.
+  signaling. `syncular doctor --json` now composes schema readiness plus
+  optional/required ops readiness for local/deploy preflight use; broader
+  browser/CDP, framework, package-install, and publish dry-run orchestration
+  stays in release rehearsal.
 - Performance and failure artifacts: keep package/WASM size, bootstrap
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch
   latency, storage/quota pressure, and redacted E2E failure artifacts

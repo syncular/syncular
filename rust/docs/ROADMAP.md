@@ -134,8 +134,9 @@ read-only review:
     templates earn their own smokes, keep starter debug state minimal, split
     adapter coverage between PR-focused tests and release-rehearsal matrix
     checks, keep generated auth-context helpers generic until app-contract
-    semantics exist, and keep `schema check` narrow until a broader `doctor`
-    has several checks to orchestrate. Adapter import side-effect isolation now
+    semantics exist, keep `schema check` narrow, and add only a narrow
+    `doctor` umbrella once schema and ops checks both have stable contracts.
+    Adapter import side-effect isolation now
     has a root import graph smoke through `bun run imports:check`, proving the
     root client/server packages do not reach optional subpath files or peers;
     the same check now dynamically imports the root client/server source
@@ -383,7 +384,10 @@ read-only review:
     credential rotation ownership/cadence, rate-limit review status, Console
     log/event retention, request-payload snapshot policy, and offline
     support-window sizing, giving deploy pipelines a first narrow ops
-    automation gate without introducing a broad `doctor` command.
+    automation gate. `syncular doctor --json` now composes schema readiness
+    plus optional/required ops readiness while leaving browser/CDP,
+    framework-import, post-publish install, and publish dry-run gates in
+    release rehearsal.
     Console Ops can now ingest that JSON through
     `POST /console/ops/readiness`, stores a redacted `ops_readiness`
     operation-audit event with local paths omitted, exposes the latest report

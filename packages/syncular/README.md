@@ -11,6 +11,7 @@ Run the app-facing generator with your package runner — no install required:
 
 ```bash
 npx syncular codegen install
+npx syncular doctor --json
 npx syncular generate --manifest-dir .
 npx syncular generate --manifest-dir . --check
 npx syncular schema check --json
@@ -27,6 +28,9 @@ generating clients. `syncular generate` can also install the Rust generator on
 demand when Cargo is available; `syncular codegen install` prewarms the same
 tool cache explicitly.
 
+`syncular doctor --json` runs the narrow local readiness checks that already
+have stable machine-readable contracts: schema readiness, plus ops readiness
+when `syncular.ops.json`, `--ops-config`, or `--require-ops` is present.
 `syncular schema check --json` verifies generated config, migrations, and
 generated client/server schema versions before deploy. `syncular ops check
 --json` validates the production runbook evidence file for restore drills,

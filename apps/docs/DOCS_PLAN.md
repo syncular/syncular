@@ -207,15 +207,16 @@ Full per-page tree and per-phase details live in the audit output; phases:
     `syncular` as CLI-only, @syncular/core, dialects subpaths,
     transport-http, server-service-worker, relay, migrations, console,
     Sentry owner subpaths, typegen.
-  - **CLI truth:** `packages/syncular/src/cli.ts` ships exactly `generate`
-    and `codegen install`. Retired `reference/cli/create`, `cli/migrate`,
+  - **CLI truth:** `packages/syncular/src/cli.ts` ships the current
+    app-facing CLI: `doctor`, `generate`, `schema check`, `ops check`, and
+    `codegen install`. Retired `reference/cli/create`, `cli/migrate`,
     `cli/console` (documented nonexistent `syncular create|migrate|console`,
-    plus doctor/dev/typegen/spaces commands) → redirects in next.config.mjs
+    plus dev/typegen/spaces commands) → redirects in next.config.mjs
     (`create` → /start/quick-start, `migrate` and `console` →
     /reference/cli) + stale patterns for `/reference/cli/(create|migrate)`
-    and `syncular (create|migrate|doctor|dev|typegen|login|deploy)`.
-    `cli/index` rewritten to the two real commands with a "what the CLI does
-    not do" section; `cli/generate` verified accurate and kept.
+    and retired `syncular create|migrate|dev|typegen|login|deploy` commands.
+    `cli/index` rewritten to the current command set with a "what the CLI
+    does not do" section; `cli/generate` verified accurate and kept.
   - **meta.json:** reference root regrouped to Packages / Configuration
     (configuration + server) / CLI / HTTP API / Errors and Protocol /
     Upgrades; index cards mirror it.
@@ -336,9 +337,10 @@ Full per-page tree and per-phase details live in the audit output; phases:
     `createSyncServer` top-level `handlers`/`authenticate` to the current
     `sync: { handlers, authenticate }` contract.
   - **console-integration**: **removed the `syncular console` CLI path — the
-    command does not exist** (packages/syncular CLI ships only `generate` and
-    `codegen install`); page now leads with `mountConsoleUi` and the
-    `createConsoleStaticResponder` generic responder (both verified exports).
+    command does not exist** (packages/syncular CLI now ships `doctor`,
+    `generate`, `schema check`, `ops check`, and `codegen install`); page now
+    leads with `mountConsoleUi` and the `createConsoleStaticResponder` generic
+    responder (both verified exports).
   - **Found for Phase 6 / out of my tree:** `reference/cli/console.mdx`
     documents the nonexistent `syncular console` command and should be retired
     or rewritten; `clients/javascript/testing/*` (quick-start,

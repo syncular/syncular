@@ -107,9 +107,9 @@ const stalePatterns: StalePattern[] = [
       'Retired reference/cli pages: the CLI has no create/migrate subcommands. Link /start/quick-start (scaffolding via create-syncular-app), /features/migrations, or /reference/cli.',
   },
   {
-    pattern: /\bsyncular (?:create|migrate|doctor|dev|typegen|login|deploy)\b/,
+    pattern: /\bsyncular (?:create|migrate|dev|typegen|login|deploy)\b/,
     message:
-      'The syncular CLI ships `generate`, `schema check`, `ops check`, and `codegen install`. Scaffolding is `bunx create-syncular-app`; migrations/console are app-owned.',
+      'The syncular CLI ships `doctor`, `generate`, `schema check`, `ops check`, and `codegen install`. Scaffolding is `bunx create-syncular-app`; migrations/console are app-owned.',
   },
 ];
 
