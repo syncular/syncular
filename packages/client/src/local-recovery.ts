@@ -1,3 +1,4 @@
+import type { SyncularBrowserDeploymentPreflightMultiTabMode } from './browser-deployment-preflight';
 import type { SyncularClientStatus } from './client';
 import type {
   SyncularBlobUploadQueueProcessOptions,
@@ -43,6 +44,23 @@ export type SyncularLocalRecoveryActionSource =
   | 'health'
   | 'storage';
 
+export type SyncularLocalRecoveryActionBlockerCode =
+  'browser.multi_tab_coordination_required';
+
+export type SyncularLocalRecoveryActionBlockerMultiTabMode =
+  | SyncularBrowserDeploymentPreflightMultiTabMode
+  | 'unknown';
+
+export type SyncularLocalRecoveryActionRecommendedAction =
+  'coordinateBrowserTabs';
+
+export interface SyncularLocalRecoveryActionBlocker {
+  code: SyncularLocalRecoveryActionBlockerCode;
+  message: string;
+  recommendedAction?: SyncularLocalRecoveryActionRecommendedAction;
+  details?: Record<string, unknown>;
+}
+
 export interface SyncularLocalRecoveryAction {
   id: string;
   kind: SyncularLocalRecoveryActionKind;
@@ -56,6 +74,7 @@ export interface SyncularLocalRecoveryAction {
   confirmationText?: string;
   subscriptionIds?: string[];
   tables?: string[];
+  blockers?: SyncularLocalRecoveryActionBlocker[];
   clearSyncedRows?: boolean;
   clearBlobCache?: boolean;
   compactStorageOptions?: SyncularStorageCompactionOptions;
@@ -101,6 +120,12 @@ export interface SyncularLocalRecoveryPlanOptions {
    */
   signOutClearBlobCache?: boolean;
   compactStorageOptions?: SyncularStorageCompactionOptions;
+  /**
+   * Pass `preflight.lifecycle.multiTabMode` when the app requires destructive
+   * local recovery actions to run only after browser tabs are coordinated.
+   */
+  multiTabMode?: SyncularBrowserDeploymentPreflightMultiTabMode;
+  requireMultiTabCoordinationForDestructiveActions?: boolean;
 }
 
 export interface SyncularRunLocalRecoveryActionOptions {
@@ -185,6 +210,27 @@ export class SyncularLocalRecoveryError extends Error {
   }
 }
 
+export class SyncularLocalRecoveryBlockedError extends Error {
+  readonly code: 'syncular.local_recovery_action_blocked';
+  readonly action: SyncularLocalRecoveryAction;
+  readonly blockers: SyncularLocalRecoveryActionBlocker[];
+
+  constructor(
+    action: SyncularLocalRecoveryAction,
+    blockers: readonly SyncularLocalRecoveryActionBlocker[]
+  ) {
+    super(
+      `Syncular local recovery action "${action.id}" is blocked: ${blockers
+        .map((blocker) => blocker.code)
+        .join(', ')}.`
+    );
+    this.name = 'SyncularLocalRecoveryBlockedError';
+    this.code = 'syncular.local_recovery_action_blocked';
+    this.action = action;
+    this.blockers = [...blockers];
+  }
+}
+
 export async function getSyncularLocalRecoveryPlan(
   client: SyncularLocalRecoveryClient,
   options: SyncularLocalRecoveryPlanOptions = {}
@@ -204,7 +250,10 @@ export async function getSyncularLocalRecoveryPlan(
     ...actionsForHealth(health),
     ...actionsForRequestedOptions(options, status, snapshot),
   ];
-  const uniqueActions = dedupeActions(actions);
+  const uniqueActions = applyRecoveryActionBlockers(
+    dedupeActions(actions),
+    options
+  );
   const recoveryStatus = summarizeRecoveryStatus({
     health,
     status,
@@ -232,6 +281,7 @@ export async function runSyncularLocalRecoveryAction(
   action: SyncularLocalRecoveryAction,
   options: SyncularRunLocalRecoveryActionOptions = {}
 ): Promise<SyncularLocalRecoveryActionResult> {
+  assertRecoveryActionNotBlocked(action);
   assertRecoveryActionConfirmed(action, options);
 
   switch (action.kind) {
@@ -296,6 +346,13 @@ export async function runSyncularLocalRecoveryAction(
   }
 }
 
+function assertRecoveryActionNotBlocked(
+  action: SyncularLocalRecoveryAction
+): void {
+  if (!action.blockers || action.blockers.length === 0) return;
+  throw new SyncularLocalRecoveryBlockedError(action, action.blockers);
+}
+
 function assertRecoveryActionConfirmed(
   action: SyncularLocalRecoveryAction,
   options: SyncularRunLocalRecoveryActionOptions
@@ -303,6 +360,38 @@ function assertRecoveryActionConfirmed(
   if (!action.requiresConfirmation) return;
   if (options.confirmationText === action.confirmationText) return;
   throw new SyncularLocalRecoveryError(action);
+}
+
+function applyRecoveryActionBlockers(
+  actions: readonly SyncularLocalRecoveryAction[],
+  options: SyncularLocalRecoveryPlanOptions
+): SyncularLocalRecoveryAction[] {
+  if (!options.requireMultiTabCoordinationForDestructiveActions) {
+    return [...actions];
+  }
+  const mode = options.multiTabMode ?? 'unknown';
+  if (mode === 'coordinated') return [...actions];
+  const blocker = multiTabCoordinationBlocker(mode);
+  return actions.map((action) =>
+    action.destructive
+      ? {
+          ...action,
+          blockers: [...(action.blockers ?? []), blocker],
+        }
+      : action
+  );
+}
+
+function multiTabCoordinationBlocker(
+  mode: SyncularLocalRecoveryActionBlockerMultiTabMode
+): SyncularLocalRecoveryActionBlocker {
+  return {
+    code: 'browser.multi_tab_coordination_required',
+    message:
+      'This destructive local recovery action requires coordinated browser tabs. Close other app tabs or use a browser/runtime with BroadcastChannel and Web Locks before running it.',
+    recommendedAction: 'coordinateBrowserTabs',
+    details: { multiTabMode: mode },
+  };
 }
 
 function supportBundleAction(): SyncularLocalRecoveryAction {

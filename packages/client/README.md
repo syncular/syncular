@@ -772,6 +772,14 @@ Errored bootstrap subscriptions with `sync.not_found` or
 `sync.integrity_rejected` also surface as targeted, confirmed
 `force-rebootstrap` actions.
 
+Browser apps that allow multiple tabs to share a persistent local database can
+pass the deployment preflight's `lifecycle.multiTabMode` and set
+`requireMultiTabCoordinationForDestructiveActions: true`. Destructive recovery
+actions then carry a `browser.multi_tab_coordination_required` blocker unless
+the preflight reports coordinated tabs. Missing preflight evidence also blocks
+when coordination is required; show that blocker and ask the user to close
+other tabs or move to a coordinated runtime before running the action.
+
 ## CRDT Document Fields
 
 Generated app clients expose schema-derived CRDT field helpers, and the

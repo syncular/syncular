@@ -226,7 +226,11 @@ read-only review:
     subscription IDs after app permissions are checked or refreshed.
     Errored bootstrap subscriptions with `sync.not_found` or
     `sync.integrity_rejected` also map to targeted, confirmed rebootstrap
-    actions.
+    actions. Destructive recovery actions can also be tied to browser
+    deployment preflight evidence: when apps require coordinated tabs and the
+    reported multi-tab mode is not `coordinated` or was not passed, the action
+    is surfaced with a `browser.multi_tab_coordination_required` blocker
+    instead of running.
     Runtime timeline artifacts now expose
     `getSyncularRuntimeTimeline(...)` and
     `SyncularDatabase.runtimeTimeline(...)`, projecting diagnostic snapshots

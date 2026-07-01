@@ -200,6 +200,11 @@ revoked, the plan surfaces a confirmed `force-rebootstrap` action for the
 affected subscription IDs after the app has checked or refreshed permissions.
 Errored bootstrap subscriptions with `sync.not_found` or
 `sync.integrity_rejected` surface as targeted, confirmed rebootstrap actions.
+In browser apps with persistent local databases, pass the deployment
+preflight's `lifecycle.multiTabMode` and set
+`requireMultiTabCoordinationForDestructiveActions: true` so destructive
+actions expose a `browser.multi_tab_coordination_required` blocker when tabs
+cannot be coordinated or the preflight mode was not passed.
 
 Manual reconnect is just a lifecycle start/sync request:
 

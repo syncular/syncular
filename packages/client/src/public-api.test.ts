@@ -26,6 +26,7 @@ import {
   SYNCULAR_WASM_BINARY_FILE,
   SYNCULAR_WASM_GLUE_FILE,
   SyncularCommandHistoryError,
+  SyncularLocalRecoveryBlockedError,
   waitForSyncularLocalVisibility,
 } from './index';
 
@@ -87,6 +88,7 @@ describe('@syncular/client public API', () => {
   it('exports local recovery helpers', () => {
     expect(typeof getSyncularLocalRecoveryPlan).toBe('function');
     expect(typeof runSyncularLocalRecoveryAction).toBe('function');
+    expect(typeof SyncularLocalRecoveryBlockedError).toBe('function');
   });
 
   it('exports the mutation status helper', () => {

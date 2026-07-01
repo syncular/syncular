@@ -1018,6 +1018,11 @@ online propagation, or reconnect behavior can change.
   model: `sync.not_found` and `sync.integrity_rejected` on snapshots with
   errored subscriptions produce a targeted, confirmed `force-rebootstrap`
   action for those subscription IDs.
+- Destructive local recovery actions can now be blocked by browser deployment
+  preflight evidence. Apps can pass `preflight.lifecycle.multiTabMode` and set
+  `requireMultiTabCoordinationForDestructiveActions: true`; when the browser
+  cannot coordinate tabs or the mode was not passed, destructive actions carry
+  a `browser.multi_tab_coordination_required` blocker instead of running.
 - The browser/Hono/WASM local-health test now exercises that plan/action API
   against the real Worker runtime for corrupted subscription state and
   orphaned verified roots, including the confirmation guardrail and successful
@@ -1463,6 +1468,9 @@ online propagation, or reconnect behavior can change.
 - 2026-07-01: Added an unrecoverable-bootstrap local recovery action that turns
   `sync.not_found` / `sync.integrity_rejected` plus errored subscription
   evidence into a targeted, confirmed `force-rebootstrap` action.
+- 2026-07-01: Added opt-in browser multi-tab blockers for destructive local
+  recovery actions so apps can require coordinated tabs before sync-state
+  reset, sign-out cleanup, cache clear, or forced rebootstrap operations run.
 - 2026-06-30: Extended the Hono-backed browser/WASM local-health test so it
   repairs corrupted subscription state and orphaned verified roots through the
   new local recovery plan/action API instead of direct low-level repair calls.
@@ -2012,7 +2020,7 @@ Most recent local-recovery rerun:
 
 - `bun test packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts`
 - `bun --cwd packages/client tsgo`
-- `bunx biome check packages/client/src/local-recovery.ts packages/client/src/local-recovery.test.ts packages/client/README.md apps/docs/content/docs/features/error-handling.mdx apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bunx biome check packages/client/src/local-recovery.ts packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts packages/client/README.md apps/docs/content/docs/features/error-handling.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -2263,8 +2271,12 @@ Most recent mutation-status rerun:
   cached blob bytes under confirmation. Revoked subscription scopes now map to
   confirmed affected-subscription rebootstrap actions. Unrecoverable bootstrap
   resource/integrity failures now map to targeted confirmed rebootstrap actions
-  when the snapshot identifies errored subscription IDs. Remaining work is to
-  decide whether multi-tab recovery needs additional lock/coordination actions.
+  when the snapshot identifies errored subscription IDs. Destructive recovery
+  actions now expose opt-in `browser.multi_tab_coordination_required` blockers
+  when the app requires coordinated tabs and the browser preflight reports a
+  weaker or unknown multi-tab mode. Remaining work is to prove richer recovery
+  coordination under real multi-tab browser suspension/resume, storage locks,
+  shutdown, and restart states.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
   environments users actually build with: Vite, Next/SSR, Bun, Node,

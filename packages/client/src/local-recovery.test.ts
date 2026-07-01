@@ -4,6 +4,7 @@ import {
   getSyncularLocalRecoveryPlan,
   runSyncularLocalRecoveryAction,
   type SyncularLocalRecoveryAction,
+  SyncularLocalRecoveryBlockedError,
   type SyncularLocalRecoveryClient,
   SyncularLocalRecoveryError,
 } from './local-recovery';
@@ -278,6 +279,69 @@ describe('local recovery plan', () => {
       'resetLocalSyncState',
       { subscriptionIds: ['sub-a'], clearSyncedRows: true },
     ]);
+  });
+
+  it('blocks destructive recovery actions when required multi-tab coordination is missing', async () => {
+    const client = new FakeRecoveryClient();
+    const plan = await getSyncularLocalRecoveryPlan(client, {
+      includeResetAction: true,
+      multiTabMode: 'single-open-database-tab',
+      requireMultiTabCoordinationForDestructiveActions: true,
+      resetClearSyncedRows: true,
+    });
+
+    const reset = requiredAction(plan.actions, 'reset-local-sync-state');
+    expect(reset.blockers).toEqual([
+      expect.objectContaining({
+        code: 'browser.multi_tab_coordination_required',
+        recommendedAction: 'coordinateBrowserTabs',
+        details: { multiTabMode: 'single-open-database-tab' },
+      }),
+    ]);
+    await expect(
+      runSyncularLocalRecoveryAction(client, reset, {
+        confirmationText: reset.confirmationText,
+      })
+    ).rejects.toBeInstanceOf(SyncularLocalRecoveryBlockedError);
+    expect(
+      requiredAction(plan.actions, 'export-support-bundle').blockers
+    ).toBeUndefined();
+  });
+
+  it('blocks destructive recovery actions when required multi-tab coordination is unknown', async () => {
+    const client = new FakeRecoveryClient();
+    const plan = await getSyncularLocalRecoveryPlan(client, {
+      includeResetAction: true,
+      requireMultiTabCoordinationForDestructiveActions: true,
+    });
+
+    expect(
+      requiredAction(plan.actions, 'reset-local-sync-state').blockers
+    ).toEqual([
+      expect.objectContaining({
+        code: 'browser.multi_tab_coordination_required',
+        details: { multiTabMode: 'unknown' },
+      }),
+    ]);
+  });
+
+  it('allows destructive recovery actions when required multi-tab coordination is available', async () => {
+    const client = new FakeRecoveryClient();
+    const plan = await getSyncularLocalRecoveryPlan(client, {
+      includeResetAction: true,
+      multiTabMode: 'coordinated',
+      requireMultiTabCoordinationForDestructiveActions: true,
+    });
+
+    const reset = requiredAction(plan.actions, 'reset-local-sync-state');
+    expect(reset.blockers).toBeUndefined();
+    await expect(
+      runSyncularLocalRecoveryAction(client, reset, {
+        confirmationText: reset.confirmationText,
+      })
+    ).resolves.toMatchObject({
+      action: 'reset-local-sync-state',
+    });
   });
 
   it('adds a confirmed sign-out cleanup action only when the local outbox is empty', async () => {
