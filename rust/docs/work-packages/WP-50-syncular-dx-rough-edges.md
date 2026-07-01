@@ -2876,6 +2876,11 @@ Most recent same-client duplicate-tab contention local rerun:
     must still accept a fresh task after the duplicate attempt. This adds a
     bounded same-client browser database contention proof between reload/reopen
     persistence and browser-process restart persistence.
+  - Hosted Checks run
+    <https://github.com/syncular/syncular/actions/runs/28534746069> passed on
+    commit `316955f9`, including `starter-browser-preview`, proving the new
+    duplicate-tab contention path in Chrome plus the full Rust/native package
+    matrix.
 
 Previous Chrome CDP lifecycle-state proof rerun:
 
@@ -4096,18 +4101,19 @@ Most recent mutation-status rerun:
   required real-browser path. Hosted Checks run `28526881709` on commit
   `656b5275` passed the full matrix, including `starter-browser-preview`,
   confirming the local-visibility proof, reload persistence, browser process
-  restart persistence, and all Rust/native packaging lanes are green.
+  restart persistence, and all Rust/native packaging lanes are green. Hosted
+  Checks run `28534746069` on commit `316955f9` passed the full matrix,
+  including `starter-browser-preview`, confirming the bounded same-client
+  duplicate-tab open contention proof between reload/reopen and browser-process
+  restart persistence.
 
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. The immediate
-starter browser-preview blocker is cleared, and production ops readiness is now
+starter browser-preview blocker is cleared, same-client duplicate-tab open
+contention is now covered in hosted Chrome, and production ops readiness is now
 part of release rehearsal when evidence is present or required. Strong
-follow-ups are deeper browser suspension/shutdown lifecycle coverage, canonical
-real-browser lifecycle/recovery contention proofs, and browser/bundler matrix
-execution, because those remain broad DX holes after the first local recovery
-browser proof, upgrade runbook, production-ops runbook, release ops-readiness
-gate, built-preview asset smoke, runtime timeline helper, composed
-support-bundle helper, hosted starter support-bundle failure artifact proof,
-starter support-bundle marker, mutation status helper,
-command timeline evidence chain, and CI browser-smoke enforcement.
+follow-ups are actual browser suspension/shutdown lifecycle coverage,
+quota/eviction and storage-shutdown recovery, concurrent database write
+contention beyond duplicate open, and browser/bundler matrix execution,
+especially Safari, Firefox, private mode, WebViews, and PWAs.
