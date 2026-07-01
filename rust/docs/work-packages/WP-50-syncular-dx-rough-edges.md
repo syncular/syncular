@@ -992,7 +992,7 @@ online propagation, or reconnect behavior can change.
   `@syncular/server/d1`, and the R2 adapter, declares `SYNC_DO`, D1, and R2
   bindings, verifies Wrangler can bundle the Worker without deploy
   credentials, and proves a local request reaches the DO route with those
-  bindings available.
+  bindings available, a tiny D1 query succeeds, and R2 object IO works.
 - The post-publish JavaScript install smoke now runs a release-time optional
   subpath import matrix by default. It installs `@syncular/client`,
   `@syncular/server`, and the Bun-friendly optional peers in a fresh npm
@@ -1655,9 +1655,10 @@ online propagation, or reconnect behavior can change.
   runtime proof. After the Wrangler dry-run bundle/binding check, the smoke
   starts `wrangler dev --local` on a free localhost port, fetches the
   generated Durable Object route, asserts D1/R2 bindings and adapter factories
-  are available, checks the expected response text, and tears down the local
-  Worker process with bounded interrupt/terminate/kill cleanup so the gate
-  cannot hang after a successful request.
+  are available, runs `SELECT 1` through D1, performs a put/head/delete cycle
+  through R2, checks the expected response text, and tears down the local Worker
+  process with bounded interrupt/terminate/kill cleanup so the gate cannot hang
+  after a successful request.
 - 2026-07-01: Made `framework-import-smokes` use a run-specific temporary
   workspace by default so a direct local smoke and a release-rehearsal smoke
   cannot delete each other's generated Next/Vite/Cloudflare app directories.
@@ -2003,7 +2004,7 @@ Most recent framework-import-smoke rerun:
     bundle/binding proof.
   - Passed the local `wrangler dev --local` runtime fetch proof for the
     generated `createSyncWorkerWithDO(...)` route through the `SYNC_DO`, D1,
-    and R2 bindings.
+    and R2 bindings, including a tiny D1 query and R2 put/head/delete cycle.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts --require-vite-browser-runtime`
   - Expected nonzero status locally because Chrome/Chromium is unavailable;
     confirms the required Vite browser-runtime path fails loudly instead of
@@ -2026,7 +2027,7 @@ Most recent release-rehearsal framework-smoke wiring rerun:
 - `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke`
   - Ran version stamp dry-runs, then the default framework import smoke.
   - Passed Next, Vite build/preview, and Cloudflare Durable Object + D1 + R2
-    dry-run/runtime proofs while skipping optional local Chrome execution.
+    dry-run/runtime IO proofs while skipping optional local Chrome execution.
 - `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke --require-framework-vite-browser-runtime`
   - Expected nonzero status locally because the new required Vite
     browser-runtime flag is passed through and no Chrome/Chromium binary is
@@ -2316,12 +2317,13 @@ Most recent mutation-status rerun:
   `@syncular/server/cloudflare`, `@syncular/server/d1`, and the R2 adapter
   through Wrangler dry-run, and starts the generated Worker with local
   `wrangler dev`, proving a real request reaches the
-  `createSyncWorkerWithDO(...)` route through those bindings. Release
-  rehearsal now runs those framework proofs by default before publish dry-runs
-  and can require the Vite browser execution path on Chrome-capable runners.
-  Remaining matrix work is deeper browser/framework execution beyond these
-  proofs, especially real D1 SQL, R2 object IO, Durable Object WebSocket
-  variants, Safari, Firefox, private mode, WebViews, and PWAs.
+  `createSyncWorkerWithDO(...)` route through those bindings, runs a tiny D1
+  query, and performs R2 object IO. Release rehearsal now runs those framework
+  proofs by default before publish dry-runs and can require the Vite browser
+  execution path on Chrome-capable runners. Remaining matrix work is deeper
+  browser/framework execution beyond these proofs, especially full Syncular D1
+  schema operations, R2 blob route flows, Durable Object WebSocket variants,
+  Safari, Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.

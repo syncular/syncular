@@ -844,7 +844,7 @@ type Env = {
 
 export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
   setup(app) {
-    app.get('/syncular-framework-import-smoke', (c) => {
+    app.get('/syncular-framework-import-smoke', async (c) => {
       if (!c.env.SYNC_DO) {
         throw new Error('Durable Object binding was not available');
       }
@@ -870,7 +870,22 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
       if (!d1Dialect || blobStorage.name !== 'r2') {
         throw new Error('Cloudflare adapter factories did not initialize');
       }
-      return c.text('syncular-cloudflare-bindings-ready');
+      const d1Row = await c.env.DB.prepare(
+        'SELECT 1 AS syncular_ready'
+      ).first<{ syncular_ready: number }>();
+      if (d1Row?.syncular_ready !== 1) {
+        throw new Error('D1 runtime query did not return the expected row');
+      }
+      const objectKey = 'syncular-framework-smoke/object.txt';
+      await c.env.BLOBS.put(objectKey, 'syncular-cloudflare-r2-ready', {
+        httpMetadata: { contentType: 'text/plain' },
+      });
+      const objectHead = await c.env.BLOBS.head(objectKey);
+      await c.env.BLOBS.delete(objectKey);
+      if (!objectHead || objectHead.size <= 0) {
+        throw new Error('R2 runtime object IO did not produce object metadata');
+      }
+      return c.text('syncular-cloudflare-runtime-io-ready');
     });
   }
 }
@@ -1041,7 +1056,7 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
   );
   for (const bundleName of bundleNames) {
     const bundle = await Bun.file(join(outDir, bundleName)).text();
-    if (bundle.includes('syncular-cloudflare-bindings-ready')) {
+    if (bundle.includes('syncular-cloudflare-runtime-io-ready')) {
       console.log(
         '[framework-import-smokes] Cloudflare DO/D1/R2 import smoke passed'
       );
@@ -1049,10 +1064,10 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
         appDir,
         wranglerBin,
         route: '/syncular-framework-import-smoke',
-        expectedText: 'syncular-cloudflare-bindings-ready',
+        expectedText: 'syncular-cloudflare-runtime-io-ready',
       });
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1/R2 runtime smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1/R2 runtime IO smoke passed'
       );
       return;
     }

@@ -150,7 +150,8 @@ read-only review:
     `@syncular/server/d1`, and the R2 adapter through Wrangler dry-run, and
     serves the generated Durable Object Worker through local `wrangler dev` to
     verify a real request reaches the `createSyncWorkerWithDO(...)` route
-    through those bindings. WASM glue dynamic imports
+    through those bindings, runs a tiny D1 query, and performs R2 object
+    put/head/delete IO. WASM glue dynamic imports
     include webpack ignore metadata so the Next build stays warning-clean.
     Release rehearsal runs the framework import smoke by default before
     publish dry-runs, with an explicit skip flag for local iteration and an
