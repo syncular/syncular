@@ -2162,7 +2162,16 @@ online propagation, or reconnect behavior can change.
   starter lifecycle Web Lock name with `lockState: "acquired"`. This proves
   the hosted browser path is exercising the same app-facing lock-backed
   foreground resume contract, while leaving true suspension/shutdown and
-  storage-lock contention for deeper browser matrix work.
+  database/recovery lock contention for deeper browser matrix work.
+- 2026-07-01: Extended the starter Chrome/CDP lifecycle path with
+  browser-observed Web Lock contention. The smoke now holds the same starter
+  lifecycle Web Lock through `navigator.locks.request(...)`, dispatches
+  `online`, waits for the starter marker to report `status: "failed"`,
+  `lockState: "timed-out"`, and the configured `10000ms` timeout error, then
+  releases the held lock and verifies a follow-up `online` resume completes.
+  This moves lifecycle lock contention from helper-only coverage into the
+  real-browser path; local execution still awaits a Chrome-capable runner
+  because this machine has no Chrome/Chromium binary.
 - 2026-07-01: Extended the starter Chrome/CDP path with a same-client
   reload/reopen proof. After two-tab propagation, the smoke navigates the
   second tab back through app startup with the same `syncularClientId` and
@@ -2781,9 +2790,10 @@ Most recent browser lifecycle resume helper rerun:
     acquired, creates a task in the first tab, and waits for the second tab to
     observe it through sync/realtime. The Chrome/CDP path now also navigates
     the second tab through a same-client reload/reopen and waits for the task
-    to reappear after app startup, then stops Chrome, starts a fresh Chrome
-    process with the same profile directory and client id, and waits for the
-    task to survive that browser-process boundary.
+    to reappear after app startup, holds the real lifecycle Web Lock and
+    verifies timeout/recovery marker evidence, then stops Chrome, starts a
+    fresh Chrome process with the same profile directory and client id, and
+    waits for the task to survive that browser-process boundary.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -2807,6 +2817,21 @@ Most recent starter two-tab lifecycle coordination rerun:
     lifecycle Web Lock as acquired, then continues through two-tab
     propagation, same-client reload/reopen, and same-profile browser-process
     restart task visibility.
+
+Most recent starter lifecycle Web Lock contention rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-browser-preview-smoke-local-lock-contention bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, built asset checks, and the
+    deterministic browser failure artifact shape and safe-metrics self-check.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available. On browser-capable runners the CDP path now holds
+    the same lifecycle Web Lock used by the starter, dispatches `online`,
+    waits for `lockState: "timed-out"` plus the configured `10000ms` timeout
+    error, releases the held lock, and verifies a follow-up `online` resume
+    completes.
 
 Most recent starter reload/reopen persistence rerun:
 
@@ -3388,10 +3413,13 @@ Most recent mutation-status rerun:
 13. Browser deployment preflight built-preview coverage: first scaffold slice
     is done for production build and preview asset serving, and the smoke now
     has an opt-in Chrome/Chromium CDP path for executing the built page in a
-    real browser. The Checks workflow now enforces that path in a dedicated
-    Chrome-provisioned starter job for starter-relevant PRs and all pushes;
-    remaining work is to observe the hosted runner and decide whether release
-    rehearsal should also require it.
+    real browser. That CDP path now covers lifecycle pause/resume markers,
+    Web Lock acquisition, browser-observed Web Lock timeout/recovery, two-tab
+    propagation, reload/reopen persistence, and same-profile browser-process
+    restart persistence. The Checks workflow now enforces that path in a
+    dedicated Chrome-provisioned starter job for starter-relevant PRs and all
+    pushes; remaining work is to observe the hosted runner and decide whether
+    release rehearsal should also require it.
 
 ## Resolved Decisions
 
@@ -3511,11 +3539,16 @@ Most recent mutation-status rerun:
   directory and waits for the task to survive a fresh browser process.
   The helper now also has an opt-in bounded Web Lock contention path:
   `lock.timeoutMs` aborts a stuck lock request and reports
-  `browser.web_locks_timeout` with `lockState: "timed-out"`. Remaining work
-  is richer browser lifecycle execution: real tab suspension, storage
-  shutdown, quota/eviction, browser-observed storage-lock contention, and
-  deeper recovery coordination for persistent browser databases beyond
-  simulated page lifecycle events and lock-serialized foreground resume.
+  `browser.web_locks_timeout` with `lockState: "timed-out"`, and the
+  Chrome/CDP starter path now holds the real browser lock, observes that
+  timeout marker, releases the lock, and proves the next foreground resume can
+  recover. Remaining work is richer browser lifecycle execution: real tab
+  suspension, storage shutdown, quota/eviction, database/recovery lock
+  contention beyond lifecycle resume, and deeper recovery coordination for
+  persistent browser databases beyond simulated page lifecycle events and
+  lock-serialized foreground resume. Local execution of the new contention
+  branch still needs a Chrome-capable runner; this machine has no
+  Chrome/Chromium binary.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
   and guarded sync-state reset, with a focused Hono/WASM proof for corrupted

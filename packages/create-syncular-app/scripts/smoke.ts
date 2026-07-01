@@ -15,8 +15,9 @@ import { Buffer } from 'node:buffer';
  *    browser and waits for the starter's Syncular health/schema/support lines.
  *    The browser path also proves pagehide/beforeunload pause evidence,
  *    restored-page and online lifecycle resume signals, two-tab
- *    lock-coordinated lifecycle resume, two-tab
- *    propagation, same-client page reload/reopen persistence, and
+ *    lock-coordinated lifecycle resume, browser-observed lifecycle Web Lock
+ *    contention timeout/recovery, two-tab propagation, same-client
+ *    page reload/reopen persistence, and
  *    same-profile browser process restart persistence.
  *    Browser failures write
  *    browser-preview-failure.json with redacted marker state under the smoke
@@ -40,6 +41,7 @@ const packageDir = resolve(join(import.meta.dirname, '..'));
 const repoRoot = resolve(join(packageDir, '../..'));
 const STARTER_LIFECYCLE_RESUME_LOCK_NAME =
   'syncular:create-syncular-app:lifecycle-resume';
+const STARTER_LIFECYCLE_RESUME_LOCK_TIMEOUT_MS = 10_000;
 const keep = process.argv.includes('--keep');
 const requireBrowserPreviewSmoke =
   process.env.SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE === 'required' ||
@@ -428,6 +430,11 @@ async function runBrowserPreviewSmoke(args: {
         args.failureArtifactPath,
         args.failureMetrics
       );
+      await proveStarterLifecycleLockContention({
+        failureMetrics: args.failureMetrics,
+        failureArtifactPath: args.failureArtifactPath,
+        session,
+      });
       const secondTarget = await createChromeTarget(
         chrome.debugPort,
         `${args.origin}/?syncularClientId=web-second`
@@ -1086,11 +1093,175 @@ async function proveStarterBrowserLifecycleResume(
   });
 }
 
+async function proveStarterLifecycleLockContention(args: {
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  failureArtifactPath: string;
+  session: CdpSession;
+}): Promise<void> {
+  const before = await readStarterBrowserProbe(args.session);
+  const holdResult = await holdStarterLifecycleResumeLock(args.session);
+  if (!holdResult.ok) {
+    await writeBrowserPreviewFailureArtifact(
+      args.failureArtifactPath,
+      'lifecycle-lock-contention-setup-failed',
+      before,
+      args.failureMetrics
+    );
+    throw new Error(
+      `Could not hold built preview lifecycle Web Lock (${holdResult.reason}). Failure artifact: ${args.failureArtifactPath}`
+    );
+  }
+
+  let timeoutProbe: BrowserPreviewProbe | null = null;
+  try {
+    await dispatchStarterOnlineEvent(args.session);
+    timeoutProbe = await waitForStarterLifecycleLockTimeout({
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      session: args.session,
+    });
+  } finally {
+    await releaseStarterLifecycleResumeLock(args.session);
+  }
+
+  await dispatchStarterOnlineEvent(args.session);
+  await waitForStarterLifecycleResume({
+    expectedCount: (timeoutProbe ?? before).lifecycleResume.count + 1,
+    expectedReason: 'online',
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    ignoreLifecycleResumeFailure: true,
+    session: args.session,
+    timeoutReason: 'lifecycle-lock-contention-recovery-timeout',
+  });
+}
+
+async function holdStarterLifecycleResumeLock(
+  session: CdpSession
+): Promise<{ ok: true } | { ok: false; reason: string }> {
+  return session.evaluate<
+    { ok: true } | { ok: false; reason: string }
+  >(`(async () => {
+    const lockName = ${JSON.stringify(STARTER_LIFECYCLE_RESUME_LOCK_NAME)};
+    const locks = globalThis.navigator?.locks;
+    if (typeof locks?.request !== 'function') {
+      return { ok: false, reason: 'web-locks-unavailable' };
+    }
+    const existingRelease =
+      globalThis.__syncularStarterHeldLifecycleLockRelease;
+    if (typeof existingRelease === 'function') {
+      existingRelease();
+      try {
+        await globalThis.__syncularStarterHeldLifecycleLockPromise;
+      } catch {
+        // Ignore cleanup errors from a previous setup attempt.
+      }
+    }
+    globalThis.__syncularStarterHeldLifecycleLockAcquired = false;
+    globalThis.__syncularStarterHeldLifecycleLockPromise = locks.request(
+      lockName,
+      { mode: 'exclusive' },
+      () =>
+        new Promise((resolve) => {
+          globalThis.__syncularStarterHeldLifecycleLockAcquired = true;
+          globalThis.__syncularStarterHeldLifecycleLockRelease = () => {
+            globalThis.__syncularStarterHeldLifecycleLockRelease = null;
+            resolve(true);
+          };
+        })
+    );
+    globalThis.__syncularStarterHeldLifecycleLockPromise.catch(() => undefined);
+    const deadline = Date.now() + 5_000;
+    while (Date.now() < deadline) {
+      if (
+        globalThis.__syncularStarterHeldLifecycleLockAcquired === true &&
+        typeof globalThis.__syncularStarterHeldLifecycleLockRelease === 'function'
+      ) {
+        return { ok: true };
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    return { ok: false, reason: 'lock-acquire-timeout' };
+  })()`);
+}
+
+async function releaseStarterLifecycleResumeLock(
+  session: CdpSession
+): Promise<void> {
+  await session.evaluate(`(async () => {
+    const release = globalThis.__syncularStarterHeldLifecycleLockRelease;
+    if (typeof release !== 'function') return true;
+    release();
+    try {
+      await Promise.race([
+        globalThis.__syncularStarterHeldLifecycleLockPromise,
+        new Promise((resolve) => setTimeout(resolve, 1_000)),
+      ]);
+    } catch {
+      // The smoke only needs the lock released; cleanup rejections are nonfatal.
+    }
+    return true;
+  })()`);
+}
+
+async function waitForStarterLifecycleLockTimeout(args: {
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<BrowserPreviewProbe> {
+  const deadline =
+    Date.now() + STARTER_LIFECYCLE_RESUME_LOCK_TIMEOUT_MS + 7_500;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    const unexpectedErrors = probe.errors.filter(
+      (error) => error !== 'lifecycle resume failed'
+    );
+    if (unexpectedErrors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'lifecycle-lock-contention-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview lifecycle lock contention failed: ${unexpectedErrors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    const errorText = probe.lifecycleResume.error ?? '';
+    if (
+      probe.lifecycleResume.status === 'failed' &&
+      probe.lifecycleResume.reason === 'online' &&
+      probe.lifecycleResume.lockName === STARTER_LIFECYCLE_RESUME_LOCK_NAME &&
+      probe.lifecycleResume.lockState === 'timed-out' &&
+      probe.lifecycleResume.lockTimeoutMs ===
+        STARTER_LIFECYCLE_RESUME_LOCK_TIMEOUT_MS &&
+      errorText.includes('Timed out waiting')
+    ) {
+      return probe;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'lifecycle-lock-contention-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview lifecycle Web Lock contention. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
 async function waitForStarterLifecycleResume(args: {
   expectedCount: number;
   expectedReason: string;
   failureArtifactPath: string;
   failureMetrics: BrowserPreviewFailureMetricsInput;
+  ignoreLifecycleResumeFailure?: boolean;
   session: CdpSession;
   timeoutReason: string;
 }): Promise<void> {
@@ -1099,7 +1270,11 @@ async function waitForStarterLifecycleResume(args: {
   while (Date.now() < deadline) {
     const probe = await readStarterBrowserProbe(args.session);
     lastProbe = probe;
-    if (probe.errors.length > 0) {
+    const errors =
+      args.ignoreLifecycleResumeFailure === true
+        ? probe.errors.filter((error) => error !== 'lifecycle resume failed')
+        : probe.errors;
+    if (errors.length > 0) {
       await writeBrowserPreviewFailureArtifact(
         args.failureArtifactPath,
         'lifecycle-resume-errors',
@@ -1107,7 +1282,7 @@ async function waitForStarterLifecycleResume(args: {
         args.failureMetrics
       );
       throw new Error(
-        `Built preview lifecycle resume failed: ${probe.errors.join(
+        `Built preview lifecycle resume failed: ${errors.join(
           ', '
         )}. Failure artifact: ${args.failureArtifactPath}`
       );
