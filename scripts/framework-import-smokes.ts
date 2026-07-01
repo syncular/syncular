@@ -2,6 +2,7 @@
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { mkdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { type AddressInfo, createServer } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 
 const repoRoot = resolve(join(import.meta.dirname, '..'));
@@ -32,6 +33,163 @@ async function run(
       reject(new Error(`${command} exited with status ${code ?? 'unknown'}`));
     });
   });
+}
+
+async function getFreePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolvePromise, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', () => resolvePromise());
+  });
+  const address = server.address();
+  await new Promise<void>((resolvePromise, reject) => {
+    server.close((error) => (error ? reject(error) : resolvePromise()));
+  });
+  if (typeof address === 'object' && address != null) {
+    return (address as AddressInfo).port;
+  }
+  throw new Error('Could not allocate a free localhost port');
+}
+
+async function runLocalWorkerRuntimeProbe(args: {
+  appDir: string;
+  wranglerBin: string;
+  route: string;
+  expectedText: string;
+}): Promise<void> {
+  const port = await getFreePort();
+  const output: string[] = [];
+  let exited: { code: number | null; signal: NodeJS.Signals | null } | null =
+    null;
+  const child = spawn(
+    'node',
+    [
+      args.wranglerBin,
+      'dev',
+      'src/worker.ts',
+      '--local',
+      '--port',
+      String(port),
+      '--ip',
+      '127.0.0.1',
+      '--name',
+      'syncular-framework-import-smoke',
+      '--compatibility-date',
+      '2026-01-01',
+      '--show-interactive-dev-session',
+      'false',
+      '--log-level',
+      'error',
+    ],
+    {
+      cwd: args.appDir,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: {
+        ...process.env,
+        WRANGLER_SEND_METRICS: 'false',
+      },
+    }
+  );
+  child.stdout?.on('data', (chunk) =>
+    appendProcessOutput(output, 'stdout', chunk)
+  );
+  child.stderr?.on('data', (chunk) =>
+    appendProcessOutput(output, 'stderr', chunk)
+  );
+  child.on('exit', (code, signal) => {
+    exited = { code, signal };
+  });
+
+  try {
+    await waitForHttpText({
+      url: `http://127.0.0.1:${port}${args.route}`,
+      expectedText: args.expectedText,
+      output,
+      getExit: () => exited,
+    });
+  } finally {
+    await stopProcess(child);
+  }
+}
+
+function appendProcessOutput(
+  output: string[],
+  stream: 'stdout' | 'stderr',
+  chunk: unknown
+) {
+  output.push(`[${stream}] ${String(chunk)}`);
+  while (output.join('').length > 12_000) {
+    output.shift();
+  }
+}
+
+async function waitForHttpText(args: {
+  url: string;
+  expectedText: string;
+  output: string[];
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<void> {
+  const deadline = Date.now() + 30_000;
+  let lastError = 'no request attempted';
+  while (Date.now() < deadline) {
+    const exit = args.getExit();
+    if (exit) {
+      throw new Error(
+        `Cloudflare Worker runtime smoke exited before serving ${args.url}: code=${
+          exit.code ?? 'null'
+        } signal=${exit.signal ?? 'null'}\n${args.output.join('')}`
+      );
+    }
+    try {
+      const text = await fetchTextWithTimeout(args.url, 1_000);
+      if (text.includes(args.expectedText)) return;
+      lastError = `unexpected response body: ${text.slice(0, 200)}`;
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    await Bun.sleep(250);
+  }
+  throw new Error(
+    `Timed out waiting for Cloudflare Worker runtime smoke at ${args.url}: ${lastError}\n${args.output.join(
+      ''
+    )}`
+  );
+}
+
+async function fetchTextWithTimeout(url: string, timeoutMs: number) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const response = await fetch(url, { signal: controller.signal });
+    return await response.text();
+  } finally {
+    clearTimeout(timeout);
+  }
+}
+
+async function stopProcess(child: ReturnType<typeof spawn>): Promise<void> {
+  if (child.exitCode != null || child.signalCode != null) return;
+  const exitPromise = new Promise<void>((resolvePromise) => {
+    child.once('exit', () => resolvePromise());
+  });
+  child.kill('SIGINT');
+  const interrupted = await Promise.race([
+    exitPromise.then(() => true),
+    Bun.sleep(2_000).then(() => false),
+  ]);
+  if (!interrupted && child.exitCode == null && child.signalCode == null) {
+    child.kill('SIGTERM');
+  }
+  const terminated = await Promise.race([
+    exitPromise.then(() => true),
+    Bun.sleep(2_000).then(() => false),
+  ]);
+  if (!terminated && child.exitCode == null && child.signalCode == null) {
+    child.kill('SIGKILL');
+    await Promise.race([exitPromise, Bun.sleep(2_000)]);
+  }
+  child.stdout?.destroy();
+  child.stderr?.destroy();
 }
 
 async function linkPackage(appDir: string, name: string, target: string) {
@@ -355,12 +513,13 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
   await linkSyncularServerWorkspacePackages(appDir);
   await linkPackage(appDir, 'hono', workspaceDependencyPath('hono'));
   await linkPackage(appDir, 'wrangler', workspaceDependencyPath('wrangler'));
+  const wranglerBin = join(appDir, 'node_modules/wrangler/bin/wrangler.js');
 
   const outDir = join(appDir, 'dist');
   await run(
     'node',
     [
-      join(appDir, 'node_modules/wrangler/bin/wrangler.js'),
+      wranglerBin,
       'deploy',
       'src/worker.ts',
       '--dry-run',
@@ -387,6 +546,15 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
     if (bundle.includes('syncular-cloudflare-root-import-ready')) {
       console.log(
         '[framework-import-smokes] Cloudflare Worker root import smoke passed'
+      );
+      await runLocalWorkerRuntimeProbe({
+        appDir,
+        wranglerBin,
+        route: '/syncular-framework-import-smoke',
+        expectedText: 'syncular-cloudflare-root-import-ready',
+      });
+      console.log(
+        '[framework-import-smokes] Cloudflare Worker runtime smoke passed'
       );
       return;
     }

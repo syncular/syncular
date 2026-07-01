@@ -1622,6 +1622,12 @@ online propagation, or reconnect behavior can change.
   registers a tiny `createSyncWorker(...)` route, disables Wrangler telemetry
   for the local smoke, and asserts the bundled Worker contains the expected
   Syncular marker.
+- 2026-07-01: Extended the Cloudflare framework smoke from build-only to
+  runtime proof. After the Wrangler dry-run bundle check, the smoke starts
+  `wrangler dev --local` on a free localhost port, fetches the generated
+  `createSyncWorker(...)` route, asserts the expected response text, and
+  tears down the local Worker process with bounded interrupt/terminate/kill
+  cleanup so the gate cannot hang after a successful request.
 - 2026-07-01: Made `framework-import-smokes` use a run-specific temporary
   workspace by default so a direct local smoke and a release-rehearsal smoke
   cannot delete each other's generated Next/Vite/Cloudflare app directories.
@@ -1952,8 +1958,16 @@ Most recent native-sqlite release-policy docs rerun:
 
 Most recent framework-import-smoke rerun:
 
-- `bunx biome check scripts/framework-import-smokes.ts package.json`
-- `bun run framework-import-smokes`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check scripts/framework-import-smokes.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/framework-import-smokes.ts`
+  - Passed the Next 16 SSR production build proof.
+  - Passed the Vite 8 browser production build proof.
+  - Passed the Wrangler dry-run Cloudflare Worker bundle proof.
+  - Passed the local `wrangler dev --local` runtime fetch proof for the
+    generated `createSyncWorker(...)` route.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs --skip-fresh-app-smokes --skip-docs-stale-check --skip-starter-smoke`
+  - Confirmed release rehearsal still runs the framework smoke by default and
+    returns cleanly after the new local Cloudflare Worker runtime probe.
 - `bun run docs:stale-check`
 - `git diff --check`
 
@@ -2242,13 +2256,14 @@ Most recent mutation-status rerun:
   checks, a Next 16 production-build smoke that imports the client/server
   roots from source and verifies the WASM glue dynamic import path is
   warning-clean under webpack, and a Vite 8 browser production-build smoke
-  that follows browser-conditioned package exports for the client root, and a
-  Wrangler dry-run Cloudflare Worker build smoke for
-  `@syncular/server/cloudflare`. Release rehearsal now runs those framework
-  build proofs by default before publish dry-runs. Remaining matrix work is
-  real browser/framework execution beyond these build proofs, especially Vite
-  runtime, Cloudflare runtime, Safari, Firefox, private mode, WebViews, and
-  PWAs.
+  that follows browser-conditioned package exports for the client root. The
+  Cloudflare smoke now bundles `@syncular/server/cloudflare` through Wrangler
+  dry-run and then starts the generated Worker with local `wrangler dev`,
+  proving a real request reaches the `createSyncWorker(...)` route. Release
+  rehearsal now runs those framework proofs by default before publish dry-runs.
+  Remaining matrix work is real browser/framework execution beyond these
+  proofs, especially Vite runtime, deeper Cloudflare binding/Durable Object
+  variants, Safari, Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
