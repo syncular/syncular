@@ -11,6 +11,7 @@ import {
   type SyncularBrowserLifecycleResumeLockState,
   type SyncularBrowserSupportPolicyEvaluation,
   type SyncularClientStatus,
+  type SyncularDiagnosticEvent,
   type SyncularSchemaReadinessResult,
   type SyncularSupportBundle,
 } from '@syncular/client';
@@ -22,6 +23,7 @@ import {
   type AppSyncClient,
   appActorId,
   openAppClient,
+  type StarterOpenPhase,
   syncularGeneratedRequiredRuntimeFeatures,
   syncularStarterRuntimeArtifacts,
   type Task,
@@ -55,6 +57,15 @@ type StarterTimelinePreview = {
   realtimeStatus: 'pending' | 'connected';
   schemaReadinessMs: number | null;
   supportBundleExportMs: number | null;
+};
+
+type StarterOpenPreview = {
+  diagnosticCode: string | null;
+  diagnosticCount: number;
+  diagnosticLevel: string | null;
+  diagnosticSource: string | null;
+  error: string | null;
+  phase: StarterOpenPhase;
 };
 
 type DeploymentPreflightPreview = {
@@ -125,6 +136,15 @@ const initialStarterTimeline: StarterTimelinePreview = {
   supportBundleExportMs: null,
 };
 
+const initialStarterOpen: StarterOpenPreview = {
+  diagnosticCode: null,
+  diagnosticCount: 0,
+  diagnosticLevel: null,
+  diagnosticSource: null,
+  error: null,
+  phase: 'idle',
+};
+
 const appStartedAtMs = performance.now();
 
 // One hook set, bound to this app's database schema.
@@ -149,6 +169,8 @@ export function App() {
   const [lifecycleResume, setLifecycleResume] =
     useState<LifecycleResumePreview>(initialLifecycleResume);
   const [openError, setOpenError] = useState<string | null>(null);
+  const [starterOpen, setStarterOpen] =
+    useState<StarterOpenPreview>(initialStarterOpen);
   const [starterTimeline, setStarterTimeline] =
     useState<StarterTimelinePreview>(initialStarterTimeline);
 
@@ -156,8 +178,28 @@ export function App() {
     let disposed = false;
     let opened: AppSyncClient | null = null;
     let lifecycleResume: SyncularBrowserLifecycleResumeController | null = null;
+    const reportPhase = (phase: StarterOpenPhase) => {
+      if (!disposed) {
+        setStarterOpen((current) => ({ ...current, error: null, phase }));
+      }
+    };
+    const reportDiagnostic = (event: SyncularDiagnosticEvent) => {
+      console.info('[syncular-starter]', event.source, event.code);
+      if (!disposed) {
+        setStarterOpen((current) => ({
+          ...current,
+          diagnosticCode: event.code,
+          diagnosticCount: current.diagnosticCount + 1,
+          diagnosticLevel: event.level,
+          diagnosticSource: event.source,
+        }));
+      }
+    };
 
-    void openAppClient()
+    void openAppClient({
+      onDiagnostic: reportDiagnostic,
+      onPhase: reportPhase,
+    })
       .then((nextClient) => {
         if (disposed) {
           void nextClient.close().catch(() => undefined);
@@ -234,9 +276,24 @@ export function App() {
           databaseOpenMs: elapsedSince(appStartedAtMs),
         }));
         setClient(nextClient);
+        void nextClient.start().catch((error) => {
+          if (!disposed) {
+            setOpenError(errorMessage(error));
+            setStarterOpen((current) => ({
+              ...current,
+              error: errorMessage(error),
+            }));
+          }
+        });
       })
       .catch((error) => {
-        if (!disposed) setOpenError(errorMessage(error));
+        if (!disposed) {
+          setOpenError(errorMessage(error));
+          setStarterOpen((current) => ({
+            ...current,
+            error: errorMessage(error),
+          }));
+        }
       });
 
     return () => {
@@ -252,6 +309,7 @@ export function App() {
         <p className="eyebrow">Syncular</p>
         <h1>Local-first tasks</h1>
       </header>
+      <StarterOpenMarker starterOpen={starterOpen} />
 
       {openError ? <p className="error-line">{openError}</p> : null}
 
@@ -270,6 +328,30 @@ export function App() {
         )}
       </section>
     </main>
+  );
+}
+
+function StarterOpenMarker({
+  starterOpen,
+}: {
+  starterOpen: StarterOpenPreview;
+}) {
+  return (
+    <span
+      data-syncular-starter-open-diagnostic-code={
+        starterOpen.diagnosticCode ?? ''
+      }
+      data-syncular-starter-open-diagnostic-count={starterOpen.diagnosticCount}
+      data-syncular-starter-open-diagnostic-level={
+        starterOpen.diagnosticLevel ?? ''
+      }
+      data-syncular-starter-open-diagnostic-source={
+        starterOpen.diagnosticSource ?? ''
+      }
+      data-syncular-starter-open-error={starterOpen.error ?? ''}
+      data-syncular-starter-open-phase={starterOpen.phase}
+      hidden
+    />
   );
 }
 

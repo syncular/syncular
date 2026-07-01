@@ -1,5 +1,6 @@
 import {
   getSyncularBrowserDeploymentPreflight,
+  type SyncularDiagnosticEvent,
   type SyncularRuntimeArtifactCandidate,
 } from '@syncular/client';
 import SyncularWorker from '@syncular/client/worker?worker';
@@ -29,6 +30,13 @@ export {
 
 /** The managed client surface that `@syncular/client/react` consumes. */
 export type AppSyncClient = SyncularAppDatabase;
+
+export type StarterOpenPhase = 'idle' | 'preflight' | 'database' | 'ready';
+
+export interface OpenAppClientOptions {
+  onDiagnostic?: (event: SyncularDiagnosticEvent) => void;
+  onPhase?: (phase: StarterOpenPhase) => void;
+}
 
 /**
  * Demo auth: the starter server accepts this static token and maps it to a
@@ -66,16 +74,19 @@ function currentClientId(): string {
 
 /**
  * Opens the local database (SQLite persisted in IndexedDB). The generated
- * factory installs the app schema, registers the default subscriptions, and
- * starts the sync lifecycle (HTTP sync + WebSocket realtime) before
- * resolving, so the returned client is ready for the React hooks.
+ * factory installs the app schema and registers the default subscriptions
+ * before resolving. The React app starts the sync lifecycle after the local
+ * database is mounted so first paint is not blocked on network/realtime work.
  */
-export async function openAppClient(): Promise<AppSyncClient> {
+export async function openAppClient(
+  options: OpenAppClientOptions = {}
+): Promise<AppSyncClient> {
   const clientId = currentClientId();
   const fileName =
     clientId === defaultClientId
       ? 'syncular-app-v1.sqlite'
       : `syncular-app-v1-${clientId}.sqlite`;
+  options.onPhase?.('preflight');
   const preflight = await getSyncularBrowserDeploymentPreflight({
     requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
     runtimeArtifacts: syncularStarterRuntimeArtifacts,
@@ -91,6 +102,7 @@ export async function openAppClient(): Promise<AppSyncClient> {
     );
   }
 
+  options.onPhase?.('database');
   const database = await createSyncularAppDatabase({
     config: {
       baseUrl: syncBaseUrl,
@@ -102,9 +114,11 @@ export async function openAppClient(): Promise<AppSyncClient> {
     worker: createSyncularStarterWorker,
     runtimeArtifacts: syncularStarterRuntimeArtifacts,
     requestTimeoutMs: 15_000,
+    lifecycle: { autoStart: false },
     getHeaders: async () => ({
       authorization: `Bearer ${appToken}`,
     }),
+    diagnostics: options.onDiagnostic,
     realtime: {
       params: { token: appToken },
       initialReconnectDelayMs: 500,
@@ -112,5 +126,6 @@ export async function openAppClient(): Promise<AppSyncClient> {
     },
   });
 
+  options.onPhase?.('ready');
   return database;
 }

@@ -792,6 +792,14 @@ type BrowserPreviewProbe = {
     schemaReadinessMs: number | null;
     supportBundleExportMs: number | null;
   };
+  starterOpen: {
+    diagnosticCode: string | null;
+    diagnosticCount: number;
+    diagnosticLevel: string | null;
+    diagnosticSource: string | null;
+    error: string | null;
+    phase: string | null;
+  };
   textExcerpt: string;
 };
 
@@ -946,6 +954,13 @@ async function readStarterBrowserProbe(
     const realtimeStatus = starterTimeline?.getAttribute('data-syncular-starter-realtime-status') ?? null;
     const schemaReadinessMs = readStarterTimelineMs('data-syncular-starter-schema-readiness-ms');
     const supportBundleExportMs = readStarterTimelineMs('data-syncular-starter-support-bundle-export-ms');
+    const starterOpen = document.querySelector('[data-syncular-starter-open-phase]');
+    const starterOpenDiagnosticCount = Number(starterOpen?.getAttribute('data-syncular-starter-open-diagnostic-count') ?? 0);
+    const starterOpenDiagnosticCode = starterOpen?.getAttribute('data-syncular-starter-open-diagnostic-code') ?? null;
+    const starterOpenDiagnosticLevel = starterOpen?.getAttribute('data-syncular-starter-open-diagnostic-level') ?? null;
+    const starterOpenDiagnosticSource = starterOpen?.getAttribute('data-syncular-starter-open-diagnostic-source') ?? null;
+    const starterOpenError = starterOpen?.getAttribute('data-syncular-starter-open-error') ?? null;
+    const starterOpenPhase = starterOpen?.getAttribute('data-syncular-starter-open-phase') ?? null;
     const durableHealthLine = text.includes('indexedDb durable');
     const schemaLine = text.includes('schema v');
     const preflightFailure = text.includes('Syncular browser preflight failed');
@@ -1100,6 +1115,14 @@ async function readStarterBrowserProbe(
         realtimeStatus,
         schemaReadinessMs,
         supportBundleExportMs,
+      },
+      starterOpen: {
+        diagnosticCode: starterOpenDiagnosticCode === '' ? null : starterOpenDiagnosticCode,
+        diagnosticCount: starterOpenDiagnosticCount,
+        diagnosticLevel: starterOpenDiagnosticLevel === '' ? null : starterOpenDiagnosticLevel,
+        diagnosticSource: starterOpenDiagnosticSource === '' ? null : starterOpenDiagnosticSource,
+        error: starterOpenError === '' ? null : starterOpenError,
+        phase: starterOpenPhase,
       },
       textExcerpt: text.slice(0, 4000),
     };
@@ -2031,6 +2054,14 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         schemaReadinessMs: 2,
         supportBundleExportMs: 4,
       },
+      starterOpen: {
+        diagnosticCode: 'sync.syncOnce.completed',
+        diagnosticCount: 1,
+        diagnosticLevel: 'info',
+        diagnosticSource: 'sync',
+        error: null,
+        phase: 'ready',
+      },
       textExcerpt:
         'Syncular support bundle failed after redacted export check.',
     },
@@ -2154,11 +2185,40 @@ function assertBrowserPreviewProbeShape(
   assertBrowserPreviewLifecycleResumeShape(probe.lifecycleResume, path);
   assertBrowserPreviewLifecyclePauseShape(probe.lifecyclePause, path);
   assertBrowserPreviewStarterTimelineShape(probe.starterTimeline, path);
+  assertBrowserPreviewStarterOpenShape(probe.starterOpen, path);
   if (
     typeof probe.textExcerpt !== 'string' ||
     probe.textExcerpt.length > 4000
   ) {
     throw new Error(`${path} probe.textExcerpt was not a bounded string`);
+  }
+}
+
+function assertBrowserPreviewStarterOpenShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.starterOpen was not a JSON object`);
+  }
+  if (
+    !isNonNegativeFiniteNumber(value.diagnosticCount) ||
+    !Number.isInteger(value.diagnosticCount)
+  ) {
+    throw new Error(
+      `${path} probe.starterOpen.diagnosticCount was not a non-negative integer`
+    );
+  }
+  for (const key of [
+    'diagnosticCode',
+    'diagnosticLevel',
+    'diagnosticSource',
+    'error',
+    'phase',
+  ] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(`${path} probe.starterOpen.${key} was not nullable text`);
+    }
   }
 }
 
@@ -2673,6 +2733,31 @@ class CdpSession {
     }
 
     this.#resolveEventWaiters(message);
+
+    if (message.method === 'Runtime.consoleAPICalled') {
+      const params = message.params as
+        | {
+            args?: Array<{
+              description?: string;
+              type?: string;
+              value?: unknown;
+            }>;
+            type?: string;
+          }
+        | undefined;
+      const text = (params?.args ?? [])
+        .map((arg) => {
+          if (typeof arg.value === 'string') return arg.value;
+          if (arg.value !== undefined) return JSON.stringify(arg.value);
+          return arg.description ?? arg.type ?? '';
+        })
+        .filter(Boolean)
+        .join(' ');
+      if (text.includes('[syncular-starter]')) {
+        log(`browser console ${params?.type ?? 'log'}: ${text}`);
+      }
+      return;
+    }
 
     if (message.method === 'Runtime.exceptionThrown') {
       const params = message.params as

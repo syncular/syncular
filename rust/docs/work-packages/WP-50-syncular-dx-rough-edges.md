@@ -3799,15 +3799,24 @@ Most recent mutation-status rerun:
   navigation window, so the harness now creates Chrome targets at
   `about:blank`, attaches/enables CDP first, navigates via `Page.navigate`,
   waits for `Page.loadEventFired`, and only then starts readiness probes.
-  Remaining depth is observing the next hosted
-  browser/Cloudflare artifacts and deciding whether future hosted artifact
-  uploads need richer Console/Fleet orchestration.
+  Hosted run `28520501695` then showed the built page and static markers were
+  present, server-side sync/realtime had started, and every non-browser job was
+  green, but the UI stayed on "Opening local database..." until the next CDP
+  readiness probe timed out. The starter now opens the durable local database,
+  installs schema/subscriptions, renders the local-first UI, and starts sync in
+  the background instead of blocking first paint on lifecycle bootstrap/realtime.
+  It also records a hidden `starterOpen` phase/diagnostic marker and mirrors
+  `[syncular-starter]` diagnostics into the Chrome/CDP log so the next hosted
+  artifact can distinguish local open, background lifecycle, and page-thread
+  starvation failures without raw browser inspection. Remaining depth is
+  observing the next hosted browser/Cloudflare artifacts and deciding whether
+  future hosted artifact uploads need richer Console/Fleet orchestration.
 
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. Strong candidates
-are observing the hosted starter browser-preview job after the CDP timeout
-harness hardening, deeper browser
+are observing the hosted starter browser-preview job after local-first first
+paint/background-sync hardening, deeper browser
 suspension/shutdown lifecycle coverage, canonical real-browser support-bundle
 failure artifacts,
 browser/bundler matrix execution, or automating production-ops checks, because
