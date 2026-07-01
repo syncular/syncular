@@ -1832,6 +1832,11 @@ online propagation, or reconnect behavior can change.
   marker booleans, support-bundle counts, redaction state, issue/request-id
   counts, and a bounded text excerpt so hosted Chrome failures produce
   inspectable support evidence.
+- 2026-07-01: Added a deterministic starter smoke self-check for the
+  `browser-preview-failure.json` contract. The normal scaffold smoke now
+  writes, reads, validates, and removes a synthetic redacted failure artifact,
+  so non-browser runners prove the artifact shape even when Chrome/CDP is
+  skipped.
 - 2026-07-01: Made the starter browser-preview Checks job preserve the smoke
   work dir in `.context/starter-browser-preview-smoke` and upload
   `browser-preview-failure.json` on job failure, so hosted Chrome readiness
@@ -2062,18 +2067,22 @@ Most recent starter support-bundle artifact rerun:
 
 Most recent starter browser-failure artifact rerun:
 
-- `bunx biome check packages/create-syncular-app/scripts/smoke.ts`
-- `bun --cwd packages/create-syncular-app tsgo`
-- `ruby -e 'require "yaml"; YAML.load_file(".github/workflows/checks.yml"); puts "workflow yaml ok"'`
-- `SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-browser-preview-smoke-local bun --cwd packages/create-syncular-app smoke`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts rust/docs/QUALITY_GATES.md rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-browser-preview-smoke-local bun --cwd packages/create-syncular-app smoke`
   - Passed dev server health/page/module/preflight transform checks.
   - Passed Vite production build, preview serving, and built asset checks.
+  - Passed the deterministic browser failure artifact shape self-check.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
-    binary was available. The artifact writer runs on browser-capable runners
-    when the page reports health/support-bundle failures or readiness times
-    out; this rerun also proved configured smoke work dirs resolve under the
-    repo root, matching the Checks upload path.
-- `bun run docs:stale-check`
+    binary was available. The real failure artifact writer runs on
+    browser-capable runners when the page reports health/support-bundle
+    failures or readiness times out; this rerun also proved configured smoke
+    work dirs resolve under the repo root, matching the Checks upload path.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-browser-preview-smoke-local-required bun --cwd packages/create-syncular-app smoke --require-browser-preview`
+  - Failed locally only at the required browser step because no
+    Chrome/Chromium binary was available, after the same build, preview asset
+    checks, and browser failure artifact shape self-check passed.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
 
 Most recent production-ops docs rerun:
@@ -2503,9 +2512,10 @@ Most recent mutation-status rerun:
   asserts the production build contains it; the Chrome/CDP smoke waits for the
   same marker when a browser is available. That browser path now writes a
   redacted `browser-preview-failure.json` artifact on readiness timeout or
-  page-reported health/support-bundle failures, and the Checks job uploads that
-  JSON on failure from a predictable smoke work directory. Remaining work is to
-  observe the hosted Chrome job for this proof and decide whether server
+  page-reported health/support-bundle failures, the normal scaffold smoke
+  self-checks the artifact shape without Chrome, and the Checks job uploads
+  that JSON on failure from a predictable smoke work directory. Remaining work
+  is to observe the hosted Chrome job for this proof and decide whether server
   Console/Fleet should ingest the same artifact shape.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,

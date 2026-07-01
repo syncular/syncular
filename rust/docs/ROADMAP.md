@@ -188,7 +188,9 @@ read-only review:
     redacted support-bundle summary after opening the database, and the
     scaffold smoke asserts that production assets contain the support-bundle
     marker plus waits for redacted support-bundle DOM evidence in the
-    Chrome/CDP preview path when a browser is available. Browser pages can now
+    Chrome/CDP preview path when a browser is available. The same smoke
+    self-checks the redacted browser failure artifact shape even when no
+    browser is installed. Browser pages can now
     install `installSyncularBrowserLifecycleResume(...)` to coalesce
     `visibilitychange`, `pageshow`, and `online` signals into the managed
     `resumeFromBackground()` catch-up path, and the starter installs it after
@@ -311,9 +313,10 @@ read-only review:
     the build/preview asset path and skipped the browser execution because no
     Chrome/Chromium binary was installed. Browser readiness failures now write
     a redacted `browser-preview-failure.json` artifact with health/schema and
-    support-bundle marker state under the smoke work dir, and the hosted
-    starter browser-preview job uploads that JSON on failure from a predictable
-    `.context/starter-browser-preview-smoke` directory.
+    support-bundle marker state under the smoke work dir, the normal scaffold
+    smoke self-checks that artifact shape without requiring Chrome, and the
+    hosted starter browser-preview job uploads that JSON on failure from a
+    predictable `.context/starter-browser-preview-smoke` directory.
 - `[x]` [`WP-49 Client API Hardening`](work-packages/WP-49-client-api-hardening.md)
   - Accepted. The Rust-client-vs-JS-client review is now tracked as a concrete
     hardening package: queued `sync()` callers wait for their requested

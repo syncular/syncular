@@ -69,7 +69,8 @@ until the full browser Worker/WASM suite is green on Linux.
 - Starter/browser-deploy changes:
   run `bun --cwd packages/create-syncular-app smoke`. The scaffold smoke boots
   the dev server, builds the app, serves Vite preview, verifies built assets,
-  and runs the real-browser preview check when Chrome/Chromium is available.
+  self-checks the browser failure artifact shape, and runs the real-browser
+  preview check when Chrome/Chromium is available.
   On a browser-capable CI runner, set
   `SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required` so missing Chrome fails instead
   of skipping the browser execution.

@@ -16,7 +16,8 @@ import { Buffer } from 'node:buffer';
  *    The browser path also proves restored-page and online lifecycle resume
  *    signals plus two-tab propagation. Browser failures write
  *    browser-preview-failure.json with redacted marker state under the smoke
- *    work dir.
+ *    work dir. The normal smoke also self-checks that artifact shape so
+ *    non-browser runners keep the failure contract covered.
  *    Set SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required to fail when no browser
  *    is available.
  *
@@ -406,6 +407,12 @@ type BrowserPreviewProbe = {
   textExcerpt: string;
 };
 
+type BrowserPreviewFailureArtifact = {
+  generatedAt: string;
+  reason: string;
+  probe: BrowserPreviewProbe | null;
+};
+
 async function readStarterBrowserProbe(
   session: CdpSession
 ): Promise<BrowserPreviewProbe> {
@@ -649,19 +656,174 @@ async function writeBrowserPreviewFailureArtifact(
   reason: string,
   probe: BrowserPreviewProbe | null
 ): Promise<void> {
-  await writeFile(
-    path,
-    `${JSON.stringify(
-      {
-        generatedAt: new Date().toISOString(),
-        reason,
-        probe,
-      },
-      null,
-      2
-    )}\n`,
-    'utf8'
-  );
+  const artifact: BrowserPreviewFailureArtifact = {
+    generatedAt: new Date().toISOString(),
+    reason,
+    probe,
+  };
+  assertBrowserPreviewFailureArtifactShape(artifact, path);
+  await writeFile(path, `${JSON.stringify(artifact, null, 2)}\n`, 'utf8');
+}
+
+async function verifyBrowserPreviewFailureArtifactSelfCheck(
+  workDir: string
+): Promise<void> {
+  const path = join(workDir, 'browser-preview-failure.self-check.json');
+  await writeBrowserPreviewFailureArtifact(path, 'artifact-self-check', {
+    ready: false,
+    errors: ['support bundle export failed'],
+    markers: {
+      durableHealthLine: true,
+      schemaLine: true,
+      preflightFailure: false,
+      databaseOpening: false,
+    },
+    supportBundle: {
+      status: 'failed',
+      redacted: 'true',
+      sectionCount: 4,
+      issueCount: 1,
+      requestIdCount: 0,
+      sectionErrorCount: 1,
+    },
+    lifecycleResume: {
+      status: 'complete',
+      count: 2,
+      reason: 'online',
+      error: null,
+    },
+    textExcerpt: 'Syncular support bundle failed after redacted export check.',
+  });
+
+  const artifact = JSON.parse(await readFile(path, 'utf8')) as unknown;
+  assertBrowserPreviewFailureArtifactShape(artifact, path);
+  await rm(path, { force: true });
+  log('browser failure artifact shape check passed');
+}
+
+function assertBrowserPreviewFailureArtifactShape(
+  artifact: unknown,
+  path: string
+): asserts artifact is BrowserPreviewFailureArtifact {
+  if (!isRecord(artifact)) {
+    throw new Error(`${path} did not contain a JSON object`);
+  }
+
+  if (
+    typeof artifact.generatedAt !== 'string' ||
+    Number.isNaN(Date.parse(artifact.generatedAt))
+  ) {
+    throw new Error(`${path} had an invalid generatedAt value`);
+  }
+  if (
+    typeof artifact.reason !== 'string' ||
+    artifact.reason.trim().length === 0
+  ) {
+    throw new Error(`${path} had an invalid reason value`);
+  }
+  if (artifact.probe !== null) {
+    assertBrowserPreviewProbeShape(artifact.probe, path);
+  }
+}
+
+function assertBrowserPreviewProbeShape(
+  probe: unknown,
+  path: string
+): asserts probe is BrowserPreviewProbe {
+  if (!isRecord(probe)) {
+    throw new Error(`${path} probe was not a JSON object`);
+  }
+  if (typeof probe.ready !== 'boolean') {
+    throw new Error(`${path} probe.ready was not a boolean`);
+  }
+  if (
+    !Array.isArray(probe.errors) ||
+    probe.errors.some((error) => typeof error !== 'string')
+  ) {
+    throw new Error(`${path} probe.errors was not a string array`);
+  }
+  assertBrowserPreviewMarkersShape(probe.markers, path);
+  assertBrowserPreviewSupportBundleShape(probe.supportBundle, path);
+  assertBrowserPreviewLifecycleResumeShape(probe.lifecycleResume, path);
+  if (
+    typeof probe.textExcerpt !== 'string' ||
+    probe.textExcerpt.length > 4000
+  ) {
+    throw new Error(`${path} probe.textExcerpt was not a bounded string`);
+  }
+}
+
+function assertBrowserPreviewMarkersShape(value: unknown, path: string): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.markers was not a JSON object`);
+  }
+  for (const key of [
+    'durableHealthLine',
+    'schemaLine',
+    'preflightFailure',
+    'databaseOpening',
+  ] as const) {
+    if (typeof value[key] !== 'boolean') {
+      throw new Error(`${path} probe.markers.${key} was not a boolean`);
+    }
+  }
+}
+
+function assertBrowserPreviewSupportBundleShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.supportBundle was not a JSON object`);
+  }
+  for (const key of ['status', 'redacted'] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.supportBundle.${key} was not nullable text`
+      );
+    }
+  }
+  for (const key of [
+    'sectionCount',
+    'issueCount',
+    'requestIdCount',
+    'sectionErrorCount',
+  ] as const) {
+    if (!isNonNegativeFiniteNumber(value[key])) {
+      throw new Error(
+        `${path} probe.supportBundle.${key} was not a non-negative number`
+      );
+    }
+  }
+}
+
+function assertBrowserPreviewLifecycleResumeShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.lifecycleResume was not a JSON object`);
+  }
+  for (const key of ['status', 'reason', 'error'] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.lifecycleResume.${key} was not nullable text`
+      );
+    }
+  }
+  if (!isNonNegativeFiniteNumber(value.count)) {
+    throw new Error(
+      `${path} probe.lifecycleResume.count was not a non-negative number`
+    );
+  }
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function isNonNegativeFiniteNumber(value: unknown): value is number {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
 type CdpResponse = {
@@ -904,6 +1066,7 @@ async function main(): Promise<void> {
     const previewBody = await previewPage.text();
     await verifyBuiltPreviewAssets(previewOrigin, previewBody);
     log('built preview asset check passed');
+    await verifyBrowserPreviewFailureArtifactSelfCheck(workDir);
 
     await maybeRunBrowserPreviewSmoke({
       origin: previewOrigin,
