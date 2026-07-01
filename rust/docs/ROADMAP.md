@@ -101,9 +101,10 @@ read-only review:
     need scoped metadata rows or an explicit shared partition policy before
     campaign/project clients can fetch them. Testkit now includes
     membership-aware project/campaign actor helpers, stable diagnostic marker
-    assertions, explicit project membership support in the bundled tasks
-    fixture, and binary sync-pack-aware combined response parsing for real
-    route tests. Public docs now lead Fresh JavaScript apps through
+    assertions, stable response assertion helpers for denied push results and
+    revoked pull subscriptions, explicit project membership support in the
+    bundled tasks fixture, and binary sync-pack-aware combined response
+    parsing for real route tests. Public docs now lead Fresh JavaScript apps through
     `create-syncular-app`, include a JavaScript import decision table, describe
     optional client/server integrations as subpaths with optional peers, and
     guard the starter-proven `src/generated/syncular.generated.ts` filename

@@ -14,6 +14,11 @@ import {
 } from './scoped-actors';
 import { createSyncCombinedRequest } from './sync-builders';
 import { postSyncCombinedRequest } from './sync-http';
+import {
+  requirePushErrorCode,
+  requirePushOperationResult,
+  requireRevokedSubscription,
+} from './sync-response';
 
 describe('project-scoped actor helpers', () => {
   it('creates deterministic actor headers and project membership maps', () => {
@@ -84,7 +89,11 @@ describe('project-scoped actor helpers', () => {
           },
         }),
       });
-      expect(allowed.json.push?.commits[0]?.results[0]).toMatchObject({
+      expect(
+        requirePushOperationResult(allowed.json.push, {
+          clientCommitId: 'commit-allowed',
+        })
+      ).toMatchObject({
         status: 'applied',
       });
 
@@ -111,8 +120,12 @@ describe('project-scoped actor helpers', () => {
           },
         }),
       });
-      expect(deniedWrite.json.push?.commits[0]?.results[0]).toMatchObject({
-        status: 'error',
+      expect(
+        requirePushErrorCode(deniedWrite.json.push, {
+          clientCommitId: 'commit-denied',
+          code: 'sync.forbidden',
+        })
+      ).toMatchObject({
         code: 'sync.forbidden',
       });
 
@@ -135,9 +148,13 @@ describe('project-scoped actor helpers', () => {
           },
         }),
       });
-      expect(deniedPull.json.pull?.subscriptions[0]).toMatchObject({
+      expect(
+        requireRevokedSubscription(
+          deniedPull.json.pull?.subscriptions,
+          'foreign-project'
+        )
+      ).toMatchObject({
         id: 'foreign-project',
-        status: 'revoked',
       });
     } finally {
       await server.destroy();

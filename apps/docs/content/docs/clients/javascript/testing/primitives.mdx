@@ -95,6 +95,7 @@ helpers flatten the digging:
 ```ts
 import {
   findSubscriptionChange,
+  requireRevokedSubscription,
   subscriptionChangeRow,
   subscriptionChanges,
 } from '@syncular/testkit';
@@ -105,7 +106,22 @@ const changes = subscriptionChanges(json.pull?.subscriptions, 'tasks-p0');
 // One row's change and its row payload:
 const change = findSubscriptionChange(json.pull?.subscriptions, 'tasks-p0', 't1');
 const row = subscriptionChangeRow(change); // Record<string, unknown> | undefined
+
+// Negative-path tests should assert the stable protocol state:
+requireRevokedSubscription(json.pull?.subscriptions, 'tasks-p0');
 ```
+
+For push results and negative-path assertions, use:
+
+- `findPushCommit(...)` / `requirePushCommit(...)`
+- `findPushOperationResult(...)` / `requirePushOperationResult(...)`
+- `requirePushErrorCode(...)`
+- `findPullSubscription(...)` / `requirePullSubscription(...)`
+- `requireRevokedSubscription(...)`
+
+These helpers fail with the observed commit ids, operation indexes, statuses,
+or subscription ids, so app tests can assert `sync.forbidden`, conflicts, and
+revoked subscriptions without parsing human error messages.
 
 ## Reference tasks schema
 
@@ -144,10 +160,31 @@ const handler = createProjectScopedTasksHandler({
 const headers = createProjectScopedActorHeaders(actor);
 ```
 
+After you send a denied push or pull, assert stable protocol fields instead
+of matching messages:
+
+```ts
+import {
+  requirePushErrorCode,
+  requireRevokedSubscription,
+} from '@syncular/testkit';
+
+requirePushErrorCode(deniedWrite.json.push, {
+  clientCommitId: 'commit-denied',
+  code: 'sync.forbidden',
+});
+requireRevokedSubscription(
+  deniedPull.json.pull?.subscriptions,
+  'tasks-campaign-b'
+);
+```
+
 With explicit membership, writes outside the actor's projects return
-`sync.forbidden`, and subscriptions outside membership are revoked. Use this
-for campaign/project join, denied membership, and auth-context replacement
-tests.
+`sync.forbidden`, and subscriptions outside membership are revoked. Assert
+those outcomes with `requirePushErrorCode(...)` and
+`requireRevokedSubscription(...)` so campaign/project join, denied
+membership, and auth-context replacement tests stay tied to stable protocol
+fields instead of response prose.
 
 ## Diagnostic markers
 

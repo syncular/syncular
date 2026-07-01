@@ -1590,6 +1590,15 @@ online propagation, or reconnect behavior can change.
   `projectsByActor` membership so tests can prove allowed writes,
   `sync.forbidden` writes, and revoked foreign subscriptions without
   app-specific auth scaffolding.
+- 2026-07-01: Added testkit response assertion helpers for stable
+  negative-path protocol outcomes:
+  `findPushCommit(...)`, `requirePushCommit(...)`,
+  `findPushOperationResult(...)`, `requirePushOperationResult(...)`,
+  `requirePushErrorCode(...)`, `findPullSubscription(...)`,
+  `requirePullSubscription(...)`, and `requireRevokedSubscription(...)`.
+  The project-scoped actor fixture test now asserts denied project writes and
+  revoked foreign subscriptions through those helpers instead of digging into
+  nested arrays or matching server prose.
 - The testkit `postSyncCombinedRequest(...)` helper now accepts the current
   binary sync-pack response format as well as JSON, so docs examples using the
   real combined route are executable again.
@@ -1769,6 +1778,10 @@ online propagation, or reconnect behavior can change.
   `findDiagnosticMarker(...)`, `hasDiagnosticMarker(...)`, and
   `requireDiagnosticMarker(...)` to `@syncular/testkit` for stable diagnostic
   and log-marker assertions.
+- 2026-07-01: Added `@syncular/testkit` response assertion helpers for
+  stable push-operation and pull-subscription outcomes, including
+  `requirePushErrorCode(...)` for denied writes and
+  `requireRevokedSubscription(...)` for revoked subscriptions.
 - 2026-06-30: Updated `postSyncCombinedRequest(...)` /
   `readSyncCombinedResponse(...)` to decode binary sync-pack combined
   responses in addition to JSON responses.
@@ -2458,6 +2471,24 @@ Most recent sync request-id evidence rerun:
 - `bunx biome check packages/client/src/types.ts packages/client/src/diagnostics.ts packages/client/src/rust-client.ts packages/client/src/worker-entry.ts packages/client/src/worker-client.ts packages/client/src/worker-client.test.ts packages/client/src/runtime-timeline.ts packages/client/src/runtime-timeline.test.ts packages/client/src/command-timeline.ts packages/client/src/command-timeline.test.ts packages/client/src/support-bundle.ts packages/client/src/support-bundle.test.ts packages/client/src/console-diagnostics.ts packages/client/src/console-diagnostics.test.ts packages/client/src/__tests__/sync-hono.wasm.test.ts packages/server/src/hono/routes/shared.ts packages/server/src/hono/__tests__/create-server.test.ts packages/client/README.md apps/docs/content/docs/operate/observability.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
+- `git diff --check`
+
+Most recent testkit negative-path response assertion rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/testkit/src/sync-response.test.ts packages/testkit/src/scoped-actors.test.ts`
+  - Passed unit assertions for push commits, push operation results,
+    `requirePushErrorCode(...)`, pull subscriptions, and
+    `requireRevokedSubscription(...)`.
+  - Passed the real project-scoped Hono fixture for allowed project writes,
+    denied project writes as `sync.forbidden`, and revoked foreign
+    subscriptions using the new assertion helpers.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/testkit tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/testkit/src/sync-response.ts packages/testkit/src/sync-response.test.ts packages/testkit/src/scoped-actors.test.ts apps/docs/content/docs/clients/javascript/testing/primitives.mdx apps/docs/content/docs/clients/javascript/testing/index.mdx`
+  - Passed for the TypeScript files. The repo Biome config ignores the MDX
+    docs, so keep `apps/docs types:check`, `docs:stale-check`, `git diff
+    --check`, and manual Markdown sanity reads for those pages.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
 
 Most recent lifecycle/multi-tab preflight rerun:
