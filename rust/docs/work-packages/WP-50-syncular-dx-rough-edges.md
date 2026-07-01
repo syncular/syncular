@@ -1432,6 +1432,9 @@ online propagation, or reconnect behavior can change.
   across tabs after preflight proves coordination. Results include lock name,
   required flag, and lock state; required locks reject with
   `SyncularLocalRecoveryActionLockError` before the client action runs.
+  `lock.timeoutMs` now bounds that wait and rejects with
+  `SyncularLocalRecoveryActionLockTimeoutError` so recovery UI can report lock
+  contention instead of spinning indefinitely behind another tab.
 - The browser/Hono/WASM local-health test now exercises that plan/action API
   against the real Worker runtime for corrupted subscription state and
   orphaned verified roots, including the confirmation guardrail and successful
@@ -1947,6 +1950,12 @@ online propagation, or reconnect behavior can change.
   through an app-specific browser lock, fall back when optional locks are
   unavailable, or fail closed with `SyncularLocalRecoveryActionLockError` when
   the lock is required; action results report the observed coordination state.
+- 2026-07-01: Added bounded local recovery Web Lock contention handling.
+  Recovery actions can pass `lock.timeoutMs`; if another tab keeps the local
+  recovery lock too long, the queued action rejects with
+  `SyncularLocalRecoveryActionLockTimeoutError` and the action does not run
+  later after the held lock releases. Package README, browser docs, and public
+  error-handling docs now show the timeout option.
 - 2026-06-30: Extended the Hono-backed browser/WASM local-health test so it
   repairs corrupted subscription state and orphaned verified roots through the
   new local recovery plan/action API instead of direct low-level repair calls.
@@ -3263,13 +3272,19 @@ Most recent framework-import quality-gate docs rerun:
 
 Most recent local-recovery rerun:
 
-- `bun test packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts`
   - Covers recovery Web Locks serialization, optional-lock fallback, and
     required-lock failure before the client action runs.
-- `bun --cwd packages/client tsgo`
-- `bunx biome check packages/client/src/local-recovery.ts packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts packages/client/README.md apps/docs/content/docs/features/error-handling.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
-- `bun run docs:stale-check`
-- `bun --cwd apps/docs types:check`
+  - Covers bounded Web Lock timeout for queued recovery actions, including
+    proving the timed-out queued action does not run later after the held lock
+    releases and that later recovery can acquire the lock again.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/local-recovery.ts packages/client/src/local-recovery.test.ts packages/client/src/public-api.test.ts packages/client/README.md apps/docs/content/docs/features/error-handling.mdx apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+  - Passed for the TypeScript files. The repo Biome config ignores Markdown
+    and MDX, so keep using `docs:stale-check`, docs typecheck, and manual
+    Markdown sanity reads for those files.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
 
 Gate note: run docs generation/type gates serially. A parallel gate attempt
@@ -3563,8 +3578,10 @@ Most recent mutation-status rerun:
   when the app requires coordinated tabs and the browser preflight reports a
   weaker or unknown multi-tab mode. The recovery executor itself can now
   serialize actions through optional Web Locks, report lock state, or fail
-  closed when a required lock is unavailable. Remaining work is richer
-  browser-process proof: suspended/resumed tabs, storage-lock contention,
+  closed when a required lock is unavailable; bounded lock timeouts now fail
+  with a typed timeout error and tests prove a timed-out queued recovery action
+  does not run later. Remaining work is richer browser-process proof:
+  suspended/resumed tabs, hosted/browser-observed recovery lock contention,
   shutdown, and restart states.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the

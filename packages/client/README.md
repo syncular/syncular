@@ -820,7 +820,7 @@ const action = plan.actions.find(
 if (action) {
   await syncular.runLocalRecoveryAction(action, {
     confirmationText: action.confirmationText,
-    lock: { name: 'syncular:my-app:local-recovery' },
+    lock: { name: 'syncular:my-app:local-recovery', timeoutMs: 10_000 },
   });
 }
 ```
@@ -849,7 +849,10 @@ other tabs or move to a coordinated runtime before running the action. Passing
 `lock` to `runLocalRecoveryAction(...)` serializes the actual recovery work
 through Web Locks when the browser provides them; optional locks fall back to
 uncoordinated execution and required locks reject with
-`SyncularLocalRecoveryActionLockError`.
+`SyncularLocalRecoveryActionLockError`. Add `lock.timeoutMs` for destructive
+actions so a recovery button fails with
+`SyncularLocalRecoveryActionLockTimeoutError` instead of waiting indefinitely
+behind another tab.
 
 ## CRDT Document Fields
 

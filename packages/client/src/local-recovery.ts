@@ -132,13 +132,14 @@ export type SyncularLocalRecoveryActionLockState =
   | 'not-requested'
   | 'waiting'
   | 'acquired'
+  | 'timed-out'
   | 'unavailable';
 
 export interface SyncularLocalRecoveryActionNavigator {
   locks?: {
     request?: <T>(
       name: string,
-      options: { mode: 'exclusive' },
+      options: { mode: 'exclusive'; signal?: AbortSignal },
       callback: () => T | Promise<T>
     ) => Promise<T>;
   };
@@ -156,12 +157,20 @@ export interface SyncularLocalRecoveryActionLockOptions {
    * instead of falling back to an uncoordinated action.
    */
   required?: boolean;
+  /**
+   * Optional maximum time to wait for the browser Web Lock. When the timeout
+   * expires, recovery rejects with
+   * `SyncularLocalRecoveryActionLockTimeoutError` instead of sitting behind
+   * another tab indefinitely.
+   */
+  timeoutMs?: number;
 }
 
 export interface SyncularLocalRecoveryActionCoordination {
   lockName?: string;
   lockRequired: boolean;
   lockState: SyncularLocalRecoveryActionLockState;
+  lockTimeoutMs?: number;
 }
 
 export interface SyncularRunLocalRecoveryActionOptions {
@@ -294,7 +303,34 @@ export class SyncularLocalRecoveryActionLockError extends Error {
   }
 }
 
+export class SyncularLocalRecoveryActionLockTimeoutError extends Error {
+  readonly code = 'syncular.local_recovery_web_locks_timeout';
+  readonly action: SyncularLocalRecoveryAction;
+  readonly lockName: string;
+  readonly timeoutMs: number;
+
+  constructor(
+    action: SyncularLocalRecoveryAction,
+    lockName: string,
+    timeoutMs: number
+  ) {
+    super(
+      `Timed out waiting ${timeoutMs}ms for Syncular local recovery Web Lock ${lockName} while running action "${action.id}".`
+    );
+    this.name = 'SyncularLocalRecoveryActionLockTimeoutError';
+    this.action = action;
+    this.lockName = lockName;
+    this.timeoutMs = timeoutMs;
+  }
+}
+
 const DEFAULT_LOCAL_RECOVERY_LOCK_NAME = 'syncular:local-recovery';
+
+type NormalizedLocalRecoveryLockOptions = {
+  name: string;
+  required: boolean;
+  timeoutMs?: number;
+};
 
 export async function getSyncularLocalRecoveryPlan(
   client: SyncularLocalRecoveryClient,
@@ -387,14 +423,66 @@ export async function runSyncularLocalRecoveryAction(
     );
   }
 
-  return locks.request(lockOptions.name, { mode: 'exclusive' }, () =>
-    runAction(
-      createLocalRecoveryCoordination({
-        lockOptions,
-        actionLockState: 'acquired',
-      })
+  let timeoutError: SyncularLocalRecoveryActionLockTimeoutError | null = null;
+  let timedOut = false;
+  const abortController =
+    lockOptions.timeoutMs != null && typeof AbortController !== 'undefined'
+      ? new AbortController()
+      : null;
+  const request = locks
+    .request(
+      lockOptions.name,
+      {
+        mode: 'exclusive',
+        ...(abortController ? { signal: abortController.signal } : {}),
+      },
+      () => {
+        if (timedOut) {
+          throw (
+            timeoutError ??
+            new SyncularLocalRecoveryActionLockTimeoutError(
+              action,
+              lockOptions.name,
+              lockOptions.timeoutMs ?? 0
+            )
+          );
+        }
+        return runAction(
+          createLocalRecoveryCoordination({
+            lockOptions,
+            actionLockState: 'acquired',
+          })
+        );
+      }
     )
+    .catch((error) => {
+      if (timeoutError) throw timeoutError;
+      throw error;
+    });
+
+  if (lockOptions.timeoutMs == null) {
+    return request;
+  }
+
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<SyncularLocalRecoveryActionResult>(
+    (_, reject) => {
+      timeoutId = setTimeout(() => {
+        timedOut = true;
+        timeoutError = new SyncularLocalRecoveryActionLockTimeoutError(
+          action,
+          lockOptions.name,
+          lockOptions.timeoutMs ?? 0
+        );
+        abortController?.abort();
+        reject(timeoutError);
+      }, lockOptions.timeoutMs);
+    }
   );
+
+  return Promise.race([request, timeout]).finally(() => {
+    if (timeoutId) clearTimeout(timeoutId);
+  });
 }
 
 async function runLocalRecoveryActionWithoutCoordination(
@@ -466,7 +554,7 @@ async function runLocalRecoveryActionWithoutCoordination(
 
 function normalizeLocalRecoveryLockOptions(
   lock: SyncularRunLocalRecoveryActionOptions['lock']
-): { name: string; required: boolean } | null {
+): NormalizedLocalRecoveryLockOptions | null {
   if (!lock) return null;
   if (lock === true) {
     return {
@@ -477,11 +565,14 @@ function normalizeLocalRecoveryLockOptions(
   return {
     name: lock.name?.trim() || DEFAULT_LOCAL_RECOVERY_LOCK_NAME,
     required: lock.required === true,
+    ...(normalizeLockTimeoutMs(lock.timeoutMs) != null
+      ? { timeoutMs: normalizeLockTimeoutMs(lock.timeoutMs) }
+      : {}),
   };
 }
 
 function createLocalRecoveryCoordination(args: {
-  lockOptions: { name: string; required: boolean } | null;
+  lockOptions: NormalizedLocalRecoveryLockOptions | null;
   actionLockState: SyncularLocalRecoveryActionLockState | null;
 }): SyncularLocalRecoveryActionCoordination {
   return {
@@ -489,7 +580,18 @@ function createLocalRecoveryCoordination(args: {
     lockState:
       args.actionLockState ?? (args.lockOptions ? 'waiting' : 'not-requested'),
     ...(args.lockOptions ? { lockName: args.lockOptions.name } : {}),
+    ...(args.lockOptions?.timeoutMs != null
+      ? { lockTimeoutMs: args.lockOptions.timeoutMs }
+      : {}),
   };
+}
+
+function normalizeLockTimeoutMs(timeoutMs: unknown): number | undefined {
+  if (typeof timeoutMs !== 'number' || !Number.isFinite(timeoutMs)) {
+    return undefined;
+  }
+  const normalized = Math.ceil(timeoutMs);
+  return normalized > 0 ? normalized : undefined;
 }
 
 function assertRecoveryActionNotBlocked(

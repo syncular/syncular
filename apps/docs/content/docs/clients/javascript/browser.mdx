@@ -199,6 +199,10 @@ best-effort recovery. Use `lock.timeoutMs` to fail foreground catch-up with
 resume error context reports `lockState: "timed-out"` and the configured
 timeout so support artifacts can point at lock contention rather than a
 generic lifecycle timeout.
+Local recovery actions use the same `lock.timeoutMs` pattern when passed to
+`runLocalRecoveryAction(...)`, rejecting with
+`SyncularLocalRecoveryActionLockTimeoutError` if another tab holds the
+recovery lock too long.
 The optional `onPause` callback reports hidden-tab, `pagehide`, and
 `beforeunload` signals so browser smokes and support artifacts can distinguish
 restored-page catch-up from shutdown/suspension intent.

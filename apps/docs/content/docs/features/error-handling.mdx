@@ -185,7 +185,7 @@ const repair = plan.actions.find(
 if (repair) {
   await syncular.runLocalRecoveryAction(repair, {
     confirmationText: repair.confirmationText,
-    lock: { name: "syncular:my-app:local-recovery" },
+    lock: { name: "syncular:my-app:local-recovery", timeoutMs: 10_000 },
   });
 }
 ```
@@ -208,7 +208,10 @@ actions expose a `browser.multi_tab_coordination_required` blocker when tabs
 cannot be coordinated or the preflight mode was not passed. Passing `lock` to
 `runLocalRecoveryAction(...)` serializes the actual recovery work through Web
 Locks when available; optional locks fall back to uncoordinated execution, and
-required locks reject with `SyncularLocalRecoveryActionLockError`.
+required locks reject with `SyncularLocalRecoveryActionLockError`. Add
+`lock.timeoutMs` so destructive recovery fails with
+`SyncularLocalRecoveryActionLockTimeoutError` instead of waiting indefinitely
+behind another tab.
 
 Manual reconnect is just a lifecycle start/sync request:
 

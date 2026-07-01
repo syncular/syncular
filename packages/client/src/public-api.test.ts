@@ -31,6 +31,7 @@ import {
   SyncularBrowserLifecycleResumeLockTimeoutError,
   SyncularCommandHistoryError,
   SyncularLocalRecoveryActionLockError,
+  SyncularLocalRecoveryActionLockTimeoutError,
   SyncularLocalRecoveryBlockedError,
   waitForSyncularLocalVisibility,
 } from './index';
@@ -103,6 +104,7 @@ describe('@syncular/client public API', () => {
     expect(typeof getSyncularLocalRecoveryPlan).toBe('function');
     expect(typeof runSyncularLocalRecoveryAction).toBe('function');
     expect(typeof SyncularLocalRecoveryActionLockError).toBe('function');
+    expect(typeof SyncularLocalRecoveryActionLockTimeoutError).toBe('function');
     expect(typeof SyncularLocalRecoveryBlockedError).toBe('function');
   });
 

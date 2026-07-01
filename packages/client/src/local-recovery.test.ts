@@ -5,6 +5,7 @@ import {
   runSyncularLocalRecoveryAction,
   type SyncularLocalRecoveryAction,
   SyncularLocalRecoveryActionLockError,
+  SyncularLocalRecoveryActionLockTimeoutError,
   SyncularLocalRecoveryBlockedError,
   type SyncularLocalRecoveryClient,
   SyncularLocalRecoveryError,
@@ -402,6 +403,87 @@ describe('local recovery plan', () => {
     ]);
   });
 
+  it('times out queued Web Locks recovery coordination without running the action', async () => {
+    const firstGate = createDeferred<void>();
+    const firstClient = new FakeRecoveryClient({
+      resetDelay: firstGate.promise,
+    });
+    const secondClient = new FakeRecoveryClient();
+    const thirdClient = new FakeRecoveryClient();
+    const locks = new FakeWebLocks();
+    const lockName = 'syncular:test:local-recovery-timeout';
+    const plan = await getSyncularLocalRecoveryPlan(firstClient, {
+      includeResetAction: true,
+      multiTabMode: 'coordinated',
+      requireMultiTabCoordinationForDestructiveActions: true,
+      resetClearSyncedRows: true,
+    });
+    const reset = requiredAction(plan.actions, 'reset-local-sync-state');
+
+    const first = runSyncularLocalRecoveryAction(firstClient, reset, {
+      confirmationText: reset.confirmationText,
+      lock: { name: lockName },
+      navigator: { locks },
+    });
+    await Promise.resolve();
+    expect(firstClient.calls).toContainEqual([
+      'resetLocalSyncState',
+      { subscriptionIds: [], clearSyncedRows: true },
+    ]);
+
+    let observedTimeoutError: unknown;
+    try {
+      await runSyncularLocalRecoveryAction(secondClient, reset, {
+        confirmationText: reset.confirmationText,
+        lock: { name: lockName, timeoutMs: 5 },
+        navigator: { locks },
+      });
+    } catch (error) {
+      observedTimeoutError = error;
+    }
+    expect(observedTimeoutError).toBeInstanceOf(
+      SyncularLocalRecoveryActionLockTimeoutError
+    );
+    expect(observedTimeoutError).toMatchObject({
+      code: 'syncular.local_recovery_web_locks_timeout',
+      lockName,
+      timeoutMs: 5,
+    });
+    expect(
+      secondClient.calls.some(([call]) => call === 'resetLocalSyncState')
+    ).toBe(false);
+
+    firstGate.resolve();
+    await expect(first).resolves.toMatchObject({
+      action: 'reset-local-sync-state',
+      coordination: {
+        lockName,
+        lockRequired: false,
+        lockState: 'acquired',
+      },
+    });
+
+    await expect(
+      runSyncularLocalRecoveryAction(thirdClient, reset, {
+        confirmationText: reset.confirmationText,
+        lock: { name: lockName, timeoutMs: 50 },
+        navigator: { locks },
+      })
+    ).resolves.toMatchObject({
+      action: 'reset-local-sync-state',
+      coordination: {
+        lockName,
+        lockRequired: false,
+        lockState: 'acquired',
+        lockTimeoutMs: 50,
+      },
+    });
+    expect(thirdClient.calls).toContainEqual([
+      'resetLocalSyncState',
+      { subscriptionIds: [], clearSyncedRows: true },
+    ]);
+  });
+
   it('falls back when optional Web Locks recovery coordination is unavailable', async () => {
     const client = new FakeRecoveryClient();
     const plan = await getSyncularLocalRecoveryPlan(client, {
@@ -694,14 +776,14 @@ class FakeWebLocks {
 
   async request<T>(
     name: string,
-    options: { mode: 'exclusive' },
+    options: { mode: 'exclusive'; signal?: AbortSignal },
     callback: () => T | Promise<T>
   ): Promise<T> {
     if (options.mode !== 'exclusive') {
       throw new Error(`Unexpected lock mode ${options.mode}`);
     }
     this.requests.push(name);
-    await this.#acquire();
+    await this.#acquire(options.signal);
     try {
       return await callback();
     } finally {
@@ -709,16 +791,37 @@ class FakeWebLocks {
     }
   }
 
-  #acquire(): Promise<void> {
+  #acquire(signal: AbortSignal | undefined): Promise<void> {
+    if (signal?.aborted) {
+      return Promise.reject(new Error('Lock request aborted'));
+    }
     if (!this.#active) {
       this.#active = true;
       return Promise.resolve();
     }
-    return new Promise((resolve) => {
-      this.#queue.push(() => {
+    return new Promise((resolve, reject) => {
+      let queued: (() => void) | null = null;
+      const cleanup = () => {
+        signal?.removeEventListener('abort', abort);
+      };
+      const abort = () => {
+        if (!queued) return;
+        const index = this.#queue.indexOf(queued);
+        if (index >= 0) {
+          this.#queue.splice(index, 1);
+        }
+        queued = null;
+        cleanup();
+        reject(new Error('Lock request aborted'));
+      };
+      queued = () => {
+        queued = null;
+        cleanup();
         this.#active = true;
         resolve();
-      });
+      };
+      signal?.addEventListener('abort', abort, { once: true });
+      this.#queue.push(queued);
     });
   }
 

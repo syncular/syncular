@@ -424,10 +424,16 @@ read-only review:
     sets, generated/schema checks, deploy-time schema setup, live readiness,
     server/client rollout order, browser preflight, recovery monitoring,
     support-window tightening, code/schema/database/browser-asset rollback,
-    and local client recovery. Production operations docs now add concrete
-    restore drills, blob storage consistency sampling, rate-limit tuning,
-    credential rotation cadence, and upgrade preflight checks so the remaining
-    ops prompts are copyable operator work rather than vague launch advice.
+    and local client recovery. Local recovery Web Locks now also support a
+    bounded `timeoutMs` so destructive recovery does not hang indefinitely
+    behind another tab; the exported
+    `SyncularLocalRecoveryActionLockTimeoutError` reports the action, lock
+    name, and timeout, and tests prove the timed-out queued action does not run
+    later after the held lock is released. Production operations docs now add
+    concrete restore drills, blob storage consistency sampling, rate-limit
+    tuning, credential rotation cadence, and upgrade preflight checks so the
+    remaining ops prompts are copyable operator work rather than vague launch
+    advice.
     `syncular ops check --json` now validates a production evidence file for
     schema readiness, restore drill freshness, external blob consistency,
     credential rotation ownership/cadence, rate-limit review status, Console
