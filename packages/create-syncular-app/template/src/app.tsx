@@ -12,8 +12,12 @@ import {
   type SyncularBrowserLifecycleResumeLockState,
   type SyncularBrowserSupportPolicyEvaluation,
   type SyncularClientStatus,
+  type SyncularCommandTimeline,
+  type SyncularCommandTimelineMissingEvidence,
+  type SyncularCommandTimelineProof,
   type SyncularDiagnosticEvent,
   type SyncularLocalRecoveryActionLockState,
+  type SyncularLocalVisibilityEvidence,
   type SyncularSchemaReadinessResult,
   type SyncularSupportBundle,
 } from '@syncular/client';
@@ -52,6 +56,7 @@ type LifecycleResumePreview = {
 type StarterTimelinePreview = {
   bootstrapReadyMs: number | null;
   bootstrapStatus: 'pending' | 'ready';
+  commandTimelineStatus: 'idle' | 'running' | 'complete' | 'failed';
   databaseOpenMs: number | null;
   healthRefreshMs: number | null;
   localVisibilityErrorCode: string | null;
@@ -61,6 +66,24 @@ type StarterTimelinePreview = {
   realtimeStatus: 'pending' | 'connected';
   schemaReadinessMs: number | null;
   supportBundleExportMs: number | null;
+};
+
+type CommandTimelineProofPreview = {
+  clientCommitId: string | null;
+  contextEventCount: number;
+  count: number;
+  durationMs: number | null;
+  error: string | null;
+  errorCode: string | null;
+  eventCount: number;
+  localVisibilityState: string | null;
+  localVisibilityTrigger: string | null;
+  matchedEventCount: number;
+  missingEvidence: SyncularCommandTimelineMissingEvidence[];
+  missingEvidenceCount: number;
+  proof: SyncularCommandTimelineProof;
+  state: string | null;
+  status: 'idle' | 'running' | 'complete' | 'failed';
 };
 
 type LocalRecoveryProofPreview = {
@@ -210,6 +233,7 @@ const initialLifecycleResume: LifecycleResumePreview = {
 const initialStarterTimeline: StarterTimelinePreview = {
   bootstrapReadyMs: null,
   bootstrapStatus: 'pending',
+  commandTimelineStatus: 'idle',
   databaseOpenMs: null,
   healthRefreshMs: null,
   localVisibilityErrorCode: null,
@@ -219,6 +243,36 @@ const initialStarterTimeline: StarterTimelinePreview = {
   realtimeStatus: 'pending',
   schemaReadinessMs: null,
   supportBundleExportMs: null,
+};
+
+const emptyCommandTimelineProof: SyncularCommandTimelineProof = {
+  outboxPersisted: false,
+  requestCorrelated: false,
+  syncAttemptObserved: false,
+  serverCommitObserved: false,
+  realtimeCursorObserved: false,
+  pullReasonObserved: false,
+  localApplyObserved: false,
+  localVisibilityObserved: false,
+  complete: false,
+};
+
+const initialCommandTimelineProof: CommandTimelineProofPreview = {
+  clientCommitId: null,
+  contextEventCount: 0,
+  count: 0,
+  durationMs: null,
+  error: null,
+  errorCode: null,
+  eventCount: 0,
+  localVisibilityState: null,
+  localVisibilityTrigger: null,
+  matchedEventCount: 0,
+  missingEvidence: [],
+  missingEvidenceCount: 0,
+  proof: emptyCommandTimelineProof,
+  state: null,
+  status: 'idle',
 };
 
 const initialLocalRecoveryProof: LocalRecoveryProofPreview = {
@@ -709,6 +763,8 @@ function TaskPane({
     useState<SyncularSchemaReadinessResult | null>(null);
   const [supportBundle, setSupportBundle] =
     useState<SupportBundlePreview | null>(null);
+  const [commandTimelineProof, setCommandTimelineProof] =
+    useState<CommandTimelineProofPreview>(initialCommandTimelineProof);
   const [localRecoveryProof, setLocalRecoveryProof] =
     useState<LocalRecoveryProofPreview>(initialLocalRecoveryProof);
   const [storageRecoveryProof, setStorageRecoveryProof] =
@@ -1416,43 +1472,116 @@ function TaskPane({
     const taskId = crypto.randomUUID();
     const visibilityStartedAtMs = performance.now();
     inputRef.current!.value = '';
+    setCommandTimelineProof((current) => ({
+      ...initialCommandTimelineProof,
+      count: current.count,
+      status: 'running',
+    }));
     updateStarterTimeline((current) => ({
       ...current,
+      commandTimelineStatus: 'running',
       localVisibilityErrorCode: null,
       localVisibilityMs: null,
       localVisibilityStatus: 'running',
     }));
-    void mutations.tasks
-      .insert({
-        id: taskId,
-        title,
-        completed: 0,
-        user_id: appActorId,
-        created_at: Date.now(),
-      })
-      .then(() =>
-        client.awaitTaskVisibility(
+    void (async () => {
+      let visibilityEvidence: SyncularLocalVisibilityEvidence | undefined;
+      let receipt:
+        | Awaited<ReturnType<typeof mutations.tasks.insert>>
+        | undefined;
+      try {
+        receipt = await mutations.tasks.insert({
+          id: taskId,
+          title,
+          completed: 0,
+          user_id: appActorId,
+          created_at: Date.now(),
+        });
+        await client.awaitTaskVisibility(
           ({ selectFrom }) =>
             selectFrom('tasks').select('id').where('id', '=', taskId).limit(1),
-          { timeoutMs: 5_000 }
-        )
-      )
-      .then(() => {
+          {
+            timeoutMs: 5_000,
+            onEvidence(evidence) {
+              visibilityEvidence = evidence;
+            },
+          }
+        );
         updateStarterTimeline((current) => ({
           ...current,
           localVisibilityErrorCode: null,
           localVisibilityMs: elapsedSince(visibilityStartedAtMs),
           localVisibilityStatus: 'visible',
         }));
-      })
-      .catch((error) => {
+      } catch (error) {
         updateStarterTimeline((current) => ({
           ...current,
+          commandTimelineStatus: 'failed',
           localVisibilityErrorCode: syncularErrorCode(error),
           localVisibilityMs: elapsedSince(visibilityStartedAtMs),
           localVisibilityStatus: 'failed',
         }));
-      });
+        setCommandTimelineProof((current) => ({
+          ...current,
+          count: current.count + 1,
+          durationMs: elapsedSince(visibilityStartedAtMs),
+          error: errorMessage(error),
+          errorCode: syncularErrorCode(error),
+          status: 'failed',
+        }));
+        return;
+      }
+
+      if (!receipt) {
+        const error = new Error('Starter mutation receipt was not captured');
+        setCommandTimelineProof((current) => ({
+          ...current,
+          count: current.count + 1,
+          durationMs: elapsedSince(visibilityStartedAtMs),
+          error: error.message,
+          errorCode: error.name,
+          status: 'failed',
+        }));
+        updateStarterTimeline((current) => ({
+          ...current,
+          commandTimelineStatus: 'failed',
+        }));
+        return;
+      }
+
+      try {
+        const timeline = await client.commandTimeline({
+          command: { ...receipt, label: 'starter.add-task' },
+          localVisibility: visibilityEvidence,
+        });
+        setCommandTimelineProof((current) =>
+          summarizeCommandTimelineProof({
+            count: current.count + 1,
+            durationMs: elapsedSince(visibilityStartedAtMs),
+            localVisibility: visibilityEvidence,
+            timeline,
+          })
+        );
+        updateStarterTimeline((current) => ({
+          ...current,
+          commandTimelineStatus: 'complete',
+        }));
+      } catch (error) {
+        setCommandTimelineProof((current) => ({
+          ...current,
+          clientCommitId: receipt?.clientCommitId ?? null,
+          count: current.count + 1,
+          durationMs: elapsedSince(visibilityStartedAtMs),
+          error: errorMessage(error),
+          errorCode: syncularErrorCode(error),
+          status: 'failed',
+        }));
+        updateStarterTimeline((current) => ({
+          ...current,
+          commandTimelineStatus: 'failed',
+        }));
+      }
+    })();
   };
 
   return (
@@ -1477,6 +1606,7 @@ function TaskPane({
       {supportBundle ? (
         <SupportBundleLine supportBundle={supportBundle} />
       ) : null}
+      <CommandTimelineProofMarker commandTimelineProof={commandTimelineProof} />
       <LocalRecoveryProofMarker localRecoveryProof={localRecoveryProof} />
       <StorageRecoveryProofMarker storageRecoveryProof={storageRecoveryProof} />
       <QuotaPressureProofMarker quotaPressureProof={quotaPressureProof} />
@@ -1759,6 +1889,9 @@ function StarterTimelineMarker({
         starterTimeline.bootstrapReadyMs ?? ''
       }
       data-syncular-starter-bootstrap-status={starterTimeline.bootstrapStatus}
+      data-syncular-starter-command-timeline-status={
+        starterTimeline.commandTimelineStatus
+      }
       data-syncular-starter-database-open-ms={
         starterTimeline.databaseOpenMs ?? ''
       }
@@ -2341,6 +2474,38 @@ function failedSupportBundlePreview(): SupportBundlePreview {
   };
 }
 
+function summarizeCommandTimelineProof(args: {
+  count: number;
+  durationMs: number;
+  localVisibility: SyncularLocalVisibilityEvidence | undefined;
+  timeline: SyncularCommandTimeline;
+}): CommandTimelineProofPreview {
+  return {
+    clientCommitId: args.timeline.clientCommitId,
+    contextEventCount: args.timeline.summary.contextEventCount,
+    count: args.count,
+    durationMs: args.durationMs,
+    error: null,
+    errorCode: null,
+    eventCount: args.timeline.events.length,
+    localVisibilityState: args.localVisibility?.state ?? null,
+    localVisibilityTrigger: localVisibilityTrigger(args.localVisibility),
+    matchedEventCount: args.timeline.summary.matchedEventCount,
+    missingEvidence: args.timeline.summary.missingEvidence,
+    missingEvidenceCount: args.timeline.summary.missingEvidence.length,
+    proof: args.timeline.summary.proof,
+    state: args.timeline.state,
+    status: 'complete',
+  };
+}
+
+function localVisibilityTrigger(
+  evidence: SyncularLocalVisibilityEvidence | undefined
+): string | null {
+  const trigger = evidence?.details?.trigger;
+  return typeof trigger === 'string' ? trigger : null;
+}
+
 function countTimelinePhase(
   events: NonNullable<SyncularSupportBundle['runtimeTimeline']>['events'],
   phase: string
@@ -2414,6 +2579,82 @@ function SupportBundleLine({
     >
       {label}
     </p>
+  );
+}
+
+function CommandTimelineProofMarker({
+  commandTimelineProof,
+}: {
+  commandTimelineProof: CommandTimelineProofPreview;
+}) {
+  const proof = commandTimelineProof.proof;
+  return (
+    <span
+      data-syncular-command-timeline-proof-client-commit-id={
+        commandTimelineProof.clientCommitId ?? ''
+      }
+      data-syncular-command-timeline-proof-complete={proof.complete}
+      data-syncular-command-timeline-proof-context-event-count={
+        commandTimelineProof.contextEventCount
+      }
+      data-syncular-command-timeline-proof-count={commandTimelineProof.count}
+      data-syncular-command-timeline-proof-duration-ms={
+        commandTimelineProof.durationMs ?? ''
+      }
+      data-syncular-command-timeline-proof-error={
+        commandTimelineProof.error ?? ''
+      }
+      data-syncular-command-timeline-proof-error-code={
+        commandTimelineProof.errorCode ?? ''
+      }
+      data-syncular-command-timeline-proof-event-count={
+        commandTimelineProof.eventCount
+      }
+      data-syncular-command-timeline-proof-local-apply-observed={
+        proof.localApplyObserved
+      }
+      data-syncular-command-timeline-proof-local-visibility-observed={
+        proof.localVisibilityObserved
+      }
+      data-syncular-command-timeline-proof-local-visibility-state={
+        commandTimelineProof.localVisibilityState ?? ''
+      }
+      data-syncular-command-timeline-proof-local-visibility-trigger={
+        commandTimelineProof.localVisibilityTrigger ?? ''
+      }
+      data-syncular-command-timeline-proof-matched-event-count={
+        commandTimelineProof.matchedEventCount
+      }
+      data-syncular-command-timeline-proof-missing-evidence={commandTimelineProof.missingEvidence.join(
+        ','
+      )}
+      data-syncular-command-timeline-proof-missing-evidence-count={
+        commandTimelineProof.missingEvidenceCount
+      }
+      data-syncular-command-timeline-proof-outbox-persisted={
+        proof.outboxPersisted
+      }
+      data-syncular-command-timeline-proof-pull-reason-observed={
+        proof.pullReasonObserved
+      }
+      data-syncular-command-timeline-proof-realtime-cursor-observed={
+        proof.realtimeCursorObserved
+      }
+      data-syncular-command-timeline-proof-request-correlated={
+        proof.requestCorrelated
+      }
+      data-syncular-command-timeline-proof-server-commit-observed={
+        proof.serverCommitObserved
+      }
+      data-syncular-command-timeline-proof-state={
+        commandTimelineProof.state ?? ''
+      }
+      data-syncular-command-timeline-proof-status={commandTimelineProof.status}
+      data-syncular-command-timeline-proof-sync-attempt-observed={
+        proof.syncAttemptObserved
+      }
+      hidden
+    />
   );
 }
 

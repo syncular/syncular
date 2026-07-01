@@ -288,6 +288,7 @@ async function verifyBuiltPreviewAssets(
 
   let sawLifecycleResumeMarker = false;
   let sawBrowserSupportPolicyMarker = false;
+  let sawCommandTimelineMarker = false;
   let sawDeploymentPreflightMarker = false;
   let sawStarterTimelineMarker = false;
   let sawStorageRecoveryMarker = false;
@@ -342,6 +343,11 @@ async function verifyBuiltPreviewAssets(
       sawSupportBundleMarker ||=
         assetBody.includes('data-syncular-support-bundle-status') &&
         assetBody.includes('data-syncular-support-bundle-timeline-event-count');
+      sawCommandTimelineMarker ||=
+        assetBody.includes('data-syncular-command-timeline-proof-status') &&
+        assetBody.includes(
+          'data-syncular-command-timeline-proof-local-visibility-observed'
+        );
     } else {
       const assetBytes = (await response.arrayBuffer()).byteLength;
       totalAssetBytes += assetBytes;
@@ -384,11 +390,17 @@ async function verifyBuiltPreviewAssets(
       'Built preview assets did not include the storage recovery proof marker'
     );
   }
+  if (!sawCommandTimelineMarker) {
+    throw new Error(
+      'Built preview assets did not include the command timeline proof marker'
+    );
+  }
 
   return {
     assetCheckMs: elapsedSince(startedAtMs),
     assetCount: assetPaths.length,
     browserSupportPolicyMarkerInAssets: sawBrowserSupportPolicyMarker,
+    commandTimelineMarkerInAssets: sawCommandTimelineMarker,
     cssAssetBytes,
     cssAssetCount,
     deploymentPreflightMarkerInAssets: sawDeploymentPreflightMarker,
@@ -444,6 +456,7 @@ type BuiltPreviewAssetMetrics = {
   assetCheckMs: number;
   assetCount: number;
   browserSupportPolicyMarkerInAssets: boolean;
+  commandTimelineMarkerInAssets: boolean;
   cssAssetBytes: number;
   cssAssetCount: number;
   deploymentPreflightMarkerInAssets: boolean;
@@ -908,6 +921,31 @@ type BrowserPreviewProbe = {
     syncEventCount: number;
     timelineEventCount: number;
   };
+  commandTimelineProof: {
+    clientCommitId: string | null;
+    complete: boolean;
+    contextEventCount: number;
+    count: number;
+    durationMs: number | null;
+    error: string | null;
+    errorCode: string | null;
+    eventCount: number;
+    localApplyObserved: boolean;
+    localVisibilityObserved: boolean;
+    localVisibilityState: string | null;
+    localVisibilityTrigger: string | null;
+    matchedEventCount: number;
+    missingEvidence: string[];
+    missingEvidenceCount: number;
+    outboxPersisted: boolean;
+    pullReasonObserved: boolean;
+    realtimeCursorObserved: boolean;
+    requestCorrelated: boolean;
+    serverCommitObserved: boolean;
+    state: string | null;
+    status: string | null;
+    syncAttemptObserved: boolean;
+  };
   lifecycleResume: {
     status: string | null;
     count: number;
@@ -999,6 +1037,7 @@ type BrowserPreviewProbe = {
   starterTimeline: {
     bootstrapReadyMs: number | null;
     bootstrapStatus: string | null;
+    commandTimelineStatus: string | null;
     databaseOpenMs: number | null;
     healthRefreshMs: number | null;
     localVisibilityErrorCode: string | null;
@@ -1033,6 +1072,7 @@ type BrowserPreviewFailureMetrics = {
   assetCheckMs: number;
   assetCount: number;
   browserSupportPolicyMarkerInAssets: boolean;
+  commandTimelineMarkerInAssets: boolean;
   cssAssetBytes: number;
   cssAssetCount: number;
   deploymentPreflightMarkerInAssets: boolean;
@@ -1078,6 +1118,37 @@ async function readStarterBrowserProbe(
     const supportBundleSyncAttemptIdCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-sync-attempt-id-count') ?? 0);
     const supportBundleSyncEventCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-sync-event-count') ?? 0);
     const supportBundleTimelineEventCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-timeline-event-count') ?? 0);
+    const commandTimelineProof = document.querySelector('[data-syncular-command-timeline-proof-status]');
+    const commandTimelineProofClientCommitId = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-client-commit-id') ?? null;
+    const commandTimelineProofComplete = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-complete') === 'true';
+    const commandTimelineProofContextEventCount = Number(commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-context-event-count') ?? 0);
+    const commandTimelineProofError = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-error') ?? null;
+    const commandTimelineProofErrorCode = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-error-code') ?? null;
+    const commandTimelineProofEventCount = Number(commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-event-count') ?? 0);
+    const commandTimelineProofLocalApplyObserved = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-local-apply-observed') === 'true';
+    const commandTimelineProofLocalVisibilityObserved = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-local-visibility-observed') === 'true';
+    const commandTimelineProofLocalVisibilityState = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-local-visibility-state') ?? null;
+    const commandTimelineProofLocalVisibilityTrigger = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-local-visibility-trigger') ?? null;
+    const commandTimelineProofMatchedEventCount = Number(commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-matched-event-count') ?? 0);
+    const commandTimelineProofMissingEvidenceText = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-missing-evidence') ?? '';
+    const commandTimelineProofMissingEvidence = commandTimelineProofMissingEvidenceText === '' ? [] : commandTimelineProofMissingEvidenceText.split(',').filter(Boolean);
+    const commandTimelineProofMissingEvidenceCount = Number(commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-missing-evidence-count') ?? commandTimelineProofMissingEvidence.length);
+    const commandTimelineProofOutboxPersisted = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-outbox-persisted') === 'true';
+    const commandTimelineProofPullReasonObserved = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-pull-reason-observed') === 'true';
+    const commandTimelineProofRealtimeCursorObserved = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-realtime-cursor-observed') === 'true';
+    const commandTimelineProofRequestCorrelated = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-request-correlated') === 'true';
+    const commandTimelineProofServerCommitObserved = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-server-commit-observed') === 'true';
+    const commandTimelineProofState = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-state') ?? null;
+    const commandTimelineProofStatus = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-status') ?? null;
+    const commandTimelineProofSyncAttemptObserved = commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-sync-attempt-observed') === 'true';
+    const readCommandTimelineProofNumber = (name) => {
+      const value = commandTimelineProof?.getAttribute(name) ?? null;
+      if (value === null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    };
+    const commandTimelineProofCount = Number(commandTimelineProof?.getAttribute('data-syncular-command-timeline-proof-count') ?? 0);
+    const commandTimelineProofDurationMs = readCommandTimelineProofNumber('data-syncular-command-timeline-proof-duration-ms');
     const deploymentPreflight = document.querySelector('[data-syncular-deployment-preflight-status]');
     const readDeploymentPreflightNumber = (name) => {
       const value = deploymentPreflight?.getAttribute(name) ?? null;
@@ -1263,6 +1334,7 @@ async function readStarterBrowserProbe(
     };
     const bootstrapReadyMs = readStarterTimelineMs('data-syncular-starter-bootstrap-ready-ms');
     const bootstrapStatus = starterTimeline?.getAttribute('data-syncular-starter-bootstrap-status') ?? null;
+    const commandTimelineStatus = starterTimeline?.getAttribute('data-syncular-starter-command-timeline-status') ?? null;
     const databaseOpenMs = readStarterTimelineMs('data-syncular-starter-database-open-ms');
     const healthRefreshMs = readStarterTimelineMs('data-syncular-starter-health-refresh-ms');
     const localVisibilityErrorCode = starterTimeline?.getAttribute('data-syncular-starter-local-visibility-error-code') ?? null;
@@ -1296,6 +1368,13 @@ async function readStarterBrowserProbe(
     }
     if (supportBundleStatus !== null && supportBundleRedacted !== 'true') {
       errors.push('support bundle was not redacted');
+    }
+    if (commandTimelineProofStatus === 'failed') {
+      errors.push(
+        commandTimelineProofErrorCode
+          ? 'command timeline proof failed: ' + commandTimelineProofErrorCode
+          : 'command timeline proof failed'
+      );
     }
     if (deploymentPreflightStatus === 'failed') {
       errors.push('deployment preflight failed');
@@ -1350,6 +1429,7 @@ async function readStarterBrowserProbe(
         (durableHealthLine || memoryStorageHealthLine) &&
         schemaLine &&
         supportBundleStatus !== null &&
+        commandTimelineProofStatus !== null &&
         browserSupportPolicyStatus !== null &&
         deploymentPreflightStatus !== null &&
         lifecycleResumeStatus !== null &&
@@ -1363,6 +1443,7 @@ async function readStarterBrowserProbe(
         databaseOpenMs !== null &&
         healthRefreshMs !== null &&
         localVisibilityStatus !== null &&
+        commandTimelineProofStatus !== null &&
         realtimeStatus !== null &&
         schemaReadinessMs !== null &&
         supportBundleExportMs !== null &&
@@ -1437,6 +1518,47 @@ async function readStarterBrowserProbe(
         syncAttemptIdCount: supportBundleSyncAttemptIdCount,
         syncEventCount: supportBundleSyncEventCount,
         timelineEventCount: supportBundleTimelineEventCount,
+      },
+      commandTimelineProof: {
+        clientCommitId:
+          commandTimelineProofClientCommitId === ''
+            ? null
+            : commandTimelineProofClientCommitId,
+        complete: commandTimelineProofComplete,
+        contextEventCount: commandTimelineProofContextEventCount,
+        count: commandTimelineProofCount,
+        durationMs: commandTimelineProofDurationMs,
+        error:
+          commandTimelineProofError === '' ? null : commandTimelineProofError,
+        errorCode:
+          commandTimelineProofErrorCode === ''
+            ? null
+            : commandTimelineProofErrorCode,
+        eventCount: commandTimelineProofEventCount,
+        localApplyObserved: commandTimelineProofLocalApplyObserved,
+        localVisibilityObserved: commandTimelineProofLocalVisibilityObserved,
+        localVisibilityState:
+          commandTimelineProofLocalVisibilityState === ''
+            ? null
+            : commandTimelineProofLocalVisibilityState,
+        localVisibilityTrigger:
+          commandTimelineProofLocalVisibilityTrigger === ''
+            ? null
+            : commandTimelineProofLocalVisibilityTrigger,
+        matchedEventCount: commandTimelineProofMatchedEventCount,
+        missingEvidence: commandTimelineProofMissingEvidence,
+        missingEvidenceCount: commandTimelineProofMissingEvidenceCount,
+        outboxPersisted: commandTimelineProofOutboxPersisted,
+        pullReasonObserved: commandTimelineProofPullReasonObserved,
+        realtimeCursorObserved: commandTimelineProofRealtimeCursorObserved,
+        requestCorrelated: commandTimelineProofRequestCorrelated,
+        serverCommitObserved: commandTimelineProofServerCommitObserved,
+        state:
+          commandTimelineProofState === ''
+            ? null
+            : commandTimelineProofState,
+        status: commandTimelineProofStatus,
+        syncAttemptObserved: commandTimelineProofSyncAttemptObserved,
       },
       lifecycleResume: {
         status: lifecycleResumeStatus,
@@ -1568,6 +1690,7 @@ async function readStarterBrowserProbe(
       starterTimeline: {
         bootstrapReadyMs,
         bootstrapStatus,
+        commandTimelineStatus,
         databaseOpenMs,
         healthRefreshMs,
         localVisibilityErrorCode,
@@ -2565,9 +2688,16 @@ async function proveStarterTwoTabPropagation(args: {
   second: CdpSession;
 }): Promise<string> {
   const title = `two-tab ${Date.now()}`;
+  const before = await readStarterBrowserProbe(args.first);
   await submitStarterTask(args.first, title);
 
   await waitForStarterLocalVisibility({
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.first,
+  });
+  await waitForStarterCommandTimelineProof({
+    expectedCount: before.commandTimelineProof.count + 1,
     failureArtifactPath: args.failureArtifactPath,
     failureMetrics: args.failureMetrics,
     session: args.first,
@@ -3930,6 +4060,61 @@ async function waitForStarterLocalVisibility(args: {
   );
 }
 
+async function waitForStarterCommandTimelineProof(args: {
+  expectedCount: number;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  session: CdpSession;
+}): Promise<void> {
+  const deadline = Date.now() + 10_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'command-timeline-proof-errors',
+        probe,
+        args.failureMetrics
+      );
+      throw new Error(
+        `Built preview command timeline proof failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    const proof = probe.commandTimelineProof;
+    if (
+      proof.status === 'complete' &&
+      proof.count >= args.expectedCount &&
+      proof.clientCommitId !== null &&
+      proof.durationMs !== null &&
+      proof.eventCount >= 3 &&
+      proof.outboxPersisted &&
+      proof.localApplyObserved &&
+      proof.localVisibilityObserved &&
+      proof.localVisibilityState === 'visible' &&
+      !proof.missingEvidence.includes('outbox-status') &&
+      !proof.missingEvidence.includes('local-apply') &&
+      !proof.missingEvidence.includes('local-visibility') &&
+      probe.starterTimeline.commandTimelineStatus === 'complete'
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'command-timeline-proof-timeout',
+    lastProbe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Timed out waiting for built preview command timeline proof. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
 async function writeBrowserPreviewFailureArtifact(
   path: string,
   reason: string,
@@ -4032,6 +4217,37 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         syncEventCount: 3,
         timelineEventCount: 12,
       },
+      commandTimelineProof: {
+        clientCommitId: 'commit-self-check',
+        complete: false,
+        contextEventCount: 1,
+        count: 1,
+        durationMs: 6,
+        error: null,
+        errorCode: null,
+        eventCount: 3,
+        localApplyObserved: true,
+        localVisibilityObserved: true,
+        localVisibilityState: 'visible',
+        localVisibilityTrigger: 'initial',
+        matchedEventCount: 1,
+        missingEvidence: [
+          'push-request-id',
+          'sync-attempt',
+          'server-commit-sequence',
+          'realtime-event-cursor',
+          'pull-reason',
+        ],
+        missingEvidenceCount: 5,
+        outboxPersisted: true,
+        pullReasonObserved: false,
+        realtimeCursorObserved: false,
+        requestCorrelated: false,
+        serverCommitObserved: false,
+        state: 'queued',
+        status: 'complete',
+        syncAttemptObserved: false,
+      },
       lifecycleResume: {
         status: 'complete',
         count: 2,
@@ -4123,6 +4339,7 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
       starterTimeline: {
         bootstrapReadyMs: 10,
         bootstrapStatus: 'ready',
+        commandTimelineStatus: 'complete',
         databaseOpenMs: 12,
         healthRefreshMs: 3,
         localVisibilityErrorCode: null,
@@ -4189,6 +4406,7 @@ function finalizeBrowserPreviewFailureMetrics(
     assetCount: metrics.assetCount,
     browserSupportPolicyMarkerInAssets:
       metrics.browserSupportPolicyMarkerInAssets,
+    commandTimelineMarkerInAssets: metrics.commandTimelineMarkerInAssets,
     cssAssetBytes: metrics.cssAssetBytes,
     cssAssetCount: metrics.cssAssetCount,
     deploymentPreflightMarkerInAssets:
@@ -4232,6 +4450,7 @@ function assertBrowserPreviewFailureMetricsShape(
   }
   for (const key of [
     'browserSupportPolicyMarkerInAssets',
+    'commandTimelineMarkerInAssets',
     'deploymentPreflightMarkerInAssets',
     'lifecycleResumeMarkerInAssets',
     'starterTimelineMarkerInAssets',
@@ -4264,6 +4483,10 @@ function assertBrowserPreviewProbeShape(
   assertBrowserPreviewDeploymentPreflightShape(probe.deploymentPreflight, path);
   assertBrowserPreviewSupportPolicyShape(probe.browserSupportPolicy, path);
   assertBrowserPreviewSupportBundleShape(probe.supportBundle, path);
+  assertBrowserPreviewCommandTimelineProofShape(
+    probe.commandTimelineProof,
+    path
+  );
   assertBrowserPreviewLifecycleResumeShape(probe.lifecycleResume, path);
   assertBrowserPreviewLifecyclePauseShape(probe.lifecyclePause, path);
   assertBrowserPreviewLocalRecoveryProofShape(probe.localRecoveryProof, path);
@@ -4342,6 +4565,7 @@ function assertBrowserPreviewStarterTimelineShape(
   }
   for (const key of [
     'bootstrapStatus',
+    'commandTimelineStatus',
     'localVisibilityErrorCode',
     'localVisibilityStatus',
     'realtimeStatus',
@@ -4535,6 +4759,84 @@ function assertBrowserPreviewSupportBundleShape(
         `${path} probe.supportBundle.${key} was not a non-negative number`
       );
     }
+  }
+}
+
+function assertBrowserPreviewCommandTimelineProofShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.commandTimelineProof was not a JSON object`);
+  }
+  for (const key of [
+    'complete',
+    'localApplyObserved',
+    'localVisibilityObserved',
+    'outboxPersisted',
+    'pullReasonObserved',
+    'realtimeCursorObserved',
+    'requestCorrelated',
+    'serverCommitObserved',
+    'syncAttemptObserved',
+  ] as const) {
+    if (typeof value[key] !== 'boolean') {
+      throw new Error(
+        `${path} probe.commandTimelineProof.${key} was not boolean`
+      );
+    }
+  }
+  if (
+    !Array.isArray(value.missingEvidence) ||
+    value.missingEvidence.some((item) => typeof item !== 'string')
+  ) {
+    throw new Error(
+      `${path} probe.commandTimelineProof.missingEvidence was not a string array`
+    );
+  }
+  if (value.missingEvidenceCount !== value.missingEvidence.length) {
+    throw new Error(
+      `${path} probe.commandTimelineProof.missingEvidenceCount did not match missingEvidence length`
+    );
+  }
+  for (const key of [
+    'clientCommitId',
+    'error',
+    'errorCode',
+    'localVisibilityState',
+    'localVisibilityTrigger',
+    'state',
+    'status',
+  ] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.commandTimelineProof.${key} was not nullable text`
+      );
+    }
+  }
+  for (const key of [
+    'contextEventCount',
+    'count',
+    'eventCount',
+    'matchedEventCount',
+    'missingEvidenceCount',
+  ] as const) {
+    if (
+      !isNonNegativeFiniteNumber(value[key]) ||
+      !Number.isInteger(value[key])
+    ) {
+      throw new Error(
+        `${path} probe.commandTimelineProof.${key} was not a non-negative integer`
+      );
+    }
+  }
+  if (
+    value.durationMs !== null &&
+    !isNonNegativeFiniteNumber(value.durationMs)
+  ) {
+    throw new Error(
+      `${path} probe.commandTimelineProof.durationMs was not nullable non-negative number`
+    );
   }
 }
 

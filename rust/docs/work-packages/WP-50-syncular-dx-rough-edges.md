@@ -4330,6 +4330,17 @@ Most recent mutation-status rerun:
   Chrome job log reached `real-browser smoke: proving quota-exhausted generated
   write` and then `real-browser built-preview preflight smoke passed`,
   confirming the quota-exhausted generated write branch in hosted Chrome.
+- 2026-07-01: Added a browser-observable command-timeline proof to the
+  starter generated task path. After a generated mutation receipt is captured,
+  the starter awaits generated `awaitTaskVisibility(...)` with `onEvidence`,
+  calls `client.commandTimeline(...)`, and records the proof booleans,
+  missing-evidence list, command state, client commit id, local visibility
+  trigger/state, and timing in a hidden marker plus
+  `browser-preview-failure.json`. The browser smoke now waits for local outbox
+  persistence, local-apply evidence, and local-visibility evidence without
+  pretending the starter UI has proven every server/realtime proof link. Local
+  `create-syncular-app` typecheck, smoke-script typecheck, focused Biome, and
+  non-Chrome scaffold smoke passed; hosted Chrome confirmation is pending.
 
 ## Next Action
 
@@ -4348,7 +4359,9 @@ quota-pressure preflight branch, now fixed to pass post-override CDP usage/quota
 facts into the app preflight proof and confirmed in hosted Chrome. The current
 slice extends those browser-observed quota facts into storage recovery action
 mapping, now confirmed in hosted Chrome. The quota-exhausted generated write
-rejection proof is also confirmed in hosted Chrome.
+rejection proof is also confirmed in hosted Chrome. The current unhosted slice
+adds a generated command-timeline proof marker to the starter browser path and
+needs hosted `starter-browser-preview` confirmation after push.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, eviction and storage-shutdown browser

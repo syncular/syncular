@@ -249,7 +249,11 @@ read-only review:
     generated mutation larger than the remaining Chrome/CDP quota budget and
     records the rejected write in the browser failure artifact; hosted Checks
     run `28544353197` confirmed that branch in Chrome. Eviction and
-    storage-shutdown behavior remain matrix work.
+    storage-shutdown behavior remain matrix work. The starter now also records
+    a browser-observable command-timeline proof after generated task creation,
+    linking the mutation receipt to redacted outbox persistence, local-apply
+    evidence, and local-visibility evidence in the hidden marker and browser
+    failure artifact; hosted Chrome confirmation for that branch is pending.
     Browser preview artifacts now include starter timings for database open,
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local
@@ -549,6 +553,9 @@ read-only review:
     accepted locally. Local visibility waits now emit redacted terminal
     evidence through `onEvidence`, so apps can pass the observed visibility
     point directly into command timelines instead of hand-writing a placeholder.
+    The starter smoke now exercises that path through the generated app UI so
+    browser artifacts carry the command proof booleans and missing-evidence
+    list instead of only a local-visibility timing.
     Sync attempts now also carry a client-generated `requestId` through
     `x-request-id`, diagnostics, runtime timelines, command timelines, and
     support bundles, matching the server request event id used by Hono console
