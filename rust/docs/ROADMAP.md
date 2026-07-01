@@ -171,8 +171,11 @@ read-only review:
     opening Syncular. The starter now emits a hidden lifecycle-resume marker,
     local asset smokes prove the marker is in the production bundle, and the
     Chrome/CDP path dispatches `online` and waits for a completed
-    `resumeFromBackground()` marker. Next slice: observe the hosted Chrome job
-    or continue with real two-tab lifecycle/recovery execution. The
+    `resumeFromBackground()` marker. The Chrome/CDP path now also opens a
+    second generated-app tab with its own client id/database file, creates a
+    task in the first tab, and waits for the second tab to observe it through
+    the normal sync/realtime path. Next slice: observe the hosted Chrome job or
+    continue broadening browser/framework runtime execution. The
     post-publish
     JavaScript install smoke now
     also creates a fresh optional import matrix project that installs

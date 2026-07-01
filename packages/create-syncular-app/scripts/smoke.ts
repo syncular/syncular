@@ -313,6 +313,7 @@ async function runBrowserPreviewSmoke(args: {
     await fetchUntilReady(`http://127.0.0.1:${debugPort}/json/version`, 15_000);
     const target = await createChromeTarget(debugPort, targetUrl);
     const session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    let secondSession: CdpSession | null = null;
     try {
       await session.send('Runtime.enable');
       await session.send('Page.enable');
@@ -322,7 +323,24 @@ async function runBrowserPreviewSmoke(args: {
         session,
         args.failureArtifactPath
       );
+      const secondTarget = await createChromeTarget(
+        debugPort,
+        `${args.origin}/?syncularClientId=web-second`
+      );
+      secondSession = await CdpSession.connect(
+        secondTarget.webSocketDebuggerUrl
+      );
+      await secondSession.send('Runtime.enable');
+      await secondSession.send('Page.enable');
+      await secondSession.send('Log.enable');
+      await waitForStarterBrowserReady(secondSession, args.failureArtifactPath);
+      await proveStarterTwoTabPropagation({
+        failureArtifactPath: args.failureArtifactPath,
+        first: session,
+        second: secondSession,
+      });
     } finally {
+      secondSession?.close();
       session.close();
     }
     log('real-browser built-preview preflight smoke passed');
@@ -525,6 +543,59 @@ async function proveStarterBrowserLifecycleResume(
   );
   throw new Error(
     `Timed out waiting for built preview lifecycle resume. Failure artifact: ${failureArtifactPath}`
+  );
+}
+
+async function proveStarterTwoTabPropagation(args: {
+  failureArtifactPath: string;
+  first: CdpSession;
+  second: CdpSession;
+}): Promise<void> {
+  const title = `two-tab ${Date.now()}`;
+  await args.first.evaluate(`(() => {
+    const input = document.querySelector('input[aria-label="New task"]');
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error('Task input not found');
+    }
+    input.value = ${JSON.stringify(title)};
+    const form = input.closest('form');
+    if (!(form instanceof HTMLFormElement)) {
+      throw new Error('Task form not found');
+    }
+    form.requestSubmit();
+    return true;
+  })()`);
+
+  const deadline = Date.now() + 20_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(args.second);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        args.failureArtifactPath,
+        'two-tab-propagation-errors',
+        probe
+      );
+      throw new Error(
+        `Built preview two-tab propagation failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${args.failureArtifactPath}`
+      );
+    }
+    const propagated = await args.second.evaluate<boolean>(
+      `document.body?.innerText.includes(${JSON.stringify(title)}) ?? false`
+    );
+    if (propagated) return;
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+  }
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'two-tab-propagation-timeout',
+    lastProbe
+  );
+  throw new Error(
+    `Timed out waiting for built preview two-tab propagation. Failure artifact: ${args.failureArtifactPath}`
   );
 }
 

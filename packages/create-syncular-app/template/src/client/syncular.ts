@@ -33,9 +33,20 @@ export type AppSyncClient = SyncularAppDatabase;
  */
 export const appActorId = 'demo-user';
 const appToken = 'demo-user';
+const defaultClientId = 'web';
 
 const syncBaseUrl =
   import.meta.env.VITE_SYNCULAR_SYNC_URL ?? 'http://127.0.0.1:4100/sync';
+
+function currentClientId(): string {
+  if (typeof window === 'undefined') return defaultClientId;
+  const requested = new URLSearchParams(window.location.search).get(
+    'syncularClientId'
+  );
+  if (!requested) return defaultClientId;
+  const normalized = requested.replace(/[^a-zA-Z0-9_-]/g, '-').slice(0, 64);
+  return normalized || defaultClientId;
+}
 
 /**
  * Opens the local database (SQLite persisted in IndexedDB). The generated
@@ -44,6 +55,11 @@ const syncBaseUrl =
  * resolving, so the returned client is ready for the React hooks.
  */
 export async function openAppClient(): Promise<AppSyncClient> {
+  const clientId = currentClientId();
+  const fileName =
+    clientId === defaultClientId
+      ? 'syncular-app-v1.sqlite'
+      : `syncular-app-v1-${clientId}.sqlite`;
   const preflight = await getSyncularBrowserDeploymentPreflight({
     requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
     storage: 'indexedDb',
@@ -62,8 +78,8 @@ export async function openAppClient(): Promise<AppSyncClient> {
     config: {
       baseUrl: syncBaseUrl,
       actorId: appActorId,
-      clientId: 'web',
-      fileName: 'syncular-app-v1.sqlite',
+      clientId,
+      fileName,
       storage: 'indexedDb',
     },
     requestTimeoutMs: 15_000,
