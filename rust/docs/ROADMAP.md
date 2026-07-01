@@ -233,6 +233,11 @@ read-only review:
     bootstrap readiness, realtime connection, and generated-mutation local
     visibility, plus deployment-preflight storage/quota status when Chrome/CDP
     is available, including available bytes, usage ratio, and quota pressure.
+    The hosted Chrome starter smoke also forces a hidden support-bundle marker
+    failure after the happy path and verifies a same-schema
+    `browser-preview-failure.support-bundle.json` artifact from live browser
+    probe data, so page-reported support-bundle failures are not covered only
+    by the synthetic non-browser artifact self-check.
     Hosted CI narrowed the remaining browser-preview failure to first paint
     being blocked after local storage/auth setup but before the app could
     commit the ready render; the starter now resolves after local

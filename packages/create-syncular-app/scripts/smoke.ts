@@ -19,6 +19,9 @@ import { Buffer } from 'node:buffer';
  *    contention timeout/recovery, two-tab propagation, same-client
  *    page reload/reopen persistence, and
  *    same-profile browser process restart persistence.
+ *    After the happy path, the browser smoke also forces a hidden
+ *    support-bundle marker failure and verifies the live
+ *    browser-preview-failure artifact contract from real Chrome probe data.
  *    Browser failures write
  *    browser-preview-failure.json with redacted marker state under the smoke
  *    work dir. The normal smoke also self-checks that artifact shape and safe
@@ -577,7 +580,23 @@ async function runBrowserPreviewSmoke(args: {
     );
     throw error;
   }
+  log('real-browser smoke: proving support-bundle failure artifact');
+  await proveStarterSupportBundleFailureArtifact({
+    chrome: args.chrome,
+    failureArtifactPath: supportBundleFailureArtifactPath(
+      args.failureArtifactPath
+    ),
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    userDataDir: `${args.userDataDir}-support-bundle-failure`,
+  });
   log('real-browser built-preview preflight smoke passed');
+}
+
+function supportBundleFailureArtifactPath(failureArtifactPath: string): string {
+  return failureArtifactPath.endsWith('.json')
+    ? failureArtifactPath.replace(/\.json$/u, '.support-bundle.json')
+    : `${failureArtifactPath}.support-bundle.json`;
 }
 
 async function withTimeout<T>(args: {
@@ -1842,6 +1861,134 @@ async function proveStarterBrowserProcessRestart(args: {
     session?.close();
     await stopProcess(chrome.process);
   }
+}
+
+async function proveStarterSupportBundleFailureArtifact(args: {
+  chrome: string;
+  failureArtifactPath: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  origin: string;
+  userDataDir: string;
+}): Promise<void> {
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  const url = `${args.origin}/?syncularClientId=web-support-bundle-artifact&syncularSupportBundleArtifactProof=${Date.now()}`;
+  let session: CdpSession | null = null;
+
+  try {
+    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
+    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    await enableChromeTarget(session);
+    await navigateChromeTarget(session, url);
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+    await forceStarterSupportBundleFailureMarker(session);
+
+    try {
+      await waitForStarterBrowserReady(
+        session,
+        args.failureArtifactPath,
+        args.failureMetrics
+      );
+    } catch {
+      await verifyExpectedSupportBundleFailureArtifact(
+        args.failureArtifactPath
+      );
+      return;
+    }
+
+    throw new Error(
+      `Built preview support-bundle failure marker did not produce a failure artifact. Artifact path: ${args.failureArtifactPath}`
+    );
+  } finally {
+    session?.close();
+    await stopProcess(chrome.process);
+  }
+}
+
+async function forceStarterSupportBundleFailureMarker(
+  session: CdpSession
+): Promise<void> {
+  const result = await session.evaluate<{
+    ok: boolean;
+    reason: string | null;
+  }>(`(() => {
+    const supportBundle = document.querySelector('[data-syncular-support-bundle-status]');
+    if (!(supportBundle instanceof HTMLElement)) {
+      return { ok: false, reason: 'support-bundle-marker-missing' };
+    }
+    const readCount = (name) => {
+      const value = Number(supportBundle.getAttribute(name) ?? 0);
+      return Number.isFinite(value) && value >= 0 ? value : 0;
+    };
+    supportBundle.setAttribute('data-syncular-support-bundle-status', 'failed');
+    supportBundle.setAttribute('data-syncular-support-bundle-redacted', 'true');
+    supportBundle.setAttribute(
+      'data-syncular-support-bundle-issue-count',
+      String(Math.max(1, readCount('data-syncular-support-bundle-issue-count')))
+    );
+    supportBundle.setAttribute(
+      'data-syncular-support-bundle-section-error-count',
+      String(Math.max(1, readCount('data-syncular-support-bundle-section-error-count')))
+    );
+    supportBundle.textContent = 'support bundle failed';
+    return { ok: true, reason: null };
+  })()`);
+  if (!result.ok) {
+    throw new Error(
+      `Could not force built preview support-bundle failure marker: ${result.reason}`
+    );
+  }
+}
+
+async function verifyExpectedSupportBundleFailureArtifact(
+  path: string
+): Promise<void> {
+  const artifact = JSON.parse(await readFile(path, 'utf8')) as unknown;
+  assertBrowserPreviewFailureArtifactShape(artifact, path);
+  if (artifact.reason !== 'page-reported-errors') {
+    throw new Error(
+      `${path} had reason ${artifact.reason}; expected page-reported-errors`
+    );
+  }
+  if (artifact.probe === null) {
+    throw new Error(`${path} did not include the live browser probe`);
+  }
+  if (!artifact.probe.errors.includes('support bundle export failed')) {
+    throw new Error(
+      `${path} did not include the support bundle export failure error`
+    );
+  }
+  if (artifact.probe.supportBundle.status !== 'failed') {
+    throw new Error(`${path} did not preserve supportBundle.status=failed`);
+  }
+  if (artifact.probe.supportBundle.redacted !== 'true') {
+    throw new Error(`${path} did not preserve redacted support-bundle state`);
+  }
+  if (artifact.probe.supportBundle.issueCount < 1) {
+    throw new Error(`${path} did not preserve support-bundle issue evidence`);
+  }
+  if (artifact.probe.supportBundle.sectionErrorCount < 1) {
+    throw new Error(
+      `${path} did not preserve support-bundle section-error evidence`
+    );
+  }
+  if (artifact.probe.deploymentPreflight.status !== 'ready') {
+    throw new Error(
+      `${path} did not include ready deployment-preflight evidence`
+    );
+  }
+  if (artifact.probe.browserSupportPolicy.status !== 'met') {
+    throw new Error(
+      `${path} did not include met browser support-policy evidence`
+    );
+  }
+  log('support-bundle failure artifact check passed');
 }
 
 async function waitForStarterBrowserUrl(args: {

@@ -2395,6 +2395,16 @@ online propagation, or reconnect behavior can change.
   work dir in `.context/starter-browser-preview-smoke` and upload
   `browser-preview-failure.json` on job failure, so hosted Chrome readiness
   failures leave downloadable redacted support evidence instead of only logs.
+- 2026-07-01: Added a live Chrome support-bundle failure artifact proof after
+  the starter browser-preview happy path. The smoke opens a fresh built-preview
+  page, waits for the real browser markers to be ready, forces the hidden
+  support-bundle marker into a failed/redacted state, verifies that the normal
+  page-reported-error path writes
+  `browser-preview-failure.support-bundle.json`, and checks that artifact
+  preserves deployment-preflight, browser support-policy, support-bundle issue,
+  and section-error evidence. The Checks upload glob now captures
+  `browser-preview-*.json` so both normal and support-bundle failure artifacts
+  are preserved on hosted failures.
 - 2026-07-01: Promoted the newer browser-preview deployment-preflight artifact
   fields into Console ingestion schema coverage and route assertions. Console
   now validates and preserves available-byte budgets, quota pressure,
@@ -2940,6 +2950,25 @@ Most recent starter browser-failure artifact rerun:
     Chrome/Chromium binary was available, after the same build, preview asset
     checks, starter runtime-timing marker check, and browser failure artifact
     shape/safe-metrics self-check passed.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `git diff --check`
+
+Most recent live support-bundle failure artifact rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts .github/workflows/checks.yml rust/docs/ROADMAP.md rust/docs/QUALITY_GATES.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, runtime asset checks,
+    hidden support-bundle/lifecycle/runtime-timing marker checks, and the
+    deterministic browser failure artifact shape/safe-metrics self-check.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available. On browser-capable runners, the smoke now opens an
+    extra built-preview Chrome target after the happy path, forces the hidden
+    support-bundle marker to a failed/redacted state, verifies
+    `browser-preview-failure.support-bundle.json`, and fails if the artifact
+    omits live deployment-preflight, support-policy, support-bundle issue, or
+    section-error evidence.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `git diff --check`
 
@@ -3699,13 +3728,16 @@ Most recent mutation-status rerun:
   subscription cursors, and diagnostic redaction policy. The starter now emits
   a compact redacted support-bundle artifact marker, and the scaffold smoke
   asserts the production build contains it plus runtime-timing markers; the
-  Chrome/CDP smoke waits for those markers when a browser is available. That
-  browser path now writes a
-  redacted `browser-preview-failure.json` artifact on readiness timeout or
-  page-reported health/support-bundle failures, the normal scaffold smoke
-  self-checks the artifact shape and safe smoke metrics without Chrome, and
-  the Checks job uploads that JSON on failure from a predictable smoke work
-  directory. Console/Fleet can now ingest that starter artifact through
+  Chrome/CDP smoke waits for those markers when a browser is available and now
+  also forces a hidden support-bundle marker failure after the happy path to
+  verify a same-schema live-browser
+  `browser-preview-failure.support-bundle.json` artifact. That browser path
+  writes a redacted `browser-preview-failure.json` artifact on readiness
+  timeout or page-reported health/support-bundle failures, the normal scaffold
+  smoke self-checks the artifact shape and safe smoke metrics without Chrome,
+  and the Checks job uploads `browser-preview-*.json` on failure from a
+  predictable smoke work directory. Console/Fleet can now ingest that starter
+  artifact through
   `POST /console/client-diagnostics/browser-preview-failure`, normalizing it
   into a redacted `browser.preview_failure` client diagnostic record without
   storing the artifact page text excerpt, and preserving the browser
@@ -3722,8 +3754,9 @@ Most recent mutation-status rerun:
   those stored quick fields. Release rehearsal now runs focused Console
   ingestion tests for both failure artifact families by default, while
   `doctor` stays limited to local schema/ops readiness. Remaining work is to
-  observe the hosted Chrome job for this proof and decide whether future
-  hosted artifact uploads need deeper Console/Fleet orchestration.
+  observe the hosted Chrome job for the live support-bundle failure-artifact
+  proof and decide whether future hosted artifact uploads need deeper
+  Console/Fleet orchestration.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
   conflict detail rows, last mutation-related errors, and recommended actions.

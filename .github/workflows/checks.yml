@@ -161,7 +161,7 @@ jobs:
         with:
           name: starter-browser-preview-${{ github.run_id }}
           if-no-files-found: ignore
-          path: .context/starter-browser-preview-smoke/browser-preview-failure.json
+          path: .context/starter-browser-preview-smoke/browser-preview-*.json
 
   rust-native:
     needs: changes
