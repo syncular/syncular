@@ -1815,6 +1815,15 @@ online propagation, or reconnect behavior can change.
   proves unauthenticated upload initiation, invalid upload-init bodies, invalid
   direct-upload tokens, and cross-actor upload completion return stable error
   envelopes before the happy-path upload/complete/download flow continues.
+- 2026-07-01: Turned the Cloudflare R2 proof from hardcoded actor allow-list
+  access into scoped app-row authorization. The first attempt exposed a real D1
+  DX bug: `createScopedBlobAccessDecisionChecker(...)` searched JSON blob
+  reference columns with `LIKE '%sha256:...'`, and local D1 rejected the long
+  content-hash pattern as too complex. `ScopedBlobReferenceTable` now accepts
+  an exact `hashColumn`, the public integration docs recommend that shape for
+  D1-backed routes, the unit test covers exact-hash lookup, and the Wrangler
+  smoke now proves owner download URL creation stays forbidden until a scoped
+  D1 app row references the completed R2 blob.
 - 2026-07-01: Extended the Cloudflare runtime proof with a DO-backed
   WebSocket echo route. The generated `SyncDurableObject` now receives
   `upgradeWebSocket`, registers `/syncular-framework-import-smoke/ws`, and the
@@ -2532,9 +2541,11 @@ Most recent mutation-status rerun:
   wrong-scope snapshot chunk access, opens real Syncular realtime reader/writer
   WebSockets over the Durable Object upgrade bridge, pushes through the writer
   socket, decodes the reader's binary sync-pack delta for the D1 row, drives
-  an R2-backed blob route upload/complete/download flow, rejects
-  unauthenticated upload initiation, invalid upload-init bodies, invalid
-  direct-upload tokens, forbidden upload completion, and forbidden blob
+  an R2-backed blob route upload/complete/download flow whose download URL is
+  authorized only after a scoped D1 app row references the completed blob via
+  an exact `hashColumn`, rejects unauthenticated upload initiation, invalid
+  upload-init bodies, invalid direct-upload tokens, forbidden upload
+  completion, missing-reference owner download URL attempts, and forbidden blob
   download URLs with stable access details, and echoes through a DO-backed
   WebSocket route. The same local runtime proof now
   self-checks a bounded Cloudflare failure artifact so failed DO/D1/R2/WebSocket
@@ -2543,8 +2554,9 @@ Most recent mutation-status rerun:
   dry-runs and can require the Vite browser execution path on Chrome-capable
   runners. Remaining matrix work is deeper browser/framework execution beyond
   these proofs, especially richer multi-client/browser Syncular realtime over
-  Durable Object WebSocket, larger app-level scoped D1/R2 route combinations,
-  Safari, Firefox, private mode, WebViews, and PWAs.
+  Durable Object WebSocket, larger app-level scoped D1/R2 route combinations
+  such as multiple blob reference tables, partition columns, and revoked
+  references, Safari, Firefox, private mode, WebViews, and PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.

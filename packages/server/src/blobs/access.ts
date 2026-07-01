@@ -26,6 +26,11 @@ export interface ScopedBlobReferenceTable {
   table: string;
   blobColumns: readonly string[];
   /**
+   * Optional exact-match content hash column. Prefer this for D1/SQLite-backed
+   * routes so lookup does not depend on LIKE over JSON blob reference columns.
+   */
+  hashColumn?: string;
+  /**
    * Optional column that must match the requested Syncular route partition.
    * Use this when one reference table stores grants for multiple partitions.
    */
@@ -96,6 +101,7 @@ export function createScopedBlobAccessDecisionChecker<
         db: options.db,
         table: reference.table,
         columns: reference.blobColumns,
+        hashColumn: reference.hashColumn,
         hash: request.hash,
         partitionId: request.partitionId,
         partitionColumn: reference.partitionColumn,
@@ -216,15 +222,16 @@ async function readBlobReferenceCandidateRows<DB extends SyncCoreDb>(args: {
   db: Kysely<DB>;
   table: string;
   columns: readonly string[];
+  hashColumn?: string;
   hash: string;
   partitionId: string;
   partitionColumn?: string;
   limit: number;
 }): Promise<Record<string, unknown>[]> {
   const pattern = `%${args.hash}%`;
-  const predicates = args.columns.map(
-    (column) => sql`${sql.ref(column)} like ${pattern}`
-  );
+  const predicates = args.hashColumn
+    ? [sql`${sql.ref(args.hashColumn)} = ${args.hash}`]
+    : args.columns.map((column) => sql`${sql.ref(column)} like ${pattern}`);
   const partitionPredicate = args.partitionColumn
     ? sql` and ${sql.ref(args.partitionColumn)} = ${args.partitionId}`
     : sql``;

@@ -838,6 +838,11 @@ live_tasks.refresh(&mut client)?;
 ## 16. Blobs
 
 Blob columns should be listed in the typed app contract under `blobColumns`.
+For server-side scoped blob download authorization, keep the typed `BlobRef`
+JSON column and prefer a separate exact content-hash column in the same scoped
+row. Pass that column as `hashColumn` to
+`createScopedBlobAccessDecisionChecker(...)`; D1 rejects long hash searches via
+`LIKE`, so exact hash lookup is the portable route shape.
 
 Store bytes locally and queue upload:
 

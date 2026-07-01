@@ -49,9 +49,11 @@ until the full browser Worker/WASM suite is green on Linux.
   forbidden-scope, missing-snapshot-scope, and forbidden snapshot-chunk sync
   failures, a real Syncular realtime route over the Durable Object WebSocket
   bridge with a WebSocket push and binary sync-pack delta, an R2-backed
-  Syncular blob route upload/complete/download flow, stable unauthenticated,
-  invalid-init, invalid-token, forbidden-completion, and forbidden-download
-  blob failures, and a Durable Object WebSocket echo through those bindings.
+  Syncular blob route upload/complete/download flow whose download URL is
+  authorized through an exact-hash scoped app row, stable unauthenticated,
+  invalid-init, invalid-token, forbidden-completion, missing-reference, and
+  forbidden-download blob failures, and a Durable Object WebSocket echo through
+  those bindings.
   For release/post-publish
   checks,
   `bun scripts/post-publish-install-smokes.ts --version <version>` also runs

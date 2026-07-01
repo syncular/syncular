@@ -14,6 +14,7 @@ interface TasksTable {
   id: string;
   user_id: string;
   image: string | null;
+  image_hash: string | null;
   server_version: number;
 }
 
@@ -35,6 +36,7 @@ interface ClientDb {
     id: string;
     user_id: string;
     image: BlobRef | null;
+    image_hash: string | null;
     server_version: number;
   };
   package_assets: {
@@ -59,6 +61,7 @@ describe('createScopedBlobAccessChecker', () => {
       .addColumn('id', 'text', (col) => col.primaryKey())
       .addColumn('user_id', 'text', (col) => col.notNull())
       .addColumn('image', 'text')
+      .addColumn('image_hash', 'text')
       .addColumn('server_version', 'integer', (col) =>
         col.notNull().defaultTo(0)
       )
@@ -115,6 +118,50 @@ describe('createScopedBlobAccessChecker', () => {
         rowId: 'task-1',
       }),
     ]);
+  });
+
+  it('can use an exact hash column before checking the blob reference payload', async () => {
+    const blob: BlobRef = {
+      hash: `sha256:${'f'.repeat(64)}`,
+      size: 8,
+      mimeType: 'image/png',
+    };
+    await db
+      .insertInto('tasks')
+      .values({
+        id: 'task-hash-column',
+        user_id: 'user-1',
+        image: JSON.stringify(blob),
+        image_hash: blob.hash,
+        server_version: 1,
+      })
+      .execute();
+
+    const decideBlobAccess = createScopedBlobAccessDecisionChecker({
+      db,
+      handlers: [tasksHandler],
+      references: [
+        {
+          table: 'tasks',
+          blobColumns: ['image'],
+          hashColumn: 'image_hash',
+        },
+      ],
+    });
+
+    await expect(
+      decideBlobAccess({
+        actorId: 'user-1',
+        partitionId: 'default',
+        hash: blob.hash,
+      })
+    ).resolves.toMatchObject({
+      allowed: true,
+      reason: 'allowed',
+      table: 'tasks',
+      column: 'image',
+      rowId: 'task-hash-column',
+    });
   });
 
   it('denies a known hash when the referencing row is outside actor scope', async () => {

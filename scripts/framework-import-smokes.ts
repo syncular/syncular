@@ -129,9 +129,13 @@ async function runLocalWorkerRuntimeProbe(args: {
       getExit: () => exited,
     });
     if (args.blobRouteBase) {
+      if (!args.syncRouteBase) {
+        throw new Error('Cloudflare blob route smoke requires syncRouteBase');
+      }
       await runBlobRouteFlow({
         origin: `http://127.0.0.1:${port}`,
         routeBase: args.blobRouteBase,
+        syncRouteBase: args.syncRouteBase,
         output,
         getExit: () => exited,
       });
@@ -1734,6 +1738,7 @@ function parseRealtimeMessage(
 async function runBlobRouteFlow(args: {
   origin: string;
   routeBase: string;
+  syncRouteBase: string;
   output: string[];
   getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
 }): Promise<void> {
@@ -1851,6 +1856,50 @@ async function runBlobRouteFlow(args: {
     args.output
   );
 
+  const unreferencedDownloadUrlResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
+      hash
+    )}/url`,
+    init: {
+      headers: {
+        'x-syncular-smoke-actor': actorId,
+        'x-syncular-smoke-partition': partitionId,
+      },
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  const unreferencedDownloadUrlBody = await expectJsonErrorResponse(
+    label,
+    'unreferenced download URL',
+    {
+      response: unreferencedDownloadUrlResponse,
+      output: args.output,
+      status: 403,
+      code: 'blob.forbidden',
+      category: 'forbidden',
+      recommendedAction: 'checkPermissions',
+    }
+  );
+  assertBlobAccessDeniedDetails(label, 'unreferenced download URL', {
+    body: unreferencedDownloadUrlBody,
+    partitionId,
+    accessReason: 'missing_reference',
+    accessStage: 'reference',
+  });
+
+  await pushBlobReferenceRow({
+    actorId,
+    hash,
+    mimeType: 'text/plain',
+    origin: args.origin,
+    output: args.output,
+    routeBase: args.syncRouteBase,
+    size: content.byteLength,
+    getExit: args.getExit,
+  });
+
   const downloadUrlResponse = await fetchWorkerResponse({
     label,
     url: `${args.origin}${args.routeBase}/blobs/${encodeURIComponent(
@@ -1931,18 +1980,130 @@ async function runBlobRouteFlow(args: {
       recommendedAction: 'checkPermissions',
     }
   );
-  const forbiddenDetails = forbiddenDownloadUrlBody.details as
-    | Record<string, unknown>
-    | undefined;
+  assertBlobAccessDeniedDetails(label, 'forbidden download URL', {
+    body: forbiddenDownloadUrlBody,
+    partitionId,
+    accessReason: 'scope_denied',
+    accessStage: 'scope',
+    referenceTable: 'syncular_framework_tasks',
+    referenceColumn: 'image_blob_ref',
+  });
+}
+
+async function pushBlobReferenceRow(args: {
+  actorId: string;
+  hash: string;
+  mimeType: string;
+  origin: string;
+  output: string[];
+  routeBase: string;
+  size: number;
+  getExit: () => { code: number | null; signal: NodeJS.Signals | null } | null;
+}): Promise<void> {
+  const label = 'Cloudflare R2 blob route smoke';
+  const rowId = `syncular-framework-blob-reference-${Date.now()}`;
+  const pushResponse = await fetchWorkerResponse({
+    label,
+    url: `${args.origin}${args.routeBase}`,
+    init: {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'x-syncular-smoke-actor': args.actorId,
+      },
+      body: JSON.stringify({
+        clientId: 'syncular-framework-blob-reference-writer',
+        push: {
+          commits: [
+            {
+              clientCommitId: `commit-${rowId}`,
+              schemaVersion: 1,
+              operations: [
+                {
+                  table: 'syncular_framework_tasks',
+                  row_id: rowId,
+                  op: 'upsert',
+                  payload: {
+                    id: rowId,
+                    user_id: args.actorId,
+                    title: 'R2 scoped blob reference ready',
+                    image_blob_hash: args.hash,
+                    image_blob_ref: JSON.stringify({
+                      hash: args.hash,
+                      size: args.size,
+                      mimeType: args.mimeType,
+                    }),
+                    server_version: 0,
+                  },
+                },
+              ],
+            },
+          ],
+        },
+      }),
+    },
+    output: args.output,
+    getExit: args.getExit,
+  });
+  await expectOkResponse(
+    label,
+    'blob reference push',
+    pushResponse,
+    args.output
+  );
+  const pushBody = (await readSyncRouteResponse(
+    label,
+    'blob reference push',
+    pushResponse
+  )) as {
+    ok?: boolean;
+    push?: {
+      commits?: Array<{
+        results?: Array<{ status?: string }>;
+        status?: string;
+      }>;
+    };
+  };
+  const pushedCommit = pushBody.push?.commits?.[0];
   if (
-    forbiddenDetails?.failureKind !== 'blob_access_denied' ||
-    forbiddenDetails.accessReason !== 'access_denied' ||
-    forbiddenDetails.accessStage !== 'unknown' ||
-    forbiddenDetails.partitionId !== partitionId
+    pushBody.ok !== true ||
+    pushedCommit?.status !== 'applied' ||
+    pushedCommit.results?.[0]?.status !== 'applied'
   ) {
     throw new Error(
-      `${label} forbidden download URL returned unexpected details: ${JSON.stringify(
-        forbiddenDownloadUrlBody
+      `${label} blob reference push did not apply: ${JSON.stringify(
+        pushBody
+      ).slice(0, 500)}`
+    );
+  }
+}
+
+function assertBlobAccessDeniedDetails(
+  label: string,
+  step: string,
+  args: {
+    body: Record<string, unknown>;
+    partitionId: string;
+    accessReason: string;
+    accessStage: string;
+    referenceColumn?: string;
+    referenceTable?: string;
+  }
+): void {
+  const details = args.body.details as Record<string, unknown> | undefined;
+  if (
+    details?.failureKind !== 'blob_access_denied' ||
+    details.accessReason !== args.accessReason ||
+    details.accessStage !== args.accessStage ||
+    details.partitionId !== args.partitionId ||
+    (args.referenceTable !== undefined &&
+      details.referenceTable !== args.referenceTable) ||
+    (args.referenceColumn !== undefined &&
+      details.referenceColumn !== args.referenceColumn)
+  ) {
+    throw new Error(
+      `${label} ${step} returned unexpected details: ${JSON.stringify(
+        args.body
       ).slice(0, 500)}`
     );
   }
@@ -2447,6 +2608,7 @@ async function writeCloudflareWorkerApp(appDir: string): Promise<void> {
   createBlobManager,
   createDatabase,
   createServerHandler,
+  createScopedBlobAccessDecisionChecker,
   ensureBlobStorageSchemaSqlite,
   ensureSyncSchema,
 } from '@syncular/server';
@@ -2496,23 +2658,24 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
       .addColumn('id', 'text', (col) => col.primaryKey())
       .addColumn('user_id', 'text', (col) => col.notNull())
       .addColumn('title', 'text', (col) => col.notNull())
+      .addColumn('image_blob_hash', 'text')
+      .addColumn('image_blob_ref', 'text')
       .addColumn('server_version', 'integer', (col) =>
         col.notNull().defaultTo(0)
       )
       .execute();
+    const taskHandler = createServerHandler({
+      table: 'syncular_framework_tasks',
+      scopes: ['user:{user_id}'],
+      resolveScopes: async (ctx) => ({
+        user_id: [ctx.actorId],
+      }),
+    });
     const { syncRoutes } = createSyncServer({
       db,
       dialect: syncDialect,
       sync: {
-        handlers: [
-          createServerHandler({
-            table: 'syncular_framework_tasks',
-            scopes: ['user:{user_id}'],
-            resolveScopes: async (ctx) => ({
-              user_id: [ctx.actorId],
-            }),
-          }),
-        ],
+        handlers: [taskHandler],
         authenticate: async (request) => {
           const actorId =
             request.headers.get('x-syncular-smoke-actor') ??
@@ -2538,8 +2701,17 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
               c.req.header('x-syncular-smoke-partition') ?? 'default',
           };
         },
-        canAccessBlob: async ({ actorId }) =>
-          actorId === 'syncular-framework-actor',
+        canAccessBlob: createScopedBlobAccessDecisionChecker({
+          db,
+          handlers: [taskHandler],
+          references: [
+            {
+              table: 'syncular_framework_tasks',
+              blobColumns: ['image_blob_ref'],
+              hashColumn: 'image_blob_hash',
+            },
+          ],
+        }),
         maxUploadSize: 1024 * 1024,
       })
     );
