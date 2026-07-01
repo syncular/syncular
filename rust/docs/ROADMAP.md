@@ -247,9 +247,9 @@ read-only review:
     compaction actions through public recovery APIs. The starter smoke now also
     has a bounded quota-exhausted generated write proof that attempts a
     generated mutation larger than the remaining Chrome/CDP quota budget and
-    records the rejected write in the browser failure artifact, with hosted
-    Chrome verification pending before it can close that matrix item; eviction
-    and storage-shutdown behavior remain matrix work.
+    records the rejected write in the browser failure artifact; hosted Checks
+    run `28544353197` confirmed that branch in Chrome. Eviction and
+    storage-shutdown behavior remain matrix work.
     Browser preview artifacts now include starter timings for database open,
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local

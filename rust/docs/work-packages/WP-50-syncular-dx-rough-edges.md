@@ -3882,13 +3882,12 @@ Most recent mutation-status rerun:
   an explicit starter-open error and proves the active tab remains writable.
   Remaining work is richer browser lifecycle execution: actual backgrounded or
   discarded tab suspension/restoration outside CDP lifecycle-state forcing,
-  storage shutdown, hosted verification of quota-exhausted generated writes,
-  eviction, lower-level storage contention/failure behavior beyond the
-  same-database duplicate-tab branch, and deeper recovery coordination for
-  persistent browser databases beyond dispatched page lifecycle events, CDP
-  lifecycle forcing, synthetic storage warning action mapping,
-  browser-observed quota-pressure preflight classification and recovery action
-  mapping, the newly wired quota-exhausted write rejection proof, and
+  storage shutdown, eviction, lower-level storage contention/failure behavior
+  beyond the same-database duplicate-tab branch, and deeper recovery
+  coordination for persistent browser databases beyond dispatched page
+  lifecycle events, CDP lifecycle forcing, synthetic storage warning action
+  mapping, browser-observed quota-pressure preflight classification and
+  recovery action mapping, hosted quota-exhausted write rejection proof, and
   lock-serialized foreground resume/recovery actions. Local
   execution of the new browser branches still needs a Chrome-capable runner;
   this machine has no Chrome/Chromium binary.
@@ -3941,9 +3940,8 @@ Most recent mutation-status rerun:
   Remaining work is richer
   browser-process proof: actual
   target-browser background/discard suspension and restoration,
-  shutdown/restart states, real storage shutdown, hosted verification of the
-  quota-exhausted generated write branch, eviction behavior in a browser,
-  lower-level storage contention/failure behavior beyond duplicate-tab
+  shutdown/restart states, real storage shutdown, eviction behavior in a
+  browser, lower-level storage contention/failure behavior beyond duplicate-tab
   generated writes, and deeper persistent database recovery coordination.
 - Browser and bundler matrix: prove durable persistence, loud unsupported
   failures, SSR-safe root imports, and optional-subpath isolation across the
@@ -4327,8 +4325,11 @@ Most recent mutation-status rerun:
   proof failure with `browser.quota_exhaustion_write_succeeded`, keeping the
   normal generated write-pressure proof as the happy path. Local
   `create-syncular-app` typecheck, smoke-script typecheck, focused Biome, and
-  non-Chrome scaffold smoke passed; hosted Chrome verification is still needed
-  because this machine has no Chrome/Chromium binary.
+  non-Chrome scaffold smoke passed; hosted Checks run `28544353197` on
+  `4a0404cc` passed the full matrix, including `starter-browser-preview`. The
+  Chrome job log reached `real-browser smoke: proving quota-exhausted generated
+  write` and then `real-browser built-preview preflight smoke passed`,
+  confirming the quota-exhausted generated write branch in hosted Chrome.
 
 ## Next Action
 
@@ -4346,10 +4347,8 @@ private-mode durable persistence. The current slice adds a browser-observed
 quota-pressure preflight branch, now fixed to pass post-override CDP usage/quota
 facts into the app preflight proof and confirmed in hosted Chrome. The current
 slice extends those browser-observed quota facts into storage recovery action
-mapping, now confirmed in hosted Chrome. The current working slice now wires a
-quota-exhausted generated write rejection proof and has passed local
-non-Chrome gates; push it and use the hosted `starter-browser-preview` job as
-the authority for the real Chrome result.
+mapping, now confirmed in hosted Chrome. The quota-exhausted generated write
+rejection proof is also confirmed in hosted Chrome.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, eviction and storage-shutdown browser
