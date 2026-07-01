@@ -410,7 +410,7 @@ async function verifyBuiltPreviewWorkerAssets(origin: string): Promise<void> {
 function collectStaticRelativeJavaScriptImports(source: string): string[] {
   const imports = new Set<string>();
   const pattern =
-    /(?:import\s+[^'"]*?\s+from\s+|import\s*|export\s+[^'"]*?\s+from\s+)['"](\.\/(?:[a-z0-9-]+\/)*[a-z0-9-]+\.js)['"]/gi;
+    /(?:import\s+[^'"]*?\s+from\s+|import\s*|export\s+[^'"]*?\s+from\s+)['"](\.\/(?:[a-z0-9-]+\/)*[a-z0-9-]+(?:\.js)?)['"]/gi;
   for (const match of source.matchAll(pattern)) imports.add(match[1]!);
   return [...imports];
 }

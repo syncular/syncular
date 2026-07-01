@@ -2,7 +2,12 @@ import { cp, mkdir, readdir, readFile } from 'node:fs/promises';
 import type { ServerResponse } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
-import { defineConfig, type Plugin, type ViteDevServer } from 'vite';
+import {
+  defineConfig,
+  type Plugin,
+  type PreviewServer,
+  type ViteDevServer,
+} from 'vite';
 
 const require = createRequire(import.meta.url);
 const syncularClientRoot = dirname(
@@ -31,6 +36,9 @@ function syncularRuntimeAssets(): Plugin {
     configureServer(server) {
       installSyncularRuntimeMiddleware(server);
     },
+    configurePreviewServer(server) {
+      installSyncularRuntimeMiddleware(server);
+    },
     async closeBundle() {
       await Promise.all([
         cp(
@@ -46,7 +54,9 @@ function syncularRuntimeAssets(): Plugin {
   };
 }
 
-function installSyncularRuntimeMiddleware(server: ViteDevServer) {
+function installSyncularRuntimeMiddleware(
+  server: ViteDevServer | PreviewServer
+) {
   server.middlewares.use((request, response, next) => {
     void serveSyncularRuntimeAsset(request.url, response)
       .then((served) => {
@@ -88,13 +98,13 @@ function resolveSyncularClientRuntimeRequest(requestUrl: string | undefined) {
   const pathname = new URL(requestUrl, 'http://syncular.local').pathname;
   if (!pathname.startsWith(syncularClientRuntimeMountPath)) return null;
   const fileName = pathname.slice(syncularClientRuntimeMountPath.length);
-  if (!/^(?:[a-z0-9-]+|wasm-bindings\/[a-z0-9-]+)\.js$/i.test(fileName)) {
+  if (!/^(?:[a-z0-9-]+|wasm-bindings\/[a-z0-9-]+)(?:\.js)?$/i.test(fileName)) {
     return null;
   }
   return {
     contentType: 'text/javascript; charset=utf-8',
     dir: syncularClientDistDir,
-    fileName,
+    fileName: fileName.endsWith('.js') ? fileName : `${fileName}.js`,
   };
 }
 
