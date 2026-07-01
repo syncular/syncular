@@ -2457,6 +2457,11 @@ online propagation, or reconnect behavior can change.
   skipped by default for local development apps; browser/CDP, framework,
   Console artifact ingestion, post-publish install, and publish dry-run checks
   remain release-rehearsal gates.
+- 2026-07-01: Wired production ops readiness into release rehearsal. The
+  rehearsal now runs `syncular ops check` when `syncular.ops.json` or
+  `--ops-config` is present, can fail closed with
+  `--require-ops-readiness`, and keeps `--skip-ops-readiness` available for
+  local-only rehearsals that are not proving release readiness.
 - 2026-07-01: Added Console Ops readiness ingestion for
   `syncular ops check --json`: `POST /console/ops/readiness` stores a redacted
   `ops_readiness` operation audit event, `GET /console/ops/readiness` returns
@@ -3073,6 +3078,24 @@ Most recent doctor readiness rerun:
   - Expected nonzero status: schema readiness stayed ready, while required ops
     readiness failed with stable `ops.*` issue codes for the missing
     production evidence file.
+
+Most recent release-rehearsal ops-readiness rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-docs-stale-check --skip-fresh-app-smokes --skip-starter-smoke --skip-framework-import-smokes --skip-console-artifact-ingestion --skip-publish-dry-runs --ops-config .context/release-ops-readiness/syncular.ops.json`
+  - Passed version stamp dry-runs, Cargo version stamp dry-run, and
+    `syncular ops check --json --pretty` against a production evidence fixture
+    with schema readiness, restore drill, blob consistency, credential
+    rotation, rate limits, log retention, and support-window checks ready.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-docs-stale-check --skip-fresh-app-smokes --skip-starter-smoke --skip-framework-import-smokes --skip-console-artifact-ingestion --skip-publish-dry-runs --require-ops-readiness`
+  - Expected nonzero status: version stamp dry-runs passed, then release
+    rehearsal failed closed because no root `syncular.ops.json` was available.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --allow-dirty --skip-docs-stale-check --skip-fresh-app-smokes --skip-starter-smoke --skip-framework-import-smokes --skip-console-artifact-ingestion --skip-publish-dry-runs`
+  - Passed version stamp dry-runs and skipped ops readiness with a clear local
+    iteration message because no root `syncular.ops.json` was available.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check scripts/release-rehearsal.ts rust/docs/ROADMAP.md rust/docs/QUALITY_GATES.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `git diff --check`
 
 Most recent ops-readiness Console ingestion rerun:
 
@@ -3736,9 +3759,12 @@ Most recent mutation-status rerun:
   visualization beyond the operation-audit page window, including gateway
   aggregation, issue trends, buckets, matched/scanned counts, and truncation
   signaling. `syncular doctor --json` now composes schema readiness plus
-  optional/required ops readiness for local/deploy preflight use; broader
-  browser/CDP, framework, Console artifact ingestion, package-install, and
-  publish dry-run orchestration stays in release rehearsal.
+  optional/required ops readiness for local/deploy preflight use, and release
+  rehearsal now runs the same ops readiness check when `syncular.ops.json` or
+  `--ops-config` is present. Stable release rehearsals can require it with
+  `--require-ops-readiness`; broader browser/CDP, framework, Console artifact
+  ingestion, package-install, and publish dry-run orchestration also stay in
+  release rehearsal.
 - Performance and failure artifacts: keep package/WASM size, bootstrap
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch
   latency, storage/quota pressure, and redacted E2E failure artifacts
@@ -3873,11 +3899,12 @@ Most recent mutation-status rerun:
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. The immediate
-starter browser-preview blocker is cleared. Strong follow-ups are deeper browser
-suspension/shutdown lifecycle coverage, canonical real-browser support-bundle
-failure artifacts, browser/bundler matrix execution, or automating
-production-ops checks, because those remain broad DX holes after the first local
-recovery browser proof, upgrade runbook, production-ops runbook, built-preview
-asset smoke, runtime timeline helper, composed support-bundle helper, starter
-support-bundle marker, mutation status helper, command timeline evidence chain,
-and CI browser-smoke enforcement.
+starter browser-preview blocker is cleared, and production ops readiness is now
+part of release rehearsal when evidence is present or required. Strong
+follow-ups are deeper browser suspension/shutdown lifecycle coverage, canonical
+real-browser support-bundle failure artifacts, and browser/bundler matrix
+execution, because those remain broad DX holes after the first local recovery
+browser proof, upgrade runbook, production-ops runbook, release ops-readiness
+gate, built-preview asset smoke, runtime timeline helper, composed
+support-bundle helper, starter support-bundle marker, mutation status helper,
+command timeline evidence chain, and CI browser-smoke enforcement.

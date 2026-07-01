@@ -60,6 +60,12 @@ until the full browser Worker/WASM suite is green on Linux.
   `bun scripts/post-publish-install-smokes.ts --version <version>` also runs
   the optional subpath install/import matrix unless
   `SYNCULAR_POST_PUBLISH_OPTIONAL_IMPORT_MATRIX=0` is set.
+- Release rehearsal changes: run
+  `bun scripts/release-rehearsal.ts --allow-dirty --skip-publish-dry-runs`
+  for local iteration. When proving a stable release with production evidence,
+  pass `--ops-config <path>` or provide `syncular.ops.json`, and add
+  `--require-ops-readiness` so missing restore/blob/credential/rate-limit/log
+  retention/support-window evidence fails the rehearsal.
 - Native sqlite adapter changes (`@syncular/server/better-sqlite3` or
   `@syncular/server/sqlite3`) should also run the opt-in native driver install
   matrix on a native-capable Node runner:

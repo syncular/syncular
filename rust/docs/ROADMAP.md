@@ -512,9 +512,12 @@ read-only review:
     log/event retention, request-payload snapshot policy, and offline
     support-window sizing, giving deploy pipelines a first narrow ops
     automation gate. `syncular doctor --json` now composes schema readiness
-    plus optional/required ops readiness while leaving browser/CDP,
-    framework-import, post-publish install, and publish dry-run gates in
-    release rehearsal.
+    plus optional/required ops readiness, and release rehearsal now runs the
+    same ops readiness check when `syncular.ops.json` or `--ops-config` is
+    present. Stable release rehearsals can fail closed with
+    `--require-ops-readiness` while local-only rehearsals may still skip missing
+    evidence; browser/CDP, framework-import, post-publish install, and publish
+    dry-run gates remain in release rehearsal.
     Console Ops can now ingest that JSON through
     `POST /console/ops/readiness`, stores a redacted `ops_readiness`
     operation-audit event with local paths omitted, exposes the latest report

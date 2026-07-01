@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { spawn } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm } from 'node:fs/promises';
 import { dirname, join, relative, resolve } from 'node:path';
 
@@ -10,15 +11,19 @@ interface Options {
   skipFreshAppSmokes: boolean;
   skipFrameworkImportSmokes: boolean;
   skipConsoleArtifactIngestion: boolean;
+  skipOpsReadiness: boolean;
   skipStarterSmoke: boolean;
   skipDocsStaleCheck: boolean;
+  requireOpsReadiness: boolean;
   requireStarterBrowserPreview: boolean;
   requireFrameworkViteBrowserRuntime: boolean;
   keepWorktree: boolean;
   workDir: string;
+  opsConfig: string;
 }
 
 const repoRoot = resolve(join(import.meta.dirname, '..'));
+const DEFAULT_OPS_CHECK_FILE = 'syncular.ops.json';
 
 function usage(): string {
   return `usage: bun scripts/release-rehearsal.ts [options]
@@ -32,6 +37,9 @@ options:
                               Skip local Next/Vite root import smokes
   --skip-console-artifact-ingestion
                               Skip focused Console failure-artifact ingestion tests
+  --skip-ops-readiness        Skip production ops evidence check
+  --ops-config <path>         Production ops evidence file for syncular ops check
+  --require-ops-readiness     Fail when no ops evidence file is available
   --skip-starter-smoke        Skip create-syncular-app built-preview smoke
   --require-starter-browser-preview
                               Require Chrome/Chromium CDP execution in the starter smoke
@@ -76,12 +84,15 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
   let skipFreshAppSmokes = false;
   let skipFrameworkImportSmokes = false;
   let skipConsoleArtifactIngestion = false;
+  let skipOpsReadiness = false;
   let skipStarterSmoke = false;
   let skipDocsStaleCheck = false;
+  let requireOpsReadiness = false;
   let requireStarterBrowserPreview = false;
   let requireFrameworkViteBrowserRuntime = false;
   let keepWorktree = false;
   let workDir = '';
+  let opsConfig = '';
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!;
@@ -116,8 +127,18 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
       continue;
     }
 
+    if (arg === '--skip-ops-readiness') {
+      skipOpsReadiness = true;
+      continue;
+    }
+
     if (arg === '--skip-starter-smoke') {
       skipStarterSmoke = true;
+      continue;
+    }
+
+    if (arg === '--require-ops-readiness') {
+      requireOpsReadiness = true;
       continue;
     }
 
@@ -155,6 +176,13 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
       continue;
     }
 
+    const opsConfigOption = readOptionValue(argv, index, arg, '--ops-config');
+    if (opsConfigOption) {
+      opsConfig = opsConfigOption.value;
+      index = opsConfigOption.nextIndex;
+      continue;
+    }
+
     throw new Error(`Unknown option: ${arg}\n\n${usage()}`);
   }
 
@@ -168,6 +196,17 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
     version = rootPackage.version;
   }
 
+  if (skipOpsReadiness && requireOpsReadiness) {
+    throw new Error(
+      'Release rehearsal cannot combine --skip-ops-readiness and --require-ops-readiness'
+    );
+  }
+  if (skipOpsReadiness && opsConfig) {
+    throw new Error(
+      'Release rehearsal cannot combine --skip-ops-readiness and --ops-config'
+    );
+  }
+
   return {
     version,
     allowDirty,
@@ -175,12 +214,15 @@ async function parseArgs(argv: readonly string[]): Promise<Options> {
     skipFreshAppSmokes,
     skipFrameworkImportSmokes,
     skipConsoleArtifactIngestion,
+    skipOpsReadiness,
     skipStarterSmoke,
     skipDocsStaleCheck,
+    requireOpsReadiness,
     requireStarterBrowserPreview,
     requireFrameworkViteBrowserRuntime,
     keepWorktree,
     workDir,
+    opsConfig,
   };
 }
 
@@ -275,6 +317,38 @@ async function removeWorktree(worktreeDir: string): Promise<void> {
   );
 }
 
+async function runOpsReadiness(options: Options): Promise<void> {
+  if (options.skipOpsReadiness) {
+    console.log('[release-rehearsal] skipping production ops readiness');
+    return;
+  }
+
+  const defaultOpsConfigPath = join(repoRoot, DEFAULT_OPS_CHECK_FILE);
+  const hasExplicitConfig = options.opsConfig.length > 0;
+  if (!hasExplicitConfig && !existsSync(defaultOpsConfigPath)) {
+    if (options.requireOpsReadiness) {
+      throw new Error(
+        `Release rehearsal requires production ops evidence. Create ${DEFAULT_OPS_CHECK_FILE}, pass --ops-config <path>, or use --skip-ops-readiness for local-only rehearsal.`
+      );
+    }
+    console.log(
+      `[release-rehearsal] no ${DEFAULT_OPS_CHECK_FILE}; skipping production ops readiness`
+    );
+    return;
+  }
+
+  await run('bun', [
+    'packages/syncular/src/cli.ts',
+    'ops',
+    'check',
+    '--manifest-dir',
+    '.',
+    ...(hasExplicitConfig ? ['--config', options.opsConfig] : []),
+    '--json',
+    '--pretty',
+  ]);
+}
+
 async function runPublishDryRuns(
   options: Options,
   sourceDirty: boolean
@@ -345,6 +419,7 @@ async function main(): Promise<void> {
   if (!options.skipDocsStaleCheck) {
     await run('bun', ['run', 'docs:stale-check']);
   }
+  await runOpsReadiness(options);
   if (!options.skipFreshAppSmokes) {
     await run('bun', ['run', 'fresh-app-smokes']);
   }
