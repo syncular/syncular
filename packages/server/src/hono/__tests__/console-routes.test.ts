@@ -395,6 +395,7 @@ describe('console timeline route filters', () => {
         artifactCreatedAfterMs: 18,
         assetCheckMs: 7,
         assetCount: 4,
+        browserSupportPolicyMarkerInAssets: true,
         cssAssetBytes: 2048,
         cssAssetCount: 1,
         deploymentPreflightMarkerInAssets: true,
@@ -428,6 +429,18 @@ describe('console timeline route filters', () => {
           status: 'ready',
           supportTier: 'persistent-offline',
           usageBytes: 4096,
+        },
+        browserSupportPolicy: {
+          actionCount: 0,
+          context: 'chromium-secure-page',
+          expectedPersistence: 'persistent',
+          expectedSupportTier: 'persistent-offline',
+          issueCount: 0,
+          observedPersistence: 'persistent',
+          observedSupportTier: 'persistent-offline',
+          policy: 'supported-after-preflight',
+          preflightRequired: 'true',
+          status: 'met',
         },
         supportBundle: {
           status: 'failed',
@@ -2281,6 +2294,17 @@ describe('console timeline route filters', () => {
       (diagnostic?.details?.metrics as Record<string, unknown> | undefined)
         ?.previewReadyMs
     ).toBe(42);
+    expect(
+      (
+        diagnostic?.details?.browserSupportPolicy as
+          | Record<string, unknown>
+          | undefined
+      )?.status
+    ).toBe('met');
+    expect(
+      (accepted.transportStats as Record<string, unknown> | undefined)
+        ?.browserSupportPolicyMarkerInAssets
+    ).toBe(true);
     expect(
       diagnostic?.details?.probeTextExcerptLength as number | undefined
     ).toBeGreaterThan(0);

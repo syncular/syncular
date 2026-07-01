@@ -228,6 +228,7 @@ async function verifyBuiltPreviewAssets(
   }
 
   let sawLifecycleResumeMarker = false;
+  let sawBrowserSupportPolicyMarker = false;
   let sawDeploymentPreflightMarker = false;
   let sawStarterTimelineMarker = false;
   let sawSupportBundleMarker = false;
@@ -258,6 +259,9 @@ async function verifyBuiltPreviewAssets(
       jsAssetBytes += assetBytes;
       sawLifecycleResumeMarker ||= assetBody.includes(
         'data-syncular-lifecycle-resume-status'
+      );
+      sawBrowserSupportPolicyMarker ||= assetBody.includes(
+        'data-syncular-browser-support-policy-status'
       );
       sawDeploymentPreflightMarker ||= assetBody.includes(
         'data-syncular-deployment-preflight-status'
@@ -292,6 +296,11 @@ async function verifyBuiltPreviewAssets(
       'Built preview assets did not include the deployment-preflight smoke marker'
     );
   }
+  if (!sawBrowserSupportPolicyMarker) {
+    throw new Error(
+      'Built preview assets did not include the browser support-policy smoke marker'
+    );
+  }
   if (!sawLifecycleResumeMarker) {
     throw new Error(
       'Built preview assets did not include the lifecycle-resume smoke marker'
@@ -306,6 +315,7 @@ async function verifyBuiltPreviewAssets(
   return {
     assetCheckMs: elapsedSince(startedAtMs),
     assetCount: assetPaths.length,
+    browserSupportPolicyMarkerInAssets: sawBrowserSupportPolicyMarker,
     cssAssetBytes,
     cssAssetCount,
     deploymentPreflightMarkerInAssets: sawDeploymentPreflightMarker,
@@ -323,6 +333,7 @@ async function verifyBuiltPreviewAssets(
 type BuiltPreviewAssetMetrics = {
   assetCheckMs: number;
   assetCount: number;
+  browserSupportPolicyMarkerInAssets: boolean;
   cssAssetBytes: number;
   cssAssetCount: number;
   deploymentPreflightMarkerInAssets: boolean;
@@ -493,6 +504,18 @@ type BrowserPreviewProbe = {
     supportTier: string | null;
     usageBytes: number | null;
   };
+  browserSupportPolicy: {
+    actionCount: number;
+    context: string | null;
+    expectedPersistence: string | null;
+    expectedSupportTier: string | null;
+    issueCount: number;
+    observedPersistence: string | null;
+    observedSupportTier: string | null;
+    policy: string | null;
+    preflightRequired: string | null;
+    status: string | null;
+  };
   supportBundle: {
     status: string | null;
     redacted: string | null;
@@ -546,6 +569,7 @@ type BrowserPreviewFailureMetrics = {
   artifactCreatedAfterMs: number;
   assetCheckMs: number;
   assetCount: number;
+  browserSupportPolicyMarkerInAssets: boolean;
   cssAssetBytes: number;
   cssAssetCount: number;
   deploymentPreflightMarkerInAssets: boolean;
@@ -607,6 +631,17 @@ async function readStarterBrowserProbe(
     const deploymentPreflightStatus = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-status') ?? null;
     const deploymentPreflightSupportTier = deploymentPreflight?.getAttribute('data-syncular-deployment-preflight-support-tier') ?? null;
     const deploymentPreflightUsageBytes = readDeploymentPreflightNumber('data-syncular-deployment-preflight-usage-bytes');
+    const browserSupportPolicy = document.querySelector('[data-syncular-browser-support-policy-status]');
+    const browserSupportPolicyActionCount = Number(browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-action-count') ?? 0);
+    const browserSupportPolicyContext = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-context') ?? null;
+    const browserSupportPolicyExpectedPersistence = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-expected-persistence') ?? null;
+    const browserSupportPolicyExpectedSupportTier = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-expected-support-tier') ?? null;
+    const browserSupportPolicyIssueCount = Number(browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-issue-count') ?? 0);
+    const browserSupportPolicyObservedPersistence = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-observed-persistence') ?? null;
+    const browserSupportPolicyObservedSupportTier = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-observed-support-tier') ?? null;
+    const browserSupportPolicyPolicy = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-policy') ?? null;
+    const browserSupportPolicyPreflightRequired = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-preflight-required') ?? null;
+    const browserSupportPolicyStatus = browserSupportPolicy?.getAttribute('data-syncular-browser-support-policy-status') ?? null;
     const lifecycleResume = document.querySelector('[data-syncular-lifecycle-resume-status]');
     const lifecycleResumeStatus = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-status') ?? null;
     const lifecycleResumeCount = Number(lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-count') ?? 0);
@@ -653,6 +688,9 @@ async function readStarterBrowserProbe(
     if (deploymentPreflightStatus === 'not-ready') {
       errors.push('deployment preflight not ready');
     }
+    if (browserSupportPolicyStatus === 'not-met') {
+      errors.push('browser support policy not met');
+    }
     if (lifecycleResumeStatus === 'failed') {
       errors.push('lifecycle resume failed');
     }
@@ -668,6 +706,7 @@ async function readStarterBrowserProbe(
         durableHealthLine &&
         schemaLine &&
         supportBundleStatus !== null &&
+        browserSupportPolicyStatus !== null &&
         deploymentPreflightStatus !== null &&
         lifecycleResumeStatus !== null &&
         starterTimeline !== null &&
@@ -700,6 +739,18 @@ async function readStarterBrowserProbe(
         status: deploymentPreflightStatus,
         supportTier: deploymentPreflightSupportTier,
         usageBytes: deploymentPreflightUsageBytes,
+      },
+      browserSupportPolicy: {
+        actionCount: browserSupportPolicyActionCount,
+        context: browserSupportPolicyContext,
+        expectedPersistence: browserSupportPolicyExpectedPersistence,
+        expectedSupportTier: browserSupportPolicyExpectedSupportTier,
+        issueCount: browserSupportPolicyIssueCount,
+        observedPersistence: browserSupportPolicyObservedPersistence,
+        observedSupportTier: browserSupportPolicyObservedSupportTier,
+        policy: browserSupportPolicyPolicy,
+        preflightRequired: browserSupportPolicyPreflightRequired,
+        status: browserSupportPolicyStatus,
       },
       supportBundle: {
         status: supportBundleStatus,
@@ -1015,6 +1066,18 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         supportTier: 'persistent-offline',
         usageBytes: 4096,
       },
+      browserSupportPolicy: {
+        actionCount: 0,
+        context: 'chromium-secure-page',
+        expectedPersistence: 'persistent',
+        expectedSupportTier: 'persistent-offline',
+        issueCount: 0,
+        observedPersistence: 'persistent',
+        observedSupportTier: 'persistent-offline',
+        policy: 'supported-after-preflight',
+        preflightRequired: 'true',
+        status: 'met',
+      },
       supportBundle: {
         status: 'failed',
         redacted: 'true',
@@ -1099,6 +1162,8 @@ function finalizeBrowserPreviewFailureMetrics(
     artifactCreatedAfterMs: elapsedSince(metrics.smokeStartedAtMs),
     assetCheckMs: metrics.assetCheckMs,
     assetCount: metrics.assetCount,
+    browserSupportPolicyMarkerInAssets:
+      metrics.browserSupportPolicyMarkerInAssets,
     cssAssetBytes: metrics.cssAssetBytes,
     cssAssetCount: metrics.cssAssetCount,
     deploymentPreflightMarkerInAssets:
@@ -1140,6 +1205,7 @@ function assertBrowserPreviewFailureMetricsShape(
     }
   }
   for (const key of [
+    'browserSupportPolicyMarkerInAssets',
     'deploymentPreflightMarkerInAssets',
     'lifecycleResumeMarkerInAssets',
     'starterTimelineMarkerInAssets',
@@ -1169,6 +1235,7 @@ function assertBrowserPreviewProbeShape(
   }
   assertBrowserPreviewMarkersShape(probe.markers, path);
   assertBrowserPreviewDeploymentPreflightShape(probe.deploymentPreflight, path);
+  assertBrowserPreviewSupportPolicyShape(probe.browserSupportPolicy, path);
   assertBrowserPreviewSupportBundleShape(probe.supportBundle, path);
   assertBrowserPreviewLifecycleResumeShape(probe.lifecycleResume, path);
   assertBrowserPreviewStarterTimelineShape(probe.starterTimeline, path);
@@ -1270,6 +1337,38 @@ function assertBrowserPreviewDeploymentPreflightShape(
     if (value[key] !== null && typeof value[key] !== 'string') {
       throw new Error(
         `${path} probe.deploymentPreflight.${key} was not nullable text`
+      );
+    }
+  }
+}
+
+function assertBrowserPreviewSupportPolicyShape(
+  value: unknown,
+  path: string
+): void {
+  if (!isRecord(value)) {
+    throw new Error(`${path} probe.browserSupportPolicy was not a JSON object`);
+  }
+  for (const key of ['actionCount', 'issueCount'] as const) {
+    if (!isNonNegativeFiniteNumber(value[key])) {
+      throw new Error(
+        `${path} probe.browserSupportPolicy.${key} was not a non-negative number`
+      );
+    }
+  }
+  for (const key of [
+    'context',
+    'expectedPersistence',
+    'expectedSupportTier',
+    'observedPersistence',
+    'observedSupportTier',
+    'policy',
+    'preflightRequired',
+    'status',
+  ] as const) {
+    if (value[key] !== null && typeof value[key] !== 'string') {
+      throw new Error(
+        `${path} probe.browserSupportPolicy.${key} was not nullable text`
       );
     }
   }

@@ -1258,6 +1258,11 @@ online propagation, or reconnect behavior can change.
   as supported only after preflight evidence, Firefox/Safari/WebView/PWA as
   preflight-gated `unknown` contexts, private/incognito as development/test
   only, and SSR/build as unsupported for database open.
+- Browser support policy can now be evaluated against observed deployment
+  preflight evidence with `evaluateSyncularBrowserSupportPolicy(...)`. The
+  starter records that expected-vs-observed policy result in its hidden smoke
+  marker and `browser-preview-failure.json`, and Console/Fleet preserves the
+  redacted policy status when ingesting starter browser artifacts.
 - The starter now calls browser deployment preflight before opening
   `createSyncularAppDatabase(...)`, using the generated required runtime
   feature list and its configured IndexedDB storage expectation. The scaffold
@@ -2313,6 +2318,24 @@ Most recent browser support-matrix rerun:
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
 
+Most recent browser support-policy artifact rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-support-matrix.test.ts packages/client/src/public-api.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/server/src/hono/__tests__/console-routes.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/client tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/server tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, built asset checks,
+    browser support-policy marker checks, and failure-artifact self-checks.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/client/src/browser-support-matrix.ts packages/client/src/browser-support-matrix.test.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts packages/server/src/hono/console/schemas.ts packages/server/src/hono/console/routes/shared.ts packages/server/src/hono/__tests__/console-routes.test.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
+- `git diff --check`
+
 Most recent browser lifecycle resume helper rerun:
 
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/client/src/browser-lifecycle.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
@@ -2877,7 +2900,10 @@ Most recent mutation-status rerun:
   decisions: Chrome/Chromium secure pages are supported only after preflight
   evidence, Firefox/Safari/WebView/PWA remain preflight-gated `unknown`
   contexts, private/incognito is development/test only, and SSR/build is
-  unsupported for database open.
+  unsupported for database open. The starter now evaluates observed preflight
+  evidence against the Chrome/Chromium support policy and exports the result
+  into its built-preview marker and browser failure artifact, so the matrix is
+  represented in smoke evidence instead of docs alone.
   Root source imports are now guarded by static graph checks, dynamic import
   checks, a Next 16 production-build smoke that imports the client/server
   roots from source and verifies the WASM glue dynamic import path is
@@ -2937,9 +2963,11 @@ Most recent mutation-status rerun:
   directory. Console/Fleet can now ingest that starter artifact through
   `POST /console/client-diagnostics/browser-preview-failure`, normalizing it
   into a redacted `browser.preview_failure` client diagnostic record without
-  storing the artifact page text excerpt. Remaining work is to observe the
-  hosted Chrome job for this proof and decide whether Cloudflare runtime
-  artifacts should feed Console/Fleet or a future `doctor` surface.
+  storing the artifact page text excerpt, and preserving the browser
+  support-policy evaluation alongside deployment-preflight and support-bundle
+  summaries. Remaining work is to observe the hosted Chrome job for this proof
+  and decide whether Cloudflare runtime artifacts should feed Console/Fleet or
+  a future `doctor` surface.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
   conflict detail rows, last mutation-related errors, and recommended actions.
@@ -2975,6 +3003,10 @@ Most recent mutation-status rerun:
   local visibility when the browser probe can run. The starter also emits
   deployment-preflight storage/quota facts so browser failures can separate
   quota, persistence, and support-tier problems from sync lifecycle failures.
+  Browser preview artifacts now also carry the expected-vs-observed browser
+  support-policy status for the starter's Chrome/Chromium context, which lets
+  Console/Fleet distinguish "preflight incomplete" from "support policy not
+  met" without user-agent sniffing.
   The support-bundle marker now adds redacted runtime timeline counts for
   sync, realtime, local-apply, blob, cursors, request ids, sync-attempt ids,
   and latest phase codes, and refreshes on row changes. The Chrome/CDP path

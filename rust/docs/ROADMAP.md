@@ -273,6 +273,10 @@ read-only review:
     explicitly `unknown` until target-host evidence exists,
     private/incognito development-only, and SSR/build unsupported for database
     open.
+    `evaluateSyncularBrowserSupportPolicy(...)` now ties that policy to
+    observed deployment preflight results, and the starter's hidden smoke
+    marker plus `browser-preview-failure.json` artifact carry the
+    expected-vs-observed browser support status through Console ingestion.
     Local recovery
     controls now expose a
     first app-facing plan/action API through

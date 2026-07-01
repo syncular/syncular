@@ -1,10 +1,12 @@
 import {
+  evaluateSyncularBrowserSupportPolicy,
   getSyncularBrowserDeploymentPreflight,
   getSyncularBrowserHealth,
   installSyncularBrowserLifecycleResume,
   type SyncularBrowserDeploymentPreflight,
   type SyncularBrowserHealth,
   type SyncularBrowserLifecycleResumeController,
+  type SyncularBrowserSupportPolicyEvaluation,
   type SyncularClientStatus,
   type SyncularSchemaReadinessResult,
   type SyncularSupportBundle,
@@ -53,6 +55,19 @@ type DeploymentPreflightPreview = {
   status: SyncularBrowserDeploymentPreflight['status'] | 'failed';
   supportTier: SyncularBrowserDeploymentPreflight['support']['tier'];
   usageBytes: number | null;
+};
+
+type BrowserSupportPolicyPreview = {
+  actionCount: number;
+  context: SyncularBrowserSupportPolicyEvaluation['context'];
+  expectedPersistence: SyncularBrowserSupportPolicyEvaluation['expectedPersistence'];
+  expectedSupportTier: SyncularBrowserSupportPolicyEvaluation['expectedSupportTier'];
+  issueCount: number;
+  observedPersistence: SyncularBrowserSupportPolicyEvaluation['observedPersistence'];
+  observedSupportTier: SyncularBrowserSupportPolicyEvaluation['observedSupportTier'];
+  policy: SyncularBrowserSupportPolicyEvaluation['policy'];
+  preflightRequired: boolean;
+  status: SyncularBrowserSupportPolicyEvaluation['status'];
 };
 
 const initialLifecycleResume: LifecycleResumePreview = {
@@ -229,6 +244,8 @@ function TaskPane({
   const status = useSyncStatus();
   const [deploymentPreflight, setDeploymentPreflight] =
     useState<DeploymentPreflightPreview | null>(null);
+  const [browserSupportPolicy, setBrowserSupportPolicy] =
+    useState<BrowserSupportPolicyPreview | null>(null);
   const [health, setHealth] = useState<SyncularBrowserHealth | null>(null);
   const [schemaReadiness, setSchemaReadiness] =
     useState<SyncularSchemaReadinessResult | null>(null);
@@ -327,6 +344,14 @@ function TaskPane({
                 elapsedSince(preflightStartedAtMs)
               )
             );
+            setBrowserSupportPolicy(
+              summarizeBrowserSupportPolicy(
+                evaluateSyncularBrowserSupportPolicy(
+                  'chromium-secure-page',
+                  preflight
+                )
+              )
+            );
           }
           return client.exportSupportBundle({
             deploymentPreflight: preflight,
@@ -346,6 +371,14 @@ function TaskPane({
             setDeploymentPreflight(
               failedDeploymentPreflightPreview(
                 elapsedSince(preflightStartedAtMs)
+              )
+            );
+            setBrowserSupportPolicy(
+              summarizeBrowserSupportPolicy(
+                evaluateSyncularBrowserSupportPolicy(
+                  'chromium-secure-page',
+                  null
+                )
               )
             );
             setSupportBundle(failedSupportBundlePreview());
@@ -431,6 +464,11 @@ function TaskPane({
       ) : null}
       {deploymentPreflight ? (
         <DeploymentPreflightMarker deploymentPreflight={deploymentPreflight} />
+      ) : null}
+      {browserSupportPolicy ? (
+        <BrowserSupportPolicyMarker
+          browserSupportPolicy={browserSupportPolicy}
+        />
       ) : null}
       {supportBundle ? (
         <SupportBundleLine supportBundle={supportBundle} />
@@ -656,6 +694,61 @@ function failedDeploymentPreflightPreview(
     supportTier: 'unknown',
     usageBytes: null,
   };
+}
+
+function summarizeBrowserSupportPolicy(
+  evaluation: SyncularBrowserSupportPolicyEvaluation
+): BrowserSupportPolicyPreview {
+  return {
+    actionCount: evaluation.recommendedActions.length,
+    context: evaluation.context,
+    expectedPersistence: evaluation.expectedPersistence,
+    expectedSupportTier: evaluation.expectedSupportTier,
+    issueCount: evaluation.issueCodes.length,
+    observedPersistence: evaluation.observedPersistence,
+    observedSupportTier: evaluation.observedSupportTier,
+    policy: evaluation.policy,
+    preflightRequired: evaluation.preflightRequired,
+    status: evaluation.status,
+  };
+}
+
+function BrowserSupportPolicyMarker({
+  browserSupportPolicy,
+}: {
+  browserSupportPolicy: BrowserSupportPolicyPreview;
+}) {
+  return (
+    <span
+      data-syncular-browser-support-policy-action-count={
+        browserSupportPolicy.actionCount
+      }
+      data-syncular-browser-support-policy-context={
+        browserSupportPolicy.context
+      }
+      data-syncular-browser-support-policy-expected-persistence={
+        browserSupportPolicy.expectedPersistence
+      }
+      data-syncular-browser-support-policy-expected-support-tier={
+        browserSupportPolicy.expectedSupportTier
+      }
+      data-syncular-browser-support-policy-issue-count={
+        browserSupportPolicy.issueCount
+      }
+      data-syncular-browser-support-policy-observed-persistence={
+        browserSupportPolicy.observedPersistence ?? ''
+      }
+      data-syncular-browser-support-policy-observed-support-tier={
+        browserSupportPolicy.observedSupportTier ?? ''
+      }
+      data-syncular-browser-support-policy-preflight-required={String(
+        browserSupportPolicy.preflightRequired
+      )}
+      data-syncular-browser-support-policy-policy={browserSupportPolicy.policy}
+      data-syncular-browser-support-policy-status={browserSupportPolicy.status}
+      hidden
+    />
+  );
 }
 
 function summarizeSupportBundle(

@@ -4,6 +4,7 @@ import {
   classifySyncularDiagnosticDetailKey,
   createSyncularCommandHistory,
   createSyncularDatabase,
+  evaluateSyncularBrowserSupportPolicy,
   getSyncularBrowserDeploymentPreflight,
   getSyncularBrowserHealth,
   getSyncularBrowserSupportMatrix,
@@ -72,6 +73,7 @@ describe('@syncular/client public API', () => {
   });
 
   it('exports the browser support matrix helpers', () => {
+    expect(typeof evaluateSyncularBrowserSupportPolicy).toBe('function');
     expect(typeof getSyncularBrowserSupportMatrix).toBe('function');
     expect(typeof getSyncularBrowserSupportPolicy).toBe('function');
   });

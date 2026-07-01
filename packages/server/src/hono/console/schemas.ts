@@ -504,6 +504,7 @@ const ConsoleBrowserPreviewFailureMetricsSchema = z
     artifactCreatedAfterMs: z.number().nonnegative(),
     assetCheckMs: z.number().nonnegative(),
     assetCount: z.number().int().nonnegative(),
+    browserSupportPolicyMarkerInAssets: z.boolean().optional(),
     cssAssetBytes: z.number().int().nonnegative(),
     cssAssetCount: z.number().int().nonnegative(),
     deploymentPreflightMarkerInAssets: z.boolean(),
@@ -551,6 +552,21 @@ const ConsoleBrowserPreviewFailureProbeSchema = z
         usageBytes: ConsoleBrowserPreviewFailureNullableNumberSchema,
       })
       .passthrough(),
+    browserSupportPolicy: z
+      .object({
+        actionCount: z.number().int().nonnegative(),
+        context: ConsoleBrowserPreviewFailureNullableStringSchema,
+        expectedPersistence: ConsoleBrowserPreviewFailureNullableStringSchema,
+        expectedSupportTier: ConsoleBrowserPreviewFailureNullableStringSchema,
+        issueCount: z.number().int().nonnegative(),
+        observedPersistence: ConsoleBrowserPreviewFailureNullableStringSchema,
+        observedSupportTier: ConsoleBrowserPreviewFailureNullableStringSchema,
+        policy: ConsoleBrowserPreviewFailureNullableStringSchema,
+        preflightRequired: ConsoleBrowserPreviewFailureNullableStringSchema,
+        status: ConsoleBrowserPreviewFailureNullableStringSchema,
+      })
+      .passthrough()
+      .optional(),
     supportBundle: z
       .object({
         status: ConsoleBrowserPreviewFailureNullableStringSchema,

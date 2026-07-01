@@ -1,4 +1,5 @@
 import type {
+  SyncularBrowserDeploymentPreflight,
   SyncularBrowserDeploymentPreflightIssueCode,
   SyncularBrowserDeploymentPreflightPersistenceMode,
   SyncularBrowserDeploymentPreflightRecommendedAction,
@@ -32,6 +33,29 @@ export interface SyncularBrowserSupportMatrixEntry {
   capabilityIssueCodes: readonly SyncularBrowserDeploymentPreflightIssueCode[];
   recommendedActions: readonly SyncularBrowserDeploymentPreflightRecommendedAction[];
   nextSteps: readonly string[];
+}
+
+export type SyncularBrowserSupportPolicyEvaluationStatus =
+  | 'met'
+  | 'warning'
+  | 'not-met'
+  | 'not-applicable';
+
+export interface SyncularBrowserSupportPolicyEvaluation {
+  context: SyncularBrowserSupportContext;
+  label: string;
+  policy: SyncularBrowserSupportPolicy;
+  status: SyncularBrowserSupportPolicyEvaluationStatus;
+  preflightRequired: boolean;
+  expectedSupportTier: SyncularBrowserDeploymentPreflightSupportTier;
+  observedSupportTier: SyncularBrowserDeploymentPreflightSupportTier | null;
+  expectedPersistence: SyncularBrowserDeploymentPreflightPersistenceMode;
+  observedPersistence: SyncularBrowserDeploymentPreflightPersistenceMode | null;
+  preflightStatus: SyncularBrowserDeploymentPreflight['status'] | null;
+  productionReady: boolean | null;
+  issueCodes: readonly SyncularBrowserDeploymentPreflightIssueCode[];
+  recommendedActions: readonly SyncularBrowserDeploymentPreflightRecommendedAction[];
+  summary: string;
 }
 
 const SYNCULAR_BROWSER_SUPPORT_MATRIX: readonly SyncularBrowserSupportMatrixEntry[] =
@@ -306,6 +330,43 @@ export function getSyncularBrowserSupportPolicy(
   return cloneBrowserSupportMatrixEntry(entry);
 }
 
+export function evaluateSyncularBrowserSupportPolicy(
+  context: SyncularBrowserSupportContext,
+  preflight?: SyncularBrowserDeploymentPreflight | null
+): SyncularBrowserSupportPolicyEvaluation {
+  const policy = getSyncularBrowserSupportPolicy(context);
+  const observedSupportTier = preflight?.support.tier ?? null;
+  const observedPersistence = preflight?.support.persistence ?? null;
+  const preflightStatus = preflight?.status ?? null;
+  const productionReady = preflight?.support.productionReady ?? null;
+  const issueCodes = preflight?.support.issueCodes ?? [];
+  const recommendedActions = uniqueBrowserSupportRecommendedActions([
+    ...(preflight?.support.recommendedActions ?? []),
+    ...policy.recommendedActions,
+  ]);
+  const status = evaluateBrowserSupportPolicyStatus(policy, preflight);
+  return {
+    context: policy.context,
+    label: policy.label,
+    policy: policy.policy,
+    status,
+    preflightRequired: policy.preflightRequired,
+    expectedSupportTier: policy.expectedSupportTier,
+    observedSupportTier,
+    expectedPersistence: policy.expectedPersistence,
+    observedPersistence,
+    preflightStatus,
+    productionReady,
+    issueCodes,
+    recommendedActions,
+    summary: summarizeBrowserSupportPolicyEvaluation({
+      policy,
+      preflight,
+      status,
+    }),
+  };
+}
+
 function cloneBrowserSupportMatrixEntry(
   entry: SyncularBrowserSupportMatrixEntry
 ): SyncularBrowserSupportMatrixEntry {
@@ -317,4 +378,66 @@ function cloneBrowserSupportMatrixEntry(
     recommendedActions: [...entry.recommendedActions],
     nextSteps: [...entry.nextSteps],
   };
+}
+
+function evaluateBrowserSupportPolicyStatus(
+  policy: SyncularBrowserSupportMatrixEntry,
+  preflight?: SyncularBrowserDeploymentPreflight | null
+): SyncularBrowserSupportPolicyEvaluationStatus {
+  if (policy.policy === 'unsupported') return 'not-applicable';
+  if (!preflight) return 'not-met';
+  if (
+    preflight.status === 'not-ready' ||
+    preflight.support.tier === 'unsupported'
+  ) {
+    return 'not-met';
+  }
+  if (policy.policy === 'development-only') {
+    if (
+      preflight.support.tier === 'ephemeral-development' ||
+      preflight.support.persistence === 'ephemeral'
+    ) {
+      return 'met';
+    }
+    return 'warning';
+  }
+  if (policy.expectedSupportTier === 'unknown') {
+    return 'warning';
+  }
+  if (preflight.support.tier !== policy.expectedSupportTier) {
+    return 'warning';
+  }
+  if (
+    policy.expectedPersistence === 'persistent' &&
+    preflight.support.persistence !== 'persistent'
+  ) {
+    return 'warning';
+  }
+  return preflight.support.productionReady ? 'met' : 'warning';
+}
+
+function summarizeBrowserSupportPolicyEvaluation(args: {
+  policy: SyncularBrowserSupportMatrixEntry;
+  preflight?: SyncularBrowserDeploymentPreflight | null;
+  status: SyncularBrowserSupportPolicyEvaluationStatus;
+}): string {
+  if (args.status === 'not-applicable') {
+    return `${args.policy.label} is not a supported context for opening a Syncular browser database.`;
+  }
+  if (!args.preflight) {
+    return `${args.policy.label} requires deployment preflight evidence before Syncular can classify browser support.`;
+  }
+  if (args.status === 'not-met') {
+    return `${args.policy.label} does not meet Syncular browser support policy: ${args.preflight.support.tier}.`;
+  }
+  if (args.status === 'met') {
+    return `${args.policy.label} meets Syncular browser support policy: ${args.preflight.support.tier}.`;
+  }
+  return `${args.policy.label} still needs retained target evidence: observed ${args.preflight.support.tier}.`;
+}
+
+function uniqueBrowserSupportRecommendedActions(
+  actions: readonly SyncularBrowserDeploymentPreflightRecommendedAction[]
+): SyncularBrowserDeploymentPreflightRecommendedAction[] {
+  return [...new Set(actions)];
 }

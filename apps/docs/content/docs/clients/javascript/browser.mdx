@@ -113,9 +113,16 @@ are still target-host preflight work, and which should not promise production
 offline persistence:
 
 ```ts
-import { getSyncularBrowserSupportMatrix } from '@syncular/client';
+import {
+  evaluateSyncularBrowserSupportPolicy,
+  getSyncularBrowserSupportMatrix,
+} from '@syncular/client';
 
 const supportMatrix = getSyncularBrowserSupportMatrix();
+const supportPolicy = evaluateSyncularBrowserSupportPolicy(
+  'chromium-secure-page',
+  preflight
+);
 ```
 
 | Context | Policy | Expected tier before target evidence |
@@ -132,7 +139,11 @@ For Firefox, Safari, WebViews, and PWAs, treat `unknown` as "run and retain
 target-host evidence" rather than "probably fine." For private/incognito modes,
 fail production durable mode loudly or show an explicit development/test-only
 storage state. SSR/build contexts may import the package root, but database
-open and deployment preflight belong behind client-only browser boundaries.
+open and deployment preflight belong behind client-only browser boundaries. The
+policy evaluator returns `met`, `warning`, `not-met`, or `not-applicable`;
+`warning` is appropriate when the context is plausible but the current preflight
+did not prove enough target evidence, such as when runtime assets are checked by
+an outer browser smoke instead of the page itself.
 
 For normal browser pages, install the lifecycle resume helper after opening the
 managed database so restored-page, visible-tab, and online signals trigger the

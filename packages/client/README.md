@@ -685,9 +685,16 @@ The package also exposes a static support policy matrix for docs, testkit
 recipes, and app diagnostics:
 
 ```ts
-import { getSyncularBrowserSupportMatrix } from '@syncular/client';
+import {
+  evaluateSyncularBrowserSupportPolicy,
+  getSyncularBrowserSupportMatrix,
+} from '@syncular/client';
 
 const supportMatrix = getSyncularBrowserSupportMatrix();
+const supportPolicy = evaluateSyncularBrowserSupportPolicy(
+  'chromium-secure-page',
+  preflight
+);
 ```
 
 The matrix does not sniff user agents and does not replace the deployment
@@ -706,7 +713,10 @@ preflight. It names the product policy for common environments:
 Treat `unknown` as "collect target-host preflight and persistence evidence,"
 not as implicit support. Private/incognito mode should not promise production
 offline persistence. SSR/build contexts may import the root package, but
-database open and deployment preflight belong in client-only browser code.
+database open and deployment preflight belong in client-only browser code. The
+policy evaluator returns `met`, `warning`, `not-met`, or `not-applicable` so
+apps, smokes, and support artifacts can carry expected-vs-observed browser
+support without sniffing user agents.
 
 For normal browser pages, install the lifecycle helper after opening the
 managed database so visible-tab, restored-page, and online signals run the

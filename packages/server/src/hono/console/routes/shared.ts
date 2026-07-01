@@ -768,6 +768,7 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
   const reason = truncateDiagnosticText(artifact.reason, 500);
   const starterTimeline = probe?.starterTimeline ?? null;
   const deploymentPreflight = probe?.deploymentPreflight ?? null;
+  const browserSupportPolicy = probe?.browserSupportPolicy ?? null;
   const supportBundle = probe?.supportBundle ?? null;
   const lifecycleResume = probe?.lifecycleResume ?? null;
 
@@ -781,6 +782,7 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
     markers: probe?.markers ?? null,
     metrics: artifact.metrics,
     deploymentPreflight,
+    browserSupportPolicy,
     supportBundle,
     lifecycleResume,
     starterTimeline,
@@ -850,6 +852,8 @@ export function buildBrowserPreviewFailureClientDiagnosticIngest(
         jsAssetBytes: artifact.metrics.jsAssetBytes,
         cssAssetBytes: artifact.metrics.cssAssetBytes,
         otherAssetBytes: artifact.metrics.otherAssetBytes,
+        browserSupportPolicyMarkerInAssets:
+          artifact.metrics.browserSupportPolicyMarkerInAssets ?? null,
         deploymentPreflightMarkerInAssets:
           artifact.metrics.deploymentPreflightMarkerInAssets,
         lifecycleResumeMarkerInAssets:

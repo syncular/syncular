@@ -1,5 +1,12 @@
 import { describe, expect, it } from 'bun:test';
+import type {
+  SyncularBrowserDeploymentPreflight,
+  SyncularBrowserDeploymentPreflightPersistenceMode,
+  SyncularBrowserDeploymentPreflightStatus,
+  SyncularBrowserDeploymentPreflightSupportTier,
+} from './browser-deployment-preflight';
 import {
+  evaluateSyncularBrowserSupportPolicy,
   getSyncularBrowserSupportMatrix,
   getSyncularBrowserSupportPolicy,
   type SyncularBrowserSupportContext,
@@ -104,4 +111,158 @@ describe('Syncular browser support matrix', () => {
       getSyncularBrowserSupportPolicy('chromium-secure-page').requiredEvidence
     ).not.toContain('mutated');
   });
+
+  it('evaluates a ready Chromium preflight as support-policy evidence', () => {
+    expect(
+      evaluateSyncularBrowserSupportPolicy(
+        'chromium-secure-page',
+        preflight({
+          productionReady: true,
+          supportTier: 'persistent-offline',
+          persistence: 'persistent',
+        })
+      )
+    ).toMatchObject({
+      context: 'chromium-secure-page',
+      policy: 'supported-after-preflight',
+      status: 'met',
+      expectedSupportTier: 'persistent-offline',
+      observedSupportTier: 'persistent-offline',
+      expectedPersistence: 'persistent',
+      observedPersistence: 'persistent',
+      preflightStatus: 'ready',
+      productionReady: true,
+    });
+  });
+
+  it('keeps incomplete Chromium evidence as a warning instead of pretending support is proven', () => {
+    expect(
+      evaluateSyncularBrowserSupportPolicy(
+        'chromium-secure-page',
+        preflight({
+          supportTier: 'unknown',
+          persistence: 'persistent',
+          productionReady: false,
+        })
+      )
+    ).toMatchObject({
+      status: 'warning',
+      observedSupportTier: 'unknown',
+      observedPersistence: 'persistent',
+      preflightStatus: 'ready',
+      productionReady: false,
+    });
+  });
+
+  it('evaluates capability blockers as not meeting support policy', () => {
+    expect(
+      evaluateSyncularBrowserSupportPolicy(
+        'chromium-secure-page',
+        preflight({
+          issueCodes: ['browser.worker_unavailable'],
+          persistence: 'unsupported',
+          status: 'not-ready',
+          supportTier: 'unsupported',
+        })
+      )
+    ).toMatchObject({
+      status: 'not-met',
+      observedSupportTier: 'unsupported',
+      observedPersistence: 'unsupported',
+      issueCodes: ['browser.worker_unavailable'],
+      recommendedActions: expect.arrayContaining(['serveRuntimeAssets']),
+    });
+  });
+
+  it('evaluates development-only and unsupported contexts explicitly', () => {
+    expect(
+      evaluateSyncularBrowserSupportPolicy(
+        'private-browsing',
+        preflight({
+          persistence: 'ephemeral',
+          productionReady: false,
+          supportTier: 'ephemeral-development',
+        })
+      )
+    ).toMatchObject({
+      policy: 'development-only',
+      status: 'met',
+      observedSupportTier: 'ephemeral-development',
+      observedPersistence: 'ephemeral',
+    });
+
+    expect(
+      evaluateSyncularBrowserSupportPolicy('ssr-build', null)
+    ).toMatchObject({
+      policy: 'unsupported',
+      status: 'not-applicable',
+      observedSupportTier: null,
+      observedPersistence: null,
+      preflightRequired: false,
+    });
+  });
 });
+
+function preflight(options: {
+  issueCodes?: SyncularBrowserDeploymentPreflight['support']['issueCodes'];
+  persistence: SyncularBrowserDeploymentPreflightPersistenceMode;
+  productionReady?: boolean;
+  status?: SyncularBrowserDeploymentPreflightStatus;
+  supportTier: SyncularBrowserDeploymentPreflightSupportTier;
+}): SyncularBrowserDeploymentPreflight {
+  const status = options.status ?? 'ready';
+  const issueCodes = options.issueCodes ?? [];
+  const supportTier = options.supportTier;
+  const productionReady = options.productionReady ?? false;
+  return {
+    generatedAt: 42,
+    status,
+    ready: status === 'ready',
+    requiresAction: status === 'not-ready',
+    browser: {
+      worker: true,
+      webAssembly: true,
+      secureContext: true,
+      crossOriginIsolated: false,
+      indexedDB: true,
+    },
+    lifecycle: {
+      broadcastChannel: true,
+      webLocks: true,
+      pageVisibility: true,
+      pageHideEvent: true,
+      beforeUnloadEvent: true,
+      resumeSignalAvailable: true,
+      shutdownSignalAvailable: true,
+      multiTabMode: 'coordinated',
+    },
+    storage: {
+      requested: 'indexedDb',
+      fallbackAllowed: false,
+      durableRequired: options.persistence !== 'ephemeral',
+      opfsAvailable: true,
+      persistenceSupported: true,
+      persisted: options.persistence === 'persistent',
+    },
+    runtimeAssets: {
+      checked: true,
+      requiredFeatures: [],
+      assets: [],
+    },
+    support: {
+      tier: supportTier,
+      persistence: options.persistence,
+      persistentOffline: supportTier === 'persistent-offline',
+      productionReady,
+      summary: 'test preflight',
+      issueCodes,
+      recommendedActions: status === 'not-ready' ? ['serveRuntimeAssets'] : [],
+    },
+    issues: issueCodes.map((code) => ({
+      code,
+      severity: 'error',
+      message: code,
+      target: 'browser',
+    })),
+  };
+}
