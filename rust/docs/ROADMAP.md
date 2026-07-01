@@ -381,9 +381,12 @@ read-only review:
     passed the full matrix, including `starter-browser-preview`, confirming the
     local-visibility proof, reload persistence, browser process restart
     persistence, and all Rust/native packaging lanes are green. The
-    post-publish
-    JavaScript install smoke now
-    also creates a fresh optional import matrix project that installs
+    service-worker-controlled PWA classification branch was then confirmed by
+    hosted Checks run `28539807017` on commit `23bd4061`; the
+    `starter-browser-preview` log reached `real-browser smoke: proving
+    service-worker-controlled PWA policy` and then `real-browser built-preview
+    preflight smoke passed`. The post-publish JavaScript install smoke now also
+    creates a fresh optional import matrix project that installs
     `@syncular/client`, `@syncular/server`, and the Bun-friendly optional peers,
     then imports the folded client/server subpaths for React, Sentry, Tauri,
     React Native, CRDT/Yjs, Hono, Cloudflare, Bun SQLite, D1, LibSQL, Neon,

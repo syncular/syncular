@@ -4233,7 +4233,11 @@ Most recent mutation-status rerun:
   preserving the product stance that PWA remains target-evidence-gated, not
   automatically supported. Local `create-syncular-app` typecheck, focused
   Biome, non-Chrome scaffold smoke, docs stale check, and diff check passed;
-  hosted Checks are still pending for this slice.
+  hosted Checks run `28539807017` on commit `23bd4061` then passed the full
+  matrix, including `starter-browser-preview`. The Chrome job log reached
+  `real-browser smoke: proving service-worker-controlled PWA policy` and then
+  `real-browser built-preview preflight smoke passed`, confirming the new
+  service-worker-controlled PWA branch in hosted Chrome.
 
 ## Next Action
 
@@ -4241,10 +4245,10 @@ Pick the next implementation slice from the remaining risks. The immediate
 starter browser-preview blocker is cleared, same-client duplicate-tab open
 contention, generated write pressure, and storage recovery action mapping are
 covered in hosted Chrome, and the same-database duplicate-tab writer branch is
-now also confirmed in hosted Chrome. The next slice is the new
-service-worker-controlled PWA classification proof; local code checks are green,
-and the non-Chrome scaffold smoke passes, but it still needs hosted Chrome
-confirmation.
+now also confirmed in hosted Chrome. The service-worker-controlled PWA
+classification proof is also covered in hosted Chrome: it verifies real
+controller evidence and support-policy `pwa`/`warning` classification without
+claiming installed-PWA offline/cache-update support.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, actual quota-exhaustion/eviction and
