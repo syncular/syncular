@@ -45,6 +45,12 @@ until the full browser Worker/WASM suite is green on Linux.
   `bun scripts/post-publish-install-smokes.ts --version <version>` also runs
   the optional subpath install/import matrix unless
   `SYNCULAR_POST_PUBLISH_OPTIONAL_IMPORT_MATRIX=0` is set.
+- Native sqlite adapter changes (`@syncular/server/better-sqlite3` or
+  `@syncular/server/sqlite3`) should also run the opt-in native driver install
+  matrix on a native-capable Node runner:
+  `SYNCULAR_POST_PUBLISH_NATIVE_SQLITE_MATRIX=1 bun run release:post-publish-smokes -- --version <version> --skip-rust`.
+  Keep this opt-in rather than a default release blocker because native module
+  installs vary by runner.
 - Generator or generated-client changes:
   run generator checks and at least one generated example/smoke that exercises
   the changed output. Use `bun run rust:codegen:check` for the todo fixture so

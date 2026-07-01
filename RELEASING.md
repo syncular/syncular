@@ -46,8 +46,11 @@ use `minor`), and describe the change. Commit the generated
 4. Optionally rehearse: `bun run release:rehearsal` (npm + cargo publish
    dry-runs in a clean worktree, fresh-app smokes, Next/Vite/Cloudflare
    framework import smokes, docs stale check).
-   To exercise native Node sqlite driver packaging on a runner with native
-   module support, also run:
+   Native Node sqlite driver packaging is deliberately not part of the default
+   release workflow because `better-sqlite3` / `sqlite3` installs depend on
+   runner native-module support. Run the opt-in matrix on a native-capable Node
+   runner before stable releases and whenever the native sqlite adapter
+   subpaths changed:
 
    ```sh
    SYNCULAR_POST_PUBLISH_NATIVE_SQLITE_MATRIX=1 \
@@ -57,8 +60,7 @@ use `minor`), and describe the change. Commit the generated
    That opt-in smoke creates a fresh Node project, installs
    `@syncular/server`, `better-sqlite3`, and `sqlite3`, imports
    `@syncular/server/better-sqlite3` plus `@syncular/server/sqlite3`, and runs
-   a small in-memory Kysely query through both drivers. It is disabled by
-   default because native module installs are platform-sensitive.
+   a small in-memory Kysely query through both drivers.
 5. Commit (`chore: release vX.Y.Z`), then tag and push:
 
    ```sh

@@ -1381,6 +1381,10 @@ online propagation, or reconnect behavior can change.
   `@syncular/server/sqlite3`, and runs a tiny in-memory Kysely query through
   both drivers. The default remains off because native module installs are
   platform-sensitive and should be enabled deliberately by release policy.
+- 2026-07-01: Resolved that release policy: keep the native sqlite matrix
+  opt-in rather than default release-blocking, but require it on a
+  native-capable Node runner before stable releases and whenever
+  `@syncular/server/better-sqlite3` or `@syncular/server/sqlite3` changes.
 - 2026-06-30: Expanded the rough-edge register with additional implementation
   prompts for browser support and SSR/bundler matrices, lifecycle state-machine
   semantics, version/asset compatibility, negative-path recipes,
@@ -1792,6 +1796,13 @@ Most recent native-sqlite-matrix script rerun:
 - `bun run docs:stale-check`
 - `git diff --check`
 
+Most recent native-sqlite release-policy docs rerun:
+
+- `bun run docs:stale-check`
+- `git diff --check`
+- Manual Markdown sanity read of `RELEASING.md`,
+  `rust/docs/QUALITY_GATES.md`, and this work package's remaining-risk text.
+
 Most recent framework-import-smoke rerun:
 
 - `bunx biome check scripts/framework-import-smokes.ts package.json`
@@ -2035,8 +2046,10 @@ Most recent mutation-status rerun:
   The post-publish JavaScript install smoke now owns the first release-time
   optional subpath install/import matrix for Bun-friendly client/server
   subpaths and has an opt-in native sqlite matrix for `better-sqlite3` and
-  `sqlite3`. Remaining work is a release-policy decision on which native
-  driver OS/Node matrix should enable that opt-in gate.
+  `sqlite3`. The native-driver policy is now explicit: run that opt-in matrix
+  on native-capable Node runners before stable releases or native sqlite
+  adapter changes, but do not make platform-sensitive native module installs a
+  default release blocker.
 - Multi-tab and lifecycle behavior: first preflight slice is done for browser
   tab/lifecycle capabilities and opt-in required coordination checks. Remaining
   work is real two-tab execution: tab suspension/resume, storage locks,
