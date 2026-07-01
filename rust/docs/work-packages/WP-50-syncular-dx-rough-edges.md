@@ -837,6 +837,62 @@ sections above and should be preserved through implementation in these forms:
   attributes should share stable codes and safe detail fields, with clear
   audience labels for what is app-facing vs debug/support-only.
 
+### 2026-07-01 Source Feedback Retention Checklist
+
+The pasted Skaldsong notes are all worth retaining as product pressure. Do not
+drop a point merely because the current code has a low-level primitive nearby;
+each item should land as a public contract, a proof artifact, a docs/runbook
+entry, or an explicit anti-solution.
+
+- Browser runtime and persistence: keep first-class docs, preflight, health,
+  support-bundle fields, and failure artifacts aligned around durable storage,
+  OPFS/SQLite, Worker/WASM assets, browser support tier, fallback reason, and
+  proof that production is not accidentally using memory storage.
+- Bootstrap and sync semantics: keep one observable state model for initial
+  bootstrap, explicit pull, autosync, realtime wakeup, command acknowledgement,
+  local apply, and query visibility. Manual `sync()` remains an explicit
+  advanced/debug action, not the normal stale-read recipe.
+- Auth and permissions: keep subscription denial, revoked scope, token or
+  campaign/project mismatch, auth replacement, and permission-denied tests
+  structured around typed errors with safe actor, scope, table, subscription,
+  and token-context details.
+- Realtime: keep the proof chain longer than socket-open. A useful app/test
+  artifact shows scope joined, remote event/cursor received, pull or recovery
+  triggered, local rows applied, and local visibility observed, with rate-limit
+  details that separate app churn from wrong actor setup.
+- Blobs and package delivery: keep the authority model explicit. Shared bytes
+  can be reused, but scoped metadata rows or an explicit shared-partition
+  policy grant access; blob failures should distinguish missing refs, forbidden
+  scope/partition, URL/token failure, missing upload/blob rows, and missing
+  storage objects.
+- Schema and deployment: keep production migrations outside request startup,
+  keep `schema check` and server readiness machine-readable, and keep drift
+  reasons split across missing schema, stale schema, stale generated output,
+  incompatible server/client versions, browser asset skew, and local database
+  open failure.
+- Testing and DX: keep the canonical recipe real enough to catch integration
+  bugs: local server, real browser client, durable persistence, scoped actors,
+  explicit auth, realtime, denied access, offline replay, blob access, and
+  redacted failure artifacts. Testkit helpers should reduce boilerplate
+  without mocking away the authority path.
+- API shape and docs: keep lifecycle, health, recovery, generated wrappers,
+  operator checks, testkit helpers, debug snapshots, and advanced escape
+  hatches labeled by audience. Stable codes and fields need additive evolution
+  expectations once app tests are told to assert them.
+
+Use this completion bar for each retained source point:
+
+- There is a public API, generated wrapper, CLI JSON shape, testkit helper, or
+  documented operator command that expresses the contract.
+- There is at least one focused test, smoke, release check, browser artifact,
+  or Console/Fleet ingestion path proving the contract on a realistic path.
+- The docs route users through the golden scaffold/generate/run/mutate/observe
+  loop before exposing raw internals.
+- The implementation does not reintroduce manual-sync freshness fixes,
+  request-startup migrations, raw synced SQL writes, implicit global blob
+  access, old JavaScript-client compatibility, console-only debugging, or
+  fake package/database splits that hide real product cost.
+
 ### 2026-07-01 Feedback Addendum
 
 The feedback is worth keeping, but the implementation should avoid turning it
@@ -1232,6 +1288,10 @@ online propagation, or reconnect behavior can change.
   semantics, auth/scope failures, realtime proof, blob/package authority,
   deploy/schema readiness, deterministic app tests, and shared public API/log
   vocabulary.
+- A source-feedback retention checklist now says every pasted Skaldsong point
+  is worth keeping as product pressure, but must land as a public contract,
+  proof artifact, docs/runbook entry, or explicit anti-solution rather than a
+  duplicate raw backlog.
 - The first failure-artifact ingestion slice adds
   `POST /console/client-diagnostics/browser-preview-failure`, accepting either
   the raw `create-syncular-app` `browser-preview-failure.json` artifact or a
@@ -1833,6 +1893,11 @@ online propagation, or reconnect behavior can change.
   variants, package splits for dependency optics, implicit global blob access,
   request-startup migrations, raw synced SQL writes, old client compatibility,
   and console-only debugging.
+- 2026-07-01: Added a source-feedback retention checklist that keeps every
+  pasted Skaldsong feedback theme in WP-50 as either a public contract, proof
+  artifact, docs/runbook obligation, or explicit anti-solution, with a
+  completion bar for APIs/CLI JSON, tests/smokes/artifacts, golden-path docs,
+  and shortcut avoidance.
 - 2026-07-01: Added a feedback-driven acceptance matrix for future WP-50
   slices, making the pasted feedback actionable by audience and completion
   standard instead of leaving it as broad DX sentiment.
