@@ -1042,7 +1042,7 @@ impl DieselSqliteStore {
                    undo_client_commit_id, redo_client_commit_id, created_at, updated_at
             from sync_command_history
             where state = ?1
-            order by updated_at desc, created_at desc, id desc
+            order by updated_at desc, created_at desc, rowid desc
             limit 1
             "#,
         )

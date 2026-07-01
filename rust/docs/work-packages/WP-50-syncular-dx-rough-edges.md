@@ -4347,6 +4347,20 @@ Most recent mutation-status rerun:
   `real-browser built-preview preflight smoke passed`; because the generated
   task path now requires the command-timeline marker before that pass marker,
   this confirms the command-timeline proof gate in hosted Chrome.
+- 2026-07-01: Final-tip hosted Checks run `28545829979` on docs commit
+  `f217acb4` confirmed `starter-browser-preview` again, but exposed a
+  pre-existing `rust-native` command-history flake: rapid undo/redo/hard-delete
+  commands could share millisecond timestamps, and
+  `latest_command_history(Done)` used random command UUIDs as the final
+  tie-breaker. The Diesel SQLite store now orders tied command-history rows by
+  SQLite insertion order (`rowid`) instead, and `store_backends.rs` forces a
+  same-timestamp/lexicographically inverted-id regression. Local
+  `cargo test --manifest-path rust/Cargo.toml --workspace`,
+  `cargo check --manifest-path rust/Cargo.toml -p syncular-client
+  --no-default-features --features native,crdt-yjs`, the new focused
+  regression, full `syncular-todo-app-example --lib`, and a 30-run stress loop
+  of the previously flaky command-history test passed; hosted rerun is
+  pending.
 
 ## Next Action
 

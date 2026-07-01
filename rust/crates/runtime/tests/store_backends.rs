@@ -3,7 +3,7 @@ use std::time::Duration;
 
 use diesel::prelude::*;
 use diesel::sql_query;
-use diesel::sql_types::{BigInt, Integer};
+use diesel::sql_types::{BigInt, Integer, Text};
 use serde_json::{json, Value};
 use std::collections::BTreeMap;
 use syncular_runtime::app_schema::{
@@ -190,6 +190,61 @@ fn diesel_store_persists_command_history_records() -> Result<()> {
             .client_commit_id,
         "client-replacement"
     );
+
+    let _ = std::fs::remove_file(path);
+    Ok(())
+}
+
+#[test]
+fn diesel_store_uses_insertion_order_for_tied_command_history_timestamps() -> Result<()> {
+    let path = temp_db_path("syncular-diesel-command-history-tie");
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let entries = vec![CommandHistoryEntry {
+        table: "tasks".to_string(),
+        row_id: "command-task".to_string(),
+        before: None,
+        after: Some(json!({
+            "id": "command-task",
+            "title": "After",
+            "server_version": 1,
+        })),
+    }];
+    let first_receipt = MutationReceipt {
+        commit_id: "commit-first".to_string(),
+        client_commit_id: "client-first".to_string(),
+    };
+    let second_receipt = MutationReceipt {
+        commit_id: "commit-second".to_string(),
+        client_commit_id: "client-second".to_string(),
+    };
+
+    let first = store.record_command_history("default", &entries, &first_receipt)?;
+    let second = store.record_command_history("default", &entries, &second_receipt)?;
+    drop(store);
+
+    let mut conn = diesel::sqlite::SqliteConnection::establish(&path)?;
+    sql_query(
+        "update sync_command_history set id = ?1, created_at = ?2, updated_at = ?2 where id = ?3",
+    )
+    .bind::<Text, _>("z-first")
+    .bind::<BigInt, _>(42_i64)
+    .bind::<Text, _>(&first.id)
+    .execute(&mut conn)?;
+    sql_query(
+        "update sync_command_history set id = ?1, created_at = ?2, updated_at = ?2 where id = ?3",
+    )
+    .bind::<Text, _>("a-second")
+    .bind::<BigInt, _>(42_i64)
+    .bind::<Text, _>(&second.id)
+    .execute(&mut conn)?;
+    drop(conn);
+
+    let mut store = DieselSqliteStore::open_with_schema(&path, demo_todo_app_schema())?;
+    let latest = store
+        .latest_command_history(CommandHistoryState::Done)?
+        .expect("second inserted command should win timestamp ties");
+    assert_eq!(latest.id, "a-second");
+    assert_eq!(latest.client_commit_id, "client-second");
 
     let _ = std::fs::remove_file(path);
     Ok(())
