@@ -3794,8 +3794,12 @@ Most recent mutation-status rerun:
   connect. The harness now decodes non-string Chrome DevTools WebSocket frames
   (`ArrayBuffer`, typed-array, Blob-like `text()`/`arrayBuffer()` payloads),
   extends CDP command timeout to 30s, and records `readiness-probe-error` when
-  the first page probe cannot be read. Remaining depth is observing the next
-  hosted
+  the first page probe cannot be read. Hosted run `28520032328` then showed
+  the probe could read an initial empty page before timing out during the app
+  navigation window, so the harness now creates Chrome targets at
+  `about:blank`, attaches/enables CDP first, navigates via `Page.navigate`,
+  waits for `Page.loadEventFired`, and only then starts readiness probes.
+  Remaining depth is observing the next hosted
   browser/Cloudflare artifacts and deciding whether future hosted artifact
   uploads need richer Console/Fleet orchestration.
 

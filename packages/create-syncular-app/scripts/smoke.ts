@@ -457,15 +457,13 @@ async function runBrowserPreviewSmoke(args: {
 
   const smokeOperation = (async () => {
     log('real-browser smoke: creating first Chrome target');
-    const target = await createChromeTarget(chrome.debugPort, targetUrl);
+    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
     const session = await CdpSession.connect(target.webSocketDebuggerUrl);
     let secondSession: CdpSession | null = null;
     try {
       log('real-browser smoke: enabling first Chrome target');
-      await session.send('Runtime.enable');
-      await session.send('Page.enable');
-      await session.send('Log.enable');
-      await session.send('Network.enable');
+      await enableChromeTarget(session);
+      await navigateChromeTarget(session, targetUrl);
       log('real-browser smoke: waiting for first page readiness');
       await waitForStarterBrowserReady(
         session,
@@ -485,18 +483,17 @@ async function runBrowserPreviewSmoke(args: {
         session,
       });
       log('real-browser smoke: creating second Chrome target');
+      const secondUrl = `${args.origin}/?syncularClientId=web-second`;
       const secondTarget = await createChromeTarget(
         chrome.debugPort,
-        `${args.origin}/?syncularClientId=web-second`
+        'about:blank'
       );
       secondSession = await CdpSession.connect(
         secondTarget.webSocketDebuggerUrl
       );
       log('real-browser smoke: enabling second Chrome target');
-      await secondSession.send('Runtime.enable');
-      await secondSession.send('Page.enable');
-      await secondSession.send('Log.enable');
-      await secondSession.send('Network.enable');
+      await enableChromeTarget(secondSession);
+      await navigateChromeTarget(secondSession, secondUrl);
       log('real-browser smoke: waiting for second page readiness');
       await waitForStarterBrowserReady(
         secondSession,
@@ -609,6 +606,22 @@ async function withTimeout<T>(args: {
   } finally {
     if (timeout !== null) clearTimeout(timeout);
   }
+}
+
+async function enableChromeTarget(session: CdpSession): Promise<void> {
+  await session.send('Runtime.enable');
+  await session.send('Page.enable');
+  await session.send('Log.enable');
+  await session.send('Network.enable');
+}
+
+async function navigateChromeTarget(
+  session: CdpSession,
+  url: string
+): Promise<void> {
+  const loadEvent = session.waitForEvent('Page.loadEventFired', 15_000);
+  await session.send('Page.navigate', { url });
+  await loadEvent;
 }
 
 async function startBrowserPreviewChrome(args: {
@@ -1758,12 +1771,10 @@ async function proveStarterBrowserProcessRestart(args: {
   let session: CdpSession | null = null;
 
   try {
-    const target = await createChromeTarget(chrome.debugPort, url);
+    const target = await createChromeTarget(chrome.debugPort, 'about:blank');
     session = await CdpSession.connect(target.webSocketDebuggerUrl);
-    await session.send('Runtime.enable');
-    await session.send('Page.enable');
-    await session.send('Log.enable');
-    await session.send('Network.enable');
+    await enableChromeTarget(session);
+    await navigateChromeTarget(session, url);
     await waitForStarterBrowserReady(
       session,
       args.failureArtifactPath,
@@ -2453,6 +2464,14 @@ type CdpResponse = {
   error?: { message?: string };
 };
 
+type CdpEventWaiter = {
+  method: string;
+  predicate(params: unknown): boolean;
+  reject(reason: unknown): void;
+  resolve(params: unknown): void;
+  timeout: ReturnType<typeof setTimeout>;
+};
+
 class CdpSession {
   #nextId = 1;
   #pending = new Map<
@@ -2460,6 +2479,7 @@ class CdpSession {
     { resolve(value: unknown): void; reject(reason: unknown): void }
   >();
   #errors: string[] = [];
+  #eventWaiters = new Set<CdpEventWaiter>();
   #requests = new Map<string, { type?: string; url: string }>();
 
   private constructor(private readonly socket: WebSocket) {
@@ -2472,12 +2492,16 @@ class CdpSession {
         );
       });
     });
-    socket.addEventListener('close', () =>
-      this.#rejectPending(new Error('Chrome DevTools WebSocket closed'))
-    );
-    socket.addEventListener('error', () =>
-      this.#rejectPending(new Error('Chrome DevTools WebSocket errored'))
-    );
+    socket.addEventListener('close', () => {
+      const error = new Error('Chrome DevTools WebSocket closed');
+      this.#rejectPending(error);
+      this.#rejectEventWaiters(error);
+    });
+    socket.addEventListener('error', () => {
+      const error = new Error('Chrome DevTools WebSocket errored');
+      this.#rejectPending(error);
+      this.#rejectEventWaiters(error);
+    });
   }
 
   static connect(url: string): Promise<CdpSession> {
@@ -2562,6 +2586,30 @@ class CdpSession {
     });
   }
 
+  waitForEvent(
+    method: string,
+    timeoutMs: number,
+    predicate: (params: unknown) => boolean = () => true
+  ): Promise<unknown> {
+    return new Promise((resolve, reject) => {
+      const waiter: CdpEventWaiter = {
+        method,
+        predicate,
+        reject,
+        resolve,
+        timeout: setTimeout(() => {
+          this.#eventWaiters.delete(waiter);
+          reject(
+            new Error(
+              `Timed out after ${timeoutMs}ms waiting for Chrome DevTools event ${method}`
+            )
+          );
+        }, timeoutMs),
+      };
+      this.#eventWaiters.add(waiter);
+    });
+  }
+
   async evaluate<T>(expression: string): Promise<T> {
     if (this.#errors.length > 0) {
       throw new Error(`Browser runtime error: ${this.#errors.join('\n')}`);
@@ -2589,12 +2637,21 @@ class CdpSession {
 
   close(): void {
     this.socket.close();
+    this.#rejectEventWaiters(new Error('Chrome DevTools WebSocket closed'));
   }
 
   #rejectPending(error: Error): void {
     for (const [id, pending] of this.#pending) {
       this.#pending.delete(id);
       pending.reject(error);
+    }
+  }
+
+  #rejectEventWaiters(error: Error): void {
+    for (const waiter of this.#eventWaiters) {
+      this.#eventWaiters.delete(waiter);
+      clearTimeout(waiter.timeout);
+      waiter.reject(error);
     }
   }
 
@@ -2614,6 +2671,8 @@ class CdpSession {
       }
       return;
     }
+
+    this.#resolveEventWaiters(message);
 
     if (message.method === 'Runtime.exceptionThrown') {
       const params = message.params as
@@ -2741,6 +2800,17 @@ class CdpSession {
           }${params?.errorText ? ` (${params.errorText})` : ''}`
         );
       }
+    }
+  }
+
+  #resolveEventWaiters(message: CdpResponse): void {
+    if (message.method === undefined) return;
+    for (const waiter of [...this.#eventWaiters]) {
+      if (waiter.method !== message.method) continue;
+      if (!waiter.predicate(message.params)) continue;
+      this.#eventWaiters.delete(waiter);
+      clearTimeout(waiter.timeout);
+      waiter.resolve(message.params);
     }
   }
 }

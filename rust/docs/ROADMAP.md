@@ -296,8 +296,12 @@ read-only review:
     first `Runtime.evaluate` readiness probe timing out after sync/realtime
     connect. The CDP client now decodes non-string WebSocket frames, uses a 30s
     command timeout, and records `readiness-probe-error` for that failure mode.
-    Next slice: observe the hosted Chrome job after that decoder hardening or
-    continue broadening browser/framework runtime execution beyond Vite. The
+    Run `28520032328` then showed an initial empty-page probe before navigation
+    settled, so the smoke now attaches CDP to `about:blank`, navigates with
+    `Page.navigate`, waits for `Page.loadEventFired`, and only then reads
+    readiness markers.
+    Next slice: observe the hosted Chrome job after that navigation hardening
+    or continue broadening browser/framework runtime execution beyond Vite. The
     post-publish
     JavaScript install smoke now
     also creates a fresh optional import matrix project that installs
