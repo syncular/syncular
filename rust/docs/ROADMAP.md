@@ -147,10 +147,12 @@ read-only review:
     through Vite preview, and can execute that built preview in Chrome/CDP to
     observe the browser root import marker. Cloudflare coverage now declares
     `SYNC_DO`, D1, and R2 bindings, bundles `@syncular/server/cloudflare`,
-    `@syncular/server/d1`, and the R2 adapter through Wrangler dry-run, and
-    serves the generated Durable Object Worker through local `wrangler dev` to
-    verify a real request reaches the `createSyncWorkerWithDO(...)` route
-    through those bindings, runs a tiny D1 query, performs R2 object
+    `@syncular/server/d1`, `@syncular/server/sqlite`, and the R2 adapter
+    through Wrangler dry-run, and serves the generated Durable Object Worker
+    through local `wrangler dev` to verify a real request reaches the
+    `createSyncWorkerWithDO(...)` route through those bindings, runs
+    `ensureSyncSchema(...)` against D1, verifies the `sync_commits` table,
+    performs D1 app-table insert/select/delete, performs R2 object
     put/head/delete IO, and echoes a message through a Durable Object
     WebSocket route. WASM glue dynamic imports
     include webpack ignore metadata so the Next build stays warning-clean.

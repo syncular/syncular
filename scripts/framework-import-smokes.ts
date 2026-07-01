@@ -951,7 +951,12 @@ async function writeCloudflareWorkerApp(appDir: string): Promise<void> {
   );
   await writeFile(
     join(appDir, 'src', 'worker.ts'),
-    `import { createD1Dialect } from '@syncular/server/d1';
+    `import {
+  createDatabase,
+  ensureSyncSchema,
+} from '@syncular/server';
+import { createD1Dialect } from '@syncular/server/d1';
+import { createSqliteServerDialect } from '@syncular/server/sqlite';
 import {
   createR2BlobStorageAdapter,
   SyncDurableObject,
@@ -977,6 +982,11 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
         throw new Error('R2 binding was not available');
       }
       const d1Dialect = createD1Dialect(c.env.DB);
+      const syncDialect = createSqliteServerDialect();
+      const db = createDatabase({
+        dialect: d1Dialect,
+        family: 'sqlite',
+      });
       const blobStorage = createR2BlobStorageAdapter({
         bucket: c.env.BLOBS,
         baseUrl: 'http://127.0.0.1/sync',
@@ -998,6 +1008,40 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
       if (d1Row?.syncular_ready !== 1) {
         throw new Error('D1 runtime query did not return the expected row');
       }
+      await ensureSyncSchema(db, syncDialect);
+      const commitCountRow = await c.env.DB.prepare(
+        'SELECT COUNT(*) AS sync_commit_count FROM sync_commits'
+      ).first<{ sync_commit_count: number }>();
+      if (typeof commitCountRow?.sync_commit_count !== 'number') {
+        throw new Error('Syncular D1 core schema did not create sync_commits');
+      }
+      await db.schema
+        .createTable('syncular_framework_tasks')
+        .ifNotExists()
+        .addColumn('id', 'text', (col) => col.primaryKey())
+        .addColumn('title', 'text', (col) => col.notNull())
+        .execute();
+      const taskId = 'syncular-framework-smoke-task';
+      await db
+        .deleteFrom('syncular_framework_tasks')
+        .where('id', '=', taskId)
+        .execute();
+      await db
+        .insertInto('syncular_framework_tasks')
+        .values({ id: taskId, title: 'D1 schema operation ready' })
+        .execute();
+      const taskRow = await db
+        .selectFrom('syncular_framework_tasks')
+        .select(['id', 'title'])
+        .where('id', '=', taskId)
+        .executeTakeFirst();
+      await db
+        .deleteFrom('syncular_framework_tasks')
+        .where('id', '=', taskId)
+        .execute();
+      if (taskRow?.title !== 'D1 schema operation ready') {
+        throw new Error('D1 app table operation did not return expected row');
+      }
       const objectKey = 'syncular-framework-smoke/object.txt';
       await c.env.BLOBS.put(objectKey, 'syncular-cloudflare-r2-ready', {
         httpMetadata: { contentType: 'text/plain' },
@@ -1007,7 +1051,7 @@ export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
       if (!objectHead || objectHead.size <= 0) {
         throw new Error('R2 runtime object IO did not produce object metadata');
       }
-      return c.text('syncular-cloudflare-runtime-io-ready');
+      return c.text('syncular-cloudflare-runtime-schema-io-ready');
     });
     app.get('/syncular-framework-import-smoke/ws', (c) =>
       upgradeWebSocket(c, {
@@ -1191,24 +1235,24 @@ async function runCloudflareWorkerImportSmoke(): Promise<void> {
   for (const bundleName of bundleNames) {
     const bundle = await Bun.file(join(outDir, bundleName)).text();
     if (
-      bundle.includes('syncular-cloudflare-runtime-io-ready') &&
+      bundle.includes('syncular-cloudflare-runtime-schema-io-ready') &&
       bundle.includes('syncular-cloudflare-websocket-echo')
     ) {
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1/R2/WebSocket import smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1 schema/R2/WebSocket import smoke passed'
       );
       await runLocalWorkerRuntimeProbe({
         appDir,
         wranglerBin,
         route: '/syncular-framework-import-smoke',
-        expectedText: 'syncular-cloudflare-runtime-io-ready',
+        expectedText: 'syncular-cloudflare-runtime-schema-io-ready',
         webSocketRoute: '/syncular-framework-import-smoke/ws',
         webSocketMessage: 'syncular-cloudflare-websocket-ping',
         webSocketExpectedText:
           'syncular-cloudflare-websocket-echo:syncular-cloudflare-websocket-ping',
       });
       console.log(
-        '[framework-import-smokes] Cloudflare DO/D1/R2/WebSocket runtime IO smoke passed'
+        '[framework-import-smokes] Cloudflare DO/D1 schema/R2/WebSocket runtime IO smoke passed'
       );
       return;
     }

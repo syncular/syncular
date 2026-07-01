@@ -43,8 +43,9 @@ until the full browser Worker/WASM suite is green on Linux.
   current Next SSR and Vite browser production graphs, so Vite preview serves
   the built app assets, and so the Cloudflare subpaths bundle with Durable
   Object, D1, R2, and WebSocket routes under Wrangler and answer local runtime
-  probes that perform tiny D1 SQL, R2 object IO, and a Durable Object
-  WebSocket echo through those bindings.
+  probes that perform Syncular schema creation on D1, D1 app-table
+  insert/select/delete, R2 object IO, and a Durable Object WebSocket echo
+  through those bindings.
   For release/post-publish
   checks,
   `bun scripts/post-publish-install-smokes.ts --version <version>` also runs
