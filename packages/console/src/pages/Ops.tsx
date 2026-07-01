@@ -62,9 +62,16 @@ const DEFAULT_ALERT_CONFIG: AlertConfig = {
 };
 
 type OpsReadinessCheckKey = keyof ConsoleOpsReadinessReport['checks'];
+type OpsReadinessIssue = ConsoleOpsReadinessReport['issues'][number];
 type OpsReadinessInstanceReport = NonNullable<
   ConsoleOpsReadinessResponse['instanceReports']
 >[number];
+
+interface OpsReadinessIssueRow {
+  sourceId: string;
+  sourceLabel: string;
+  issue: OpsReadinessIssue;
+}
 
 const OPS_READINESS_CHECK_ORDER: OpsReadinessCheckKey[] = [
   'schemaReadiness',
@@ -220,6 +227,12 @@ function opsReadinessBadgeVariant(
   return 'offline';
 }
 
+function opsReadinessIssueBadgeVariant(
+  severity: OpsReadinessIssue['severity']
+): 'syncing' | 'offline' {
+  return severity === 'warning' ? 'syncing' : 'offline';
+}
+
 function compareNullableIsoDesc(
   a: string | null | undefined,
   b: string | null | undefined
@@ -287,6 +300,27 @@ function opsReadinessFleetBadge(
 function opsReadinessInstanceStatus(entry: OpsReadinessInstanceReport): string {
   if (!entry.available || !entry.report) return 'missing';
   return entry.report.status;
+}
+
+function collectOpsReadinessIssueRows(args: {
+  report: ConsoleOpsReadinessReport | null;
+  instanceReports: OpsReadinessInstanceReport[];
+}): OpsReadinessIssueRow[] {
+  if (args.instanceReports.length === 0) {
+    return (args.report?.issues ?? []).map((issue) => ({
+      sourceId: 'latest',
+      sourceLabel: 'latest',
+      issue,
+    }));
+  }
+
+  return args.instanceReports.flatMap((entry) =>
+    (entry.report?.issues ?? []).map((issue) => ({
+      sourceId: entry.instanceId,
+      sourceLabel: entry.label ?? entry.instanceId,
+      issue,
+    }))
+  );
 }
 
 export function Ops() {
@@ -470,34 +504,10 @@ function OpsReadinessView() {
                 })}
               </div>
 
-              {report.issues.length > 0 ? (
-                <div className="overflow-x-auto">
-                  <Table>
-                    <TableHeader>
-                      <TableRow>
-                        <TableHead>Code</TableHead>
-                        <TableHead>Action</TableHead>
-                        <TableHead>Message</TableHead>
-                      </TableRow>
-                    </TableHeader>
-                    <TableBody>
-                      {report.issues.slice(0, 5).map((issue, index) => (
-                        <TableRow key={`${issue.code}:${index}`}>
-                          <TableCell className="font-mono text-xs text-offline">
-                            {issue.code}
-                          </TableCell>
-                          <TableCell className="font-mono text-xs">
-                            {issue.recommendedAction}
-                          </TableCell>
-                          <TableCell className="text-xs text-neutral-300">
-                            {issue.message}
-                          </TableCell>
-                        </TableRow>
-                      ))}
-                    </TableBody>
-                  </Table>
-                </div>
-              ) : null}
+              <OpsReadinessIssueDrilldownView
+                report={report}
+                instanceReports={instanceReports}
+              />
             </>
           ) : (
             <div className="px-2 py-3 text-sm text-neutral-500">
@@ -564,6 +574,84 @@ function OpsReadinessView() {
         </div>
       )}
     </SectionCard>
+  );
+}
+
+function OpsReadinessIssueDrilldownView({
+  report,
+  instanceReports,
+}: {
+  report: ConsoleOpsReadinessReport | null;
+  instanceReports: OpsReadinessInstanceReport[];
+}) {
+  const issueRows = collectOpsReadinessIssueRows({
+    report,
+    instanceReports,
+  });
+  if (issueRows.length === 0) return null;
+
+  const visibleRows = issueRows.slice(0, 8);
+  const isFleetReport = instanceReports.length > 0;
+
+  return (
+    <div className="flex flex-col gap-2">
+      <div className="flex items-center justify-between gap-3">
+        <div className="font-mono text-[10px] uppercase text-neutral-500">
+          Issue Drilldown
+        </div>
+        <Badge variant="ghost">
+          {issueRows.length} issue{issueRows.length === 1 ? '' : 's'}
+        </Badge>
+      </div>
+      <div className="overflow-x-auto">
+        <Table>
+          <TableHeader>
+            <TableRow>
+              {isFleetReport ? <TableHead>Instance</TableHead> : null}
+              <TableHead>Severity</TableHead>
+              <TableHead>Code</TableHead>
+              <TableHead>Action</TableHead>
+              <TableHead>Message</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {visibleRows.map(({ sourceId, sourceLabel, issue }, index) => (
+              <TableRow key={`${sourceId}:${issue.code}:${index}`}>
+                {isFleetReport ? (
+                  <TableCell className="font-mono text-xs">
+                    <div>{sourceLabel}</div>
+                    <div className="text-[10px] text-neutral-500">
+                      {sourceId}
+                    </div>
+                  </TableCell>
+                ) : null}
+                <TableCell>
+                  <Badge
+                    variant={opsReadinessIssueBadgeVariant(issue.severity)}
+                  >
+                    {issue.severity}
+                  </Badge>
+                </TableCell>
+                <TableCell className="font-mono text-xs text-offline">
+                  {issue.code}
+                </TableCell>
+                <TableCell className="font-mono text-xs">
+                  {issue.recommendedAction}
+                </TableCell>
+                <TableCell className="text-xs text-neutral-300">
+                  {issue.message}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
+      </div>
+      {issueRows.length > visibleRows.length ? (
+        <div className="px-2 font-mono text-[10px] text-neutral-500">
+          Showing {visibleRows.length} of {issueRows.length}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
