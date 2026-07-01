@@ -2893,6 +2893,22 @@ Most recent release-rehearsal framework-smoke wiring rerun:
 - `bun run docs:stale-check`
 - `git diff --check`
 
+Most recent release-rehearsal local gate rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun scripts/release-rehearsal.ts --skip-publish-dry-runs`
+  - Passed version stamp dry-runs, Cargo version stamp dry-run, docs stale
+    check, JS browser fresh-app generate/check/schema/runtime smoke, Rust
+    fresh-app generate/check/cargo test smoke, create-syncular-app
+    built-preview smoke, Next root import production build smoke, Vite root
+    import build/preview smoke, Vite browser-runtime artifact self-check,
+    Cloudflare Worker dry-run, and Cloudflare DO/D1 schema/sync authz/realtime
+    plus R2 blob authz/WebSocket runtime IO smoke.
+  - Skipped optional local Chrome/Chromium execution in starter and Vite
+    browser smokes because this machine has no Chrome/Chromium binary.
+  - Publish dry-runs were intentionally skipped for this local WP-50 coherence
+    gate; the release rehearsal script still owns them when run without
+    `--skip-publish-dry-runs`.
+
 Most recent framework-import quality-gate docs rerun:
 
 - `bun run docs:stale-check`
