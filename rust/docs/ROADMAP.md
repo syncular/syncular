@@ -291,7 +291,12 @@ read-only review:
     the smoke harness now has explicit CDP connect/command timeouts, Chrome
     DevTools `127.0.0.1` binding/URL normalization, phase logs, and bounded
     failure artifacts before the GitHub job timeout can cancel the upload.
-    Next slice: observe the hosted Chrome job after that harness hardening or
+    Follow-up hosted run `28519417487` confirmed all non-browser jobs green and
+    the artifact upload path working; the remaining browser failure is the
+    first `Runtime.evaluate` readiness probe timing out after sync/realtime
+    connect. The CDP client now decodes non-string WebSocket frames, uses a 30s
+    command timeout, and records `readiness-probe-error` for that failure mode.
+    Next slice: observe the hosted Chrome job after that decoder hardening or
     continue broadening browser/framework runtime execution beyond Vite. The
     post-publish
     JavaScript install smoke now

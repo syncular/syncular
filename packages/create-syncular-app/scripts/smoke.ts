@@ -44,7 +44,7 @@ const STARTER_LIFECYCLE_RESUME_LOCK_NAME =
 const STARTER_LIFECYCLE_RESUME_LOCK_TIMEOUT_MS = 10_000;
 const BROWSER_PREVIEW_SMOKE_TIMEOUT_MS = 180_000;
 const CDP_CONNECT_TIMEOUT_MS = 10_000;
-const CDP_COMMAND_TIMEOUT_MS = 10_000;
+const CDP_COMMAND_TIMEOUT_MS = 30_000;
 const keep = process.argv.includes('--keep');
 const requireBrowserPreviewSmoke =
   process.env.SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE === 'required' ||
@@ -203,6 +203,10 @@ async function getFreePort(): Promise<number> {
 
 function elapsedSince(startedAtMs: number): number {
   return Math.max(0, Date.now() - startedAtMs);
+}
+
+function describeError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 async function stopProcess(
@@ -1097,7 +1101,22 @@ async function waitForStarterBrowserReady(
   const deadline = Date.now() + 60_000;
   let lastProbe: BrowserPreviewProbe | null = null;
   while (Date.now() < deadline) {
-    const evaluation = await readStarterBrowserProbe(session);
+    let evaluation: BrowserPreviewProbe;
+    try {
+      evaluation = await readStarterBrowserProbe(session);
+    } catch (error) {
+      await writeBrowserPreviewFailureArtifact(
+        failureArtifactPath,
+        'readiness-probe-error',
+        lastProbe,
+        failureMetrics
+      );
+      throw new Error(
+        `Built preview browser readiness probe failed: ${describeError(
+          error
+        )}. Failure artifact: ${failureArtifactPath}`
+      );
+    }
     lastProbe = evaluation;
     if (evaluation.errors.length > 0) {
       await writeBrowserPreviewFailureArtifact(
@@ -2444,7 +2463,15 @@ class CdpSession {
   #requests = new Map<string, { type?: string; url: string }>();
 
   private constructor(private readonly socket: WebSocket) {
-    socket.addEventListener('message', (event) => this.#handleMessage(event));
+    socket.addEventListener('message', (event) => {
+      void this.#handleMessage(event).catch((error) => {
+        this.#rejectPending(
+          new Error(
+            `Chrome DevTools message decode failed: ${describeError(error)}`
+          )
+        );
+      });
+    });
     socket.addEventListener('close', () =>
       this.#rejectPending(new Error('Chrome DevTools WebSocket closed'))
     );
@@ -2571,11 +2598,8 @@ class CdpSession {
     }
   }
 
-  #handleMessage(event: MessageEvent): void {
-    const data =
-      typeof event.data === 'string'
-        ? event.data
-        : Buffer.from(event.data as ArrayBuffer).toString('utf8');
+  async #handleMessage(event: MessageEvent): Promise<void> {
+    const data = await decodeWebSocketMessageData(event.data);
     const message = JSON.parse(data) as CdpResponse;
     if (message.id !== undefined) {
       const pending = this.#pending.get(message.id);
@@ -2719,6 +2743,29 @@ class CdpSession {
       }
     }
   }
+}
+
+async function decodeWebSocketMessageData(data: unknown): Promise<string> {
+  if (typeof data === 'string') return data;
+  if (data instanceof ArrayBuffer) return Buffer.from(data).toString('utf8');
+  if (ArrayBuffer.isView(data)) {
+    return Buffer.from(data.buffer, data.byteOffset, data.byteLength).toString(
+      'utf8'
+    );
+  }
+  const maybeBlob = data as { text?: unknown; arrayBuffer?: unknown };
+  if (typeof maybeBlob?.text === 'function') {
+    return await (maybeBlob.text as () => Promise<string>).call(maybeBlob);
+  }
+  if (typeof maybeBlob?.arrayBuffer === 'function') {
+    const buffer = await (
+      maybeBlob.arrayBuffer as () => Promise<ArrayBuffer>
+    ).call(maybeBlob);
+    return Buffer.from(buffer).toString('utf8');
+  }
+  throw new Error(
+    `Unsupported Chrome DevTools WebSocket frame type: ${typeof data}`
+  );
 }
 
 function formatBrowserDiagnostic(

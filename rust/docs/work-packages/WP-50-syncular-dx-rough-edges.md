@@ -3788,7 +3788,14 @@ Most recent mutation-status rerun:
   `localhost` WebSocket URLs to `127.0.0.1`, adds explicit CDP connect/command
   timeouts, logs each real-browser phase, and writes a bounded
   `real-browser-smoke-timeout`/`real-browser-smoke-error` artifact if the CDP
-  path stalls. Remaining depth is observing the next hosted
+  path stalls. Hosted run `28519417487` then confirmed every non-browser job
+  green and confirmed the artifact upload path works; the first
+  `Runtime.evaluate` readiness probe timed out after first-page sync/realtime
+  connect. The harness now decodes non-string Chrome DevTools WebSocket frames
+  (`ArrayBuffer`, typed-array, Blob-like `text()`/`arrayBuffer()` payloads),
+  extends CDP command timeout to 30s, and records `readiness-probe-error` when
+  the first page probe cannot be read. Remaining depth is observing the next
+  hosted
   browser/Cloudflare artifacts and deciding whether future hosted artifact
   uploads need richer Console/Fleet orchestration.
 
