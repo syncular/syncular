@@ -1670,6 +1670,15 @@ online propagation, or reconnect behavior can change.
   the app-facing place to route stable recovery actions such as refreshing auth,
   checking permissions, regenerating/upgrading schema, or recreating a failed
   runtime.
+- 2026-07-01: Browser health now also exposes lifecycle operation availability
+  as part of the same UI-facing truth surface: lifecycle stage, recovery owner,
+  blocked-operation count, and fixed operation states for local reads,
+  generated mutations, local-visibility waits, explicit sync, auth replacement,
+  resume, support-bundle export, and destructive local recovery. The starter
+  health line records those fields as hidden marker attributes, public
+  error-handling and observability docs route app chrome through the new
+  projection, and focused browser-health tests prove happy-path, auth-required,
+  revoked-scope, and offline queueing semantics.
 - 2026-06-30 fourteenth implementation slice resolved the default global/base
   blob sharing pattern: shared object bytes are fine, but campaign/project
   access is granted by scoped metadata rows in the requested partition/scope.
@@ -1870,6 +1879,12 @@ online propagation, or reconnect behavior can change.
 - 2026-06-30: Updated public error-handling docs and the starter README so apps
   treat browser health as the stable place to route recovery UI instead of
   interpreting low-level status objects or diagnostic text.
+- 2026-07-01: Extended `getSyncularBrowserHealth(...)` with
+  `lifecycle.stage`, `lifecycle.recoveryOwner`, and fixed lifecycle operation
+  availability entries. Focused tests cover durable happy path,
+  auth-required recovery, revoked-scope blockers, and offline queued mutation
+  semantics; the starter health line now exposes the operation projection as
+  smoke-readable data attributes.
 - 2026-06-30: Added `partitionColumn` to
   `ScopedBlobReferenceTable` / `createScopedBlobAccessDecisionChecker(...)` so
   blob reference lookup can be constrained to the requested Syncular route
@@ -4362,6 +4377,22 @@ Most recent mutation-status rerun:
   of the previously flaky command-history test passed. Hosted Checks run
   `28546327052` on commit `09f94e67` then passed the full matrix, including
   `rust-native` and `starter-browser-preview`.
+- 2026-07-01: Added the browser-health lifecycle operation projection slice.
+  `getSyncularBrowserHealth(...)` now returns lifecycle stage, recovery owner,
+  blocked-operation count, and fixed operation availability for local reads,
+  generated mutations, local-visibility waits, explicit sync, auth replacement,
+  resume, support-bundle export, and destructive local recovery. This makes
+  UI/support recovery ownership visible without a second diagnostics
+  vocabulary. The starter health marker now includes the projection as data
+  attributes. Local gates with Bun `1.3.9` passed:
+  `bun test packages/client/src/browser-health.test.ts`,
+  `bun --cwd packages/client tsgo`,
+  `bun --cwd packages/create-syncular-app tsgo`,
+  `bun run docs:stale-check`, `bun --cwd apps/docs types:check`, focused
+  Biome check, `bun --cwd packages/create-syncular-app smoke`, and
+  `git diff --check`. Chrome was not installed locally, so the starter smoke
+  used the non-Chrome path; hosted browser proof remains a follow-up if this
+  marker becomes a required browser artifact assertion.
 
 ## Next Action
 
@@ -4382,7 +4413,10 @@ slice extends those browser-observed quota facts into storage recovery action
 mapping, now confirmed in hosted Chrome. The quota-exhausted generated write
 rejection proof is also confirmed in hosted Chrome. The generated
 command-timeline proof marker is also confirmed in hosted Chrome through Checks
-run `28545477587`.
+run `28545477587`. Browser health now has a typed lifecycle operation
+projection for app chrome and support output; the next lifecycle-facing slice
+should either promote these marker fields into the browser failure artifact or
+extend the realtime proof chain with joined-scope/event/pull/apply evidence.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, eviction and storage-shutdown browser

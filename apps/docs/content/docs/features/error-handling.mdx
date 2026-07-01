@@ -146,6 +146,17 @@ app-facing summary and stable recovery actions in one place:
 import { getSyncularBrowserHealth } from '@syncular/client';
 
 const health = await getSyncularBrowserHealth(syncular);
+const syncNow = health.lifecycle.operations.find(
+  (operation) => operation.operation === 'sync-now'
+);
+
+if (syncNow?.availability === 'blocked') {
+  routeLifecycleUi({
+    operation: syncNow.operation,
+    reasonCode: syncNow.reasonCode,
+    recoveryOwner: health.lifecycle.recoveryOwner,
+  });
+}
 
 if (health.requiresAction) {
   for (const action of health.recommendedActions) {
@@ -162,7 +173,11 @@ if (health.requiresAction) {
 `recommendedActions` is derived from the shared error taxonomy. For example,
 `sync.auth_required` maps to `refreshAuth`, revoked subscriptions map to
 `checkPermissions`, schema mismatches map to regenerate or upgrade actions, and
-worker failures map to `recreateClient`.
+worker failures map to `recreateClient`. The same health result also includes a
+small `lifecycle` projection: a stage, a recovery owner, and fixed operation
+availability entries for local reads, generated mutations, local-visibility
+waits, explicit sync, auth replacement, resume, support-bundle export, and
+destructive local recovery.
 
 For local database recovery, prefer the managed recovery plan before calling
 low-level storage helpers. It turns local health findings, failed outbox/blob

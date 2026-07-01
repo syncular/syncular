@@ -515,6 +515,12 @@ UI code can poll `syncular.client.connectionState()` for a cheap snapshot of the
 Worker state: closed flag, pending request count, realtime connection state,
 storage fallback, and the latest diagnostic/error.
 
+For app chrome that needs a typed recovery decision, prefer
+`getSyncularBrowserHealth(syncular)`. Its `lifecycle` field reports the current
+stage, recovery owner, and fixed operation availability for local reads,
+generated mutations, local-visibility waits, explicit sync, auth replacement,
+resume, support-bundle export, and destructive local recovery.
+
 For E2E failures and support reports, use `runtimeTimeline()` to turn the
 current snapshot plus recent diagnostics into an ordered, redacted sequence of
 runtime, lifecycle, bootstrap, sync, auth, realtime, local-apply, outbox,

@@ -7,6 +7,7 @@ import type { SyncularClientStatus } from './client';
 import type {
   SyncularDiagnosticEvent,
   SyncularDiagnosticSnapshot,
+  SyncularLifecyclePhase,
   SyncularRealtimeConnectionState,
   SyncularRuntimeInfo,
   SyncularStorage,
@@ -22,6 +23,41 @@ export type SyncularBrowserHealthStatus =
   | 'closed';
 
 export type SyncularBrowserPersistenceStatus = 'durable' | 'memory' | 'unknown';
+
+export type SyncularBrowserHealthLifecycleStage =
+  | 'destroyed'
+  | 'requires-action'
+  | 'recovering'
+  | 'offline'
+  | 'bootstrapping'
+  | 'degraded'
+  | 'realtime-live'
+  | 'ready';
+
+export type SyncularBrowserHealthRecoveryOwner =
+  | 'none'
+  | 'runtime'
+  | 'app-auth'
+  | 'app-scope'
+  | 'user'
+  | 'operator'
+  | 'developer';
+
+export type SyncularBrowserHealthOperation =
+  | 'read-local'
+  | 'generated-mutation'
+  | 'await-local-visibility'
+  | 'sync-now'
+  | 'replace-auth-context'
+  | 'resume-from-background'
+  | 'export-support-bundle'
+  | 'destructive-local-recovery';
+
+export type SyncularBrowserHealthOperationAvailability =
+  | 'available'
+  | 'blocked'
+  | 'advanced'
+  | 'requires-confirmation';
 
 export interface SyncularBrowserHealthClient {
   diagnosticSnapshot(): Promise<SyncularDiagnosticSnapshot>;
@@ -99,11 +135,27 @@ export interface SyncularBrowserHealthRecommendedAction {
   source?: string;
 }
 
+export interface SyncularBrowserHealthOperationState {
+  operation: SyncularBrowserHealthOperation;
+  availability: SyncularBrowserHealthOperationAvailability;
+  reasonCode?: string;
+  recommendedAction?: SyncularErrorRecommendedAction;
+}
+
+export interface SyncularBrowserHealthLifecycle {
+  phase: SyncularLifecyclePhase | 'unknown';
+  stage: SyncularBrowserHealthLifecycleStage;
+  recoveryOwner: SyncularBrowserHealthRecoveryOwner;
+  blockedOperationCount: number;
+  operations: SyncularBrowserHealthOperationState[];
+}
+
 export interface SyncularBrowserHealth {
   generatedAt: number;
   status: SyncularBrowserHealthStatus;
   requiresAction: boolean;
   recommendedActions: SyncularBrowserHealthRecommendedAction[];
+  lifecycle: SyncularBrowserHealthLifecycle;
   runtime: SyncularBrowserHealthRuntime;
   persistence: SyncularBrowserHealthPersistence;
   bootstrap: SyncularBrowserHealthBootstrap | null;
@@ -145,6 +197,7 @@ export async function getSyncularBrowserHealth(
   const lifecyclePhase = status?.lifecycle.phase;
   const explicitRequiresAction =
     status?.requiresAction ?? status?.lifecycle.requiresAction ?? false;
+  const closed = status?.connection.closed ?? snapshot.connection.closed;
   const requiresAction =
     explicitRequiresAction ||
     lifecyclePhase === 'authRequired' ||
@@ -156,20 +209,35 @@ export async function getSyncularBrowserHealth(
     lastError,
     recentErrors,
   });
+  const healthStatus = summarizeHealthStatus({
+    closed,
+    lifecyclePhase,
+    requiresAction,
+    persistence,
+    bootstrap,
+    subscriptions,
+    lastError,
+  });
+  const lifecycle = summarizeLifecycle({
+    closed,
+    lifecyclePhase,
+    online: status?.lifecycle.online,
+    realtimeConnected: realtimeState === 'connected',
+    healthStatus,
+    requiresAction,
+    recommendedActions,
+    persistence,
+    bootstrap,
+    subscriptions,
+    lastError,
+  });
 
   return {
     generatedAt: snapshot.generatedAt,
-    status: summarizeHealthStatus({
-      closed: status?.connection.closed ?? snapshot.connection.closed,
-      lifecyclePhase,
-      requiresAction,
-      persistence,
-      bootstrap,
-      subscriptions,
-      lastError,
-    }),
+    status: healthStatus,
     requiresAction,
     recommendedActions,
+    lifecycle,
     runtime: {
       packageName: snapshot.runtime.packageName,
       packageVersion: snapshot.runtime.packageVersion,
@@ -317,6 +385,249 @@ function summarizeRecommendedActions(args: {
   }
 
   return Array.from(actions.values());
+}
+
+function summarizeLifecycle(args: {
+  closed: boolean;
+  lifecyclePhase: SyncularLifecyclePhase | undefined;
+  online: boolean | undefined;
+  realtimeConnected: boolean;
+  healthStatus: SyncularBrowserHealthStatus;
+  requiresAction: boolean;
+  recommendedActions: readonly SyncularBrowserHealthRecommendedAction[];
+  persistence: SyncularBrowserHealthPersistence;
+  bootstrap: SyncularBrowserHealthBootstrap | null;
+  subscriptions: SyncularBrowserHealthSubscriptions;
+  lastError: SyncularBrowserHealthError | null;
+}): SyncularBrowserHealthLifecycle {
+  const stage = summarizeLifecycleStage(args);
+  const recoveryOwner = summarizeRecoveryOwner(args);
+  const operations = summarizeOperationStates(args);
+
+  return {
+    phase: args.lifecyclePhase ?? 'unknown',
+    stage,
+    recoveryOwner,
+    blockedOperationCount: operations.filter(
+      (operation) => operation.availability === 'blocked'
+    ).length,
+    operations,
+  };
+}
+
+function summarizeLifecycleStage(args: {
+  closed: boolean;
+  lifecyclePhase: SyncularLifecyclePhase | undefined;
+  realtimeConnected: boolean;
+  healthStatus: SyncularBrowserHealthStatus;
+  requiresAction: boolean;
+  bootstrap: SyncularBrowserHealthBootstrap | null;
+}): SyncularBrowserHealthLifecycleStage {
+  if (args.closed || args.lifecyclePhase === 'closed') return 'destroyed';
+  if (args.requiresAction || args.healthStatus === 'action-required') {
+    return 'requires-action';
+  }
+  if (
+    args.lifecyclePhase === 'recovering' ||
+    args.lifecyclePhase === 'syncing' ||
+    args.lifecyclePhase === 'connecting'
+  ) {
+    return 'recovering';
+  }
+  if (args.lifecyclePhase === 'offline' || args.healthStatus === 'offline') {
+    return 'offline';
+  }
+  if (args.bootstrap && !args.bootstrap.complete) return 'bootstrapping';
+  if (args.healthStatus === 'degraded') return 'degraded';
+  if (args.lifecyclePhase === 'complete' && args.realtimeConnected) {
+    return 'realtime-live';
+  }
+  return 'ready';
+}
+
+function summarizeRecoveryOwner(args: {
+  closed: boolean;
+  lifecyclePhase: SyncularLifecyclePhase | undefined;
+  healthStatus: SyncularBrowserHealthStatus;
+  recommendedActions: readonly SyncularBrowserHealthRecommendedAction[];
+  persistence: SyncularBrowserHealthPersistence;
+}): SyncularBrowserHealthRecoveryOwner {
+  if (args.healthStatus === 'ok' || args.healthStatus === 'starting') {
+    return 'none';
+  }
+  if (args.closed || args.lifecyclePhase === 'closed') return 'user';
+
+  for (const action of args.recommendedActions) {
+    const owner = recoveryOwnerForRecommendedAction(action.recommendedAction);
+    if (owner !== 'none') return owner;
+  }
+
+  if (args.lifecyclePhase === 'authRequired') return 'app-auth';
+  if (
+    args.lifecyclePhase === 'connecting' ||
+    args.lifecyclePhase === 'syncing' ||
+    args.lifecyclePhase === 'recovering' ||
+    args.lifecyclePhase === 'offline'
+  ) {
+    return 'runtime';
+  }
+  if (args.persistence.durable === false) return 'user';
+  return args.healthStatus === 'degraded' ? 'runtime' : 'none';
+}
+
+function recoveryOwnerForRecommendedAction(
+  action: SyncularErrorRecommendedAction
+): SyncularBrowserHealthRecoveryOwner {
+  switch (action) {
+    case 'refreshAuth':
+      return 'app-auth';
+    case 'checkPermissions':
+      return 'app-scope';
+    case 'inspectServer':
+    case 'regenerateClient':
+    case 'upgradeClient':
+      return 'operator';
+    case 'inspectStorage':
+    case 'recreateClient':
+    case 'resetClientId':
+    case 'resolveConflict':
+    case 'reduceInput':
+      return 'user';
+    case 'fixRequest':
+    case 'splitBatch':
+      return 'developer';
+    case 'forceResync':
+    case 'retryLater':
+      return 'runtime';
+  }
+}
+
+function summarizeOperationStates(args: {
+  closed: boolean;
+  lifecyclePhase: SyncularLifecyclePhase | undefined;
+  online: boolean | undefined;
+  requiresAction: boolean;
+  recommendedActions: readonly SyncularBrowserHealthRecommendedAction[];
+  persistence: SyncularBrowserHealthPersistence;
+  subscriptions: SyncularBrowserHealthSubscriptions;
+  lastError: SyncularBrowserHealthError | null;
+}): SyncularBrowserHealthOperationState[] {
+  const actionByCode = new Map(
+    args.recommendedActions.map((action) => [
+      action.code,
+      action.recommendedAction,
+    ])
+  );
+  const reasonCode = primaryLifecycleReasonCode(args);
+  const recommendedAction = reasonCode
+    ? (actionByCode.get(reasonCode as SyncularErrorCode) ??
+      recommendedActionForReasonCode(reasonCode))
+    : undefined;
+  const blocked = (
+    operation: SyncularBrowserHealthOperation,
+    fallbackReasonCode: string
+  ): SyncularBrowserHealthOperationState => ({
+    operation,
+    availability: 'blocked',
+    reasonCode: reasonCode ?? fallbackReasonCode,
+    ...(recommendedAction ? { recommendedAction } : {}),
+  });
+  const available = (
+    operation: SyncularBrowserHealthOperation
+  ): SyncularBrowserHealthOperationState => ({
+    operation,
+    availability: 'available',
+  });
+  const advanced = (
+    operation: SyncularBrowserHealthOperation,
+    operationReasonCode: string
+  ): SyncularBrowserHealthOperationState => ({
+    operation,
+    availability: 'advanced',
+    reasonCode: operationReasonCode,
+  });
+  const requiresConfirmation = (
+    operation: SyncularBrowserHealthOperation,
+    operationReasonCode: string
+  ): SyncularBrowserHealthOperationState => ({
+    operation,
+    availability: 'requires-confirmation',
+    reasonCode: operationReasonCode,
+  });
+
+  if (args.closed || args.lifecyclePhase === 'closed') {
+    return ALL_BROWSER_HEALTH_OPERATIONS.map((operation) =>
+      blocked(operation, 'lifecycle.closed')
+    );
+  }
+
+  const authBlocked = args.lifecyclePhase === 'authRequired';
+  const scopeBlocked = args.subscriptions.revoked > 0;
+  const offline = args.online === false || args.lifecyclePhase === 'offline';
+  const nonDurable = args.persistence.durable === false;
+
+  return [
+    available('read-local'),
+    authBlocked || scopeBlocked
+      ? blocked('generated-mutation', 'sync.auth_required')
+      : nonDurable
+        ? advanced('generated-mutation', 'browser.storage_ephemeral')
+        : available('generated-mutation'),
+    authBlocked || scopeBlocked
+      ? blocked('await-local-visibility', 'sync.auth_required')
+      : available('await-local-visibility'),
+    authBlocked || scopeBlocked
+      ? blocked('sync-now', 'sync.auth_required')
+      : offline
+        ? blocked('sync-now', 'sync.offline')
+        : available('sync-now'),
+    available('replace-auth-context'),
+    authBlocked
+      ? blocked('resume-from-background', 'sync.auth_required')
+      : available('resume-from-background'),
+    available('export-support-bundle'),
+    args.requiresAction || nonDurable
+      ? requiresConfirmation(
+          'destructive-local-recovery',
+          reasonCode ?? 'lifecycle.requires_action'
+        )
+      : advanced('destructive-local-recovery', 'lifecycle.advanced_recovery'),
+  ];
+}
+
+const ALL_BROWSER_HEALTH_OPERATIONS: SyncularBrowserHealthOperation[] = [
+  'read-local',
+  'generated-mutation',
+  'await-local-visibility',
+  'sync-now',
+  'replace-auth-context',
+  'resume-from-background',
+  'export-support-bundle',
+  'destructive-local-recovery',
+];
+
+function primaryLifecycleReasonCode(args: {
+  lifecyclePhase: SyncularLifecyclePhase | undefined;
+  recommendedActions: readonly SyncularBrowserHealthRecommendedAction[];
+  persistence: SyncularBrowserHealthPersistence;
+  subscriptions: SyncularBrowserHealthSubscriptions;
+  lastError: SyncularBrowserHealthError | null;
+}): string | undefined {
+  if (args.lifecyclePhase === 'authRequired') return 'sync.auth_required';
+  if (args.subscriptions.revoked > 0) return 'sync.scope_revoked';
+  if (args.lastError?.code) return args.lastError.code;
+  if (args.recommendedActions[0]?.code) return args.recommendedActions[0].code;
+  if (args.persistence.durable === false) return 'browser.storage_ephemeral';
+  if (args.lifecyclePhase === 'offline') return 'sync.offline';
+  return undefined;
+}
+
+function recommendedActionForReasonCode(
+  code: string
+): SyncularErrorRecommendedAction | undefined {
+  return isSyncularErrorCode(code)
+    ? SYNCULAR_ERROR_DEFINITIONS[code].recommendedAction
+    : undefined;
 }
 
 function errorRecordToHealthError(

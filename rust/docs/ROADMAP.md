@@ -228,6 +228,12 @@ read-only review:
     optional Web Locks, can fail contended locks with
     `browser.web_locks_timeout`, and records lifecycle lock state plus timeout
     budget in the hidden marker and browser failure artifact.
+    Browser health now also includes a compact lifecycle operation projection:
+    stage, recovery owner, blocked-operation count, and fixed availability for
+    local reads, generated mutations, local-visibility waits, explicit sync,
+    auth replacement, resume, support-bundle export, and destructive local
+    recovery. The starter health marker exposes those fields without adding
+    visible UI noise.
     Local recovery now consumes storage-related deployment-preflight warnings:
     persistent-storage grant gaps can become a non-destructive
     `navigator.storage.persist()` request when supported, while quota/pressure

@@ -20,6 +20,27 @@ describe('Syncular browser health', () => {
       status: 'ok',
       requiresAction: false,
       recommendedActions: [],
+      lifecycle: {
+        phase: 'complete',
+        stage: 'realtime-live',
+        recoveryOwner: 'none',
+        blockedOperationCount: 0,
+        operations: expect.arrayContaining([
+          {
+            operation: 'generated-mutation',
+            availability: 'available',
+          },
+          {
+            operation: 'sync-now',
+            availability: 'available',
+          },
+          {
+            operation: 'destructive-local-recovery',
+            availability: 'advanced',
+            reasonCode: 'lifecycle.advanced_recovery',
+          },
+        ]),
+      },
       persistence: {
         status: 'durable',
         durable: true,
@@ -97,6 +118,30 @@ describe('Syncular browser health', () => {
     await expect(getSyncularBrowserHealth(client)).resolves.toMatchObject({
       status: 'action-required',
       requiresAction: true,
+      lifecycle: {
+        stage: 'requires-action',
+        recoveryOwner: 'app-scope',
+        blockedOperationCount: 3,
+        operations: expect.arrayContaining([
+          expect.objectContaining({
+            operation: 'generated-mutation',
+            availability: 'blocked',
+            reasonCode: 'sync.scope_revoked',
+            recommendedAction: 'checkPermissions',
+          }),
+          expect.objectContaining({
+            operation: 'sync-now',
+            availability: 'blocked',
+            reasonCode: 'sync.scope_revoked',
+            recommendedAction: 'checkPermissions',
+          }),
+          expect.objectContaining({
+            operation: 'destructive-local-recovery',
+            availability: 'requires-confirmation',
+            reasonCode: 'sync.scope_revoked',
+          }),
+        ]),
+      },
       recommendedActions: expect.arrayContaining([
         expect.objectContaining({
           code: 'sync.scope_revoked',
@@ -145,6 +190,28 @@ describe('Syncular browser health', () => {
     await expect(getSyncularBrowserHealth(client)).resolves.toMatchObject({
       status: 'action-required',
       requiresAction: true,
+      lifecycle: {
+        stage: 'requires-action',
+        recoveryOwner: 'app-auth',
+        operations: expect.arrayContaining([
+          expect.objectContaining({
+            operation: 'generated-mutation',
+            availability: 'blocked',
+            reasonCode: 'sync.auth_required',
+            recommendedAction: 'refreshAuth',
+          }),
+          expect.objectContaining({
+            operation: 'replace-auth-context',
+            availability: 'available',
+          }),
+          expect.objectContaining({
+            operation: 'sync-now',
+            availability: 'blocked',
+            reasonCode: 'sync.auth_required',
+            recommendedAction: 'refreshAuth',
+          }),
+        ]),
+      },
       recommendedActions: expect.arrayContaining([
         expect.objectContaining({
           code: 'sync.auth_required',
@@ -152,6 +219,47 @@ describe('Syncular browser health', () => {
           source: 'lifecycle',
         }),
       ]),
+    });
+  });
+
+  it('keeps generated mutations available while offline but blocks immediate sync', async () => {
+    const client = fakeHealthClient({
+      snapshot: makeSnapshot(),
+      status: makeStatus({
+        phase: 'offline',
+        online: false,
+        lastError: {
+          code: 'sync.offline',
+          message: 'The browser is offline.',
+        },
+      }),
+    });
+
+    await expect(getSyncularBrowserHealth(client)).resolves.toMatchObject({
+      status: 'offline',
+      requiresAction: false,
+      lifecycle: {
+        phase: 'offline',
+        stage: 'offline',
+        recoveryOwner: 'runtime',
+        blockedOperationCount: 1,
+        operations: expect.arrayContaining([
+          expect.objectContaining({
+            operation: 'generated-mutation',
+            availability: 'available',
+          }),
+          expect.objectContaining({
+            operation: 'await-local-visibility',
+            availability: 'available',
+          }),
+          expect.objectContaining({
+            operation: 'sync-now',
+            availability: 'blocked',
+            reasonCode: 'sync.offline',
+            recommendedAction: 'retryLater',
+          }),
+        ]),
+      },
     });
   });
 });
@@ -275,6 +383,7 @@ function makeSnapshot(
 function makeStatus(
   options: {
     phase?: SyncularClientStatus['lifecycle']['phase'];
+    online?: boolean;
     requiresAction?: boolean;
     lastError?: SyncularClientStatus['lifecycle']['lastError'];
   } = {}
@@ -285,7 +394,7 @@ function makeStatus(
     lifecycle: {
       phase,
       realtime: 'connected',
-      online: true,
+      online: options.online ?? true,
       requiresAction,
       pendingRequests: 0,
       ...(options.lastError ? { lastError: options.lastError } : {}),

@@ -201,7 +201,7 @@ Pick the narrowest surface for the job:
 
 | Audience | Use |
 | --- | --- |
-| UI-facing app code | `getSyncularBrowserHealth(...)`, managed lifecycle status, generated readiness helpers, and stable `recommendedAction` values |
+| UI-facing app code | `getSyncularBrowserHealth(...)`, managed lifecycle status, generated readiness helpers, stable `recommendedAction` values, and lifecycle operation availability |
 | Operator/deploy | `syncular schema check --json`, `getSyncularServerSchemaReadiness(...)`, server telemetry, and Console request events |
 | Debug/console | `diagnosticSnapshot()`, `runtimeTimeline()`, `exportSupportBundle()`, and Console diagnostics snapshots after redaction/compaction |
 | Testkit/E2E | `runtimeTimeline()`, `exportSupportBundle()`, `requireDiagnosticMarker(...)`, and stable error/detail codes instead of message matching |

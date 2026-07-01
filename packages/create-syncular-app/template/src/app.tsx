@@ -2673,6 +2673,11 @@ function SchemaLine({
 
 function HealthLine({ health }: { health: SyncularBrowserHealth }) {
   const storage = health.persistence.effectiveStorage ?? 'unknown';
+  const operationAvailability = (
+    operation: SyncularBrowserHealth['lifecycle']['operations'][number]['operation']
+  ) =>
+    health.lifecycle.operations.find((entry) => entry.operation === operation)
+      ?.availability ?? 'blocked';
   const storageLabel =
     health.persistence.durable === true
       ? `${storage} durable`
@@ -2685,7 +2690,24 @@ function HealthLine({ health }: { health: SyncularBrowserHealth }) {
       : `${health.subscriptions.ready}/${health.subscriptions.total} subscriptions`;
 
   return (
-    <p className={`health-line ${health.status}`}>
+    <p
+      className={`health-line ${health.status}`}
+      data-syncular-browser-health-blocked-operation-count={
+        health.lifecycle.blockedOperationCount
+      }
+      data-syncular-browser-health-generated-mutation={operationAvailability(
+        'generated-mutation'
+      )}
+      data-syncular-browser-health-lifecycle-stage={health.lifecycle.stage}
+      data-syncular-browser-health-local-visibility={operationAvailability(
+        'await-local-visibility'
+      )}
+      data-syncular-browser-health-recovery-owner={
+        health.lifecycle.recoveryOwner
+      }
+      data-syncular-browser-health-status={health.status}
+      data-syncular-browser-health-sync-now={operationAvailability('sync-now')}
+    >
       {storageLabel} · {subscriptions} · realtime {health.realtime.state}
     </p>
   );
