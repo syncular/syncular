@@ -242,8 +242,10 @@ read-only review:
     Chrome's origin quota override, passes the post-override CDP usage/quota
     facts into the app's public deployment preflight helper, and proves
     `browser.storage_pressure_high` plus high usage-ratio evidence from real
-    browser quota facts, while keeping full quota exhaustion and eviction
-    behavior as remaining matrix work.
+    browser quota facts. The same observed quota facts now also drive a second
+    app recovery proof that maps storage warnings to request-persistence and
+    compaction actions through public recovery APIs, while keeping full quota
+    exhaustion and eviction behavior as remaining matrix work.
     Browser preview artifacts now include starter timings for database open,
     browser health refresh, schema readiness, support-bundle export,
     bootstrap readiness, realtime connection, and generated-mutation local

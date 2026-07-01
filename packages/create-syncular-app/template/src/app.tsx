@@ -77,16 +77,24 @@ type LocalRecoveryProofPreview = {
 
 type StorageRecoveryProofPreview = {
   actionKinds: string[];
+  availableBytes: number | null;
   clearBlobCacheCompleted: boolean;
   compactCompleted: boolean;
   count: number;
   error: string | null;
   errorCode: string | null;
+  issueCodes: string[];
+  issueCount: number;
   planActionCount: number;
+  quotaBytes: number | null;
+  quotaPressure: SyncularBrowserDeploymentPreflight['storage']['quotaPressure'];
   requestPersistenceGranted: boolean | null;
   requestPersistenceOffered: boolean;
   requestPersistenceSupported: boolean | null;
+  source: 'synthetic' | 'browser-observed' | null;
   status: 'idle' | 'running' | 'complete' | 'failed';
+  usageBytes: number | null;
+  usageRatio: number | null;
 };
 
 type QuotaPressureProofPreview = {
@@ -213,16 +221,24 @@ const initialLocalRecoveryProof: LocalRecoveryProofPreview = {
 
 const initialStorageRecoveryProof: StorageRecoveryProofPreview = {
   actionKinds: [],
+  availableBytes: null,
   clearBlobCacheCompleted: false,
   compactCompleted: false,
   count: 0,
   error: null,
   errorCode: null,
+  issueCodes: [],
+  issueCount: 0,
   planActionCount: 0,
+  quotaBytes: null,
+  quotaPressure: 'unknown',
   requestPersistenceGranted: null,
   requestPersistenceOffered: false,
   requestPersistenceSupported: null,
+  source: null,
   status: 'idle',
+  usageBytes: null,
+  usageRatio: null,
 };
 
 const initialQuotaPressureProof: QuotaPressureProofPreview = {
@@ -962,27 +978,38 @@ function TaskPane({
   }, [client]);
 
   useEffect(() => {
-    const runProof = async () => {
+    const runProof = async (event: Event) => {
       if (storageRecoveryProofRunning.current) return;
       storageRecoveryProofRunning.current = true;
       setStorageRecoveryProof((current) => ({
         ...current,
         actionKinds: [],
+        availableBytes: null,
         clearBlobCacheCompleted: false,
         compactCompleted: false,
         error: null,
         errorCode: null,
+        issueCodes: [],
+        issueCount: 0,
         planActionCount: 0,
+        quotaBytes: null,
+        quotaPressure: 'unknown',
         requestPersistenceGranted: null,
         requestPersistenceOffered: false,
         requestPersistenceSupported: null,
+        source: null,
         status: 'running',
+        usageBytes: null,
+        usageRatio: null,
       }));
       try {
-        const deploymentPreflight =
-          await starterStorageRecoveryDeploymentPreflight();
+        const { preflight: deploymentPreflight, source } =
+          await starterStorageRecoveryDeploymentPreflight(event);
         const plan = await client.localRecoveryPlan({ deploymentPreflight });
         const actionKinds = plan.actions.map((action) => action.kind);
+        const issueCodes = deploymentPreflight.issues.map(
+          (issue) => issue.code
+        );
         const requestPersistence = plan.actions.find(
           (candidate) => candidate.kind === 'request-persistent-storage'
         );
@@ -1017,12 +1044,17 @@ function TaskPane({
         }
         setStorageRecoveryProof((current) => ({
           actionKinds,
+          availableBytes: deploymentPreflight.storage.availableBytes ?? null,
           clearBlobCacheCompleted: Boolean(clearBlobCache),
           compactCompleted: true,
           count: current.count + 1,
           error: null,
           errorCode: null,
+          issueCodes,
+          issueCount: deploymentPreflight.issues.length,
           planActionCount: plan.actions.length,
+          quotaBytes: deploymentPreflight.storage.quotaBytes ?? null,
+          quotaPressure: deploymentPreflight.storage.quotaPressure,
           requestPersistenceGranted:
             persistenceResult.action === 'request-persistent-storage'
               ? persistenceResult.granted
@@ -1032,7 +1064,10 @@ function TaskPane({
             persistenceResult.action === 'request-persistent-storage'
               ? persistenceResult.supported
               : null,
+          source,
           status: 'complete',
+          usageBytes: deploymentPreflight.storage.usageBytes ?? null,
+          usageRatio: deploymentPreflight.storage.usageRatio ?? null,
         }));
       } catch (error) {
         setStorageRecoveryProof((current) => ({
@@ -1046,8 +1081,8 @@ function TaskPane({
         storageRecoveryProofRunning.current = false;
       }
     };
-    const onProof = () => {
-      void runProof();
+    const onProof = (event: Event) => {
+      void runProof(event);
     };
     window.addEventListener(
       'syncular-starter-run-storage-recovery-proof',
@@ -1409,6 +1444,9 @@ function StorageRecoveryProofMarker({
       data-syncular-storage-recovery-proof-action-kinds={storageRecoveryProof.actionKinds.join(
         ','
       )}
+      data-syncular-storage-recovery-proof-available-bytes={
+        storageRecoveryProof.availableBytes ?? ''
+      }
       data-syncular-storage-recovery-proof-clear-blob-cache-completed={String(
         storageRecoveryProof.clearBlobCacheCompleted
       )}
@@ -1422,8 +1460,20 @@ function StorageRecoveryProofMarker({
       data-syncular-storage-recovery-proof-error-code={
         storageRecoveryProof.errorCode ?? ''
       }
+      data-syncular-storage-recovery-proof-issue-codes={storageRecoveryProof.issueCodes.join(
+        ','
+      )}
+      data-syncular-storage-recovery-proof-issue-count={
+        storageRecoveryProof.issueCount
+      }
       data-syncular-storage-recovery-proof-plan-action-count={
         storageRecoveryProof.planActionCount
+      }
+      data-syncular-storage-recovery-proof-quota-bytes={
+        storageRecoveryProof.quotaBytes ?? ''
+      }
+      data-syncular-storage-recovery-proof-quota-pressure={
+        storageRecoveryProof.quotaPressure
       }
       data-syncular-storage-recovery-proof-request-persistence-granted={
         storageRecoveryProof.requestPersistenceGranted === null
@@ -1438,7 +1488,16 @@ function StorageRecoveryProofMarker({
           ? ''
           : String(storageRecoveryProof.requestPersistenceSupported)
       }
+      data-syncular-storage-recovery-proof-source={
+        storageRecoveryProof.source ?? ''
+      }
       data-syncular-storage-recovery-proof-status={storageRecoveryProof.status}
+      data-syncular-storage-recovery-proof-usage-bytes={
+        storageRecoveryProof.usageBytes ?? ''
+      }
+      data-syncular-storage-recovery-proof-usage-ratio={
+        storageRecoveryProof.usageRatio ?? ''
+      }
       hidden
     />
   );
@@ -1811,92 +1870,143 @@ function quotaPressureProofNavigatorOverride(
   return next;
 }
 
-async function starterStorageRecoveryDeploymentPreflight(): Promise<SyncularBrowserDeploymentPreflight> {
+type StarterStorageRecoveryDeploymentPreflightProof = {
+  preflight: SyncularBrowserDeploymentPreflight;
+  source: NonNullable<StorageRecoveryProofPreview['source']>;
+};
+
+async function starterStorageRecoveryDeploymentPreflight(
+  event: Event
+): Promise<StarterStorageRecoveryDeploymentPreflightProof> {
+  const detail = quotaPressureProofDetailFromEvent(event);
+  const navigatorOverride = quotaPressureProofNavigatorOverride(detail);
   const live = await getSyncularBrowserDeploymentPreflight(
-    starterDeploymentPreflightOptions
+    navigatorOverride
+      ? {
+          ...starterDeploymentPreflightOptions,
+          navigator: navigatorOverride,
+        }
+      : starterDeploymentPreflightOptions
   );
+  const source: NonNullable<StorageRecoveryProofPreview['source']> = detail
+    ? 'browser-observed'
+    : 'synthetic';
+  if (
+    detail &&
+    (live.storage.quotaPressure !== 'high' ||
+      !live.issues.some(
+        (issue) => issue.code === 'browser.storage_pressure_high'
+      ))
+  ) {
+    throw Object.assign(
+      new Error(
+        `Browser-observed storage recovery proof did not see high quota pressure: ${live.storage.quotaPressure}`
+      ),
+      { code: 'browser.storage_pressure_not_observed' }
+    );
+  }
   const storageIssues: SyncularBrowserDeploymentPreflight['issues'] = [
     {
       code: 'browser.storage_persistence_not_granted',
       details: { persistRequestSupported: true },
       message:
-        'Synthetic starter proof: persistent browser storage is requestable but not granted.',
+        source === 'browser-observed'
+          ? 'Browser-observed starter proof: persistent browser storage is requestable but not granted.'
+          : 'Synthetic starter proof: persistent browser storage is requestable but not granted.',
       recommendedAction: 'requestPersistentStorage',
       severity: 'warning',
       target: 'storage',
     },
-    {
-      code: 'browser.storage_pressure_high',
-      details: {
-        quotaBytes: live.storage.quotaBytes ?? 100_000,
-        usageBytes: live.storage.usageBytes ?? 92_000,
-        usageRatio: 0.92,
-      },
-      message:
-        'Synthetic starter proof: browser storage usage is close to quota.',
-      recommendedAction: 'freeStorageQuota',
-      severity: 'warning',
-      target: 'storage',
-    },
-    {
-      code: 'browser.storage_quota_low',
-      details: {
-        availableBytes: live.storage.availableBytes ?? 8_000,
-        minimumAvailableBytes:
-          live.storage.minimumAvailableBytes ??
-          starterDeploymentPreflightOptions.minimumAvailableBytes,
-        minimumQuotaBytes:
-          live.storage.minimumQuotaBytes ??
-          starterDeploymentPreflightOptions.minimumQuotaBytes,
-        quotaBytes: live.storage.quotaBytes ?? 100_000,
-      },
-      message:
-        'Synthetic starter proof: available browser storage is below the Syncular budget.',
-      recommendedAction: 'freeStorageQuota',
-      severity: 'warning',
-      target: 'storage',
-    },
+    ...(source === 'synthetic'
+      ? ([
+          {
+            code: 'browser.storage_pressure_high',
+            details: {
+              quotaBytes: live.storage.quotaBytes ?? 100_000,
+              usageBytes: live.storage.usageBytes ?? 92_000,
+              usageRatio: 0.92,
+            },
+            message:
+              'Synthetic starter proof: browser storage usage is close to quota.',
+            recommendedAction: 'freeStorageQuota',
+            severity: 'warning',
+            target: 'storage',
+          },
+          {
+            code: 'browser.storage_quota_low',
+            details: {
+              availableBytes: live.storage.availableBytes ?? 8_000,
+              minimumAvailableBytes:
+                live.storage.minimumAvailableBytes ??
+                starterDeploymentPreflightOptions.minimumAvailableBytes,
+              minimumQuotaBytes:
+                live.storage.minimumQuotaBytes ??
+                starterDeploymentPreflightOptions.minimumQuotaBytes,
+              quotaBytes: live.storage.quotaBytes ?? 100_000,
+            },
+            message:
+              'Synthetic starter proof: available browser storage is below the Syncular budget.',
+            recommendedAction: 'freeStorageQuota',
+            severity: 'warning',
+            target: 'storage',
+          },
+        ] satisfies SyncularBrowserDeploymentPreflight['issues'])
+      : []),
   ];
   const issueCodes = [
     ...new Set([
       ...live.support.issueCodes,
+      ...live.issues.map((issue) => issue.code),
       ...storageIssues.map((issue) => issue.code),
     ]),
   ];
   const recommendedActions = [
-    ...new Set([
+    ...new Set<
+      SyncularBrowserDeploymentPreflight['support']['recommendedActions'][number]
+    >([
       ...live.support.recommendedActions,
       'requestPersistentStorage' as const,
       'freeStorageQuota' as const,
     ]),
   ];
+  const storage =
+    source === 'browser-observed'
+      ? live.storage
+      : {
+          ...live.storage,
+          availableBytes: live.storage.availableBytes ?? 8_000,
+          quotaBytes: live.storage.quotaBytes ?? 100_000,
+          quotaPressure: 'high' as const,
+          usageBytes: live.storage.usageBytes ?? 92_000,
+          usageRatio: Math.max(live.storage.usageRatio ?? 0, 0.92),
+        };
   return {
-    ...live,
-    issues: [...live.issues, ...storageIssues],
-    ready: false,
-    requiresAction: live.requiresAction,
-    status: live.status === 'not-ready' ? 'not-ready' : 'warning',
-    storage: {
-      ...live.storage,
-      availableBytes: live.storage.availableBytes ?? 8_000,
-      persistenceSupported: true,
-      persistRequestSupported: true,
-      persisted: false,
-      quotaBytes: live.storage.quotaBytes ?? 100_000,
-      quotaPressure: 'high',
-      usageBytes: live.storage.usageBytes ?? 92_000,
-      usageRatio: Math.max(live.storage.usageRatio ?? 0, 0.92),
-    },
-    support: {
-      ...live.support,
-      issueCodes,
-      persistence: 'evictable',
-      persistentOffline: false,
-      productionReady: false,
-      recommendedActions,
-      summary:
-        'Synthetic starter proof storage warning for local recovery action mapping.',
-      tier: live.support.tier === 'unsupported' ? 'unsupported' : 'unknown',
+    source,
+    preflight: {
+      ...live,
+      issues: [...live.issues, ...storageIssues],
+      ready: false,
+      requiresAction: true,
+      status: live.status === 'not-ready' ? 'not-ready' : 'warning',
+      storage: {
+        ...storage,
+        persistenceSupported: true,
+        persistRequestSupported: true,
+        persisted: false,
+      },
+      support: {
+        ...live.support,
+        issueCodes,
+        persistence: 'evictable',
+        persistentOffline: false,
+        productionReady: false,
+        recommendedActions,
+        summary:
+          source === 'browser-observed'
+            ? 'Browser-observed starter proof storage warning for local recovery action mapping.'
+            : 'Synthetic starter proof storage warning for local recovery action mapping.',
+        tier: live.support.tier === 'unsupported' ? 'unsupported' : 'unknown',
+      },
     },
   };
 }

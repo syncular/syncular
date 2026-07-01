@@ -3804,7 +3804,10 @@ Most recent mutation-status rerun:
   fills browser origin storage in a fresh profile, applies Chrome's origin
   quota override, and reruns the public deployment preflight helper from the
   app so high quota-pressure warnings are proven from browser-reported usage
-  and quota rather than only synthetic preflight fixtures. Current hosted
+  and quota rather than only synthetic preflight fixtures. The same
+  post-override CDP usage/quota facts now also feed the starter's public local
+  recovery plan proof so `browser.storage_pressure_high` action mapping is
+  covered by observed browser quota facts. Current hosted
   observation on
   2026-07-01: latest checked `main` Checks run `28459201533` at
   `origin/main` `7f0081b6` did not contain a `starter-browser-preview` job,
@@ -3884,7 +3887,8 @@ Most recent mutation-status rerun:
   and deeper recovery coordination for persistent browser databases beyond
   dispatched page lifecycle events, CDP lifecycle forcing, synthetic storage
   warning action mapping, browser-observed quota-pressure preflight
-  classification, and lock-serialized foreground resume/recovery actions. Local
+  classification and recovery action mapping, and lock-serialized foreground
+  resume/recovery actions. Local
   execution of the new browser branches still needs a Chrome-capable runner;
   this machine has no Chrome/Chromium binary.
 - Local recovery controls: first plan/action slice is done for support bundles,
@@ -3927,10 +3931,13 @@ Most recent mutation-status rerun:
   synthetic storage-warning deployment preflight produces and can run the
   expected request-persistence, compaction, and confirmed blob-cache clearing
   actions through public local recovery APIs. A fresh-profile Chrome/CDP proof
-  now also fills origin storage, applies a browser quota override, and requires
+  now also fills origin storage, applies a browser quota override, requires
   the public app preflight marker to expose `browser.storage_pressure_high`,
   high usage ratio, quota bytes, usage bytes, available bytes, and recommended
-  storage actions from live browser quota facts. Remaining work is richer
+  storage actions from live browser quota facts, then passes those same
+  observed quota facts into the storage-recovery proof and requires the public
+  recovery plan to map them to request-persistence and compaction actions.
+  Remaining work is richer
   browser-process proof: actual
   target-browser background/discard suspension and restoration,
   shutdown/restart states, real storage shutdown, quota-exhaustion and eviction
@@ -4291,6 +4298,19 @@ Most recent mutation-status rerun:
   hosted Checks run `28542315687` on `8d2cc113` passed the full matrix,
   including `starter-browser-preview`, proving the fixed quota-pressure branch
   in hosted Chrome.
+- 2026-07-01: Extended the starter's storage-recovery proof so the Chrome/CDP
+  quota-pressure branch reuses the same post-override browser usage/quota
+  facts to build the public deployment preflight passed into
+  `client.localRecoveryPlan(...)`. The hidden storage-recovery marker and
+  browser failure artifact now preserve source, issue codes, quota pressure,
+  quota/usage/available bytes, and usage ratio, and the Chrome branch requires
+  `source=browser-observed`, `browser.storage_pressure_high`, high usage ratio,
+  and the expected request-persistence plus compaction actions. This moves the
+  recovery action mapping beyond synthetic storage-warning fixtures while
+  keeping actual quota-exhausted app writes and eviction behavior open. Local
+  `create-syncular-app` typecheck, focused Biome, non-Chrome scaffold smoke,
+  smoke-script typecheck, docs stale check, and diff check passed; hosted
+  Chrome verification is pending for this branch.
 
 ## Next Action
 
@@ -4306,7 +4326,9 @@ memory-storage support-policy branch is now confirmed in hosted Chrome and
 verifies explicit ephemeral/development storage classification without claiming
 private-mode durable persistence. The current slice adds a browser-observed
 quota-pressure preflight branch, now fixed to pass post-override CDP usage/quota
-facts into the app preflight proof and confirmed in hosted Chrome.
+facts into the app preflight proof and confirmed in hosted Chrome. The current
+slice extends those browser-observed quota facts into storage recovery action
+mapping, with hosted Chrome verification pending.
 Production ops readiness is now part of release rehearsal when evidence is
 present or required. Strong follow-ups after that remain actual browser
 suspension/shutdown lifecycle coverage, actual quota-exhaustion/eviction and

@@ -935,16 +935,24 @@ type BrowserPreviewProbe = {
   };
   storageRecoveryProof: {
     actionKinds: string[];
+    availableBytes: number | null;
     clearBlobCacheCompleted: string | null;
     compactCompleted: string | null;
     count: number;
     error: string | null;
     errorCode: string | null;
+    issueCodes: string[];
+    issueCount: number;
     planActionCount: number;
+    quotaBytes: number | null;
+    quotaPressure: string | null;
     requestPersistenceGranted: string | null;
     requestPersistenceOffered: string | null;
     requestPersistenceSupported: string | null;
+    source: string | null;
     status: string | null;
+    usageBytes: number | null;
+    usageRatio: number | null;
   };
   quotaPressureProof: {
     actionCount: number;
@@ -1148,18 +1156,33 @@ async function readStarterBrowserProbe(
     };
     const localRecoveryProofLockTimeoutMs = readLocalRecoveryProofNumber('data-syncular-local-recovery-proof-lock-timeout-ms');
     const storageRecoveryProof = document.querySelector('[data-syncular-storage-recovery-proof-status]');
+    const readStorageRecoveryProofNumber = (name) => {
+      const value = storageRecoveryProof?.getAttribute(name) ?? null;
+      if (value === null || value === '') return null;
+      const number = Number(value);
+      return Number.isFinite(number) && number >= 0 ? number : null;
+    };
     const storageRecoveryProofActionKindsText = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-action-kinds') ?? '';
     const storageRecoveryProofActionKinds = storageRecoveryProofActionKindsText === '' ? [] : storageRecoveryProofActionKindsText.split(',').filter(Boolean);
+    const storageRecoveryProofAvailableBytes = readStorageRecoveryProofNumber('data-syncular-storage-recovery-proof-available-bytes');
     const storageRecoveryProofClearBlobCacheCompleted = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-clear-blob-cache-completed') ?? null;
     const storageRecoveryProofCompactCompleted = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-compact-completed') ?? null;
     const storageRecoveryProofCount = Number(storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-count') ?? 0);
     const storageRecoveryProofError = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-error') ?? null;
     const storageRecoveryProofErrorCode = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-error-code') ?? null;
+    const storageRecoveryProofIssueCodesText = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-issue-codes') ?? '';
+    const storageRecoveryProofIssueCodes = storageRecoveryProofIssueCodesText === '' ? [] : storageRecoveryProofIssueCodesText.split(',').filter(Boolean);
+    const storageRecoveryProofIssueCount = Number(storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-issue-count') ?? 0);
     const storageRecoveryProofPlanActionCount = Number(storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-plan-action-count') ?? 0);
+    const storageRecoveryProofQuotaBytes = readStorageRecoveryProofNumber('data-syncular-storage-recovery-proof-quota-bytes');
+    const storageRecoveryProofQuotaPressure = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-quota-pressure') ?? null;
     const storageRecoveryProofRequestPersistenceGranted = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-request-persistence-granted') ?? null;
     const storageRecoveryProofRequestPersistenceOffered = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-request-persistence-offered') ?? null;
     const storageRecoveryProofRequestPersistenceSupported = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-request-persistence-supported') ?? null;
+    const storageRecoveryProofSource = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-source') ?? null;
     const storageRecoveryProofStatus = storageRecoveryProof?.getAttribute('data-syncular-storage-recovery-proof-status') ?? null;
+    const storageRecoveryProofUsageBytes = readStorageRecoveryProofNumber('data-syncular-storage-recovery-proof-usage-bytes');
+    const storageRecoveryProofUsageRatio = readStorageRecoveryProofNumber('data-syncular-storage-recovery-proof-usage-ratio');
     const quotaPressureProof = document.querySelector('[data-syncular-quota-pressure-proof-status]');
     const readQuotaPressureProofNumber = (name) => {
       const value = quotaPressureProof?.getAttribute(name) ?? null;
@@ -1402,6 +1425,7 @@ async function readStarterBrowserProbe(
       },
       storageRecoveryProof: {
         actionKinds: storageRecoveryProofActionKinds,
+        availableBytes: storageRecoveryProofAvailableBytes,
         clearBlobCacheCompleted:
           storageRecoveryProofClearBlobCacheCompleted,
         compactCompleted: storageRecoveryProofCompactCompleted,
@@ -1414,7 +1438,14 @@ async function readStarterBrowserProbe(
           storageRecoveryProofErrorCode === ''
             ? null
             : storageRecoveryProofErrorCode,
+        issueCodes: storageRecoveryProofIssueCodes,
+        issueCount: storageRecoveryProofIssueCount,
         planActionCount: storageRecoveryProofPlanActionCount,
+        quotaBytes: storageRecoveryProofQuotaBytes,
+        quotaPressure:
+          storageRecoveryProofQuotaPressure === ''
+            ? null
+            : storageRecoveryProofQuotaPressure,
         requestPersistenceGranted:
           storageRecoveryProofRequestPersistenceGranted === ''
             ? null
@@ -1425,7 +1456,13 @@ async function readStarterBrowserProbe(
           storageRecoveryProofRequestPersistenceSupported === ''
             ? null
             : storageRecoveryProofRequestPersistenceSupported,
+        source:
+          storageRecoveryProofSource === ''
+            ? null
+            : storageRecoveryProofSource,
         status: storageRecoveryProofStatus,
+        usageBytes: storageRecoveryProofUsageBytes,
+        usageRatio: storageRecoveryProofUsageRatio,
       },
       quotaPressureProof: {
         actionCount: quotaPressureProofActionCount,
@@ -1844,18 +1881,34 @@ async function proveStarterStorageRecoveryActionMapping(args: {
   await dispatchStarterStorageRecoveryProof(args.session);
   await waitForStarterStorageRecoveryCompletion({
     expectedCount: before.storageRecoveryProof.count + 1,
+    expectedSource: 'synthetic',
     failureArtifactPath: args.failureArtifactPath,
     failureMetrics: args.failureMetrics,
+    requireObservedQuotaPressure: false,
     session: args.session,
   });
 }
 
 async function dispatchStarterStorageRecoveryProof(
-  session: CdpSession
+  session: CdpSession,
+  quotaPressure?: StarterOriginQuotaPressure
 ): Promise<void> {
   await session.evaluate(`(() => {
     window.dispatchEvent(
-      new Event('syncular-starter-run-storage-recovery-proof')
+      new CustomEvent('syncular-starter-run-storage-recovery-proof', {
+        detail: ${JSON.stringify(
+          quotaPressure
+            ? {
+                availableBytes: quotaPressure.availableBytes,
+                overrideActive: quotaPressure.overrideActive,
+                quotaBytes: quotaPressure.quotaBytes,
+                source: 'chrome-devtools-protocol',
+                usageBytes: quotaPressure.usageBytes,
+                usageRatio: quotaPressure.usageRatio,
+              }
+            : null
+        )},
+      })
     );
     return true;
   })()`);
@@ -1863,8 +1916,10 @@ async function dispatchStarterStorageRecoveryProof(
 
 async function waitForStarterStorageRecoveryCompletion(args: {
   expectedCount: number;
+  expectedSource?: 'synthetic' | 'browser-observed';
   failureArtifactPath: string;
   failureMetrics: BrowserPreviewFailureMetricsInput;
+  requireObservedQuotaPressure?: boolean;
   session: CdpSession;
 }): Promise<void> {
   const deadline = Date.now() + 20_000;
@@ -1897,6 +1952,19 @@ async function waitForStarterStorageRecoveryCompletion(args: {
       probe.storageRecoveryProof.requestPersistenceSupported === 'true' &&
       probe.storageRecoveryProof.requestPersistenceGranted === 'true' &&
       probe.storageRecoveryProof.compactCompleted === 'true' &&
+      (args.expectedSource == null ||
+        probe.storageRecoveryProof.source === args.expectedSource) &&
+      (args.requireObservedQuotaPressure !== true ||
+        (probe.storageRecoveryProof.quotaPressure === 'high' &&
+          probe.storageRecoveryProof.issueCodes.includes(
+            'browser.storage_pressure_high'
+          ) &&
+          probe.storageRecoveryProof.usageRatio !== null &&
+          probe.storageRecoveryProof.usageRatio >= 0.9 &&
+          probe.storageRecoveryProof.quotaBytes !== null &&
+          probe.storageRecoveryProof.usageBytes !== null &&
+          probe.storageRecoveryProof.availableBytes !== null &&
+          probe.storageRecoveryProof.issueCount >= 1)) &&
       (clearBlobCacheOffered
         ? probe.storageRecoveryProof.clearBlobCacheCompleted === 'true'
         : probe.storageRecoveryProof.clearBlobCacheCompleted === 'false')
@@ -3295,6 +3363,17 @@ async function proveStarterQuotaPressurePreflight(args: {
       failureMetrics: args.failureMetrics,
       session,
     });
+    log('real-browser smoke: proving browser-observed quota recovery actions');
+    const beforeRecovery = await readStarterBrowserProbe(session);
+    await dispatchStarterStorageRecoveryProof(session, quotaPressure);
+    await waitForStarterStorageRecoveryCompletion({
+      expectedCount: beforeRecovery.storageRecoveryProof.count + 1,
+      expectedSource: 'browser-observed',
+      failureArtifactPath: args.failureArtifactPath,
+      failureMetrics: args.failureMetrics,
+      requireObservedQuotaPressure: true,
+      session,
+    });
   } finally {
     session?.close();
     await stopProcess(chrome.process);
@@ -3817,16 +3896,24 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
       },
       storageRecoveryProof: {
         actionKinds: ['request-persistent-storage', 'compact-storage'],
+        availableBytes: 524_288,
         clearBlobCacheCompleted: 'false',
         compactCompleted: 'true',
         count: 1,
         error: null,
         errorCode: null,
+        issueCodes: ['browser.storage_pressure_high'],
+        issueCount: 1,
         planActionCount: 2,
+        quotaBytes: 10_485_760,
+        quotaPressure: 'high',
         requestPersistenceGranted: 'true',
         requestPersistenceOffered: 'true',
         requestPersistenceSupported: 'true',
+        source: 'browser-observed',
         status: 'complete',
+        usageBytes: 9_961_472,
+        usageRatio: 0.95,
       },
       quotaPressureProof: {
         actionCount: 1,
@@ -4383,14 +4470,24 @@ function assertBrowserPreviewStorageRecoveryProofShape(
       `${path} probe.storageRecoveryProof.actionKinds was not a string array`
     );
   }
+  if (
+    !Array.isArray(value.issueCodes) ||
+    value.issueCodes.some((issueCode) => typeof issueCode !== 'string')
+  ) {
+    throw new Error(
+      `${path} probe.storageRecoveryProof.issueCodes was not a string array`
+    );
+  }
   for (const key of [
     'clearBlobCacheCompleted',
     'compactCompleted',
     'error',
     'errorCode',
+    'quotaPressure',
     'requestPersistenceGranted',
     'requestPersistenceOffered',
     'requestPersistenceSupported',
+    'source',
     'status',
   ] as const) {
     if (value[key] !== null && typeof value[key] !== 'string') {
@@ -4399,13 +4496,25 @@ function assertBrowserPreviewStorageRecoveryProofShape(
       );
     }
   }
-  for (const key of ['count', 'planActionCount'] as const) {
+  for (const key of ['count', 'issueCount', 'planActionCount'] as const) {
     if (
       !isNonNegativeFiniteNumber(value[key]) ||
       !Number.isInteger(value[key])
     ) {
       throw new Error(
         `${path} probe.storageRecoveryProof.${key} was not a non-negative integer`
+      );
+    }
+  }
+  for (const key of [
+    'availableBytes',
+    'quotaBytes',
+    'usageBytes',
+    'usageRatio',
+  ] as const) {
+    if (value[key] !== null && !isNonNegativeFiniteNumber(value[key])) {
+      throw new Error(
+        `${path} probe.storageRecoveryProof.${key} was not nullable non-negative number`
       );
     }
   }
