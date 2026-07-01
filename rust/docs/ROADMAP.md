@@ -232,11 +232,13 @@ read-only review:
     local-visibility marker, and waits for the second tab to observe it
     through the normal sync/realtime path. The same CDP path now navigates the
     second tab through a same-client page reload/reopen and waits for the task
-    to reappear after app startup. Release rehearsal now runs the
-    create-syncular-app built-preview smoke by default and can require the
-    Chrome/CDP path with `--require-starter-browser-preview`. Next slice:
-    observe the hosted Chrome job or continue broadening browser/framework
-    runtime execution beyond Vite. The
+    to reappear after app startup, then restarts Chrome with the same profile
+    directory and verifies that the same client id can still see the task in a
+    fresh browser process. Release rehearsal now runs the create-syncular-app
+    built-preview smoke by default and can require the Chrome/CDP path with
+    `--require-starter-browser-preview`. Next slice: observe the hosted Chrome
+    job or continue broadening browser/framework runtime execution beyond
+    Vite. The
     post-publish
     JavaScript install smoke now
     also creates a fresh optional import matrix project that installs

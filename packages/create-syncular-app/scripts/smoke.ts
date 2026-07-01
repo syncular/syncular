@@ -14,8 +14,9 @@ import { Buffer } from 'node:buffer';
  * 4. When Chrome/Chromium is available, opens the built preview in a real
  *    browser and waits for the starter's Syncular health/schema/support lines.
  *    The browser path also proves restored-page and online lifecycle resume
- *    signals, two-tab propagation, and same-client page reload/reopen
- *    persistence. Browser failures write
+ *    signals, two-tab propagation, same-client page reload/reopen
+ *    persistence, and same-profile browser process restart persistence.
+ *    Browser failures write
  *    browser-preview-failure.json with redacted marker state under the smoke
  *    work dir. The normal smoke also self-checks that artifact shape and safe
  *    smoke metrics so non-browser runners keep the failure contract covered.
@@ -398,9 +399,87 @@ async function runBrowserPreviewSmoke(args: {
   origin: string;
   userDataDir: string;
 }): Promise<void> {
+  const targetUrl = `${args.origin}/`;
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  let propagatedTitle: string | null = null;
+
+  try {
+    const target = await createChromeTarget(chrome.debugPort, targetUrl);
+    const session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    let secondSession: CdpSession | null = null;
+    try {
+      await session.send('Runtime.enable');
+      await session.send('Page.enable');
+      await session.send('Log.enable');
+      await waitForStarterBrowserReady(
+        session,
+        args.failureArtifactPath,
+        args.failureMetrics
+      );
+      await proveStarterBrowserLifecycleResume(
+        session,
+        args.failureArtifactPath,
+        args.failureMetrics
+      );
+      const secondTarget = await createChromeTarget(
+        chrome.debugPort,
+        `${args.origin}/?syncularClientId=web-second`
+      );
+      secondSession = await CdpSession.connect(
+        secondTarget.webSocketDebuggerUrl
+      );
+      await secondSession.send('Runtime.enable');
+      await secondSession.send('Page.enable');
+      await secondSession.send('Log.enable');
+      await waitForStarterBrowserReady(
+        secondSession,
+        args.failureArtifactPath,
+        args.failureMetrics
+      );
+      propagatedTitle = await proveStarterTwoTabPropagation({
+        failureMetrics: args.failureMetrics,
+        failureArtifactPath: args.failureArtifactPath,
+        first: session,
+        second: secondSession,
+      });
+      await proveStarterReloadPersistence({
+        failureMetrics: args.failureMetrics,
+        failureArtifactPath: args.failureArtifactPath,
+        session: secondSession,
+        title: propagatedTitle,
+        url: `${args.origin}/?syncularClientId=web-second&syncularReloadProof=${Date.now()}`,
+      });
+    } finally {
+      secondSession?.close();
+      session.close();
+    }
+  } finally {
+    await stopProcess(chrome.process);
+  }
+
+  if (propagatedTitle === null) {
+    throw new Error('Built preview browser smoke did not produce a task title');
+  }
+  await proveStarterBrowserProcessRestart({
+    chrome: args.chrome,
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    origin: args.origin,
+    title: propagatedTitle,
+    userDataDir: args.userDataDir,
+  });
+  log('real-browser built-preview preflight smoke passed');
+}
+
+async function startBrowserPreviewChrome(args: {
+  chrome: string;
+  userDataDir: string;
+}): Promise<{ debugPort: number; process: ReturnType<typeof spawn> }> {
   await mkdir(args.userDataDir, { recursive: true });
   const debugPort = await getFreePort();
-  const targetUrl = `${args.origin}/`;
   const chrome = spawn(
     args.chrome,
     [
@@ -420,59 +499,12 @@ async function runBrowserPreviewSmoke(args: {
 
   try {
     await fetchUntilReady(`http://127.0.0.1:${debugPort}/json/version`, 15_000);
-    const target = await createChromeTarget(debugPort, targetUrl);
-    const session = await CdpSession.connect(target.webSocketDebuggerUrl);
-    let secondSession: CdpSession | null = null;
-    try {
-      await session.send('Runtime.enable');
-      await session.send('Page.enable');
-      await session.send('Log.enable');
-      await waitForStarterBrowserReady(
-        session,
-        args.failureArtifactPath,
-        args.failureMetrics
-      );
-      await proveStarterBrowserLifecycleResume(
-        session,
-        args.failureArtifactPath,
-        args.failureMetrics
-      );
-      const secondTarget = await createChromeTarget(
-        debugPort,
-        `${args.origin}/?syncularClientId=web-second`
-      );
-      secondSession = await CdpSession.connect(
-        secondTarget.webSocketDebuggerUrl
-      );
-      await secondSession.send('Runtime.enable');
-      await secondSession.send('Page.enable');
-      await secondSession.send('Log.enable');
-      await waitForStarterBrowserReady(
-        secondSession,
-        args.failureArtifactPath,
-        args.failureMetrics
-      );
-      const propagatedTitle = await proveStarterTwoTabPropagation({
-        failureMetrics: args.failureMetrics,
-        failureArtifactPath: args.failureArtifactPath,
-        first: session,
-        second: secondSession,
-      });
-      await proveStarterReloadPersistence({
-        failureMetrics: args.failureMetrics,
-        failureArtifactPath: args.failureArtifactPath,
-        session: secondSession,
-        title: propagatedTitle,
-        url: `${args.origin}/?syncularClientId=web-second&syncularReloadProof=${Date.now()}`,
-      });
-    } finally {
-      secondSession?.close();
-      session.close();
-    }
-    log('real-browser built-preview preflight smoke passed');
-  } finally {
+  } catch (error) {
     await stopProcess(chrome);
+    throw error;
   }
+
+  return { debugPort, process: chrome };
 }
 
 async function createChromeTarget(
@@ -1087,6 +1119,73 @@ async function proveStarterReloadPersistence(args: {
   throw new Error(
     `Timed out waiting for built preview reload persistence. Failure artifact: ${args.failureArtifactPath}`
   );
+}
+
+async function proveStarterBrowserProcessRestart(args: {
+  chrome: string;
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  failureArtifactPath: string;
+  origin: string;
+  title: string;
+  userDataDir: string;
+}): Promise<void> {
+  const chrome = await startBrowserPreviewChrome({
+    chrome: args.chrome,
+    userDataDir: args.userDataDir,
+  });
+  const url = `${args.origin}/?syncularClientId=web-second&syncularRestartProof=${Date.now()}`;
+  let session: CdpSession | null = null;
+
+  try {
+    const target = await createChromeTarget(chrome.debugPort, url);
+    session = await CdpSession.connect(target.webSocketDebuggerUrl);
+    await session.send('Runtime.enable');
+    await session.send('Page.enable');
+    await session.send('Log.enable');
+    await waitForStarterBrowserReady(
+      session,
+      args.failureArtifactPath,
+      args.failureMetrics
+    );
+
+    const deadline = Date.now() + 20_000;
+    let lastProbe: BrowserPreviewProbe | null = null;
+    while (Date.now() < deadline) {
+      const probe = await readStarterBrowserProbe(session);
+      lastProbe = probe;
+      if (probe.errors.length > 0) {
+        await writeBrowserPreviewFailureArtifact(
+          args.failureArtifactPath,
+          'browser-restart-persistence-errors',
+          probe,
+          args.failureMetrics
+        );
+        throw new Error(
+          `Built preview browser restart persistence failed: ${probe.errors.join(
+            ', '
+          )}. Failure artifact: ${args.failureArtifactPath}`
+        );
+      }
+      const restored = await session.evaluate<boolean>(
+        `document.body?.innerText.includes(${JSON.stringify(args.title)}) ?? false`
+      );
+      if (restored) return;
+      await new Promise((resolveSleep) => setTimeout(resolveSleep, 500));
+    }
+
+    await writeBrowserPreviewFailureArtifact(
+      args.failureArtifactPath,
+      'browser-restart-persistence-timeout',
+      lastProbe,
+      args.failureMetrics
+    );
+    throw new Error(
+      `Timed out waiting for built preview browser restart persistence. Failure artifact: ${args.failureArtifactPath}`
+    );
+  } finally {
+    session?.close();
+    await stopProcess(chrome.process);
+  }
 }
 
 async function waitForStarterBrowserUrl(args: {

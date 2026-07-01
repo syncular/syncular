@@ -2065,6 +2065,11 @@ online propagation, or reconnect behavior can change.
   second tab back through app startup with the same `syncularClientId` and
   waits for the propagated task to reappear, giving the browser path its first
   generated-app restart-style persistence boundary.
+- 2026-07-01: Extended the starter Chrome/CDP path with a same-profile
+  browser-process restart proof. After the two-tab and reload/reopen checks,
+  the smoke stops Chrome, starts a fresh Chrome process with the same profile
+  directory and `syncularClientId`, and waits for the propagated task to
+  reappear from the browser database after app startup.
 - 2026-07-01: Wired `bun run release:rehearsal` to run the
   `create-syncular-app` built-preview smoke by default after fresh-app smokes
   and before framework import smokes. Local rehearsal can skip it with
@@ -2532,7 +2537,9 @@ Most recent browser lifecycle resume helper rerun:
     file, creates a task in the first tab, and waits for the second tab to
     observe it through sync/realtime. The Chrome/CDP path now also navigates
     the second tab through a same-client reload/reopen and waits for the task
-    to reappear after app startup.
+    to reappear after app startup, then stops Chrome, starts a fresh Chrome
+    process with the same profile directory and client id, and waits for the
+    task to survive that browser-process boundary.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -2549,7 +2556,7 @@ Most recent starter reload/reopen persistence rerun:
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
     binary was available. On browser-capable runners, the CDP path now proves
     persisted `pageshow`, `online`, two-tab propagation, and same-client
-    reload/reopen task visibility.
+    reload/reopen plus same-profile browser-process restart task visibility.
 
 Most recent starter browser-preview rerun:
 
@@ -3144,9 +3151,11 @@ Most recent mutation-status rerun:
   one tab creates a task, and the second tab must observe it through the normal
   sync/realtime path. The CDP path now also performs a same-client
   reload/reopen after propagation and waits for the task to reappear after app
-  startup. Remaining work is richer two-tab lifecycle execution: true tab
-  suspension/resume, full browser-process restarts, and recovery coordination
-  for persistent browser databases beyond lock-serialized foreground resume.
+  startup, then restarts Chrome with the same profile directory and waits for
+  the task to survive a fresh browser process. Remaining work is richer
+  two-tab lifecycle execution: true tab suspension/resume, storage-lock and
+  shutdown contention, and recovery coordination for persistent browser
+  databases beyond lock-serialized foreground resume.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
   and guarded sync-state reset, with a focused Hono/WASM proof for corrupted
