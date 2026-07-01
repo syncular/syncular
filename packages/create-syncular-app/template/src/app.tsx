@@ -19,6 +19,20 @@ import {
   type Task,
 } from './client/syncular';
 
+type LifecycleResumePreview = {
+  count: number;
+  error: string | null;
+  lastReason: string | null;
+  status: 'idle' | 'running' | 'complete' | 'failed';
+};
+
+const initialLifecycleResume: LifecycleResumePreview = {
+  count: 0,
+  error: null,
+  lastReason: null,
+  status: 'idle',
+};
+
 // One hook set, bound to this app's database schema.
 const {
   SyncProvider,
@@ -30,6 +44,8 @@ const {
 
 export function App() {
   const [client, setClient] = useState<AppSyncClient | null>(null);
+  const [lifecycleResume, setLifecycleResume] =
+    useState<LifecycleResumePreview>(initialLifecycleResume);
   const [openError, setOpenError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -44,7 +60,38 @@ export function App() {
           return;
         }
         opened = nextClient;
-        lifecycleResume = installSyncularBrowserLifecycleResume(nextClient);
+        lifecycleResume = installSyncularBrowserLifecycleResume(nextClient, {
+          onResumeStart(context) {
+            if (!disposed) {
+              setLifecycleResume((current) => ({
+                ...current,
+                error: null,
+                lastReason: context.reason,
+                status: 'running',
+              }));
+            }
+          },
+          onResumeComplete(_result, context) {
+            if (!disposed) {
+              setLifecycleResume((current) => ({
+                count: current.count + 1,
+                error: null,
+                lastReason: context.reason,
+                status: 'complete',
+              }));
+            }
+          },
+          onResumeError(error, context) {
+            if (!disposed) {
+              setLifecycleResume((current) => ({
+                ...current,
+                error: errorMessage(error),
+                lastReason: context.reason,
+                status: 'failed',
+              }));
+            }
+          },
+        });
         setClient(nextClient);
       })
       .catch((error) => {
@@ -70,6 +117,7 @@ export function App() {
       <section className="client-pane" aria-label="Tasks">
         {client ? (
           <SyncProvider client={client}>
+            <LifecycleResumeMarker lifecycleResume={lifecycleResume} />
             <TaskPane client={client} />
           </SyncProvider>
         ) : (
@@ -77,6 +125,22 @@ export function App() {
         )}
       </section>
     </main>
+  );
+}
+
+function LifecycleResumeMarker({
+  lifecycleResume,
+}: {
+  lifecycleResume: LifecycleResumePreview;
+}) {
+  return (
+    <span
+      data-syncular-lifecycle-resume-count={lifecycleResume.count}
+      data-syncular-lifecycle-resume-error={lifecycleResume.error ?? ''}
+      data-syncular-lifecycle-resume-reason={lifecycleResume.lastReason ?? ''}
+      data-syncular-lifecycle-resume-status={lifecycleResume.status}
+      hidden
+    />
   );
 }
 

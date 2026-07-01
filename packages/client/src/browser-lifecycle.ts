@@ -47,6 +47,11 @@ export interface SyncularBrowserLifecycleResumeOptions {
     | ((
         context: SyncularBrowserLifecycleResumeContext
       ) => SyncularSyncRequestOptions | undefined);
+  onResumeStart?: (context: SyncularBrowserLifecycleResumeContext) => void;
+  onResumeComplete?: (
+    result: SyncularSyncResult,
+    context: SyncularBrowserLifecycleResumeContext
+  ) => void;
   onResumeError?: (
     error: unknown,
     context: SyncularBrowserLifecycleResumeContext
@@ -81,9 +86,27 @@ export function installSyncularBrowserLifecycleResume(
       typeof options.syncOptions === 'function'
         ? options.syncOptions(context)
         : options.syncOptions;
-    inFlight = client.resumeFromBackground(syncOptions).finally(() => {
-      inFlight = null;
-    });
+    options.onResumeStart?.(context);
+    let resumePromise: Promise<SyncularSyncResult>;
+    try {
+      resumePromise = client.resumeFromBackground(syncOptions);
+    } catch (error) {
+      resumePromise = Promise.reject(error);
+    }
+    inFlight = resumePromise
+      .then(
+        (result) => {
+          options.onResumeComplete?.(result, context);
+          return result;
+        },
+        (error) => {
+          options.onResumeError?.(error, context);
+          throw error;
+        }
+      )
+      .finally(() => {
+        inFlight = null;
+      });
     return inFlight;
   };
 
@@ -91,9 +114,7 @@ export function installSyncularBrowserLifecycleResume(
     reason: SyncularBrowserLifecycleResumeReason
   ): void => {
     if (destroyed || isDocumentHidden(documentRef)) return;
-    void resume(reason).catch((error) => {
-      options.onResumeError?.(error, { reason });
-    });
+    void resume(reason).catch(() => undefined);
   };
 
   if (documentRef?.addEventListener) {

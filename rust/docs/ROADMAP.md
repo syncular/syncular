@@ -168,8 +168,12 @@ read-only review:
     install `installSyncularBrowserLifecycleResume(...)` to coalesce
     `visibilitychange`, `pageshow`, and `online` signals into the managed
     `resumeFromBackground()` catch-up path, and the starter installs it after
-    opening Syncular. Next slice: observe the hosted Chrome job or continue
-    with real two-tab lifecycle/recovery execution. The post-publish
+    opening Syncular. The starter now emits a hidden lifecycle-resume marker,
+    local asset smokes prove the marker is in the production bundle, and the
+    Chrome/CDP path dispatches `online` and waits for a completed
+    `resumeFromBackground()` marker. Next slice: observe the hosted Chrome job
+    or continue with real two-tab lifecycle/recovery execution. The
+    post-publish
     JavaScript install smoke now
     also creates a fresh optional import matrix project that installs
     `@syncular/client`, `@syncular/server`, and the Bun-friendly optional peers,

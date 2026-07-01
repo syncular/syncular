@@ -1520,6 +1520,11 @@ online propagation, or reconnect behavior can change.
   hook, and tears listeners down explicitly. The starter now installs it after
   opening the generated database so foreground recovery does not depend on app
   code calling `sync()` manually.
+- 2026-07-01: Extended the starter lifecycle helper proof with completion
+  callbacks and hidden DOM markers for resume status/count/reason/error. The
+  scaffold smoke now proves the production bundle contains the lifecycle
+  marker, and the Chrome/CDP browser path dispatches an `online` event and
+  waits for the marker to report a completed `resumeFromBackground()` catch-up.
 - 2026-07-01: Added `scripts/framework-import-smokes.ts` plus the root
   `framework-import-smokes` script. The smoke builds a minimal Next 16 app
   with webpack, imports `@syncular/client` and `@syncular/server` roots from a
@@ -1733,12 +1738,15 @@ Most recent browser lifecycle resume helper rerun:
 - `bun test packages/client/src/browser-lifecycle.test.ts packages/client/src/browser-deployment-preflight.test.ts packages/client/src/public-api.test.ts`
 - `bun --cwd packages/client tsgo`
 - `bun --cwd packages/create-syncular-app tsgo`
-- `bunx biome check packages/client/src/browser-lifecycle.ts packages/client/src/browser-lifecycle.test.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+- `bunx biome check packages/client/src/browser-lifecycle.ts packages/client/src/browser-lifecycle.test.ts packages/client/src/index.ts packages/client/src/public-api.test.ts packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/scripts/smoke.ts packages/client/README.md apps/docs/content/docs/clients/javascript/browser.mdx rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
 - `bun --cwd packages/create-syncular-app smoke`
   - Passed dev server health/page/module/preflight transform checks.
-  - Passed Vite production build, preview serving, and built asset checks.
+  - Passed Vite production build, preview serving, and built asset checks,
+    including the lifecycle-resume and support-bundle markers in the
+    production JavaScript asset.
   - Skipped the real-browser CDP check locally because no Chrome/Chromium
-    binary was available.
+    binary was available. On browser-capable runners the same CDP path now
+    dispatches `online` and waits for a completed lifecycle-resume marker.
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -2104,10 +2112,12 @@ Most recent mutation-status rerun:
   first browser-page helper slice is also done:
   `installSyncularBrowserLifecycleResume(...)` coalesces visible-tab,
   restored-page, and online signals into the managed
-  `resumeFromBackground()` catch-up path, and the starter installs it.
-  Remaining work is real two-tab execution: tab suspension/resume, storage
-  locks, shutdown, app restarts, and recovery coordination for persistent
-  browser databases.
+  `resumeFromBackground()` catch-up path, and the starter installs it. The
+  starter browser smoke now asserts the marker exists in production assets and,
+  on Chrome-capable runners, dispatches `online` and waits for a completed
+  resume marker. Remaining work is real two-tab execution: tab suspension/
+  resume, storage locks, shutdown, app restarts, and recovery coordination for
+  persistent browser databases.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
   and guarded sync-state reset, with a focused Hono/WASM proof for corrupted

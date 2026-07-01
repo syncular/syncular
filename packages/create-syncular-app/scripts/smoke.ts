@@ -211,6 +211,7 @@ async function verifyBuiltPreviewAssets(
     throw new Error('Built preview page did not reference any Vite assets');
   }
 
+  let sawLifecycleResumeMarker = false;
   let sawSupportBundleMarker = false;
   for (const assetPath of assetPaths) {
     const assetUrl = new URL(assetPath, origin);
@@ -226,6 +227,9 @@ async function verifyBuiltPreviewAssets(
       contentType.includes('javascript')
     ) {
       const assetBody = await response.text();
+      sawLifecycleResumeMarker ||= assetBody.includes(
+        'data-syncular-lifecycle-resume-status'
+      );
       sawSupportBundleMarker ||= assetBody.includes(
         'data-syncular-support-bundle-status'
       );
@@ -234,6 +238,11 @@ async function verifyBuiltPreviewAssets(
   if (!sawSupportBundleMarker) {
     throw new Error(
       'Built preview assets did not include the support-bundle smoke marker'
+    );
+  }
+  if (!sawLifecycleResumeMarker) {
+    throw new Error(
+      'Built preview assets did not include the lifecycle-resume smoke marker'
     );
   }
 }
@@ -309,6 +318,10 @@ async function runBrowserPreviewSmoke(args: {
       await session.send('Page.enable');
       await session.send('Log.enable');
       await waitForStarterBrowserReady(session, args.failureArtifactPath);
+      await proveStarterBrowserLifecycleResume(
+        session,
+        args.failureArtifactPath
+      );
     } finally {
       session.close();
     }
@@ -356,8 +369,87 @@ type BrowserPreviewProbe = {
     requestIdCount: number;
     sectionErrorCount: number;
   };
+  lifecycleResume: {
+    status: string | null;
+    count: number;
+    reason: string | null;
+    error: string | null;
+  };
   textExcerpt: string;
 };
+
+async function readStarterBrowserProbe(
+  session: CdpSession
+): Promise<BrowserPreviewProbe> {
+  return session.evaluate<BrowserPreviewProbe>(`(() => {
+    const text = document.body?.innerText ?? '';
+    const supportBundle = document.querySelector('[data-syncular-support-bundle-status]');
+    const supportBundleStatus = supportBundle?.getAttribute('data-syncular-support-bundle-status') ?? null;
+    const supportBundleRedacted = supportBundle?.getAttribute('data-syncular-support-bundle-redacted') ?? null;
+    const supportBundleSectionCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-section-count') ?? 0);
+    const supportBundleIssueCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-issue-count') ?? 0);
+    const supportBundleRequestIdCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-request-id-count') ?? 0);
+    const supportBundleSectionErrorCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-section-error-count') ?? 0);
+    const lifecycleResume = document.querySelector('[data-syncular-lifecycle-resume-status]');
+    const lifecycleResumeStatus = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-status') ?? null;
+    const lifecycleResumeCount = Number(lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-count') ?? 0);
+    const lifecycleResumeReason = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-reason') ?? null;
+    const lifecycleResumeError = lifecycleResume?.getAttribute('data-syncular-lifecycle-resume-error') ?? null;
+    const durableHealthLine = text.includes('indexedDb durable');
+    const schemaLine = text.includes('schema v');
+    const preflightFailure = text.includes('Syncular browser preflight failed');
+    const databaseOpening = text.includes('Opening local database');
+    const errors = [];
+    if (preflightFailure) {
+      errors.push('preflight failed');
+    }
+    if (databaseOpening && text.includes('Error')) {
+      errors.push('database open failed');
+    }
+    if (supportBundleStatus === 'failed') {
+      errors.push('support bundle export failed');
+    }
+    if (supportBundleStatus !== null && supportBundleRedacted !== 'true') {
+      errors.push('support bundle was not redacted');
+    }
+    if (lifecycleResumeStatus === 'failed') {
+      errors.push('lifecycle resume failed');
+    }
+    return {
+      ready:
+        durableHealthLine &&
+        schemaLine &&
+        supportBundleStatus !== null &&
+        lifecycleResumeStatus !== null &&
+        supportBundleRedacted === 'true' &&
+        supportBundleSectionCount >= 4 &&
+        !databaseOpening &&
+        !preflightFailure,
+      errors,
+      markers: {
+        durableHealthLine,
+        schemaLine,
+        preflightFailure,
+        databaseOpening,
+      },
+      supportBundle: {
+        status: supportBundleStatus,
+        redacted: supportBundleRedacted,
+        sectionCount: supportBundleSectionCount,
+        issueCount: supportBundleIssueCount,
+        requestIdCount: supportBundleRequestIdCount,
+        sectionErrorCount: supportBundleSectionErrorCount,
+      },
+      lifecycleResume: {
+        status: lifecycleResumeStatus,
+        count: lifecycleResumeCount,
+        reason: lifecycleResumeReason,
+        error: lifecycleResumeError,
+      },
+      textExcerpt: text.slice(0, 4000),
+    };
+  })()`);
+}
 
 async function waitForStarterBrowserReady(
   session: CdpSession,
@@ -366,59 +458,7 @@ async function waitForStarterBrowserReady(
   const deadline = Date.now() + 60_000;
   let lastProbe: BrowserPreviewProbe | null = null;
   while (Date.now() < deadline) {
-    const evaluation = await session.evaluate<BrowserPreviewProbe>(`(() => {
-      const text = document.body?.innerText ?? '';
-      const supportBundle = document.querySelector('[data-syncular-support-bundle-status]');
-      const supportBundleStatus = supportBundle?.getAttribute('data-syncular-support-bundle-status') ?? null;
-      const supportBundleRedacted = supportBundle?.getAttribute('data-syncular-support-bundle-redacted') ?? null;
-      const supportBundleSectionCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-section-count') ?? 0);
-      const supportBundleIssueCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-issue-count') ?? 0);
-      const supportBundleRequestIdCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-request-id-count') ?? 0);
-      const supportBundleSectionErrorCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-section-error-count') ?? 0);
-      const durableHealthLine = text.includes('indexedDb durable');
-      const schemaLine = text.includes('schema v');
-      const preflightFailure = text.includes('Syncular browser preflight failed');
-      const databaseOpening = text.includes('Opening local database');
-      const errors = [];
-      if (preflightFailure) {
-        errors.push('preflight failed');
-      }
-      if (databaseOpening && text.includes('Error')) {
-        errors.push('database open failed');
-      }
-      if (supportBundleStatus === 'failed') {
-        errors.push('support bundle export failed');
-      }
-      if (supportBundleStatus !== null && supportBundleRedacted !== 'true') {
-        errors.push('support bundle was not redacted');
-      }
-      return {
-        ready:
-          durableHealthLine &&
-          schemaLine &&
-          supportBundleStatus !== null &&
-          supportBundleRedacted === 'true' &&
-          supportBundleSectionCount >= 4 &&
-          !databaseOpening &&
-          !preflightFailure,
-        errors,
-        markers: {
-          durableHealthLine,
-          schemaLine,
-          preflightFailure,
-          databaseOpening,
-        },
-        supportBundle: {
-          status: supportBundleStatus,
-          redacted: supportBundleRedacted,
-          sectionCount: supportBundleSectionCount,
-          issueCount: supportBundleIssueCount,
-          requestIdCount: supportBundleRequestIdCount,
-          sectionErrorCount: supportBundleSectionErrorCount,
-        },
-        textExcerpt: text.slice(0, 4000),
-      };
-    })()`);
+    const evaluation = await readStarterBrowserProbe(session);
     lastProbe = evaluation;
     if (evaluation.errors.length > 0) {
       await writeBrowserPreviewFailureArtifact(
@@ -442,6 +482,49 @@ async function waitForStarterBrowserReady(
   );
   throw new Error(
     `Timed out waiting for built preview browser readiness. Failure artifact: ${failureArtifactPath}`
+  );
+}
+
+async function proveStarterBrowserLifecycleResume(
+  session: CdpSession,
+  failureArtifactPath: string
+): Promise<void> {
+  await session.evaluate(`(() => {
+    window.dispatchEvent(new Event('online'));
+    return true;
+  })()`);
+  const deadline = Date.now() + 15_000;
+  let lastProbe: BrowserPreviewProbe | null = null;
+  while (Date.now() < deadline) {
+    const probe = await readStarterBrowserProbe(session);
+    lastProbe = probe;
+    if (probe.errors.length > 0) {
+      await writeBrowserPreviewFailureArtifact(
+        failureArtifactPath,
+        'lifecycle-resume-errors',
+        probe
+      );
+      throw new Error(
+        `Built preview lifecycle resume failed: ${probe.errors.join(
+          ', '
+        )}. Failure artifact: ${failureArtifactPath}`
+      );
+    }
+    if (
+      probe.lifecycleResume.status === 'complete' &&
+      probe.lifecycleResume.count >= 1
+    ) {
+      return;
+    }
+    await new Promise((resolveSleep) => setTimeout(resolveSleep, 250));
+  }
+  await writeBrowserPreviewFailureArtifact(
+    failureArtifactPath,
+    'lifecycle-resume-timeout',
+    lastProbe
+  );
+  throw new Error(
+    `Timed out waiting for built preview lifecycle resume. Failure artifact: ${failureArtifactPath}`
   );
 }
 

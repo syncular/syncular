@@ -7,11 +7,15 @@ describe('Syncular browser lifecycle resume', () => {
     const client = new FakeResumeClient();
     const document = new FakeDocument('hidden');
     const global = new FakeGlobal(document);
+    const completions: string[] = [];
     const controller = installSyncularBrowserLifecycleResume(client, {
       global,
       syncOptions: ({ reason }) => ({
         syncAttempt: { id: `resume:${reason}`, startedAt: 1 },
       }),
+      onResumeComplete(_result, context) {
+        completions.push(context.reason);
+      },
     });
 
     document.dispatch('visibilitychange');
@@ -24,6 +28,33 @@ describe('Syncular browser lifecycle resume', () => {
     await expect(controller.inFlight()).resolves.toMatchObject({
       changedTables: ['resume:visibilitychange'],
     });
+    expect(completions).toEqual(['visibilitychange']);
+  });
+
+  it('reports resume starts before the catch-up result settles', async () => {
+    const client = new FakeResumeClient({ deferred: true });
+    const document = new FakeDocument('visible');
+    const global = new FakeGlobal(document);
+    const starts: string[] = [];
+    const completions: string[] = [];
+    const controller = installSyncularBrowserLifecycleResume(client, {
+      global,
+      onResumeStart(context) {
+        starts.push(context.reason);
+      },
+      onResumeComplete(_result, context) {
+        completions.push(context.reason);
+      },
+    });
+
+    const resume = controller.resume('manual');
+    expect(starts).toEqual(['manual']);
+    expect(completions).toEqual([]);
+
+    client.resolveNext('manual');
+    await resume;
+
+    expect(completions).toEqual(['manual']);
   });
 
   it('coalesces overlapping browser resume signals', async () => {
