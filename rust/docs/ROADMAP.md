@@ -143,10 +143,12 @@ read-only review:
     Framework import smokes now cover a Next 16 SSR production build that
     imports `@syncular/client` plus `@syncular/server` roots, and a Vite 8
     browser production build that imports the `@syncular/client` root through
-    browser-conditioned package exports. WASM glue dynamic imports include
-    webpack ignore metadata so the Next build stays warning-clean. Release
-    rehearsal runs the framework import smoke by default before publish
-    dry-runs, with an explicit skip flag for local iteration.
+    browser-conditioned package exports, and a Wrangler dry-run Cloudflare
+    Worker build that imports `@syncular/server/cloudflare`. WASM glue dynamic
+    imports include webpack ignore metadata so the Next build stays
+    warning-clean. Release rehearsal runs the framework import smoke by
+    default before publish dry-runs, with an explicit skip flag for local
+    iteration.
     Browser deployment preflight now exposes
     `getSyncularBrowserDeploymentPreflight(...)` from `@syncular/client` so
     deploy previews can check Worker/WebAssembly support, secure-context and

@@ -40,9 +40,10 @@ until the full browser Worker/WASM suite is green on Linux.
   surface changes: run `bun run imports:check` so root client/server imports do
   not start loading optional subpath modules or peers, and run
   `bun run framework-import-smokes` so those roots still build under the
-  current Next SSR and Vite browser production graphs. For release/post-publish
-  checks, `bun scripts/post-publish-install-smokes.ts --version <version>` also
-  runs the optional subpath install/import matrix unless
+  current Next SSR, Vite browser, and Cloudflare Worker production graphs. For
+  release/post-publish checks,
+  `bun scripts/post-publish-install-smokes.ts --version <version>` also runs
+  the optional subpath install/import matrix unless
   `SYNCULAR_POST_PUBLISH_OPTIONAL_IMPORT_MATRIX=0` is set.
 - Generator or generated-client changes:
   run generator checks and at least one generated example/smoke that exercises

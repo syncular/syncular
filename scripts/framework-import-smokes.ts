@@ -7,7 +7,7 @@ import { dirname, join, resolve } from 'node:path';
 const repoRoot = resolve(join(import.meta.dirname, '..'));
 const workDir = resolve(
   process.env.SYNCULAR_FRAMEWORK_IMPORT_SMOKE_DIR ??
-    '.context/framework-import-smokes'
+    `.context/framework-import-smokes/run-${process.pid}`
 );
 const keep = process.argv.includes('--keep');
 
@@ -227,6 +227,49 @@ document
   );
 }
 
+async function writeCloudflareWorkerApp(appDir: string): Promise<void> {
+  await mkdir(join(appDir, 'src'), { recursive: true });
+  await writeFile(
+    join(appDir, 'package.json'),
+    `${JSON.stringify(
+      {
+        private: true,
+        type: 'module',
+        dependencies: {
+          '@syncular/core': 'workspace:*',
+          '@syncular/server': 'workspace:*',
+          hono: 'workspace:*',
+          wrangler: 'workspace:*',
+        },
+      },
+      null,
+      2
+    )}\n`,
+    'utf8'
+  );
+  await writeFile(
+    join(appDir, 'src', 'worker.ts'),
+    `import {
+  SyncDurableObject,
+  createSyncWorker,
+} from '@syncular/server/cloudflare';
+
+type Env = Record<string, never>;
+
+export class SyncularSmokeDurableObject extends SyncDurableObject<Env> {
+  setup() {}
+}
+
+export default createSyncWorker<Env>((app) => {
+  app.get('/syncular-framework-import-smoke', (c) =>
+    c.text('syncular-cloudflare-root-import-ready')
+  );
+});
+`,
+    'utf8'
+  );
+}
+
 async function linkSyncularWorkspacePackages(appDir: string): Promise<void> {
   await linkPackage(
     appDir,
@@ -234,6 +277,17 @@ async function linkSyncularWorkspacePackages(appDir: string): Promise<void> {
     join(repoRoot, 'packages/client')
   );
   await linkPackage(appDir, '@syncular/core', join(repoRoot, 'packages/core'));
+}
+
+async function linkSyncularServerWorkspacePackages(
+  appDir: string
+): Promise<void> {
+  await linkPackage(appDir, '@syncular/core', join(repoRoot, 'packages/core'));
+  await linkPackage(
+    appDir,
+    '@syncular/server',
+    join(repoRoot, 'packages/server')
+  );
 }
 
 async function runNextRootImportSmoke(): Promise<void> {
@@ -293,11 +347,62 @@ async function runViteClientRootImportSmoke(): Promise<void> {
   );
 }
 
+async function runCloudflareWorkerImportSmoke(): Promise<void> {
+  const appDir = join(workDir, 'cloudflare-worker-root-imports');
+  await mkdir(appDir, { recursive: true });
+  await writeCloudflareWorkerApp(appDir);
+
+  await linkSyncularServerWorkspacePackages(appDir);
+  await linkPackage(appDir, 'hono', workspaceDependencyPath('hono'));
+  await linkPackage(appDir, 'wrangler', workspaceDependencyPath('wrangler'));
+
+  const outDir = join(appDir, 'dist');
+  await run(
+    'node',
+    [
+      join(appDir, 'node_modules/wrangler/bin/wrangler.js'),
+      'deploy',
+      'src/worker.ts',
+      '--dry-run',
+      '--outdir',
+      outDir,
+      '--name',
+      'syncular-framework-import-smoke',
+      '--compatibility-date',
+      '2026-01-01',
+    ],
+    {
+      cwd: appDir,
+      env: {
+        WRANGLER_SEND_METRICS: 'false',
+      },
+    }
+  );
+
+  const bundleNames = Array.from(
+    new Bun.Glob('**/*.js').scanSync({ cwd: outDir })
+  );
+  for (const bundleName of bundleNames) {
+    const bundle = await Bun.file(join(outDir, bundleName)).text();
+    if (bundle.includes('syncular-cloudflare-root-import-ready')) {
+      console.log(
+        '[framework-import-smokes] Cloudflare Worker root import smoke passed'
+      );
+      return;
+    }
+  }
+
+  throw new Error(
+    `Cloudflare dry-run build did not contain the Syncular root import marker in ${outDir}`
+  );
+}
+
 async function main(): Promise<void> {
   await rm(workDir, { recursive: true, force: true });
   try {
     await runNextRootImportSmoke();
     await runViteClientRootImportSmoke();
+    await runCloudflareWorkerImportSmoke();
   } finally {
     if (!keep) {
       await rm(workDir, { recursive: true, force: true });

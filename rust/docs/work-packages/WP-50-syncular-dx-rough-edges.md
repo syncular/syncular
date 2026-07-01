@@ -929,14 +929,17 @@ online propagation, or reconnect behavior can change.
   source entrypoints and checks known exports, catching top-level browser,
   native-driver, or optional-peer side effects that static graph walking could
   miss.
-- Framework import smokes now build a minimal Next 16 SSR app through webpack
-  and a minimal Vite 8 browser app. The Next path imports
-  `@syncular/client` and `@syncular/server` roots, aliases workspace package
-  roots to source so stale ignored `dist` leftovers cannot affect the result,
-  and verifies those root imports stay warning-clean after WASM glue dynamic
-  imports gained webpack ignore metadata. The Vite path imports the client
-  root through browser-conditioned package exports and verifies the production
-  bundle contains the expected Syncular marker.
+- Framework import smokes now build a minimal Next 16 SSR app through webpack,
+  a minimal Vite 8 browser app, and a minimal Cloudflare Worker through
+  Wrangler dry-run. The Next path imports `@syncular/client` and
+  `@syncular/server` roots, aliases workspace package roots to source so stale
+  ignored `dist` leftovers cannot affect the result, and verifies those root
+  imports stay warning-clean after WASM glue dynamic imports gained webpack
+  ignore metadata. The Vite path imports the client root through
+  browser-conditioned package exports and verifies the production bundle
+  contains the expected Syncular marker. The Cloudflare path imports
+  `@syncular/server/cloudflare` and verifies Wrangler can bundle a Worker
+  without deploy credentials.
 - The post-publish JavaScript install smoke now runs a release-time optional
   subpath import matrix by default. It installs `@syncular/client`,
   `@syncular/server`, and the Bun-friendly optional peers in a fresh npm
@@ -1522,6 +1525,15 @@ online propagation, or reconnect behavior can change.
   import marker. The smoke resolver now also understands Bun's
   `node_modules/.bun/<package>@.../node_modules/<package>` dependency layout so
   it can reuse workspace-installed Vite without a network install.
+- 2026-07-01: Extended `framework-import-smokes` with a minimal Cloudflare
+  Worker dry-run build through Wrangler. The generated Worker imports
+  `@syncular/server/cloudflare`, exports a `SyncDurableObject` subclass,
+  registers a tiny `createSyncWorker(...)` route, disables Wrangler telemetry
+  for the local smoke, and asserts the bundled Worker contains the expected
+  Syncular marker.
+- 2026-07-01: Made `framework-import-smokes` use a run-specific temporary
+  workspace by default so a direct local smoke and a release-rehearsal smoke
+  cannot delete each other's generated Next/Vite/Cloudflare app directories.
 - 2026-07-01: Wired `bun run release:rehearsal` to run
   `framework-import-smokes` by default after docs/fresh-app checks and before
   publish dry-runs, with `--skip-framework-import-smokes` for local iteration
@@ -2049,11 +2061,13 @@ Most recent mutation-status rerun:
   checks, a Next 16 production-build smoke that imports the client/server
   roots from source and verifies the WASM glue dynamic import path is
   warning-clean under webpack, and a Vite 8 browser production-build smoke
-  that follows browser-conditioned package exports for the client root.
-  Release rehearsal now runs those framework build proofs by default before
-  publish dry-runs. Remaining matrix work is real browser/framework execution
-  beyond these build proofs, especially Vite runtime, Cloudflare, Safari,
-  Firefox, private mode, WebViews, and PWAs.
+  that follows browser-conditioned package exports for the client root, and a
+  Wrangler dry-run Cloudflare Worker build smoke for
+  `@syncular/server/cloudflare`. Release rehearsal now runs those framework
+  build proofs by default before publish dry-runs. Remaining matrix work is
+  real browser/framework execution beyond these build proofs, especially Vite
+  runtime, Cloudflare runtime, Safari, Firefox, private mode, WebViews, and
+  PWAs.
 - Runtime timeline and support bundles: first timeline slice is done for
   ordered, redacted phase events over runtime, lifecycle, bootstrap, sync,
   auth, realtime, storage, local-apply, outbox, conflict, and blob state.
