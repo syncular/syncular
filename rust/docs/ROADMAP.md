@@ -330,6 +330,11 @@ read-only review:
     restore drills, blob storage consistency sampling, rate-limit tuning,
     credential rotation cadence, and upgrade preflight checks so the remaining
     ops prompts are copyable operator work rather than vague launch advice.
+    `syncular ops check --json` now validates a production evidence file for
+    schema readiness, restore drill freshness, external blob consistency,
+    credential rotation ownership/cadence, and rate-limit review status, giving
+    deploy pipelines a first narrow ops automation gate without introducing a
+    broad `doctor` command.
     The `create-syncular-app` scaffold smoke now
     also builds the generated app, serves Vite preview, verifies built preview
     assets, and has an opt-in Chrome/Chromium CDP path for opening the built

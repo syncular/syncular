@@ -1,9 +1,9 @@
 # syncular
 
-CLI for Syncular app code generation. The `syncular` package ships only the
-`syncular` command; all runtime libraries live in the scoped `@syncular/*`
-packages (for example `@syncular/client`, `@syncular/server`,
-`@syncular/client/react`).
+CLI for Syncular app code generation, schema readiness, and production ops
+checks. The `syncular` package ships only the `syncular` command; all runtime
+libraries live in the scoped `@syncular/*` packages (for example
+`@syncular/client`, `@syncular/server`, `@syncular/client/react`).
 
 ## Usage
 
@@ -13,6 +13,8 @@ Run the app-facing generator with your package runner — no install required:
 npx syncular codegen install
 npx syncular generate --manifest-dir .
 npx syncular generate --manifest-dir . --check
+npx syncular schema check --json
+npx syncular ops check --json
 ```
 
 `syncular generate` refreshes `generated/syncular.codegen.json` from
@@ -25,10 +27,15 @@ generating clients. `syncular generate` can also install the Rust generator on
 demand when Cargo is available; `syncular codegen install` prewarms the same
 tool cache explicitly.
 
+`syncular schema check --json` verifies generated config, migrations, and
+generated client/server schema versions before deploy. `syncular ops check
+--json` validates the production runbook evidence file for restore drills,
+blob consistency, credential rotation, and rate-limit review status.
+
 ## Documentation
 
 - Quick start: https://syncular.dev/docs/start/quick-start
-- CLI reference: https://syncular.dev/docs/reference/cli/generate
+- CLI reference: https://syncular.dev/docs/reference/cli
 
 ## Links
 

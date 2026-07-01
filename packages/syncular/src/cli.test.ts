@@ -14,6 +14,7 @@ import {
   buildGenerateSteps,
   isMainModuleEntrypoint,
   parseSyncularCliArgs,
+  runOpsCheckCommand,
   runSchemaCheckCommand,
 } from './cli';
 
@@ -88,6 +89,38 @@ describe('syncular CLI', () => {
         generatedServer: './src/generated/server.ts',
         json: true,
         pretty: true,
+      },
+    });
+  });
+
+  it('parses the ops check command', () => {
+    expect(
+      parseSyncularCliArgs([
+        'ops',
+        'check',
+        '--manifest-dir',
+        './app',
+        '--config=./ops/prod.json',
+        '--max-restore-drill-age-days',
+        '30',
+        '--max-blob-consistency-age-days=2',
+        '--max-credential-review-age-days',
+        '45',
+        '--max-rate-limit-review-age-days=60',
+        '--json',
+        '--pretty',
+      ])
+    ).toEqual({
+      kind: 'ops-check',
+      options: {
+        manifestDir: './app',
+        config: './ops/prod.json',
+        json: true,
+        pretty: true,
+        maxRestoreDrillAgeDays: 30,
+        maxBlobConsistencyAgeDays: 2,
+        maxCredentialReviewAgeDays: 45,
+        maxRateLimitReviewAgeDays: 60,
       },
     });
   });
@@ -308,6 +341,79 @@ describe('syncular CLI', () => {
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  it('checks production ops evidence from the deployment runbook', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-ops-check-'));
+    try {
+      writeOpsCheckFixture(dir);
+
+      const result = runOpsCheckCommand(
+        { manifestDir: dir, json: true, pretty: false },
+        { now: () => new Date('2026-07-01T00:00:00.000Z') }
+      );
+
+      expect(result).toEqual({
+        generatedAt: '2026-07-01T00:00:00.000Z',
+        status: 'ready',
+        ready: true,
+        manifestDir: dir,
+        configPath: join(dir, 'syncular.ops.json'),
+        environment: 'production',
+        checks: {
+          schemaReadiness: 'ready',
+          restoreDrill: 'ready',
+          blobConsistency: 'ready',
+          credentialRotation: 'ready',
+          rateLimits: 'ready',
+        },
+        issues: [],
+      });
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports stale or failed production ops evidence with stable issue codes', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'syncular-ops-check-'));
+    try {
+      writeOpsCheckFixture(dir, {
+        restoreCompletedAt: '2026-01-01T00:00:00.000Z',
+        blobStatus: 'fail',
+        credentialReviewedAt: '2026-01-01T00:00:00.000Z',
+        rateLimitStatus: 'disabled',
+      });
+
+      const result = runOpsCheckCommand(
+        { manifestDir: dir, json: true, pretty: false },
+        { now: () => new Date('2026-07-01T00:00:00.000Z') }
+      );
+
+      expect(result.ready).toBe(false);
+      expect(result.status).toBe('not-ready');
+      expect(result.issues).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            code: 'ops.restore_drill_stale',
+            recommendedAction: 'runRestoreDrill',
+          }),
+          expect.objectContaining({
+            code: 'ops.blob_consistency_status_invalid',
+            recommendedAction: 'runBlobConsistencyCheck',
+          }),
+          expect.objectContaining({
+            code: 'ops.credential_rotation_stale',
+            recommendedAction: 'reviewCredentialRotation',
+          }),
+          expect.objectContaining({
+            code: 'ops.rate_limits_status_invalid',
+            recommendedAction: 'tuneRateLimits',
+          }),
+        ])
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 function writeSchemaCheckFixture(
@@ -348,5 +454,50 @@ function writeSchemaCheckFixture(
   writeFileSync(
     join(dir, 'src/generated/syncular.server.generated.ts'),
     generatedSource
+  );
+}
+
+function writeOpsCheckFixture(
+  dir: string,
+  options: {
+    restoreCompletedAt?: string;
+    blobStatus?: string;
+    credentialReviewedAt?: string;
+    rateLimitStatus?: string;
+  } = {}
+): void {
+  writeFileSync(
+    join(dir, 'syncular.ops.json'),
+    JSON.stringify({
+      environment: 'production',
+      schemaReadiness: {
+        status: 'ready',
+        ready: true,
+        checkedAt: '2026-06-30T00:00:00.000Z',
+      },
+      restoreDrill: {
+        completedAt: options.restoreCompletedAt ?? '2026-06-15T00:00:00.000Z',
+        restoreMinutes: 12,
+        expectedClientRebootstrapLoad: 'normal weekday client population',
+        rollbackDecision: 'roll forward unless schema readiness fails',
+      },
+      blobConsistency: {
+        required: true,
+        status: options.blobStatus ?? 'pass',
+        checkedAt: '2026-06-30T00:00:00.000Z',
+      },
+      credentialRotation: {
+        reviewedAt: options.credentialReviewedAt ?? '2026-06-15T00:00:00.000Z',
+        owners: {
+          auth: 'identity team',
+          console: 'platform team',
+          storage: 'storage team',
+        },
+      },
+      rateLimits: {
+        reviewedAt: '2026-06-15T00:00:00.000Z',
+        status: options.rateLimitStatus ?? 'enabled',
+      },
+    })
   );
 }

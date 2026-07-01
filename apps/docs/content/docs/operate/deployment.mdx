@@ -424,6 +424,24 @@ Plan rotations by credential class:
   canary upload and download. Watch for `blob.signing_failed` and
   `storage_object_missing` during and after the rotation.
 
+## Operations readiness gate
+
+Keep a small production evidence file next to your deployment config and fail
+deploys when the runbook facts are missing or stale:
+
+```bash
+npx syncular ops check --config ./ops/production.syncular.ops.json --json
+```
+
+The check validates the facts from this page: schema readiness, latest restore
+drill, blob consistency policy, credential rotation ownership/cadence, and
+rate-limit review status. It does not replace live probes such as
+`GET <mount>/health`; it makes the operator runbook evidence machine-readable
+so CI can block an unsafe deploy before traffic moves.
+
+See [Ops Check Command](/reference/cli/ops-check) for the JSON shape and
+freshness flags.
+
 ## Multi-instance deployments
 
 Syncular servers are stateless between requests except for WebSocket
@@ -450,6 +468,7 @@ for their next HTTP pull instead of waking immediately.
   - [ ] `ensureSyncSchema` + app migrations run on deploy, before traffic
   - [ ] `syncular schema check --json` or `getSyncularServerSchemaReadiness(...)`
         runs in CI/deploy readiness
+  - [ ] `syncular ops check --json` validates the production evidence file
   - [ ] Upgrade and rollback order reviewed in the
         [Upgrade Guide](/reference/upgrade-guide)
   - [ ] Backups configured and restore tested

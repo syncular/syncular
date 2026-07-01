@@ -1311,6 +1311,12 @@ online propagation, or reconnect behavior can change.
 - Public deployment docs now steer production schema setup toward release or
   operator steps before traffic, with `syncular schema check --json` and
   `getSyncularServerSchemaReadiness(...)` as readiness checks.
+- `syncular ops check` now gives deploy pipelines a narrow machine-readable
+  production-ops gate over the manual runbook evidence: schema readiness,
+  latest restore drill, external blob consistency policy/status, credential
+  rotation ownership/cadence, and rate-limit review status. This keeps the
+  first production-ops automation concrete without introducing a broad
+  `doctor` command before enough narrower checks exist.
 - 2026-06-30 ninth implementation slice added
   `createScopedBlobAccessDecisionChecker(...)`, allowed Hono blob routes to
   consume boolean or structured access decisions, and exposed typed blob route
@@ -1966,6 +1972,12 @@ online propagation, or reconnect behavior can change.
   checklist items for restore load, external blob stores, and rotation
   ownership. The upgrade guide now requires those ops drills before a package
   upgrade routes production traffic.
+- 2026-07-01: Added `syncular ops check`, a narrow deploy-facing production
+  evidence command that validates `syncular.ops.json` with stable issue codes
+  and recommended actions for schema readiness, restore drill freshness,
+  external blob consistency, credential rotation ownership/cadence, and
+  rate-limit review status. Public deployment and CLI docs now show the
+  evidence file shape and freshness flags.
 
 ## Latest Gates
 
@@ -2275,8 +2287,12 @@ Most recent starter support-timeline artifact rerun:
     latest public timeline evidence after generated mutations instead of only
     the initial page-open snapshot.
 
-Most recent production-ops docs rerun:
+Most recent production-ops automation rerun:
 
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun packages/syncular/src/cli.ts ops check --help`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun test packages/syncular/src/cli.test.ts`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/syncular tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/syncular/src/cli.ts packages/syncular/src/cli.test.ts scripts/check-docs-stale-patterns.ts README.md packages/syncular/README.md apps/docs/content/docs/reference/cli/index.mdx apps/docs/content/docs/reference/cli/ops-check.mdx apps/docs/content/docs/reference/cli/meta.json apps/docs/content/docs/operate/deployment.mdx apps/docs/content/docs/reference/packages-crates/index.mdx apps/docs/content/docs/reference/index.mdx packages/syncular/package.json`
 - `bun run docs:stale-check`
 - `bun --cwd apps/docs types:check`
 - `git diff --check`
@@ -2745,8 +2761,12 @@ Most recent mutation-status rerun:
   rotation, local database recovery, and rollback into copyable operator docs.
   Upgrade/rollback docs are done, and production-ops depth now includes
   restore drills, blob-store consistency checks, rate-limit tuning, and
-  credential rotation cadence. Remaining depth is to automate any of those
-  drills as `doctor`/Console checks once the manual runbooks stabilize.
+  credential rotation cadence. The first narrow automation slice is also done:
+  `syncular ops check --json` validates a production evidence file for schema
+  readiness, restore drill freshness, external blob consistency, credential
+  rotation ownership/cadence, and rate-limit review status. Remaining depth is
+  to connect these same facts to live Console/Fleet views or a future broader
+  `doctor` once enough independently useful checks exist.
 - Performance and failure artifacts: keep package/WASM size, bootstrap
   latency, local visibility delay, sync apply, realtime reconnect, blob fetch
   latency, storage/quota pressure, and redacted E2E failure artifacts

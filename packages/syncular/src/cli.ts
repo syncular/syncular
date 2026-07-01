@@ -16,6 +16,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const DEFAULT_APP_FILE = 'syncular.app.ts';
 const DEFAULT_CODEGEN_CONFIG_FILE = 'generated/syncular.codegen.json';
+const DEFAULT_OPS_CHECK_FILE = 'syncular.ops.json';
 const SYNCULAR_CODEGEN_BIN = 'syncular-codegen';
 
 export interface GenerateCommandOptions {
@@ -42,11 +43,26 @@ export interface SchemaCheckCommandOptions {
   pretty: boolean;
 }
 
+export interface OpsCheckCommandOptions {
+  manifestDir: string;
+  config?: string;
+  json: boolean;
+  pretty: boolean;
+  maxRestoreDrillAgeDays?: number;
+  maxBlobConsistencyAgeDays?: number;
+  maxCredentialReviewAgeDays?: number;
+  maxRateLimitReviewAgeDays?: number;
+}
+
 export type SyncularCliCommand =
-  | { kind: 'help'; topic?: 'generate' | 'codegen-install' | 'schema-check' }
+  | {
+      kind: 'help';
+      topic?: 'generate' | 'codegen-install' | 'schema-check' | 'ops-check';
+    }
   | { kind: 'generate'; options: GenerateCommandOptions }
   | { kind: 'codegen-install'; options: CodegenInstallCommandOptions }
-  | { kind: 'schema-check'; options: SchemaCheckCommandOptions };
+  | { kind: 'schema-check'; options: SchemaCheckCommandOptions }
+  | { kind: 'ops-check'; options: OpsCheckCommandOptions };
 
 export interface GenerateStep {
   label: string;
@@ -110,10 +126,78 @@ export interface SchemaCheckResult {
   issues: SchemaCheckIssue[];
 }
 
+export type OpsCheckStatus = 'ready' | 'not-ready';
+
+export type OpsCheckIssueCode =
+  | 'ops.config_missing'
+  | 'ops.config_invalid'
+  | 'ops.environment_missing'
+  | 'ops.schema_readiness_missing'
+  | 'ops.schema_readiness_not_ready'
+  | 'ops.schema_readiness_checked_at_missing'
+  | 'ops.restore_drill_missing'
+  | 'ops.restore_drill_completed_at_missing'
+  | 'ops.restore_drill_stale'
+  | 'ops.restore_drill_duration_invalid'
+  | 'ops.restore_drill_rebootstrap_load_missing'
+  | 'ops.restore_drill_rollback_decision_missing'
+  | 'ops.blob_consistency_missing'
+  | 'ops.blob_consistency_status_invalid'
+  | 'ops.blob_consistency_stale'
+  | 'ops.credential_rotation_missing'
+  | 'ops.credential_rotation_stale'
+  | 'ops.credential_rotation_owner_missing'
+  | 'ops.rate_limits_missing'
+  | 'ops.rate_limits_status_invalid'
+  | 'ops.rate_limits_stale';
+
+export type OpsCheckIssueSeverity = 'error';
+
+export interface OpsCheckIssue {
+  code: OpsCheckIssueCode;
+  severity: OpsCheckIssueSeverity;
+  message: string;
+  path?: string;
+  recommendedAction:
+    | 'createOpsReadinessFile'
+    | 'runSchemaChecks'
+    | 'runRestoreDrill'
+    | 'runBlobConsistencyCheck'
+    | 'reviewCredentialRotation'
+    | 'tuneRateLimits';
+  details?: Record<string, unknown>;
+}
+
+export interface OpsCheckResult {
+  generatedAt: string;
+  status: OpsCheckStatus;
+  ready: boolean;
+  manifestDir: string;
+  configPath: string;
+  environment: string | null;
+  checks: {
+    schemaReadiness: 'ready' | 'not-ready' | 'missing';
+    restoreDrill: 'ready' | 'not-ready' | 'missing';
+    blobConsistency: 'ready' | 'not-ready' | 'not-applicable' | 'missing';
+    credentialRotation: 'ready' | 'not-ready' | 'missing';
+    rateLimits: 'ready' | 'not-ready' | 'missing';
+  };
+  issues: OpsCheckIssue[];
+}
+
 interface SyncularCodegenConfig {
   tables?: unknown;
   typescriptOutputPath?: unknown;
   typescriptServerOutputPath?: unknown;
+}
+
+interface SyncularOpsCheckConfig {
+  environment?: unknown;
+  schemaReadiness?: unknown;
+  restoreDrill?: unknown;
+  blobConsistency?: unknown;
+  credentialRotation?: unknown;
+  rateLimits?: unknown;
 }
 
 function usage(): string {
@@ -122,6 +206,7 @@ function usage(): string {
 commands:
   generate [--check] [--manifest-dir <path>] [--migrations-dir <path>] [--rust-output-dir <path>] [--app <path>]
   schema check [--manifest-dir <path>] [--config <path>] [--migrations-dir <path>] [--generated-client <path>] [--generated-server <path>] [--json] [--pretty]
+  ops check [--manifest-dir <path>] [--config <path>] [--json] [--pretty]
   codegen install [--version <version>] [--root <path>] [--force]
 
 examples:
@@ -129,6 +214,7 @@ examples:
   syncular generate --check
   syncular generate --manifest-dir ./syncular-app --app ./syncular.app.ts
   syncular schema check --json
+  syncular ops check --json
   syncular codegen install
 `;
 }
@@ -165,6 +251,19 @@ function schemaCheckUsage(): string {
 
 Checks that the generated Syncular config, migrations, and generated TypeScript
 client/server outputs agree before deploy or CI continues.
+
+Use --json for machine-readable output. A not-ready result exits with status 1.
+`;
+}
+
+function opsCheckUsage(): string {
+  return `usage: syncular ops check [--manifest-dir <path>] [--config <path>] [--json] [--pretty] [--max-restore-drill-age-days <days>] [--max-blob-consistency-age-days <days>] [--max-credential-review-age-days <days>] [--max-rate-limit-review-age-days <days>]
+
+Checks a production operations evidence file before deploy continues.
+
+By default the command reads <manifest-dir>/syncular.ops.json and verifies
+schema readiness, restore-drill evidence, blob consistency policy, credential
+rotation ownership/cadence, and rate-limit review status.
 
 Use --json for machine-readable output. A not-ready result exits with status 1.
 `;
@@ -248,6 +347,25 @@ export function parseSyncularCliArgs(
     };
   }
 
+  if (command === 'ops') {
+    const [subcommand, ...opsArgs] = rest;
+    if (!subcommand || subcommand === '--help' || subcommand === '-h') {
+      return { kind: 'help', topic: 'ops-check' };
+    }
+    if (subcommand !== 'check') {
+      throw new Error(
+        `Unknown syncular ops command: ${subcommand}\n\n${usage()}`
+      );
+    }
+    if (opsArgs.includes('--help') || opsArgs.includes('-h')) {
+      return { kind: 'help', topic: 'ops-check' };
+    }
+    return {
+      kind: 'ops-check',
+      options: parseOpsCheckArgs(opsArgs),
+    };
+  }
+
   if (command !== 'generate') {
     throw new Error(`Unknown syncular command: ${command}\n\n${usage()}`);
   }
@@ -308,6 +426,21 @@ export function parseSyncularCliArgs(
   }
 
   return { kind: 'generate', options };
+}
+
+function readPositiveNumberOptionValue(
+  argv: readonly string[],
+  index: number,
+  arg: string,
+  name: string
+): { value: number; nextIndex: number } | null {
+  const value = readOptionValue(argv, index, arg, name);
+  if (!value) return null;
+  const number = Number(value.value);
+  if (!Number.isFinite(number) || number <= 0) {
+    throw new Error(`${name} requires a positive number`);
+  }
+  return { value: number, nextIndex: value.nextIndex };
 }
 
 function parseSchemaCheckArgs(
@@ -379,6 +512,100 @@ function parseSchemaCheckArgs(
 
     throw new Error(
       `Unknown syncular schema check option: ${arg}\n\n${schemaCheckUsage()}`
+    );
+  }
+
+  return options;
+}
+
+function parseOpsCheckArgs(args: readonly string[]): OpsCheckCommandOptions {
+  const options: OpsCheckCommandOptions = {
+    manifestDir: '.',
+    json: false,
+    pretty: false,
+    maxRestoreDrillAgeDays: 90,
+    maxBlobConsistencyAgeDays: 7,
+    maxCredentialReviewAgeDays: 90,
+    maxRateLimitReviewAgeDays: 90,
+  };
+
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index]!;
+
+    if (arg === '--json') {
+      options.json = true;
+      continue;
+    }
+
+    if (arg === '--pretty') {
+      options.pretty = true;
+      continue;
+    }
+
+    const manifestDir = readOptionValue(args, index, arg, '--manifest-dir');
+    if (manifestDir) {
+      options.manifestDir = manifestDir.value;
+      index = manifestDir.nextIndex;
+      continue;
+    }
+
+    const config = readOptionValue(args, index, arg, '--config');
+    if (config) {
+      options.config = config.value;
+      index = config.nextIndex;
+      continue;
+    }
+
+    const maxRestoreDrillAgeDays = readPositiveNumberOptionValue(
+      args,
+      index,
+      arg,
+      '--max-restore-drill-age-days'
+    );
+    if (maxRestoreDrillAgeDays) {
+      options.maxRestoreDrillAgeDays = maxRestoreDrillAgeDays.value;
+      index = maxRestoreDrillAgeDays.nextIndex;
+      continue;
+    }
+
+    const maxBlobConsistencyAgeDays = readPositiveNumberOptionValue(
+      args,
+      index,
+      arg,
+      '--max-blob-consistency-age-days'
+    );
+    if (maxBlobConsistencyAgeDays) {
+      options.maxBlobConsistencyAgeDays = maxBlobConsistencyAgeDays.value;
+      index = maxBlobConsistencyAgeDays.nextIndex;
+      continue;
+    }
+
+    const maxCredentialReviewAgeDays = readPositiveNumberOptionValue(
+      args,
+      index,
+      arg,
+      '--max-credential-review-age-days'
+    );
+    if (maxCredentialReviewAgeDays) {
+      options.maxCredentialReviewAgeDays = maxCredentialReviewAgeDays.value;
+      index = maxCredentialReviewAgeDays.nextIndex;
+      continue;
+    }
+
+    const maxRateLimitReviewAgeDays = readPositiveNumberOptionValue(
+      args,
+      index,
+      arg,
+      '--max-rate-limit-review-age-days'
+    );
+    if (maxRateLimitReviewAgeDays) {
+      options.maxRateLimitReviewAgeDays = maxRateLimitReviewAgeDays.value;
+      index = maxRateLimitReviewAgeDays.nextIndex;
+      continue;
+    }
+
+    throw new Error(
+      `Unknown syncular ops check option: ${arg}\n\n${opsCheckUsage()}`
     );
   }
 
@@ -624,6 +851,83 @@ export function runSchemaCheckCommand(
   };
 }
 
+export function runOpsCheckCommand(
+  options: OpsCheckCommandOptions,
+  context: { cwd?: string; now?: () => Date } = {}
+): OpsCheckResult {
+  const cwd = context.cwd ?? process.cwd();
+  const now = context.now?.() ?? new Date();
+  const manifestDir = resolveFrom(cwd, options.manifestDir);
+  const configPath = options.config
+    ? resolveFrom(cwd, options.config)
+    : resolveFrom(manifestDir, DEFAULT_OPS_CHECK_FILE);
+
+  const issues: OpsCheckIssue[] = [];
+  const config = readOpsCheckConfig(configPath, issues);
+  const environment = nonEmptyString(config?.environment);
+
+  if (config && !environment) {
+    issues.push({
+      code: 'ops.environment_missing',
+      severity: 'error',
+      message: 'Syncular ops evidence must name the production environment.',
+      path: configPath,
+      recommendedAction: 'createOpsReadinessFile',
+    });
+  }
+
+  const checks = {
+    schemaReadiness: checkOpsSchemaReadiness({
+      section: config?.schemaReadiness,
+      issues,
+      configPath,
+    }),
+    restoreDrill: checkOpsRestoreDrill({
+      section: config?.restoreDrill,
+      issues,
+      configPath,
+      maxAgeDays: options.maxRestoreDrillAgeDays ?? 90,
+      now,
+    }),
+    blobConsistency: checkOpsBlobConsistency({
+      section: config?.blobConsistency,
+      issues,
+      configPath,
+      maxAgeDays: options.maxBlobConsistencyAgeDays ?? 7,
+      now,
+    }),
+    credentialRotation:
+      'missing' as OpsCheckResult['checks']['credentialRotation'],
+    rateLimits: checkOpsRateLimits({
+      section: config?.rateLimits,
+      issues,
+      configPath,
+      maxAgeDays: options.maxRateLimitReviewAgeDays ?? 90,
+      now,
+    }),
+  };
+  checks.credentialRotation = checkOpsCredentialRotation({
+    section: config?.credentialRotation,
+    issues,
+    configPath,
+    maxAgeDays: options.maxCredentialReviewAgeDays ?? 90,
+    now,
+    storageOwnerRequired: checks.blobConsistency !== 'not-applicable',
+  });
+
+  const ready = !issues.some((issue) => issue.severity === 'error');
+  return {
+    generatedAt: now.toISOString(),
+    status: ready ? 'ready' : 'not-ready',
+    ready,
+    manifestDir,
+    configPath,
+    environment,
+    checks,
+    issues,
+  };
+}
+
 function readCodegenConfig(
   path: string,
   issues: SchemaCheckIssue[]
@@ -756,6 +1060,396 @@ function readGeneratedSchemaVersion(args: {
   return Number(match[1]);
 }
 
+function readOpsCheckConfig(
+  path: string,
+  issues: OpsCheckIssue[]
+): SyncularOpsCheckConfig | null {
+  if (!existsSync(path)) {
+    issues.push({
+      code: 'ops.config_missing',
+      severity: 'error',
+      message:
+        'Syncular production ops evidence is missing. Create syncular.ops.json or pass --config.',
+      path,
+      recommendedAction: 'createOpsReadinessFile',
+    });
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+    if (!isPlainRecord(parsed)) {
+      issues.push({
+        code: 'ops.config_invalid',
+        severity: 'error',
+        message: 'Syncular production ops evidence must be a JSON object.',
+        path,
+        recommendedAction: 'createOpsReadinessFile',
+      });
+      return null;
+    }
+    return parsed as SyncularOpsCheckConfig;
+  } catch (error) {
+    issues.push({
+      code: 'ops.config_invalid',
+      severity: 'error',
+      message: 'Syncular production ops evidence is not valid JSON.',
+      path,
+      recommendedAction: 'createOpsReadinessFile',
+      details: {
+        message: error instanceof Error ? error.message : String(error),
+      },
+    });
+    return null;
+  }
+}
+
+function nonEmptyString(value: unknown): string | null {
+  return typeof value === 'string' && value.trim().length > 0
+    ? value.trim()
+    : null;
+}
+
+function checkOpsSchemaReadiness(args: {
+  section: unknown;
+  issues: OpsCheckIssue[];
+  configPath: string;
+}): OpsCheckResult['checks']['schemaReadiness'] {
+  if (!isPlainRecord(args.section)) {
+    args.issues.push({
+      code: 'ops.schema_readiness_missing',
+      severity: 'error',
+      message:
+        'Syncular ops evidence must include schema readiness from syncular schema check or getSyncularServerSchemaReadiness.',
+      path: args.configPath,
+      recommendedAction: 'runSchemaChecks',
+    });
+    return 'missing';
+  }
+
+  let ready = true;
+  if (args.section.ready !== true && args.section.status !== 'ready') {
+    args.issues.push({
+      code: 'ops.schema_readiness_not_ready',
+      severity: 'error',
+      message: 'Syncular schema readiness evidence is not ready.',
+      path: args.configPath,
+      recommendedAction: 'runSchemaChecks',
+    });
+    ready = false;
+  }
+
+  if (!validDate(args.section.checkedAt)) {
+    args.issues.push({
+      code: 'ops.schema_readiness_checked_at_missing',
+      severity: 'error',
+      message: 'Syncular schema readiness evidence must include checkedAt.',
+      path: args.configPath,
+      recommendedAction: 'runSchemaChecks',
+    });
+    ready = false;
+  }
+
+  return ready ? 'ready' : 'not-ready';
+}
+
+function checkOpsRestoreDrill(args: {
+  section: unknown;
+  issues: OpsCheckIssue[];
+  configPath: string;
+  maxAgeDays: number;
+  now: Date;
+}): OpsCheckResult['checks']['restoreDrill'] {
+  if (!isPlainRecord(args.section)) {
+    args.issues.push({
+      code: 'ops.restore_drill_missing',
+      severity: 'error',
+      message: 'Syncular ops evidence must include the latest restore drill.',
+      path: args.configPath,
+      recommendedAction: 'runRestoreDrill',
+    });
+    return 'missing';
+  }
+
+  let ready = true;
+  const completedAt = readFreshDate({
+    value: args.section.completedAt,
+    now: args.now,
+    maxAgeDays: args.maxAgeDays,
+    missingCode: 'ops.restore_drill_completed_at_missing',
+    staleCode: 'ops.restore_drill_stale',
+    missingMessage: 'Syncular restore drill evidence must include completedAt.',
+    staleMessage: 'Syncular restore drill evidence is older than allowed.',
+    recommendedAction: 'runRestoreDrill',
+    path: args.configPath,
+    issues: args.issues,
+  });
+  if (!completedAt) ready = false;
+
+  if (
+    typeof args.section.restoreMinutes !== 'number' ||
+    !Number.isFinite(args.section.restoreMinutes) ||
+    args.section.restoreMinutes < 0
+  ) {
+    args.issues.push({
+      code: 'ops.restore_drill_duration_invalid',
+      severity: 'error',
+      message:
+        'Syncular restore drill evidence must include a non-negative restoreMinutes value.',
+      path: args.configPath,
+      recommendedAction: 'runRestoreDrill',
+    });
+    ready = false;
+  }
+
+  if (!nonEmptyString(args.section.expectedClientRebootstrapLoad)) {
+    args.issues.push({
+      code: 'ops.restore_drill_rebootstrap_load_missing',
+      severity: 'error',
+      message:
+        'Syncular restore drill evidence must record expected client re-bootstrap load.',
+      path: args.configPath,
+      recommendedAction: 'runRestoreDrill',
+    });
+    ready = false;
+  }
+
+  if (!nonEmptyString(args.section.rollbackDecision)) {
+    args.issues.push({
+      code: 'ops.restore_drill_rollback_decision_missing',
+      severity: 'error',
+      message:
+        'Syncular restore drill evidence must record the rollback decision.',
+      path: args.configPath,
+      recommendedAction: 'runRestoreDrill',
+    });
+    ready = false;
+  }
+
+  return ready ? 'ready' : 'not-ready';
+}
+
+function checkOpsBlobConsistency(args: {
+  section: unknown;
+  issues: OpsCheckIssue[];
+  configPath: string;
+  maxAgeDays: number;
+  now: Date;
+}): OpsCheckResult['checks']['blobConsistency'] {
+  if (!isPlainRecord(args.section)) {
+    args.issues.push({
+      code: 'ops.blob_consistency_missing',
+      severity: 'error',
+      message:
+        'Syncular ops evidence must declare blob consistency as pass or not-applicable.',
+      path: args.configPath,
+      recommendedAction: 'runBlobConsistencyCheck',
+    });
+    return 'missing';
+  }
+
+  const required = args.section.required !== false;
+  const status = nonEmptyString(args.section.status);
+  if (!required || status === 'not-applicable') {
+    return 'not-applicable';
+  }
+
+  let ready = true;
+  if (status !== 'pass') {
+    args.issues.push({
+      code: 'ops.blob_consistency_status_invalid',
+      severity: 'error',
+      message:
+        'Syncular blob consistency evidence must pass before production deploy.',
+      path: args.configPath,
+      recommendedAction: 'runBlobConsistencyCheck',
+      details: { status },
+    });
+    ready = false;
+  }
+
+  const checkedAt = readFreshDate({
+    value: args.section.checkedAt,
+    now: args.now,
+    maxAgeDays: args.maxAgeDays,
+    missingCode: 'ops.blob_consistency_stale',
+    staleCode: 'ops.blob_consistency_stale',
+    missingMessage:
+      'Syncular blob consistency evidence must include checkedAt when blob storage is required.',
+    staleMessage: 'Syncular blob consistency evidence is older than allowed.',
+    recommendedAction: 'runBlobConsistencyCheck',
+    path: args.configPath,
+    issues: args.issues,
+  });
+  if (!checkedAt) ready = false;
+
+  return ready ? 'ready' : 'not-ready';
+}
+
+function checkOpsCredentialRotation(args: {
+  section: unknown;
+  issues: OpsCheckIssue[];
+  configPath: string;
+  maxAgeDays: number;
+  now: Date;
+  storageOwnerRequired: boolean;
+}): OpsCheckResult['checks']['credentialRotation'] {
+  if (!isPlainRecord(args.section)) {
+    args.issues.push({
+      code: 'ops.credential_rotation_missing',
+      severity: 'error',
+      message:
+        'Syncular ops evidence must include credential rotation ownership and review date.',
+      path: args.configPath,
+      recommendedAction: 'reviewCredentialRotation',
+    });
+    return 'missing';
+  }
+
+  let ready = true;
+  const reviewedAt = readFreshDate({
+    value: args.section.reviewedAt,
+    now: args.now,
+    maxAgeDays: args.maxAgeDays,
+    missingCode: 'ops.credential_rotation_stale',
+    staleCode: 'ops.credential_rotation_stale',
+    missingMessage:
+      'Syncular credential rotation evidence must include reviewedAt.',
+    staleMessage:
+      'Syncular credential rotation evidence is older than allowed.',
+    recommendedAction: 'reviewCredentialRotation',
+    path: args.configPath,
+    issues: args.issues,
+  });
+  if (!reviewedAt) ready = false;
+
+  const owners = isPlainRecord(args.section.owners)
+    ? args.section.owners
+    : null;
+  for (const owner of [
+    'auth',
+    'console',
+    ...(args.storageOwnerRequired ? ['storage'] : []),
+  ]) {
+    if (!owners || !nonEmptyString(owners[owner])) {
+      args.issues.push({
+        code: 'ops.credential_rotation_owner_missing',
+        severity: 'error',
+        message: `Syncular credential rotation evidence must name an owner for ${owner}.`,
+        path: args.configPath,
+        recommendedAction: 'reviewCredentialRotation',
+        details: { owner },
+      });
+      ready = false;
+    }
+  }
+
+  return ready ? 'ready' : 'not-ready';
+}
+
+function checkOpsRateLimits(args: {
+  section: unknown;
+  issues: OpsCheckIssue[];
+  configPath: string;
+  maxAgeDays: number;
+  now: Date;
+}): OpsCheckResult['checks']['rateLimits'] {
+  if (!isPlainRecord(args.section)) {
+    args.issues.push({
+      code: 'ops.rate_limits_missing',
+      severity: 'error',
+      message:
+        'Syncular ops evidence must include rate-limit tuning or gateway ownership.',
+      path: args.configPath,
+      recommendedAction: 'tuneRateLimits',
+    });
+    return 'missing';
+  }
+
+  let ready = true;
+  const status = nonEmptyString(args.section.status);
+  if (status !== 'enabled' && status !== 'gateway') {
+    args.issues.push({
+      code: 'ops.rate_limits_status_invalid',
+      severity: 'error',
+      message:
+        'Syncular rate-limit evidence must have status "enabled" or "gateway".',
+      path: args.configPath,
+      recommendedAction: 'tuneRateLimits',
+      details: { status },
+    });
+    ready = false;
+  }
+
+  const reviewedAt = readFreshDate({
+    value: args.section.reviewedAt,
+    now: args.now,
+    maxAgeDays: args.maxAgeDays,
+    missingCode: 'ops.rate_limits_stale',
+    staleCode: 'ops.rate_limits_stale',
+    missingMessage: 'Syncular rate-limit evidence must include reviewedAt.',
+    staleMessage: 'Syncular rate-limit evidence is older than allowed.',
+    recommendedAction: 'tuneRateLimits',
+    path: args.configPath,
+    issues: args.issues,
+  });
+  if (!reviewedAt) ready = false;
+
+  return ready ? 'ready' : 'not-ready';
+}
+
+function validDate(value: unknown): value is string {
+  if (typeof value !== 'string') return false;
+  const time = Date.parse(value);
+  return Number.isFinite(time);
+}
+
+function readFreshDate(args: {
+  value: unknown;
+  now: Date;
+  maxAgeDays: number;
+  missingCode: OpsCheckIssueCode;
+  staleCode: OpsCheckIssueCode;
+  missingMessage: string;
+  staleMessage: string;
+  recommendedAction: OpsCheckIssue['recommendedAction'];
+  path: string;
+  issues: OpsCheckIssue[];
+}): Date | null {
+  if (!validDate(args.value)) {
+    args.issues.push({
+      code: args.missingCode,
+      severity: 'error',
+      message: args.missingMessage,
+      path: args.path,
+      recommendedAction: args.recommendedAction,
+    });
+    return null;
+  }
+
+  const date = new Date(args.value);
+  const ageDays = Math.max(
+    0,
+    (args.now.getTime() - date.getTime()) / 86_400_000
+  );
+  if (ageDays > args.maxAgeDays) {
+    args.issues.push({
+      code: args.staleCode,
+      severity: 'error',
+      message: args.staleMessage,
+      path: args.path,
+      recommendedAction: args.recommendedAction,
+      details: {
+        ageDays: Math.round(ageDays * 10) / 10,
+        maxAgeDays: args.maxAgeDays,
+      },
+    });
+    return null;
+  }
+
+  return date;
+}
+
 function isPlainRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
@@ -768,6 +1462,20 @@ function formatSchemaCheckText(result: SchemaCheckResult): string {
 
   return [
     `[syncular] schema not ready (${result.issues.length} issue${result.issues.length === 1 ? '' : 's'})`,
+    ...result.issues.map((issue) => {
+      const location = issue.path ? ` at ${issue.path}` : '';
+      return `- ${issue.code}${location}: ${issue.message}`;
+    }),
+  ].join('\n');
+}
+
+function formatOpsCheckText(result: OpsCheckResult): string {
+  if (result.ready) {
+    return `[syncular] ops ready (${result.environment ?? 'unknown environment'})`;
+  }
+
+  return [
+    `[syncular] ops not ready (${result.issues.length} issue${result.issues.length === 1 ? '' : 's'})`,
     ...result.issues.map((issue) => {
       const location = issue.path ? ` at ${issue.path}` : '';
       return `- ${issue.code}${location}: ${issue.message}`;
@@ -1075,6 +1783,8 @@ export async function runSyncularCli(
         console.log(codegenInstallUsage());
       } else if (parsed.topic === 'schema-check') {
         console.log(schemaCheckUsage());
+      } else if (parsed.topic === 'ops-check') {
+        console.log(opsCheckUsage());
       } else {
         console.log(usage());
       }
@@ -1089,6 +1799,14 @@ export async function runSyncularCli(
         parsed.options.json
           ? JSON.stringify(result, null, parsed.options.pretty ? 2 : 0)
           : formatSchemaCheckText(result)
+      );
+      return result.ready ? 0 : 1;
+    } else if (parsed.kind === 'ops-check') {
+      const result = runOpsCheckCommand(parsed.options);
+      console.log(
+        parsed.options.json
+          ? JSON.stringify(result, null, parsed.options.pretty ? 2 : 0)
+          : formatOpsCheckText(result)
       );
       return result.ready ? 0 : 1;
     } else {

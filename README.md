@@ -165,12 +165,12 @@ client implementations are no longer a product path.
 ## Core packages
 
 Most packages are published under the `@syncular` scope on npm. The `syncular`
-package is CLI-only (`npx syncular generate`); app code imports from the scoped
-packages and their subpaths.
+package is CLI-only (`npx syncular generate`, `schema check`, and
+`ops check`); app code imports from the scoped packages and their subpaths.
 
 | Package | Description |
 |---|---|
-| `syncular` | CLI package for `npx syncular generate`, `schema check`, and `codegen install` |
+| `syncular` | CLI package for `npx syncular generate`, `schema check`, `ops check`, and `codegen install` |
 | `@syncular/server` | Server sync engine (push, pull, pruning, snapshots, blobs) |
 | `@syncular/server/hono` | Hono adapter with HTTP routes, OpenAPI, WebSocket, and console routes |
 | `@syncular/server/cloudflare` | Cloudflare adapter for Workers and Durable Objects |

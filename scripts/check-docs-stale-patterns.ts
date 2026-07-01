@@ -109,7 +109,7 @@ const stalePatterns: StalePattern[] = [
   {
     pattern: /\bsyncular (?:create|migrate|doctor|dev|typegen|login|deploy)\b/,
     message:
-      'The syncular CLI only ships `generate` and `codegen install`. Scaffolding is `bunx create-syncular-app`; migrations/console are app-owned.',
+      'The syncular CLI ships `generate`, `schema check`, `ops check`, and `codegen install`. Scaffolding is `bunx create-syncular-app`; migrations/console are app-owned.',
   },
 ];
 

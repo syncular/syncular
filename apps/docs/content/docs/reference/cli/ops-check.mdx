@@ -1,0 +1,110 @@
+---
+title: Ops Check Command
+description: Use syncular ops check to gate deploys on production runbook evidence.
+---
+
+# Ops Check Command
+
+`syncular ops check` validates the production operations evidence your deploy
+pipeline records around Syncular. It is intentionally narrower than a broad
+doctor command: it checks the runbook facts that must already exist before
+traffic moves.
+
+By default the command reads `syncular.ops.json` from the manifest directory:
+
+```bash
+npx syncular ops check --manifest-dir . --json --pretty
+```
+
+Use `--config` when the evidence file lives elsewhere:
+
+```bash
+npx syncular ops check --config ./ops/production.syncular.json --json
+```
+
+## Evidence File
+
+```json
+{
+  "environment": "production",
+  "schemaReadiness": {
+    "status": "ready",
+    "ready": true,
+    "checkedAt": "2026-07-01T00:00:00.000Z"
+  },
+  "restoreDrill": {
+    "completedAt": "2026-06-15T00:00:00.000Z",
+    "restoreMinutes": 12,
+    "expectedClientRebootstrapLoad": "normal weekday client population",
+    "rollbackDecision": "roll forward unless schema readiness fails"
+  },
+  "blobConsistency": {
+    "required": true,
+    "status": "pass",
+    "checkedAt": "2026-06-30T00:00:00.000Z"
+  },
+  "credentialRotation": {
+    "reviewedAt": "2026-06-15T00:00:00.000Z",
+    "owners": {
+      "auth": "identity team",
+      "console": "platform team",
+      "storage": "storage team"
+    }
+  },
+  "rateLimits": {
+    "reviewedAt": "2026-06-15T00:00:00.000Z",
+    "status": "enabled"
+  }
+}
+```
+
+If your app does not use external blob storage, set:
+
+```json
+{
+  "blobConsistency": {
+    "required": false,
+    "status": "not-applicable"
+  }
+}
+```
+
+## What It Checks
+
+| Field | Requirement |
+|---|---|
+| `schemaReadiness` | Recent successful `syncular schema check --json` or live server schema readiness evidence |
+| `restoreDrill` | Restore drill completion time, restore duration, expected client re-bootstrap load, and rollback decision |
+| `blobConsistency` | Pass/fail evidence for external blob storage, or an explicit not-applicable declaration |
+| `credentialRotation` | Review date plus owners for auth and Console credentials; storage owner is required when blob storage is required |
+| `rateLimits` | Rate limits are enabled in Syncular or owned by a gateway, with review date |
+
+## Freshness Flags
+
+Defaults are conservative: restore drills, credential reviews, and rate-limit
+reviews must be at most 90 days old; blob consistency evidence must be at most
+7 days old.
+
+```bash
+npx syncular ops check \
+  --max-restore-drill-age-days 30 \
+  --max-blob-consistency-age-days 1 \
+  --max-credential-review-age-days 45 \
+  --max-rate-limit-review-age-days 45 \
+  --json
+```
+
+## Exit Codes
+
+- `0`: all required ops evidence is ready.
+- `1`: the evidence file is missing, invalid, stale, or contains failed
+  checks.
+
+The JSON output includes stable issue codes and recommended actions so deploy
+pipelines can fail on codes instead of parsing human text.
+
+## Related Guides
+
+- [Deployment](/operate/deployment)
+- [Upgrade Guide](/reference/upgrade-guide)
+- [Observability](/operate/observability)
