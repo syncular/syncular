@@ -14,8 +14,9 @@ import { Buffer } from 'node:buffer';
  * 4. When Chrome/Chromium is available, opens the built preview in a real
  *    browser and waits for the starter's Syncular health/schema/support lines.
  *    The browser path also proves restored-page and online lifecycle resume
- *    signals, two-tab propagation, same-client page reload/reopen
- *    persistence, and same-profile browser process restart persistence.
+ *    signals, two-tab lock-coordinated lifecycle resume, two-tab
+ *    propagation, same-client page reload/reopen persistence, and
+ *    same-profile browser process restart persistence.
  *    Browser failures write
  *    browser-preview-failure.json with redacted marker state under the smoke
  *    work dir. The normal smoke also self-checks that artifact shape and safe
@@ -36,6 +37,8 @@ import { dirname, isAbsolute, join, resolve } from 'node:path';
 
 const packageDir = resolve(join(import.meta.dirname, '..'));
 const repoRoot = resolve(join(packageDir, '../..'));
+const STARTER_LIFECYCLE_RESUME_LOCK_NAME =
+  'syncular:create-syncular-app:lifecycle-resume';
 const keep = process.argv.includes('--keep');
 const requireBrowserPreviewSmoke =
   process.env.SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE === 'required' ||
@@ -439,6 +442,12 @@ async function runBrowserPreviewSmoke(args: {
         args.failureArtifactPath,
         args.failureMetrics
       );
+      await proveStarterTwoTabLifecycleResumeCoordination({
+        failureMetrics: args.failureMetrics,
+        failureArtifactPath: args.failureArtifactPath,
+        first: session,
+        second: secondSession,
+      });
       propagatedTitle = await proveStarterTwoTabPropagation({
         failureMetrics: args.failureMetrics,
         failureArtifactPath: args.failureArtifactPath,
@@ -1008,6 +1017,77 @@ async function waitForStarterLifecycleResume(args: {
   );
 }
 
+async function proveStarterTwoTabLifecycleResumeCoordination(args: {
+  failureMetrics: BrowserPreviewFailureMetricsInput;
+  failureArtifactPath: string;
+  first: CdpSession;
+  second: CdpSession;
+}): Promise<void> {
+  const [firstBefore, secondBefore] = await Promise.all([
+    readStarterBrowserProbe(args.first),
+    readStarterBrowserProbe(args.second),
+  ]);
+
+  await Promise.all([
+    dispatchStarterOnlineEvent(args.first),
+    dispatchStarterOnlineEvent(args.second),
+  ]);
+
+  await waitForStarterLifecycleResume({
+    expectedCount: firstBefore.lifecycleResume.count + 1,
+    expectedReason: 'online',
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.first,
+    timeoutReason: 'two-tab-lifecycle-first-timeout',
+  });
+  await waitForStarterLifecycleResume({
+    expectedCount: secondBefore.lifecycleResume.count + 1,
+    expectedReason: 'online',
+    failureArtifactPath: args.failureArtifactPath,
+    failureMetrics: args.failureMetrics,
+    session: args.second,
+    timeoutReason: 'two-tab-lifecycle-second-timeout',
+  });
+
+  const [firstAfter, secondAfter] = await Promise.all([
+    readStarterBrowserProbe(args.first),
+    readStarterBrowserProbe(args.second),
+  ]);
+  const firstLockReady = isStarterLifecycleResumeLockAcquired(firstAfter);
+  const secondLockReady = isStarterLifecycleResumeLockAcquired(secondAfter);
+  if (firstLockReady && secondLockReady) return;
+
+  const probe = firstLockReady ? secondAfter : firstAfter;
+  await writeBrowserPreviewFailureArtifact(
+    args.failureArtifactPath,
+    'two-tab-lifecycle-lock-state-mismatch',
+    probe,
+    args.failureMetrics
+  );
+  throw new Error(
+    `Built preview two-tab lifecycle resume did not acquire the expected Web Lock. Failure artifact: ${args.failureArtifactPath}`
+  );
+}
+
+async function dispatchStarterOnlineEvent(session: CdpSession): Promise<void> {
+  await session.evaluate(`(() => {
+    window.dispatchEvent(new Event('online'));
+    return true;
+  })()`);
+}
+
+function isStarterLifecycleResumeLockAcquired(
+  probe: BrowserPreviewProbe
+): boolean {
+  return (
+    probe.lifecycleResume.status === 'complete' &&
+    probe.lifecycleResume.reason === 'online' &&
+    probe.lifecycleResume.lockName === STARTER_LIFECYCLE_RESUME_LOCK_NAME &&
+    probe.lifecycleResume.lockState === 'acquired'
+  );
+}
+
 async function proveStarterTwoTabPropagation(args: {
   failureMetrics: BrowserPreviewFailureMetricsInput;
   failureArtifactPath: string;
@@ -1354,7 +1434,7 @@ async function verifyBrowserPreviewFailureArtifactSelfCheck(
         count: 2,
         reason: 'online',
         error: null,
-        lockName: 'syncular:create-syncular-app:lifecycle-resume',
+        lockName: STARTER_LIFECYCLE_RESUME_LOCK_NAME,
         lockRequired: 'false',
         lockState: 'acquired',
       },

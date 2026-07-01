@@ -2061,6 +2061,14 @@ online propagation, or reconnect behavior can change.
   `?syncularClientId=...`; the CDP smoke opens a second tab with a distinct
   client id, creates a task in the first tab, and waits for the second tab to
   observe the task through the normal sync/realtime path.
+- 2026-07-01: Extended the starter Chrome/CDP two-tab proof with
+  lock-coordinated lifecycle resume evidence. After both generated-app tabs
+  are ready, the smoke dispatches `online` in both tabs, waits for each tab's
+  lifecycle marker to advance, and asserts that both markers report the
+  starter lifecycle Web Lock name with `lockState: "acquired"`. This proves
+  the hosted browser path is exercising the same app-facing lock-backed
+  foreground resume contract, while leaving true suspension/shutdown and
+  storage-lock contention for deeper browser matrix work.
 - 2026-07-01: Extended the starter Chrome/CDP path with a same-client
   reload/reopen proof. After two-tab propagation, the smoke navigates the
   second tab back through app startup with the same `syncularClientId` and
@@ -2541,15 +2549,37 @@ Most recent browser lifecycle resume helper rerun:
     dispatches persisted `pageshow`, waits for a completed restored-page
     lifecycle marker, dispatches `online`, waits for a second completed
     lifecycle marker, opens a second tab with a distinct client id/database
-    file, creates a task in the first tab, and waits for the second tab to
-    observe it through sync/realtime. The Chrome/CDP path now also navigates
-    the second tab through a same-client reload/reopen and waits for the task
-    to reappear after app startup, then stops Chrome, starts a fresh Chrome
-    process with the same profile directory and client id, and waits for the
-    task to survive that browser-process boundary.
+    file, dispatches `online` in both tabs, verifies both tabs report the
+    starter lifecycle Web Lock as acquired, creates a task in the first tab,
+    and waits for the second tab to observe it through sync/realtime. The
+    Chrome/CDP path now also navigates the second tab through a same-client
+    reload/reopen and waits for the task to reappear after app startup, then
+    stops Chrome, starts a fresh Chrome process with the same profile
+    directory and client id, and waits for the task to survive that
+    browser-process boundary.
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
 - `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd apps/docs types:check`
 - `git diff --check`
+
+Most recent starter two-tab lifecycle coordination rerun:
+
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun --cwd packages/create-syncular-app tsgo`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bunx biome check packages/create-syncular-app/scripts/smoke.ts rust/docs/ROADMAP.md rust/docs/work-packages/WP-50-syncular-dx-rough-edges.md`
+  - Passed for the TypeScript smoke file. The repo Biome config ignores the
+    Markdown planning docs, so keep using `git diff --check` and manual
+    Markdown sanity reads for those files.
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" bun run docs:stale-check`
+- `PATH="$PWD/.context/bun-1.3.9/bun-darwin-aarch64:$PATH" SYNCULAR_CSA_SMOKE_WORK_DIR=.context/starter-two-tab-lifecycle-smoke-2 bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, built asset checks, and the
+    browser failure artifact shape self-check.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available. On browser-capable runners the CDP path now opens a
+    second generated-app tab, dispatches `online` in both tabs, waits for both
+    lifecycle markers to advance, verifies both markers report the starter
+    lifecycle Web Lock as acquired, then continues through two-tab
+    propagation, same-client reload/reopen, and same-profile browser-process
+    restart task visibility.
 
 Most recent starter reload/reopen persistence rerun:
 
@@ -3184,13 +3214,15 @@ Most recent mutation-status rerun:
   restored-page resume marker, dispatches `online`, and waits for a second
   completed resume marker. The first Chrome two-tab runtime proof is also in
   place: distinct generated-app tabs use distinct client ids/database files,
-  one tab creates a task, and the second tab must observe it through the normal
-  sync/realtime path. The CDP path now also performs a same-client
+  both tabs dispatch `online` and must report the starter lifecycle Web Lock
+  as acquired, one tab creates a task, and the second tab must observe it
+  through the normal sync/realtime path. The CDP path now also performs a
+  same-client
   reload/reopen after propagation and waits for the task to reappear after app
   startup, then restarts Chrome with the same profile directory and waits for
   the task to survive a fresh browser process. Remaining work is richer
-  two-tab lifecycle execution: true tab suspension/resume, storage-lock and
-  shutdown contention, and recovery coordination for persistent browser
+  two-tab lifecycle execution: true tab suspension/resume, storage shutdown,
+  quota/eviction, and deeper recovery coordination for persistent browser
   databases beyond lock-serialized foreground resume.
 - Local recovery controls: first plan/action slice is done for support bundles,
   local health repairs, failed outbox/blob retries, compaction, cache clear,
@@ -3356,8 +3388,9 @@ Most recent mutation-status rerun:
 ## Next Action
 
 Pick the next implementation slice from the remaining risks. Strong candidates
-are observing the new hosted starter browser-preview job, multi-tab lifecycle
-coverage, canonical real-browser support-bundle failure artifacts,
+are observing the new hosted starter browser-preview job, deeper browser
+suspension/shutdown lifecycle coverage, canonical real-browser support-bundle
+failure artifacts,
 browser/bundler matrix execution, or automating production-ops checks, because
 those remain broad DX holes after the first local recovery browser proof,
 upgrade runbook, production-ops runbook, built-preview asset smoke, runtime

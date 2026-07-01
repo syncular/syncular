@@ -229,13 +229,15 @@ read-only review:
     waits for a completed `resumeFromBackground()` marker, then dispatches
     `online` and waits for a second completed marker. The Chrome/CDP path now
     also opens a second generated-app tab with its own client id/database file,
-    creates a task in the first tab, waits for the first tab's
-    local-visibility marker, and waits for the second tab to observe it
-    through the normal sync/realtime path. The same CDP path now navigates the
-    second tab through a same-client page reload/reopen and waits for the task
-    to reappear after app startup, then restarts Chrome with the same profile
-    directory and verifies that the same client id can still see the task in a
-    fresh browser process. Release rehearsal now runs the create-syncular-app
+    dispatches `online` in both tabs, verifies both lifecycle markers report
+    the starter Web Lock as acquired, creates a task in the first tab, waits
+    for the first tab's local-visibility marker, and waits for the second tab
+    to observe it through the normal sync/realtime path. The same CDP path now
+    navigates the second tab through a same-client page reload/reopen and waits
+    for the task to reappear after app startup, then restarts Chrome with the
+    same profile directory and verifies that the same client id can still see
+    the task in a fresh browser process. Release rehearsal now runs the
+    create-syncular-app
     built-preview smoke by default and can require the Chrome/CDP path with
     `--require-starter-browser-preview`. Next slice: observe the hosted Chrome
     job or continue broadening browser/framework runtime execution beyond
