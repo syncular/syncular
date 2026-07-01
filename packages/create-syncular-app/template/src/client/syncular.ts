@@ -18,7 +18,10 @@ export type AppDb = SyncularAppDb;
 
 export type Task = Selectable<AppDb['tasks']>;
 
-export { syncularGeneratedSchemaVersion };
+export {
+  syncularGeneratedRequiredRuntimeFeatures,
+  syncularGeneratedSchemaVersion,
+};
 
 /** The managed client surface that `@syncular/client/react` consumes. */
 export type AppSyncClient = SyncularAppDatabase;

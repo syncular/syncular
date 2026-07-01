@@ -22,12 +22,13 @@ Open the app in two browser windows and watch edits replicate. Stop the dev
 server while the page stays open: edits queue locally and sync when the
 server is back.
 
-The status lines in the task panel come from `getSyncularBrowserHealth(...)`
-and the generated `database.schemaReadiness()` helper. They are the
-app-facing checks for
+The status lines in the task panel come from `getSyncularBrowserHealth(...)`,
+the generated `database.schemaReadiness()` helper, and
+`database.exportSupportBundle(...)`. They are the app-facing checks for
 durable storage, active subscriptions, realtime state, generated schema
-compatibility, the latest structured Syncular error, and any stable
-recommended action such as refreshing auth or checking permissions.
+compatibility, the latest structured Syncular error, stable recommended
+actions such as refreshing auth or checking permissions, and a redacted local
+support artifact that can be attached to bug reports.
 
 For preview or production deploys, run
 `getSyncularBrowserDeploymentPreflight(...)` from the browser before opening the
@@ -55,7 +56,7 @@ generated/             Codegen handoff (syncular.codegen.json, Rust/Swift/Kotlin
 src/generated/         Generated TypeScript client + server modules (committed)
 src/server/            Hono sync server (auth, handlers, server-side tables)
 src/client/syncular.ts Client wiring: local DB, sync lifecycle, managed client
-src/app.tsx            React UI built on @syncular/client/react hooks + health
+src/app.tsx            React UI built on @syncular/client/react hooks + diagnostics
 scripts/dev.ts         Runs sync server + Vite together
 ```
 

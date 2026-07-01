@@ -12,9 +12,9 @@ import { Buffer } from 'node:buffer';
  *    the Vite page, then builds the app and repeats the same checks against
  *    `bun scripts/dev.ts --preview`.
  * 4. When Chrome/Chromium is available, opens the built preview in a real
- *    browser and waits for the starter's Syncular health/schema lines. Set
- *    SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required to fail when no browser is
- *    available.
+ *    browser and waits for the starter's Syncular health/schema/support lines.
+ *    Set SYNCULAR_CSA_BROWSER_PREVIEW_SMOKE=required to fail when no browser
+ *    is available.
  *
  * Usage: bun scripts/smoke.ts [--keep] [--require-browser-preview]
  */
@@ -207,6 +207,7 @@ async function verifyBuiltPreviewAssets(
     throw new Error('Built preview page did not reference any Vite assets');
   }
 
+  let sawSupportBundleMarker = false;
   for (const assetPath of assetPaths) {
     const assetUrl = new URL(assetPath, origin);
     const response = await fetch(assetUrl);
@@ -215,6 +216,21 @@ async function verifyBuiltPreviewAssets(
         `Built preview asset ${assetUrl.href} returned ${response.status}`
       );
     }
+    const contentType = response.headers.get('content-type') ?? '';
+    if (
+      assetUrl.pathname.endsWith('.js') ||
+      contentType.includes('javascript')
+    ) {
+      const assetBody = await response.text();
+      sawSupportBundleMarker ||= assetBody.includes(
+        'data-syncular-support-bundle-status'
+      );
+    }
+  }
+  if (!sawSupportBundleMarker) {
+    throw new Error(
+      'Built preview assets did not include the support-bundle smoke marker'
+    );
   }
 }
 
@@ -325,8 +341,13 @@ async function waitForStarterBrowserReady(session: CdpSession): Promise<void> {
       ready: boolean;
       text: string;
       errors: string[];
+      supportBundleStatus: string | null;
     }>(`(() => {
       const text = document.body?.innerText ?? '';
+      const supportBundle = document.querySelector('[data-syncular-support-bundle-status]');
+      const supportBundleStatus = supportBundle?.getAttribute('data-syncular-support-bundle-status') ?? null;
+      const supportBundleRedacted = supportBundle?.getAttribute('data-syncular-support-bundle-redacted') ?? null;
+      const supportBundleSectionCount = Number(supportBundle?.getAttribute('data-syncular-support-bundle-section-count') ?? 0);
       const errors = [];
       if (text.includes('Syncular browser preflight failed')) {
         errors.push('preflight failed');
@@ -334,14 +355,24 @@ async function waitForStarterBrowserReady(session: CdpSession): Promise<void> {
       if (text.includes('Opening local database') && text.includes('Error')) {
         errors.push('database open failed');
       }
+      if (supportBundleStatus === 'failed') {
+        errors.push('support bundle export failed');
+      }
+      if (supportBundleStatus !== null && supportBundleRedacted !== 'true') {
+        errors.push('support bundle was not redacted');
+      }
       return {
         ready:
           text.includes('indexedDb durable') &&
           text.includes('schema v') &&
+          supportBundleStatus !== null &&
+          supportBundleRedacted === 'true' &&
+          supportBundleSectionCount >= 4 &&
           !text.includes('Opening local database') &&
           !text.includes('Syncular browser preflight failed'),
         text,
         errors,
+        supportBundleStatus,
       };
     })()`);
     lastText = evaluation.text;

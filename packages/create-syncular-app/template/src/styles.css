@@ -127,6 +127,10 @@ h2 {
   color: #9b5b12;
 }
 
+.health-line.failed {
+  color: #8f2727;
+}
+
 .health-line.offline,
 .health-line.closed {
   color: #5f6f79;

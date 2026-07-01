@@ -1489,6 +1489,13 @@ online propagation, or reconnect behavior can change.
   Locks, page visibility, `pagehide`, `beforeunload`, resume/shutdown signal
   availability, and a multi-tab mode; apps can opt into failing the preflight
   when multi-tab coordination or page lifecycle resume signals are required.
+- 2026-07-01: Wired the `create-syncular-app` starter to export a composed
+  redacted support-bundle summary after the database opens. The task panel now
+  exposes stable support-bundle DOM markers for status, redaction, section
+  count, issue count, request-id count, and section-error count. The scaffold
+  smoke now proves the production build contains that marker and, when Chrome
+  is available, waits for redacted support-bundle DOM evidence alongside the
+  existing health/schema readiness checks.
 
 ## Latest Gates
 
@@ -1657,6 +1664,18 @@ Most recent starter browser-preview rerun:
     with `browser-actions/setup-chrome@v2` and exports `CHROME_BIN` from
     `steps.setup-chrome.outputs.chrome-path`.
 - `bun run docs:stale-check`
+- `git diff --check`
+
+Most recent starter support-bundle artifact rerun:
+
+- `bun --cwd packages/create-syncular-app tsgo`
+- `bunx biome check packages/create-syncular-app/template/src/app.tsx packages/create-syncular-app/template/src/client/syncular.ts packages/create-syncular-app/template/src/styles.css packages/create-syncular-app/scripts/smoke.ts`
+- `bun --cwd packages/create-syncular-app smoke`
+  - Passed dev server health/page/module/preflight transform checks.
+  - Passed Vite production build, preview serving, and built asset checks,
+    including the support-bundle marker in the production JavaScript asset.
+  - Skipped the real-browser CDP check locally because no Chrome/Chromium
+    binary was available.
 - `git diff --check`
 
 Most recent generated-helper rerun:
@@ -1954,9 +1973,13 @@ Most recent mutation-status rerun:
   First composed support-bundle slice is also done for browser health, runtime
   timeline, schema readiness, optional deployment preflight, local support
   data, section errors, package/runtime versions, request/sync/trace ids,
-  subscription cursors, and diagnostic redaction policy. Remaining work is to
-  prove the composed bundle in a real browser failure artifact and decide
-  whether server Console/Fleet should ingest the same artifact shape.
+  subscription cursors, and diagnostic redaction policy. The starter now emits
+  a compact redacted support-bundle artifact marker, and the scaffold smoke
+  asserts the production build contains it; the Chrome/CDP smoke waits for the
+  same marker when a browser is available. Remaining work is to observe the
+  hosted Chrome job for this proof, create a canonical real-browser failure
+  artifact, and decide whether server Console/Fleet should ingest the same
+  artifact shape.
 - Outbox and conflict UX: first app-facing status slice is done for
   queued/sending/failed/acked outbox counts, unresolved/resolved conflicts,
   conflict detail rows, last mutation-related errors, and recommended actions.
@@ -1984,9 +2007,9 @@ Most recent mutation-status rerun:
 
 Pick the next implementation slice from the remaining risks. Strong candidates
 are observing the new hosted starter browser-preview job, multi-tab lifecycle
-coverage, real-browser support-bundle failure artifacts, browser/bundler matrix
-execution, or production-ops depth, because those remain broad DX holes after
-the first local recovery browser proof, upgrade runbook, built-preview asset
-smoke, runtime timeline helper, composed support-bundle helper, mutation
-status helper, command timeline evidence chain, and CI browser-smoke
-enforcement.
+coverage, canonical real-browser support-bundle failure artifacts,
+browser/bundler matrix execution, or production-ops depth, because those
+remain broad DX holes after the first local recovery browser proof, upgrade
+runbook, built-preview asset smoke, runtime timeline helper, composed
+support-bundle helper, starter support-bundle marker, mutation status helper,
+command timeline evidence chain, and CI browser-smoke enforcement.

@@ -3,6 +3,7 @@ import {
   type SyncularBrowserHealth,
   type SyncularClientStatus,
   type SyncularSchemaReadinessResult,
+  type SyncularSupportBundle,
 } from '@syncular/client';
 import { createSyncularReact } from '@syncular/client/react';
 import type { FormEvent } from 'react';
@@ -12,6 +13,7 @@ import {
   type AppSyncClient,
   appActorId,
   openAppClient,
+  syncularGeneratedRequiredRuntimeFeatures,
   type Task,
 } from './client/syncular';
 
@@ -89,6 +91,8 @@ function TaskPane({ client }: { client: AppSyncClient }) {
   const [health, setHealth] = useState<SyncularBrowserHealth | null>(null);
   const [schemaReadiness, setSchemaReadiness] =
     useState<SyncularSchemaReadinessResult | null>(null);
+  const [supportBundle, setSupportBundle] =
+    useState<SupportBundlePreview | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -108,6 +112,21 @@ function TaskPane({ client }: { client: AppSyncClient }) {
         })
         .catch(() => {
           if (!disposed) setSchemaReadiness(null);
+        });
+      void client
+        .exportSupportBundle({
+          deploymentPreflight: {
+            requiredRuntimeFeatures: syncularGeneratedRequiredRuntimeFeatures,
+            storage: 'indexedDb',
+            checkRuntimeAssets: false,
+            minimumQuotaBytes: 50 * 1024 * 1024,
+          },
+        })
+        .then((bundle) => {
+          if (!disposed) setSupportBundle(summarizeSupportBundle(bundle));
+        })
+        .catch(() => {
+          if (!disposed) setSupportBundle(failedSupportBundlePreview());
         });
     };
     refresh();
@@ -150,6 +169,9 @@ function TaskPane({ client }: { client: AppSyncClient }) {
       {health ? <HealthLine health={health} /> : null}
       {schemaReadiness ? (
         <SchemaLine schemaReadiness={schemaReadiness} />
+      ) : null}
+      {supportBundle ? (
+        <SupportBundleLine supportBundle={supportBundle} />
       ) : null}
 
       <form className="add-row" onSubmit={addTask}>
@@ -232,6 +254,72 @@ function TaskItem({
         ×
       </button>
     </div>
+  );
+}
+
+type SupportBundlePreview = {
+  status: SyncularSupportBundle['summary']['status'] | 'failed';
+  redacted: boolean;
+  includedSections: number;
+  issueCount: number;
+  requestIdCount: number;
+  sectionErrorCount: number;
+};
+
+function summarizeSupportBundle(
+  bundle: SyncularSupportBundle
+): SupportBundlePreview {
+  return {
+    status: bundle.summary.status,
+    redacted: bundle.redacted,
+    includedSections: Object.values(bundle.sections).filter(
+      (sectionStatus) => sectionStatus === 'included'
+    ).length,
+    issueCount: bundle.summary.issueCodes.length,
+    requestIdCount: bundle.summary.requestIds.length,
+    sectionErrorCount: bundle.sectionErrors.length,
+  };
+}
+
+function failedSupportBundlePreview(): SupportBundlePreview {
+  return {
+    status: 'failed',
+    redacted: false,
+    includedSections: 0,
+    issueCount: 1,
+    requestIdCount: 0,
+    sectionErrorCount: 1,
+  };
+}
+
+function SupportBundleLine({
+  supportBundle,
+}: {
+  supportBundle: SupportBundlePreview;
+}) {
+  const label =
+    supportBundle.status === 'failed'
+      ? 'support bundle failed'
+      : `support bundle ${supportBundle.status} · ${supportBundle.includedSections} sections · redacted`;
+
+  return (
+    <p
+      className={`health-line ${supportBundle.status}`}
+      data-syncular-support-bundle-issue-count={supportBundle.issueCount}
+      data-syncular-support-bundle-redacted={String(supportBundle.redacted)}
+      data-syncular-support-bundle-request-id-count={
+        supportBundle.requestIdCount
+      }
+      data-syncular-support-bundle-section-count={
+        supportBundle.includedSections
+      }
+      data-syncular-support-bundle-section-error-count={
+        supportBundle.sectionErrorCount
+      }
+      data-syncular-support-bundle-status={supportBundle.status}
+    >
+      {label}
+    </p>
   );
 }
 

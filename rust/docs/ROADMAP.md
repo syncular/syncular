@@ -151,9 +151,13 @@ read-only review:
     not-ready checks for apps that require tab coordination or page lifecycle
     resume signals; the starter now runs this preflight before
     `createSyncularAppDatabase(...)`, and its scaffold smoke checks the
-    transformed preflight client module. Next slice: wire the preflight into a
-    real browser built-preview smoke or continue with real multi-tab
-    lifecycle/recovery execution. The post-publish JavaScript install smoke now
+    transformed preflight client module. The starter now also exports a
+    redacted support-bundle summary after opening the database, and the
+    scaffold smoke asserts that production assets contain the support-bundle
+    marker plus waits for redacted support-bundle DOM evidence in the
+    Chrome/CDP preview path when a browser is available. Next slice: observe
+    the hosted Chrome job or continue with real multi-tab lifecycle/recovery
+    execution. The post-publish JavaScript install smoke now
     also creates a fresh optional import matrix project that installs
     `@syncular/client`, `@syncular/server`, and the Bun-friendly optional peers,
     then imports the folded client/server subpaths for React, Sentry, Tauri,
